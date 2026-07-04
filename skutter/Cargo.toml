@@ -1,6 +1,6 @@
 [package]
-name = "brain-stdio"
-description = "Stdio head for the brain agent engine: one-shot `run` and bidirectional `pipe` (NDJSON)."
+name = "skutter"
+description = "Terminal head for the entanglement agent engine: one-shot `run` and bidirectional `pipe` (NDJSON)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,12 +8,12 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "brain"
+name = "skutter"
 path = "src/main.rs"
 
 [dependencies]
-brain-core = { workspace = true }
-brain-llm = { workspace = true }
+entanglement-core = { workspace = true }
+entanglement-llm = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

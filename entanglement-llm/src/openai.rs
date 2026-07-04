@@ -1,16 +1,16 @@
 //! Generic OpenAI-compatible streaming client — hand-rolled over `reqwest`,
 //! no SDK crate. One [`OpenAiLlm`] serves any provider that speaks the
-//! `/chat/completions` wire format: **z.ai** (GLM models, brain's primary),
+//! `/chat/completions` wire format: **z.ai** (GLM models, entanglement's primary),
 //! **OpenAI**, and **Ollama**'s `/v1` compat endpoint. The only differences
 //! between them are config: base URL, whether a key is required, and the model
 //! name — all injected by the host.
 //!
-//! Implements [`brain_core::Llm`] by POSTing to `/chat/completions` with
+//! Implements [`entanglement_core::Llm`] by POSTing to `/chat/completions` with
 //! `stream: true` and parsing the Server-Sent-Events stream into [`LlmEvent`]s
 //! (incremental text, assembled tool calls, usage).
 //!
 //! # Preset base URLs
-//! - [`ZAI_CODING_PLAN_BASE`] — GLM Coding Plan (dedicated tier), brain default.
+//! - [`ZAI_CODING_PLAN_BASE`] — GLM Coding Plan (dedicated tier), entanglement default.
 //! - [`ZAI_GENERAL_BASE`] — z.ai pay-as-you-go.
 //! - [`OPENAI_BASE`] — OpenAI.
 //! - [`OLLAMA_BASE`] — local Ollama (keyless).
@@ -27,18 +27,20 @@
 //! Tool-result messages round-trip as `role: "tool"` **per call** — unlike
 //! Anthropic, which merges consecutive results into one user turn (that's why
 //! Anthropic keeps its own module). See ADR-0007 for why backends live outside
-//! `brain-core`.
+//! `entanglement-core`.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use async_stream::try_stream;
 use async_trait::async_trait;
-use brain_core::{Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, ToolCall, ToolSpec};
+use entanglement_core::{
+    Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, ToolCall, ToolSpec,
+};
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-/// z.ai GLM Coding Plan (dedicated tier) — brain's default base URL.
+/// z.ai GLM Coding Plan (dedicated tier) — entanglement's default base URL.
 pub const ZAI_CODING_PLAN_BASE: &str = "https://api.z.ai/api/coding/paas/v4";
 /// z.ai general (pay-as-you-go) tier.
 pub const ZAI_GENERAL_BASE: &str = "https://api.z.ai/api/paas/v4";
@@ -88,7 +90,7 @@ pub fn openai_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
     default_model: impl Into<String>,
-) -> brain_core::LlmFactory {
+) -> entanglement_core::LlmFactory {
     let llm = OpenAiLlm::new(base_url, api_key, default_model);
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
@@ -224,7 +226,7 @@ fn build_body(model: &str, system: &str, messages: &[Message], tools: &[ToolSpec
     body
 }
 
-/// Map brain's `Message` history to OpenAI chat format. Tool results become one
+/// Map entanglement's `Message` history to OpenAI chat format. Tool results become one
 /// `role: "tool"` message each (with its `tool_call_id`); assistant tool calls
 /// become a `tool_calls` array carrying the raw JSON argument string.
 fn convert_messages(messages: &[Message]) -> Vec<Value> {

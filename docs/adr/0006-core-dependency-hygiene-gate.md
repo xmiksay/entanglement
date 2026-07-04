@@ -1,4 +1,4 @@
-# 0006. brain-core zero-UI-dep hygiene gate
+# 0006. entanglement-core zero-UI-dep hygiene gate
 
 - Status: Accepted
 - Date: 2026-07-04
@@ -8,27 +8,27 @@
 PLAN.md calls out as a top risk: *"accidentally coupling core logic to CLI
 crates."* The entire project premise is a **headless core** that stays
 UI/transport-agnostic. Once `clap`, `crossterm`, or `axum` leaks into
-`brain-core`, every embedder drags in a UI stack, and the seam is gone.
+`entanglement-core`, every embedder drags in a UI stack, and the seam is gone.
 
 ## Decision
 
-`brain-core` depends **only** on: `tokio`, `serde`, `serde_json`, `async-trait`,
+`entanglement-core` depends **only** on: `tokio`, `serde`, `serde_json`, `async-trait`,
 `anyhow`, `thiserror`, `tracing`, `futures`. It must **never** pull in
 `clap`, `axum`, `tower`, `tonic`, `crossterm`, `ratatui`, `tui`, or any other
 UI/transport crate.
 
 This is enforced automatically:
 
-- Heads live in **separate crates** (`brain-stdio`, future `brain-ws`,
-  `brain-cli`) that depend on `brain-core`, never the reverse.
-- `make tree` runs `cargo tree -p brain-core` and greps for forbidden crates; it
+- Heads live in **separate crates** (`skutter`, future `entanglement-ws`,
+  `entanglement-cli`) that depend on `entanglement-core`, never the reverse.
+- `make tree` runs `cargo tree -p entanglement-core` and greps for forbidden crates; it
   is part of `make verify`'s CI-equivalent gate.
 
 ## Consequences
 
 - **(+)** A structural guarantee of the headless seam, not just a convention.
 - **(+)** `make tree` is a fast, automatable CI check.
-- **(+)** Embedders link `brain-core` without any UI baggage.
+- **(+)** Embedders link `entanglement-core` without any UI baggage.
 - **(−)** More crates to version/publish — a minor cost for the guarantee.
 
 ## Alternatives considered

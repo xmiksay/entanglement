@@ -1,5 +1,5 @@
 //! Anthropic Messages API streaming client — hand-rolled over `reqwest`, no
-//! Anthropic SDK crate. Implements [`brain_core::Llm`] by POSTing to
+//! Anthropic SDK crate. Implements [`entanglement_core::Llm`] by POSTing to
 //! `/v1/messages` with `stream: true` and parsing the Server-Sent-Events stream
 //! into [`LlmEvent`]s (incremental text, assembled tool calls, terminal usage).
 //!
@@ -14,14 +14,14 @@
 //! - `message_stop`             → `Finish`
 //! - `error`                    → mid-stream failure
 //!
-//! See ADR-0007 for why this lives outside `brain-core` (reqwest is a transport
+//! See ADR-0007 for why this lives outside `entanglement-core` (reqwest is a transport
 //! dep; core stays pure).
 
 use std::time::Duration;
 
 use async_stream::try_stream;
 use async_trait::async_trait;
-use brain_core::{Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, ToolSpec};
+use entanglement_core::{Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, ToolSpec};
 use futures::StreamExt;
 use serde_json::{json, Value};
 
@@ -68,7 +68,7 @@ impl AnthropicLlm {
 pub fn anthropic_factory(
     api_key: impl Into<String>,
     default_model: impl Into<String>,
-) -> brain_core::LlmFactory {
+) -> entanglement_core::LlmFactory {
     let llm = AnthropicLlm::new(api_key, default_model);
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
@@ -175,7 +175,7 @@ fn build_body(
     body
 }
 
-/// Map brain's `Message` history to Anthropic's content-block format. Runs of
+/// Map entanglement's `Message` history to Anthropic's content-block format. Runs of
 /// consecutive tool-result messages are merged into a single `user` turn
 /// (Anthropic requires all `tool_result` blocks for a turn in one message).
 fn convert_messages(messages: &[Message]) -> Vec<Value> {
@@ -339,7 +339,7 @@ fn handle_frame(
                 } else {
                     tool.input_buf
                 };
-                out.push(LlmEvent::ToolCall(brain_core::ToolCall {
+                out.push(LlmEvent::ToolCall(entanglement_core::ToolCall {
                     id: tool.id,
                     name: tool.name,
                     input,
@@ -483,7 +483,7 @@ mod tests {
             handle_frame("content_block_stop", None, &mut tool, &mut None, &mut None).unwrap();
         assert_eq!(
             evs,
-            vec![LlmEvent::ToolCall(brain_core::ToolCall {
+            vec![LlmEvent::ToolCall(entanglement_core::ToolCall {
                 id: "t1".into(),
                 name: "greet".into(),
                 input: r#"{"nm":"sam"}"#.into(),

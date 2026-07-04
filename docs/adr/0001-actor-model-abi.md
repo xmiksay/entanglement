@@ -5,7 +5,7 @@
 
 ## Context
 
-The Phase-1 bootstrap modeled the engine as `Brain<T: Transport>` calling a
+The Phase-1 bootstrap modeled the engine as `Holly<T: Transport>` calling a
 **pull-based** `Transport` trait (`transport.next_action()` blocks; the engine
 calls *into* the harness). That fits exactly one blocking caller.
 
@@ -22,12 +22,12 @@ It fails the moment we look at the real heads:
 
 ## Decision
 
-The engine is an **actor**. `Brain` owns a process-wide inbox
+The engine is an **actor**. `Holly` owns a process-wide inbox
 (`mpsc::Sender<InMsg>`) and outbox (`broadcast::Sender<OutEvent>`):
 
 ```rust
-impl Brain {
-    pub fn spawn(cfg: EngineConfig) -> Brain;
+impl Holly {
+    pub fn spawn(cfg: EngineConfig) -> Holly;
     pub async fn send(&self, msg: InMsg);          // push a typed message in
     pub fn subscribe(&self) -> broadcast::Receiver<OutEvent>;  // fan-out events
 }
@@ -36,7 +36,7 @@ impl Brain {
 Every head (ABI, stdio, WebSocket, TUI) is a thin adapter over these two methods.
 The `Transport` trait is removed.
 
-This **is** the ABI: an embedder holds a cheaply-cloned `Brain`, calls `send`
+This **is** the ABI: an embedder holds a cheaply-cloned `Holly`, calls `send`
 with typed `InMsg`s and drains `subscribe` for `OutEvent`s — zero serialization.
 
 ## Consequences

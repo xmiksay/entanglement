@@ -5,7 +5,7 @@
 //! Streaming mirrors opencode (which drives the Vercel AI SDK's `doStream`),
 //! keeping live token-by-token UI feedback as a first-class concern. Concrete
 //! backends live out-of-tree so [`DummyLlm`] is the only in-core implementation;
-//! the real Anthropic SSE client lives in the `brain-llm` crate (it pulls in
+//! the real Anthropic SSE client lives in the `entanglement-llm` crate (it pulls in
 //! `reqwest`, which core must never depend on — see ADR-0006 / ADR-0007).
 
 use async_trait::async_trait;

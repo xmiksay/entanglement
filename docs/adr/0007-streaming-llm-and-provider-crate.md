@@ -9,21 +9,21 @@ The engine needs a real model backend. Two questions had to be settled together
 because they're load-bearing and hard to reverse:
 
 1. **Streaming vs. buffered.** The original `Llm` trait (pre-0007) was buffered:
-   `async fn complete(req) -> LlmResponse`. But `brain` is modeled on opencode,
+   `async fn complete(req) -> LlmResponse`. But `entanglement` is modeled on opencode,
    and opencode streams — it drives the Vercel AI SDK's `doStream` and surfaces
    `text/event-stream` deltas to the UI token-by-token. `OutEvent::TextDelta`
    was already in the protocol *implying* streaming, yet the backend handed back
    the whole reply at once. The two reference projects studied
    (`nexial/infra`, `f13/knowledge-base`) both converged on a buffered
-   `LlmProvider::chat` trait — deliberately *not* the model `brain` follows.
+   `LlmProvider::chat` trait — deliberately *not* the model `entanglement` follows.
 
 2. **Where the backend lives.** A real backend needs an HTTP client (`reqwest`).
-   ADR-0006 forbids `reqwest` (and all transport crates) in `brain-core`. So the
+   ADR-0006 forbids `reqwest` (and all transport crates) in `entanglement-core`. So the
    backend cannot live in core — but the abstract `Llm` trait must.
 
 ## Decision
 
-**Streaming trait in core, concrete backend in a new `brain-llm` crate.**
+**Streaming trait in core, concrete backend in a new `entanglement-llm` crate.**
 
 The `Llm` trait becomes streaming:
 
@@ -44,7 +44,7 @@ pub trait Llm: Send {
 - `LlmRequest` gains `model: Option<&str>` (per-profile; `None` = backend
   default) since the factory is profile-agnostic but the model id is per-profile.
 
-`brain-llm` is a new workspace member that depends on `brain-core` **plus**
+`entanglement-llm` is a new workspace member that depends on `entanglement-core` **plus**
 `reqwest` (allowed there). It ships the Anthropic backend: a hand-rolled
 `POST /v1/messages` with `stream: true`, parsing the SSE frames
 (`message_start`, `content_block_delta`, `content_block_stop`, `message_delta`,
@@ -64,14 +64,14 @@ result back to its originating call is load-bearing (not just metadata).
 
 - **(+)** Live, token-by-token UI feedback is first-class, matching opencode —
   no future trait reshaping needed to stream.
-- **(+)** `brain-core` stays pure: the seam (the `Llm` trait) is in core, the
-  I/O (reqwest, SSE) is quarantined in `brain-llm`. `make tree` keeps passing.
+- **(+)** `entanglement-core` stays pure: the seam (the `Llm` trait) is in core, the
+  I/O (reqwest, SSE) is quarantined in `entanglement-llm`. `make tree` keeps passing.
 - **(+)** Other providers (OpenAI-compatible, Ollama, …) drop in as further
-  modules in `brain-llm` or sibling crates, all behind the same trait.
+  modules in `entanglement-llm` or sibling crates, all behind the same trait.
 - **(+)** Mid-stream failures are recoverable: partial text is already streamed;
   the failed turn surfaces as an `Error` + `Done` without committing a bogus
   assistant message to context.
-- **(−)** `'static` box stream requires an indirection: `brain-llm` drains
+- **(−)** `'static` box stream requires an indirection: `entanglement-llm` drains
   reqwest's borrowed `bytes_stream` on a detached task into an owned-byte mpsc
   channel the consumer stream owns. One extra task per turn — negligible cost.
 - **(−)** Tool inputs are now JSON objects, so scripted backends/tests that
@@ -80,10 +80,10 @@ result back to its originating call is load-bearing (not just metadata).
 
 ## Alternatives considered
 
-- **Buffered `complete()` (the reference projects' shape).** Rejected: `brain`
+- **Buffered `complete()` (the reference projects' shape).** Rejected: `entanglement`
   follows opencode, which streams. Keeping buffered would make `TextDelta` a lie
   (one full-text event per turn) and force a trait rewrite later.
-- **`reqwest` inside `brain-core`.** Rejected outright: violates ADR-0006 and
+- **`reqwest` inside `entanglement-core`.** Rejected outright: violates ADR-0006 and
   destroys the headless seam every embedder relies on.
 - **An Anthropic SDK crate.** Rejected: hand-rolling against `/v1/messages` is
   ~200 lines, keeps the dep surface to `reqwest`, and avoids coupling to a

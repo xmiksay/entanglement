@@ -1,4 +1,4 @@
-# brain
+# entanglement
 
 Headless, Rust-based AI coding agent **engine**. The reasoning + tool-execution
 loop is decoupled from any UI and exposed as an async **actor**: a typed inbox of
@@ -29,10 +29,10 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 
 | Head | Status | What it is |
 | --- | --- | --- |
-| **ABI (direct)** | ✅ | Hold a `Brain`, call `brain.send(InMsg)` / `brain.subscribe()`. Zero serialization. The foundation. |
-| **stdio** (`brain run` / `brain pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. |
-| **WebSocket** (`brain serve`) | next | axum `/ws`, in-band auth first frame, `broadcast` fan-out, multiplexed by `SessionId`. Model from the `agent`/`design` references. |
-| **TUI** (`brain`) | next | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
+| **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
+| **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. |
+| **WebSocket** (`entanglement-ws`) | next | axum `/ws`, in-band auth first frame, `broadcast` fan-out, multiplexed by `SessionId`. Model from the `agent`/`design` references. |
+| **TUI** (`entanglement-cli`) | next | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
 
 ## Agent profiles (opencode-style)
 
@@ -50,10 +50,10 @@ natively.
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
-| `brain-core` | actor engine: `Brain`, `InMsg`/`OutEvent`, session loop, permission dispatch, built-in tools, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm` forbidden). Enforced via `make tree`. |
-| `brain-stdio` | stdio head (`run`, `pipe`). | — |
-| `brain-ws` | _(next)_ axum WebSocket head. | — |
-| `brain-cli` | _(next)_ opencode-style TUI. | — |
+| `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, session loop, permission dispatch, built-in tools, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm` forbidden). Enforced via `make tree`. |
+| `skutter` | stdio head (`run`, `pipe`). | — |
+| `entanglement-ws` | _(next)_ axum WebSocket head. | — |
+| `entanglement-cli` | _(next)_ opencode-style TUI. | — |
 
 ## Build & develop
 
@@ -66,7 +66,7 @@ make run-json     # one dummy turn, NDJSON events
 make test         # unit + integration
 make lint         # clippy --all-targets -D warnings
 make verify       # check-fmt + clippy + test (CI-equivalent)
-make tree         # cargo tree -p brain-core (UI-dep hygiene gate)
+make tree         # cargo tree -p entanglement-core (UI-dep hygiene gate)
 make build | check | fmt | clean
 ```
 

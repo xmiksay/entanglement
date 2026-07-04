@@ -1,10 +1,10 @@
-//! The engine actor. [`Brain`] owns a process-wide inbox (`mpsc<InMsg>`) and
+//! The engine actor. [`Holly`] owns a process-wide inbox (`mpsc<InMsg>`) and
 //! outbox (`broadcast<OutEvent>`). The supervisor routes inbound messages to
 //! per-session tasks (lazily spawned, one per [`SessionId`]).
 //!
-//! This is the ABI foundation: an embedder holds a (cheaply-cloned) `Brain`,
-//! calls [`Brain::send`] with typed [`InMsg`]s and drains
-//! [`Brain::subscribe`] for [`OutEvent`]s — no serialization. Every transport
+//! This is the ABI foundation: an embedder holds a (cheaply-cloned) `Holly`,
+//! calls [`Holly::send`] with typed [`InMsg`]s and drains
+//! [`Holly::subscribe`] for [`OutEvent`]s — no serialization. Every transport
 //! (stdio, WS, TUI) is a thin adapter over these two methods.
 
 use std::collections::HashMap;
@@ -100,12 +100,12 @@ fn built_in_profiles() -> [AgentProfile; 3] {
 /// Handle to the running engine. Cheap to clone; the actor task lives until all
 /// clones drop (the inbox closes) or every session stops.
 #[derive(Clone)]
-pub struct Brain {
+pub struct Holly {
     inbox: mpsc::Sender<InMsg>,
     events: broadcast::Sender<OutEvent>,
 }
 
-impl Brain {
+impl Holly {
     /// Spawn the engine actor with `cfg` and return a handle.
     pub fn spawn(cfg: EngineConfig) -> Self {
         let (inbox, rx) = mpsc::channel::<InMsg>(INBOX_CAPACITY);

@@ -50,5 +50,5 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0003](0003-agent-and-permission-profiles.md) | Agent + permission profiles (opencode-style) | Accepted |
 | [0004](0004-structured-plan-and-task-events.md) | Structured Plan & TaskList events (profiles + events, both) | Accepted |
 | [0005](0005-ndjson-stdio-head.md) | NDJSON stdio head (`run` + `pipe`) | Accepted |
-| [0006](0006-core-dependency-hygiene-gate.md) | brain-core zero-UI-dep hygiene gate | Accepted |
-| [0007](0007-streaming-llm-and-provider-crate.md) | Streaming `Llm` trait + out-of-core `brain-llm` provider crate | Accepted |
+| [0006](0006-core-dependency-hygiene-gate.md) | entanglement-core zero-UI-dep hygiene gate | Accepted |
+| [0007](0007-streaming-llm-and-provider-crate.md) | Streaming `Llm` trait + out-of-core `entanglement-llm` provider crate | Accepted |

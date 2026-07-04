@@ -1,22 +1,22 @@
 //! Headless AI coding agent engine.
 //!
-//! `brain-core` owns the reasoning + tool-execution loop and is strictly
-//! decoupled from any UI. The contract is an actor: a [`Brain`] holds an inbox
+//! `entanglement-core` owns the reasoning + tool-execution loop and is strictly
+//! decoupled from any UI. The contract is an actor: a [`Holly`] holds an inbox
 //! of [`InMsg`] and an outbox of [`OutEvent`]. Every head (in-process ABI,
-//! stdio NDJSON, WebSocket, TUI) is a thin adapter over [`Brain::send`] and
-//! [`Brain::subscribe`].
+//! stdio NDJSON, WebSocket, TUI) is a thin adapter over [`Holly::send`] and
+//! [`Holly::subscribe`].
 //!
 //! See `PLAN.md` and `docs/architecture.md` for the design.
 
-pub mod brain;
 pub mod context;
+pub mod holly;
 pub mod llm;
 pub mod protocol;
 pub mod session;
 pub mod tools;
 
-pub use brain::{Brain, EngineConfig, ProfileRegistry};
 pub use context::{Message, MessageRole};
+pub use holly::{EngineConfig, Holly, ProfileRegistry};
 pub use llm::{
     stream_from_response, DummyLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream,
     ToolCall, ToolSpec,

@@ -1,5 +1,5 @@
 [workspace]
-members = ["brain-core", "brain-llm", "brain-stdio"]
+members = ["entanglement-core", "entanglement-llm", "skutter"]
 resolver = "2"
 
 [workspace.package]
@@ -7,11 +7,11 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
-repository = "https://github.com/xmiksay/brain"
+repository = "https://github.com/xmiksay/entanglement"
 
 [workspace.dependencies]
-brain-core = { path = "brain-core" }
-brain-llm = { path = "brain-llm" }
+entanglement-core = { path = "entanglement-core" }
+entanglement-llm = { path = "entanglement-llm" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

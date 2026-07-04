@@ -1,4 +1,4 @@
-# brain — Architecture
+# entanglement — Architecture
 
 How the headless engine is structured and how the four interfaces share one
 contract. Vision & roadmap live in [`../PLAN.md`](../PLAN.md); overview in
@@ -8,10 +8,10 @@ the [decision log](adr/README.md) (ADRs); this document describes the current
 
 ## 1. The actor model (the ABI) — [ADR-0001](adr/0001-actor-model-abi.md)
 
-`brain-core` exposes one engine, [`Brain`][brain], as an async actor:
+`entanglement-core` exposes one engine, [`Holly`][holly], as an async actor:
 
 ```
-                       ┌──────────── brain-core ────────────┐
+                       ┌──────────── entanglement-core ────────────┐
   ABI (direct) ───────►│  inbox   mpsc<Sender<InMsg>>        │
   stdio (NDJSON) ─────►│  ────────────────────────► engine   │
   WebSocket ──────────►│  outbox  broadcast<Sender<OutEvent>│────► subscribe()
@@ -19,8 +19,8 @@ the [decision log](adr/README.md) (ADRs); this document describes the current
                        └────────────────────────────────────┘
 ```
 
-- `brain.send(InMsg)` — push a typed message in (zero serialization).
-- `brain.subscribe()` — get a `broadcast::Receiver<OutEvent>` (fan-out to N
+- `holly.send(InMsg)` — push a typed message in (zero serialization).
+- `holly.subscribe()` — get a `broadcast::Receiver<OutEvent>` (fan-out to N
   subscribers).
 
 This **is** the ABI. The other three heads are adapters that translate their
@@ -83,7 +83,7 @@ Both are written two ways:
    mutate session state) and never need approval.
 2. A **harness message** — `InMsg::SetPlan` / `InMsg::SetTasks` (user edits).
 
-This is why `brain` has *both* the opencode agent-profile axis *and* structured
+This is why `entanglement` has *both* the opencode agent-profile axis *and* structured
 events: profiles control **what the agent is instructed/permitted to do**;
 structured events give every head a native plan/task panel to render.
 
@@ -101,11 +101,11 @@ park the task on its inbox; any non-matching message (e.g. a new prompt) is
 stashed and processed after the turn. Setup/mid-stream backend errors surface as
 `Error` + `Done` without committing a partial assistant message.
 
-## 5b. Model backends (`brain-llm`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
+## 5b. Model backends (`entanglement-llm`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 
-The `Llm` **trait** lives in `brain-core` (the seam); concrete backends live in
-**`brain-llm`**, a separate crate that *may* depend on transport crates
-(`reqwest`) — `brain-core` may not.
+The `Llm` **trait** lives in `entanglement-core` (the seam); concrete backends live in
+**`entanglement-llm`**, a separate crate that *may* depend on transport crates
+(`reqwest`) — `entanglement-core` may not.
 
 ```rust
 enum LlmEvent { Text(String), ToolCall(ToolCall), Finish { input_tokens?, output_tokens? } }
@@ -118,15 +118,15 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 **Provider topology mirrors opencode / the AI SDK** — split by *wire format*,
 not by vendor:
 
-| client (`brain-llm`) | wire format | serves | auth |
+| client (`entanglement-llm`) | wire format | serves | auth |
 | --- | --- | --- | --- |
-| `OpenAiLlm` (`openai.rs`) | `/chat/completions` SSE | **z.ai** (GLM, brain's primary), **OpenAI**, **Ollama** `/v1` | `Bearer` or none (Ollama) |
+| `OpenAiLlm` (`openai.rs`) | `/chat/completions` SSE | **z.ai** (GLM, entanglement's primary), **OpenAI**, **Ollama** `/v1` | `Bearer` or none (Ollama) |
 | `AnthropicLlm` (`anthropic.rs`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
 
 - `OpenAiLlm` is one generic client `{ base_url, api_key: Option, default_model }`
   hand-rolled over `reqwest` (no SDK crate). The three OpenAI-shape providers
   differ only by config, so preset base constants exist (`ZAI_CODING_PLAN_BASE`
-  — brain default, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`).
+  — entanglement default, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`).
   `openai_factory(base, key, model)` builds an `LlmFactory`. Tool calls stream as
   per-index `function.arguments` deltas, flushed on `finish_reason: "tool_calls"`;
   tool results round-trip as one `role: "tool"` message each.
@@ -137,7 +137,7 @@ not by vendor:
   (OpenAI-compat); `Message.tool_call_id` surfaces as `tool_use_id` (Anthropic) /
   `tool_call_id` (OpenAI-compat).
 
-**Provider selection (`brain-stdio`):** `BRAIN_PROVIDER` env selects
+**Provider selection (`skutter`):** `ENTANGLEMENT_PROVIDER` env selects
 `zai | openai | ollama | anthropic` explicitly (errors loudly if the matching key
 is missing); if unset, auto-detect by key presence with z.ai first, then OpenAI,
 then Anthropic; else `DummyLlm`. Per-provider env: `<PROV>_API_KEY` (z.ai/OpenAI/
@@ -146,9 +146,9 @@ Default models: `glm-5.2` / `gpt-4o` / `llama3.1` / `claude-sonnet-4-5`.
 
 ## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI)
 
-- **ABI** — `brain.send()` / `brain.subscribe()`. Done.
-- **stdio** (`brain-stdio`): `brain run [--format text|json] [--agent <name>]`
-  one-shot; `brain pipe` bidirectional NDJSON (`InMsg` in, `OutEvent` out).
+- **ABI** — `holly.send()` / `holly.subscribe()`. Done.
+- **stdio** (`skutter`): `skutter run [--format text|json] [--agent <name>]`
+  one-shot; `skutter pipe` bidirectional NDJSON (`InMsg` in, `OutEvent` out).
 - **WebSocket** _(next)_: axum `GET /ws`, in-band auth first frame, stateless
   handler, one `subscribe()` per socket, inbound frame → `InMsg` → `send()`,
   30s ping, `continue` on `broadcast::Lagged`. (Recipe lifted from `agent`.)
@@ -156,13 +156,13 @@ Default models: `glm-5.2` / `gpt-4o` / `llama3.1` / `claude-sonnet-4-5`.
 
 ## 7. Hygiene gate — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)
 
-`brain-core` must stay free of UI/transport deps. Enforced by
-`make tree`, which runs `cargo tree -p brain-core` and **fails** if any of
+`entanglement-core` must stay free of UI/transport deps. Enforced by
+`make tree`, which runs `cargo tree -p entanglement-core` and **fails** if any of
 `clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` appear. It
 is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
 `async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`. The `reqwest` both
-backends use lives in `brain-llm`, not core — see ADR-0007.
+backends use lives in `entanglement-llm`, not core — see ADR-0007.
 
-[brain]: ../brain-core/src/brain.rs
-[profile]: ../brain-core/src/protocol.rs
-[perm]: ../brain-core/src/protocol.rs
+[holly]: ../entanglement-core/src/holly.rs
+[profile]: ../entanglement-core/src/protocol.rs
+[perm]: ../entanglement-core/src/protocol.rs
