@@ -74,8 +74,8 @@ monotonic `seq`. Agent profiles (`build`/`plan`/`explore` + custom) drive
 permission dispatch (`Allow`/`Ask`/`Deny`). `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
-`input_schema`); `host_tools(root)` (see ADR-0008) assembles the read-only
-host trio (`read`/`glob`/`grep`) that the profiles gate.
+`input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009) assembles the
+host-tool quintet (`read`/`glob`/`grep`/`edit`/`bash`) that the profiles gate.
 
 ## Conventions (project-specific)
 
@@ -100,12 +100,12 @@ host trio (`read`/`glob`/`grep`) that the profiles gate.
 
 ## Open work (current phase)
 
-- Host tools `bash` (timeout, process model) and `edit` (search/replace
-  semantics) — the mutating/executing pair. The read-only trio
-  (`read`/`glob`/`grep`) is done in `entanglement-core::host` behind
-  `host_tools(root)` ([ADR-0008](../docs/adr/0008-host-tools-workdir-and-bounded-output.md));
-  `skutter` wires it from the cwd. Each new tool needs a JSON `schema()` on its
-  `Tool` impl.
+- Host tool quintet (`read`/`glob`/`grep`/`edit`/`bash`) is done in
+  `entanglement-core::host` behind `host_tools(root)` ([ADR-0008](../docs/adr/0008-host-tools-workdir-and-bounded-output.md)
+  trio + [ADR-0009](../docs/adr/0009-edit-and-bash-host-tools.md) `edit`/`bash`);
+  the `skutter` binary wires it from the cwd. `bash` is **not** sandboxed —
+  permission profiles are the only gate; a real sandbox is the next
+  security-focused ADR.
 - `entanglement-ws` (axum) and `entanglement-cli` (TUI) heads.
 
 LLM providers are wired (`entanglement-llm`, ADR-0007): `Llm` is a streaming trait

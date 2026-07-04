@@ -1,14 +1,15 @@
-//! Host tools that execute against the local filesystem — the read-only trio
-//! `read`, `glob`, `grep`. (The mutating/executing tools `edit` and `bash`
-//! land later; this trio is what the `explore` and `plan` permission profiles
-//! gate first.)
+//! Host tools that execute against the local filesystem and shell — the
+//! quintet `read`, `glob`, `grep`, `edit`, `bash`. The read-only trio
+//! (`read`/`glob`/`grep`) is covered by ADR-0008; the mutating/executing pair
+//! (`edit`/`bash`) is covered by ADR-0009.
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
 //! paths resolve against it and are **rejected on `..` escape** (lexical only
 //! for now — no symlink defense yet). Output is byte-capped so a runaway
-//! listing or huge file can't silently consume the context window. Design +
-//! dep choices (why host tools live in core, why `glob`/`regex` and not
-//! `ignore`) are recorded in ADR-0008.
+//! listing or huge file can't silently consume the context window. `bash` runs
+//! the command rooted at `root` but otherwise inherits the engine process's
+//! full privileges — sandboxing is deferred (ADR-0009); permission profiles
+//! gate *whether* `bash`/`edit` run at all.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -336,18 +337,272 @@ impl Tool for GrepTool {
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ┃ edit
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `edit` — exact-string search/replace inside a file under the working
+/// directory (mirrors opencode's `edit`). `oldString == ""` creates a new file
+/// with `newString` as content (refused if the path already exists); otherwise
+/// `oldString` must appear exactly once unless `replaceAll` is set. Paths
+/// escape the root via `..` are rejected by [`resolve_under_root`].
+pub struct EditTool {
+    root: PathBuf,
+}
+
+impl EditTool {
+    pub fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EditInput {
+    path: String,
+    old_string: String,
+    new_string: String,
+    #[serde(default)]
+    replace_all: Option<bool>,
+}
+
+#[async_trait]
+impl Tool for EditTool {
+    fn name(&self) -> &'static str {
+        "edit"
+    }
+    fn description(&self) -> &str {
+        "Edit a file under the working directory by exact-string search/replace, \
+         or create it. `oldString` must match exactly once (pass `replaceAll` to \
+         substitute every occurrence). An empty `oldString` creates the file with \
+         `newString` as content (refused if it already exists)."
+    }
+    fn schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to the working directory, or an absolute path inside it."
+                },
+                "oldString": {
+                    "type": "string",
+                    "description": "Exact text to find. Empty string creates a new file (refused if the file exists)."
+                },
+                "newString": {
+                    "type": "string",
+                    "description": "Text to replace `oldString` with (or the new file's content when creating)."
+                },
+                "replaceAll": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence of `oldString` (default false). Required when `oldString` is not unique."
+                }
+            },
+            "required": ["path", "oldString", "newString"]
+        })
+    }
+    async fn run(&self, input: &str) -> Result<String> {
+        let parsed: EditInput = serde_json::from_str(input).context(
+            "invalid input to edit: expected {\"path\",\"oldString\",\"newString\",...}",
+        )?;
+        let full = resolve_under_root(&self.root, &parsed.path)?;
+
+        // Create-file path: empty oldString. Refused if the file already exists
+        // so the model can't accidentally clobber a file it meant to modify.
+        if parsed.old_string.is_empty() {
+            if full.exists() {
+                return Err(anyhow::anyhow!(
+                    "edit refused: {} already exists (use a non-empty oldString to modify it)",
+                    parsed.path
+                ));
+            }
+            if let Some(parent) = full.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .with_context(|| format!("creating parent dirs for {}", parsed.path))?;
+            }
+            let bytes = parsed.new_string.len();
+            tokio::fs::write(&full, &parsed.new_string)
+                .await
+                .with_context(|| format!("creating {}", parsed.path))?;
+            return Ok(format!("created {} ({} bytes)", parsed.path, bytes));
+        }
+
+        let bytes = tokio::fs::read(&full)
+            .await
+            .with_context(|| format!("reading {}", parsed.path))?;
+        let text = String::from_utf8(bytes)
+            .with_context(|| format!("{} is not valid UTF-8", parsed.path))?;
+
+        let count = text.matches(&parsed.old_string).count();
+        if count == 0 {
+            return Err(anyhow::anyhow!(
+                "edit failed: oldString not found in {}",
+                parsed.path
+            ));
+        }
+        let replace_all = parsed.replace_all.unwrap_or(false);
+        if count > 1 && !replace_all {
+            return Err(anyhow::anyhow!(
+                "edit failed: oldString appears {count} times in {} — pass replaceAll=true or make oldString more specific",
+                parsed.path
+            ));
+        }
+
+        let new_text = if replace_all {
+            text.replace(&parsed.old_string, &parsed.new_string)
+        } else {
+            text.replacen(&parsed.old_string, &parsed.new_string, 1)
+        };
+        tokio::fs::write(&full, &new_text)
+            .await
+            .with_context(|| format!("writing {}", parsed.path))?;
+        let plural = if count == 1 { "" } else { "es" };
+        Ok(format!(
+            "edited {} ({} match{} replaced)",
+            parsed.path, count, plural
+        ))
+    }
+}
+
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ┃ bash
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Default per-command timeout when the model omits `timeout`. Matches
+/// opencode's Bash default and is short enough to keep a hung command from
+/// stalling a turn. See ADR-0009.
+const BASH_DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// Hard ceiling on the model-supplied `timeout`. Prevents a runaway model from
+/// pinning a session for tens of minutes. See ADR-0009.
+const BASH_MAX_TIMEOUT_SECS: u64 = 600;
+
+/// `bash` — run a command line under `sh -c` rooted at the working directory.
+/// Captures stdout + stderr and the exit code. A per-call `timeout` (seconds,
+/// default 120, capped at 600) kills the process on expiry. Output is run
+/// through [`truncate_output`].
+///
+/// Runs with the engine process's full privileges — `root` only sets the cwd,
+/// it is **not** a sandbox. Permission profiles gate whether `bash` runs at
+/// all; true sandboxing is deferred (ADR-0009).
+pub struct BashTool {
+    root: PathBuf,
+}
+
+impl BashTool {
+    pub fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BashInput {
+    command: String,
+    #[serde(default)]
+    timeout: Option<u64>,
+}
+
+/// Format captured stdout/stderr + exit code into the model-facing string.
+/// Separates streams so the model can tell command output apart from
+/// diagnostics, and prefixes the exit code so non-zero failures are obvious.
+fn format_bash_output(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String {
+    let code = code.unwrap_or(-1);
+    let mut s = String::new();
+    s.push_str(&format!("[exit {code}]\n"));
+    if !stdout.is_empty() {
+        s.push_str(&String::from_utf8_lossy(stdout));
+        if !s.ends_with('\n') {
+            s.push('\n');
+        }
+    }
+    if !stderr.is_empty() {
+        s.push_str("[stderr]\n");
+        s.push_str(&String::from_utf8_lossy(stderr));
+        if !s.ends_with('\n') {
+            s.push('\n');
+        }
+    }
+    truncate_output(s)
+}
+
+#[async_trait]
+impl Tool for BashTool {
+    fn name(&self) -> &'static str {
+        "bash"
+    }
+    fn description(&self) -> &str {
+        "Run a shell command line under `sh -c` rooted at the working directory. \
+         Captures stdout, stderr, and the exit code. Optional `timeout` in \
+         seconds (default 120, capped at 600) kills the process on expiry."
+    }
+    fn schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to execute (passed to `sh -c`)."
+                },
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum seconds to let the command run before it is killed (default 120, capped at 600)."
+                }
+            },
+            "required": ["command"]
+        })
+    }
+    async fn run(&self, input: &str) -> Result<String> {
+        let parsed: BashInput = serde_json::from_str(input)
+            .context("invalid input to bash: expected {\"command\": string, ...}")?;
+        let secs = parsed
+            .timeout
+            .unwrap_or(BASH_DEFAULT_TIMEOUT_SECS)
+            .clamp(1, BASH_MAX_TIMEOUT_SECS);
+        let dur = std::time::Duration::from_secs(secs);
+
+        // `kill_on_drop(true)` is the cleanup guarantee: if `wait_with_output`
+        // is dropped by a timeout (or a panic, or task cancellation), the child
+        // is reaped instead of orphaned. The child is moved into the timed
+        // future, so on timeout it is dropped here and killed.
+        let child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&parsed.command)
+            .current_dir(&self.root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| "spawning bash command")?;
+
+        match tokio::time::timeout(dur, child.wait_with_output()).await {
+            Ok(Ok(output)) => Ok(format_bash_output(
+                output.status.code(),
+                &output.stdout,
+                &output.stderr,
+            )),
+            Ok(Err(e)) => Err(anyhow::anyhow!("bash io error: {e}")),
+            Err(_) => Ok(format!("[killed: timed out after {secs}s]")),
+        }
+    }
+}
+
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Registry builder
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Build a [`ToolRegistry`] with the read-only host trio (`read`, `glob`,
-/// `grep`) rooted at `root`. A head (e.g. `skutter`) passes its working
-/// directory; the engine then advertises these tools to the model and the
-/// session dispatches model calls to them under the active permission profile.
+/// Build a [`ToolRegistry`] with the host tool quintet (`read`, `glob`,
+/// `grep`, `edit`, `bash`) rooted at `root`. A head (e.g. the `skutter`
+/// binary) passes its working directory; the engine then advertises these tools
+/// to the model and the session dispatches model calls to them under the active
+/// permission profile.
 pub fn host_tools(root: PathBuf) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(ReadTool::new(root.clone()));
     reg.register(GlobTool::new(root.clone()));
-    reg.register(GrepTool::new(root));
+    reg.register(GrepTool::new(root.clone()));
+    reg.register(EditTool::new(root.clone()));
+    reg.register(BashTool::new(root));
     reg
 }
 
@@ -471,6 +726,149 @@ mod tests {
         assert!(!out.contains("docs/m.md"), "got: {out}");
     }
 
+    #[tokio::test]
+    async fn edit_creates_file_when_old_string_empty() {
+        let dir = TempDir::new();
+        let tool = EditTool::new(dir.path.clone());
+        let out = tool
+            .run(r#"{"path":"new.txt","oldString":"","newString":"hello\n"}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("created"), "got: {out}");
+        let on_disk = std::fs::read_to_string(dir.join("new.txt")).unwrap();
+        assert_eq!(on_disk, "hello\n");
+    }
+
+    #[tokio::test]
+    async fn edit_create_refused_when_file_exists() {
+        let dir = TempDir::new();
+        fs::write(dir.join("exists.txt"), "x\n").unwrap();
+        let tool = EditTool::new(dir.path.clone());
+        let res = tool
+            .run(r#"{"path":"exists.txt","oldString":"","newString":"y"}"#)
+            .await;
+        assert!(res.is_err(), "expected create refusal");
+    }
+
+    #[tokio::test]
+    async fn edit_replaces_unique_match() {
+        let dir = TempDir::new();
+        fs::write(dir.join("a.txt"), "alpha\nbeta\n").unwrap();
+        let tool = EditTool::new(dir.path.clone());
+        let out = tool
+            .run(r#"{"path":"a.txt","oldString":"beta","newString":"BETA"}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("1 match replaced"), "got: {out}");
+        let on_disk = std::fs::read_to_string(dir.join("a.txt")).unwrap();
+        assert_eq!(on_disk, "alpha\nBETA\n");
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_ambiguous_match_without_replace_all() {
+        let dir = TempDir::new();
+        fs::write(dir.join("a.txt"), "dup\ndup\n").unwrap();
+        let tool = EditTool::new(dir.path.clone());
+        let res = tool
+            .run(r#"{"path":"a.txt","oldString":"dup","newString":"x"}"#)
+            .await;
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("2 times"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn edit_replace_all_substitutes_every_occurrence() {
+        let dir = TempDir::new();
+        fs::write(dir.join("a.txt"), "dup\ndup\ndup\n").unwrap();
+        let tool = EditTool::new(dir.path.clone());
+        let out = tool
+            .run(r#"{"path":"a.txt","oldString":"dup","newString":"x","replaceAll":true}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("3 matches replaced"), "got: {out}");
+        let on_disk = std::fs::read_to_string(dir.join("a.txt")).unwrap();
+        assert_eq!(on_disk, "x\nx\nx\n");
+    }
+
+    #[tokio::test]
+    async fn edit_errors_when_old_string_not_found() {
+        let dir = TempDir::new();
+        fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        let tool = EditTool::new(dir.path.clone());
+        let res = tool
+            .run(r#"{"path":"a.txt","oldString":"nope","newString":"x"}"#)
+            .await;
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_path_escape() {
+        let dir = TempDir::new();
+        let tool = EditTool::new(dir.path.clone());
+        let res = tool
+            .run(r#"{"path":"../out.txt","oldString":"","newString":"x"}"#)
+            .await;
+        assert!(res.is_err(), "expected escape rejection");
+    }
+
+    #[tokio::test]
+    async fn bash_captures_stdout_and_exit_code() {
+        let dir = TempDir::new();
+        let tool = BashTool::new(dir.path.clone());
+        let out = tool.run(r#"{"command":"printf 'hi\\n'"}"#).await.unwrap();
+        assert!(out.contains("[exit 0]"), "got: {out}");
+        assert!(out.contains("hi"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn bash_reports_nonzero_exit_and_stderr() {
+        let dir = TempDir::new();
+        let tool = BashTool::new(dir.path.clone());
+        let out = tool
+            .run(r#"{"command":"echo oops 1>&2; exit 7"}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("[exit 7]"), "got: {out}");
+        assert!(out.contains("[stderr]"), "got: {out}");
+        assert!(out.contains("oops"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn bash_runs_rooted_at_working_directory() {
+        let dir = TempDir::new();
+        fs::write(dir.join("marker.txt"), "here\n").unwrap();
+        let tool = BashTool::new(dir.path.clone());
+        let out = tool.run(r#"{"command":"ls marker.txt"}"#).await.unwrap();
+        assert!(out.contains("marker.txt"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn bash_kills_on_timeout() {
+        let dir = TempDir::new();
+        let tool = BashTool::new(dir.path.clone());
+        // `sleep 5` under a 1s timeout must be killed, not awaited.
+        let out = tool
+            .run(r#"{"command":"sleep 5","timeout":1}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("[killed: timed out after 1s]"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn bash_clamps_oversize_timeout_to_max() {
+        // A timeout over the cap is clamped down; the command still runs and
+        // exits normally (well under the clamped deadline). This guards the
+        // `.clamp(1, MAX)` path without needing to wait the full cap.
+        let dir = TempDir::new();
+        let tool = BashTool::new(dir.path.clone());
+        let out = tool
+            .run(r#"{"command":"true","timeout":99999}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("[exit 0]"), "got: {out}");
+    }
+
     #[test]
     fn truncate_caps_large_output_with_notice() {
         let big = "x".repeat(MAX_OUTPUT_BYTES + 5000);
@@ -484,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn host_tools_registers_read_only_trio_with_schemas() {
+    fn host_tools_registers_full_quintet_with_schemas() {
         let dir = TempDir::new();
         let reg = host_tools(dir.path.clone());
         let specs = reg.specs();
@@ -492,6 +890,8 @@ mod tests {
         assert!(names.contains(&"read"), "{names:?}");
         assert!(names.contains(&"glob"), "{names:?}");
         assert!(names.contains(&"grep"), "{names:?}");
+        assert!(names.contains(&"edit"), "{names:?}");
+        assert!(names.contains(&"bash"), "{names:?}");
         // Schemas are non-empty objects with a `properties` field.
         for s in &specs {
             assert!(

@@ -163,33 +163,38 @@ is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
 `glob`/`regex` back the host tools (§8); the `reqwest` both LLM backends use
 lives in `entanglement-llm`, not core — see ADR-0007.
 
-## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md)
+## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`)
 
-Concrete filesystem tools the engine dispatches under the active permission
-profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)). They live in
-`entanglement-core::host` (no UI/transport deps) and are assembled by
-`host_tools(root: PathBuf) -> ToolRegistry`:
+Concrete filesystem + shell tools the engine dispatches under the active
+permission profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)).
+They live in `entanglement-core::host` (no UI/transport deps) and are
+assembled by `host_tools(root: PathBuf) -> ToolRegistry`:
 
 | tool | input | output |
 | --- | --- | --- |
 | `read` | `{path, offset?, limit?}` | file contents, `{lineno}: {line}`, 1-based, line-ranged |
 | `glob` | `{pattern}` | matching paths (relative to root), one per line |
 | `grep` | `{pattern, path?}` | matches as `path:lineno:line` over files matched by `path` (default `**/*`) |
+| `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists); non-unique match errors unless `replaceAll` |
+| `bash` | `{command, timeout?}` | `sh -c` rooted at root; `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600, `kill_on_drop` reaps on expiry |
 
 - **Working directory:** each tool holds a `root`; model-supplied paths resolve
   against it and are rejected on `..` escape. Lexical containment only (no
-  symlink defense) — ADR-0008.
+  symlink defense) — ADR-0008. `bash` sets only the **cwd** — it is explicitly
+  *not* sandboxed and runs with the engine's full privileges (ADR-0009);
+  permission profiles gate whether it runs at all.
 - **Bounded output:** 32 KiB byte cap with a truncation notice; `read` defaults
   to 2000 lines; `glob`/`grep` cap at 1000 results. Prevents a huge file/tree
   from blowing the context window.
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
-- **Wiring:** `skutter` always registers the trio rooted at the cwd;
-  `EngineConfig::default()` ships an empty registry (embedders opt in via
+- **Wiring:** the `skutter` binary always registers the quintet rooted at the
+  cwd; `EngineConfig::default()` ships an empty registry (embedders opt in via
   `host_tools`).
 
-`bash` (timeout, process model) and `edit` (search/replace semantics) are the
-next host tools — their decisions are deferred to focused follow-ups.
+`edit`/`bash` slots into the existing permission profiles with no profile
+changes: `build` auto-allows both (default `Allow`), `plan` asks for both
+(default `Ask`), `explore` denies both (default `Deny`).
 
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs
