@@ -1,0 +1,4 @@
+# Workspace rule: keep concurrent build jobs bounded so parallel cargo builds
+# don't overload the CPU / stall the box. Mirrors the global CARGO_BUILD_JOBS=4.
+[build]
+jobs = 4

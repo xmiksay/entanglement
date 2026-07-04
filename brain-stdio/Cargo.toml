@@ -1,0 +1,21 @@
+[package]
+name = "brain-stdio"
+description = "Stdio head for the brain agent engine: one-shot `run` and bidirectional `pipe` (NDJSON)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "brain"
+path = "src/main.rs"
+
+[dependencies]
+brain-core = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
