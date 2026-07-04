@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use entanglement_core::{AgentState, EngineConfig, Holly, InMsg, OutEvent, SessionId, TaskStatus};
+use entanglement_core::{
+    host_tools, AgentState, EngineConfig, Holly, InMsg, OutEvent, SessionId, TaskStatus,
+};
 use tokio::io::AsyncBufReadExt;
 
 /// Default models per provider when its `<PROVIDER>_MODEL` env is unset.
@@ -33,7 +35,18 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 /// Set `ENTANGLEMENT_PROVIDER=ollama` to use a local keyless Ollama (it has no key to
 /// auto-detect on). z.ai/OpenAI/Ollama share one OpenAI-compatible client
 /// ([`entanglement_llm::openai_factory`]); Anthropic has its own client.
+///
+/// The read-only host trio (`read`, `glob`, `grep`) is always registered,
+/// rooted at the current working directory, so the `build`/`plan`/`explore`
+/// permission profiles gate something real out of the box.
 fn build_config() -> EngineConfig {
+    let mut cfg = select_provider();
+    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    cfg.tools = host_tools(root);
+    cfg
+}
+
+fn select_provider() -> EngineConfig {
     match std::env::var("ENTANGLEMENT_PROVIDER").ok().as_deref() {
         Some("zai") => require(
             zai_config(),

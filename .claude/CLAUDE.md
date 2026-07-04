@@ -66,13 +66,16 @@ z.ai/OpenAI/Ollama share one `entanglement-llm::OpenAiLlm`; Anthropic has its ow
 ```
 InMsg    : Prompt | Approve | Reject | Stop | SetTasks | SetPlan | SetAgent
 OutEvent : Status | AgentChanged | Plan | TextDelta | ToolRequest | ToolOutput
-           | TaskList | Error | Done
+          | TaskList | Error | Done
 ```
 
 Session-multiplexed (every frame carries `SessionId`); content frames carry
 monotonic `seq`. Agent profiles (`build`/`plan`/`explore` + custom) drive
 permission dispatch (`Allow`/`Ask`/`Deny`). `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
+The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
+`input_schema`); `host_tools(root)` (see ADR-0008) assembles the read-only
+host trio (`read`/`glob`/`grep`) that the profiles gate.
 
 ## Conventions (project-specific)
 
@@ -97,9 +100,12 @@ session-owned snapshots, written by built-in tools or harness `Set*` messages.
 
 ## Open work (current phase)
 
-- Concrete host tools (`read`, `edit`, `bash`, `glob`, `grep`) so the `build`/
-  `plan`/`explore` permission profiles actually gate something. Each will need a
-  JSON `input_schema` on its `ToolSpec` (the seam is in place).
+- Host tools `bash` (timeout, process model) and `edit` (search/replace
+  semantics) — the mutating/executing pair. The read-only trio
+  (`read`/`glob`/`grep`) is done in `entanglement-core::host` behind
+  `host_tools(root)` ([ADR-0008](../docs/adr/0008-host-tools-workdir-and-bounded-output.md));
+  `skutter` wires it from the cwd. Each new tool needs a JSON `schema()` on its
+  `Tool` impl.
 - `entanglement-ws` (axum) and `entanglement-cli` (TUI) heads.
 
 LLM providers are wired (`entanglement-llm`, ADR-0007): `Llm` is a streaming trait

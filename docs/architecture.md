@@ -160,8 +160,37 @@ Default models: `glm-5.2` / `gpt-4o` / `llama3.1` / `claude-sonnet-4-5`.
 `make tree`, which runs `cargo tree -p entanglement-core` and **fails** if any of
 `clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` appear. It
 is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
-`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`. The `reqwest` both
-backends use lives in `entanglement-llm`, not core — see ADR-0007.
+`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`, `glob`, `regex`.
+`glob`/`regex` back the host tools (§8); the `reqwest` both LLM backends use
+lives in `entanglement-llm`, not core — see ADR-0007.
+
+## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md)
+
+Concrete filesystem tools the engine dispatches under the active permission
+profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)). They live in
+`entanglement-core::host` (no UI/transport deps) and are assembled by
+`host_tools(root: PathBuf) -> ToolRegistry`:
+
+| tool | input | output |
+| --- | --- | --- |
+| `read` | `{path, offset?, limit?}` | file contents, `{lineno}: {line}`, 1-based, line-ranged |
+| `glob` | `{pattern}` | matching paths (relative to root), one per line |
+| `grep` | `{pattern, path?}` | matches as `path:lineno:line` over files matched by `path` (default `**/*`) |
+
+- **Working directory:** each tool holds a `root`; model-supplied paths resolve
+  against it and are rejected on `..` escape. Lexical containment only (no
+  symlink defense) — ADR-0008.
+- **Bounded output:** 32 KiB byte cap with a truncation notice; `read` defaults
+  to 2000 lines; `glob`/`grep` cap at 1000 results. Prevents a huge file/tree
+  from blowing the context window.
+- **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
+  the model sees a real `input_schema` per host tool (not an empty object).
+- **Wiring:** `skutter` always registers the trio rooted at the cwd;
+  `EngineConfig::default()` ships an empty registry (embedders opt in via
+  `host_tools`).
+
+`bash` (timeout, process model) and `edit` (search/replace semantics) are the
+next host tools — their decisions are deferred to focused follow-ups.
 
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs

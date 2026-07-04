@@ -19,6 +19,14 @@ pub trait Tool: Send + Sync {
         ""
     }
 
+    /// JSON Schema for the tool's input object (surfaces as Anthropic's
+    /// `input_schema` / OpenAI's `parameters`). Default is a permissive
+    /// empty-object schema; structured tools override it so the model knows the
+    /// exact arguments to send.
+    fn schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
     async fn run(&self, input: &str) -> anyhow::Result<String>;
 }
 
@@ -44,10 +52,12 @@ impl ToolRegistry {
     }
 
     /// Specs advertised to the model (for the `tools` field of an LLM request).
+    /// Each carries the tool's [`Tool::schema`] so the model sees the real
+    /// `input_schema`, not an empty object.
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools
             .values()
-            .map(|t| ToolSpec::new(t.name(), t.description()))
+            .map(|t| ToolSpec::with_schema(t.name(), t.description(), t.schema()))
             .collect()
     }
 
@@ -110,12 +120,17 @@ mod tests {
     }
 
     #[test]
-    fn specs_advertise_name_and_description() {
+    fn specs_advertise_name_description_and_schema() {
         let mut reg = ToolRegistry::new();
         reg.register(Echo);
         let specs = reg.specs();
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "echo");
         assert_eq!(specs[0].description, "echo its input");
+        // Default schema is a permissive empty object.
+        assert_eq!(
+            specs[0].schema,
+            serde_json::json!({"type":"object","properties":{}})
+        );
     }
 }

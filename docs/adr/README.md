@@ -52,3 +52,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0005](0005-ndjson-stdio-head.md) | NDJSON stdio head (`run` + `pipe`) | Accepted |
 | [0006](0006-core-dependency-hygiene-gate.md) | entanglement-core zero-UI-dep hygiene gate | Accepted |
 | [0007](0007-streaming-llm-and-provider-crate.md) | Streaming `Llm` trait + out-of-core `entanglement-llm` provider crate | Accepted |
+| [0008](0008-host-tools-workdir-and-bounded-output.md) | Host tools: working-directory root + bounded output | Accepted |
