@@ -1,0 +1,24 @@
+[package]
+name = "brain-llm"
+description = "Concrete LLM backends for the brain agent engine (Anthropic SSE streaming)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "brain_llm"
+path = "src/lib.rs"
+
+[dependencies]
+brain-core = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }

@@ -20,8 +20,9 @@ Full design: [`../PLAN.md`](../PLAN.md). Architecture & the four interfaces:
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
-| `brain-core` | actor engine: `Brain`, protocol, session loop, permission dispatch, built-in tools, `Context` | **Zero UI/transport deps** (`clap`/`axum`/`crossterm` forbidden). `make tree` enforces. |
-| `brain-stdio` | stdio head: `brain run` (text/`--format json`), `brain pipe` (NDJSON) | — |
+| `brain-core` | actor engine: `Brain`, protocol, session loop, permission dispatch, built-in tools, `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
+| `brain-llm` | concrete LLM backends (Anthropic SSE streaming via `reqwest`); implements `brain_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `brain-core` |
+| `brain-stdio` | stdio head: `brain run` (text/`--format json`), `brain pipe` (NDJSON); wires `brain-llm` when `ANTHROPIC_API_KEY` is set | — |
 | `brain-ws` | _(next)_ axum WebSocket head | — |
 | `brain-cli` | _(next)_ opencode-style TUI | — |
 
@@ -36,8 +37,8 @@ make test          # unit + integration
 make test-unit | make test-integration
 make lint          # clippy --all-targets -D warnings
 make fmt | check-fmt
-make verify        # check-fmt + clippy + test  (CI-equivalent gate)
-make tree          # cargo tree -p brain-core (UI-dep hygiene gate)
+make verify        # check-fmt + tree + clippy + test  (CI-equivalent gate)
+make tree          # brain-core dep hygiene gate (fails on UI/transport crates)
 make build | check | clean
 ```
 
@@ -81,10 +82,13 @@ session-owned snapshots, written by built-in tools or harness `Set*` messages.
 
 ## Open work (current phase)
 
-- Real `Llm` with Anthropic SSE streaming (the protocol is already shaped for it
-  via `LlmRequest { system, messages, tools }`).
 - Concrete host tools (`read`, `edit`, `bash`, `glob`, `grep`) so the `build`/
-  `plan`/`explore` permission profiles actually gate something.
+  `plan`/`explore` permission profiles actually gate something. Each will need a
+  JSON `input_schema` on its `ToolSpec` (the seam is in place).
 - `brain-ws` (axum) and `brain-cli` (TUI) heads.
+
+Anthropic SSE streaming is wired (`brain-llm`, ADR-0007) — `Llm` is a streaming
+trait returning `BoxStream<LlmEvent>`; `brain-stdio` uses it when
+`ANTHROPIC_API_KEY` is set, else falls back to `DummyLlm`.
 
 See [`../PLAN.md`](../PLAN.md) §5.

@@ -15,6 +15,29 @@ use brain_core::{AgentState, Brain, EngineConfig, InMsg, OutEvent, SessionId, Ta
 use clap::{Parser, Subcommand};
 use tokio::io::AsyncBufReadExt;
 
+/// Default model when `ANTHROPIC_MODEL` is unset.
+const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
+
+/// Build the engine config. Uses the real Anthropic backend when
+/// `ANTHROPIC_API_KEY` is set; otherwise falls back to `DummyLlm` so `brain`
+/// still runs end-to-end without credentials.
+fn build_config() -> EngineConfig {
+    match std::env::var("ANTHROPIC_API_KEY") {
+        Ok(key) if !key.is_empty() => {
+            let model =
+                std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+            EngineConfig {
+                llm_factory: brain_llm::anthropic_factory(key, model),
+                ..EngineConfig::default()
+            }
+        }
+        _ => {
+            eprintln!("brain: ANTHROPIC_API_KEY unset — using DummyLlm");
+            EngineConfig::default()
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "brain",
@@ -60,7 +83,7 @@ async fn main() -> Result<()> {
     let filter = if cli.verbose { "debug" } else { "warn" };
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    let brain = Brain::spawn(EngineConfig::default());
+    let brain = Brain::spawn(build_config());
 
     match cli.cmd {
         Some(Cmd::Run {

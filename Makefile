@@ -38,11 +38,17 @@ fmt: ## cargo fmt (write)
 check-fmt: ## cargo fmt --check (CI)
 	$(CARGO) fmt --all -- --check
 
-# Hygiene gate from PLAN.md: brain-core must pull in zero UI deps.
-tree: ## cargo tree for brain-core (verify no clap/crossterm/tonic leak in)
-	$(CARGO) tree -p brain-core
+# Hygiene gate (ADR-0006): brain-core must pull in zero UI/transport crates.
+# Grep for forbidden names followed by a version tag as `cargo tree` prints them.
+tree: ## fail if brain-core pulls a forbidden UI/transport crate
+	@out=$$($(CARGO) tree -p brain-core 2>/dev/null); \
+	if echo "$$out" | grep -Ei '(clap|axum|tower|tonic|crossterm|ratatui|reqwest|hyper) v[0-9]'; then \
+		echo "FAIL: forbidden crate leaked into brain-core (see ADR-0006)"; exit 1; \
+	else \
+		echo "brain-core deps clean: no UI/transport crates"; \
+	fi
 
-verify: check-fmt lint test ## full CI-equivalent gate locally
+verify: check-fmt tree lint test ## full CI-equivalent gate locally
 
 clean: ## cargo clean
 	$(CARGO) clean

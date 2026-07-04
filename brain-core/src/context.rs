@@ -16,13 +16,19 @@ pub enum MessageRole {
 /// A single conversation message.
 ///
 /// Assistant messages may carry [`ToolCall`]s in addition to (or instead of)
-/// text; tool results are stored as plain text on a `Tool`-role message.
+/// text; tool results are stored as plain text on a `Tool`-role message, linked
+/// back to the originating tool call via `tool_call_id`. That id is load-bearing
+/// for providers like Anthropic, whose `tool_result` block requires `tool_use_id`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub role: MessageRole,
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    /// `Some` only on `Tool`-role messages: the id of the tool call this result
+    /// answers. Echoed as Anthropic's `tool_use_id` / OpenAI's `tool_call_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
@@ -31,6 +37,7 @@ impl Message {
             role: MessageRole::User,
             text: text.into(),
             tool_calls: Vec::new(),
+            tool_call_id: None,
         }
     }
     pub fn assistant(text: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
@@ -38,13 +45,15 @@ impl Message {
             role: MessageRole::Assistant,
             text: text.into(),
             tool_calls,
+            tool_call_id: None,
         }
     }
-    pub fn tool(text: impl Into<String>) -> Self {
+    pub fn tool(tool_call_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             role: MessageRole::Tool,
             text: text.into(),
             tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.into()),
         }
     }
 }
@@ -86,8 +95,8 @@ impl Context {
     pub fn push_assistant(&mut self, text: impl Into<String>, tool_calls: Vec<ToolCall>) {
         self.push(Message::assistant(text, tool_calls));
     }
-    pub fn push_tool(&mut self, text: impl Into<String>) {
-        self.push(Message::tool(text));
+    pub fn push_tool(&mut self, tool_call_id: impl Into<String>, text: impl Into<String>) {
+        self.push(Message::tool(tool_call_id, text));
     }
 
     pub fn clear(&mut self) {

@@ -93,11 +93,37 @@ Each session is a lazily-spawned tokio task owning: `Context` (message history +
 token estimate), its own `Llm` instance (from `EngineConfig::llm_factory`), the
 active `AgentProfile`, the `TaskList`, the `Plan`, and a per-session `seq`.
 
-Turn loop: send `LlmRequest { system, messages, tools }` → stream `TextDelta` →
-for each tool call, dispatch by built-in vs host-tool-vs-permission → loop until
-the model returns no tool calls → `Done`. Approval waits park the task on its
-inbox; any non-matching message (e.g. a new prompt) is stashed and processed
-after the turn.
+Turn loop: send `LlmRequest { system, model, messages, tools }` → consume the
+streamed `LlmEvent`s (emit `TextDelta` per `Text` chunk, gather `ToolCall`s,
+note `Finish`) → for each tool call, dispatch by built-in vs host-tool-vs-
+permission → loop until the model returns no tool calls → `Done`. Approval waits
+park the task on its inbox; any non-matching message (e.g. a new prompt) is
+stashed and processed after the turn. Setup/mid-stream backend errors surface as
+`Error` + `Done` without committing a partial assistant message.
+
+## 5b. Model backends (`brain-llm`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
+
+The `Llm` **trait** lives in `brain-core` (the seam); concrete backends live in
+**`brain-llm`**, a separate crate that *may* depend on transport crates
+(`reqwest`) — `brain-core` may not.
+
+```rust
+enum LlmEvent { Text(String), ToolCall(ToolCall), Finish { input_tokens?, output_tokens? } }
+trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEvent>>> }
+```
+
+- Streaming mirrors opencode (Vercel AI SDK `doStream`): live token-by-token
+  deltas, not a buffered whole-reply. The box stream is `'static`.
+- `brain-llm::AnthropicLlm` hand-rolls `POST /v1/messages` with `stream: true`
+  (no Anthropic SDK crate — `reqwest` directly), parsing SSE frames into
+  `LlmEvent`s. Tool input arrives as `input_json_delta` fragments assembled into
+  one `ToolCall`; text arrives as `text_delta`. `anthropic_factory(key, model)`
+  builds an `LlmFactory` for `EngineConfig`.
+- `ToolSpec.schema` surfaces as Anthropic's `input_schema`; `Message.tool_call_id`
+  surfaces as `tool_use_id` (Anthropic requires it on every `tool_result`).
+- `brain-stdio` wires `brain-llm` when `ANTHROPIC_API_KEY` is set (model overridable
+  via `ANTHROPIC_MODEL`, default `claude-sonnet-4-5`); otherwise it falls back to
+  `DummyLlm` so the engine runs end-to-end without credentials.
 
 ## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI)
 
@@ -112,9 +138,11 @@ after the turn.
 ## 7. Hygiene gate — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)
 
 `brain-core` must stay free of UI/transport deps. Enforced by
-`make tree` (`cargo tree -p brain-core` — must show no `clap`/`axum`/`crossterm`/
-`tonic`). Current core deps: `tokio`, `serde`, `serde_json`, `async-trait`,
-`anyhow`, `thiserror`, `tracing`, `futures`.
+`make tree`, which runs `cargo tree -p brain-core` and **fails** if any of
+`clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` appear. It
+is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
+`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`. The `reqwest` the
+Anthropic backend uses lives in `brain-llm`, not core — see ADR-0007.
 
 [brain]: ../brain-core/src/brain.rs
 [profile]: ../brain-core/src/protocol.rs

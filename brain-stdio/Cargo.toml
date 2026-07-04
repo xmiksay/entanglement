@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 brain-core = { workspace = true }
+brain-llm = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

@@ -17,7 +17,10 @@ pub mod tools;
 
 pub use brain::{Brain, EngineConfig, ProfileRegistry};
 pub use context::{Message, MessageRole};
-pub use llm::{DummyLlm, Llm, LlmFactory, LlmRequest, LlmResponse, ToolCall, ToolSpec};
+pub use llm::{
+    stream_from_response, DummyLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream,
+    ToolCall, ToolSpec,
+};
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, InMsg, OutEvent, Permission, PermissionProfile, SessionId,
     TaskItem, TaskStatus,

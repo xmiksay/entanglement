@@ -1,5 +1,5 @@
 [workspace]
-members = ["brain-core", "brain-stdio"]
+members = ["brain-core", "brain-llm", "brain-stdio"]
 resolver = "2"
 
 [workspace.package]
@@ -11,6 +11,7 @@ repository = "https://github.com/xmiksay/brain"
 
 [workspace.dependencies]
 brain-core = { path = "brain-core" }
+brain-llm = { path = "brain-llm" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
@@ -20,8 +21,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
+async-stream = "0.3"
 futures = "0.3"
 clap = { version = "4", features = ["derive"] }
+# rustls (not native-tls) so builds need no system OpenSSL headers.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "charset"] }
 
 [profile.release]
 lto = "thin"

@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use brain_core::{
-    AgentMode, AgentProfile, Brain, EngineConfig, InMsg, Llm, LlmRequest, LlmResponse, OutEvent,
-    Permission, PermissionProfile, SessionId, TaskItem, TaskStatus, ToolCall,
+    stream_from_response, AgentMode, AgentProfile, Brain, EngineConfig, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, TaskItem,
+    TaskStatus, ToolCall,
 };
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
@@ -50,12 +51,15 @@ impl ScriptedLlm {
 
 #[async_trait]
 impl Llm for ScriptedLlm {
-    async fn complete(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmResponse> {
-        let mut responses = self.responses.lock().unwrap();
-        Ok(responses.pop().unwrap_or_else(|| LlmResponse {
-            text: "ok".into(),
-            tool_calls: vec![],
-        }))
+    async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        let resp = {
+            let mut responses = self.responses.lock().unwrap();
+            responses.pop().unwrap_or_else(|| LlmResponse {
+                text: "ok".into(),
+                tool_calls: vec![],
+            })
+        };
+        Ok(stream_from_response(resp))
     }
 }
 
