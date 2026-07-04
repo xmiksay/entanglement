@@ -30,8 +30,8 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | --- | --- | --- |
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
 | **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. |
-| **WebSocket** (`entanglement-ws`) | next | axum `/ws`, in-band auth first frame, `broadcast` fan-out, multiplexed by `SessionId`. Model from the `agent`/`design` references. |
-| **TUI** (`entanglement-cli`) | next | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
+| **WebSocket** (`skutter serve`) | next | axum `/ws`, in-band auth first frame, `broadcast` fan-out, multiplexed by `SessionId`. Model from the `agent`/`design` references. |
+| **TUI** (`skutter tui`) | next | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
 
 ## Agent profiles (opencode-style)
 
@@ -50,9 +50,7 @@ natively.
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, session loop, permission dispatch, built-in tools, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm` forbidden). Enforced via `make tree`. |
-| `entanglement-stdio` | stdio head (`run`, `pipe`); binary `skutter`. | — |
-| `entanglement-ws` | _(next)_ axum WebSocket head. | — |
-| `entanglement-cli` | _(next)_ opencode-style TUI. | — |
+| `entanglement-cli` | the head crate (binary `skutter`): stdio `run`/`pipe` today; future `serve` (WS) + `tui` subcommands. All transports live here (ADR-0010). | — |
 
 ## Build & develop
 

@@ -12,10 +12,10 @@ build: ## cargo build --workspace
 	$(CARGO) build --workspace
 
 run: build ## build + run the stdio head once (one dummy turn)
-	$(CARGO) run -p entanglement-stdio -- run "Hello, Holly!" $(ARGS)
+	$(CARGO) run -p entanglement-cli -- run "Hello, Holly!" $(ARGS)
 
 run-json: build ## stream one turn as NDJSON events (like opencode run --format json)
-	$(CARGO) run -p entanglement-stdio -- run --format json "Hello, Holly!"
+	$(CARGO) run -p entanglement-cli -- run --format json "Hello, Holly!"
 
 check: ## cargo check --workspace (fast typecheck)
 	$(CARGO) check --workspace

@@ -1,6 +1,6 @@
 [package]
-name = "entanglement-stdio"
-description = "Terminal head for the entanglement agent engine: one-shot `run` and bidirectional `pipe` (NDJSON). Binary: `skutter`."
+name = "entanglement-cli"
+description = "Head crate for the entanglement agent engine (binary `skutter`): stdio `run`/`pipe` today; future WebSocket `serve` and TUI `tui` subcommands."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

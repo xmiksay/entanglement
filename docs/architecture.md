@@ -143,15 +143,21 @@ then Anthropic; else `DummyLlm`. Per-provider env: `<PROV>_API_KEY` (z.ai/OpenAI
 Anthropic; Ollama is keyless), `<PROV>_MODEL`, `<PROV>_BASE`/`<PROV>_API_BASE`.
 Default models: `glm-5.2` / `gpt-4o` / `llama3.1` / `claude-sonnet-4-5`.
 
-## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI)
+## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI), [0010](adr/0010-single-head-crate-and-bash-opt-in.md) (packaging)
+
+All heads live in one crate, **`entanglement-cli`** (binary `skutter`), as
+subcommands. The "four interfaces" (in-process ABI + three transports) are a
+design concept, not a packaging boundary — the real seam is
+`entanglement-core` ↔ everything else (ADR-0006, ADR-0010).
 
 - **ABI** — `holly.send()` / `holly.subscribe()`. Done.
-- **stdio** (`skutter`): `skutter run [--format text|json] [--agent <name>]`
-  one-shot; `skutter pipe` bidirectional NDJSON (`InMsg` in, `OutEvent` out).
-- **WebSocket** _(next)_: axum `GET /ws`, in-band auth first frame, stateless
-  handler, one `subscribe()` per socket, inbound frame → `InMsg` → `send()`,
-  30s ping, `continue` on `broadcast::Lagged`. (Recipe lifted from `agent`.)
-- **TUI** _(next)_: opencode-style terminal UI over `subscribe()`.
+- **stdio** (`skutter run` / `skutter pipe`): one-shot `run [--format text|json]
+  [--agent <name>]`; bidirectional `pipe` NDJSON (`InMsg` in, `OutEvent` out).
+- **WebSocket** (`skutter serve`, _next_): axum `GET /ws`, in-band auth first
+  frame, stateless handler, one `subscribe()` per socket, inbound frame →
+  `InMsg` → `send()`, 30s ping, `continue` on `broadcast::Lagged`. (Recipe
+  lifted from `agent`.)
+- **TUI** (`skutter tui`, _next_): opencode-style terminal UI over `subscribe()`.
 
 ## 7. Hygiene gate — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)
 
@@ -163,7 +169,7 @@ is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
 `glob`/`regex` back the host tools (§8); the `reqwest` both LLM backends use
 lives in `entanglement-llm`, not core — see ADR-0007.
 
-## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`)
+## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in)
 
 Concrete filesystem + shell tools the engine dispatches under the active
 permission profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)).
@@ -176,7 +182,7 @@ assembled by `host_tools(root: PathBuf) -> ToolRegistry`:
 | `glob` | `{pattern}` | matching paths (relative to root), one per line |
 | `grep` | `{pattern, path?}` | matches as `path:lineno:line` over files matched by `path` (default `**/*`) |
 | `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists); non-unique match errors unless `replaceAll` |
-| `bash` | `{command, timeout?}` | `sh -c` rooted at root; `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600, `kill_on_drop` reaps on expiry |
+| `bash` ⚠ | `{command, timeout?}` | `sh -c` rooted at root; `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600, `kill_on_drop` reaps on expiry |
 
 - **Working directory:** each tool holds a `root`; model-supplied paths resolve
   against it and are rejected on `..` escape. Lexical containment only (no
@@ -188,13 +194,18 @@ assembled by `host_tools(root: PathBuf) -> ToolRegistry`:
   from blowing the context window.
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
-- **Wiring:** the `skutter` binary always registers the quintet rooted at the
-  cwd; `EngineConfig::default()` ships an empty registry (embedders opt in via
-  `host_tools`).
+- **Wiring (ADR-0010):** `host_tools(root)` registers the **root-contained
+  quartet** (`read`/`glob`/`grep`/`edit`). `bash` is opt-in — the `skutter`
+  binary registers `BashTool` only when `ENTANGLEMENT_ENABLE_BASH=1`, because
+  it runs unsandboxed (ADR-0009). `EngineConfig::default()` ships an empty
+  registry (embedders opt in via `host_tools`).
 
-`edit`/`bash` slots into the existing permission profiles with no profile
+`edit`/`bash` slot into the existing permission profiles with no profile
 changes: `build` auto-allows both (default `Allow`), `plan` asks for both
-(default `Ask`), `explore` denies both (default `Deny`).
+(default `Ask`), `explore` denies both (default `Deny`). The opt-in gate is
+orthogonal to the permission profile: it controls *registration* (whether the
+tool is advertised at all), the profile controls *dispatch* (Allow/Ask/Deny
+when the model calls it).
 
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs

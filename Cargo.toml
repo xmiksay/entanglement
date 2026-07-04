@@ -1,5 +1,5 @@
 [workspace]
-members = ["entanglement-core", "entanglement-llm", "entanglement-stdio"]
+members = ["entanglement-core", "entanglement-llm", "entanglement-cli"]
 resolver = "2"
 
 [workspace.package]

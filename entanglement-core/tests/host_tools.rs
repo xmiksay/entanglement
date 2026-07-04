@@ -1,7 +1,8 @@
-//! Integration test: the host-tool quintet (`read`/`glob`/`grep`/`edit`/`bash`)
-//! wired through the real engine — a scripted LLM asks for a tool call, the
-//! engine dispatches it under the `build` profile (Allow), and the result comes
-//! back as a `ToolOutput`. Validates the registry wiring from ADR-0008 + ADR-0009.
+//! Integration test: the host tools wired through the real engine — a scripted
+//! LLM asks for a tool call, the engine dispatches it under the `build` profile
+//! (Allow), and the result comes back as a `ToolOutput`. Validates the registry
+//! wiring from ADR-0008 + ADR-0009; `bash` is registered explicitly here to
+//! mirror a head's opt-in path (ADR-0010).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

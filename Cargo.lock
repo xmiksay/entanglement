@@ -219,6 +219,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "entanglement-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "entanglement-core",
+ "entanglement-llm",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "entanglement-core"
 version = "0.1.0"
 dependencies = [
@@ -248,20 +262,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "entanglement-stdio"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "entanglement-core",
- "entanglement-llm",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

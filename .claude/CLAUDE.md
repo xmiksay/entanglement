@@ -14,7 +14,7 @@ Architecture & the four interfaces:
 - **Rust** (stable, `../rust-toolchain.toml`).
 - Async: **Tokio** (`mpsc` inbox, `broadcast` outbox). Errors: `anyhow` + `thiserror`.
 - Logging: `tracing`. Serde everywhere (the wire protocol).
-- No web framework in core; `entanglement-ws` will bring `axum`.
+- No web framework in core; `entanglement-cli`'s future `serve` subcommand will bring `axum`.
 
 ## Workspace
 
@@ -22,9 +22,7 @@ Architecture & the four interfaces:
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, protocol, session loop, permission dispatch, built-in tools, `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
 | `entanglement-llm` | concrete LLM backends: one generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, all via `reqwest`; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
-| `entanglement-stdio` | stdio head (binary `skutter`): `skutter run` (text/`--format json`), `skutter pipe` (NDJSON); selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect | — |
-| `entanglement-ws` | _(next)_ axum WebSocket head | — |
-| `entanglement-cli` | _(next)_ opencode-style TUI | — |
+| `entanglement-cli` | the head crate (binary `skutter`): stdio `run`/`pipe` today; future `serve` (WS) + `tui` subcommands. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here (ADR-0010). | — |
 
 Heads depend on core, **never** the reverse.
 
@@ -74,8 +72,9 @@ monotonic `seq`. Agent profiles (`build`/`plan`/`explore` + custom) drive
 permission dispatch (`Allow`/`Ask`/`Deny`). `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
-`input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009) assembles the
-host-tool quintet (`read`/`glob`/`grep`/`edit`/`bash`) that the profiles gate.
+`input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010)
+assembles the root-contained quartet (`read`/`glob`/`grep`/`edit`);
+`BashTool` is opt-in at the head (`ENTANGLEMENT_ENABLE_BASH=1`).
 
 ## Conventions (project-specific)
 
@@ -100,13 +99,14 @@ host-tool quintet (`read`/`glob`/`grep`/`edit`/`bash`) that the profiles gate.
 
 ## Open work (current phase)
 
-- Host tool quintet (`read`/`glob`/`grep`/`edit`/`bash`) is done in
+- Host tools: the root-contained quartet (`read`/`glob`/`grep`/`edit`) ships in
   `entanglement-core::host` behind `host_tools(root)` ([ADR-0008](../docs/adr/0008-host-tools-workdir-and-bounded-output.md)
-  trio + [ADR-0009](../docs/adr/0009-edit-and-bash-host-tools.md) `edit`/`bash`);
-  the `skutter` binary wires it from the cwd. `bash` is **not** sandboxed —
-  permission profiles are the only gate; a real sandbox is the next
-  security-focused ADR.
-- `entanglement-ws` (axum) and `entanglement-cli` (TUI) heads.
+  trio + [ADR-0009](../docs/adr/0009-edit-and-bash-host-tools.md) `edit`/`bash`).
+  `bash` is opt-in: register `BashTool` at the head when
+  `ENTANGLEMENT_ENABLE_BASH=1` ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md))
+  — it runs unsandboxed; a real sandbox is the next security-focused ADR.
+- `skutter serve` (axum WS) and `skutter tui` subcommands, both inside
+  `entanglement-cli`.
 
 LLM providers are wired (`entanglement-llm`, ADR-0007): `Llm` is a streaming trait
 returning `BoxStream<LlmEvent>`; one generic OpenAI-compat client serves z.ai
