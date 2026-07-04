@@ -5,7 +5,6 @@ loop is decoupled from any UI and exposed as an async **actor**: a typed inbox o
 `InMsg` and a broadcast outbox of `OutEvent`. Every interface is a thin adapter
 over those two methods.
 
-- Design & roadmap: [`PLAN.md`](PLAN.md)
 - Architecture & interfaces: [`docs/architecture.md`](docs/architecture.md)
 
 ## Status

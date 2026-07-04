@@ -5,7 +5,7 @@ loop is decoupled from any UI and exposed as an async actor: a typed `InMsg`
 inbox and a broadcast `OutEvent` outbox. Every interface (ABI, stdio, WebSocket,
 TUI) is a thin adapter over `holly.send()` / `holly.subscribe()`.
 
-Full design: [`../PLAN.md`](../PLAN.md). Architecture & the four interfaces:
+Architecture & the four interfaces:
 [`../docs/architecture.md`](../docs/architecture.md). Overview:
 [`../README.md`](../README.md).
 
@@ -112,5 +112,3 @@ LLM providers are wired (`entanglement-llm`, ADR-0007): `Llm` is a streaming tra
 returning `BoxStream<LlmEvent>`; one generic OpenAI-compat client serves z.ai
 (primary)/OpenAI/Ollama, with a separate Anthropic client. `skutter` picks
 one via `ENTANGLEMENT_PROVIDER` or key auto-detect, else `DummyLlm`.
-
-See [`../PLAN.md`](../PLAN.md) §5.

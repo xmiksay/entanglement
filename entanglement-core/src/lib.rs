@@ -6,7 +6,7 @@
 //! stdio NDJSON, WebSocket, TUI) is a thin adapter over [`Holly::send`] and
 //! [`Holly::subscribe`].
 //!
-//! See `PLAN.md` and `docs/architecture.md` for the design.
+//! See `docs/architecture.md` for the design.
 
 pub mod context;
 pub mod holly;

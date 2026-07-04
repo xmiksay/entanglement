@@ -1,10 +1,9 @@
 # entanglement — Architecture
 
 How the headless engine is structured and how the four interfaces share one
-contract. Vision & roadmap live in [`../PLAN.md`](../PLAN.md); overview in
-[`../README.md`](../README.md). The *why* behind each choice here is recorded in
-the [decision log](adr/README.md) (ADRs); this document describes the current
-*what is*.
+contract. Overview & roadmap in [`../README.md`](../README.md). The *why* behind
+each choice here is recorded in the [decision log](adr/README.md) (ADRs); this
+document describes the current *what is*.
 
 ## 1. The actor model (the ABI) — [ADR-0001](adr/0001-actor-model-abi.md)
 

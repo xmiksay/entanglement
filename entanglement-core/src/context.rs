@@ -60,8 +60,8 @@ impl Message {
 
 /// Approximate tokens-per-char for the heuristic estimator.
 ///
-/// Anthropic's exact tokenizer isn't readily available in Rust; per PLAN.md we
-/// use a safe heuristic and keep the limit below the real ceiling.
+/// Anthropic's exact tokenizer isn't readily available in Rust, so we use a
+/// safe heuristic and keep the limit below the real ceiling.
 const CHARS_PER_TOKEN: f32 = 3.5;
 
 /// Conservative soft cap (in tokens) below the model's hard 200k ceiling.
