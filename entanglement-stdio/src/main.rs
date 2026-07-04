@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use entanglement_core::{
-    host_tools, AgentState, EngineConfig, Holly, InMsg, OutEvent, SessionId, TaskStatus,
+    host_tools, AgentState, BashTool, EngineConfig, Holly, InMsg, OutEvent, SessionId, TaskStatus,
 };
 use tokio::io::AsyncBufReadExt;
 
@@ -36,13 +36,24 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 /// auto-detect on). z.ai/OpenAI/Ollama share one OpenAI-compatible client
 /// ([`entanglement_llm::openai_factory`]); Anthropic has its own client.
 ///
-/// The read-only host trio (`read`, `glob`, `grep`) is always registered,
-/// rooted at the current working directory, so the `build`/`plan`/`explore`
-/// permission profiles gate something real out of the box.
+/// The root-contained host quartet (`read`/`glob`/`grep`/`edit`) is always
+/// registered, rooted at the current working directory, so the
+/// `build`/`plan`/`explore` permission profiles gate something real out of the
+/// box. `bash` is opt-in: set `ENTANGLEMENT_ENABLE_BASH=1` to register
+/// `BashTool` — it runs unsandboxed with the engine's full privileges
+/// (ADR-0009 / ADR-0010).
 fn build_config() -> EngineConfig {
     let mut cfg = select_provider();
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    cfg.tools = host_tools(root);
+    let mut tools = host_tools(root.clone());
+    if std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1") {
+        tools.register(BashTool::new(root.clone()));
+        eprintln!(
+            "skutter: bash enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
+             runs unsandboxed with full privileges"
+        );
+    }
+    cfg.tools = tools;
     cfg
 }
 

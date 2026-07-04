@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    host_tools, stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
-    LlmStream, OutEvent, SessionId, ToolCall,
+    host_tools, stream_from_response, BashTool, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, OutEvent, SessionId, ToolCall,
 };
 
 /// An LLM that replays a scripted list of responses in order, then a plain
@@ -225,11 +225,17 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![bash_call, finish]);
+    // bash is opt-in (ADR-0010); mirror what `skutter` does when
+    // ENTANGLEMENT_ENABLE_BASH=1 by registering BashTool explicitly.
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        tools: host_tools(root.clone()),
+        tools: {
+            let mut reg = host_tools(root.clone());
+            reg.register(BashTool::new(root.clone()));
+            reg
+        },
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);

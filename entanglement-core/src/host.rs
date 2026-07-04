@@ -1,15 +1,17 @@
-//! Host tools that execute against the local filesystem and shell — the
-//! quintet `read`, `glob`, `grep`, `edit`, `bash`. The read-only trio
-//! (`read`/`glob`/`grep`) is covered by ADR-0008; the mutating/executing pair
-//! (`edit`/`bash`) is covered by ADR-0009.
+//! Host tools that execute against the local filesystem and shell — `read`,
+//! `glob`, `grep`, `edit`, and the opt-in `bash`. The read-only trio
+//! (`read`/`glob`/`grep`) is covered by ADR-0008; `edit`/`bash` by ADR-0009;
+//! [`host_tools`] assembles the **root-contained quartet** (`read`/`glob`/
+//! `grep`/`edit`) and a head explicitly opts into [`BashTool`] (gated by
+//! `ENTANGLEMENT_ENABLE_BASH`) — see ADR-0010.
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
 //! paths resolve against it and are **rejected on `..` escape** (lexical only
 //! for now — no symlink defense yet). Output is byte-capped so a runaway
 //! listing or huge file can't silently consume the context window. `bash` runs
 //! the command rooted at `root` but otherwise inherits the engine process's
-//! full privileges — sandboxing is deferred (ADR-0009); permission profiles
-//! gate *whether* `bash`/`edit` run at all.
+//! full privileges — unsandboxed by design (ADR-0009); the opt-in gate plus
+//! permission profiles are the only controls (ADR-0010).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -591,18 +593,21 @@ impl Tool for BashTool {
 // ┃ Registry builder
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Build a [`ToolRegistry`] with the host tool quintet (`read`, `glob`,
-/// `grep`, `edit`, `bash`) rooted at `root`. A head (e.g. the `skutter`
-/// binary) passes its working directory; the engine then advertises these tools
-/// to the model and the session dispatches model calls to them under the active
-/// permission profile.
+/// Build a [`ToolRegistry`] with the root-contained host quartet (`read`,
+/// `glob`, `grep`, `edit`) rooted at `root`. `bash` is intentionally **not**
+/// registered here — it runs arbitrary code with the engine's full privileges
+/// (ADR-0009), so a head must opt into it explicitly by registering
+/// [`BashTool`] (e.g. when `ENTANGLEMENT_ENABLE_BASH=1`). See ADR-0010.
+///
+/// A head (e.g. the `skutter` binary) passes its working directory; the engine
+/// then advertises these tools to the model and the session dispatches model
+/// calls to them under the active permission profile.
 pub fn host_tools(root: PathBuf) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(ReadTool::new(root.clone()));
     reg.register(GlobTool::new(root.clone()));
     reg.register(GrepTool::new(root.clone()));
-    reg.register(EditTool::new(root.clone()));
-    reg.register(BashTool::new(root));
+    reg.register(EditTool::new(root));
     reg
 }
 
@@ -882,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn host_tools_registers_full_quintet_with_schemas() {
+    fn host_tools_registers_root_contained_quartet_without_bash() {
         let dir = TempDir::new();
         let reg = host_tools(dir.path.clone());
         let specs = reg.specs();
@@ -891,7 +896,8 @@ mod tests {
         assert!(names.contains(&"glob"), "{names:?}");
         assert!(names.contains(&"grep"), "{names:?}");
         assert!(names.contains(&"edit"), "{names:?}");
-        assert!(names.contains(&"bash"), "{names:?}");
+        // bash is opt-in at the head level (ADR-0010) — never auto-registered.
+        assert!(!names.contains(&"bash"), "{names:?}");
         // Schemas are non-empty objects with a `properties` field.
         for s in &specs {
             assert!(
