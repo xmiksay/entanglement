@@ -7,15 +7,15 @@
 //! - `pipe` is a bidirectional NDJSON relay: `InMsg` lines on stdin,
 //!   `OutEvent` lines on stdout. For scripting / editor integration.
 
-use std::io::Write;
-use std::time::Duration;
+mod pipe;
+mod run;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use entanglement_core::{
-    host_tools, AgentState, BashTool, EngineConfig, Holly, InMsg, OutEvent, SessionId, TaskStatus,
-};
-use tokio::io::AsyncBufReadExt;
+use entanglement_core::{host_tools, BashTool, EngineConfig, Holly, SessionId};
+
+use pipe::pipe;
+use run::run_one;
 
 /// Default models per provider when its `<PROVIDER>_MODEL` env is unset.
 const DEFAULT_ZAI_MODEL: &str = "glm-5.2";
@@ -229,151 +229,5 @@ async fn main() -> Result<()> {
             let prompt = cli.prompt.join(" ");
             run_one(&holly, &SessionId::new("run"), None, &prompt, "text").await
         }
-    }
-}
-
-/// Send one prompt and stream events until `Done` (or timeout).
-async fn run_one(
-    holly: &Holly,
-    session: &SessionId,
-    agent: Option<&str>,
-    prompt: &str,
-    format: &str,
-) -> Result<()> {
-    let json = format == "json";
-    let mut sub = holly.subscribe();
-
-    if let Some(a) = agent {
-        holly
-            .send(InMsg::SetAgent {
-                session: session.clone(),
-                agent: a.to_string(),
-            })
-            .await?;
-    }
-    holly
-        .send(InMsg::Prompt {
-            session: session.clone(),
-            text: prompt.to_string(),
-        })
-        .await?;
-
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    loop {
-        let ev = match tokio::time::timeout(Duration::from_secs(60), sub.recv()).await {
-            Ok(Ok(ev)) => ev,
-            Ok(Err(_)) => break, // engine dropped
-            Err(_) => anyhow::bail!("timed out waiting for engine event"),
-        };
-        if ev.session() != session {
-            continue;
-        }
-        if json {
-            writeln!(out, "{}", serde_json::to_string(&ev)?)?;
-        } else {
-            render_text(&mut out, &ev)?;
-        }
-        out.flush()?;
-        if matches!(ev, OutEvent::Done { .. }) {
-            break;
-        }
-    }
-    Ok(())
-}
-
-/// Continuous NDJSON relay.
-async fn pipe(holly: &Holly, default_session: &SessionId) -> Result<()> {
-    let mut sub = holly.subscribe();
-    let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<()>();
-
-    // stdin reader → InMsg
-    let holly2 = holly.clone();
-    let default_session = default_session.clone();
-    tokio::spawn(async move {
-        let stdin = tokio::io::stdin();
-        let mut lines = tokio::io::BufReader::new(stdin).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<InMsg>(trimmed) {
-                Ok(msg) => {
-                    if holly2.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    let _ = holly2
-                        .send(InMsg::Prompt {
-                            session: default_session.clone(),
-                            text: trimmed.to_string(),
-                        })
-                        .await;
-                    eprintln!("note: treated line as prompt for default session ({e})");
-                }
-            }
-        }
-        let _ = done_tx.send(());
-    });
-
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    loop {
-        tokio::select! {
-            ev = sub.recv() => match ev {
-                Ok(ev) => {
-                    writeln!(out, "{}", serde_json::to_string(&ev)?)?;
-                    out.flush()?;
-                }
-                Err(_) => break,
-            },
-            _ = &mut done_rx => {
-                // stdin closed; flush any trailing events then stop.
-                while let Ok(ev) = tokio::time::timeout(Duration::from_millis(200), sub.recv()).await {
-                    if let Ok(ev) = ev {
-                        writeln!(out, "{}", serde_json::to_string(&ev)?)?;
-                    }
-                }
-                break;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Human-friendly rendering of a single event.
-fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
-    match ev {
-        OutEvent::Status { state, .. } => match state {
-            AgentState::Thinking => writeln!(out, "… thinking")?,
-            AgentState::WaitingApproval => writeln!(out, "… waiting for approval")?,
-            AgentState::Error => writeln!(out, "! turn ended in error")?,
-            _ => {}
-        },
-        OutEvent::AgentChanged { agent, .. } => writeln!(out, "# agent: {agent}")?,
-        OutEvent::Plan { content, .. } => writeln!(out, "▸ plan:\n{content}")?,
-        OutEvent::TextDelta { text, .. } => writeln!(out, "> {text}")?,
-        OutEvent::ToolRequest { tool, input, .. } => writeln!(out, "? {tool}: {input}")?,
-        OutEvent::ToolOutput { output, .. } => writeln!(out, "= {output}")?,
-        OutEvent::TaskList { tasks, .. } => {
-            writeln!(out, "▢ tasks:")?;
-            for t in tasks {
-                writeln!(out, "  [{}] {}", task_symbol(t.status), t.content)?;
-            }
-        }
-        OutEvent::Error { message, .. } => writeln!(out, "! {message}")?,
-        OutEvent::Done { .. } => writeln!(out, "✓ done")?,
-    }
-    Ok(())
-}
-
-fn task_symbol(s: TaskStatus) -> &'static str {
-    match s {
-        TaskStatus::Pending => "○",
-        TaskStatus::InProgress => "▶",
-        TaskStatus::Completed => "✓",
-        TaskStatus::Cancelled => "✗",
     }
 }
