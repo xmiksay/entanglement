@@ -50,7 +50,7 @@ natively.
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, session loop, permission dispatch, built-in tools, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm` forbidden). Enforced via `make tree`. |
-| `skutter` | stdio head (`run`, `pipe`). | — |
+| `entanglement-stdio` | stdio head (`run`, `pipe`); binary `skutter`. | — |
 | `entanglement-ws` | _(next)_ axum WebSocket head. | — |
 | `entanglement-cli` | _(next)_ opencode-style TUI. | — |
 

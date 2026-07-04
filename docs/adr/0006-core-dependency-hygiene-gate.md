@@ -19,8 +19,9 @@ UI/transport crate.
 
 This is enforced automatically:
 
-- Heads live in **separate crates** (`skutter`, future `entanglement-ws`,
-  `entanglement-cli`) that depend on `entanglement-core`, never the reverse.
+- Heads live in **separate crates** (`entanglement-stdio`, future
+  `entanglement-ws`, `entanglement-cli`) that depend on `entanglement-core`,
+  never the reverse.
 - `make tree` runs `cargo tree -p entanglement-core` and greps for forbidden crates; it
   is part of `make verify`'s CI-equivalent gate.
 

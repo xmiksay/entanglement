@@ -1,6 +1,6 @@
 [package]
-name = "skutter"
-description = "Terminal head for the entanglement agent engine: one-shot `run` and bidirectional `pipe` (NDJSON)."
+name = "entanglement-stdio"
+description = "Terminal head for the entanglement agent engine: one-shot `run` and bidirectional `pipe` (NDJSON). Binary: `skutter`."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

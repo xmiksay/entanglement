@@ -11,7 +11,7 @@ one per line, as the turn streams.
 
 ## Decision
 
-The stdio head (`skutter`, binary `skutter`) has two subcommands, both driving
+The stdio head (crate `entanglement-stdio`, binary `skutter`) has two subcommands, both driving
 `Holly` directly (the ABI from ADR-0001):
 
 - **`skutter run [--format text|json] [--agent <name>] "<prompt>"`** — one-shot:

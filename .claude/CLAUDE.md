@@ -22,7 +22,7 @@ Architecture & the four interfaces:
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, protocol, session loop, permission dispatch, built-in tools, `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
 | `entanglement-llm` | concrete LLM backends: one generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, all via `reqwest`; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
-| `skutter` | stdio head: `skutter run` (text/`--format json`), `skutter pipe` (NDJSON); selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect | — |
+| `entanglement-stdio` | stdio head (binary `skutter`): `skutter run` (text/`--format json`), `skutter pipe` (NDJSON); selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect | — |
 | `entanglement-ws` | _(next)_ axum WebSocket head | — |
 | `entanglement-cli` | _(next)_ opencode-style TUI | — |
 
