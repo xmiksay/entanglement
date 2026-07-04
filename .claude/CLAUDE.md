@@ -21,8 +21,8 @@ Full design: [`../PLAN.md`](../PLAN.md). Architecture & the four interfaces:
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `brain-core` | actor engine: `Brain`, protocol, session loop, permission dispatch, built-in tools, `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
-| `brain-llm` | concrete LLM backends (Anthropic SSE streaming via `reqwest`); implements `brain_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `brain-core` |
-| `brain-stdio` | stdio head: `brain run` (text/`--format json`), `brain pipe` (NDJSON); wires `brain-llm` when `ANTHROPIC_API_KEY` is set | — |
+| `brain-llm` | concrete LLM backends: one generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, all via `reqwest`; implements `brain_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `brain-core` |
+| `brain-stdio` | stdio head: `brain run` (text/`--format json`), `brain pipe` (NDJSON); selects provider via `BRAIN_PROVIDER` or key auto-detect | — |
 | `brain-ws` | _(next)_ axum WebSocket head | — |
 | `brain-cli` | _(next)_ opencode-style TUI | — |
 
@@ -43,6 +43,21 @@ make build | check | clean
 ```
 
 Build jobs capped at 4 via `../.cargo/config.toml`.
+
+## Providers (`brain-stdio`)
+
+Set `BRAIN_PROVIDER` explicitly, or let it auto-detect by key (z.ai first):
+
+| `BRAIN_PROVIDER` | wire | key env | model env (default) | base env |
+| --- | --- | --- | --- | --- |
+| `zai` (primary) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_MODEL` (`glm-5.2`) | `ZAI_API_BASE` (Coding Plan) |
+| `openai` | OpenAI-compat | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-4o`) | `OPENAI_API_BASE` |
+| `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_BASE` |
+| `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-4-5`) | — |
+
+z.ai/OpenAI/Ollama share one `brain-llm::OpenAiLlm`; Anthropic has its own client
+(distinct content-block format). No key → `DummyLlm`. Detail in
+[`../docs/architecture.md`](../docs/architecture.md) §5b.
 
 ## The contract (read before touching the engine)
 
@@ -87,8 +102,9 @@ session-owned snapshots, written by built-in tools or harness `Set*` messages.
   JSON `input_schema` on its `ToolSpec` (the seam is in place).
 - `brain-ws` (axum) and `brain-cli` (TUI) heads.
 
-Anthropic SSE streaming is wired (`brain-llm`, ADR-0007) — `Llm` is a streaming
-trait returning `BoxStream<LlmEvent>`; `brain-stdio` uses it when
-`ANTHROPIC_API_KEY` is set, else falls back to `DummyLlm`.
+LLM providers are wired (`brain-llm`, ADR-0007): `Llm` is a streaming trait
+returning `BoxStream<LlmEvent>`; one generic OpenAI-compat client serves z.ai
+(primary)/OpenAI/Ollama, with a separate Anthropic client. `brain-stdio` picks
+one via `BRAIN_PROVIDER` or key auto-detect, else `DummyLlm`.
 
 See [`../PLAN.md`](../PLAN.md) §5.

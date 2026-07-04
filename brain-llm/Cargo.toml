@@ -1,6 +1,6 @@
 [package]
 name = "brain-llm"
-description = "Concrete LLM backends for the brain agent engine (Anthropic SSE streaming)."
+description = "Concrete LLM backends for the brain agent engine (z.ai GLM + Anthropic SSE streaming)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

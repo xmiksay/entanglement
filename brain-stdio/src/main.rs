@@ -15,27 +15,121 @@ use brain_core::{AgentState, Brain, EngineConfig, InMsg, OutEvent, SessionId, Ta
 use clap::{Parser, Subcommand};
 use tokio::io::AsyncBufReadExt;
 
-/// Default model when `ANTHROPIC_MODEL` is unset.
-const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
+/// Default models per provider when its `<PROVIDER>_MODEL` env is unset.
+const DEFAULT_ZAI_MODEL: &str = "glm-5.2";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-4o";
+const DEFAULT_OLLAMA_MODEL: &str = "llama3.1";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 
-/// Build the engine config. Uses the real Anthropic backend when
-/// `ANTHROPIC_API_KEY` is set; otherwise falls back to `DummyLlm` so `brain`
-/// still runs end-to-end without credentials.
+/// Pick a provider and build the engine config.
+///
+/// Selection order:
+/// 1. `BRAIN_PROVIDER` env, one of `zai | openai | ollama | anthropic`
+///    (explicit; errors loudly if the matching key is missing).
+/// 2. Auto-detect by key presence, z.ai first (the project's primary), then
+///    OpenAI, then Anthropic.
+/// 3. Fall back to `DummyLlm` so `brain` always runs end-to-end.
+///
+/// Set `BRAIN_PROVIDER=ollama` to use a local keyless Ollama (it has no key to
+/// auto-detect on). z.ai/OpenAI/Ollama share one OpenAI-compatible client
+/// ([`brain_llm::openai_factory`]); Anthropic has its own client.
 fn build_config() -> EngineConfig {
-    match std::env::var("ANTHROPIC_API_KEY") {
-        Ok(key) if !key.is_empty() => {
-            let model =
-                std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
-            EngineConfig {
-                llm_factory: brain_llm::anthropic_factory(key, model),
-                ..EngineConfig::default()
-            }
+    match std::env::var("BRAIN_PROVIDER").ok().as_deref() {
+        Some("zai") => require(zai_config(), "BRAIN_PROVIDER=zai requires ZAI_API_KEY"),
+        Some("openai") => require(
+            openai_config(),
+            "BRAIN_PROVIDER=openai requires OPENAI_API_KEY",
+        ),
+        Some("ollama") => ollama_config(),
+        Some("anthropic") => require(
+            anthropic_config(),
+            "BRAIN_PROVIDER=anthropic requires ANTHROPIC_API_KEY",
+        ),
+        Some(other) => {
+            eprintln!(
+                "brain: unknown BRAIN_PROVIDER='{other}' (expected: zai|openai|ollama|anthropic)"
+            );
+            std::process::exit(2);
         }
-        _ => {
-            eprintln!("brain: ANTHROPIC_API_KEY unset — using DummyLlm");
+        None => {
+            if let Some(c) = zai_config() {
+                return c;
+            }
+            if let Some(c) = openai_config() {
+                return c;
+            }
+            if let Some(c) = anthropic_config() {
+                return c;
+            }
+            eprintln!(
+                "brain: no provider key set — using DummyLlm \
+                 (set BRAIN_PROVIDER=ollama for local, or a *_API_KEY)"
+            );
             EngineConfig::default()
         }
     }
+}
+
+fn env_nonempty(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(v) if !v.is_empty() => Some(v),
+        _ => None,
+    }
+}
+
+fn require(cfg: Option<EngineConfig>, msg: &str) -> EngineConfig {
+    match cfg {
+        Some(c) => c,
+        None => {
+            eprintln!("brain: {msg}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn zai_config() -> Option<EngineConfig> {
+    let key = env_nonempty("ZAI_API_KEY")?;
+    let model = std::env::var("ZAI_MODEL").unwrap_or_else(|_| DEFAULT_ZAI_MODEL.to_string());
+    let base = std::env::var("ZAI_API_BASE")
+        .unwrap_or_else(|_| brain_llm::ZAI_CODING_PLAN_BASE.to_string());
+    eprintln!("brain: provider=zai model={model} base={base}");
+    Some(EngineConfig {
+        llm_factory: brain_llm::openai_factory(base, Some(key), model),
+        ..EngineConfig::default()
+    })
+}
+
+fn openai_config() -> Option<EngineConfig> {
+    let key = env_nonempty("OPENAI_API_KEY")?;
+    let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_OPENAI_MODEL.to_string());
+    let base =
+        std::env::var("OPENAI_API_BASE").unwrap_or_else(|_| brain_llm::OPENAI_BASE.to_string());
+    eprintln!("brain: provider=openai model={model} base={base}");
+    Some(EngineConfig {
+        llm_factory: brain_llm::openai_factory(base, Some(key), model),
+        ..EngineConfig::default()
+    })
+}
+
+fn ollama_config() -> EngineConfig {
+    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| DEFAULT_OLLAMA_MODEL.to_string());
+    let base = std::env::var("OLLAMA_BASE").unwrap_or_else(|_| brain_llm::OLLAMA_BASE.to_string());
+    eprintln!("brain: provider=ollama model={model} base={base}");
+    EngineConfig {
+        llm_factory: brain_llm::openai_factory(base, None, model),
+        ..EngineConfig::default()
+    }
+}
+
+fn anthropic_config() -> Option<EngineConfig> {
+    let key = env_nonempty("ANTHROPIC_API_KEY")?;
+    let model =
+        std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| DEFAULT_ANTHROPIC_MODEL.to_string());
+    eprintln!("brain: provider=anthropic model={model}");
+    Some(EngineConfig {
+        llm_factory: brain_llm::anthropic_factory(key, model),
+        ..EngineConfig::default()
+    })
 }
 
 #[derive(Parser)]

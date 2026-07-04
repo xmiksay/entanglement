@@ -114,16 +114,35 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 
 - Streaming mirrors opencode (Vercel AI SDK `doStream`): live token-by-token
   deltas, not a buffered whole-reply. The box stream is `'static`.
-- `brain-llm::AnthropicLlm` hand-rolls `POST /v1/messages` with `stream: true`
-  (no Anthropic SDK crate — `reqwest` directly), parsing SSE frames into
-  `LlmEvent`s. Tool input arrives as `input_json_delta` fragments assembled into
-  one `ToolCall`; text arrives as `text_delta`. `anthropic_factory(key, model)`
-  builds an `LlmFactory` for `EngineConfig`.
-- `ToolSpec.schema` surfaces as Anthropic's `input_schema`; `Message.tool_call_id`
-  surfaces as `tool_use_id` (Anthropic requires it on every `tool_result`).
-- `brain-stdio` wires `brain-llm` when `ANTHROPIC_API_KEY` is set (model overridable
-  via `ANTHROPIC_MODEL`, default `claude-sonnet-4-5`); otherwise it falls back to
-  `DummyLlm` so the engine runs end-to-end without credentials.
+
+**Provider topology mirrors opencode / the AI SDK** — split by *wire format*,
+not by vendor:
+
+| client (`brain-llm`) | wire format | serves | auth |
+| --- | --- | --- | --- |
+| `OpenAiLlm` (`openai.rs`) | `/chat/completions` SSE | **z.ai** (GLM, brain's primary), **OpenAI**, **Ollama** `/v1` | `Bearer` or none (Ollama) |
+| `AnthropicLlm` (`anthropic.rs`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
+
+- `OpenAiLlm` is one generic client `{ base_url, api_key: Option, default_model }`
+  hand-rolled over `reqwest` (no SDK crate). The three OpenAI-shape providers
+  differ only by config, so preset base constants exist (`ZAI_CODING_PLAN_BASE`
+  — brain default, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`).
+  `openai_factory(base, key, model)` builds an `LlmFactory`. Tool calls stream as
+  per-index `function.arguments` deltas, flushed on `finish_reason: "tool_calls"`;
+  tool results round-trip as one `role: "tool"` message each.
+- `AnthropicLlm` is separate because Anthropic's format genuinely differs: system
+  is a top-level field; tool results are merged into one user turn; tool input
+  arrives as `input_json_delta` fragments. `anthropic_factory(key, model)`.
+- `ToolSpec.schema` surfaces as `input_schema` (Anthropic) / `parameters`
+  (OpenAI-compat); `Message.tool_call_id` surfaces as `tool_use_id` (Anthropic) /
+  `tool_call_id` (OpenAI-compat).
+
+**Provider selection (`brain-stdio`):** `BRAIN_PROVIDER` env selects
+`zai | openai | ollama | anthropic` explicitly (errors loudly if the matching key
+is missing); if unset, auto-detect by key presence with z.ai first, then OpenAI,
+then Anthropic; else `DummyLlm`. Per-provider env: `<PROV>_API_KEY` (z.ai/OpenAI/
+Anthropic; Ollama is keyless), `<PROV>_MODEL`, `<PROV>_BASE`/`<PROV>_API_BASE`.
+Default models: `glm-5.2` / `gpt-4o` / `llama3.1` / `claude-sonnet-4-5`.
 
 ## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI)
 
@@ -141,8 +160,8 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 `make tree`, which runs `cargo tree -p brain-core` and **fails** if any of
 `clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` appear. It
 is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
-`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`. The `reqwest` the
-Anthropic backend uses lives in `brain-llm`, not core — see ADR-0007.
+`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`. The `reqwest` both
+backends use lives in `brain-llm`, not core — see ADR-0007.
 
 [brain]: ../brain-core/src/brain.rs
 [profile]: ../brain-core/src/protocol.rs
