@@ -55,3 +55,8 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0008](0008-host-tools-workdir-and-bounded-output.md) | Host tools: working-directory root + bounded output | Accepted |
 | [0009](0009-edit-and-bash-host-tools.md) | Host tools: `edit` (search/replace) and `bash` (subprocess + timeout) | Accepted (wiring superseded by ADR-0010) |
 | [0010](0010-single-head-crate-and-bash-opt-in.md) | Single head crate (`entanglement-cli`) + `bash` opt-in gate | Accepted |
+| [0011](0011-tui-head-ratatui-crossterm.md) | TUI head: ratatui + crossterm in `entanglement-cli` | Accepted |
+| [0012](0012-tui-event-buffering-rendering.md) | TUI event-buffering & rendering model | Accepted |
+| [0013](0013-keybinding-leader-which-key.md) | Keybinding scheme: leader key + which-key | Accepted |
+| [0014](0014-tool-approval-inline-modal.md) | Tool approval UX: inline card vs modal | Accepted |
+| [0015](0015-rich-text-pipeline-syntect.md) | Rich-text pipeline: pulldown-cmark → ratatui Text, syntect for code blocks | Accepted |

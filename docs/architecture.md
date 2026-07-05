@@ -143,7 +143,7 @@ then Anthropic; else `DummyLlm`. Per-provider env: `<PROV>_API_KEY` (z.ai/OpenAI
 Anthropic; Ollama is keyless), `<PROV>_MODEL`, `<PROV>_BASE`/`<PROV>_API_BASE`.
 Default models: `glm-5.2` / `gpt-4o` / `llama3.1` / `claude-sonnet-4-5`.
 
-## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI), [0010](adr/0010-single-head-crate-and-bash-opt-in.md) (packaging)
+## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI), [0010](adr/0010-single-head-crate-and-bash-opt-in.md) (packaging), [0011](adr/0011-tui-head-ratatui-crossterm.md)–[0015](adr/0015-rich-text-pipeline-syntect.md) (TUI)
 
 All heads live in one crate, **`entanglement-cli`** (binary `skutter`), as
 subcommands. The "four interfaces" (in-process ABI + three transports) are a
@@ -157,7 +157,11 @@ design concept, not a packaging boundary — the real seam is
   frame, stateless handler, one `subscribe()` per socket, inbound frame →
   `InMsg` → `send()`, 30s ping, `continue` on `broadcast::Lagged`. (Recipe
   lifted from `agent`.)
-- **TUI** (`skutter tui`, _next_): opencode-style terminal UI over `subscribe()`.
+- **TUI** (`skutter tui`): opencode-style terminal UI over `subscribe()`. Uses
+  ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
+  (ADR-0013), inline tool approval cards (ADR-0014), and rich markdown
+  rendering with pulldown-cmark + syntect (ADR-0015). Event buffering and
+  multiplexed-session rendering follow ADR-0012.
 
 ## 7. Hygiene gate — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)
 

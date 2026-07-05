@@ -31,7 +31,7 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
 | **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. |
 | **WebSocket** (`skutter serve`) | next | axum `/ws`, in-band auth first frame, `broadcast` fan-out, multiplexed by `SessionId`. Model from the `agent`/`design` references. |
-| **TUI** (`skutter tui`) | next | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
+| **TUI** (`skutter tui`) | next | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. Design & issue breakdown tracked in [GitHub issue #1](https://github.com/xmiksay/entanglement/issues/1). |
 
 ## Agent profiles (opencode-style)
 
