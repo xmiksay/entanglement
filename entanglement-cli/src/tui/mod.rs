@@ -85,7 +85,7 @@ fn spawn_crossterm_task(tx: mpsc::Sender<Event>) {
     });
 }
 
-fn handle_event(_app: &mut App, _holly: &Holly, ev: Event) -> Result<bool> {
+fn handle_event(app: &mut App, _holly: &Holly, ev: Event) -> Result<bool> {
     match ev {
         Event::Key(key) => {
             if key.kind == KeyEventKind::Press {
@@ -96,11 +96,28 @@ fn handle_event(_app: &mut App, _holly: &Holly, ev: Event) -> Result<bool> {
                         return Ok(true);
                     }
                     KeyCode::Char('q') => return Ok(true),
+                    KeyCode::PageUp => {
+                        app.scroll_up(5);
+                    }
+                    KeyCode::PageDown => {
+                        app.scroll_down(5);
+                    }
+                    KeyCode::End => {
+                        app.scroll_to_bottom();
+                    }
                     _ => {}
                 }
             }
         }
-        Event::Mouse(_) => {}
+        Event::Mouse(mouse_event) => match mouse_event.kind {
+            crossterm::event::MouseEventKind::ScrollUp => {
+                app.scroll_up(3);
+            }
+            crossterm::event::MouseEventKind::ScrollDown => {
+                app.scroll_down(3);
+            }
+            _ => {}
+        },
         Event::Resize => {}
         Event::FocusGained | Event::FocusLost => {}
         Event::Paste(_) => {}
