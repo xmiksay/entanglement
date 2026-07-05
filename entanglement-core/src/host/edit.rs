@@ -1,0 +1,119 @@
+//! `edit` — exact-string replace within a file. Empty `oldString` creates
+//! (refused if exists); non-unique match errors unless `replaceAll` is set.
+//! Only writes under the working directory (path-escape rejected).
+
+use super::resolve_under_root;
+use crate::tools::Tool;
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use serde::Deserialize;
+
+pub struct EditTool {
+    root: std::path::PathBuf,
+}
+
+impl EditTool {
+    pub fn new(root: std::path::PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+#[derive(Deserialize)]
+struct EditInput {
+    path: String,
+    #[serde(rename = "oldString")]
+    old_string: String,
+    #[serde(rename = "newString")]
+    new_string: String,
+    #[serde(rename = "replaceAll", default)]
+    replace_all: bool,
+}
+
+#[async_trait]
+impl Tool for EditTool {
+    fn name(&self) -> &'static str {
+        "edit"
+    }
+    fn description(&self) -> &str {
+        "Exact-string replace within a file under the working directory. \
+         Empty `oldString` creates a new file (refused if exists). \
+         Non-unique match errors unless `replaceAll` is set."
+    }
+    fn schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to the working directory."
+                },
+                "oldString": {
+                    "type": "string",
+                    "description": "Exact string to replace. Empty string means \"create file\"."
+                },
+                "newString": {
+                    "type": "string",
+                    "description": "Replacement string."
+                },
+                "replaceAll": {
+                    "type": "boolean",
+                    "description": "If true, replace all occurrences. Default false (error on multiple)."
+                }
+            },
+            "required": ["path", "oldString", "newString"]
+        })
+    }
+    async fn run(&self, input: &str) -> Result<String> {
+        let parsed: EditInput = serde_json::from_str(input)
+            .context("invalid input to edit: expected {\"path\": string, \"oldString\": string, \"newString\": string, ...}")?;
+        let target_abs = resolve_under_root(&self.root, &parsed.path)?;
+        if parsed.old_string.is_empty() {
+            if target_abs.exists() {
+                return Err(anyhow::anyhow!(
+                    "create patch targets existing file: {}",
+                    parsed.path
+                ));
+            }
+            if let Some(parent) = target_abs.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .with_context(|| "creating parent dirs".to_string())?;
+            }
+            tokio::fs::write(&target_abs, &parsed.new_string)
+                .await
+                .with_context(|| "creating file".to_string())?;
+            return Ok(format!("created file: {}", parsed.path));
+        }
+        let content = tokio::fs::read_to_string(&target_abs)
+            .await
+            .with_context(|| "reading before modify".to_string())?;
+        let matches: Vec<_> = content.match_indices(&parsed.old_string).collect();
+        if matches.is_empty() {
+            return Err(anyhow::anyhow!("oldString not found in file"));
+        }
+        if matches.len() > 1 && !parsed.replace_all {
+            return Err(anyhow::anyhow!(
+                "oldString appears {} times in file; use replaceAll to replace all",
+                matches.len()
+            ));
+        }
+        let replaced = if parsed.replace_all {
+            content.replace(&parsed.old_string, &parsed.new_string)
+        } else {
+            let (idx, _) = matches[0];
+            format!(
+                "{}{}{}",
+                &content[..idx],
+                &parsed.new_string,
+                &content[idx + parsed.old_string.len()..]
+            )
+        };
+        tokio::fs::write(&target_abs, &replaced)
+            .await
+            .with_context(|| "writing modified file".to_string())?;
+        Ok(format!(
+            "{} matches replaced",
+            if parsed.replace_all { matches.len() } else { 1 }
+        ))
+    }
+}
