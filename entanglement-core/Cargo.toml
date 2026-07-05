@@ -22,6 +22,8 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
+diffy = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = "3"

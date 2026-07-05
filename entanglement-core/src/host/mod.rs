@@ -19,12 +19,14 @@ use anyhow::{Context, Result};
 
 use crate::tools::ToolRegistry;
 
+pub mod apply_diff;
 pub mod bash;
 pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod read;
 
+pub use apply_diff::ApplyDiffTool;
 pub use bash::BashTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
@@ -44,6 +46,23 @@ const MAX_RESULTS: usize = 1000;
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Shared helpers
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+fn count_patch_changes(patch_text: &str) -> (usize, usize) {
+    let mut insertions = 0;
+    let mut deletions = 0;
+    for line in patch_text.lines() {
+        let trimmed = line.trim_start_matches(' ');
+        if trimmed.starts_with('+') && !trimmed.starts_with("+++") && !trimmed.starts_with("@@") {
+            insertions += 1;
+        } else if trimmed.starts_with('-')
+            && !trimmed.starts_with("---")
+            && !trimmed.starts_with("@@")
+        {
+            deletions += 1;
+        }
+    }
+    (insertions, deletions)
+}
 
 /// Resolve `rel` against `root`, rejecting paths that escape the root via `..`
 /// (and absolute paths that don't live under it). Lexical only — symlinks can
@@ -113,7 +132,7 @@ pub fn list_files(root: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
 // ┃ host_tools registry
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Build the **root-contained set** (`read`/`glob`/`grep`/`edit`).
+/// Build the **root-contained set** (`read`/`glob`/`grep`/`edit`/`apply_diff`).
 /// Bash is opt-in at the head level (ADR-0010): call [`BashTool::new`] directly and
 /// register it when `ENTANGLEMENT_ENABLE_BASH=1`.
 pub fn host_tools(root: PathBuf) -> ToolRegistry {
@@ -121,7 +140,8 @@ pub fn host_tools(root: PathBuf) -> ToolRegistry {
     reg.register(ReadTool::new(root.clone()));
     reg.register(GlobTool::new(root.clone()));
     reg.register(GrepTool::new(root.clone()));
-    reg.register(EditTool::new(root));
+    reg.register(EditTool::new(root.clone()));
+    reg.register(ApplyDiffTool::new(root));
     reg
 }
 
@@ -232,7 +252,7 @@ mod tests {
         assert!(names.contains(&"glob"), "{names:?}");
         assert!(names.contains(&"grep"), "{names:?}");
         assert!(names.contains(&"edit"), "{names:?}");
-        assert!(!names.contains(&"apply_diff"), "{names:?}");
+        assert!(names.contains(&"apply_diff"), "{names:?}");
         assert!(!names.contains(&"bash"), "{names:?}");
         for s in &specs {
             assert!(
