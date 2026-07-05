@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build run run-json test test-unit test-integration lint fmt check-fmt verify clean check tree
+.PHONY: help build run run-json run-tui test test-unit test-integration lint fmt check-fmt verify clean check tree
 
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -16,6 +16,9 @@ run: build ## build + run the stdio head once (one dummy turn)
 
 run-json: build ## stream one turn as NDJSON events (like opencode run --format json)
 	$(CARGO) run -p entanglement-cli -- run --format json "Hello, Holly!"
+
+run-tui: build ## launch the terminal UI
+	$(CARGO) run -p entanglement-cli -- tui
 
 check: ## cargo check --workspace (fast typecheck)
 	$(CARGO) check --workspace

@@ -9,13 +9,15 @@
 
 mod pipe;
 mod run;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use entanglement_core::{host_tools, BashTool, EngineConfig, Holly, SessionId};
+use entanglement_core::{host_tools, BashTool, EngineConfig, Holly, InMsg, SessionId};
 
 use pipe::pipe;
 use run::run_one;
+use tui::tui;
 
 /// Default models per provider when its `<PROVIDER>_MODEL` env is unset.
 const DEFAULT_ZAI_MODEL: &str = "glm-5.2";
@@ -197,6 +199,14 @@ enum Cmd {
         #[arg(long, default_value = "pipe")]
         session: String,
     },
+    /// Terminal UI mode.
+    Tui {
+        #[arg(long, default_value = "tui")]
+        session: String,
+        /// Agent profile to run under (build | plan | explore | custom).
+        #[arg(long)]
+        agent: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -225,6 +235,17 @@ async fn main() -> Result<()> {
             .await
         }
         Some(Cmd::Pipe { session }) => pipe(&holly, &SessionId::new(session)).await,
+        Some(Cmd::Tui { session, agent }) => {
+            if let Some(a) = agent {
+                holly
+                    .send(InMsg::SetAgent {
+                        session: SessionId::new(session.clone()),
+                        agent: a.to_string(),
+                    })
+                    .await?;
+            }
+            tui(holly).await
+        }
         None => {
             let prompt = cli.prompt.join(" ");
             run_one(&holly, &SessionId::new("run"), None, &prompt, "text").await
