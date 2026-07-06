@@ -98,8 +98,6 @@ impl Theme {
     }
 
     pub fn decorate<'a>(self, mut line: Line<'a>, c: RoleColors) -> Line<'a> {
-        let content_width: u16 = line.spans.iter().map(|s| s.width() as u16).sum();
-
         line.style = line.style.bg(c.bg);
         line.spans.insert(0, Span::raw(" "));
         line.spans.insert(
@@ -109,15 +107,7 @@ impl Theme {
                 Style::default().fg(c.fg).bg(c.bg),
             ),
         );
-
-        let total_width = line.spans.iter().map(|s| s.width() as u16).sum::<u16>();
-        let padding = if content_width > 0 {
-            total_width.saturating_sub(content_width + 2)
-        } else {
-            0
-        };
-
-        line.spans.push(Span::raw(" ".repeat(padding as usize)));
+        line.spans.push(Span::raw(" "));
         line
     }
 }

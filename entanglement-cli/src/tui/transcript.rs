@@ -111,15 +111,32 @@ fn append_transcript<'a>(
         run: &str,
         theme: Theme,
         assistant: RoleColors,
-        _available_width: u16,
+        available_width: u16,
     ) {
         if run.trim().is_empty() {
             return;
         }
         let rendered = markdown_renderer.render(run);
         for line in rendered.lines {
-            let decorated = theme.decorate(line, assistant);
-            lines.push(decorated);
+            let is_table = line
+                .spans
+                .first()
+                .map(|s| s.content.as_ref().starts_with('|'))
+                .unwrap_or(false);
+
+            let is_code =
+                line.spans.len() > 1 && line.spans.iter().skip(1).any(|s| s.style.fg.is_some());
+
+            if is_table || is_code {
+                let decorated = theme.decorate(line, assistant);
+                lines.push(decorated);
+            } else {
+                let wrapped = wrap::wrap_line(line, available_width.saturating_sub(2));
+                for wline in wrapped {
+                    let decorated = theme.decorate(wline, assistant);
+                    lines.push(decorated);
+                }
+            }
         }
     }
 
