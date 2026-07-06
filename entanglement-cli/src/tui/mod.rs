@@ -21,7 +21,7 @@ use ratatui::{
     widgets::Borders,
     Terminal,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -47,34 +47,44 @@ pub async fn tui(holly: Holly, initial_session: SessionId, model_info: ModelInfo
 
     let mut holly_sub = holly.subscribe();
 
+    const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+    let mut last_draw = Instant::now();
+
     loop {
-        terminal.draw(|f| ui::draw(f, &mut app))?;
+        if app.is_dirty() {
+            let wait = FRAME_INTERVAL.saturating_sub(last_draw.elapsed());
+            if !wait.is_zero() {
+                tokio::time::sleep(wait).await;
+            }
+            terminal.draw(|f| ui::draw(f, &mut app))?;
+            last_draw = Instant::now();
+        }
+
+        if app.leader_handler().check_timeout() {
+            app.mark_dirty();
+        }
 
         tokio::select! {
+            biased;
             Some(ev) = event_rx.recv() => {
-                debug!("Received event: {:?}", ev);
                 if handle_event(&mut app, &holly, ev).await? {
                     break;
                 }
             }
-            result = tokio::time::timeout(Duration::from_millis(50), holly_sub.recv()) => {
-                match result {
-                    Ok(Ok(event)) => {
-                        debug!("Received Holly event: {:?}", event);
-                        app.handle_out_event(event);
-                    }
-                    Ok(Err(_)) => {
-                        debug!("Holly subscription closed");
-                        break;
-                    }
-                    Err(_) => {
-                    }
+            recv = tokio::time::timeout(Duration::from_millis(50), holly_sub.recv()) => match recv {
+                Ok(Ok(event)) => app.handle_out_event(event),
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                    tracing::warn!("TUI lagged, skipped {n} engine events");
                 }
-            }
-            _ = tokio::time::sleep(Duration::from_millis(50)), if app.leader_handler().check_timeout() => {
-                app.mark_dirty();
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+                Err(_) => {}
             }
         }
+
+        if drain_terminal_events(&mut event_rx, &mut app, &holly).await? {
+            break;
+        }
+        drain_engine_events(&mut holly_sub, &mut app);
     }
 
     restore_terminal(&mut terminal)?;
@@ -97,6 +107,7 @@ fn spawn_crossterm_task(tx: mpsc::Sender<Event>) {
 }
 
 async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
+    app.mark_dirty();
     match ev {
         Event::Key(key) => {
             if key.kind == KeyEventKind::Press {
@@ -460,4 +471,26 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) 
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+async fn drain_terminal_events(
+    event_rx: &mut mpsc::Receiver<Event>,
+    app: &mut App,
+    holly: &Holly,
+) -> Result<bool> {
+    while let Ok(ev) = event_rx.try_recv() {
+        if handle_event(app, holly, ev).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn drain_engine_events(
+    holly_sub: &mut tokio::sync::broadcast::Receiver<entanglement_core::OutEvent>,
+    app: &mut App,
+) {
+    while let Ok(event) = holly_sub.try_recv() {
+        app.handle_out_event(event);
+    }
 }

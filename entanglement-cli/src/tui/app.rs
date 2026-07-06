@@ -5,6 +5,7 @@ use tui_textarea::{CursorMove, TextArea};
 
 use crate::tui::commands::{Command, CommandPalette};
 use crate::tui::keybindings::{Action, LeaderKeyHandler};
+use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 use crate::tui::sessions::SessionRegistry;
 
@@ -25,6 +26,7 @@ pub struct ProfileInfo {
 pub struct App {
     sessions: SessionRegistry,
     dirty: bool,
+    markdown_renderer: MarkdownRenderer,
 
     // Input state — one keyboard shared across sessions (shell-history semantics).
     input: TextArea<'static>,
@@ -122,6 +124,7 @@ impl App {
         Self {
             sessions: SessionRegistry::new(initial_session),
             dirty: true,
+            markdown_renderer: MarkdownRenderer::new(),
             input,
             history: VecDeque::with_capacity(HISTORY_CAPACITY),
             history_index: None,
@@ -165,6 +168,14 @@ impl App {
 
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn markdown_renderer(&self) -> &MarkdownRenderer {
+        &self.markdown_renderer
     }
 
     pub fn agent(&self) -> &str {
