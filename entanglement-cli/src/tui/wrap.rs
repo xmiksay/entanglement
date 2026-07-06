@@ -1,6 +1,5 @@
 use ratatui::text::{Line, Span};
 
-#[allow(dead_code)]
 pub fn wrap_line(line: Line<'_>, width: u16) -> Vec<Line<'_>> {
     if width == 0 || line.spans.is_empty() {
         return if line.spans.is_empty() {
