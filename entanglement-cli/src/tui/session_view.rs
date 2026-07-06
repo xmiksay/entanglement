@@ -29,6 +29,7 @@ pub struct SessionView {
     task_list: Option<Vec<TaskItem>>,
     last_seen_seq: u64,
     scroll_offset: usize,
+    scroll_offset_x: usize,
     auto_follow: bool,
     approval_mode: ApprovalMode,
     pending_tool_request: Option<(String, String, String)>,
@@ -50,6 +51,7 @@ impl SessionView {
             task_list: None,
             last_seen_seq: 0,
             scroll_offset: 0,
+            scroll_offset_x: 0,
             auto_follow: true,
             approval_mode: ApprovalMode::Normal,
             pending_tool_request: None,
@@ -85,6 +87,10 @@ impl SessionView {
         self.scroll_offset
     }
 
+    pub fn scroll_offset_x(&self) -> usize {
+        self.scroll_offset_x
+    }
+
     pub fn scroll_down(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(lines);
         self.auto_follow = false;
@@ -95,8 +101,19 @@ impl SessionView {
         self.auto_follow = false;
     }
 
+    pub fn scroll_right(&mut self, cols: usize) {
+        self.scroll_offset_x = self.scroll_offset_x.saturating_add(cols);
+        self.auto_follow = false;
+    }
+
+    pub fn scroll_left(&mut self, cols: usize) {
+        self.scroll_offset_x = self.scroll_offset_x.saturating_sub(cols);
+        self.auto_follow = false;
+    }
+
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
+        self.scroll_offset_x = 0;
         self.auto_follow = true;
     }
 
@@ -150,6 +167,7 @@ impl SessionView {
         });
         if self.auto_follow {
             self.scroll_offset = 0;
+            self.scroll_offset_x = 0;
         }
     }
 
@@ -192,6 +210,7 @@ impl SessionView {
                     self.last_seen_seq = seq;
                     if self.auto_follow {
                         self.scroll_offset = 0;
+                        self.scroll_offset_x = 0;
                     }
                     true
                 } else {
@@ -215,6 +234,7 @@ impl SessionView {
                     self.approval_mode = ApprovalMode::WaitingForApproval { request_id };
                     if self.auto_follow {
                         self.scroll_offset = 0;
+                        self.scroll_offset_x = 0;
                     }
                     true
                 } else {
@@ -227,6 +247,7 @@ impl SessionView {
                     self.last_seen_seq = seq;
                     if self.auto_follow {
                         self.scroll_offset = 0;
+                        self.scroll_offset_x = 0;
                     }
                     true
                 } else {
@@ -248,6 +269,7 @@ impl SessionView {
                     self.last_seen_seq = seq;
                     if self.auto_follow {
                         self.scroll_offset = 0;
+                        self.scroll_offset_x = 0;
                     }
                     true
                 } else {
@@ -260,6 +282,7 @@ impl SessionView {
                     self.last_seen_seq = seq;
                     if self.auto_follow {
                         self.scroll_offset = 0;
+                        self.scroll_offset_x = 0;
                     }
                     true
                 } else {

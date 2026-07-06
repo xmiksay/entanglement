@@ -265,6 +265,12 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                         KeyCode::End => {
                             app.scroll_to_bottom();
                         }
+                        KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                            app.scroll_left(10);
+                        }
+                        KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                            app.scroll_right(10);
+                        }
                         KeyCode::Esc => {
                             if app.is_input_multiline() {
                                 app.set_input_multiline(false);
