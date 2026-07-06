@@ -9,6 +9,7 @@ use ratatui::{
 use std::hash::Hasher;
 
 use crate::tui::app::App;
+use crate::tui::keybindings::LeaderState;
 use crate::tui::modals::{self, draw_profile_picker};
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 
@@ -86,6 +87,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     if app.showing_sessions_modal() {
         modals::draw_sessions_modal(f, app);
+    }
+
+    if app.showing_help() {
+        modals::draw_help_dialog(f, app.leader_handler().keymap());
+    }
+
+    if matches!(app.leader_handler().state(), LeaderState::Pending { .. }) {
+        modals::draw_which_key_popup(f, app.leader_handler().keymap());
     }
 
     app.clear_dirty();

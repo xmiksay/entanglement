@@ -1,5 +1,6 @@
 mod app;
 mod event;
+mod keybindings;
 mod modals;
 mod session_view;
 mod sessions;
@@ -65,6 +66,9 @@ pub async fn tui(holly: Holly, initial_session: SessionId) -> Result<()> {
                     }
                 }
             }
+            _ = tokio::time::sleep(Duration::from_millis(50)), if app.leader_handler().check_timeout() => {
+                app.mark_dirty();
+            }
         }
     }
 
@@ -97,6 +101,12 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                 if app.showing_profile_picker() {
                     return handle_profile_picker_event(app, holly, key).await;
                 }
+                if app.showing_help() {
+                    if key.code == KeyCode::Esc {
+                        app.close_help();
+                    }
+                    return Ok(false);
+                }
 
                 let current_mode = app.approval_mode().clone();
 
@@ -106,6 +116,15 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                 {
                     app.toggle_sessions_modal();
                     return Ok(false);
+                }
+
+                if matches!(current_mode, ApprovalMode::Normal) {
+                    if let Some(action) = app.leader_handler().handle_key(&key) {
+                        if app.dispatch_action(action) {
+                            return Ok(true);
+                        }
+                        return Ok(false);
+                    }
                 }
 
                 match current_mode {

@@ -3,6 +3,7 @@ use ratatui::widgets::ListState;
 use std::collections::VecDeque;
 use tui_textarea::{CursorMove, TextArea};
 
+use crate::tui::keybindings::{Action, LeaderKeyHandler};
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 use crate::tui::sessions::SessionRegistry;
 
@@ -29,6 +30,10 @@ pub struct App {
     profile_picker_state: ListState,
     available_profiles: Vec<ProfileInfo>,
     primary_profile_order: Vec<String>,
+
+    // Leader key state
+    leader_handler: LeaderKeyHandler,
+    showing_help: bool,
 }
 
 impl App {
@@ -72,6 +77,8 @@ impl App {
             profile_picker_state,
             available_profiles,
             primary_profile_order,
+            leader_handler: LeaderKeyHandler::new(),
+            showing_help: false,
         }
     }
 
@@ -377,5 +384,63 @@ impl App {
     pub fn select_session_from_modal(&mut self) {
         self.sessions.select_from_modal();
         self.mark_dirty();
+    }
+
+    pub fn leader_handler(&mut self) -> &mut LeaderKeyHandler {
+        &mut self.leader_handler
+    }
+
+    pub fn showing_help(&self) -> bool {
+        self.showing_help
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.showing_help = !self.showing_help;
+        self.mark_dirty();
+    }
+
+    pub fn close_help(&mut self) {
+        self.showing_help = false;
+        self.mark_dirty();
+    }
+
+    pub fn dispatch_action(&mut self, action: Action) -> bool {
+        match action {
+            Action::Quit => true,
+            Action::NewSession => {
+                self.create_session();
+                false
+            }
+            Action::ListSessions => {
+                self.toggle_sessions_modal();
+                false
+            }
+            Action::PickAgent => {
+                self.toggle_profile_picker();
+                false
+            }
+            Action::CycleAgent => {
+                self.cycle_primary_profile();
+                false
+            }
+            Action::PickModel => false,
+            Action::ToggleSidebar => false,
+            Action::OpenEditor => false,
+            Action::Export => false,
+            Action::Interrupt => false,
+            Action::ScrollUp => {
+                self.scroll_up(5);
+                false
+            }
+            Action::ScrollDown => {
+                self.scroll_down(5);
+                false
+            }
+            Action::ShowHelp => {
+                self.toggle_help();
+                false
+            }
+            Action::CommandPalette => false,
+        }
     }
 }

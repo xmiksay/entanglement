@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
+use crate::tui::keybindings::KeyMap;
 use crate::tui::ui::agent_color;
 
 pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
@@ -76,6 +77,77 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
     let area = centered_rect(60, 40, f.area());
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.sessions_modal_state());
+}
+
+pub fn draw_which_key_popup(f: &mut Frame, keymap: &KeyMap) {
+    let bindings = keymap.all_bindings();
+    let mut lines = Vec::new();
+
+    for (sequence, action) in bindings {
+        let key_str = format!("{}", sequence);
+        let description = action.description();
+        lines.push(ListItem::new(Line::from(vec![
+            Span::styled(
+                format!(" {:8} ", key_str),
+                Style::default().fg(Color::Cyan).bold(),
+            ),
+            Span::styled(description, Style::default()),
+        ])));
+    }
+
+    let list = List::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Keybindings (Esc to cancel)"),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let area = centered_rect(80, 60, f.area());
+    f.render_widget(Clear, area);
+    f.render_widget(list, area);
+}
+
+pub fn draw_help_dialog(f: &mut Frame, keymap: &KeyMap) {
+    let bindings = keymap.all_bindings();
+    let mut current_category = String::new();
+    let mut lines = Vec::new();
+
+    for (sequence, action) in bindings {
+        let category = action.category();
+        if category != current_category {
+            if !current_category.is_empty() {
+                lines.push(ListItem::new(Line::from("")));
+            }
+            lines.push(ListItem::new(Line::from(vec![Span::styled(
+                format!("{}:", category),
+                Style::default().fg(Color::Yellow).bold(),
+            )])));
+            current_category = category.to_string();
+        }
+
+        let key_str = format!("{}", sequence);
+        let description = action.description();
+        lines.push(ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("  {:12} ", key_str),
+                Style::default().fg(Color::Cyan).bold(),
+            ),
+            Span::styled(description, Style::default()),
+        ])));
+    }
+
+    let list = List::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Keybindings Help (Esc to close)"),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let area = centered_rect(80, 70, f.area());
+    f.render_widget(Clear, area);
+    f.render_widget(list, area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
