@@ -10,7 +10,9 @@ use ratatui::{
 use std::hash::Hasher;
 
 use crate::tui::app::App;
+use crate::tui::diff::DiffRenderer;
 use crate::tui::keybindings::LeaderState;
+use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::modals::{self, draw_profile_picker};
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 
@@ -182,13 +184,15 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
+    let markdown_renderer = MarkdownRenderer::new();
 
     // Add plan if present
     if let Some(plan) = app.plan() {
         lines.push(Line::from(""));
         lines.push(Line::from("Plan:").bold());
-        for line in plan.lines() {
-            lines.push(Line::from(format!("  {}", line)));
+        let rendered_plan = markdown_renderer.render(plan);
+        for line in rendered_plan.lines {
+            lines.push(line);
         }
         lines.push(Line::from(""));
     }
@@ -211,9 +215,14 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     // Add transcript entries
     for entry in app.transcript() {
         match entry {
-            TranscriptEntry::TextDelta { text, .. } => {
-                for line in text.lines() {
-                    lines.push(Line::from(format!("  {}", line)));
+            TranscriptEntry::TextDelta { text } => {
+                if !text.trim().is_empty() {
+                    let rendered_text = markdown_renderer.render(text);
+                    for line in rendered_text.lines {
+                        if !line.spans.is_empty() {
+                            lines.push(line);
+                        }
+                    }
                 }
             }
             TranscriptEntry::ToolRequest { tool, input, .. } => {
@@ -226,14 +235,27 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
                     lines.push(Line::from(format!("  {}", line)));
                 }
             }
-            TranscriptEntry::ToolOutput { output, .. } => {
+            TranscriptEntry::ToolOutput { output } => {
                 lines.push(Line::from(""));
                 lines.push(Line::from("Tool Output:").fg(Color::DarkGray));
-                for line in output.lines() {
-                    lines.push(Line::from(format!("  {}", line)).fg(Color::DarkGray));
+
+                // Check if this looks like a diff output from an edit tool
+                if output.contains("---")
+                    || output.contains("+++")
+                    || output.contains("-")
+                    || output.contains("+")
+                {
+                    let diff_text = DiffRenderer::render_unified(output);
+                    for line in diff_text.lines {
+                        lines.push(line);
+                    }
+                } else {
+                    for line in output.lines() {
+                        lines.push(Line::from(format!("  {}", line)).fg(Color::DarkGray));
+                    }
                 }
             }
-            TranscriptEntry::Error { message, .. } => {
+            TranscriptEntry::Error { message } => {
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
                     Span::styled("Error: ", Style::default().fg(Color::Red).bold()),
@@ -292,7 +314,7 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     // Handle scrolling
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text)
-        .wrap(Wrap { trim: true })
+        .wrap(Wrap { trim: false })
         .block(Block::new().borders(Borders::ALL))
         .scroll((app.scroll_offset() as u16, 0));
 

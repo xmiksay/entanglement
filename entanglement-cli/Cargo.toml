@@ -26,3 +26,4 @@ crossterm = { workspace = true }
 tui-textarea = { workspace = true }
 pulldown-cmark = { workspace = true }
 syntect = { workspace = true }
+diffy = { workspace = true }

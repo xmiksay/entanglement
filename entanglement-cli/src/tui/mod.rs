@@ -1,7 +1,9 @@
 mod app;
 mod commands;
+mod diff;
 mod event;
 mod keybindings;
+mod markdown;
 mod modals;
 mod session_view;
 mod sessions;
