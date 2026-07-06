@@ -40,16 +40,23 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_status_bar(f, chunks[0], app);
     draw_body(f, chunks[1], app);
 
+    let input_height = if app.is_input_multiline() { 5 } else { 3 };
     let input_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(input_height), Constraint::Length(1)])
+        .split(chunks[2]);
+
+    let sidebar_input_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(app.agent().len() as u16 + 4),
             Constraint::Min(0),
         ])
-        .split(chunks[2]);
+        .split(input_chunks[0]);
 
-    draw_profile_badge(f, input_chunks[0], app);
-    draw_input(f, input_chunks[1], app);
+    draw_profile_badge(f, sidebar_input_chunks[0], app);
+    draw_input(f, sidebar_input_chunks[1], app);
+    draw_input_info(f, input_chunks[1], app);
 
     if let Some(sidebar) = sidebar_area {
         draw_sidebar(f, sidebar, app);
@@ -195,11 +202,19 @@ fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
 fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let approval_mode = app.approval_mode().clone();
     let theme = app.theme();
+    let multiline = app.is_input_multiline();
     let input = app.input();
+
     match &approval_mode {
         ApprovalMode::Normal => {
-            input
-                .set_placeholder_text("Type a message... (Enter to send, Shift+Enter for newline) | Tab: cycle agent | Ctrl+A: agent picker | Ctrl+L: sessions");
+            if multiline {
+                input
+                    .set_placeholder_text("Shift+Enter: add line | Esc: single line | Enter: send");
+            } else {
+                input.set_placeholder_text(
+                    "Type a message... | Shift+Enter: multiline | Enter: send",
+                );
+            }
         }
         ApprovalMode::WaitingForApproval { .. } => {
             input.set_placeholder_text("Waiting for approval... Use [y] approve, [n] reject, [e] edit reason, [Esc] interrupt");
@@ -210,11 +225,36 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     }
     input.set_block(ratatui::widgets::Block::new());
     input.set_style(Style::default().bg(theme.input_bg));
+    input.set_cursor_line_style(Style::default());
     f.render_widget(&*input, area);
 
     if matches!(approval_mode, ApprovalMode::Normal) {
         modals::draw_slash_autocomplete(f, app, area);
     }
+}
+
+fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let model_info = app.model_info();
+
+    let model_display = format!("{}/{}", model_info.provider, model_info.model);
+    let tokens_display = format!("{} in / {} out", app.input_tokens(), app.output_tokens());
+    let help_text = app.help_text();
+
+    let info_line = Line::from(vec![
+        Span::styled(model_display, Style::default().fg(Color::Cyan)),
+        Span::raw(" | "),
+        Span::styled(tokens_display, Style::default().fg(Color::Yellow)),
+        Span::raw(" | "),
+        Span::styled(help_text, Style::default().dim()),
+    ]);
+
+    let info_area = Rect::new(area.x, area.y.saturating_sub(1), area.width, 1);
+
+    let paragraph = Paragraph::new(info_line)
+        .alignment(Alignment::Left)
+        .style(Style::default().bg(theme.input_bg));
+    f.render_widget(paragraph, info_area);
 }
 
 fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {

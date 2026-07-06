@@ -63,6 +63,14 @@ pub struct App {
     theme: Theme,
     profile_colors: HashMap<String, ratatui::style::Color>,
     thinking_since: Option<Instant>,
+
+    // Token usage tracking
+    input_tokens: u64,
+    output_tokens: u64,
+
+    // Input state
+    input_multiline: bool,
+    help_text: String,
 }
 
 impl App {
@@ -155,6 +163,10 @@ impl App {
             theme: Theme::default(),
             profile_colors: HashMap::new(),
             thinking_since: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            input_multiline: false,
+            help_text: "Enter: send | Shift+Enter: multiline | Ctrl+A: agent picker | Ctrl+L: sessions | Ctrl+P: command palette | ?: help".to_string(),
         }
     }
 
@@ -701,6 +713,43 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    pub fn input_tokens(&self) -> u64 {
+        self.input_tokens
+    }
+
+    pub fn output_tokens(&self) -> u64 {
+        self.output_tokens
+    }
+
+    #[allow(dead_code)]
+    pub fn add_input_tokens(&mut self, tokens: u64) {
+        self.input_tokens += tokens;
+    }
+
+    #[allow(dead_code)]
+    pub fn add_output_tokens(&mut self, tokens: u64) {
+        self.output_tokens += tokens;
+    }
+
+    #[allow(dead_code)]
+    pub fn is_input_multiline(&self) -> bool {
+        self.input_multiline
+    }
+
+    pub fn toggle_input_multiline(&mut self) {
+        self.input_multiline = !self.input_multiline;
+        self.mark_dirty();
+    }
+
+    pub fn set_input_multiline(&mut self, multiline: bool) {
+        self.input_multiline = multiline;
+        self.mark_dirty();
+    }
+
+    pub fn help_text(&self) -> &str {
+        &self.help_text
     }
 }
 

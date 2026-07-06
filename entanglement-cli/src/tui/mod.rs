@@ -262,9 +262,18 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                         KeyCode::End => {
                             app.scroll_to_bottom();
                         }
+                        KeyCode::Esc => {
+                            if app.is_input_multiline() {
+                                app.set_input_multiline(false);
+                            }
+                        }
                         KeyCode::Enter => {
                             if key.modifiers.contains(KeyModifiers::SHIFT) {
-                                app.input().insert_newline();
+                                if app.is_input_multiline() {
+                                    app.input().insert_newline();
+                                } else {
+                                    app.toggle_input_multiline();
+                                }
                             } else {
                                 let text = app.take_input_text();
                                 if !text.is_empty() {
