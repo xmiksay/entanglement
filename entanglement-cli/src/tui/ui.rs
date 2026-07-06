@@ -159,6 +159,9 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let user_input = theme.user_input_colors(app.profile_color_for(app.agent()));
+
     if let Some(since) = app.thinking_since() {
         progress::draw_ship_cruise(
             f,
@@ -171,12 +174,14 @@ fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
         let agent_color = app.profile_color_for(app.agent());
 
         let badge = Line::from(vec![
-            Span::styled("[", Style::default().dim()),
+            Span::styled("[", Style::default().fg(Color::DarkGray)),
             Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
-            Span::styled("]", Style::default().dim()),
+            Span::styled("]", Style::default().fg(Color::DarkGray)),
         ]);
 
-        let paragraph = Paragraph::new(badge).alignment(Alignment::Left);
+        let paragraph = Paragraph::new(badge)
+            .alignment(Alignment::Left)
+            .style(Style::default().bg(user_input.bg));
         f.render_widget(paragraph, area);
     }
 }
@@ -281,9 +286,16 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let sidebar_text = Text::from(lines);
+    let theme = app.theme();
+    let sidebar_colors = theme.sidebar_colors();
     let sidebar_paragraph = Paragraph::new(sidebar_text)
         .wrap(Wrap { trim: false })
-        .block(Block::new().borders(Borders::ALL));
+        .block(
+            Block::new()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(sidebar_colors.bg)),
+        )
+        .style(Style::default().bg(sidebar_colors.bg));
 
     f.render_widget(sidebar_paragraph, area);
 }

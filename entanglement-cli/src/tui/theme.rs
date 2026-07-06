@@ -16,10 +16,13 @@ pub(crate) struct Theme {
     pub ship_right: char,
     pub ship_left: char,
     pub trail_glyph: char,
-    pub assistant: RoleColors,
-    pub tool_req: RoleColors,
-    pub tool_out: RoleColors,
-    pub error: RoleColors,
+    pub assistant_fg: Color,
+    pub tool_req_fg: Color,
+    pub tool_out_fg: Color,
+    pub error_fg: Color,
+    pub message_bg: Color,
+    pub sidebar_bg: Color,
+    pub sidebar_fg: Color,
 }
 
 impl Default for Theme {
@@ -29,22 +32,13 @@ impl Default for Theme {
             ship_right: '▸',
             ship_left: '◂',
             trail_glyph: '▮',
-            assistant: RoleColors {
-                fg: Color::Cyan,
-                bg: Color::Rgb(26, 26, 33),
-            },
-            tool_req: RoleColors {
-                fg: Color::Cyan,
-                bg: Color::Rgb(18, 30, 30),
-            },
-            tool_out: RoleColors {
-                fg: Color::Gray,
-                bg: Color::Rgb(22, 22, 22),
-            },
-            error: RoleColors {
-                fg: Color::Red,
-                bg: Color::Rgb(40, 18, 18),
-            },
+            assistant_fg: Color::Cyan,
+            tool_req_fg: Color::Cyan,
+            tool_out_fg: Color::Gray,
+            error_fg: Color::Red,
+            message_bg: Color::Rgb(30, 30, 35),
+            sidebar_bg: Color::Rgb(26, 26, 33),
+            sidebar_fg: Color::Cyan,
         }
     }
 }
@@ -53,7 +47,49 @@ impl Theme {
     pub fn user_colors(self, profile_color: Color) -> RoleColors {
         RoleColors {
             fg: profile_color,
-            bg: darken(profile_color, 0.15),
+            bg: Color::Reset,
+        }
+    }
+
+    pub fn user_input_colors(self, profile_color: Color) -> RoleColors {
+        RoleColors {
+            fg: profile_color,
+            bg: self.sidebar_bg,
+        }
+    }
+
+    pub fn assistant_colors(&self) -> RoleColors {
+        RoleColors {
+            fg: self.assistant_fg,
+            bg: self.message_bg,
+        }
+    }
+
+    pub fn tool_req_colors(&self) -> RoleColors {
+        RoleColors {
+            fg: self.tool_req_fg,
+            bg: self.message_bg,
+        }
+    }
+
+    pub fn tool_out_colors(&self) -> RoleColors {
+        RoleColors {
+            fg: self.tool_out_fg,
+            bg: self.message_bg,
+        }
+    }
+
+    pub fn error_colors(&self) -> RoleColors {
+        RoleColors {
+            fg: self.error_fg,
+            bg: self.message_bg,
+        }
+    }
+
+    pub fn sidebar_colors(&self) -> RoleColors {
+        RoleColors {
+            fg: self.sidebar_fg,
+            bg: self.sidebar_bg,
         }
     }
 
@@ -67,6 +103,7 @@ impl Theme {
                 Style::default().fg(c.fg).bg(c.bg),
             ),
         );
+        line.spans.push(Span::raw(" "));
         line
     }
 }
@@ -151,16 +188,28 @@ mod tests {
         assert_eq!(theme.ship_right, '▸');
         assert_eq!(theme.ship_left, '◂');
         assert_eq!(theme.trail_glyph, '▮');
+        assert_eq!(theme.assistant_fg, Color::Cyan);
+        assert_eq!(theme.message_bg, Color::Rgb(30, 30, 35));
+    }
+
+    #[test]
+    fn test_theme_colors() {
+        let theme = Theme::default();
+        let assistant = theme.assistant_colors();
+        assert_eq!(assistant.fg, Color::Cyan);
+        assert_eq!(assistant.bg, Color::Rgb(30, 30, 35));
     }
 
     #[test]
     fn test_decorate_line() {
         let theme = Theme::default();
         let line = Line::from("test");
-        let decorated = theme.decorate(line, theme.assistant);
-        assert_eq!(decorated.spans.len(), 3);
+        let assistant = theme.assistant_colors();
+        let decorated = theme.decorate(line, assistant);
+        assert_eq!(decorated.spans.len(), 4);
         assert_eq!(decorated.spans[0].content.as_ref(), "▌");
         assert_eq!(decorated.spans[1].content.as_ref(), " ");
         assert_eq!(decorated.spans[2].content.as_ref(), "test");
+        assert_eq!(decorated.spans[3].content.as_ref(), " ");
     }
 }

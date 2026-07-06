@@ -102,16 +102,22 @@ fn append_transcript<'a>(
         markdown_renderer: &'a MarkdownRenderer,
         run: &str,
         theme: Theme,
+        assistant: RoleColors,
     ) {
         if run.trim().is_empty() {
             return;
         }
         let rendered = markdown_renderer.render(run);
         for line in rendered.lines {
-            let decorated = theme.decorate(line, theme.assistant);
+            let decorated = theme.decorate(line, assistant);
             lines.push(decorated);
         }
     }
+
+    let assistant = theme.assistant_colors();
+    let tool_req = theme.tool_req_colors();
+    let tool_out = theme.tool_out_colors();
+    let error = theme.error_colors();
 
     let mut pending_text = String::new();
     for entry in app.transcript() {
@@ -120,7 +126,7 @@ fn append_transcript<'a>(
             continue;
         }
         if !pending_text.is_empty() {
-            render_text_run(lines, markdown_renderer, &pending_text, theme);
+            render_text_run(lines, markdown_renderer, &pending_text, theme, assistant);
             pending_text.clear();
         }
 
@@ -142,16 +148,16 @@ fn append_transcript<'a>(
                     Span::styled("Tool Request: ", Style::default().fg(Color::Cyan)),
                     Span::styled(tool, Style::default().bold()),
                 ]);
-                lines.push(theme.decorate(request_line, theme.tool_req));
+                lines.push(theme.decorate(request_line, tool_req));
                 for line in input.lines() {
                     let content_line = Line::from(format!("  {line}"));
-                    lines.push(theme.decorate(content_line, theme.tool_req));
+                    lines.push(theme.decorate(content_line, tool_req));
                 }
             }
             TranscriptEntry::ToolOutput { output } => {
                 lines.push(Line::from(""));
                 let output_header = Line::from("Tool Output:");
-                lines.push(theme.decorate(output_header, theme.tool_out));
+                lines.push(theme.decorate(output_header, tool_out));
 
                 if output.contains("---")
                     || output.contains("+++")
@@ -165,11 +171,7 @@ fn append_transcript<'a>(
                 } else {
                     for line in output.lines() {
                         let content_line = Line::from(format!("  {line}"));
-                        lines.push(
-                            theme
-                                .decorate(content_line, theme.tool_out)
-                                .fg(Color::DarkGray),
-                        );
+                        lines.push(theme.decorate(content_line, tool_out).fg(Color::DarkGray));
                     }
                 }
             }
@@ -179,7 +181,7 @@ fn append_transcript<'a>(
                     Span::styled("Error: ", Style::default().fg(Color::Red).bold()),
                     Span::styled(message, Style::default().fg(Color::Red)),
                 ]);
-                lines.push(theme.decorate(error_line, theme.error));
+                lines.push(theme.decorate(error_line, error));
             }
             TranscriptEntry::Done => {
                 lines.push(Line::from(""));
@@ -188,7 +190,7 @@ fn append_transcript<'a>(
         }
     }
     if !pending_text.is_empty() {
-        render_text_run(lines, markdown_renderer, &pending_text, theme);
+        render_text_run(lines, markdown_renderer, &pending_text, theme, assistant);
     }
 }
 
@@ -249,8 +251,6 @@ mod tests {
 
         let lines = render_body_lines(&app);
         let user_color = hash_profile_color("build");
-        let theme = app.theme();
-        let expected_user_bg = theme.user_colors(user_color).bg;
 
         let user_lines: Vec<_> = lines
             .iter()
@@ -263,12 +263,14 @@ mod tests {
 
         assert!(!user_lines.is_empty(), "Should have user message lines");
         for line in user_lines {
-            if let Some(bg) = line.style.bg {
-                assert_eq!(
-                    bg, expected_user_bg,
-                    "User message should have profile-colored background"
-                );
-            }
+            assert!(
+                line.spans.iter().any(|s| s.style.fg == Some(user_color)),
+                "User message should have profile color foreground"
+            );
+            assert!(
+                line.style.bg.is_none() || line.style.bg == Some(Color::Reset),
+                "User message should have no background"
+            );
         }
     }
 
@@ -284,7 +286,7 @@ mod tests {
 
         let lines = render_body_lines(&app);
         let theme = app.theme();
-        let expected_bg = theme.assistant.bg;
+        let expected_bg = theme.assistant_colors().bg;
 
         let assistant_lines: Vec<_> = lines
             .iter()
@@ -296,7 +298,7 @@ mod tests {
             if let Some(bg) = line.style.bg {
                 assert_eq!(
                     bg, expected_bg,
-                    "Assistant lines should use theme assistant background"
+                    "Assistant lines should use theme message background"
                 );
             }
         }
