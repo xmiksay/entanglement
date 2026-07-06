@@ -68,12 +68,14 @@ impl MarkdownRenderer {
                             lines.push(Line::from(current_line.clone()));
                             current_line.clear();
                         }
+                        lines.push(Line::from(""));
                     }
                     TagEnd::Heading(_) => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line.clone()));
                             current_line.clear();
                         }
+                        lines.push(Line::from(""));
                     }
                     TagEnd::Emphasis => {}
                     TagEnd::Strong => {}
@@ -83,6 +85,7 @@ impl MarkdownRenderer {
                         for line in highlighted.lines {
                             lines.push(line);
                         }
+                        lines.push(Line::from(""));
                         code_language.clear();
                         code_content.clear();
                     }
@@ -100,7 +103,14 @@ impl MarkdownRenderer {
                     if in_code_block {
                         code_content.push_str(&text);
                     } else {
-                        current_line.push(Span::raw(text.to_string()));
+                        let words: Vec<&str> = text.split_whitespace().collect();
+                        if !words.is_empty() {
+                            let first = words.join(" ");
+                            current_line.push(Span::raw(first));
+                            for word in &words[1..] {
+                                current_line.push(Span::raw(format!(" {}", word)));
+                            }
+                        }
                     }
                 }
                 Event::Code(text) => {
