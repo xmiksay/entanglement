@@ -5,11 +5,29 @@ use tui_textarea::{CursorMove, TextArea};
 
 #[derive(Debug, Clone)]
 pub enum TranscriptEntry {
-    TextDelta { text: String },
-    ToolRequest { tool: String, input: String },
-    ToolOutput { output: String },
-    Error { message: String },
+    TextDelta {
+        text: String,
+    },
+    ToolRequest {
+        tool: String,
+        input: String,
+        #[allow(dead_code)]
+        request_id: String,
+    },
+    ToolOutput {
+        output: String,
+    },
+    Error {
+        message: String,
+    },
     Done,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ApprovalMode {
+    Normal,
+    WaitingForApproval { request_id: String },
+    EnteringRejectReason { request_id: String },
 }
 
 const HISTORY_CAPACITY: usize = 100;
@@ -40,6 +58,10 @@ pub struct App {
     history: VecDeque<String>,
     history_index: Option<usize>,
     history_search_term: Option<String>,
+
+    // Approval state
+    approval_mode: ApprovalMode,
+    pending_tool_request: Option<(String, String, String)>,
 }
 
 impl App {
@@ -63,6 +85,8 @@ impl App {
             history: VecDeque::with_capacity(HISTORY_CAPACITY),
             history_index: None,
             history_search_term: None,
+            approval_mode: ApprovalMode::Normal,
+            pending_tool_request: None,
         }
     }
 
@@ -165,7 +189,7 @@ impl App {
 
         if let Some(idx) = self.history_index {
             if let Some(text) = self.history.get(idx) {
-                self.input = TextArea::from(text.lines().collect::<Vec<_>>());
+                self.input = TextArea::from(text.lines().collect::<Vec<&str>>());
                 self.mark_dirty();
             }
         }
@@ -186,7 +210,7 @@ impl App {
             } else {
                 self.history_index = None;
                 let search_term = self.history_search_term.take().unwrap_or_default();
-                self.input = TextArea::from(search_term.lines().collect::<Vec<_>>());
+                self.input = TextArea::from(search_term.lines().collect::<Vec<&str>>());
                 self.mark_dirty();
             }
         }
@@ -218,6 +242,25 @@ impl App {
         }
     }
 
+    pub fn approval_mode(&self) -> &ApprovalMode {
+        &self.approval_mode
+    }
+
+    pub fn pending_tool_request(&self) -> Option<&(String, String, String)> {
+        self.pending_tool_request.as_ref()
+    }
+
+    pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
+        self.approval_mode = mode;
+        self.mark_dirty();
+    }
+
+    pub fn clear_approval(&mut self) {
+        self.approval_mode = ApprovalMode::Normal;
+        self.pending_tool_request = None;
+        self.mark_dirty();
+    }
+
     pub fn handle_out_event(&mut self, event: OutEvent) {
         debug!("App handling OutEvent: {:?}", event);
 
@@ -225,6 +268,12 @@ impl App {
             OutEvent::Status { session, state } => {
                 if session == self.session_id {
                     self.state = state;
+                    if state == AgentState::Idle
+                        || state == AgentState::Done
+                        || state == AgentState::Error
+                    {
+                        self.clear_approval();
+                    }
                     self.mark_dirty();
                 }
             }
@@ -258,14 +307,21 @@ impl App {
             OutEvent::ToolRequest {
                 session,
                 seq,
+                request_id,
                 tool,
                 input,
-                ..
             } => {
                 if session == self.session_id && seq > self.last_seen_seq {
-                    self.transcript
-                        .push(TranscriptEntry::ToolRequest { tool, input });
+                    self.transcript.push(TranscriptEntry::ToolRequest {
+                        tool: tool.clone(),
+                        input: input.clone(),
+                        request_id: request_id.clone(),
+                    });
                     self.last_seen_seq = seq;
+                    self.pending_tool_request = Some((request_id.clone(), tool, input));
+                    self.approval_mode = ApprovalMode::WaitingForApproval {
+                        request_id: request_id.clone(),
+                    };
                     if self.auto_follow {
                         self.scroll_offset = 0;
                     }
