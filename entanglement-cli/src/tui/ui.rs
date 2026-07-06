@@ -90,30 +90,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
-    let state_color = match app.state() {
-        AgentState::Idle => Color::Green,
-        AgentState::Thinking => Color::Yellow,
-        AgentState::WaitingApproval => Color::Cyan,
-        AgentState::Done => Color::Blue,
-        AgentState::Error => Color::Red,
-    };
-
-    let state_text = match app.state() {
-        AgentState::Idle => "Idle",
-        AgentState::Thinking => "Thinking",
-        AgentState::WaitingApproval => "WaitingApproval",
-        AgentState::Done => "Done",
-        AgentState::Error => "Error",
-    };
-
-    let agent_color = app.profile_color_for(app.agent());
     let sessions = app.sessions();
     let background_waiting = sessions
         .iter()
         .any(|(id, view)| *id != app.active_session_id() && view.is_waiting_approval());
-
-    let model_info = app.model_info();
-    let model_display = format!("{}/{}", model_info.provider, model_info.model);
 
     let mut spans = vec![
         Span::styled("skutter", Style::default().bold()),
@@ -135,16 +115,6 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::Yellow).bold(),
         ));
     }
-    spans.extend([
-        Span::raw(" | "),
-        Span::styled("[", Style::default().dim()),
-        Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
-        Span::styled("]", Style::default().dim()),
-        Span::raw(" | "),
-        Span::styled(model_display, Style::default().fg(Color::Cyan)),
-        Span::raw(" | "),
-        Span::styled(state_text, Style::default().fg(state_color).bold()),
-    ]);
     let status = Line::from(spans);
 
     let paragraph = Paragraph::new(status).alignment(Alignment::Left);
@@ -176,26 +146,56 @@ fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme();
     let user_input = theme.user_input_colors(app.profile_color_for(app.agent()));
 
+    let agent_color = app.profile_color_for(app.agent());
+    let state_color = match app.state() {
+        AgentState::Idle => Color::Green,
+        AgentState::Thinking => Color::Yellow,
+        AgentState::WaitingApproval => Color::Cyan,
+        AgentState::Done => Color::Blue,
+        AgentState::Error => Color::Red,
+    };
+
+    let state_text = match app.state() {
+        AgentState::Idle => "Idle",
+        AgentState::Thinking => "Thinking",
+        AgentState::WaitingApproval => "WaitingApproval",
+        AgentState::Done => "Done",
+        AgentState::Error => "Error",
+    };
+
+    let badge_top = Line::from(vec![Span::styled(
+        app.agent(),
+        Style::default().fg(agent_color).bold(),
+    )]);
+
+    let badge_bottom = Line::from(vec![Span::styled(
+        state_text,
+        Style::default().fg(state_color),
+    )]);
+
+    let vertical_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let top_badge = Paragraph::new(badge_top)
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(user_input.bg));
+    f.render_widget(top_badge, vertical_chunks[0]);
+
     if let Some(since) = app.thinking_since() {
         progress::draw_ship_cruise(
             f,
-            area,
+            vertical_chunks[1],
             since,
             app.profile_color_for(app.agent()),
             app.theme(),
         );
     } else {
-        let agent_color = app.profile_color_for(app.agent());
-
-        let badge = Line::from(vec![Span::styled(
-            app.agent(),
-            Style::default().fg(agent_color).bold(),
-        )]);
-
-        let paragraph = Paragraph::new(badge)
+        let bottom_badge = Paragraph::new(badge_bottom)
             .alignment(Alignment::Center)
             .style(Style::default().bg(user_input.bg));
-        f.render_widget(paragraph, area);
+        f.render_widget(bottom_badge, vertical_chunks[1]);
     }
 }
 
@@ -204,6 +204,13 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = app.theme();
     let multiline = app.is_input_multiline();
     let input = app.input();
+
+    let input_area = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
 
     match &approval_mode {
         ApprovalMode::Normal => {
@@ -226,10 +233,10 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     input.set_block(ratatui::widgets::Block::new());
     input.set_style(Style::default().bg(theme.input_bg));
     input.set_cursor_line_style(Style::default());
-    f.render_widget(&*input, area);
+    f.render_widget(&*input, input_area);
 
     if matches!(approval_mode, ApprovalMode::Normal) {
-        modals::draw_slash_autocomplete(f, app, area);
+        modals::draw_slash_autocomplete(f, app, input_area);
     }
 }
 
@@ -252,7 +259,7 @@ fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     let info_area = Rect::new(area.x, area.y.saturating_sub(1), area.width, 1);
 
     let paragraph = Paragraph::new(info_line)
-        .alignment(Alignment::Left)
+        .alignment(Alignment::Right)
         .style(Style::default().bg(theme.input_bg));
     f.render_widget(paragraph, info_area);
 }
