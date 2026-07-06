@@ -170,6 +170,19 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                         }
                     },
                     ApprovalMode::Normal => match key.code {
+                        KeyCode::Tab => {
+                            if let Some(agent_name) = app.cycle_primary_profile() {
+                                let _ = holly
+                                    .send(entanglement_core::InMsg::SetAgent {
+                                        session: app.session_id().clone(),
+                                        agent: agent_name,
+                                    })
+                                    .await;
+                            }
+                        }
+                        KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
+                            app.toggle_profile_picker();
+                        }
                         KeyCode::Char('q') | KeyCode::Char('c')
                             if key.modifiers == KeyModifiers::CONTROL =>
                         {
@@ -234,19 +247,6 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                             if !app.handle_readline_key(c) {
                                 app.input().input(tui_textarea::Input::from(key));
                             }
-                        }
-                        KeyCode::Tab => {
-                            if let Some(agent_name) = app.cycle_primary_profile() {
-                                let _ = holly
-                                    .send(entanglement_core::InMsg::SetAgent {
-                                        session: app.session_id().clone(),
-                                        agent: agent_name,
-                                    })
-                                    .await;
-                            }
-                        }
-                        KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
-                            app.toggle_profile_picker();
                         }
                         _ => {
                             app.input().input(tui_textarea::Input::from(key));
