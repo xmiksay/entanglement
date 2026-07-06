@@ -42,7 +42,14 @@ impl MarkdownRenderer {
             | Options::ENABLE_FOOTNOTES
             | Options::ENABLE_GFM;
 
-        let parser = Parser::new_ext(markdown, opts);
+        // Some models emit "tables" as pipe rows WITHOUT the GFM separator row
+        // pulldown-cmark requires to parse a `Tag::Table` — those then render
+        // as a plain paragraph (the "table shows as text" bug). Normalize such
+        // loose-table runs into well-formed tables before parsing. Fenced code
+        // is skipped so pasted source isn't mangled.
+        let normalized = normalize_loose_tables(markdown);
+
+        let parser = Parser::new_ext(&normalized, opts);
         let mut state = RenderState::new(self);
         for event in parser {
             state.handle(event);
@@ -86,6 +93,96 @@ impl Default for MarkdownRenderer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Heuristic pre-pass: detect "loose tables" — 2+ consecutive `|`-prefixed rows
+/// with no GFM separator — and inject a separator after the header so pulldown-cmark
+/// parses them as `Tag::Table` (otherwise they render as a plain paragraph).
+///
+/// Fenced code blocks (``` / ~~~) are skipped so source containing pipes isn't
+/// rewritten. Conservative by design: a row must start with `|`, and a run is
+/// only patched when it lacks any separator line — well-formed tables pass through
+/// untouched.
+fn normalize_loose_tables(markdown: &str) -> String {
+    let lines: Vec<&str> = markdown.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut in_fence = false;
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+
+        if is_fence_line(line) {
+            in_fence = !in_fence;
+            out.push(line.to_string());
+            i += 1;
+            continue;
+        }
+        if in_fence {
+            out.push(line.to_string());
+            i += 1;
+            continue;
+        }
+
+        if is_table_row_line(line) {
+            let start = i;
+            while i < lines.len() && is_table_row_line(lines[i]) {
+                i += 1;
+            }
+            let run = &lines[start..i];
+            let has_sep = run.iter().any(|l| is_separator_line(l));
+            if !has_sep && run.len() >= 2 {
+                let ncols = count_cells(run[0]);
+                out.push(run[0].to_string());
+                out.push(make_separator(ncols));
+                out.extend(run[1..].iter().map(|l| l.to_string()));
+            } else {
+                out.extend(run.iter().map(|l| l.to_string()));
+            }
+        } else {
+            out.push(line.to_string());
+            i += 1;
+        }
+    }
+
+    out.join("\n")
+}
+
+fn is_fence_line(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("```") || t.starts_with("~~~")
+}
+
+fn is_table_row_line(line: &str) -> bool {
+    let t = line.trim();
+    if !t.starts_with('|') {
+        return false;
+    }
+    // needs at least one more pipe (cell delimiter or trailing) past the opener
+    t[1..].contains('|')
+}
+
+fn is_separator_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return false;
+    }
+    // strip pipes, then the remainder must be only [-:space] with at least one dash
+    let body: String = t.chars().filter(|&c| c != '|').collect();
+    let body = body.trim();
+    body.chars().any(|c| c == '-') && body.chars().all(|c| c == '-' || c == ':' || c == ' ')
+}
+
+fn count_cells(row: &str) -> usize {
+    row.trim().matches('|').count().saturating_sub(1).max(1)
+}
+
+fn make_separator(ncols: usize) -> String {
+    let mut s = String::from("|");
+    for _ in 0..ncols.max(1) {
+        s.push_str(" --- |");
+    }
+    s
 }
 
 #[cfg(test)]
@@ -241,5 +338,50 @@ mod tests {
             .collect();
         assert!(joined.contains('▌'), "expected a blockquote bar: {joined}");
         assert!(joined.contains("quoted text"));
+    }
+
+    #[test]
+    fn loose_table_without_separator_still_renders_as_grid() {
+        // Regression: many models emit tables WITHOUT the GFM `| --- |` row.
+        // pulldown-cmark then parses it as a paragraph ("just text"). The
+        // normalize pre-pass must inject a separator so it becomes a real table.
+        let renderer = MarkdownRenderer::new();
+        let md = "| name | role |\n| holly | engine |\n| tui | head |";
+        let result = renderer.render(md);
+
+        let has_separator = result.lines.iter().any(|l| {
+            let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
+            s.contains("---")
+        });
+        assert!(
+            has_separator,
+            "loose table should have been normalized into a grid with a separator"
+        );
+        let joined: String = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(joined.contains("holly") && joined.contains("engine"));
+    }
+
+    #[test]
+    fn loose_table_inside_code_block_is_left_alone() {
+        // Pipes inside fenced code must NOT be rewritten as a table.
+        let renderer = MarkdownRenderer::new();
+        let md = "```\n| a | b |\n| 1 | 2 |\n```";
+        let result = renderer.render(md);
+        let joined: String = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !joined.contains("---"),
+            "fenced code should not be normalized into a table: {joined}"
+        );
+        assert!(joined.contains("| 1 | 2 |"));
     }
 }

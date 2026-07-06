@@ -187,3 +187,52 @@ fn append_transcript<'a>(
         render_text_run(lines, markdown_renderer, &pending_text);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::app::App;
+    use entanglement_core::{OutEvent, SessionId};
+
+    #[test]
+    fn streamed_table_renders_as_grid_after_all_deltas() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new(sid.clone());
+        // A table streamed token-by-token, exactly as the engine emits it.
+        let deltas = [
+            "| name | role |\n",
+            "| --- | --- |\n",
+            "| holly | engine |\n",
+            "| tui | head |\n",
+        ];
+        for (i, d) in deltas.iter().enumerate() {
+            app.handle_out_event(OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: i as u64 + 1,
+                text: (*d).to_string(),
+            });
+        }
+
+        let lines = render_body_lines(&app);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+            .replace('\n', "\\n");
+        println!("STREAMED TABLE LINES:");
+        for l in &lines {
+            let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
+            println!("  {s:?}");
+        }
+        // The completed table must produce a dashed separator row.
+        let has_grid = lines.iter().any(|l| {
+            let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
+            s.contains("---")
+        });
+        assert!(
+            has_grid,
+            "streamed table did not render as a grid: {joined}"
+        );
+    }
+}
