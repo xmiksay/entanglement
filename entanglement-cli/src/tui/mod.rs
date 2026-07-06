@@ -5,8 +5,10 @@ mod event;
 mod keybindings;
 mod markdown;
 mod modals;
+mod progress;
 mod session_view;
 mod sessions;
+mod theme;
 mod transcript;
 mod ui;
 
@@ -52,6 +54,7 @@ pub async fn tui(holly: Holly, initial_session: SessionId, model_info: ModelInfo
     let mut last_draw = Instant::now();
 
     loop {
+        app.tick_thinking();
         if app.is_dirty() {
             let wait = FRAME_INTERVAL.saturating_sub(last_draw.elapsed());
             if !wait.is_zero() {
@@ -258,6 +261,13 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                         }
                         KeyCode::End => {
                             app.scroll_to_bottom();
+                        }
+                        KeyCode::Esc => {
+                            if app.is_input_multiline() {
+                                app.set_input_multiline(false);
+                            } else {
+                                return Ok(true);
+                            }
                         }
                         KeyCode::Enter => {
                             if key.modifiers.contains(KeyModifiers::SHIFT) {

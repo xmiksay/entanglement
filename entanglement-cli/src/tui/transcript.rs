@@ -8,17 +8,13 @@ use crate::tui::app::App;
 use crate::tui::diff::DiffRenderer;
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
+use crate::tui::theme::{RoleColors, Theme};
 
-/// Build every `Line` for the main chat panel: plan snapshot, task list, the
-/// streamed transcript (user prompts + assistant deltas + tool I/O), and the
-/// inline approval card when a tool call is pending.
-///
-/// Extracted from `ui::draw_body` so `ui.rs` stays under the 400-line cap and
-/// the transcript rendering rules (markdown coalescing, blank-line fidelity,
-/// user-message styling) live in one place.
 pub(crate) fn render_body_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
     let markdown_renderer = app.markdown_renderer();
+    let theme = app.theme();
+    let user = theme.user_colors(app.profile_color_for(app.agent()));
 
     if let Some(plan) = app.plan() {
         lines.push(Line::from(""));
@@ -44,7 +40,7 @@ pub(crate) fn render_body_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
         lines.push(Line::from(""));
     }
 
-    append_transcript(&mut lines, markdown_renderer, app);
+    append_transcript(&mut lines, markdown_renderer, app, theme, user);
 
     if let ApprovalMode::WaitingForApproval { .. } = app.approval_mode() {
         if let Some((_, tool, input)) = app.pending_tool_request() {
@@ -98,63 +94,87 @@ fn append_transcript<'a>(
     lines: &mut Vec<Line<'a>>,
     markdown_renderer: &'a MarkdownRenderer,
     app: &'a App,
+    theme: Theme,
+    user: RoleColors,
 ) {
-    fn render_text_run<'b>(
-        lines: &mut Vec<Line<'b>>,
-        markdown_renderer: &'b MarkdownRenderer,
+    fn render_text_run<'a>(
+        lines: &mut Vec<Line<'a>>,
+        markdown_renderer: &'a MarkdownRenderer,
         run: &str,
+        theme: Theme,
+        assistant: RoleColors,
     ) {
         if run.trim().is_empty() {
             return;
         }
         let rendered = markdown_renderer.render(run);
-        // Keep every line the renderer emits, including the blank separators
-        // between blocks — dropping them (the old `!spans.is_empty()` filter)
-        // collapsed the spacing markdown relies on for readability.
         for line in rendered.lines {
-            lines.push(line);
+            let decorated = theme.decorate(line, assistant);
+            lines.push(decorated);
         }
     }
 
+    let assistant = theme.assistant_colors();
+    let tool_req = theme.tool_req_colors();
+    let tool_out = theme.tool_out_colors();
+    let error = theme.error_colors();
+
     let mut pending_text = String::new();
+    let mut last_was_text_delta = false;
     for entry in app.transcript() {
         if let TranscriptEntry::TextDelta { text } = entry {
             pending_text.push_str(text);
+            last_was_text_delta = true;
             continue;
         }
         if !pending_text.is_empty() {
-            render_text_run(lines, markdown_renderer, &pending_text);
+            if !last_was_text_delta && !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            render_text_run(lines, markdown_renderer, &pending_text, theme, assistant);
             pending_text.clear();
         }
+        last_was_text_delta = false;
 
         match entry {
             TranscriptEntry::TextDelta { .. } => unreachable!(),
-            TranscriptEntry::User { text } => {
-                lines.push(Line::from(""));
+            TranscriptEntry::User { text, pending } => {
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
                 for line in text.lines() {
-                    lines.push(Line::from(vec![
-                        Span::styled("> ", Style::default().fg(Color::Blue).bold()),
-                        Span::styled(line.to_string(), Style::default().fg(Color::Blue)),
-                    ]));
+                    let user_line = Line::from(vec![Span::styled(
+                        line.to_string(),
+                        if *pending {
+                            Style::default().fg(user.fg).dim()
+                        } else {
+                            Style::default().fg(user.fg)
+                        },
+                    )]);
+                    lines.push(theme.decorate(user_line, user));
                 }
             }
             TranscriptEntry::ToolRequest { tool, input, .. } => {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                let request_line = Line::from(vec![
                     Span::styled("Tool Request: ", Style::default().fg(Color::Cyan)),
                     Span::styled(tool, Style::default().bold()),
-                ]));
+                ]);
+                lines.push(theme.decorate(request_line, tool_req));
                 for line in input.lines() {
-                    lines.push(Line::from(format!("  {line}")));
+                    let content_line = Line::from(format!("  {line}"));
+                    lines.push(theme.decorate(content_line, tool_req));
                 }
             }
             TranscriptEntry::ToolOutput { output } => {
-                lines.push(Line::from(""));
-                lines.push(Line::from("Tool Output:").fg(Color::DarkGray));
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                let output_header = Line::from("Tool Output:");
+                lines.push(theme.decorate(output_header, tool_out));
 
-                // Diff outputs get first-class rendering; everything else is
-                // dimmed verbatim. The `+`/`-` heuristic is loose on purpose —
-                // `DiffRenderer::render_unified` falls back to plain text.
                 if output.contains("---")
                     || output.contains("+++")
                     || output.contains("-")
@@ -166,16 +186,20 @@ fn append_transcript<'a>(
                     }
                 } else {
                     for line in output.lines() {
-                        lines.push(Line::from(format!("  {line}")).fg(Color::DarkGray));
+                        let content_line = Line::from(format!("  {line}"));
+                        lines.push(theme.decorate(content_line, tool_out).fg(Color::DarkGray));
                     }
                 }
             }
             TranscriptEntry::Error { message } => {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                let error_line = Line::from(vec![
                     Span::styled("Error: ", Style::default().fg(Color::Red).bold()),
                     Span::styled(message, Style::default().fg(Color::Red)),
-                ]));
+                ]);
+                lines.push(theme.decorate(error_line, error));
             }
             TranscriptEntry::Done => {
                 lines.push(Line::from(""));
@@ -184,7 +208,7 @@ fn append_transcript<'a>(
         }
     }
     if !pending_text.is_empty() {
-        render_text_run(lines, markdown_renderer, &pending_text);
+        render_text_run(lines, markdown_renderer, &pending_text, theme, assistant);
     }
 }
 
@@ -192,6 +216,7 @@ fn append_transcript<'a>(
 mod tests {
     use super::*;
     use crate::tui::app::App;
+    use crate::tui::theme::hash_profile_color;
     use entanglement_core::{OutEvent, SessionId};
 
     #[test]
@@ -234,5 +259,66 @@ mod tests {
             has_grid,
             "streamed table did not render as a grid: {joined}"
         );
+    }
+
+    #[test]
+    fn user_messages_use_profile_colors() {
+        let sid = SessionId::new("test");
+        let mut app = App::new(sid.clone());
+        app.record_user_message("Hello world".to_string());
+
+        let lines = render_body_lines(&app);
+        let user_color = hash_profile_color("build");
+        let theme = app.theme();
+        let expected_user_bg = theme.user_colors(user_color).bg;
+
+        let user_lines: Vec<_> = lines
+            .iter()
+            .filter(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.contains("Hello") || s.content.contains("world"))
+            })
+            .collect();
+
+        assert!(!user_lines.is_empty(), "Should have user message lines");
+        for line in user_lines {
+            if let Some(bg) = line.style.bg {
+                assert_eq!(
+                    bg, expected_user_bg,
+                    "User message should have message background"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn assistant_lines_use_theme_colors() {
+        let sid = SessionId::new("test");
+        let mut app = App::new(sid.clone());
+        app.handle_out_event(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: 1,
+            text: "Response".to_string(),
+        });
+
+        let lines = render_body_lines(&app);
+        let theme = app.theme();
+        let expected_bg = theme.assistant_colors().bg;
+
+        let assistant_lines: Vec<_> = lines
+            .iter()
+            .filter(|l| l.spans.iter().any(|s| s.content.contains("Response")))
+            .collect();
+
+        assert!(!assistant_lines.is_empty(), "Should have assistant lines");
+        for line in assistant_lines {
+            if let Some(bg) = line.style.bg {
+                assert_eq!(
+                    bg, expected_bg,
+                    "Assistant lines should use theme message background"
+                );
+            }
+        }
     }
 }

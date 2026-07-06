@@ -7,54 +7,12 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-use std::hash::Hasher;
 
 use crate::tui::app::App;
 use crate::tui::keybindings::LeaderState;
 use crate::tui::modals::{self, draw_model_picker, draw_profile_picker};
+use crate::tui::progress;
 use crate::tui::session_view::ApprovalMode;
-
-pub(crate) fn agent_color(name: &str) -> Color {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(name, &mut hasher);
-    let hash = hasher.finish();
-
-    let hue = (hash % 360) as u8;
-    let saturation = 70;
-    let value = 90;
-
-    hsv_to_rgb(hue, saturation, value)
-}
-
-fn hsv_to_rgb(h: u8, s: u8, v: u8) -> Color {
-    let h = h as f64 / 360.0;
-    let s = s as f64 / 100.0;
-    let v = v as f64 / 100.0;
-
-    let c = v * s;
-    let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
-    let m = v - c;
-
-    let (r, g, b) = if h < 1.0 / 6.0 {
-        (c, x, 0.0)
-    } else if h < 2.0 / 6.0 {
-        (x, c, 0.0)
-    } else if h < 3.0 / 6.0 {
-        (0.0, c, x)
-    } else if h < 4.0 / 6.0 {
-        (0.0, x, c)
-    } else if h < 5.0 / 6.0 {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-
-    Color::Rgb(
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
-    )
-}
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -75,14 +33,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(4),
+            Constraint::Length(1),
         ])
         .split(main_area);
 
     draw_status_bar(f, chunks[0], app);
     draw_body(f, chunks[1], app);
 
-    let input_chunks = Layout::default()
+    let input_horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(app.agent().len() as u16 + 4),
@@ -90,8 +49,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ])
         .split(chunks[2]);
 
-    draw_profile_badge(f, input_chunks[0], app);
-    draw_input(f, input_chunks[1], app);
+    draw_profile_badge(f, input_horizontal_chunks[0], app);
+    draw_input(f, input_horizontal_chunks[1], app);
+
+    draw_input_info(f, chunks[3], app);
 
     if let Some(sidebar) = sidebar_area {
         draw_sidebar(f, sidebar, app);
@@ -125,30 +86,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
-    let state_color = match app.state() {
-        AgentState::Idle => Color::Green,
-        AgentState::Thinking => Color::Yellow,
-        AgentState::WaitingApproval => Color::Cyan,
-        AgentState::Done => Color::Blue,
-        AgentState::Error => Color::Red,
-    };
-
-    let state_text = match app.state() {
-        AgentState::Idle => "Idle",
-        AgentState::Thinking => "Thinking",
-        AgentState::WaitingApproval => "WaitingApproval",
-        AgentState::Done => "Done",
-        AgentState::Error => "Error",
-    };
-
-    let agent_color = agent_color(app.agent());
     let sessions = app.sessions();
     let background_waiting = sessions
         .iter()
         .any(|(id, view)| *id != app.active_session_id() && view.is_waiting_approval());
-
-    let model_info = app.model_info();
-    let model_display = format!("{}/{}", model_info.provider, model_info.model);
 
     let mut spans = vec![
         Span::styled("skutter", Style::default().bold()),
@@ -170,61 +111,98 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::Yellow).bold(),
         ));
     }
-    spans.extend([
-        Span::raw(" | "),
-        Span::styled("[", Style::default().dim()),
-        Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
-        Span::styled("]", Style::default().dim()),
-        Span::raw(" | "),
-        Span::styled(model_display, Style::default().fg(Color::Cyan)),
-        Span::raw(" | "),
-        Span::styled(state_text, Style::default().fg(state_color).bold()),
-    ]);
     let status = Line::from(spans);
 
-    let paragraph = Paragraph::new(status)
-        .alignment(Alignment::Left)
-        .block(Block::new().borders(Borders::BOTTOM));
+    let paragraph = Paragraph::new(status).alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
 }
 
 fn draw_body(f: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let margin = theme.chat_margin_left;
+
+    let inner_area = if margin > 0 && area.width > margin {
+        Rect::new(area.x + margin, area.y, area.width - margin, area.height)
+    } else {
+        area
+    };
+
     let lines = crate::tui::transcript::render_body_lines(app);
 
-    // Handle scrolling
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text)
         .wrap(Wrap { trim: false })
-        .block(Block::new().borders(Borders::ALL))
         .scroll((app.scroll_offset() as u16, 0));
 
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, inner_area);
 }
 
 fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
-    let agent_color = agent_color(app.agent());
+    let theme = app.theme();
+    let user_input = theme.user_input_colors(app.profile_color_for(app.agent()));
 
-    let badge = Line::from(vec![
-        Span::styled("[", Style::default().dim()),
-        Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
-        Span::styled("]", Style::default().dim()),
-    ]);
+    let agent_color = app.profile_color_for(app.agent());
+    let state_color = match app.state() {
+        AgentState::Idle => Color::Green,
+        AgentState::Thinking => Color::Yellow,
+        AgentState::WaitingApproval => Color::Cyan,
+        AgentState::Done => Color::Blue,
+        AgentState::Error => Color::Red,
+    };
 
-    let paragraph = Paragraph::new(badge)
-        .alignment(Alignment::Left)
-        .block(Block::new().borders(Borders::ALL));
+    let state_text = match app.state() {
+        AgentState::Idle => "Idle",
+        AgentState::Thinking => "Thinking",
+        AgentState::WaitingApproval => "WaitingApproval",
+        AgentState::Done => "Done",
+        AgentState::Error => "Error",
+    };
 
-    f.render_widget(paragraph, area);
+    let badge_top = Line::from(vec![Span::styled(
+        app.agent(),
+        Style::default().fg(agent_color).bold(),
+    )]);
+
+    let badge_bottom = Line::from(vec![Span::styled(
+        state_text,
+        Style::default().fg(state_color),
+    )]);
+
+    let vertical_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let top_badge = Paragraph::new(badge_top)
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(user_input.bg));
+    f.render_widget(top_badge, vertical_chunks[0]);
+
+    if let Some(since) = app.thinking_since() {
+        progress::draw_ship_cruise(
+            f,
+            vertical_chunks[1],
+            since,
+            app.profile_color_for(app.agent()),
+            app.theme(),
+        );
+    } else {
+        let bottom_badge = Paragraph::new(badge_bottom)
+            .alignment(Alignment::Center)
+            .style(Style::default().bg(user_input.bg));
+        f.render_widget(bottom_badge, vertical_chunks[1]);
+    }
 }
 
 fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let approval_mode = app.approval_mode().clone();
+    let theme = app.theme();
     let input = app.input();
+
     match &approval_mode {
         ApprovalMode::Normal => {
-            input
-                .set_placeholder_text("Type a message... (Enter to send, Shift+Enter for newline) | Tab: cycle agent | Ctrl+A: agent picker | Ctrl+L: sessions");
+            input.set_placeholder_text("Type a message... | Shift+Enter: newline | Enter: send");
         }
         ApprovalMode::WaitingForApproval { .. } => {
             input.set_placeholder_text("Waiting for approval... Use [y] approve, [n] reject, [e] edit reason, [Esc] interrupt");
@@ -233,12 +211,33 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
             input.set_placeholder_text("Enter rejection reason... (Enter to send, Esc to cancel)");
         }
     }
-    input.set_block(ratatui::widgets::Block::new().borders(Borders::TOP));
+    input.set_block(ratatui::widgets::Block::new());
+    input.set_style(Style::default().bg(theme.input_bg));
+    input.set_cursor_line_style(Style::default());
     f.render_widget(&*input, area);
 
     if matches!(approval_mode, ApprovalMode::Normal) {
         modals::draw_slash_autocomplete(f, app, area);
     }
+}
+
+fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
+    let model_info = app.model_info();
+
+    let model_display = format!("{}/{}", model_info.provider, model_info.model);
+    let tokens_display = format!("{} in / {} out", app.input_tokens(), app.output_tokens());
+    let help_text = app.help_text();
+
+    let info_line = Line::from(vec![
+        Span::styled(model_display, Style::default().fg(Color::Cyan)),
+        Span::raw(" | "),
+        Span::styled(tokens_display, Style::default().fg(Color::Yellow)),
+        Span::raw(" | "),
+        Span::styled(help_text, Style::default().dim()),
+    ]);
+
+    let paragraph = Paragraph::new(info_line).alignment(Alignment::Right);
+    f.render_widget(paragraph, area);
 }
 
 fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
@@ -272,7 +271,7 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
                 },
             ),
             Span::raw(" "),
-            Span::styled(agent, Style::default().fg(agent_color(agent))),
+            Span::styled(agent, Style::default().fg(app.profile_color_for(agent))),
             Span::raw(" "),
             Span::styled(state, Style::default().dim()),
         ]);
@@ -318,9 +317,16 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let sidebar_text = Text::from(lines);
+    let theme = app.theme();
+    let sidebar_colors = theme.sidebar_colors();
     let sidebar_paragraph = Paragraph::new(sidebar_text)
         .wrap(Wrap { trim: false })
-        .block(Block::new().borders(Borders::ALL));
+        .block(
+            Block::new()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(sidebar_colors.bg)),
+        )
+        .style(Style::default().bg(sidebar_colors.bg));
 
     f.render_widget(sidebar_paragraph, area);
 }
@@ -352,12 +358,11 @@ mod tests {
         terminal.draw(|f| draw_body(f, f.area(), &app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
 
-        // Exclude the bordered frame (top/bottom rows, left/right columns)
-        // drawn by Block::Borders::ALL — it's non-blank regardless of content
-        // and would otherwise mask the bug.
-        let non_empty_rows = (1..9)
+        // With Borders::ALL removed, all rows are content. Assistant text now
+        // gets decorated (accent bar + space), which uses 2 columns per line.
+        let non_empty_rows = (0..10)
             .filter(|&y| {
-                (1..29)
+                (0..30)
                     .map(|x| buffer[(x, y)].symbol())
                     .any(|sym| !sym.trim().is_empty())
             })
@@ -366,7 +371,7 @@ mod tests {
         // 10 short words at width 30 wrap onto a couple of rows; rendering
         // each streamed delta as its own markdown blob put one word per row.
         assert!(
-            non_empty_rows <= 3,
+            non_empty_rows <= 4,
             "expected a wrapped paragraph, got {non_empty_rows} non-empty rows"
         );
     }
