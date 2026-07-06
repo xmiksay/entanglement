@@ -25,11 +25,12 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
 
+use crate::ModelInfo;
 use app::App;
 use event::Event;
 use session_view::ApprovalMode;
 
-pub async fn tui(holly: Holly, initial_session: SessionId) -> Result<()> {
+pub async fn tui(holly: Holly, initial_session: SessionId, model_info: ModelInfo) -> Result<()> {
     setup_panic_handler();
 
     let mut stdout = std::io::stdout();
@@ -42,6 +43,7 @@ pub async fn tui(holly: Holly, initial_session: SessionId) -> Result<()> {
     spawn_crossterm_task(event_tx.clone());
 
     let mut app = App::new(initial_session);
+    app.set_model_info(model_info.provider, model_info.model);
 
     let mut holly_sub = holly.subscribe();
 
@@ -103,6 +105,9 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                 }
                 if app.showing_profile_picker() {
                     return handle_profile_picker_event(app, holly, key).await;
+                }
+                if app.showing_model_picker() {
+                    return handle_model_picker_event(app, key).await;
                 }
                 if app.showing_help() {
                     if key.code == KeyCode::Esc {
@@ -350,6 +355,28 @@ async fn handle_profile_picker_event(app: &mut App, holly: &Holly, key: KeyEvent
         }
         KeyCode::Up | KeyCode::Char('k') => {
             app.profile_picker_prev();
+        }
+        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+async fn handle_model_picker_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_model_picker();
+        }
+        KeyCode::Enter => {
+            app.close_model_picker();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.model_picker_next();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.model_picker_prev();
         }
         KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);

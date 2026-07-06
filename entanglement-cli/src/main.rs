@@ -19,6 +19,12 @@ use pipe::pipe;
 use run::run_one;
 use tui::tui;
 
+#[derive(Debug, Clone)]
+pub struct ModelInfo {
+    pub provider: String,
+    pub model: String,
+}
+
 /// Default models per provider when its `<PROVIDER>_MODEL` env is unset.
 const DEFAULT_ZAI_MODEL: &str = "glm-5.2";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-4o";
@@ -44,8 +50,8 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 /// box. `bash` is opt-in: set `ENTANGLEMENT_ENABLE_BASH=1` to register
 /// `BashTool` — it runs unsandboxed with the engine's full privileges
 /// (ADR-0009 / ADR-0010).
-fn build_config() -> EngineConfig {
-    let mut cfg = select_provider();
+fn build_config() -> (EngineConfig, ModelInfo) {
+    let (mut cfg, model_info) = select_provider();
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut tools = host_tools(root.clone());
     if std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1") {
@@ -56,24 +62,26 @@ fn build_config() -> EngineConfig {
         );
     }
     cfg.tools = tools;
-    cfg
+    (cfg, model_info)
 }
 
-fn select_provider() -> EngineConfig {
+fn select_provider() -> (EngineConfig, ModelInfo) {
     match std::env::var("ENTANGLEMENT_PROVIDER").ok().as_deref() {
-        Some("zai") => require(
-            zai_config(),
-            "ENTANGLEMENT_PROVIDER=zai requires ZAI_API_KEY",
-        ),
-        Some("openai") => require(
-            openai_config(),
-            "ENTANGLEMENT_PROVIDER=openai requires OPENAI_API_KEY",
-        ),
+        Some("zai") => {
+            let (cfg, info) = zai_config().expect("ENTANGLEMENT_PROVIDER=zai requires ZAI_API_KEY");
+            (cfg, info)
+        }
+        Some("openai") => {
+            let (cfg, info) =
+                openai_config().expect("ENTANGLEMENT_PROVIDER=openai requires OPENAI_API_KEY");
+            (cfg, info)
+        }
         Some("ollama") => ollama_config(),
-        Some("anthropic") => require(
-            anthropic_config(),
-            "ENTANGLEMENT_PROVIDER=anthropic requires ANTHROPIC_API_KEY",
-        ),
+        Some("anthropic") => {
+            let (cfg, info) = anthropic_config()
+                .expect("ENTANGLEMENT_PROVIDER=anthropic requires ANTHROPIC_API_KEY");
+            (cfg, info)
+        }
         Some(other) => {
             eprintln!(
                 "skutter: unknown ENTANGLEMENT_PROVIDER='{other}' (expected: zai|openai|ollama|anthropic)"
@@ -81,20 +89,26 @@ fn select_provider() -> EngineConfig {
             std::process::exit(2);
         }
         None => {
-            if let Some(c) = zai_config() {
-                return c;
+            if let Some((c, info)) = zai_config() {
+                return (c, info);
             }
-            if let Some(c) = openai_config() {
-                return c;
+            if let Some((c, info)) = openai_config() {
+                return (c, info);
             }
-            if let Some(c) = anthropic_config() {
-                return c;
+            if let Some((c, info)) = anthropic_config() {
+                return (c, info);
             }
             eprintln!(
                 "skutter: no provider key set — using DummyLlm \
                  (set ENTANGLEMENT_PROVIDER=ollama for local, or a *_API_KEY)"
             );
-            EngineConfig::default()
+            (
+                EngineConfig::default(),
+                ModelInfo {
+                    provider: "dummy".to_string(),
+                    model: "dummy".to_string(),
+                },
+            )
         }
     }
 }
@@ -106,60 +120,74 @@ fn env_nonempty(name: &str) -> Option<String> {
     }
 }
 
-fn require(cfg: Option<EngineConfig>, msg: &str) -> EngineConfig {
-    match cfg {
-        Some(c) => c,
-        None => {
-            eprintln!("skutter: {msg}");
-            std::process::exit(2);
-        }
-    }
-}
-
-fn zai_config() -> Option<EngineConfig> {
+fn zai_config() -> Option<(EngineConfig, ModelInfo)> {
     let key = env_nonempty("ZAI_API_KEY")?;
     let model = std::env::var("ZAI_MODEL").unwrap_or_else(|_| DEFAULT_ZAI_MODEL.to_string());
     let base = std::env::var("ZAI_API_BASE")
         .unwrap_or_else(|_| entanglement_llm::ZAI_CODING_PLAN_BASE.to_string());
     eprintln!("skutter: provider=zai model={model} base={base}");
-    Some(EngineConfig {
-        llm_factory: entanglement_llm::openai_factory(base, Some(key), model),
-        ..EngineConfig::default()
-    })
+    Some((
+        EngineConfig {
+            llm_factory: entanglement_llm::openai_factory(base, Some(key), model.clone()),
+            ..EngineConfig::default()
+        },
+        ModelInfo {
+            provider: "zai".to_string(),
+            model,
+        },
+    ))
 }
 
-fn openai_config() -> Option<EngineConfig> {
+fn openai_config() -> Option<(EngineConfig, ModelInfo)> {
     let key = env_nonempty("OPENAI_API_KEY")?;
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_OPENAI_MODEL.to_string());
     let base = std::env::var("OPENAI_API_BASE")
         .unwrap_or_else(|_| entanglement_llm::OPENAI_BASE.to_string());
     eprintln!("skutter: provider=openai model={model} base={base}");
-    Some(EngineConfig {
-        llm_factory: entanglement_llm::openai_factory(base, Some(key), model),
-        ..EngineConfig::default()
-    })
+    Some((
+        EngineConfig {
+            llm_factory: entanglement_llm::openai_factory(base, Some(key), model.clone()),
+            ..EngineConfig::default()
+        },
+        ModelInfo {
+            provider: "openai".to_string(),
+            model,
+        },
+    ))
 }
 
-fn ollama_config() -> EngineConfig {
+fn ollama_config() -> (EngineConfig, ModelInfo) {
     let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| DEFAULT_OLLAMA_MODEL.to_string());
     let base =
         std::env::var("OLLAMA_BASE").unwrap_or_else(|_| entanglement_llm::OLLAMA_BASE.to_string());
     eprintln!("skutter: provider=ollama model={model} base={base}");
-    EngineConfig {
-        llm_factory: entanglement_llm::openai_factory(base, None, model),
-        ..EngineConfig::default()
-    }
+    (
+        EngineConfig {
+            llm_factory: entanglement_llm::openai_factory(base, None, model.clone()),
+            ..EngineConfig::default()
+        },
+        ModelInfo {
+            provider: "ollama".to_string(),
+            model,
+        },
+    )
 }
 
-fn anthropic_config() -> Option<EngineConfig> {
+fn anthropic_config() -> Option<(EngineConfig, ModelInfo)> {
     let key = env_nonempty("ANTHROPIC_API_KEY")?;
     let model =
         std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| DEFAULT_ANTHROPIC_MODEL.to_string());
     eprintln!("skutter: provider=anthropic model={model}");
-    Some(EngineConfig {
-        llm_factory: entanglement_llm::anthropic_factory(key, model),
-        ..EngineConfig::default()
-    })
+    Some((
+        EngineConfig {
+            llm_factory: entanglement_llm::anthropic_factory(key, model.clone()),
+            ..EngineConfig::default()
+        },
+        ModelInfo {
+            provider: "anthropic".to_string(),
+            model,
+        },
+    ))
 }
 
 #[derive(Parser)]
@@ -215,7 +243,8 @@ async fn main() -> Result<()> {
     let filter = if cli.verbose { "debug" } else { "warn" };
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    let holly = Holly::spawn(build_config());
+    let (config, model_info) = build_config();
+    let holly = Holly::spawn(config);
 
     match cli.cmd {
         Some(Cmd::Run {
@@ -245,7 +274,7 @@ async fn main() -> Result<()> {
                     })
                     .await?;
             }
-            tui(holly, session_id).await
+            tui(holly, session_id, model_info).await
         }
         None => {
             let prompt = cli.prompt.join(" ");
