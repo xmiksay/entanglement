@@ -120,20 +120,30 @@ fn append_transcript<'a>(
     let error = theme.error_colors();
 
     let mut pending_text = String::new();
+    let mut last_was_text_delta = false;
     for entry in app.transcript() {
         if let TranscriptEntry::TextDelta { text } = entry {
             pending_text.push_str(text);
+            last_was_text_delta = true;
             continue;
         }
         if !pending_text.is_empty() {
+            if lines.is_empty() || !last_was_text_delta {
+                lines.push(Line::from(""));
+                lines.push(Line::from(""));
+            }
             render_text_run(lines, markdown_renderer, &pending_text, theme, assistant);
             pending_text.clear();
+            lines.push(Line::from(""));
         }
+        last_was_text_delta = false;
 
         match entry {
             TranscriptEntry::TextDelta { .. } => unreachable!(),
             TranscriptEntry::User { text } => {
-                lines.push(Line::from(""));
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
                 for line in text.lines() {
                     let user_line = Line::from(vec![Span::styled(
                         line.to_string(),
@@ -143,7 +153,9 @@ fn append_transcript<'a>(
                 }
             }
             TranscriptEntry::ToolRequest { tool, input, .. } => {
-                lines.push(Line::from(""));
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
                 let request_line = Line::from(vec![
                     Span::styled("Tool Request: ", Style::default().fg(Color::Cyan)),
                     Span::styled(tool, Style::default().bold()),
@@ -155,7 +167,9 @@ fn append_transcript<'a>(
                 }
             }
             TranscriptEntry::ToolOutput { output } => {
-                lines.push(Line::from(""));
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
                 let output_header = Line::from("Tool Output:");
                 lines.push(theme.decorate(output_header, tool_out));
 
@@ -176,7 +190,9 @@ fn append_transcript<'a>(
                 }
             }
             TranscriptEntry::Error { message } => {
-                lines.push(Line::from(""));
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
                 let error_line = Line::from(vec![
                     Span::styled("Error: ", Style::default().fg(Color::Red).bold()),
                     Span::styled(message, Style::default().fg(Color::Red)),

@@ -34,6 +34,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(4),
+            Constraint::Length(1),
         ])
         .split(main_area);
 
@@ -48,14 +49,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ])
         .split(chunks[2]);
 
-    let input_vertical_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(input_horizontal_chunks[1]);
-
     draw_profile_badge(f, input_horizontal_chunks[0], app);
-    draw_input(f, input_vertical_chunks[0], app);
-    draw_input_info(f, input_vertical_chunks[1], app);
+    draw_input(f, input_horizontal_chunks[1], app);
+
+    draw_input_info(f, chunks[3], app);
 
     if let Some(sidebar) = sidebar_area {
         draw_sidebar(f, sidebar, app);
@@ -240,7 +237,6 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
-    let theme = app.theme();
     let model_info = app.model_info();
 
     let model_display = format!("{}/{}", model_info.provider, model_info.model);
@@ -255,9 +251,7 @@ fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(help_text, Style::default().dim()),
     ]);
 
-    let paragraph = Paragraph::new(info_line)
-        .alignment(Alignment::Right)
-        .style(Style::default().bg(theme.input_bg));
+    let paragraph = Paragraph::new(info_line).alignment(Alignment::Right);
     f.render_widget(paragraph, area);
 }
 
