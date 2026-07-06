@@ -66,7 +66,17 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_status_bar(f, chunks[0], app);
     draw_body(f, chunks[1], app);
-    draw_input(f, chunks[2], app);
+
+    let input_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(app.agent().len() as u16 + 4),
+            Constraint::Min(0),
+        ])
+        .split(chunks[2]);
+
+    draw_profile_badge(f, input_chunks[0], app);
+    draw_input(f, input_chunks[1], app);
 
     if app.showing_profile_picker() {
         draw_profile_picker(f, app);
@@ -231,6 +241,22 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
         .wrap(Wrap { trim: true })
         .block(Block::new().borders(Borders::ALL))
         .scroll((app.scroll_offset() as u16, 0));
+
+    f.render_widget(paragraph, area);
+}
+
+fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
+    let agent_color = agent_color(app.agent());
+
+    let badge = Line::from(vec![
+        Span::styled("[", Style::default().dim()),
+        Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
+        Span::styled("]", Style::default().dim()),
+    ]);
+
+    let paragraph = Paragraph::new(badge)
+        .alignment(Alignment::Left)
+        .block(Block::new().borders(Borders::ALL));
 
     f.render_widget(paragraph, area);
 }
