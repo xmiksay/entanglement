@@ -11,6 +11,12 @@ use crate::tui::sessions::SessionRegistry;
 const HISTORY_CAPACITY: usize = 100;
 
 #[derive(Clone)]
+pub struct ModelInfo {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Clone)]
 pub struct ProfileInfo {
     pub name: String,
     pub description: String,
@@ -31,6 +37,12 @@ pub struct App {
     profile_picker_state: ListState,
     available_profiles: Vec<ProfileInfo>,
     primary_profile_order: Vec<String>,
+
+    // Model picker state — catalog is global, selection is display-only (requires restart)
+    showing_model_picker: bool,
+    model_picker_state: ListState,
+    available_models: Vec<(String, Vec<String>)>,
+    model_info: ModelInfo,
 
     // Leader key state
     leader_handler: LeaderKeyHandler,
@@ -74,6 +86,39 @@ impl App {
         let mut profile_picker_state = ListState::default();
         profile_picker_state.select(Some(0));
 
+        let available_models = vec![
+            (
+                "zai".to_string(),
+                vec!["glm-5.2".to_string(), "glm-4.7".to_string()],
+            ),
+            (
+                "openai".to_string(),
+                vec![
+                    "gpt-4o".to_string(),
+                    "gpt-4-turbo".to_string(),
+                    "gpt-3.5-turbo".to_string(),
+                ],
+            ),
+            (
+                "ollama".to_string(),
+                vec![
+                    "llama3.1".to_string(),
+                    "llama3".to_string(),
+                    "mistral".to_string(),
+                ],
+            ),
+            (
+                "anthropic".to_string(),
+                vec![
+                    "claude-sonnet-4-5".to_string(),
+                    "claude-3-5-sonnet-20241022".to_string(),
+                ],
+            ),
+        ];
+
+        let mut model_picker_state = ListState::default();
+        model_picker_state.select(Some(0));
+
         Self {
             sessions: SessionRegistry::new(initial_session),
             dirty: true,
@@ -85,6 +130,13 @@ impl App {
             profile_picker_state,
             available_profiles,
             primary_profile_order,
+            showing_model_picker: false,
+            model_picker_state,
+            available_models,
+            model_info: ModelInfo {
+                provider: "dummy".to_string(),
+                model: "dummy".to_string(),
+            },
             leader_handler: LeaderKeyHandler::new(),
             showing_help: false,
             command_palette: CommandPalette::new(),
@@ -450,6 +502,70 @@ impl App {
         self.mark_dirty();
     }
 
+    pub fn showing_model_picker(&self) -> bool {
+        self.showing_model_picker
+    }
+
+    pub fn model_picker_state(&mut self) -> &mut ListState {
+        &mut self.model_picker_state
+    }
+
+    pub fn available_models(&self) -> &[(String, Vec<String>)] {
+        &self.available_models
+    }
+
+    pub fn model_info(&self) -> &ModelInfo {
+        &self.model_info
+    }
+
+    pub fn set_model_info(&mut self, provider: String, model: String) {
+        self.model_info = ModelInfo { provider, model };
+        self.mark_dirty();
+    }
+
+    pub fn toggle_model_picker(&mut self) {
+        self.showing_model_picker = !self.showing_model_picker;
+        if self.showing_model_picker {
+            self.model_picker_state.select(Some(0));
+        }
+        self.mark_dirty();
+    }
+
+    pub fn close_model_picker(&mut self) {
+        self.showing_model_picker = false;
+        self.mark_dirty();
+    }
+
+    pub fn model_picker_next(&mut self) {
+        let total_models: usize = self
+            .available_models
+            .iter()
+            .map(|(_, models)| models.len())
+            .sum();
+        if let Some(selected) = self.model_picker_state.selected() {
+            let next = (selected + 1) % total_models;
+            self.model_picker_state.select(Some(next));
+            self.mark_dirty();
+        }
+    }
+
+    pub fn model_picker_prev(&mut self) {
+        let total_models: usize = self
+            .available_models
+            .iter()
+            .map(|(_, models)| models.len())
+            .sum();
+        if let Some(selected) = self.model_picker_state.selected() {
+            let prev = if selected == 0 {
+                total_models - 1
+            } else {
+                selected - 1
+            };
+            self.model_picker_state.select(Some(prev));
+            self.mark_dirty();
+        }
+    }
+
     pub fn execute_command(&mut self, command: Command) -> bool {
         match command {
             Command::Help => {
@@ -492,7 +608,10 @@ impl App {
                 self.cycle_primary_profile();
                 false
             }
-            Action::PickModel => false,
+            Action::PickModel => {
+                self.toggle_model_picker();
+                false
+            }
             Action::ToggleSidebar => {
                 self.toggle_sidebar();
                 false

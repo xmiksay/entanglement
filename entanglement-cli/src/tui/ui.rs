@@ -13,7 +13,7 @@ use crate::tui::app::App;
 use crate::tui::diff::DiffRenderer;
 use crate::tui::keybindings::LeaderState;
 use crate::tui::markdown::MarkdownRenderer;
-use crate::tui::modals::{self, draw_profile_picker};
+use crate::tui::modals::{self, draw_model_picker, draw_profile_picker};
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 
 pub(crate) fn agent_color(name: &str) -> Color {
@@ -103,6 +103,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_profile_picker(f, app);
     }
 
+    if app.showing_model_picker() {
+        draw_model_picker(f, app);
+    }
+
     if app.showing_sessions_modal() {
         modals::draw_sessions_modal(f, app);
     }
@@ -145,6 +149,9 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .any(|(id, view)| *id != app.active_session_id() && view.is_waiting_approval());
 
+    let model_info = app.model_info();
+    let model_display = format!("{}/{}", model_info.provider, model_info.model);
+
     let mut spans = vec![
         Span::styled("skutter", Style::default().bold()),
         Span::raw(" | "),
@@ -170,6 +177,8 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("[", Style::default().dim()),
         Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
         Span::styled("]", Style::default().dim()),
+        Span::raw(" | "),
+        Span::styled(model_display, Style::default().fg(Color::Cyan)),
         Span::raw(" | "),
         Span::styled(state_text, Style::default().fg(state_color).bold()),
     ]);
