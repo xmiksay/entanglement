@@ -1,5 +1,8 @@
 mod app;
 mod event;
+mod modals;
+mod session_view;
+mod sessions;
 mod ui;
 
 use anyhow::Result;
@@ -18,10 +21,11 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use app::{App, ApprovalMode};
+use app::App;
 use event::Event;
+use session_view::ApprovalMode;
 
-pub async fn tui(holly: Holly) -> Result<()> {
+pub async fn tui(holly: Holly, initial_session: SessionId) -> Result<()> {
     setup_panic_handler();
 
     let mut stdout = std::io::stdout();
@@ -33,8 +37,7 @@ pub async fn tui(holly: Holly) -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::channel(128);
     spawn_crossterm_task(event_tx.clone());
 
-    let session_id = SessionId::new("tui");
-    let mut app = App::new(holly.clone(), session_id);
+    let mut app = App::new(initial_session);
 
     let mut holly_sub = holly.subscribe();
 
@@ -52,9 +55,7 @@ pub async fn tui(holly: Holly) -> Result<()> {
                 match result {
                     Ok(Ok(event)) => {
                         debug!("Received Holly event: {:?}", event);
-                        if event.session() == app.session_id() {
-                            app.handle_out_event(event);
-                        }
+                        app.handle_out_event(event);
                     }
                     Ok(Err(_)) => {
                         debug!("Holly subscription closed");
@@ -90,17 +91,29 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
     match ev {
         Event::Key(key) => {
             if key.kind == KeyEventKind::Press {
+                if app.showing_sessions_modal() {
+                    return handle_sessions_modal_event(app, key).await;
+                }
                 if app.showing_profile_picker() {
                     return handle_profile_picker_event(app, holly, key).await;
                 }
 
                 let current_mode = app.approval_mode().clone();
+
+                if key.code == KeyCode::Char('l')
+                    && key.modifiers == KeyModifiers::CONTROL
+                    && !matches!(current_mode, ApprovalMode::EnteringRejectReason { .. })
+                {
+                    app.toggle_sessions_modal();
+                    return Ok(false);
+                }
+
                 match current_mode {
                     ApprovalMode::WaitingForApproval { request_id } => match key.code {
                         KeyCode::Char('y') => {
                             let _ = holly
                                 .send(InMsg::Approve {
-                                    session: app.session_id().clone(),
+                                    session: app.active_session_id().clone(),
                                     request_id: request_id.clone(),
                                 })
                                 .await;
@@ -135,9 +148,10 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                         KeyCode::Esc => {
                             let _ = holly
                                 .send(InMsg::Stop {
-                                    session: app.session_id().clone(),
+                                    session: app.active_session_id().clone(),
                                 })
                                 .await;
+                            app.note_stop_sent();
                             app.clear_approval();
                         }
                         _ => {}
@@ -158,7 +172,7 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                             let text = app.take_input_text();
                             let _ = holly
                                 .send(InMsg::Reject {
-                                    session: app.session_id().clone(),
+                                    session: app.active_session_id().clone(),
                                     request_id: request_id.clone(),
                                     reason: if text.is_empty() { None } else { Some(text) },
                                 })
@@ -174,7 +188,7 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                             if let Some(agent_name) = app.cycle_primary_profile() {
                                 let _ = holly
                                     .send(entanglement_core::InMsg::SetAgent {
-                                        session: app.session_id().clone(),
+                                        session: app.active_session_id().clone(),
                                         agent: agent_name,
                                     })
                                     .await;
@@ -188,7 +202,6 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                         {
                             return Ok(true);
                         }
-                        KeyCode::Char('q') => return Ok(true),
                         KeyCode::PageUp => {
                             app.scroll_up(5);
                         }
@@ -204,9 +217,10 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                             } else {
                                 let text = app.take_input_text();
                                 if !text.is_empty() {
+                                    app.note_prompt_sent();
                                     if let Err(e) = holly
                                         .send(InMsg::Prompt {
-                                            session: app.session_id().clone(),
+                                            session: app.active_session_id().clone(),
                                             text,
                                         })
                                         .await
@@ -284,7 +298,7 @@ async fn handle_profile_picker_event(app: &mut App, holly: &Holly, key: KeyEvent
             if let Some(agent_name) = app.select_profile_picker() {
                 let _ = holly
                     .send(entanglement_core::InMsg::SetAgent {
-                        session: app.session_id().clone(),
+                        session: app.active_session_id().clone(),
                         agent: agent_name,
                     })
                     .await;
@@ -295,6 +309,32 @@ async fn handle_profile_picker_event(app: &mut App, holly: &Holly, key: KeyEvent
         }
         KeyCode::Up | KeyCode::Char('k') => {
             app.profile_picker_prev();
+        }
+        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+async fn handle_sessions_modal_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_sessions_modal();
+        }
+        KeyCode::Enter => {
+            app.select_session_from_modal();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.sessions_modal_next();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.sessions_modal_prev();
+        }
+        KeyCode::Char('n') => {
+            app.create_session();
+            app.close_sessions_modal();
         }
         KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);

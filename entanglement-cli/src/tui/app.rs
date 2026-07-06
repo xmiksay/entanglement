@@ -1,35 +1,10 @@
-use entanglement_core::{AgentState, Holly, OutEvent, SessionId, TaskItem};
+use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
 use ratatui::widgets::ListState;
 use std::collections::VecDeque;
-use tracing::debug;
 use tui_textarea::{CursorMove, TextArea};
 
-#[derive(Debug, Clone)]
-pub enum TranscriptEntry {
-    TextDelta {
-        text: String,
-    },
-    ToolRequest {
-        tool: String,
-        input: String,
-        #[allow(dead_code)]
-        request_id: String,
-    },
-    ToolOutput {
-        output: String,
-    },
-    Error {
-        message: String,
-    },
-    Done,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ApprovalMode {
-    Normal,
-    WaitingForApproval { request_id: String },
-    EnteringRejectReason { request_id: String },
-}
+use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
+use crate::tui::sessions::SessionRegistry;
 
 const HISTORY_CAPACITY: usize = 100;
 
@@ -40,37 +15,16 @@ pub struct ProfileInfo {
 }
 
 pub struct App {
-    _holly: Holly,
-    session_id: SessionId,
+    sessions: SessionRegistry,
     dirty: bool,
 
-    // Status bar state
-    agent: String,
-    state: AgentState,
-
-    // Content state
-    transcript: Vec<TranscriptEntry>,
-    plan: Option<String>,
-    task_list: Option<Vec<TaskItem>>,
-
-    // Per-session last-seen seq (for deduping)
-    last_seen_seq: u64,
-
-    // Scrolling state
-    scroll_offset: usize,
-    auto_follow: bool,
-
-    // Input state
+    // Input state — one keyboard shared across sessions (shell-history semantics).
     input: TextArea<'static>,
     history: VecDeque<String>,
     history_index: Option<usize>,
     history_search_term: Option<String>,
 
-    // Approval state
-    approval_mode: ApprovalMode,
-    pending_tool_request: Option<(String, String, String)>,
-
-    // Profile picker state
+    // Profile picker state — catalog is global, selection acts on the active session.
     showing_profile_picker: bool,
     profile_picker_state: ListState,
     available_profiles: Vec<ProfileInfo>,
@@ -78,7 +32,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(holly: Holly, session_id: SessionId) -> Self {
+    pub fn new(initial_session: SessionId) -> Self {
         let mut input = TextArea::default();
         input.set_placeholder_text("Type a message... (Enter to send, Shift+Enter for newline)");
 
@@ -108,23 +62,12 @@ impl App {
         profile_picker_state.select(Some(0));
 
         Self {
-            _holly: holly,
-            session_id,
+            sessions: SessionRegistry::new(initial_session),
             dirty: true,
-            agent: "build".to_string(),
-            state: AgentState::Idle,
-            transcript: Vec::new(),
-            plan: None,
-            task_list: None,
-            last_seen_seq: 0,
-            scroll_offset: 0,
-            auto_follow: true,
             input,
             history: VecDeque::with_capacity(HISTORY_CAPACITY),
             history_index: None,
             history_search_term: None,
-            approval_mode: ApprovalMode::Normal,
-            pending_tool_request: None,
             showing_profile_picker: false,
             profile_picker_state,
             available_profiles,
@@ -132,8 +75,18 @@ impl App {
         }
     }
 
-    pub fn session_id(&self) -> &SessionId {
-        &self.session_id
+    pub fn active_session_id(&self) -> &SessionId {
+        self.sessions.active_id()
+    }
+
+    pub fn create_session(&mut self) -> SessionId {
+        let id = self.sessions.create();
+        self.mark_dirty();
+        id
+    }
+
+    pub fn sessions(&self) -> Vec<(&SessionId, &crate::tui::session_view::SessionView)> {
+        self.sessions.all()
     }
 
     pub fn clear_dirty(&mut self) {
@@ -145,44 +98,41 @@ impl App {
     }
 
     pub fn agent(&self) -> &str {
-        &self.agent
+        self.sessions.active_view().agent()
     }
 
     pub fn state(&self) -> AgentState {
-        self.state
+        self.sessions.active_view().state()
     }
 
     pub fn transcript(&self) -> &[TranscriptEntry] {
-        &self.transcript
+        self.sessions.active_view().transcript()
     }
 
     pub fn plan(&self) -> Option<&String> {
-        self.plan.as_ref()
+        self.sessions.active_view().plan()
     }
 
     pub fn task_list(&self) -> Option<&[TaskItem]> {
-        self.task_list.as_deref()
+        self.sessions.active_view().task_list()
     }
 
     pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset
+        self.sessions.active_view().scroll_offset()
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_add(lines);
-        self.auto_follow = false;
+        self.sessions.active_view_mut().scroll_down(lines);
         self.mark_dirty();
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
-        self.auto_follow = false;
+        self.sessions.active_view_mut().scroll_up(lines);
         self.mark_dirty();
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = 0;
-        self.auto_follow = true;
+        self.sessions.active_view_mut().scroll_to_bottom();
         self.mark_dirty();
     }
 
@@ -285,141 +235,37 @@ impl App {
     }
 
     pub fn approval_mode(&self) -> &ApprovalMode {
-        &self.approval_mode
+        self.sessions.active_view().approval_mode()
     }
 
     pub fn pending_tool_request(&self) -> Option<&(String, String, String)> {
-        self.pending_tool_request.as_ref()
+        self.sessions.active_view().pending_tool_request()
     }
 
     pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
-        self.approval_mode = mode;
+        self.sessions.active_view_mut().set_approval_mode(mode);
         self.mark_dirty();
     }
 
     pub fn clear_approval(&mut self) {
-        self.approval_mode = ApprovalMode::Normal;
-        self.pending_tool_request = None;
+        self.sessions.active_view_mut().clear_approval();
         self.mark_dirty();
     }
 
-    pub fn handle_out_event(&mut self, event: OutEvent) {
-        debug!("App handling OutEvent: {:?}", event);
+    /// Call right after sending `InMsg::Stop` for the active session.
+    pub fn note_stop_sent(&mut self) {
+        self.sessions.active_view_mut().note_stop_sent();
+    }
 
-        match event {
-            OutEvent::Status { session, state } => {
-                if session == self.session_id {
-                    self.state = state;
-                    if state == AgentState::Idle
-                        || state == AgentState::Done
-                        || state == AgentState::Error
-                    {
-                        self.clear_approval();
-                    }
-                    self.mark_dirty();
-                }
-            }
-            OutEvent::AgentChanged { session, agent } => {
-                if session == self.session_id {
-                    self.agent = agent;
-                    self.mark_dirty();
-                }
-            }
-            OutEvent::Plan {
-                session,
-                seq,
-                content,
-            } => {
-                if session == self.session_id && seq > self.last_seen_seq {
-                    self.plan = Some(content);
-                    self.last_seen_seq = seq;
-                    self.mark_dirty();
-                }
-            }
-            OutEvent::TextDelta { session, seq, text } => {
-                if session == self.session_id && seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::TextDelta { text });
-                    self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                    }
-                    self.mark_dirty();
-                }
-            }
-            OutEvent::ToolRequest {
-                session,
-                seq,
-                request_id,
-                tool,
-                input,
-            } => {
-                if session == self.session_id && seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::ToolRequest {
-                        tool: tool.clone(),
-                        input: input.clone(),
-                        request_id: request_id.clone(),
-                    });
-                    self.last_seen_seq = seq;
-                    self.pending_tool_request = Some((request_id.clone(), tool, input));
-                    self.approval_mode = ApprovalMode::WaitingForApproval {
-                        request_id: request_id.clone(),
-                    };
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                    }
-                    self.mark_dirty();
-                }
-            }
-            OutEvent::ToolOutput {
-                session,
-                seq,
-                output,
-                ..
-            } => {
-                if session == self.session_id && seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::ToolOutput { output });
-                    self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                    }
-                    self.mark_dirty();
-                }
-            }
-            OutEvent::TaskList {
-                session,
-                seq,
-                tasks,
-            } => {
-                if session == self.session_id && seq > self.last_seen_seq {
-                    self.task_list = Some(tasks);
-                    self.last_seen_seq = seq;
-                    self.mark_dirty();
-                }
-            }
-            OutEvent::Error {
-                session,
-                seq,
-                message,
-            } => {
-                if session == self.session_id && seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::Error { message });
-                    self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                    }
-                    self.mark_dirty();
-                }
-            }
-            OutEvent::Done { session, seq } => {
-                if session == self.session_id && seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::Done);
-                    self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                    }
-                    self.mark_dirty();
-                }
-            }
+    /// Call right before sending `InMsg::Prompt` for the active session.
+    pub fn note_prompt_sent(&mut self) {
+        self.sessions.active_view_mut().note_prompt_sent();
+    }
+
+    pub fn handle_out_event(&mut self, event: OutEvent) {
+        tracing::debug!("App handling OutEvent: {:?}", event);
+        if self.sessions.handle_out_event(event) {
+            self.mark_dirty();
         }
     }
 
@@ -438,10 +284,11 @@ impl App {
     pub fn toggle_profile_picker(&mut self) {
         self.showing_profile_picker = !self.showing_profile_picker;
         if self.showing_profile_picker {
+            let agent = self.sessions.active_view().agent().to_string();
             let current_index = self
                 .available_profiles
                 .iter()
-                .position(|p| p.name == self.agent)
+                .position(|p| p.name == agent)
                 .unwrap_or(0);
             self.profile_picker_state.select(Some(current_index));
         }
@@ -486,15 +333,49 @@ impl App {
     }
 
     pub fn cycle_primary_profile(&mut self) -> Option<String> {
+        let current = self.sessions.active_view().agent().to_string();
         let current_index = self
             .primary_profile_order
             .iter()
-            .position(|name| name == &self.agent)
+            .position(|name| name == &current)
             .unwrap_or(0);
         let next_index = (current_index + 1) % self.primary_profile_order.len();
         let new_agent = self.primary_profile_order[next_index].clone();
-        self.agent = new_agent.clone();
+        self.sessions.active_view_mut().set_agent(new_agent.clone());
         self.mark_dirty();
         Some(new_agent)
+    }
+
+    pub fn showing_sessions_modal(&self) -> bool {
+        self.sessions.showing_modal()
+    }
+
+    pub fn toggle_sessions_modal(&mut self) {
+        self.sessions.toggle_modal();
+        self.mark_dirty();
+    }
+
+    pub fn close_sessions_modal(&mut self) {
+        self.sessions.close_modal();
+        self.mark_dirty();
+    }
+
+    pub fn sessions_modal_state(&mut self) -> &mut ListState {
+        self.sessions.modal_state()
+    }
+
+    pub fn sessions_modal_next(&mut self) {
+        self.sessions.modal_next();
+        self.mark_dirty();
+    }
+
+    pub fn sessions_modal_prev(&mut self) {
+        self.sessions.modal_prev();
+        self.mark_dirty();
+    }
+
+    pub fn select_session_from_modal(&mut self) {
+        self.sessions.select_from_modal();
+        self.mark_dirty();
     }
 }
