@@ -314,7 +314,7 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     // Handle scrolling
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text)
-        .wrap(Wrap { trim: true })
+        .wrap(Wrap { trim: false })
         .block(Block::new().borders(Borders::ALL))
         .scroll((app.scroll_offset() as u16, 0));
 
