@@ -1,6 +1,7 @@
 use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
 use ratatui::widgets::ListState;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::time::Instant;
 use tui_textarea::{CursorMove, TextArea};
 
 use crate::tui::commands::{Command, CommandPalette};
@@ -8,6 +9,7 @@ use crate::tui::keybindings::{Action, LeaderKeyHandler};
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 use crate::tui::sessions::SessionRegistry;
+use crate::tui::theme::Theme;
 
 const HISTORY_CAPACITY: usize = 100;
 
@@ -56,6 +58,11 @@ pub struct App {
     // Sidebar state
     sidebar_visible: bool,
     sidebar_width: u16,
+
+    // Theme and rendering state
+    theme: Theme,
+    profile_colors: HashMap<String, ratatui::style::Color>,
+    thinking_since: Option<Instant>,
 }
 
 impl App {
@@ -145,6 +152,9 @@ impl App {
             command_palette: CommandPalette::new(),
             sidebar_visible: false,
             sidebar_width: 24,
+            theme: Theme::default(),
+            profile_colors: HashMap::new(),
+            thinking_since: None,
         }
     }
 
@@ -658,5 +668,93 @@ impl App {
                 false
             }
         }
+    }
+
+    pub fn theme(&self) -> Theme {
+        self.theme
+    }
+
+    pub fn profile_color_for(&self, name: &str) -> ratatui::style::Color {
+        self.profile_colors
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| crate::tui::theme::hash_profile_color(name))
+    }
+
+    pub fn thinking_since(&self) -> Option<Instant> {
+        self.thinking_since
+    }
+
+    pub fn tick_thinking(&mut self) {
+        let is_thinking = matches!(self.state(), AgentState::Thinking);
+        match (self.thinking_since, is_thinking) {
+            (None, true) => {
+                self.thinking_since = Some(Instant::now());
+                self.mark_dirty();
+            }
+            (Some(_), false) => {
+                self.thinking_since = None;
+                self.mark_dirty();
+            }
+            (Some(_), true) => {
+                self.mark_dirty();
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use entanglement_core::OutEvent;
+
+    #[test]
+    fn test_profile_color_for_hash() {
+        let sid = SessionId::new("test");
+        let app = App::new(sid);
+        let color1 = app.profile_color_for("build");
+        let color2 = app.profile_color_for("plan");
+        let color3 = app.profile_color_for("build");
+
+        assert_eq!(color1, color3);
+        assert_ne!(color1, color2);
+    }
+
+    #[test]
+    fn test_profile_color_for_override() {
+        let sid = SessionId::new("test");
+        let mut app = App::new(sid);
+        let hash_color = app.profile_color_for("build");
+
+        app.profile_colors
+            .insert("build".to_string(), ratatui::style::Color::Magenta);
+        let override_color = app.profile_color_for("build");
+
+        assert_ne!(hash_color, override_color);
+        assert_eq!(override_color, ratatui::style::Color::Magenta);
+    }
+
+    #[test]
+    fn test_thinking_state_tracking() {
+        let sid = SessionId::new("test");
+        let mut app = App::new(sid.clone());
+
+        app.handle_out_event(OutEvent::Status {
+            session: sid.clone(),
+            state: AgentState::Thinking,
+        });
+        app.tick_thinking();
+
+        assert!(app.thinking_since().is_some());
+        assert!(matches!(app.state(), AgentState::Thinking));
+
+        app.handle_out_event(OutEvent::Status {
+            session: sid.clone(),
+            state: AgentState::Done,
+        });
+        app.tick_thinking();
+
+        assert!(app.thinking_since().is_none());
     }
 }

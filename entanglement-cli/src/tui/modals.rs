@@ -8,14 +8,13 @@ use ratatui::{
 
 use crate::tui::app::App;
 use crate::tui::keybindings::KeyMap;
-use crate::tui::ui::agent_color;
 
 pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
     let profiles = app.available_profiles().to_vec();
     let items: Vec<ListItem> = profiles
         .iter()
         .map(|p| {
-            let color = agent_color(&p.name);
+            let color = app.profile_color_for(&p.name);
             ListItem::new(Line::from(vec![
                 Span::styled("[", Style::default().dim()),
                 Span::styled(&p.name, Style::default().fg(color).bold()),
@@ -46,7 +45,7 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
         .into_iter()
         .map(|(id, view)| {
             let marker = if *id == active { "▸ " } else { "  " };
-            let color = agent_color(view.agent());
+            let color = app.profile_color_for(view.agent());
             let mut spans = vec![
                 Span::raw(marker),
                 Span::styled(id.to_string(), Style::default().bold()),

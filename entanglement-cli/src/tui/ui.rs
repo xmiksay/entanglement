@@ -7,54 +7,12 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-use std::hash::Hasher;
 
 use crate::tui::app::App;
 use crate::tui::keybindings::LeaderState;
 use crate::tui::modals::{self, draw_model_picker, draw_profile_picker};
+use crate::tui::progress;
 use crate::tui::session_view::ApprovalMode;
-
-pub(crate) fn agent_color(name: &str) -> Color {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(name, &mut hasher);
-    let hash = hasher.finish();
-
-    let hue = (hash % 360) as u8;
-    let saturation = 70;
-    let value = 90;
-
-    hsv_to_rgb(hue, saturation, value)
-}
-
-fn hsv_to_rgb(h: u8, s: u8, v: u8) -> Color {
-    let h = h as f64 / 360.0;
-    let s = s as f64 / 100.0;
-    let v = v as f64 / 100.0;
-
-    let c = v * s;
-    let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
-    let m = v - c;
-
-    let (r, g, b) = if h < 1.0 / 6.0 {
-        (c, x, 0.0)
-    } else if h < 2.0 / 6.0 {
-        (x, c, 0.0)
-    } else if h < 3.0 / 6.0 {
-        (0.0, c, x)
-    } else if h < 4.0 / 6.0 {
-        (0.0, x, c)
-    } else if h < 5.0 / 6.0 {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-
-    Color::Rgb(
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
-    )
-}
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -141,7 +99,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         AgentState::Error => "Error",
     };
 
-    let agent_color = agent_color(app.agent());
+    let agent_color = app.profile_color_for(app.agent());
     let sessions = app.sessions();
     let background_waiting = sessions
         .iter()
@@ -192,30 +150,35 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
 fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     let lines = crate::tui::transcript::render_body_lines(app);
 
-    // Handle scrolling
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text)
         .wrap(Wrap { trim: false })
-        .block(Block::new().borders(Borders::ALL))
         .scroll((app.scroll_offset() as u16, 0));
 
     f.render_widget(paragraph, area);
 }
 
 fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
-    let agent_color = agent_color(app.agent());
+    if let Some(since) = app.thinking_since() {
+        progress::draw_ship_cruise(
+            f,
+            area,
+            since,
+            app.profile_color_for(app.agent()),
+            app.theme(),
+        );
+    } else {
+        let agent_color = app.profile_color_for(app.agent());
 
-    let badge = Line::from(vec![
-        Span::styled("[", Style::default().dim()),
-        Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
-        Span::styled("]", Style::default().dim()),
-    ]);
+        let badge = Line::from(vec![
+            Span::styled("[", Style::default().dim()),
+            Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
+            Span::styled("]", Style::default().dim()),
+        ]);
 
-    let paragraph = Paragraph::new(badge)
-        .alignment(Alignment::Left)
-        .block(Block::new().borders(Borders::ALL));
-
-    f.render_widget(paragraph, area);
+        let paragraph = Paragraph::new(badge).alignment(Alignment::Left);
+        f.render_widget(paragraph, area);
+    }
 }
 
 fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
@@ -272,7 +235,7 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
                 },
             ),
             Span::raw(" "),
-            Span::styled(agent, Style::default().fg(agent_color(agent))),
+            Span::styled(agent, Style::default().fg(app.profile_color_for(agent))),
             Span::raw(" "),
             Span::styled(state, Style::default().dim()),
         ]);
@@ -352,12 +315,11 @@ mod tests {
         terminal.draw(|f| draw_body(f, f.area(), &app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
 
-        // Exclude the bordered frame (top/bottom rows, left/right columns)
-        // drawn by Block::Borders::ALL — it's non-blank regardless of content
-        // and would otherwise mask the bug.
-        let non_empty_rows = (1..9)
+        // With Borders::ALL removed, all rows are content. Assistant text now
+        // gets decorated (accent bar + space), which uses 2 columns per line.
+        let non_empty_rows = (0..10)
             .filter(|&y| {
-                (1..29)
+                (0..30)
                     .map(|x| buffer[(x, y)].symbol())
                     .any(|sym| !sym.trim().is_empty())
             })
@@ -366,7 +328,7 @@ mod tests {
         // 10 short words at width 30 wrap onto a couple of rows; rendering
         // each streamed delta as its own markdown blob put one word per row.
         assert!(
-            non_empty_rows <= 3,
+            non_empty_rows <= 4,
             "expected a wrapped paragraph, got {non_empty_rows} non-empty rows"
         );
     }
