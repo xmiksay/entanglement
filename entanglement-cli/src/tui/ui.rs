@@ -154,8 +154,9 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     let lines = crate::tui::transcript::render_body_lines(app, inner_area.width);
 
     let text = Text::from(lines);
-    let paragraph =
-        Paragraph::new(text).scroll((app.scroll_offset() as u16, app.scroll_offset_x() as u16));
+    let paragraph = Paragraph::new(text)
+        .scroll((app.scroll_offset() as u16, app.scroll_offset_x() as u16))
+        .style(Style::default().bg(theme.message_bg));
 
     f.render_widget(paragraph, inner_area);
 }
