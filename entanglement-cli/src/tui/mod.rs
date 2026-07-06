@@ -2,6 +2,7 @@ mod app;
 mod commands;
 mod diff;
 mod event;
+mod input_panel;
 mod keybindings;
 mod markdown;
 mod modals;
@@ -11,17 +12,20 @@ mod sessions;
 mod theme;
 mod transcript;
 mod ui;
+mod wrap;
 
 use anyhow::Result;
 use entanglement_core::{Holly, InMsg, SessionId};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
-        event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+        event::{
+            KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+            PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        },
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     },
-    widgets::Borders,
     Terminal,
 };
 use std::time::{Duration, Instant};
@@ -39,6 +43,13 @@ pub async fn tui(holly: Holly, initial_session: SessionId, model_info: ModelInfo
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     enable_raw_mode()?;
+    let _ = execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        )
+    );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -168,27 +179,11 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                             app.set_approval_mode(ApprovalMode::EnteringRejectReason {
                                 request_id: request_id.clone(),
                             });
-                            app.input().set_block(
-                                ratatui::widgets::Block::new()
-                                    .borders(Borders::TOP)
-                                    .border_style(
-                                        ratatui::style::Style::default()
-                                            .fg(ratatui::style::Color::Yellow),
-                                    ),
-                            );
                         }
                         KeyCode::Char('e') => {
                             app.set_approval_mode(ApprovalMode::EnteringRejectReason {
                                 request_id: request_id.clone(),
                             });
-                            app.input().set_block(
-                                ratatui::widgets::Block::new()
-                                    .borders(Borders::TOP)
-                                    .border_style(
-                                        ratatui::style::Style::default()
-                                            .fg(ratatui::style::Color::Yellow),
-                                    ),
-                            );
                         }
                         KeyCode::Esc => {
                             let _ = holly
@@ -206,8 +201,6 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                             app.set_approval_mode(ApprovalMode::WaitingForApproval {
                                 request_id: request_id.clone(),
                             });
-                            app.input()
-                                .set_block(ratatui::widgets::Block::new().borders(Borders::TOP));
                             let text = app.take_input_text();
                             if !text.is_empty() {
                                 app.input().insert_str(&text);
@@ -224,9 +217,19 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                                 .await;
                             app.clear_approval();
                         }
-                        _ => {
-                            app.input().input(tui_textarea::Input::from(key));
+                        KeyCode::Char(c) => {
+                            app.input().insert_char(c);
                         }
+                        KeyCode::Backspace => {
+                            app.input().delete_char();
+                        }
+                        KeyCode::Left => {
+                            app.input().move_cursor_left();
+                        }
+                        KeyCode::Right => {
+                            app.input().move_cursor_right();
+                        }
+                        _ => {}
                     },
                     ApprovalMode::Normal => match key.code {
                         KeyCode::Tab => {
@@ -303,37 +306,44 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                             app.input().insert_newline();
                         }
                         KeyCode::Up => {
-                            if app.input().cursor().0 == 0 && app.input().cursor().1 == 0 {
+                            if app.input().cursor() == (0, 0) {
                                 app.history_up();
                             } else {
-                                app.input().move_cursor(tui_textarea::CursorMove::Up);
+                                app.input().move_cursor_up();
                             }
                         }
                         KeyCode::Down => {
-                            let input = app.input();
-                            let input_lines = input.lines();
-                            let cursor = input.cursor();
-                            let is_at_end = cursor.0 == input_lines.len().saturating_sub(1)
-                                && cursor.1
-                                    == input_lines
-                                        .last()
-                                        .map(|l: &String| l.chars().count())
-                                        .unwrap_or(0);
-
-                            if is_at_end && app.history_index().is_some() {
+                            if app.input().cursor() == (0, 0) {
                                 app.history_down();
                             } else {
-                                app.input().move_cursor(tui_textarea::CursorMove::Down);
+                                app.input().move_cursor_down();
                             }
                         }
                         KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             if !app.handle_readline_key(c) {
-                                app.input().input(tui_textarea::Input::from(key));
+                                match c {
+                                    'a' => app.input().move_cursor_to_head(),
+                                    'e' => app.input().move_cursor_to_end(),
+                                    'k' => app.input().delete_line_by_end(),
+                                    'u' => app.input().delete_line_by_head(),
+                                    'w' => app.input().delete_word(),
+                                    _ => app.input().insert_char(c),
+                                }
                             }
                         }
-                        _ => {
-                            app.input().input(tui_textarea::Input::from(key));
+                        KeyCode::Char(c) => {
+                            app.input().insert_char(c);
                         }
+                        KeyCode::Backspace => {
+                            app.input().delete_char();
+                        }
+                        KeyCode::Left => {
+                            app.input().move_cursor_left();
+                        }
+                        KeyCode::Right => {
+                            app.input().move_cursor_right();
+                        }
+                        _ => {}
                     },
                 }
             }
@@ -474,13 +484,21 @@ async fn handle_command_palette_event(app: &mut App, key: KeyEvent) -> Result<bo
 fn setup_panic_handler() {
     std::panic::set_hook(Box::new(|_| {
         let _ = disable_raw_mode();
-        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(
+            std::io::stdout(),
+            LeaveAlternateScreen,
+            PopKeyboardEnhancementFlags
+        );
     }));
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    let _ = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        PopKeyboardEnhancementFlags
+    );
     terminal.show_cursor()?;
     Ok(())
 }

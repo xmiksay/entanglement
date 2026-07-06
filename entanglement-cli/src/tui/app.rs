@@ -2,7 +2,6 @@ use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
-use tui_textarea::{CursorMove, TextArea};
 
 use crate::tui::commands::{Command, CommandPalette};
 use crate::tui::keybindings::{Action, LeaderKeyHandler};
@@ -10,6 +9,173 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 use crate::tui::sessions::SessionRegistry;
 use crate::tui::theme::Theme;
+
+#[derive(Debug, Clone, Default)]
+pub struct SimpleInput {
+    lines: Vec<String>,
+    cursor_row: usize,
+    cursor_col: usize,
+    scroll_offset: u16,
+}
+
+impl SimpleInput {
+    pub fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
+    pub fn cursor(&self) -> (usize, usize) {
+        (self.cursor_row, self.cursor_col)
+    }
+
+    #[allow(dead_code)]
+    pub fn cursor_row(&self) -> usize {
+        self.cursor_row
+    }
+
+    pub fn cursor_col(&self) -> usize {
+        self.cursor_col
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        if self.cursor_row >= self.lines.len() {
+            self.lines.resize(self.cursor_row + 1, String::new());
+        }
+        let line = &mut self.lines[self.cursor_row];
+        if self.cursor_col > line.len() {
+            line.extend(std::iter::repeat_n(' ', self.cursor_col - line.len()));
+        }
+        line.insert(self.cursor_col, c);
+        self.cursor_col += 1;
+    }
+
+    pub fn insert_str(&mut self, s: &str) {
+        for c in s.chars() {
+            self.insert_char(c);
+        }
+    }
+
+    pub fn insert_newline(&mut self) {
+        let current_line = self.lines.get(self.cursor_row).cloned().unwrap_or_default();
+        let (before, after) = current_line.split_at(self.cursor_col);
+        self.lines[self.cursor_row] = before.to_string();
+        self.lines.insert(self.cursor_row + 1, after.to_string());
+        self.cursor_row += 1;
+        self.cursor_col = 0;
+    }
+
+    pub fn delete_char(&mut self) {
+        if self.cursor_col > 0 {
+            let line = &mut self.lines[self.cursor_row];
+            if self.cursor_col <= line.len() {
+                line.remove(self.cursor_col - 1);
+            }
+            self.cursor_col -= 1;
+        } else if self.cursor_row > 0 {
+            let current_line = self.lines.remove(self.cursor_row);
+            let prev_line = &mut self.lines[self.cursor_row - 1];
+            self.cursor_col = prev_line.len();
+            prev_line.push_str(&current_line);
+            self.cursor_row -= 1;
+        }
+    }
+
+    pub fn delete_line_by_end(&mut self) {
+        let line = &mut self.lines[self.cursor_row];
+        line.truncate(self.cursor_col);
+    }
+
+    pub fn delete_line_by_head(&mut self) {
+        let line = &mut self.lines[self.cursor_row];
+        let after = line.split_off(self.cursor_col);
+        *line = after;
+        self.cursor_col = 0;
+    }
+
+    pub fn delete_word(&mut self) {
+        let line = &mut self.lines[self.cursor_row];
+        if self.cursor_col > 0 {
+            let before = &line[..self.cursor_col];
+            let after = &line[self.cursor_col..];
+            let new_before = before.trim_end();
+            let removed = before.len() - new_before.len();
+            if removed > 0 {
+                *line = format!("{}{}", new_before, after);
+                self.cursor_col -= removed;
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn clear(&mut self) {
+        self.lines = vec![String::new()];
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        self.scroll_offset = 0;
+    }
+
+    pub fn move_cursor_up(&mut self) {
+        if self.cursor_row > 0 {
+            self.cursor_row -= 1;
+            let line_len = self
+                .lines
+                .get(self.cursor_row)
+                .map(|l| l.len())
+                .unwrap_or(0);
+            self.cursor_col = self.cursor_col.min(line_len);
+        }
+    }
+
+    pub fn move_cursor_down(&mut self) {
+        if self.cursor_row < self.lines.len().saturating_sub(1) {
+            self.cursor_row += 1;
+            let line_len = self
+                .lines
+                .get(self.cursor_row)
+                .map(|l| l.len())
+                .unwrap_or(0);
+            self.cursor_col = self.cursor_col.min(line_len);
+        }
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        if self.cursor_col > 0 {
+            self.cursor_col -= 1;
+        }
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        let line_len = self
+            .lines
+            .get(self.cursor_row)
+            .map(|l| l.len())
+            .unwrap_or(0);
+        if self.cursor_col < line_len {
+            self.cursor_col += 1;
+        }
+    }
+
+    pub fn move_cursor_to_head(&mut self) {
+        self.cursor_col = 0;
+    }
+
+    pub fn move_cursor_to_end(&mut self) {
+        let line_len = self
+            .lines
+            .get(self.cursor_row)
+            .map(|l| l.len())
+            .unwrap_or(0);
+        self.cursor_col = line_len;
+    }
+
+    #[allow(dead_code)]
+    pub fn set_scroll_offset(&mut self, offset: u16) {
+        self.scroll_offset = offset;
+    }
+
+    pub fn scroll_offset(&self) -> u16 {
+        self.scroll_offset
+    }
+}
 
 const HISTORY_CAPACITY: usize = 100;
 
@@ -30,8 +196,7 @@ pub struct App {
     dirty: bool,
     markdown_renderer: MarkdownRenderer,
 
-    // Input state — one keyboard shared across sessions (shell-history semantics).
-    input: TextArea<'static>,
+    input: SimpleInput,
     history: VecDeque<String>,
     history_index: Option<usize>,
     history_search_term: Option<String>,
@@ -75,9 +240,6 @@ pub struct App {
 
 impl App {
     pub fn new(initial_session: SessionId) -> Self {
-        let mut input = TextArea::default();
-        input.set_placeholder_text("Type a message... (Enter to send, Shift+Enter for newline)");
-
         let available_profiles = vec![
             ProfileInfo {
                 name: "build".to_string(),
@@ -140,7 +302,7 @@ impl App {
             sessions: SessionRegistry::new(initial_session),
             dirty: true,
             markdown_renderer: MarkdownRenderer::new(),
-            input,
+            input: SimpleInput::default(),
             history: VecDeque::with_capacity(HISTORY_CAPACITY),
             history_index: None,
             history_search_term: None,
@@ -166,7 +328,7 @@ impl App {
             input_tokens: 0,
             output_tokens: 0,
             input_multiline: false,
-            help_text: "Enter: send | Shift+Enter: multiline | Ctrl+A: agent picker | Ctrl+L: sessions | Ctrl+P: command palette | ?: help".to_string(),
+            help_text: "Enter: send | Shift+Enter: newline | Ctrl+A: agent picker | Ctrl+L: sessions | Ctrl+P: command palette | ?: help".to_string(),
         }
     }
 
@@ -239,10 +401,15 @@ impl App {
         self.mark_dirty();
     }
 
-    pub fn input(&mut self) -> &mut TextArea<'static> {
+    pub fn input(&mut self) -> &mut SimpleInput {
         &mut self.input
     }
 
+    pub fn input_text(&self) -> String {
+        self.input.lines().join("\n")
+    }
+
+    #[allow(dead_code)]
     pub fn history_index(&self) -> Option<usize> {
         self.history_index
     }
@@ -257,9 +424,7 @@ impl App {
             self.history_index = None;
             self.history_search_term = None;
         }
-        self.input = TextArea::default();
-        self.input
-            .set_placeholder_text("Type a message... (Enter to send, Shift+Enter for newline)");
+        self.input = SimpleInput::default();
         self.mark_dirty();
         text
     }
@@ -284,7 +449,8 @@ impl App {
 
         if let Some(idx) = self.history_index {
             if let Some(text) = self.history.get(idx) {
-                self.input = TextArea::from(text.lines().collect::<Vec<&str>>());
+                self.input = SimpleInput::default();
+                self.input.insert_str(text);
                 self.mark_dirty();
             }
         }
@@ -299,13 +465,15 @@ impl App {
             if idx < self.history.len().saturating_sub(1) {
                 self.history_index = Some(idx + 1);
                 if let Some(text) = self.history.get(idx + 1) {
-                    self.input = TextArea::from(text.lines().collect::<Vec<_>>());
+                    self.input = SimpleInput::default();
+                    self.input.insert_str(text);
                     self.mark_dirty();
                 }
             } else {
                 self.history_index = None;
                 let search_term = self.history_search_term.take().unwrap_or_default();
-                self.input = TextArea::from(search_term.lines().collect::<Vec<&str>>());
+                self.input = SimpleInput::default();
+                self.input.insert_str(&search_term);
                 self.mark_dirty();
             }
         }
@@ -314,11 +482,11 @@ impl App {
     pub fn handle_readline_key(&mut self, c: char) -> bool {
         match c {
             'a' => {
-                self.input.move_cursor(CursorMove::Head);
+                self.input.move_cursor_to_head();
                 true
             }
             'e' => {
-                self.input.move_cursor(CursorMove::End);
+                self.input.move_cursor_to_end();
                 true
             }
             'k' => {
