@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::app::{App, TranscriptEntry};
+use crate::tui::app::{App, ApprovalMode, TranscriptEntry};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -132,6 +132,48 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // Add approval card if waiting for approval
+    if let ApprovalMode::WaitingForApproval { .. } = app.approval_mode() {
+        if let Some((_, tool, input)) = app.pending_tool_request() {
+            lines.push(Line::from(""));
+            lines.push(Line::from("─".repeat(60)).fg(Color::Yellow));
+            lines.push(Line::from(vec![
+                Span::styled("?", Style::default().fg(Color::Yellow).bold()),
+                Span::raw(" "),
+                Span::styled(tool, Style::default().fg(Color::Cyan).bold()),
+            ]));
+
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(input) {
+                if let Ok(pretty) = serde_json::to_string_pretty(&json) {
+                    for line in pretty.lines() {
+                        lines.push(Line::from(format!("  {}", line)));
+                    }
+                } else {
+                    for line in input.lines() {
+                        lines.push(Line::from(format!("  {}", line)));
+                    }
+                }
+            } else {
+                for line in input.lines() {
+                    lines.push(Line::from(format!("  {}", line)));
+                }
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("[y]", Style::default().fg(Color::Green).bold()),
+                Span::raw(" approve  "),
+                Span::styled("[n]", Style::default().fg(Color::Red).bold()),
+                Span::raw(" reject  "),
+                Span::styled("[e]", Style::default().fg(Color::Yellow).bold()),
+                Span::raw(" edit reason  "),
+                Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
+                Span::raw(" interrupt"),
+            ]));
+            lines.push(Line::from("─".repeat(60)).fg(Color::Yellow));
+        }
+    }
+
     // Handle scrolling
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text)
@@ -143,7 +185,20 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
+    let approval_mode = app.approval_mode().clone();
     let input = app.input();
+    match &approval_mode {
+        ApprovalMode::Normal => {
+            input
+                .set_placeholder_text("Type a message... (Enter to send, Shift+Enter for newline)");
+        }
+        ApprovalMode::WaitingForApproval { .. } => {
+            input.set_placeholder_text("Waiting for approval... Use [y] approve, [n] reject, [e] edit reason, [Esc] interrupt");
+        }
+        ApprovalMode::EnteringRejectReason { .. } => {
+            input.set_placeholder_text("Enter rejection reason... (Enter to send, Esc to cancel)");
+        }
+    }
     input.set_block(ratatui::widgets::Block::new().borders(Borders::TOP));
     f.render_widget(&*input, area);
 }

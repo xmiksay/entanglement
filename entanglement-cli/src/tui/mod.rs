@@ -11,13 +11,14 @@ use ratatui::{
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     },
+    widgets::Borders,
     Terminal,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use app::App;
+use app::{App, ApprovalMode};
 use event::Event;
 
 pub async fn tui(holly: Holly) -> Result<()> {
@@ -89,75 +90,151 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
     match ev {
         Event::Key(key) => {
             if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Char('c')
-                        if key.modifiers == KeyModifiers::CONTROL =>
-                    {
-                        return Ok(true);
-                    }
-                    KeyCode::Char('q') => return Ok(true),
-                    KeyCode::PageUp => {
-                        app.scroll_up(5);
-                    }
-                    KeyCode::PageDown => {
-                        app.scroll_down(5);
-                    }
-                    KeyCode::End => {
-                        app.scroll_to_bottom();
-                    }
-                    KeyCode::Enter => {
-                        if key.modifiers.contains(KeyModifiers::SHIFT) {
-                            app.input().insert_newline();
-                        } else {
+                let current_mode = app.approval_mode().clone();
+                match current_mode {
+                    ApprovalMode::WaitingForApproval { request_id } => match key.code {
+                        KeyCode::Char('y') => {
+                            let _ = holly
+                                .send(InMsg::Approve {
+                                    session: app.session_id().clone(),
+                                    request_id: request_id.clone(),
+                                })
+                                .await;
+                            app.set_approval_mode(ApprovalMode::Normal);
+                        }
+                        KeyCode::Char('n') => {
+                            app.set_approval_mode(ApprovalMode::EnteringRejectReason {
+                                request_id: request_id.clone(),
+                            });
+                            app.input().set_block(
+                                ratatui::widgets::Block::new()
+                                    .borders(Borders::TOP)
+                                    .border_style(
+                                        ratatui::style::Style::default()
+                                            .fg(ratatui::style::Color::Yellow),
+                                    ),
+                            );
+                        }
+                        KeyCode::Char('e') => {
+                            app.set_approval_mode(ApprovalMode::EnteringRejectReason {
+                                request_id: request_id.clone(),
+                            });
+                            app.input().set_block(
+                                ratatui::widgets::Block::new()
+                                    .borders(Borders::TOP)
+                                    .border_style(
+                                        ratatui::style::Style::default()
+                                            .fg(ratatui::style::Color::Yellow),
+                                    ),
+                            );
+                        }
+                        KeyCode::Esc => {
+                            let _ = holly
+                                .send(InMsg::Stop {
+                                    session: app.session_id().clone(),
+                                })
+                                .await;
+                            app.clear_approval();
+                        }
+                        _ => {}
+                    },
+                    ApprovalMode::EnteringRejectReason { request_id } => match key.code {
+                        KeyCode::Esc => {
+                            app.set_approval_mode(ApprovalMode::WaitingForApproval {
+                                request_id: request_id.clone(),
+                            });
+                            app.input()
+                                .set_block(ratatui::widgets::Block::new().borders(Borders::TOP));
                             let text = app.take_input_text();
                             if !text.is_empty() {
-                                if let Err(e) = holly
-                                    .send(InMsg::Prompt {
-                                        session: app.session_id().clone(),
-                                        text,
-                                    })
-                                    .await
-                                {
-                                    debug!("Failed to send prompt: {}", e);
+                                app.input().insert_str(&text);
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let text = app.take_input_text();
+                            let _ = holly
+                                .send(InMsg::Reject {
+                                    session: app.session_id().clone(),
+                                    request_id: request_id.clone(),
+                                    reason: if text.is_empty() { None } else { Some(text) },
+                                })
+                                .await;
+                            app.clear_approval();
+                        }
+                        _ => {
+                            app.input().input(tui_textarea::Input::from(key));
+                        }
+                    },
+                    ApprovalMode::Normal => match key.code {
+                        KeyCode::Char('q') | KeyCode::Char('c')
+                            if key.modifiers == KeyModifiers::CONTROL =>
+                        {
+                            return Ok(true);
+                        }
+                        KeyCode::Char('q') => return Ok(true),
+                        KeyCode::PageUp => {
+                            app.scroll_up(5);
+                        }
+                        KeyCode::PageDown => {
+                            app.scroll_down(5);
+                        }
+                        KeyCode::End => {
+                            app.scroll_to_bottom();
+                        }
+                        KeyCode::Enter => {
+                            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                app.input().insert_newline();
+                            } else {
+                                let text = app.take_input_text();
+                                if !text.is_empty() {
+                                    if let Err(e) = holly
+                                        .send(InMsg::Prompt {
+                                            session: app.session_id().clone(),
+                                            text,
+                                        })
+                                        .await
+                                    {
+                                        debug!("Failed to send prompt: {}", e);
+                                    }
                                 }
                             }
                         }
-                    }
-                    KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.input().insert_newline();
-                    }
-                    KeyCode::Up => {
-                        if app.input().cursor().0 == 0 && app.input().cursor().1 == 0 {
-                            app.history_up();
-                        } else {
-                            app.input().move_cursor(tui_textarea::CursorMove::Up);
+                        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.input().insert_newline();
                         }
-                    }
-                    KeyCode::Down => {
-                        let input = app.input();
-                        let input_lines = input.lines();
-                        let cursor = input.cursor();
-                        let is_at_end = cursor.0 == input_lines.len().saturating_sub(1)
-                            && cursor.1
-                                == input_lines
-                                    .last()
-                                    .map(|l: &String| l.chars().count())
-                                    .unwrap_or(0);
+                        KeyCode::Up => {
+                            if app.input().cursor().0 == 0 && app.input().cursor().1 == 0 {
+                                app.history_up();
+                            } else {
+                                app.input().move_cursor(tui_textarea::CursorMove::Up);
+                            }
+                        }
+                        KeyCode::Down => {
+                            let input = app.input();
+                            let input_lines = input.lines();
+                            let cursor = input.cursor();
+                            let is_at_end = cursor.0 == input_lines.len().saturating_sub(1)
+                                && cursor.1
+                                    == input_lines
+                                        .last()
+                                        .map(|l: &String| l.chars().count())
+                                        .unwrap_or(0);
 
-                        if is_at_end && app.history_index().is_some() {
-                            app.history_down();
-                        } else {
-                            app.input().move_cursor(tui_textarea::CursorMove::Down);
+                            if is_at_end && app.history_index().is_some() {
+                                app.history_down();
+                            } else {
+                                app.input().move_cursor(tui_textarea::CursorMove::Down);
+                            }
                         }
-                    }
-                    KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        if !app.handle_readline_key(c) {
+                        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if !app.handle_readline_key(c) {
+                                app.input().input(tui_textarea::Input::from(key));
+                            }
+                        }
+                        _ => {
                             app.input().input(tui_textarea::Input::from(key));
                         }
-                    }
-                    _ => {
-                        app.input().input(tui_textarea::Input::from(key));
-                    }
+                    },
                 }
             }
         }
@@ -173,7 +250,9 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
         Event::Resize => {}
         Event::FocusGained | Event::FocusLost => {}
         Event::Paste(s) => {
-            app.input().insert_str(&s);
+            if matches!(app.approval_mode(), ApprovalMode::Normal) {
+                app.input().insert_str(&s);
+            }
         }
     }
     Ok(false)
