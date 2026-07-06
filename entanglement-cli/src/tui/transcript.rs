@@ -9,8 +9,6 @@ use crate::tui::diff::DiffRenderer;
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 use crate::tui::theme::{RoleColors, Theme};
-
-use crate::tui::wrap;
 pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
     let markdown_renderer = app.markdown_renderer();
@@ -112,18 +110,15 @@ fn append_transcript<'a>(
         run: &str,
         theme: Theme,
         assistant: RoleColors,
-        available_width: u16,
+        _available_width: u16,
     ) {
         if run.trim().is_empty() {
             return;
         }
         let rendered = markdown_renderer.render(run);
         for line in rendered.lines {
-            let wrapped = wrap::wrap_line(line, available_width.saturating_sub(2));
-            for wline in wrapped {
-                let decorated = theme.decorate(wline, assistant);
-                lines.push(decorated);
-            }
+            let decorated = theme.decorate(line, assistant);
+            lines.push(decorated);
         }
     }
 
@@ -171,10 +166,7 @@ fn append_transcript<'a>(
                             Style::default().fg(user.fg)
                         },
                     )]);
-                    let wrapped = wrap::wrap_line(user_line, available_width.saturating_sub(2));
-                    for wline in wrapped {
-                        lines.push(theme.decorate(wline, user));
-                    }
+                    lines.push(theme.decorate(user_line, user));
                 }
             }
             TranscriptEntry::ToolRequest { tool, input, .. } => {
@@ -185,16 +177,10 @@ fn append_transcript<'a>(
                     Span::styled("Tool Request: ", Style::default().fg(Color::Cyan)),
                     Span::styled(tool, Style::default().bold()),
                 ]);
-                let wrapped = wrap::wrap_line(request_line, available_width.saturating_sub(2));
-                for wline in wrapped {
-                    lines.push(theme.decorate(wline, tool_req));
-                }
+                lines.push(theme.decorate(request_line, tool_req));
                 for line in input.lines() {
                     let content_line = Line::from(format!("  {line}"));
-                    let wrapped = wrap::wrap_line(content_line, available_width.saturating_sub(2));
-                    for wline in wrapped {
-                        lines.push(theme.decorate(wline, tool_req));
-                    }
+                    lines.push(theme.decorate(content_line, tool_req));
                 }
             }
             TranscriptEntry::ToolOutput { output } => {
@@ -202,10 +188,7 @@ fn append_transcript<'a>(
                     lines.push(Line::from(""));
                 }
                 let output_header = Line::from("Tool Output:");
-                let wrapped = wrap::wrap_line(output_header, available_width.saturating_sub(2));
-                for wline in wrapped {
-                    lines.push(theme.decorate(wline, tool_out));
-                }
+                lines.push(theme.decorate(output_header, tool_out));
 
                 if output.contains("---")
                     || output.contains("+++")
@@ -219,11 +202,7 @@ fn append_transcript<'a>(
                 } else {
                     for line in output.lines() {
                         let content_line = Line::from(format!("  {line}"));
-                        let wrapped =
-                            wrap::wrap_line(content_line, available_width.saturating_sub(2));
-                        for wline in wrapped {
-                            lines.push(theme.decorate(wline, tool_out).fg(Color::DarkGray));
-                        }
+                        lines.push(theme.decorate(content_line, tool_out).fg(Color::DarkGray));
                     }
                 }
             }
@@ -235,10 +214,7 @@ fn append_transcript<'a>(
                     Span::styled("Error: ", Style::default().fg(Color::Red).bold()),
                     Span::styled(message, Style::default().fg(Color::Red)),
                 ]);
-                let wrapped = wrap::wrap_line(error_line, available_width.saturating_sub(2));
-                for wline in wrapped {
-                    lines.push(theme.decorate(wline, error));
-                }
+                lines.push(theme.decorate(error_line, error));
             }
             TranscriptEntry::Done => {
                 lines.push(Line::from(""));
