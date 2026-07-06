@@ -216,9 +216,13 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     for entry in app.transcript() {
         match entry {
             TranscriptEntry::TextDelta { text } => {
-                let rendered_text = markdown_renderer.render(text);
-                for line in rendered_text.lines {
-                    lines.push(line);
+                if !text.trim().is_empty() {
+                    let rendered_text = markdown_renderer.render(text);
+                    for line in rendered_text.lines {
+                        if !line.spans.is_empty() {
+                            lines.push(line);
+                        }
+                    }
                 }
             }
             TranscriptEntry::ToolRequest { tool, input, .. } => {

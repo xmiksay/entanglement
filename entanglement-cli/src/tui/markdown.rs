@@ -25,6 +25,10 @@ impl MarkdownRenderer {
     }
 
     pub fn render(&self, markdown: &str) -> Text<'_> {
+        if markdown.trim().is_empty() {
+            return Text::default();
+        }
+
         let parser = Parser::new(markdown);
         let mut lines = Vec::new();
         let mut current_line = Vec::new();
@@ -64,14 +68,12 @@ impl MarkdownRenderer {
                             lines.push(Line::from(current_line.clone()));
                             current_line.clear();
                         }
-                        lines.push(Line::from(""));
                     }
                     TagEnd::Heading(_) => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line.clone()));
                             current_line.clear();
                         }
-                        lines.push(Line::from(""));
                     }
                     TagEnd::Emphasis => {}
                     TagEnd::Strong => {}
@@ -81,7 +83,6 @@ impl MarkdownRenderer {
                         for line in highlighted.lines {
                             lines.push(line);
                         }
-                        lines.push(Line::from(""));
                         code_language.clear();
                         code_content.clear();
                     }
@@ -99,7 +100,10 @@ impl MarkdownRenderer {
                     if in_code_block {
                         code_content.push_str(&text);
                     } else {
-                        current_line.push(Span::raw(text.to_string()));
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            current_line.push(Span::raw(text.to_string()));
+                        }
                     }
                 }
                 Event::Code(text) => {
