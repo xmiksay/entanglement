@@ -131,7 +131,7 @@ fn append_transcript<'a>(
                 let decorated = theme.decorate(line, assistant);
                 lines.push(decorated);
             } else {
-                let wrapped = wrap::wrap_line(line, available_width.saturating_sub(2));
+                let wrapped = wrap::wrap_line(line, available_width.saturating_sub(4));
                 for wline in wrapped {
                     let decorated = theme.decorate(wline, assistant);
                     lines.push(decorated);
@@ -146,17 +146,13 @@ fn append_transcript<'a>(
     let error = theme.error_colors();
 
     let mut pending_text = String::new();
-    let mut last_was_text_delta = false;
     for entry in app.transcript() {
         if let TranscriptEntry::TextDelta { text } = entry {
             pending_text.push_str(text);
-            last_was_text_delta = true;
             continue;
         }
         if !pending_text.is_empty() {
-            if !last_was_text_delta && !lines.is_empty() {
-                lines.push(Line::from(""));
-            }
+            lines.push(Line::from("").bg(assistant.bg));
             render_text_run(
                 lines,
                 markdown_renderer,
@@ -165,16 +161,14 @@ fn append_transcript<'a>(
                 assistant,
                 available_width,
             );
+            lines.push(Line::from("").bg(assistant.bg));
             pending_text.clear();
         }
-        last_was_text_delta = false;
 
         match entry {
             TranscriptEntry::TextDelta { .. } => unreachable!(),
             TranscriptEntry::User { text, pending } => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(""));
-                }
+                lines.push(Line::from("").bg(user.bg));
                 for line in text.lines() {
                     let user_line = Line::from(vec![Span::styled(
                         line.to_string(),
@@ -184,38 +178,36 @@ fn append_transcript<'a>(
                             Style::default().fg(user.fg)
                         },
                     )]);
-                    let wrapped = wrap::wrap_line(user_line, available_width.saturating_sub(2));
+                    let wrapped = wrap::wrap_line(user_line, available_width.saturating_sub(4));
                     for wline in wrapped {
                         lines.push(theme.decorate(wline, user));
                     }
                 }
+                lines.push(Line::from("").bg(user.bg));
             }
             TranscriptEntry::ToolRequest { tool, input, .. } => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(""));
-                }
+                lines.push(Line::from("").bg(tool_req.bg));
                 let request_line = Line::from(vec![
                     Span::styled("Tool Request: ", Style::default().fg(Color::Cyan)),
                     Span::styled(tool, Style::default().bold()),
                 ]);
-                let wrapped = wrap::wrap_line(request_line, available_width.saturating_sub(2));
+                let wrapped = wrap::wrap_line(request_line, available_width.saturating_sub(4));
                 for wline in wrapped {
                     lines.push(theme.decorate(wline, tool_req));
                 }
                 for line in input.lines() {
                     let content_line = Line::from(format!("  {line}"));
-                    let wrapped = wrap::wrap_line(content_line, available_width.saturating_sub(2));
+                    let wrapped = wrap::wrap_line(content_line, available_width.saturating_sub(4));
                     for wline in wrapped {
                         lines.push(theme.decorate(wline, tool_req));
                     }
                 }
+                lines.push(Line::from("").bg(tool_req.bg));
             }
             TranscriptEntry::ToolOutput { output } => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(""));
-                }
+                lines.push(Line::from("").bg(tool_out.bg));
                 let output_header = Line::from("Tool Output:");
-                let wrapped = wrap::wrap_line(output_header, available_width.saturating_sub(2));
+                let wrapped = wrap::wrap_line(output_header, available_width.saturating_sub(4));
                 for wline in wrapped {
                     lines.push(theme.decorate(wline, tool_out));
                 }
@@ -227,35 +219,36 @@ fn append_transcript<'a>(
                 {
                     let diff_text = DiffRenderer::render_unified(output);
                     for line in diff_text.lines {
-                        lines.push(line);
+                        lines.push(theme.decorate(line, tool_out));
                     }
                 } else {
                     for line in output.lines() {
                         let content_line = Line::from(format!("  {line}"));
                         let wrapped =
-                            wrap::wrap_line(content_line, available_width.saturating_sub(2));
+                            wrap::wrap_line(content_line, available_width.saturating_sub(4));
                         for wline in wrapped {
                             lines.push(theme.decorate(wline, tool_out).fg(Color::DarkGray));
                         }
                     }
                 }
+                lines.push(Line::from("").bg(tool_out.bg));
             }
             TranscriptEntry::Error { message } => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(""));
-                }
+                lines.push(Line::from("").bg(error.bg));
                 let error_line = Line::from(vec![
                     Span::styled("Error: ", Style::default().fg(Color::Red).bold()),
                     Span::styled(message, Style::default().fg(Color::Red)),
                 ]);
-                let wrapped = wrap::wrap_line(error_line, available_width.saturating_sub(2));
+                let wrapped = wrap::wrap_line(error_line, available_width.saturating_sub(4));
                 for wline in wrapped {
                     lines.push(theme.decorate(wline, error));
                 }
+                lines.push(Line::from("").bg(error.bg));
             }
             TranscriptEntry::Done => {
                 lines.push(Line::from(""));
                 lines.push(Line::from("─".repeat(40)).fg(Color::Blue));
+                lines.push(Line::from(""));
             }
         }
     }

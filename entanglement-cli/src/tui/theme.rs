@@ -1,5 +1,5 @@
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Style, Stylize},
     text::{Line, Span},
 };
 use std::hash::Hasher;
@@ -97,18 +97,22 @@ impl Theme {
         }
     }
 
-    pub fn decorate<'a>(self, mut line: Line<'a>, c: RoleColors) -> Line<'a> {
-        line.style = line.style.bg(c.bg);
-        line.spans.insert(0, Span::raw(" "));
-        line.spans.insert(
-            0,
+    pub fn decorate<'a>(self, line: Line<'a>, c: RoleColors) -> Line<'a> {
+        let padding = std::cmp::max(0, 1);
+
+        let mut spans = vec![
             Span::styled(
                 self.bar_glyph.to_string(),
                 Style::default().fg(c.fg).bg(c.bg),
             ),
-        );
-        line.spans.push(Span::raw(" "));
-        line
+            Span::raw(" "),
+        ];
+        spans.extend(line.spans);
+        for _ in 0..padding {
+            spans.push(Span::raw(" "));
+        }
+
+        Line::from(spans).bg(c.bg)
     }
 }
 
