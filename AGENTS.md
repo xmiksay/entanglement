@@ -36,6 +36,7 @@ Heads depend on core, **never the reverse.**
 
 ## Code conventions (this repo-specific)
 
+- **Files must not exceed 400 lines of code.** Split long files into modules when they exceed this limit.
 - **Tests ship with the change.** Pure logic → in-module `#[cfg(test)] mod tests`; actor/protocol behavior → `entanglement-core/tests/` (`actor.rs`, `host_tools.rs`).
 - **No panicking operators on I/O / user / network / config paths** in `entanglement-core`. Propagate with `?` + `.context()`. `.unwrap()`/`.expect()` only in tests or provably-unreachable spots (then `.expect("invariant …")`).
 - **Comments: WHY, not WHAT.**
@@ -46,7 +47,7 @@ Heads depend on core, **never the reverse.**
 - **Conventional Commits with a real scope**: `feat(engine): …`, `fix(cli): …`, `docs: …`. No `Co-Authored-By` trailer.
 - **Fast-forward only; never commit to `master`.** Work on a feature branch; rebase; push `--force-with-lease` (never `--force`) after a rebase.
 - **Hard-to-reverse decisions get an ADR** (`docs/adr/`, next number, immutable) **and** a `docs/architecture.md` update, in the same change.
-- Full issue→PR loop (branch → push → PR → address review): see the `/git` skill at `.claude/skills/git/SKILL.md`.
+- Full issue→PR loop (branch → push → PR → address review): see the `/git` skill at `.agents/skills/git/SKILL.md`.
 
 ## Runtime env (for `make run`/`skutter`)
 
