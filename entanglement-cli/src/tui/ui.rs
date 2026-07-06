@@ -3,11 +3,54 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
+use std::hash::Hasher;
 
 use crate::tui::app::{App, ApprovalMode, TranscriptEntry};
+
+fn agent_color(name: &str) -> Color {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(name, &mut hasher);
+    let hash = hasher.finish();
+
+    let hue = (hash % 360) as u8;
+    let saturation = 70;
+    let value = 90;
+
+    hsv_to_rgb(hue, saturation, value)
+}
+
+fn hsv_to_rgb(h: u8, s: u8, v: u8) -> Color {
+    let h = h as f64 / 360.0;
+    let s = s as f64 / 100.0;
+    let v = v as f64 / 100.0;
+
+    let c = v * s;
+    let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+
+    let (r, g, b) = if h < 1.0 / 6.0 {
+        (c, x, 0.0)
+    } else if h < 2.0 / 6.0 {
+        (x, c, 0.0)
+    } else if h < 3.0 / 6.0 {
+        (0.0, c, x)
+    } else if h < 4.0 / 6.0 {
+        (0.0, x, c)
+    } else if h < 5.0 / 6.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    Color::Rgb(
+        ((r + m) * 255.0) as u8,
+        ((g + m) * 255.0) as u8,
+        ((b + m) * 255.0) as u8,
+    )
+}
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -24,6 +67,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_status_bar(f, chunks[0], app);
     draw_body(f, chunks[1], app);
     draw_input(f, chunks[2], app);
+
+    if app.showing_profile_picker() {
+        draw_profile_picker(f, app);
+    }
 
     app.clear_dirty();
 }
@@ -45,6 +92,8 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         AgentState::Error => "Error",
     };
 
+    let agent_color = agent_color(app.agent());
+
     let status = Line::from(vec![
         Span::styled("skutter", Style::default().bold()),
         Span::raw(" | "),
@@ -53,7 +102,9 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
             Style::default().dim(),
         ),
         Span::raw(" | "),
-        Span::styled(format!("Agent: {}", app.agent()), Style::default()),
+        Span::styled("[", Style::default().dim()),
+        Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
+        Span::styled("]", Style::default().dim()),
         Span::raw(" | "),
         Span::styled(state_text, Style::default().fg(state_color).bold()),
     ]);
@@ -190,7 +241,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     match &approval_mode {
         ApprovalMode::Normal => {
             input
-                .set_placeholder_text("Type a message... (Enter to send, Shift+Enter for newline)");
+                .set_placeholder_text("Type a message... (Enter to send, Shift+Enter for newline) | Tab: cycle agent | Ctrl+A: agent picker");
         }
         ApprovalMode::WaitingForApproval { .. } => {
             input.set_placeholder_text("Waiting for approval... Use [y] approve, [n] reject, [e] edit reason, [Esc] interrupt");
@@ -201,4 +252,53 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     }
     input.set_block(ratatui::widgets::Block::new().borders(Borders::TOP));
     f.render_widget(&*input, area);
+}
+
+pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
+    let profiles = app.available_profiles().to_vec();
+    let items: Vec<ListItem> = profiles
+        .iter()
+        .map(|p| {
+            let color = agent_color(&p.name);
+            ListItem::new(Line::from(vec![
+                Span::styled("[", Style::default().dim()),
+                Span::styled(&p.name, Style::default().fg(color).bold()),
+                Span::styled("]", Style::default().dim()),
+                Span::raw(" "),
+                Span::styled(&p.description, Style::default().dim()),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Select Agent Profile (Esc to close, Enter to select)"),
+        )
+        .highlight_style(Style::default().bg(ratatui::style::Color::DarkGray));
+
+    let area = centered_rect(60, 40, f.area());
+    f.render_widget(Clear, area);
+    f.render_stateful_widget(list, area, app.profile_picker_state());
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }

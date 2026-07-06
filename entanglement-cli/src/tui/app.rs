@@ -1,4 +1,5 @@
 use entanglement_core::{AgentState, Holly, OutEvent, SessionId, TaskItem};
+use ratatui::widgets::ListState;
 use std::collections::VecDeque;
 use tracing::debug;
 use tui_textarea::{CursorMove, TextArea};
@@ -32,6 +33,12 @@ pub enum ApprovalMode {
 
 const HISTORY_CAPACITY: usize = 100;
 
+#[derive(Clone)]
+pub struct ProfileInfo {
+    pub name: String,
+    pub description: String,
+}
+
 pub struct App {
     _holly: Holly,
     session_id: SessionId,
@@ -62,6 +69,12 @@ pub struct App {
     // Approval state
     approval_mode: ApprovalMode,
     pending_tool_request: Option<(String, String, String)>,
+
+    // Profile picker state
+    showing_profile_picker: bool,
+    profile_picker_state: ListState,
+    available_profiles: Vec<ProfileInfo>,
+    primary_profile_order: Vec<String>,
 }
 
 impl App {
@@ -69,11 +82,36 @@ impl App {
         let mut input = TextArea::default();
         input.set_placeholder_text("Type a message... (Enter to send, Shift+Enter for newline)");
 
+        let available_profiles = vec![
+            ProfileInfo {
+                name: "build".to_string(),
+                description: "Coding agent - implements changes using available tools".to_string(),
+            },
+            ProfileInfo {
+                name: "plan".to_string(),
+                description: "Planning agent - produces plans without making changes".to_string(),
+            },
+            ProfileInfo {
+                name: "explore".to_string(),
+                description: "Read-only exploration agent - answers questions about codebase"
+                    .to_string(),
+            },
+        ];
+
+        let primary_profile_order = vec![
+            "build".to_string(),
+            "plan".to_string(),
+            "explore".to_string(),
+        ];
+
+        let mut profile_picker_state = ListState::default();
+        profile_picker_state.select(Some(0));
+
         Self {
             _holly: holly,
             session_id,
             dirty: true,
-            agent: "default".to_string(),
+            agent: "build".to_string(),
             state: AgentState::Idle,
             transcript: Vec::new(),
             plan: None,
@@ -87,6 +125,10 @@ impl App {
             history_search_term: None,
             approval_mode: ApprovalMode::Normal,
             pending_tool_request: None,
+            showing_profile_picker: false,
+            profile_picker_state,
+            available_profiles,
+            primary_profile_order,
         }
     }
 
@@ -379,5 +421,80 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn showing_profile_picker(&self) -> bool {
+        self.showing_profile_picker
+    }
+
+    pub fn profile_picker_state(&mut self) -> &mut ListState {
+        &mut self.profile_picker_state
+    }
+
+    pub fn available_profiles(&self) -> &[ProfileInfo] {
+        &self.available_profiles
+    }
+
+    pub fn toggle_profile_picker(&mut self) {
+        self.showing_profile_picker = !self.showing_profile_picker;
+        if self.showing_profile_picker {
+            let current_index = self
+                .available_profiles
+                .iter()
+                .position(|p| p.name == self.agent)
+                .unwrap_or(0);
+            self.profile_picker_state.select(Some(current_index));
+        }
+        self.mark_dirty();
+    }
+
+    pub fn close_profile_picker(&mut self) {
+        self.showing_profile_picker = false;
+        self.mark_dirty();
+    }
+
+    pub fn select_profile_picker(&mut self) -> Option<String> {
+        if let Some(selected) = self.profile_picker_state.selected() {
+            if selected < self.available_profiles.len() {
+                let profile_name = self.available_profiles[selected].name.clone();
+                self.showing_profile_picker = false;
+                self.mark_dirty();
+                return Some(profile_name);
+            }
+        }
+        None
+    }
+
+    pub fn profile_picker_next(&mut self) {
+        if let Some(selected) = self.profile_picker_state.selected() {
+            let next = (selected + 1) % self.available_profiles.len();
+            self.profile_picker_state.select(Some(next));
+            self.mark_dirty();
+        }
+    }
+
+    pub fn profile_picker_prev(&mut self) {
+        if let Some(selected) = self.profile_picker_state.selected() {
+            let prev = if selected == 0 {
+                self.available_profiles.len() - 1
+            } else {
+                selected - 1
+            };
+            self.profile_picker_state.select(Some(prev));
+            self.mark_dirty();
+        }
+    }
+
+    pub fn cycle_primary_profile(&mut self) -> Option<String> {
+        let current_index = self
+            .primary_profile_order
+            .iter()
+            .position(|name| name == &self.agent)
+            .unwrap_or(0);
+        let next_index = (current_index + 1) % self.primary_profile_order.len();
+        let new_agent = self.primary_profile_order[next_index].clone();
+        self.agent = new_agent.clone();
+        self.mark_dirty();
+        Some(new_agent)
     }
 }
