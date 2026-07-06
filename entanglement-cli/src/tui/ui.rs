@@ -9,21 +9,38 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
+use crate::tui::input_panel;
 use crate::tui::keybindings::LeaderState;
 use crate::tui::modals::{self, draw_model_picker, draw_profile_picker};
-use crate::tui::progress;
-use crate::tui::session_view::ApprovalMode;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
     let (main_area, sidebar_area) = if app.showing_sidebar() {
-        let horizontal_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(app.sidebar_width())])
-            .split(size);
-
-        (horizontal_chunks[0], Some(horizontal_chunks[1]))
+        let sidebar_width = app.sidebar_width();
+        if size.width > sidebar_width + 1 {
+            let horizontal_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                    Constraint::Length(sidebar_width),
+                ])
+                .split(size);
+            (
+                horizontal_chunks[0],
+                Some((horizontal_chunks[1], horizontal_chunks[2])),
+            )
+        } else {
+            let horizontal_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Length(sidebar_width)])
+                .split(size);
+            (
+                horizontal_chunks[0],
+                Some((Rect::default(), horizontal_chunks[1])),
+            )
+        }
     } else {
         (size, None)
     };
@@ -33,13 +50,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(4),
+            Constraint::Length(1),
+            Constraint::Length(2),
             Constraint::Length(1),
         ])
         .split(main_area);
 
     draw_status_bar(f, chunks[0], app);
     draw_body(f, chunks[1], app);
+    input_panel::draw_top_padding(f, chunks[2], app);
 
     let input_horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -47,14 +66,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Constraint::Length(app.agent().len() as u16 + 4),
             Constraint::Min(0),
         ])
-        .split(chunks[2]);
+        .split(chunks[3]);
 
-    draw_profile_badge(f, input_horizontal_chunks[0], app);
-    draw_input(f, input_horizontal_chunks[1], app);
+    input_panel::draw_profile_badge(f, input_horizontal_chunks[0], app);
+    input_panel::draw_input(f, input_horizontal_chunks[1], app);
 
-    draw_input_info(f, chunks[3], app);
+    input_panel::draw_input_info(f, chunks[4], app);
 
-    if let Some(sidebar) = sidebar_area {
+    if let Some((gutter, sidebar)) = sidebar_area {
+        if gutter.width > 0 {
+            let gutter_para = Paragraph::new("").style(Style::default());
+            f.render_widget(gutter_para, gutter);
+        }
         draw_sidebar(f, sidebar, app);
     }
 
@@ -128,116 +151,12 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
         area
     };
 
-    let lines = crate::tui::transcript::render_body_lines(app);
+    let lines = crate::tui::transcript::render_body_lines(app, inner_area.width);
 
     let text = Text::from(lines);
-    let paragraph = Paragraph::new(text)
-        .wrap(Wrap { trim: false })
-        .scroll((app.scroll_offset() as u16, 0));
+    let paragraph = Paragraph::new(text).scroll((app.scroll_offset() as u16, 0));
 
     f.render_widget(paragraph, inner_area);
-}
-
-fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
-    let theme = app.theme();
-    let user_input = theme.user_input_colors(app.profile_color_for(app.agent()));
-
-    let agent_color = app.profile_color_for(app.agent());
-    let state_color = match app.state() {
-        AgentState::Idle => Color::Green,
-        AgentState::Thinking => Color::Yellow,
-        AgentState::WaitingApproval => Color::Cyan,
-        AgentState::Done => Color::Blue,
-        AgentState::Error => Color::Red,
-    };
-
-    let state_text = match app.state() {
-        AgentState::Idle => "Idle",
-        AgentState::Thinking => "Thinking",
-        AgentState::WaitingApproval => "WaitingApproval",
-        AgentState::Done => "Done",
-        AgentState::Error => "Error",
-    };
-
-    let badge_top = Line::from(vec![Span::styled(
-        app.agent(),
-        Style::default().fg(agent_color).bold(),
-    )]);
-
-    let badge_bottom = Line::from(vec![Span::styled(
-        state_text,
-        Style::default().fg(state_color),
-    )]);
-
-    let vertical_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(area);
-
-    let top_badge = Paragraph::new(badge_top)
-        .alignment(Alignment::Center)
-        .style(Style::default().bg(user_input.bg));
-    f.render_widget(top_badge, vertical_chunks[0]);
-
-    if let Some(since) = app.thinking_since() {
-        progress::draw_ship_cruise(
-            f,
-            vertical_chunks[1],
-            since,
-            app.profile_color_for(app.agent()),
-            app.theme(),
-        );
-    } else {
-        let bottom_badge = Paragraph::new(badge_bottom)
-            .alignment(Alignment::Center)
-            .style(Style::default().bg(user_input.bg));
-        f.render_widget(bottom_badge, vertical_chunks[1]);
-    }
-}
-
-fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
-    let approval_mode = app.approval_mode().clone();
-    let theme = app.theme();
-    let input = app.input();
-
-    match &approval_mode {
-        ApprovalMode::Normal => {
-            input.set_placeholder_text("Type a message... | Shift+Enter: newline | Enter: send");
-        }
-        ApprovalMode::WaitingForApproval { .. } => {
-            input.set_placeholder_text("Waiting for approval... Use [y] approve, [n] reject, [e] edit reason, [Esc] interrupt");
-        }
-        ApprovalMode::EnteringRejectReason { .. } => {
-            input.set_placeholder_text("Enter rejection reason... (Enter to send, Esc to cancel)");
-        }
-    }
-    input.set_block(ratatui::widgets::Block::new());
-    input.set_style(Style::default().bg(theme.input_bg));
-    input.set_cursor_line_style(Style::default());
-    f.render_widget(&*input, area);
-
-    if matches!(approval_mode, ApprovalMode::Normal) {
-        modals::draw_slash_autocomplete(f, app, area);
-    }
-}
-
-fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
-    let model_info = app.model_info();
-
-    let model_display = format!("{}/{}", model_info.provider, model_info.model);
-    let tokens_display = format!("{} in / {} out", app.input_tokens(), app.output_tokens());
-    let help_text = app.help_text();
-
-    let info_line = Line::from(vec![
-        Span::styled(model_display, Style::default().fg(Color::Cyan)),
-        Span::raw(" | "),
-        Span::styled(tokens_display, Style::default().fg(Color::Yellow)),
-        Span::raw(" | "),
-        Span::styled(help_text, Style::default().dim()),
-    ]);
-
-    let paragraph = Paragraph::new(info_line).alignment(Alignment::Right);
-    f.render_widget(paragraph, area);
 }
 
 fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
@@ -358,8 +277,6 @@ mod tests {
         terminal.draw(|f| draw_body(f, f.area(), &app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
 
-        // With Borders::ALL removed, all rows are content. Assistant text now
-        // gets decorated (accent bar + space), which uses 2 columns per line.
         let non_empty_rows = (0..10)
             .filter(|&y| {
                 (0..30)
@@ -368,8 +285,6 @@ mod tests {
             })
             .count();
 
-        // 10 short words at width 30 wrap onto a couple of rows; rendering
-        // each streamed delta as its own markdown blob put one word per row.
         assert!(
             non_empty_rows <= 4,
             "expected a wrapped paragraph, got {non_empty_rows} non-empty rows"

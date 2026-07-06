@@ -1,6 +1,6 @@
 use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 use ratatui::{
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
 };
 

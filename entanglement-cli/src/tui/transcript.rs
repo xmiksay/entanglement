@@ -10,7 +10,8 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 use crate::tui::theme::{RoleColors, Theme};
 
-pub(crate) fn render_body_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
+use crate::tui::wrap;
+pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
     let markdown_renderer = app.markdown_renderer();
     let theme = app.theme();
@@ -40,7 +41,14 @@ pub(crate) fn render_body_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
         lines.push(Line::from(""));
     }
 
-    append_transcript(&mut lines, markdown_renderer, app, theme, user);
+    append_transcript(
+        &mut lines,
+        markdown_renderer,
+        app,
+        theme,
+        user,
+        available_width,
+    );
 
     if let ApprovalMode::WaitingForApproval { .. } = app.approval_mode() {
         if let Some((_, tool, input)) = app.pending_tool_request() {
@@ -96,6 +104,7 @@ fn append_transcript<'a>(
     app: &'a App,
     theme: Theme,
     user: RoleColors,
+    available_width: u16,
 ) {
     fn render_text_run<'a>(
         lines: &mut Vec<Line<'a>>,
@@ -103,14 +112,18 @@ fn append_transcript<'a>(
         run: &str,
         theme: Theme,
         assistant: RoleColors,
+        available_width: u16,
     ) {
         if run.trim().is_empty() {
             return;
         }
         let rendered = markdown_renderer.render(run);
         for line in rendered.lines {
-            let decorated = theme.decorate(line, assistant);
-            lines.push(decorated);
+            let wrapped = wrap::wrap_line(line, available_width.saturating_sub(2));
+            for wline in wrapped {
+                let decorated = theme.decorate(wline, assistant);
+                lines.push(decorated);
+            }
         }
     }
 
@@ -131,7 +144,14 @@ fn append_transcript<'a>(
             if !last_was_text_delta && !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-            render_text_run(lines, markdown_renderer, &pending_text, theme, assistant);
+            render_text_run(
+                lines,
+                markdown_renderer,
+                &pending_text,
+                theme,
+                assistant,
+                available_width,
+            );
             pending_text.clear();
         }
         last_was_text_delta = false;
@@ -151,7 +171,10 @@ fn append_transcript<'a>(
                             Style::default().fg(user.fg)
                         },
                     )]);
-                    lines.push(theme.decorate(user_line, user));
+                    let wrapped = wrap::wrap_line(user_line, available_width.saturating_sub(2));
+                    for wline in wrapped {
+                        lines.push(theme.decorate(wline, user));
+                    }
                 }
             }
             TranscriptEntry::ToolRequest { tool, input, .. } => {
@@ -162,10 +185,16 @@ fn append_transcript<'a>(
                     Span::styled("Tool Request: ", Style::default().fg(Color::Cyan)),
                     Span::styled(tool, Style::default().bold()),
                 ]);
-                lines.push(theme.decorate(request_line, tool_req));
+                let wrapped = wrap::wrap_line(request_line, available_width.saturating_sub(2));
+                for wline in wrapped {
+                    lines.push(theme.decorate(wline, tool_req));
+                }
                 for line in input.lines() {
                     let content_line = Line::from(format!("  {line}"));
-                    lines.push(theme.decorate(content_line, tool_req));
+                    let wrapped = wrap::wrap_line(content_line, available_width.saturating_sub(2));
+                    for wline in wrapped {
+                        lines.push(theme.decorate(wline, tool_req));
+                    }
                 }
             }
             TranscriptEntry::ToolOutput { output } => {
@@ -173,7 +202,10 @@ fn append_transcript<'a>(
                     lines.push(Line::from(""));
                 }
                 let output_header = Line::from("Tool Output:");
-                lines.push(theme.decorate(output_header, tool_out));
+                let wrapped = wrap::wrap_line(output_header, available_width.saturating_sub(2));
+                for wline in wrapped {
+                    lines.push(theme.decorate(wline, tool_out));
+                }
 
                 if output.contains("---")
                     || output.contains("+++")
@@ -187,7 +219,11 @@ fn append_transcript<'a>(
                 } else {
                     for line in output.lines() {
                         let content_line = Line::from(format!("  {line}"));
-                        lines.push(theme.decorate(content_line, tool_out).fg(Color::DarkGray));
+                        let wrapped =
+                            wrap::wrap_line(content_line, available_width.saturating_sub(2));
+                        for wline in wrapped {
+                            lines.push(theme.decorate(wline, tool_out).fg(Color::DarkGray));
+                        }
                     }
                 }
             }
@@ -199,7 +235,10 @@ fn append_transcript<'a>(
                     Span::styled("Error: ", Style::default().fg(Color::Red).bold()),
                     Span::styled(message, Style::default().fg(Color::Red)),
                 ]);
-                lines.push(theme.decorate(error_line, error));
+                let wrapped = wrap::wrap_line(error_line, available_width.saturating_sub(2));
+                for wline in wrapped {
+                    lines.push(theme.decorate(wline, error));
+                }
             }
             TranscriptEntry::Done => {
                 lines.push(Line::from(""));
@@ -208,7 +247,14 @@ fn append_transcript<'a>(
         }
     }
     if !pending_text.is_empty() {
-        render_text_run(lines, markdown_renderer, &pending_text, theme, assistant);
+        render_text_run(
+            lines,
+            markdown_renderer,
+            &pending_text,
+            theme,
+            assistant,
+            available_width,
+        );
     }
 }
 
@@ -238,7 +284,7 @@ mod tests {
             });
         }
 
-        let lines = render_body_lines(&app);
+        let lines = render_body_lines(&app, 80);
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -250,7 +296,6 @@ mod tests {
             let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
             println!("  {s:?}");
         }
-        // The completed table must produce a dashed separator row.
         let has_grid = lines.iter().any(|l| {
             let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
             s.contains("---")
@@ -267,7 +312,7 @@ mod tests {
         let mut app = App::new(sid.clone());
         app.record_user_message("Hello world".to_string());
 
-        let lines = render_body_lines(&app);
+        let lines = render_body_lines(&app, 80);
         let user_color = hash_profile_color("build");
         let theme = app.theme();
         let expected_user_bg = theme.user_colors(user_color).bg;
@@ -302,7 +347,7 @@ mod tests {
             text: "Response".to_string(),
         });
 
-        let lines = render_body_lines(&app);
+        let lines = render_body_lines(&app, 80);
         let theme = app.theme();
         let expected_bg = theme.assistant_colors().bg;
 
