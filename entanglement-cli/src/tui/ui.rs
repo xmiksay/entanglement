@@ -1,4 +1,5 @@
 use entanglement_core::{AgentState, TaskStatus};
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
@@ -58,6 +59,17 @@ fn hsv_to_rgb(h: u8, s: u8, v: u8) -> Color {
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
+    let (main_area, sidebar_area) = if app.showing_sidebar() {
+        let horizontal_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(app.sidebar_width())])
+            .split(size);
+
+        (horizontal_chunks[0], Some(horizontal_chunks[1]))
+    } else {
+        (size, None)
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -65,7 +77,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Constraint::Min(0),
             Constraint::Length(3),
         ])
-        .split(size);
+        .split(main_area);
 
     draw_status_bar(f, chunks[0], app);
     draw_body(f, chunks[1], app);
@@ -80,6 +92,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_profile_badge(f, input_chunks[0], app);
     draw_input(f, input_chunks[1], app);
+
+    if let Some(sidebar) = sidebar_area {
+        draw_sidebar(f, sidebar, app);
+    }
 
     if app.showing_profile_picker() {
         draw_profile_picker(f, app);
@@ -320,4 +336,88 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     if matches!(approval_mode, ApprovalMode::Normal) {
         modals::draw_slash_autocomplete(f, app, area);
     }
+}
+
+fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
+    let sessions = app.sessions();
+    let active_id = app.active_session_id();
+    let plan = app.plan();
+
+    let mut lines = Vec::new();
+
+    lines.push(Line::from("Sessions").bold());
+    for (id, view) in sessions {
+        let is_active = id.0 == active_id.0;
+        let agent = view.agent();
+        let state = match view.state() {
+            AgentState::Idle => "idle",
+            AgentState::Thinking => "thinking",
+            AgentState::WaitingApproval => "waiting",
+            AgentState::Done => "done",
+            AgentState::Error => "error",
+        };
+
+        let prefix = if is_active { "* " } else { "  " };
+        let line = Line::from(vec![
+            Span::raw(prefix),
+            Span::styled(
+                format!("{}", id),
+                if is_active {
+                    Style::default().bold()
+                } else {
+                    Style::default()
+                },
+            ),
+            Span::raw(" "),
+            Span::styled(agent, Style::default().fg(agent_color(agent))),
+            Span::raw(" "),
+            Span::styled(state, Style::default().dim()),
+        ]);
+        lines.push(line);
+    }
+
+    lines.push(Line::from(""));
+
+    if let Some(plan_content) = plan {
+        lines.push(Line::from("Plan Outline").bold());
+
+        let mut current_level = 0;
+        let parser = Parser::new(plan_content);
+
+        for event in parser {
+            match event {
+                Event::Start(Tag::Heading { level, .. }) => {
+                    current_level = level as usize;
+                }
+                Event::End(TagEnd::Heading(_)) => {
+                    current_level = 0;
+                }
+                Event::Text(text) => {
+                    if current_level > 0 {
+                        let indent = "  ".repeat(current_level.min(3));
+                        let prefix = match current_level {
+                            1 => "# ",
+                            2 => "## ",
+                            _ => "• ",
+                        };
+                        let content = format!("{}{}{}", indent, prefix, text);
+                        let truncated = if content.len() > 40 {
+                            format!("{}...", &content[..40 - 3])
+                        } else {
+                            content
+                        };
+                        lines.push(Line::from(truncated));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let sidebar_text = Text::from(lines);
+    let sidebar_paragraph = Paragraph::new(sidebar_text)
+        .wrap(Wrap { trim: false })
+        .block(Block::new().borders(Borders::ALL));
+
+    f.render_widget(sidebar_paragraph, area);
 }

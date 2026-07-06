@@ -38,6 +38,10 @@ pub struct App {
 
     // Command palette state
     command_palette: CommandPalette,
+
+    // Sidebar state
+    sidebar_visible: bool,
+    sidebar_width: u16,
 }
 
 impl App {
@@ -84,6 +88,8 @@ impl App {
             leader_handler: LeaderKeyHandler::new(),
             showing_help: false,
             command_palette: CommandPalette::new(),
+            sidebar_visible: false,
+            sidebar_width: 24,
         }
     }
 
@@ -431,6 +437,19 @@ impl App {
         &mut self.command_palette
     }
 
+    pub fn showing_sidebar(&self) -> bool {
+        self.sidebar_visible
+    }
+
+    pub fn sidebar_width(&self) -> u16 {
+        self.sidebar_width
+    }
+
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_visible = !self.sidebar_visible;
+        self.mark_dirty();
+    }
+
     pub fn execute_command(&mut self, command: Command) -> bool {
         match command {
             Command::Help => {
@@ -474,7 +493,10 @@ impl App {
                 false
             }
             Action::PickModel => false,
-            Action::ToggleSidebar => false,
+            Action::ToggleSidebar => {
+                self.toggle_sidebar();
+                false
+            }
             Action::OpenEditor => false,
             Action::Export => false,
             Action::Interrupt => false,
