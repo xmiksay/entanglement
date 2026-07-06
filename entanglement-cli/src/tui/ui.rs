@@ -1,4 +1,4 @@
-use entanglement_core::{AgentState, TaskStatus};
+use entanglement_core::AgentState;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -10,11 +10,9 @@ use ratatui::{
 use std::hash::Hasher;
 
 use crate::tui::app::App;
-use crate::tui::diff::DiffRenderer;
 use crate::tui::keybindings::LeaderState;
-use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::modals::{self, draw_model_picker, draw_profile_picker};
-use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
+use crate::tui::session_view::ApprovalMode;
 
 pub(crate) fn agent_color(name: &str) -> Color {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -192,155 +190,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_body(f: &mut Frame, area: Rect, app: &App) {
-    let mut lines = Vec::new();
-    let markdown_renderer = app.markdown_renderer();
-
-    // Add plan if present
-    if let Some(plan) = app.plan() {
-        lines.push(Line::from(""));
-        lines.push(Line::from("Plan:").bold());
-        let rendered_plan = markdown_renderer.render(plan);
-        for line in rendered_plan.lines {
-            lines.push(line);
-        }
-        lines.push(Line::from(""));
-    }
-
-    // Add task list if present
-    if let Some(tasks) = app.task_list() {
-        lines.push(Line::from("Tasks:").bold());
-        for task in tasks {
-            let symbol = match task.status {
-                TaskStatus::Pending => "○",
-                TaskStatus::InProgress => "▶",
-                TaskStatus::Completed => "✓",
-                TaskStatus::Cancelled => "✗",
-            };
-            lines.push(Line::from(format!("  {} {}", symbol, task.content)));
-        }
-        lines.push(Line::from(""));
-    }
-
-    // Add transcript entries. Consecutive `TextDelta` entries are streamed
-    // token-by-token by the engine, so they're coalesced into one string
-    // before markdown rendering — rendering each delta on its own would give
-    // every chunk its own hard line break, wrecking word wrap.
-    fn render_text_run<'a>(
-        lines: &mut Vec<Line<'a>>,
-        markdown_renderer: &'a MarkdownRenderer,
-        run: &str,
-    ) {
-        if !run.trim().is_empty() {
-            let rendered_text = markdown_renderer.render(run);
-            for line in rendered_text.lines {
-                if !line.spans.is_empty() {
-                    lines.push(line);
-                }
-            }
-        }
-    }
-
-    let mut pending_text = String::new();
-    for entry in app.transcript() {
-        if let TranscriptEntry::TextDelta { text } = entry {
-            pending_text.push_str(text);
-            continue;
-        }
-        if !pending_text.is_empty() {
-            render_text_run(&mut lines, markdown_renderer, &pending_text);
-            pending_text.clear();
-        }
-
-        match entry {
-            TranscriptEntry::TextDelta { .. } => unreachable!(),
-            TranscriptEntry::ToolRequest { tool, input, .. } => {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("Tool Request: ", Style::default().fg(Color::Cyan)),
-                    Span::styled(tool, Style::default().bold()),
-                ]));
-                for line in input.lines() {
-                    lines.push(Line::from(format!("  {}", line)));
-                }
-            }
-            TranscriptEntry::ToolOutput { output } => {
-                lines.push(Line::from(""));
-                lines.push(Line::from("Tool Output:").fg(Color::DarkGray));
-
-                // Check if this looks like a diff output from an edit tool
-                if output.contains("---")
-                    || output.contains("+++")
-                    || output.contains("-")
-                    || output.contains("+")
-                {
-                    let diff_text = DiffRenderer::render_unified(output);
-                    for line in diff_text.lines {
-                        lines.push(line);
-                    }
-                } else {
-                    for line in output.lines() {
-                        lines.push(Line::from(format!("  {}", line)).fg(Color::DarkGray));
-                    }
-                }
-            }
-            TranscriptEntry::Error { message } => {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("Error: ", Style::default().fg(Color::Red).bold()),
-                    Span::styled(message, Style::default().fg(Color::Red)),
-                ]));
-            }
-            TranscriptEntry::Done => {
-                lines.push(Line::from(""));
-                lines.push(Line::from("─".repeat(40)).fg(Color::Blue));
-            }
-        }
-    }
-    if !pending_text.is_empty() {
-        render_text_run(&mut lines, markdown_renderer, &pending_text);
-    }
-
-    // Add approval card if waiting for approval
-    if let ApprovalMode::WaitingForApproval { .. } = app.approval_mode() {
-        if let Some((_, tool, input)) = app.pending_tool_request() {
-            lines.push(Line::from(""));
-            lines.push(Line::from("─".repeat(60)).fg(Color::Yellow));
-            lines.push(Line::from(vec![
-                Span::styled("?", Style::default().fg(Color::Yellow).bold()),
-                Span::raw(" "),
-                Span::styled(tool, Style::default().fg(Color::Cyan).bold()),
-            ]));
-
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(input) {
-                if let Ok(pretty) = serde_json::to_string_pretty(&json) {
-                    for line in pretty.lines() {
-                        lines.push(Line::from(format!("  {}", line)));
-                    }
-                } else {
-                    for line in input.lines() {
-                        lines.push(Line::from(format!("  {}", line)));
-                    }
-                }
-            } else {
-                for line in input.lines() {
-                    lines.push(Line::from(format!("  {}", line)));
-                }
-            }
-
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("[y]", Style::default().fg(Color::Green).bold()),
-                Span::raw(" approve  "),
-                Span::styled("[n]", Style::default().fg(Color::Red).bold()),
-                Span::raw(" reject  "),
-                Span::styled("[e]", Style::default().fg(Color::Yellow).bold()),
-                Span::raw(" edit reason  "),
-                Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
-                Span::raw(" interrupt"),
-            ]));
-            lines.push(Line::from("─".repeat(60)).fg(Color::Yellow));
-        }
-    }
+    let lines = crate::tui::transcript::render_body_lines(app);
 
     // Handle scrolling
     let text = Text::from(lines);

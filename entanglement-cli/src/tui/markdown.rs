@@ -1,5 +1,6 @@
+use pulldown_cmark::{Options, Parser};
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span, Text},
 };
 use syntect::{
@@ -7,7 +8,9 @@ use syntect::{
     parsing::SyntaxSet,
 };
 
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+mod md_state;
+
+use md_state::RenderState;
 
 #[derive(Clone)]
 pub struct MarkdownRenderer {
@@ -20,124 +23,37 @@ impl MarkdownRenderer {
         let syntax_set = SyntaxSet::load_defaults_newlines();
         let theme_set = ThemeSet::load_defaults();
         let theme = theme_set.themes["base16-ocean.dark"].clone();
-
         Self { syntax_set, theme }
     }
 
+    /// Parse CommonMark + GFM (tables, strikethrough, task lists, footnotes,
+    /// GitHub alerts) and render to a styled `Text`. The returned `Text`
+    /// borrows from `&self` by convention (matching ratatui's `Text<'_>` idiom);
+    /// every span is built from owned `String`s, so the borrow is nominal and
+    /// the value is freely storable for any lifetime the caller needs.
     pub fn render(&self, markdown: &str) -> Text<'_> {
         if markdown.trim().is_empty() {
             return Text::default();
         }
 
-        let parser = Parser::new(markdown);
-        let mut lines = Vec::new();
-        let mut current_line = Vec::new();
-        let mut in_code_block = false;
-        let mut code_language = String::new();
-        let mut code_content = String::new();
+        let opts = Options::ENABLE_TABLES
+            | Options::ENABLE_STRIKETHROUGH
+            | Options::ENABLE_TASKLISTS
+            | Options::ENABLE_FOOTNOTES
+            | Options::ENABLE_GFM;
 
+        let parser = Parser::new_ext(markdown, opts);
+        let mut state = RenderState::new(self);
         for event in parser {
-            match event {
-                Event::Start(tag) => match tag {
-                    Tag::Paragraph => {
-                        current_line.push(Span::raw("  "));
-                    }
-                    Tag::Heading { level, .. } => {
-                        let prefix = "#".repeat(level as usize);
-                        current_line.push(Span::styled(
-                            format!("{} ", prefix),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ));
-                    }
-                    Tag::Emphasis => {}
-                    Tag::Strong => {}
-                    Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(lang)) => {
-                        in_code_block = true;
-                        code_language = lang.to_string();
-                    }
-                    Tag::List(_) => {}
-                    Tag::Item => {
-                        current_line.push(Span::raw("  • "));
-                    }
-                    Tag::Link { .. } => {}
-                    _ => {}
-                },
-                Event::End(tag_end) => match tag_end {
-                    TagEnd::Paragraph => {
-                        if !current_line.is_empty() {
-                            lines.push(Line::from(current_line.clone()));
-                            current_line.clear();
-                        }
-                        lines.push(Line::from(""));
-                    }
-                    TagEnd::Heading(_) => {
-                        if !current_line.is_empty() {
-                            lines.push(Line::from(current_line.clone()));
-                            current_line.clear();
-                        }
-                        lines.push(Line::from(""));
-                    }
-                    TagEnd::Emphasis => {}
-                    TagEnd::Strong => {}
-                    TagEnd::CodeBlock => {
-                        in_code_block = false;
-                        let highlighted = self.highlight_code(&code_language, &code_content);
-                        for line in highlighted.lines {
-                            lines.push(line);
-                        }
-                        lines.push(Line::from(""));
-                        code_language.clear();
-                        code_content.clear();
-                    }
-                    TagEnd::List(_) => {}
-                    TagEnd::Item => {
-                        if !current_line.is_empty() {
-                            lines.push(Line::from(current_line.clone()));
-                            current_line.clear();
-                        }
-                    }
-                    TagEnd::Link => {}
-                    _ => {}
-                },
-                Event::Text(text) => {
-                    if in_code_block {
-                        code_content.push_str(&text);
-                    } else {
-                        current_line.push(Span::raw(text.to_string()));
-                    }
-                }
-                Event::Code(text) => {
-                    current_line.push(Span::styled(
-                        format!("`{}`", text),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::ITALIC),
-                    ));
-                }
-                Event::SoftBreak => {
-                    current_line.push(Span::raw(" "));
-                }
-                Event::HardBreak => {
-                    if !current_line.is_empty() {
-                        lines.push(Line::from(current_line.clone()));
-                        current_line.clear();
-                    }
-                }
-                Event::Rule => {
-                    lines.push(Line::from("─".repeat(40)));
-                }
-                _ => {}
-            }
+            state.handle(event);
         }
-
-        if !current_line.is_empty() {
-            lines.push(Line::from(current_line));
-        }
-
-        Text::from(lines)
+        state.finish()
     }
 
-    fn highlight_code(&self, language: &str, code: &str) -> Text<'_> {
+    /// Highlight a fenced code block via syntect. `pub(super)` so the state
+    /// machine in `md_state` can delegate here without exposing syntect to the
+    /// rest of the crate.
+    pub(super) fn highlight_code(&self, language: &str, code: &str) -> Text<'static> {
         let syntax = self
             .syntax_set
             .find_syntax_by_token(language)
@@ -175,6 +91,18 @@ impl Default for MarkdownRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Modifier;
+
+    fn render_str(md: &str) -> String {
+        let renderer = MarkdownRenderer::new();
+        let result = renderer.render(md);
+        result
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
 
     #[test]
     fn test_render_plain_text() {
@@ -185,22 +113,10 @@ mod tests {
 
     #[test]
     fn test_render_plain_text_no_word_duplication() {
-        let renderer = MarkdownRenderer::new();
-        let result = renderer.render("one two three four");
-        let rendered: String = result
-            .lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(rendered.trim(), "one two three four");
-    }
-
-    #[test]
-    fn test_render_bold() {
-        let renderer = MarkdownRenderer::new();
-        let result = renderer.render("**bold text**");
-        assert!(!result.lines.is_empty());
+        assert_eq!(
+            render_str("one two three four").trim(),
+            "one two three four"
+        );
     }
 
     #[test]
@@ -229,5 +145,101 @@ mod tests {
         let renderer = MarkdownRenderer::new();
         let result = renderer.render("- Item 1\n- Item 2");
         assert!(!result.lines.is_empty());
+    }
+
+    #[test]
+    fn soft_breaks_preserve_each_line() {
+        // Regression for the "split by whitespace and joined with space" bug:
+        // three source lines must render as three content lines, not one.
+        let renderer = MarkdownRenderer::new();
+        let result = renderer.render("line one\nline two\nline three");
+        let non_empty = result.lines.iter().filter(|l| !l.spans.is_empty()).count();
+        assert_eq!(non_empty, 3, "expected 3 lines, got {non_empty}");
+    }
+
+    #[test]
+    fn bold_and_italic_apply_style_modifiers() {
+        let renderer = MarkdownRenderer::new();
+        let result = renderer.render("**bold** and *italic*");
+        let modifiers: Vec<Modifier> = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.style.add_modifier)
+            .collect();
+        assert!(
+            modifiers.iter().any(|m| m.contains(Modifier::BOLD)),
+            "expected a bold span, got {modifiers:?}"
+        );
+        assert!(
+            modifiers.iter().any(|m| m.contains(Modifier::ITALIC)),
+            "expected an italic span, got {modifiers:?}"
+        );
+    }
+
+    #[test]
+    fn strikethrough_applies_crossed_out() {
+        let renderer = MarkdownRenderer::new();
+        let result = renderer.render("~~removed~~");
+        let has_strike = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.style.add_modifier.contains(Modifier::CROSSED_OUT));
+        assert!(has_strike, "expected a struck-through span");
+    }
+
+    #[test]
+    fn table_renders_pipe_grid_with_separator() {
+        let renderer = MarkdownRenderer::new();
+        let md = "| name | role |\n| --- | --- |\n| holly | engine |\n| tui | head |";
+        let result = renderer.render(md);
+
+        let joined: String = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            joined.contains('|'),
+            "table rows should contain pipes: {joined}"
+        );
+        assert!(
+            result.lines.iter().any(|l| {
+                let s: String = l
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>();
+                s.contains("---")
+            }),
+            "expected a dashed separator row after the header"
+        );
+        assert!(
+            result.lines.iter().any(|l| {
+                let s: String = l
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>();
+                s.contains("holly")
+            }),
+            "expected a row containing 'holly'"
+        );
+    }
+
+    #[test]
+    fn blockquote_renders_with_quote_bar() {
+        let renderer = MarkdownRenderer::new();
+        let result = renderer.render("> quoted text");
+        let joined: String = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(joined.contains('▌'), "expected a blockquote bar: {joined}");
+        assert!(joined.contains("quoted text"));
     }
 }

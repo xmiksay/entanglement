@@ -343,6 +343,14 @@ impl App {
         self.sessions.active_view_mut().note_prompt_sent();
     }
 
+    /// Records the user's prompt into the active session's transcript so the
+    /// chat scrollback mirrors a real conversation (the engine never echoes
+    /// `InMsg::Prompt` back as an `OutEvent`).
+    pub fn record_user_message(&mut self, text: String) {
+        self.sessions.active_view_mut().record_user_message(text);
+        self.mark_dirty();
+    }
+
     pub fn handle_out_event(&mut self, event: OutEvent) {
         tracing::debug!("App handling OutEvent: {:?}", event);
         if self.sessions.handle_out_event(event) {
