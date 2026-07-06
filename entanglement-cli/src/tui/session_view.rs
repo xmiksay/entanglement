@@ -1,25 +1,12 @@
 use entanglement_core::{AgentState, OutEvent, TaskItem};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
-    User {
-        text: String,
-    },
-    TextDelta {
-        text: String,
-    },
-    ToolRequest {
-        tool: String,
-        input: String,
-        #[allow(dead_code)]
-        request_id: String,
-    },
-    ToolOutput {
-        output: String,
-    },
-    Error {
-        message: String,
-    },
+    User { text: String, pending: bool },
+    TextDelta { text: String },
+    ToolRequest { tool: String, input: String },
+    ToolOutput { output: String },
+    Error { message: String },
     Done,
 }
 
@@ -157,7 +144,10 @@ impl SessionView {
     /// no `seq` and bypass the dedupe guard — they originate here, not the
     /// engine broadcast.
     pub fn record_user_message(&mut self, text: String) {
-        self.transcript.push(TranscriptEntry::User { text });
+        self.transcript.push(TranscriptEntry::User {
+            text,
+            pending: true,
+        });
         if self.auto_follow {
             self.scroll_offset = 0;
         }
@@ -192,6 +182,12 @@ impl SessionView {
             }
             OutEvent::TextDelta { seq, text, .. } => {
                 if seq > self.last_seen_seq {
+                    for entry in self.transcript.iter_mut().rev() {
+                        if let TranscriptEntry::User { pending, .. } = entry {
+                            *pending = false;
+                            break;
+                        }
+                    }
                     self.transcript.push(TranscriptEntry::TextDelta { text });
                     self.last_seen_seq = seq;
                     if self.auto_follow {
@@ -213,7 +209,6 @@ impl SessionView {
                     self.transcript.push(TranscriptEntry::ToolRequest {
                         tool: tool.clone(),
                         input: input.clone(),
-                        request_id: request_id.clone(),
                     });
                     self.last_seen_seq = seq;
                     self.pending_tool_request = Some((request_id.clone(), tool, input));
@@ -367,7 +362,7 @@ mod tests {
         });
 
         let entries = v.transcript();
-        assert!(matches!(entries[0], TranscriptEntry::User { ref text } if text == "hello?"));
+        assert!(matches!(entries[0], TranscriptEntry::User { ref text, .. } if text == "hello?"));
         assert!(matches!(entries[1], TranscriptEntry::TextDelta { .. }));
         assert_eq!(entries.len(), 2);
     }

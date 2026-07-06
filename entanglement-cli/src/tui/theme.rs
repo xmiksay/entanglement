@@ -98,11 +98,7 @@ impl Theme {
     }
 
     pub fn decorate<'a>(self, mut line: Line<'a>, c: RoleColors) -> Line<'a> {
-        let content_width: u16 = line
-            .spans
-            .iter()
-            .map(|s| s.width() as u16)
-            .sum();
+        let content_width: u16 = line.spans.iter().map(|s| s.width() as u16).sum();
 
         line.style = line.style.bg(c.bg);
         line.spans.insert(0, Span::raw(" "));

@@ -198,26 +198,11 @@ fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
 fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let approval_mode = app.approval_mode().clone();
     let theme = app.theme();
-    let multiline = app.is_input_multiline();
     let input = app.input();
-
-    let input_area = Rect::new(
-        area.x + 1,
-        area.y + 1,
-        area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
-    );
 
     match &approval_mode {
         ApprovalMode::Normal => {
-            if multiline {
-                input
-                    .set_placeholder_text("Shift+Enter: add line | Esc: single line | Enter: send");
-            } else {
-                input.set_placeholder_text(
-                    "Type a message... | Shift+Enter: multiline | Enter: send",
-                );
-            }
+            input.set_placeholder_text("Type a message... | Shift+Enter: newline | Enter: send");
         }
         ApprovalMode::WaitingForApproval { .. } => {
             input.set_placeholder_text("Waiting for approval... Use [y] approve, [n] reject, [e] edit reason, [Esc] interrupt");
@@ -229,10 +214,10 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     input.set_block(ratatui::widgets::Block::new());
     input.set_style(Style::default().bg(theme.input_bg));
     input.set_cursor_line_style(Style::default());
-    f.render_widget(&*input, input_area);
+    f.render_widget(&*input, area);
 
     if matches!(approval_mode, ApprovalMode::Normal) {
-        modals::draw_slash_autocomplete(f, app, input_area);
+        modals::draw_slash_autocomplete(f, app, area);
     }
 }
 

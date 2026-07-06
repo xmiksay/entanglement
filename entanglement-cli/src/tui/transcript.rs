@@ -128,26 +128,28 @@ fn append_transcript<'a>(
             continue;
         }
         if !pending_text.is_empty() {
-            if lines.is_empty() || !last_was_text_delta {
-                lines.push(Line::from(""));
+            if !last_was_text_delta && !lines.is_empty() {
                 lines.push(Line::from(""));
             }
             render_text_run(lines, markdown_renderer, &pending_text, theme, assistant);
             pending_text.clear();
-            lines.push(Line::from(""));
         }
         last_was_text_delta = false;
 
         match entry {
             TranscriptEntry::TextDelta { .. } => unreachable!(),
-            TranscriptEntry::User { text } => {
+            TranscriptEntry::User { text, pending } => {
                 if !lines.is_empty() {
                     lines.push(Line::from(""));
                 }
                 for line in text.lines() {
                     let user_line = Line::from(vec![Span::styled(
                         line.to_string(),
-                        Style::default().fg(user.fg),
+                        if *pending {
+                            Style::default().fg(user.fg).dim()
+                        } else {
+                            Style::default().fg(user.fg)
+                        },
                     )]);
                     lines.push(theme.decorate(user_line, user));
                 }

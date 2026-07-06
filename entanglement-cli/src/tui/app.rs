@@ -738,6 +738,7 @@ impl App {
         self.input_multiline
     }
 
+    #[allow(dead_code)]
     pub fn toggle_input_multiline(&mut self) {
         self.input_multiline = !self.input_multiline;
         self.mark_dirty();
