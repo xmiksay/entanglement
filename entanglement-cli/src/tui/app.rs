@@ -581,7 +581,10 @@ impl App {
                 self.toggle_profile_picker();
                 false
             }
-            Command::Model => false,
+            Command::Model => {
+                self.toggle_model_picker();
+                false
+            }
             Command::Plan => false,
             Command::Tasks => false,
             Command::Editor => false,
