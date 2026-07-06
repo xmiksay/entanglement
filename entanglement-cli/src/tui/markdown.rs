@@ -100,10 +100,7 @@ impl MarkdownRenderer {
                     if in_code_block {
                         code_content.push_str(&text);
                     } else {
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            current_line.push(Span::raw(text.to_string()));
-                        }
+                        current_line.push(Span::raw(text.to_string()));
                     }
                 }
                 Event::Code(text) => {
