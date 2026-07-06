@@ -3,6 +3,7 @@ use ratatui::widgets::ListState;
 use std::collections::VecDeque;
 use tui_textarea::{CursorMove, TextArea};
 
+use crate::tui::commands::{Command, CommandPalette};
 use crate::tui::keybindings::{Action, LeaderKeyHandler};
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 use crate::tui::sessions::SessionRegistry;
@@ -34,6 +35,9 @@ pub struct App {
     // Leader key state
     leader_handler: LeaderKeyHandler,
     showing_help: bool,
+
+    // Command palette state
+    command_palette: CommandPalette,
 }
 
 impl App {
@@ -79,6 +83,7 @@ impl App {
             primary_profile_order,
             leader_handler: LeaderKeyHandler::new(),
             showing_help: false,
+            command_palette: CommandPalette::new(),
         }
     }
 
@@ -404,6 +409,51 @@ impl App {
         self.mark_dirty();
     }
 
+    pub fn showing_command_palette(&self) -> bool {
+        self.command_palette.visible()
+    }
+
+    pub fn toggle_command_palette(&mut self) {
+        if self.command_palette.visible() {
+            self.command_palette.hide();
+        } else {
+            self.command_palette.show();
+        }
+        self.mark_dirty();
+    }
+
+    pub fn close_command_palette(&mut self) {
+        self.command_palette.hide();
+        self.mark_dirty();
+    }
+
+    pub fn command_palette(&mut self) -> &mut CommandPalette {
+        &mut self.command_palette
+    }
+
+    pub fn execute_command(&mut self, command: Command) -> bool {
+        match command {
+            Command::Help => {
+                self.toggle_help();
+                false
+            }
+            Command::New => {
+                self.create_session();
+                false
+            }
+            Command::Exit => true,
+            Command::Agent => {
+                self.toggle_profile_picker();
+                false
+            }
+            Command::Model => false,
+            Command::Plan => false,
+            Command::Tasks => false,
+            Command::Editor => false,
+            Command::Export => false,
+        }
+    }
+
     pub fn dispatch_action(&mut self, action: Action) -> bool {
         match action {
             Action::Quit => true,
@@ -440,7 +490,10 @@ impl App {
                 self.toggle_help();
                 false
             }
-            Action::CommandPalette => false,
+            Action::CommandPalette => {
+                self.toggle_command_palette();
+                false
+            }
         }
     }
 }

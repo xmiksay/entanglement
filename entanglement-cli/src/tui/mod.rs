@@ -1,4 +1,5 @@
 mod app;
+mod commands;
 mod event;
 mod keybindings;
 mod modals;
@@ -107,6 +108,9 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                     }
                     return Ok(false);
                 }
+                if app.showing_command_palette() {
+                    return handle_command_palette_event(app, key).await;
+                }
 
                 let current_mode = app.approval_mode().clone();
 
@@ -204,7 +208,10 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                     },
                     ApprovalMode::Normal => match key.code {
                         KeyCode::Tab => {
-                            if let Some(agent_name) = app.cycle_primary_profile() {
+                            let input_text = app.input().lines().join("\n");
+                            if input_text.starts_with('/') && input_text.chars().count() == 1 {
+                                app.toggle_command_palette();
+                            } else if let Some(agent_name) = app.cycle_primary_profile() {
                                 let _ = holly
                                     .send(entanglement_core::InMsg::SetAgent {
                                         session: app.active_session_id().clone(),
@@ -215,6 +222,9 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                         }
                         KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
                             app.toggle_profile_picker();
+                        }
+                        KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+                            app.toggle_command_palette();
                         }
                         KeyCode::Char('q') | KeyCode::Char('c')
                             if key.modifiers == KeyModifiers::CONTROL =>
@@ -236,6 +246,16 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                             } else {
                                 let text = app.take_input_text();
                                 if !text.is_empty() {
+                                    if text.starts_with('/') {
+                                        if let Some(cmd) =
+                                            crate::tui::commands::parse_command(&text)
+                                        {
+                                            if app.execute_command(cmd) {
+                                                return Ok(true);
+                                            }
+                                            return Ok(false);
+                                        }
+                                    }
                                     app.note_prompt_sent();
                                     if let Err(e) = holly
                                         .send(InMsg::Prompt {
@@ -357,6 +377,42 @@ async fn handle_sessions_modal_event(app: &mut App, key: KeyEvent) -> Result<boo
         }
         KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+async fn handle_command_palette_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_command_palette();
+        }
+        KeyCode::Enter => {
+            if let Some(cmd) = app.command_palette().execute_selected() {
+                if app.execute_command(cmd) {
+                    return Ok(true);
+                }
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.command_palette().select_next();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.command_palette().select_prev();
+        }
+        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        KeyCode::Char(c) => {
+            let mut query = app.command_palette().query().to_string();
+            query.push(c);
+            app.command_palette().set_query(query);
+        }
+        KeyCode::Backspace => {
+            let mut query = app.command_palette().query().to_string();
+            query.pop();
+            app.command_palette().set_query(query);
         }
         _ => {}
     }

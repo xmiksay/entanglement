@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -168,4 +168,94 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+pub fn draw_command_palette(f: &mut Frame, app: &mut App) {
+    let palette = app.command_palette();
+    let query = palette.query().to_string();
+    let commands = palette.filtered_commands().to_vec();
+
+    let items: Vec<ListItem> = commands
+        .iter()
+        .map(|cmd| {
+            let name = cmd.slash_name();
+            let description = cmd.description();
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", name),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::styled(description, Style::default().dim()),
+            ]))
+        })
+        .collect();
+
+    let input_paragraph = Paragraph::new(if query.is_empty() {
+        "Type to filter commands..."
+    } else {
+        query.as_str()
+    })
+    .style(Style::default().fg(Color::Yellow));
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Command Palette (Esc to close, Enter to execute)"),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let area = centered_rect(60, 50, f.area());
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
+        .split(area);
+
+    f.render_widget(Clear, area);
+    f.render_widget(input_paragraph, chunks[0]);
+    f.render_stateful_widget(list, chunks[1], palette.state());
+}
+
+pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
+    let input_text = app.input().lines().join("\n");
+
+    if !input_text.starts_with('/') || input_text.chars().count() > 1 {
+        return;
+    }
+
+    let commands = crate::tui::commands::all_commands();
+
+    let items: Vec<ListItem> = commands
+        .iter()
+        .map(|cmd| {
+            let name = cmd.slash_name();
+            let description = cmd.description();
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", name),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::styled(description, Style::default().dim()),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Commands (Tab to select)"),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let popup_area = Rect {
+        x: input_area.x,
+        y: input_area.y.saturating_sub(15),
+        width: input_area.width.min(60),
+        height: 15.min(input_area.y),
+    };
+
+    f.render_widget(Clear, popup_area);
+    f.render_widget(list, popup_area);
 }

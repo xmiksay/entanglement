@@ -93,6 +93,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         modals::draw_help_dialog(f, app.leader_handler().keymap());
     }
 
+    if app.showing_command_palette() {
+        modals::draw_command_palette(f, app);
+    }
+
     if matches!(app.leader_handler().state(), LeaderState::Pending { .. }) {
         modals::draw_which_key_popup(f, app.leader_handler().keymap());
     }
@@ -312,4 +316,8 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     }
     input.set_block(ratatui::widgets::Block::new().borders(Borders::TOP));
     f.render_widget(&*input, area);
+
+    if matches!(approval_mode, ApprovalMode::Normal) {
+        modals::draw_slash_autocomplete(f, app, area);
+    }
 }
