@@ -17,13 +17,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(3),
         ])
         .split(size);
 
     draw_status_bar(f, chunks[0], app);
     draw_body(f, chunks[1], app);
-    draw_footer(f, chunks[2]);
+    draw_input(f, chunks[2], app);
 
     app.clear_dirty();
 }
@@ -142,19 +142,8 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(paragraph, area);
 }
 
-fn draw_footer(f: &mut Frame, area: Rect) {
-    let scroll_hint =
-        if ratatui::crossterm::event::poll(std::time::Duration::from_millis(0)).is_ok() {
-            "PageUp/Down: scroll | q: quit"
-        } else {
-            "q: quit"
-        };
-
-    let footer = Line::from(vec![Span::raw(scroll_hint)]);
-
-    let paragraph = Paragraph::new(footer)
-        .alignment(Alignment::Center)
-        .block(Block::new().borders(Borders::TOP));
-
-    f.render_widget(paragraph, area);
+fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
+    let input = app.input();
+    input.set_block(ratatui::widgets::Block::new().borders(Borders::TOP));
+    f.render_widget(&*input, area);
 }

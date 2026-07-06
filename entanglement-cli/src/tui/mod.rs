@@ -3,7 +3,7 @@ mod event;
 mod ui;
 
 use anyhow::Result;
-use entanglement_core::{Holly, SessionId};
+use entanglement_core::{Holly, InMsg, SessionId};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -43,7 +43,7 @@ pub async fn tui(holly: Holly) -> Result<()> {
         tokio::select! {
             Some(ev) = event_rx.recv() => {
                 debug!("Received event: {:?}", ev);
-                if handle_event(&mut app, &holly, ev)? {
+                if handle_event(&mut app, &holly, ev).await? {
                     break;
                 }
             }
@@ -85,7 +85,7 @@ fn spawn_crossterm_task(tx: mpsc::Sender<Event>) {
     });
 }
 
-fn handle_event(app: &mut App, _holly: &Holly, ev: Event) -> Result<bool> {
+async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
     match ev {
         Event::Key(key) => {
             if key.kind == KeyEventKind::Press {
@@ -105,7 +105,59 @@ fn handle_event(app: &mut App, _holly: &Holly, ev: Event) -> Result<bool> {
                     KeyCode::End => {
                         app.scroll_to_bottom();
                     }
-                    _ => {}
+                    KeyCode::Enter => {
+                        if key.modifiers.contains(KeyModifiers::SHIFT) {
+                            app.input().insert_newline();
+                        } else {
+                            let text = app.take_input_text();
+                            if !text.is_empty() {
+                                if let Err(e) = holly
+                                    .send(InMsg::Prompt {
+                                        session: app.session_id().clone(),
+                                        text,
+                                    })
+                                    .await
+                                {
+                                    debug!("Failed to send prompt: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.input().insert_newline();
+                    }
+                    KeyCode::Up => {
+                        if app.input().cursor().0 == 0 && app.input().cursor().1 == 0 {
+                            app.history_up();
+                        } else {
+                            app.input().move_cursor(tui_textarea::CursorMove::Up);
+                        }
+                    }
+                    KeyCode::Down => {
+                        let input = app.input();
+                        let input_lines = input.lines();
+                        let cursor = input.cursor();
+                        let is_at_end = cursor.0 == input_lines.len().saturating_sub(1)
+                            && cursor.1
+                                == input_lines
+                                    .last()
+                                    .map(|l: &String| l.chars().count())
+                                    .unwrap_or(0);
+
+                        if is_at_end && app.history_index().is_some() {
+                            app.history_down();
+                        } else {
+                            app.input().move_cursor(tui_textarea::CursorMove::Down);
+                        }
+                    }
+                    KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if !app.handle_readline_key(c) {
+                            app.input().input(tui_textarea::Input::from(key));
+                        }
+                    }
+                    _ => {
+                        app.input().input(tui_textarea::Input::from(key));
+                    }
                 }
             }
         }
@@ -120,7 +172,9 @@ fn handle_event(app: &mut App, _holly: &Holly, ev: Event) -> Result<bool> {
         },
         Event::Resize => {}
         Event::FocusGained | Event::FocusLost => {}
-        Event::Paste(_) => {}
+        Event::Paste(s) => {
+            app.input().insert_str(&s);
+        }
     }
     Ok(false)
 }
