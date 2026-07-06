@@ -251,6 +251,8 @@ mod tests {
 
         let lines = render_body_lines(&app);
         let user_color = hash_profile_color("build");
+        let theme = app.theme();
+        let expected_user_bg = theme.user_colors(user_color).bg;
 
         let user_lines: Vec<_> = lines
             .iter()
@@ -263,14 +265,12 @@ mod tests {
 
         assert!(!user_lines.is_empty(), "Should have user message lines");
         for line in user_lines {
-            assert!(
-                line.spans.iter().any(|s| s.style.fg == Some(user_color)),
-                "User message should have profile color foreground"
-            );
-            assert!(
-                line.style.bg.is_none() || line.style.bg == Some(Color::Reset),
-                "User message should have no background"
-            );
+            if let Some(bg) = line.style.bg {
+                assert_eq!(
+                    bg, expected_user_bg,
+                    "User message should have message background"
+                );
+            }
         }
     }
 

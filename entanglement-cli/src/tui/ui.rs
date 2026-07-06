@@ -140,14 +140,21 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
     ]);
     let status = Line::from(spans);
 
-    let paragraph = Paragraph::new(status)
-        .alignment(Alignment::Left)
-        .block(Block::new().borders(Borders::BOTTOM));
+    let paragraph = Paragraph::new(status).alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
 }
 
 fn draw_body(f: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let margin = theme.chat_margin_left;
+
+    let inner_area = if margin > 0 && area.width > margin {
+        Rect::new(area.x + margin, area.y, area.width - margin, area.height)
+    } else {
+        area
+    };
+
     let lines = crate::tui::transcript::render_body_lines(app);
 
     let text = Text::from(lines);
@@ -155,7 +162,7 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
         .wrap(Wrap { trim: false })
         .scroll((app.scroll_offset() as u16, 0));
 
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, inner_area);
 }
 
 fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
@@ -173,14 +180,13 @@ fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
     } else {
         let agent_color = app.profile_color_for(app.agent());
 
-        let badge = Line::from(vec![
-            Span::styled("[", Style::default().fg(Color::DarkGray)),
-            Span::styled(app.agent(), Style::default().fg(agent_color).bold()),
-            Span::styled("]", Style::default().fg(Color::DarkGray)),
-        ]);
+        let badge = Line::from(vec![Span::styled(
+            app.agent(),
+            Style::default().fg(agent_color).bold(),
+        )]);
 
         let paragraph = Paragraph::new(badge)
-            .alignment(Alignment::Left)
+            .alignment(Alignment::Center)
             .style(Style::default().bg(user_input.bg));
         f.render_widget(paragraph, area);
     }
@@ -188,6 +194,7 @@ fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let approval_mode = app.approval_mode().clone();
+    let theme = app.theme();
     let input = app.input();
     match &approval_mode {
         ApprovalMode::Normal => {
@@ -201,7 +208,8 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
             input.set_placeholder_text("Enter rejection reason... (Enter to send, Esc to cancel)");
         }
     }
-    input.set_block(ratatui::widgets::Block::new().borders(Borders::TOP));
+    input.set_block(ratatui::widgets::Block::new());
+    input.set_style(Style::default().bg(theme.input_bg));
     f.render_widget(&*input, area);
 
     if matches!(approval_mode, ApprovalMode::Normal) {

@@ -23,6 +23,8 @@ pub(crate) struct Theme {
     pub message_bg: Color,
     pub sidebar_bg: Color,
     pub sidebar_fg: Color,
+    pub input_bg: Color,
+    pub chat_margin_left: u16,
 }
 
 impl Default for Theme {
@@ -39,6 +41,8 @@ impl Default for Theme {
             message_bg: Color::Rgb(30, 30, 35),
             sidebar_bg: Color::Rgb(26, 26, 33),
             sidebar_fg: Color::Cyan,
+            input_bg: Color::Rgb(26, 26, 33),
+            chat_margin_left: 2,
         }
     }
 }
@@ -47,14 +51,14 @@ impl Theme {
     pub fn user_colors(self, profile_color: Color) -> RoleColors {
         RoleColors {
             fg: profile_color,
-            bg: Color::Reset,
+            bg: self.message_bg,
         }
     }
 
     pub fn user_input_colors(self, profile_color: Color) -> RoleColors {
         RoleColors {
             fg: profile_color,
-            bg: self.sidebar_bg,
+            bg: self.input_bg,
         }
     }
 
