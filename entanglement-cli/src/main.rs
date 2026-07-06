@@ -236,15 +236,16 @@ async fn main() -> Result<()> {
         }
         Some(Cmd::Pipe { session }) => pipe(&holly, &SessionId::new(session)).await,
         Some(Cmd::Tui { session, agent }) => {
+            let session_id = SessionId::new(session);
             if let Some(a) = agent {
                 holly
                     .send(InMsg::SetAgent {
-                        session: SessionId::new(session.clone()),
+                        session: session_id.clone(),
                         agent: a.to_string(),
                     })
                     .await?;
             }
-            tui(holly).await
+            tui(holly, session_id).await
         }
         None => {
             let prompt = cli.prompt.join(" ");
