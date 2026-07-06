@@ -33,30 +33,29 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ])
         .split(main_area);
 
     draw_status_bar(f, chunks[0], app);
     draw_body(f, chunks[1], app);
 
-    let input_height = if app.is_input_multiline() { 5 } else { 3 };
-    let input_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(input_height), Constraint::Length(1)])
-        .split(chunks[2]);
-
-    let sidebar_input_chunks = Layout::default()
+    let input_horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(app.agent().len() as u16 + 4),
             Constraint::Min(0),
         ])
-        .split(input_chunks[0]);
+        .split(chunks[2]);
 
-    draw_profile_badge(f, sidebar_input_chunks[0], app);
-    draw_input(f, sidebar_input_chunks[1], app);
-    draw_input_info(f, input_chunks[1], app);
+    let input_vertical_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(input_horizontal_chunks[1]);
+
+    draw_profile_badge(f, input_horizontal_chunks[0], app);
+    draw_input(f, input_vertical_chunks[0], app);
+    draw_input_info(f, input_vertical_chunks[1], app);
 
     if let Some(sidebar) = sidebar_area {
         draw_sidebar(f, sidebar, app);
@@ -256,12 +255,10 @@ fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(help_text, Style::default().dim()),
     ]);
 
-    let info_area = Rect::new(area.x, area.y.saturating_sub(1), area.width, 1);
-
     let paragraph = Paragraph::new(info_line)
         .alignment(Alignment::Right)
         .style(Style::default().bg(theme.input_bg));
-    f.render_widget(paragraph, info_area);
+    f.render_widget(paragraph, area);
 }
 
 fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
