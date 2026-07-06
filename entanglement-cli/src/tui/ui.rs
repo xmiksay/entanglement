@@ -193,7 +193,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
-    let markdown_renderer = MarkdownRenderer::new();
+    let markdown_renderer = app.markdown_renderer();
 
     // Add plan if present
     if let Some(plan) = app.plan() {
@@ -247,7 +247,7 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
             continue;
         }
         if !pending_text.is_empty() {
-            render_text_run(&mut lines, &markdown_renderer, &pending_text);
+            render_text_run(&mut lines, markdown_renderer, &pending_text);
             pending_text.clear();
         }
 
@@ -297,7 +297,7 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
         }
     }
     if !pending_text.is_empty() {
-        render_text_run(&mut lines, &markdown_renderer, &pending_text);
+        render_text_run(&mut lines, markdown_renderer, &pending_text);
     }
 
     // Add approval card if waiting for approval
