@@ -7,6 +7,7 @@ mod markdown;
 mod modals;
 mod session_view;
 mod sessions;
+mod transcript;
 mod ui;
 
 use anyhow::Result;
@@ -275,6 +276,7 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                                         }
                                     }
                                     app.note_prompt_sent();
+                                    app.record_user_message(text.clone());
                                     if let Err(e) = holly
                                         .send(InMsg::Prompt {
                                             session: app.active_session_id().clone(),

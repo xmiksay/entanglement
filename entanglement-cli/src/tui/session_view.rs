@@ -2,6 +2,9 @@ use entanglement_core::{AgentState, OutEvent, TaskItem};
 
 #[derive(Debug, Clone)]
 pub enum TranscriptEntry {
+    User {
+        text: String,
+    },
     TextDelta {
         text: String,
     },
@@ -146,6 +149,17 @@ impl SessionView {
         if self.stopped {
             self.stopped = false;
             self.last_seen_seq = 0;
+        }
+    }
+
+    /// Records the user's outgoing prompt into the transcript so it shows up
+    /// in the chat scrollback. Unlike engine `OutEvent`s, user prompts carry
+    /// no `seq` and bypass the dedupe guard — they originate here, not the
+    /// engine broadcast.
+    pub fn record_user_message(&mut self, text: String) {
+        self.transcript.push(TranscriptEntry::User { text });
+        if self.auto_follow {
+            self.scroll_offset = 0;
         }
     }
 
@@ -336,5 +350,25 @@ mod tests {
             seq: 1,
             text: "fresh".into(),
         }));
+    }
+
+    #[test]
+    fn record_user_message_appears_before_streamed_reply() {
+        // Regression for "user messages don't show in chat": recording a
+        // prompt must insert a `User` entry into the transcript (and it must
+        // not be subject to the seq dedupe guard, which only covers engine
+        // `OutEvent`s).
+        let mut v = SessionView::new();
+        v.record_user_message("hello?".into());
+        v.apply_event(OutEvent::TextDelta {
+            session: sid(),
+            seq: 1,
+            text: "hi!".into(),
+        });
+
+        let entries = v.transcript();
+        assert!(matches!(entries[0], TranscriptEntry::User { ref text } if text == "hello?"));
+        assert!(matches!(entries[1], TranscriptEntry::TextDelta { .. }));
+        assert_eq!(entries.len(), 2);
     }
 }
