@@ -379,6 +379,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "diffy",
  "entanglement-core",
  "entanglement-llm",
  "pulldown-cmark",
