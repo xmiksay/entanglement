@@ -7,7 +7,7 @@ use entanglement_core::{Holly, InMsg, SessionId};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
-        event::{KeyCode, KeyEventKind, KeyModifiers},
+        event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     },
@@ -90,6 +90,10 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
     match ev {
         Event::Key(key) => {
             if key.kind == KeyEventKind::Press {
+                if app.showing_profile_picker() {
+                    return handle_profile_picker_event(app, holly, key).await;
+                }
+
                 let current_mode = app.approval_mode().clone();
                 match current_mode {
                     ApprovalMode::WaitingForApproval { request_id } => match key.code {
@@ -166,6 +170,19 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                         }
                     },
                     ApprovalMode::Normal => match key.code {
+                        KeyCode::Tab => {
+                            if let Some(agent_name) = app.cycle_primary_profile() {
+                                let _ = holly
+                                    .send(entanglement_core::InMsg::SetAgent {
+                                        session: app.session_id().clone(),
+                                        agent: agent_name,
+                                    })
+                                    .await;
+                            }
+                        }
+                        KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
+                            app.toggle_profile_picker();
+                        }
                         KeyCode::Char('q') | KeyCode::Char('c')
                             if key.modifiers == KeyModifiers::CONTROL =>
                         {
@@ -254,6 +271,35 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                 app.input().insert_str(&s);
             }
         }
+    }
+    Ok(false)
+}
+
+async fn handle_profile_picker_event(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_profile_picker();
+        }
+        KeyCode::Enter => {
+            if let Some(agent_name) = app.select_profile_picker() {
+                let _ = holly
+                    .send(entanglement_core::InMsg::SetAgent {
+                        session: app.session_id().clone(),
+                        agent: agent_name,
+                    })
+                    .await;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.profile_picker_next();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.profile_picker_prev();
+        }
+        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        _ => {}
     }
     Ok(false)
 }
