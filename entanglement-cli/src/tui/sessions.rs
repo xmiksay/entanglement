@@ -282,4 +282,142 @@ mod tests {
         reg.handle_out_event(event(&a, 1, "after-restart"));
         assert_eq!(reg.active_view().transcript().len(), 2);
     }
+
+    #[test]
+    fn acceptance_multiple_sessions_visible_in_modal_switching_renders_right_transcript() {
+        let a = SessionId::new("a");
+        let b = SessionId::new("b");
+        let c = SessionId::new("c");
+        let mut reg = SessionRegistry::new(a.clone());
+
+        reg.handle_out_event(event(&a, 1, "hello-a"));
+        reg.handle_out_event(event(&b, 1, "hello-b"));
+        reg.handle_out_event(event(&c, 1, "hello-c"));
+
+        let all = reg.all();
+        assert_eq!(all.len(), 3, "All sessions should be visible");
+
+        assert_eq!(
+            reg.active_view().transcript().len(),
+            1,
+            "Active session has 1 entry"
+        );
+        assert!(
+            matches!(
+                &reg.active_view().transcript()[0],
+                crate::tui::session_view::TranscriptEntry::TextDelta { text } if text == "hello-a"
+            ),
+            "Active session 'a' shows correct transcript"
+        );
+
+        reg.switch_to(b.clone());
+        assert_eq!(
+            reg.active_view().transcript().len(),
+            1,
+            "After switch, active session has 1 entry"
+        );
+        assert!(
+            matches!(
+                &reg.active_view().transcript()[0],
+                crate::tui::session_view::TranscriptEntry::TextDelta { text } if text == "hello-b"
+            ),
+            "After switch, session 'b' shows correct transcript"
+        );
+
+        reg.switch_to(c.clone());
+        assert!(
+            matches!(
+                &reg.active_view().transcript()[0],
+                crate::tui::session_view::TranscriptEntry::TextDelta { text } if text == "hello-c"
+            ),
+            "After switch to 'c', shows correct transcript"
+        );
+
+        reg.switch_to(a.clone());
+        assert!(
+            matches!(
+                &reg.active_view().transcript()[0],
+                crate::tui::session_view::TranscriptEntry::TextDelta { text } if text == "hello-a"
+            ),
+            "Switching back to 'a' still shows correct transcript"
+        );
+    }
+
+    #[test]
+    fn acceptance_new_session_created_on_first_prompt_and_appears_in_list() {
+        let initial = SessionId::new("initial");
+        let mut reg = SessionRegistry::new(initial.clone());
+
+        reg.handle_out_event(event(&initial, 1, "first message"));
+
+        let new_session = reg.create();
+        assert!(new_session.to_string().starts_with("initial-"));
+
+        let all = reg.all();
+        assert_eq!(all.len(), 2, "New session appears in list");
+
+        assert!(
+            all.iter().any(|(id, _)| *id == &new_session),
+            "New session ID is in the list"
+        );
+
+        reg.switch_to(new_session.clone());
+        reg.handle_out_event(event(&new_session, 1, "new session message"));
+
+        let all = reg.all();
+        assert!(
+            all.iter()
+                .find(|(id, _)| **id == new_session)
+                .map(|(_, view)| !view.transcript().is_empty())
+                .unwrap_or(false),
+            "New session transcript exists"
+        );
+    }
+
+    #[test]
+    fn acceptance_events_from_inactive_sessions_dont_pollute_active_view() {
+        let active = SessionId::new("active");
+        let background = SessionId::new("background");
+        let mut reg = SessionRegistry::new(active.clone());
+
+        reg.handle_out_event(event(&active, 1, "active-1"));
+
+        reg.handle_out_event(event(&background, 1, "background-1"));
+        reg.handle_out_event(event(&background, 2, "background-2"));
+
+        assert_eq!(
+            reg.active_view().transcript().len(),
+            1,
+            "Active session only has its own events"
+        );
+        assert!(
+            matches!(
+                &reg.active_view().transcript()[0],
+                crate::tui::session_view::TranscriptEntry::TextDelta { text } if text == "active-1"
+            ),
+            "Active session not polluted by background events"
+        );
+
+        reg.switch_to(background.clone());
+        assert_eq!(
+            reg.active_view().transcript().len(),
+            2,
+            "Background session has its own events"
+        );
+
+        reg.handle_out_event(event(&active, 2, "active-2"));
+
+        assert_eq!(
+            reg.active_view().transcript().len(),
+            2,
+            "Background session not polluted by active events"
+        );
+
+        reg.switch_to(active.clone());
+        assert_eq!(
+            reg.active_view().transcript().len(),
+            2,
+            "Active session now has both its events"
+        );
+    }
 }
