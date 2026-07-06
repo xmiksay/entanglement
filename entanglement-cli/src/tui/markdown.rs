@@ -103,14 +103,7 @@ impl MarkdownRenderer {
                     if in_code_block {
                         code_content.push_str(&text);
                     } else {
-                        let words: Vec<&str> = text.split_whitespace().collect();
-                        if !words.is_empty() {
-                            let first = words.join(" ");
-                            current_line.push(Span::raw(first));
-                            for word in &words[1..] {
-                                current_line.push(Span::raw(format!(" {}", word)));
-                            }
-                        }
+                        current_line.push(Span::raw(text.to_string()));
                     }
                 }
                 Event::Code(text) => {
@@ -188,6 +181,19 @@ mod tests {
         let renderer = MarkdownRenderer::new();
         let result = renderer.render("Hello, world!");
         assert!(!result.lines.is_empty());
+    }
+
+    #[test]
+    fn test_render_plain_text_no_word_duplication() {
+        let renderer = MarkdownRenderer::new();
+        let result = renderer.render("one two three four");
+        let rendered: String = result
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(rendered.trim(), "one two three four");
     }
 
     #[test]

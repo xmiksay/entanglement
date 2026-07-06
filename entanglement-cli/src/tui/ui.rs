@@ -212,19 +212,38 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(""));
     }
 
-    // Add transcript entries
-    for entry in app.transcript() {
-        match entry {
-            TranscriptEntry::TextDelta { text } => {
-                if !text.trim().is_empty() {
-                    let rendered_text = markdown_renderer.render(text);
-                    for line in rendered_text.lines {
-                        if !line.spans.is_empty() {
-                            lines.push(line);
-                        }
-                    }
+    // Add transcript entries. Consecutive `TextDelta` entries are streamed
+    // token-by-token by the engine, so they're coalesced into one string
+    // before markdown rendering — rendering each delta on its own would give
+    // every chunk its own hard line break, wrecking word wrap.
+    fn render_text_run<'a>(
+        lines: &mut Vec<Line<'a>>,
+        markdown_renderer: &'a MarkdownRenderer,
+        run: &str,
+    ) {
+        if !run.trim().is_empty() {
+            let rendered_text = markdown_renderer.render(run);
+            for line in rendered_text.lines {
+                if !line.spans.is_empty() {
+                    lines.push(line);
                 }
             }
+        }
+    }
+
+    let mut pending_text = String::new();
+    for entry in app.transcript() {
+        if let TranscriptEntry::TextDelta { text } = entry {
+            pending_text.push_str(text);
+            continue;
+        }
+        if !pending_text.is_empty() {
+            render_text_run(&mut lines, &markdown_renderer, &pending_text);
+            pending_text.clear();
+        }
+
+        match entry {
+            TranscriptEntry::TextDelta { .. } => unreachable!(),
             TranscriptEntry::ToolRequest { tool, input, .. } => {
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
@@ -267,6 +286,9 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
                 lines.push(Line::from("─".repeat(40)).fg(Color::Blue));
             }
         }
+    }
+    if !pending_text.is_empty() {
+        render_text_run(&mut lines, &markdown_renderer, &pending_text);
     }
 
     // Add approval card if waiting for approval
@@ -442,4 +464,51 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
         .block(Block::new().borders(Borders::ALL));
 
     f.render_widget(sidebar_paragraph, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::app::App;
+    use entanglement_core::{OutEvent, SessionId};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn streamed_text_deltas_wrap_as_one_paragraph() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new(sid.clone());
+        let words = [
+            "This", "is", "a", "fairly", "long", "sentence", "that", "should", "wrap", "nicely",
+        ];
+        for (i, word) in words.iter().enumerate() {
+            app.handle_out_event(OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: i as u64 + 1,
+                text: format!("{} ", word),
+            });
+        }
+
+        let backend = TestBackend::new(30, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw_body(f, f.area(), &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // Exclude the bordered frame (top/bottom rows, left/right columns)
+        // drawn by Block::Borders::ALL — it's non-blank regardless of content
+        // and would otherwise mask the bug.
+        let non_empty_rows = (1..9)
+            .filter(|&y| {
+                (1..29)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .any(|sym| !sym.trim().is_empty())
+            })
+            .count();
+
+        // 10 short words at width 30 wrap onto a couple of rows; rendering
+        // each streamed delta as its own markdown blob put one word per row.
+        assert!(
+            non_empty_rows <= 3,
+            "expected a wrapped paragraph, got {non_empty_rows} non-empty rows"
+        );
+    }
 }
