@@ -48,7 +48,7 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 /// auto-detect on). Set `ENTANGLEMENT_PROVIDER=echo` to use the EchoLlm stub,
 /// which returns a summary of the messages it received (useful for debugging
 /// history propagation without a real provider). z.ai/OpenAI/Ollama share one
-/// OpenAI-compatible client ([`entanglement_llm::openai_factory`]); Anthropic
+/// OpenAI-compatible client ([`entanglement_provider::openai_factory`]); Anthropic
 /// has its own client.
 ///
 /// The root-contained host quartet (`read`/`glob`/`grep`/`edit`) is always
@@ -132,11 +132,11 @@ fn zai_config() -> Option<(EngineConfig, ModelInfo)> {
     let key = env_nonempty("ZAI_API_KEY")?;
     let model = std::env::var("ZAI_MODEL").unwrap_or_else(|_| DEFAULT_ZAI_MODEL.to_string());
     let base = std::env::var("ZAI_API_BASE")
-        .unwrap_or_else(|_| entanglement_llm::ZAI_CODING_PLAN_BASE.to_string());
+        .unwrap_or_else(|_| entanglement_provider::ZAI_CODING_PLAN_BASE.to_string());
     eprintln!("skutter: provider=zai model={model} base={base}");
     Some((
         EngineConfig {
-            llm_factory: entanglement_llm::openai_factory(base, Some(key), model.clone()),
+            llm_factory: entanglement_provider::openai_factory(base, Some(key), model.clone()),
             ..EngineConfig::default()
         },
         ModelInfo {
@@ -150,11 +150,11 @@ fn openai_config() -> Option<(EngineConfig, ModelInfo)> {
     let key = env_nonempty("OPENAI_API_KEY")?;
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_OPENAI_MODEL.to_string());
     let base = std::env::var("OPENAI_API_BASE")
-        .unwrap_or_else(|_| entanglement_llm::OPENAI_BASE.to_string());
+        .unwrap_or_else(|_| entanglement_provider::OPENAI_BASE.to_string());
     eprintln!("skutter: provider=openai model={model} base={base}");
     Some((
         EngineConfig {
-            llm_factory: entanglement_llm::openai_factory(base, Some(key), model.clone()),
+            llm_factory: entanglement_provider::openai_factory(base, Some(key), model.clone()),
             ..EngineConfig::default()
         },
         ModelInfo {
@@ -166,12 +166,12 @@ fn openai_config() -> Option<(EngineConfig, ModelInfo)> {
 
 fn ollama_config() -> (EngineConfig, ModelInfo) {
     let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| DEFAULT_OLLAMA_MODEL.to_string());
-    let base =
-        std::env::var("OLLAMA_BASE").unwrap_or_else(|_| entanglement_llm::OLLAMA_BASE.to_string());
+    let base = std::env::var("OLLAMA_BASE")
+        .unwrap_or_else(|_| entanglement_provider::OLLAMA_BASE.to_string());
     eprintln!("skutter: provider=ollama model={model} base={base}");
     (
         EngineConfig {
-            llm_factory: entanglement_llm::openai_factory(base, None, model.clone()),
+            llm_factory: entanglement_provider::openai_factory(base, None, model.clone()),
             ..EngineConfig::default()
         },
         ModelInfo {
@@ -188,7 +188,7 @@ fn anthropic_config() -> Option<(EngineConfig, ModelInfo)> {
     eprintln!("skutter: provider=anthropic model={model}");
     Some((
         EngineConfig {
-            llm_factory: entanglement_llm::anthropic_factory(key, model.clone()),
+            llm_factory: entanglement_provider::anthropic_factory(key, model.clone()),
             ..EngineConfig::default()
         },
         ModelInfo {

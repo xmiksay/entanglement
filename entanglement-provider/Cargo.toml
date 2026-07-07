@@ -1,5 +1,5 @@
 [package]
-name = "entanglement-llm"
+name = "entanglement-provider"
 description = "Concrete LLM backends for the entanglement agent engine (z.ai GLM + Anthropic SSE streaming)."
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "entanglement_llm"
+name = "entanglement_provider"
 path = "src/lib.rs"
 
 [dependencies]

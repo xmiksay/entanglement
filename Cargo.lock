@@ -519,7 +519,7 @@ dependencies = [
  "diffy",
  "dirs",
  "entanglement-core",
- "entanglement-llm",
+ "entanglement-provider",
  "pulldown-cmark",
  "ratatui",
  "serde",
@@ -553,7 +553,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "entanglement-llm"
+name = "entanglement-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",

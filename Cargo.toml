@@ -1,5 +1,5 @@
 [workspace]
-members = ["entanglement-core", "entanglement-llm", "entanglement-cli"]
+members = ["entanglement-core", "entanglement-provider", "entanglement-cli"]
 resolver = "2"
 
 [workspace.package]
@@ -11,7 +11,7 @@ repository = "https://github.com/xmiksay/entanglement"
 
 [workspace.dependencies]
 entanglement-core = { path = "entanglement-core" }
-entanglement-llm = { path = "entanglement-llm" }
+entanglement-provider = { path = "entanglement-provider" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

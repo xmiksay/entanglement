@@ -19,15 +19,13 @@ Architecture & the four interfaces:
 ## Workspace
 
 Three crates, two seams (core↔provider via the `Llm` trait, core↔runtime for
-tool exec/approval over the protocol). The renames `entanglement-llm →
-entanglement-provider` and `entanglement-cli → entanglement-runtime` are the
-decided target (🚧 — code still uses the old names). Layering: [ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md).
+tool exec/approval over the protocol). Layering: [ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md).
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
-| `entanglement-provider` _(🚧 from `entanglement-llm`)_ | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **connection pool, retry, rate-limit, reasoning stream, models-per-provider (🚧)**; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
-| `entanglement-runtime` _(🚧 from `entanglement-cli`)_ | the head crate (binary `skutter`): **host tools + execution, permission dispatch + approval, user sessions**, stdio `run`/`pipe` today, `serve` (WS) + `tui` next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
+| `entanglement-provider` | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **connection pool, retry, rate-limit, reasoning stream, models-per-provider (🚧)**; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
+| `entanglement-cli` _(🚧 to be renamed `entanglement-runtime`)_ | the head crate (binary `skutter`): **host tools + execution, permission dispatch + approval, user sessions**, stdio `run`/`pipe` today, `serve` (WS) + `tui` next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
 
 Heads depend on core, **never** the reverse.
 
@@ -58,8 +56,7 @@ Set `ENTANGLEMENT_PROVIDER` explicitly, or let it auto-detect by key (z.ai first
 | `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_BASE` |
 | `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-4-5`) | — |
 
-z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm` (🚧 crate rename
-from `entanglement-llm`); Anthropic has its own client (distinct content-block
+z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
 format). No key → `DummyLlm`. Detail in
 [`../docs/architecture.md`](../docs/architecture.md) §5b. **Pending (🚧):**
 connection pool, retry/backoff, rate-limit (429/RPM), and reasoning/thinking
@@ -114,8 +111,7 @@ Today core owns too much (tool loop **and** execution **and** permission dispatc
 to their proper layers. Backlog:
 
 - **Provider** ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)):
-  rename `entanglement-llm → entanglement-provider` (#51); connection pool +
-  retry + rate-limit (#52); models-per-provider (#53); reasoning/thinking stream
+  connection pool + retry + rate-limit (#52); models-per-provider (#53); reasoning/thinking stream
   events (#54, currently dropped); live session/connection handle (#55).
 - **Runtime** ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)):
   rename `entanglement-cli → entanglement-runtime` (#56); move host tools out of
