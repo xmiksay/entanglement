@@ -144,13 +144,10 @@ async fn supervisor(
         let session_id = msg.session().clone();
         let cmd = msg_to_cmd(msg);
 
-        if matches!(cmd, SessionCmd::Stop) {
-            if let Some(tx) = sessions.remove(&session_id) {
-                let _ = tx.send(SessionCmd::Stop).await;
-            }
-            continue;
-        }
-
+        // Stop is cancel-semantics (ADR-0017): it interrupts the in-flight
+        // turn inside the session task (or no-ops when idle) but does *not*
+        // destroy the task. Routing it as a regular command preserves the
+        // session's `Context` across a Stop+Prompt round-trip.
         if !sessions.contains_key(&session_id) {
             let profile = cfg
                 .profiles

@@ -273,17 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn stop_then_prompt_resets_seq_guard() {
-        let a = SessionId::new("a");
-        let mut reg = SessionRegistry::new(a.clone());
-        reg.handle_out_event(event(&a, 9, "before-stop"));
-        reg.active_view_mut().note_stop_sent();
-        reg.active_view_mut().note_prompt_sent();
-        reg.handle_out_event(event(&a, 1, "after-restart"));
-        assert_eq!(reg.active_view().transcript().len(), 2);
-    }
-
-    #[test]
     fn acceptance_multiple_sessions_visible_in_modal_switching_renders_right_transcript() {
         let a = SessionId::new("a");
         let b = SessionId::new("b");

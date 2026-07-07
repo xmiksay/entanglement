@@ -46,12 +46,6 @@ pub struct SessionView {
     auto_follow: bool,
     approval_mode: ApprovalMode,
     pending_tool_request: Option<(String, String, String)>,
-    /// Set when we send `InMsg::Stop` for this session; the engine destroys
-    /// the session task and a later `Prompt` lazily recreates it with
-    /// `seq` starting back at 0. Cleared (and `last_seen_seq` reset) the
-    /// next time we send a `Prompt`, so the dedupe guard doesn't discard
-    /// every event from the fresh session.
-    stopped: bool,
 }
 
 impl SessionView {
@@ -68,7 +62,6 @@ impl SessionView {
             auto_follow: true,
             approval_mode: ApprovalMode::Normal,
             pending_tool_request: None,
-            stopped: false,
         }
     }
 
@@ -152,21 +145,6 @@ impl SessionView {
             self.approval_mode,
             ApprovalMode::WaitingForApproval { .. } | ApprovalMode::EnteringRejectReason { .. }
         )
-    }
-
-    /// Marks this session stopped so the next `Prompt` resets the seq dedupe
-    /// guard against the engine recreating the session at `seq = 0`.
-    pub fn note_stop_sent(&mut self) {
-        self.stopped = true;
-        self.clear_approval();
-    }
-
-    /// Call right before sending a `Prompt` for this session.
-    pub fn note_prompt_sent(&mut self) {
-        if self.stopped {
-            self.stopped = false;
-            self.last_seen_seq = 0;
-        }
     }
 
     /// Records the user's outgoing prompt into the transcript so it shows up
@@ -383,23 +361,6 @@ mod tests {
         });
         assert!(!v.is_waiting_approval());
         assert!(v.pending_tool_request().is_none());
-    }
-
-    #[test]
-    fn stop_then_prompt_resets_seq_guard() {
-        let mut v = SessionView::new();
-        v.apply_event(OutEvent::TextDelta {
-            session: sid(),
-            seq: 9,
-            text: "a".into(),
-        });
-        v.note_stop_sent();
-        v.note_prompt_sent();
-        assert!(v.apply_event(OutEvent::TextDelta {
-            session: sid(),
-            seq: 1,
-            text: "fresh".into(),
-        }));
     }
 
     #[test]
