@@ -237,10 +237,7 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 out.push(json!({ "role": "user", "content": m.text }));
             }
             MessageRole::Assistant => {
-                let mut entry = json!({ "role": "assistant" });
-                if !m.text.is_empty() {
-                    entry["content"] = json!(m.text);
-                }
+                let mut entry = json!({ "role": "assistant", "content": m.text });
                 if !m.tool_calls.is_empty() {
                     let calls: Vec<Value> = m
                         .tool_calls
