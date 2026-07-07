@@ -214,6 +214,17 @@ impl InMsg {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OutEvent {
+    /// Session started (lifecycle event, no `seq`). Emits when a session is spawned.
+    SessionStarted {
+        session: SessionId,
+        parent: Option<SessionId>,
+        profile: String,
+        model: Option<String>,
+        root: bool,
+        ts: u64,
+    },
+    /// Session ended (lifecycle event, no `seq`). Emits when a session exits.
+    SessionEnded { session: SessionId, ts: u64 },
     /// Lifecycle state change (point-in-time, no `seq`).
     Status {
         session: SessionId,
@@ -290,7 +301,9 @@ pub enum OutEvent {
 impl OutEvent {
     pub fn session(&self) -> &SessionId {
         match self {
-            OutEvent::Status { session, .. }
+            OutEvent::SessionStarted { session, .. }
+            | OutEvent::SessionEnded { session, .. }
+            | OutEvent::Status { session, .. }
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }

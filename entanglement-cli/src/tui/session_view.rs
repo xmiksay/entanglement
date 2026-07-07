@@ -166,6 +166,8 @@ impl SessionView {
     /// if it changed anything the UI needs to redraw for.
     pub fn apply_event(&mut self, event: OutEvent) -> bool {
         match event {
+            OutEvent::SessionStarted { .. } => true,
+            OutEvent::SessionEnded { .. } => true,
             OutEvent::Status { state, .. } => {
                 self.state = state;
                 if state == AgentState::Idle

@@ -7,6 +7,7 @@
 //! - `pipe` is a bidirectional NDJSON relay: `InMsg` lines on stdin,
 //!   `OutEvent` lines on stdout. For scripting / editor integration.
 
+mod persistence;
 mod pipe;
 mod run;
 mod session_store;
@@ -262,6 +263,10 @@ async fn main() -> Result<()> {
 
     let (config, model_info) = build_config();
     let holly = Holly::spawn(config);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Spawn the persistence subscriber to log all events
+    let _persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
 
     match cli.cmd {
         Some(Cmd::Run {

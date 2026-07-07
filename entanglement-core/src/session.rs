@@ -11,6 +11,7 @@ use crate::llm::{Llm, LlmEvent, LlmRequest, ToolCall, ToolSpec};
 use crate::protocol::{AgentProfile, AgentState, OutEvent, Permission, SessionId, TaskItem};
 use crate::tools::ToolRegistry;
 use crate::EngineConfig;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Built-in engine tools. They mutate session state only, so they bypass the
 /// permission profile and always run (no approval).
@@ -41,7 +42,7 @@ pub(crate) struct Session {
     pub turn_count: usize,
 }
 
-/// Runs one session until `Stop` / inbox close. Emits an initial `Idle` status
+/// Runs one session until `Stop` / inbox close. Emits `SessionStarted`, `Idle` status
 /// and `AgentChanged` so a head knows the starting profile.
 pub(crate) async fn session_loop(
     session: SessionId,
@@ -50,6 +51,20 @@ pub(crate) async fn session_loop(
     cfg: EngineConfig,
     profile: AgentProfile,
 ) {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let _ = events.send(OutEvent::SessionStarted {
+        session: session.clone(),
+        parent: None,
+        profile: profile.name.clone(),
+        model: profile.model.clone(),
+        root: true,
+        ts,
+    });
+
     let mut s = Session {
         ctx: Context::new(),
         llm: (cfg.llm_factory)(),
@@ -116,7 +131,17 @@ pub(crate) async fn session_loop(
             // try_recv inside run_turn). Cancel semantics (ADR-0017): no-op,
             // the session is already idle; just keep listening.
             Some(SessionCmd::Stop) => {}
-            None => return,
+            None => {
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let _ = events.send(OutEvent::SessionEnded {
+                    session: session.clone(),
+                    ts,
+                });
+                return;
+            }
         }
     }
 }
