@@ -34,15 +34,19 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 /// Pick a provider and build the engine config.
 ///
 /// Selection order:
-/// 1. `ENTANGLEMENT_PROVIDER` env, one of `zai | openai | ollama | anthropic`
+/// 1. `ENTANGLEMENT_PROVIDER` env, one of `zai | openai | ollama | anthropic | echo`
 ///    (explicit; errors loudly if the matching key is missing).
 /// 2. Auto-detect by key presence, z.ai first (the project's primary), then
 ///    OpenAI, then Anthropic.
-/// 3. Fall back to `DummyLlm` so `skutter` always runs end-to-end.
+/// 3. Fall back to `EchoLlm` so `skutter` always runs end-to-end and history
+///    propagation is observable.
 ///
 /// Set `ENTANGLEMENT_PROVIDER=ollama` to use a local keyless Ollama (it has no key to
-/// auto-detect on). z.ai/OpenAI/Ollama share one OpenAI-compatible client
-/// ([`entanglement_llm::openai_factory`]); Anthropic has its own client.
+/// auto-detect on). Set `ENTANGLEMENT_PROVIDER=echo` to use the EchoLlm stub,
+/// which returns a summary of the messages it received (useful for debugging
+/// history propagation without a real provider). z.ai/OpenAI/Ollama share one
+/// OpenAI-compatible client ([`entanglement_llm::openai_factory`]); Anthropic
+/// has its own client.
 ///
 /// The root-contained host quartet (`read`/`glob`/`grep`/`edit`) is always
 /// registered, rooted at the current working directory, so the
@@ -82,9 +86,10 @@ fn select_provider() -> (EngineConfig, ModelInfo) {
                 .expect("ENTANGLEMENT_PROVIDER=anthropic requires ANTHROPIC_API_KEY");
             (cfg, info)
         }
+        Some("echo") => echo_config(),
         Some(other) => {
             eprintln!(
-                "skutter: unknown ENTANGLEMENT_PROVIDER='{other}' (expected: zai|openai|ollama|anthropic)"
+                "skutter: unknown ENTANGLEMENT_PROVIDER='{other}' (expected: zai|openai|ollama|anthropic|echo)"
             );
             std::process::exit(2);
         }
@@ -99,14 +104,14 @@ fn select_provider() -> (EngineConfig, ModelInfo) {
                 return (c, info);
             }
             eprintln!(
-                "skutter: no provider key set — using DummyLlm \
-                 (set ENTANGLEMENT_PROVIDER=ollama for local, or a *_API_KEY)"
+                "skutter: no provider key set — using EchoLlm \
+                 (set ENTANGLEMENT_PROVIDER=ollama for local, or a *_API_KEY, or echo)"
             );
             (
                 EngineConfig::default(),
                 ModelInfo {
-                    provider: "dummy".to_string(),
-                    model: "dummy".to_string(),
+                    provider: "echo".to_string(),
+                    model: "echo".to_string(),
                 },
             )
         }
@@ -188,6 +193,17 @@ fn anthropic_config() -> Option<(EngineConfig, ModelInfo)> {
             model,
         },
     ))
+}
+
+fn echo_config() -> (EngineConfig, ModelInfo) {
+    eprintln!("skutter: provider=echo (history-debugging stub)");
+    (
+        EngineConfig::default(),
+        ModelInfo {
+            provider: "echo".to_string(),
+            model: "echo".to_string(),
+        },
+    )
 }
 
 #[derive(Parser)]

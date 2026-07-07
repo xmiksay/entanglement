@@ -20,8 +20,8 @@ pub use context::{Message, MessageRole};
 pub use holly::{EngineConfig, Holly, ProfileRegistry};
 pub use host::{host_tools, BashTool, EditTool, GlobTool, GrepTool, ReadTool};
 pub use llm::{
-    stream_from_response, DummyLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream,
-    ToolCall, ToolSpec,
+    stream_from_response, DummyLlm, EchoLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse,
+    LlmStream, ToolCall, ToolSpec,
 };
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, InMsg, OutEvent, Permission, PermissionProfile, SessionId,
