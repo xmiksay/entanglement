@@ -386,6 +386,10 @@ impl App {
         self.sessions.active_view().scroll_offset()
     }
 
+    pub fn scroll_offset_x(&self) -> usize {
+        self.sessions.active_view().scroll_offset_x()
+    }
+
     pub fn scroll_down(&mut self, lines: usize) {
         self.sessions.active_view_mut().scroll_down(lines);
         self.mark_dirty();
@@ -393,6 +397,16 @@ impl App {
 
     pub fn scroll_up(&mut self, lines: usize) {
         self.sessions.active_view_mut().scroll_up(lines);
+        self.mark_dirty();
+    }
+
+    pub fn scroll_right(&mut self, cols: usize) {
+        self.sessions.active_view_mut().scroll_right(cols);
+        self.mark_dirty();
+    }
+
+    pub fn scroll_left(&mut self, cols: usize) {
+        self.sessions.active_view_mut().scroll_left(cols);
         self.mark_dirty();
     }
 

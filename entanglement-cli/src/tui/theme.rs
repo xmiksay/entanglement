@@ -1,5 +1,5 @@
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Style, Stylize},
     text::{Line, Span},
 };
 use std::hash::Hasher;
@@ -97,28 +97,23 @@ impl Theme {
         }
     }
 
-    pub fn decorate<'a>(self, mut line: Line<'a>, c: RoleColors) -> Line<'a> {
-        let content_width: u16 = line.spans.iter().map(|s| s.width() as u16).sum();
+    pub fn decorate<'a>(self, line: Line<'a>, c: RoleColors, width: u16) -> Line<'a> {
+        let content_len = line.spans.iter().map(|s| s.width() as u16).sum::<u16>();
+        let remaining = width.saturating_sub(content_len).saturating_sub(3);
 
-        line.style = line.style.bg(c.bg);
-        line.spans.insert(0, Span::raw(" "));
-        line.spans.insert(
-            0,
+        let mut spans = vec![
             Span::styled(
                 self.bar_glyph.to_string(),
                 Style::default().fg(c.fg).bg(c.bg),
             ),
-        );
+            Span::raw(" "),
+        ];
+        spans.extend(line.spans);
+        for _ in 0..remaining {
+            spans.push(Span::raw(" "));
+        }
 
-        let total_width = line.spans.iter().map(|s| s.width() as u16).sum::<u16>();
-        let padding = if content_width > 0 {
-            total_width.saturating_sub(content_width + 2)
-        } else {
-            0
-        };
-
-        line.spans.push(Span::raw(" ".repeat(padding as usize)));
-        line
+        Line::from(spans).bg(c.bg)
     }
 }
 
@@ -219,7 +214,7 @@ mod tests {
         let theme = Theme::default();
         let line = Line::from("test");
         let assistant = theme.assistant_colors();
-        let decorated = theme.decorate(line, assistant);
+        let decorated = theme.decorate(line, assistant, 20);
         assert!(decorated.spans.len() >= 3);
         assert_eq!(decorated.spans[0].content.as_ref(), "▌");
         assert_eq!(decorated.spans[1].content.as_ref(), " ");
