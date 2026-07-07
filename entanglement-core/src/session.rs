@@ -8,9 +8,11 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::context::Context;
 use crate::llm::{Llm, LlmEvent, LlmRequest, ToolCall, ToolSpec};
-use crate::protocol::{AgentProfile, AgentState, OutEvent, Permission, SessionId, TaskItem};
+use crate::protocol::{AgentProfile, AgentState, InMsg, OutEvent, Permission, SessionId, TaskItem};
 use crate::tools::ToolRegistry;
 use crate::EngineConfig;
+use anyhow::Result;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Built-in engine tools. They mutate session state only, so they bypass the
@@ -31,7 +33,7 @@ pub(crate) enum SessionCmd {
 }
 
 /// Mutable per-session state.
-pub(crate) struct Session {
+pub struct Session {
     pub ctx: Context,
     pub llm: Box<dyn Llm>,
     pub profile: AgentProfile,
@@ -42,14 +44,137 @@ pub(crate) struct Session {
     pub turn_count: usize,
 }
 
+impl Session {
+    /// Creates a new empty session with the given configuration and profile.
+    pub fn new_empty(cfg: &EngineConfig, profile: AgentProfile) -> Self {
+        Self {
+            ctx: Context::new(),
+            llm: (cfg.llm_factory)(),
+            profile,
+            tools: cfg.tools.clone(),
+            tasks: Vec::new(),
+            plan: String::new(),
+            seq: 0,
+            turn_count: 0,
+        }
+    }
+
+    /// Resume a session from replayed log records.
+    ///
+    /// This reconstructs the session state from the provided records and returns
+    /// the `Session` that can be passed to `session_loop_with_initial`.
+    ///
+    /// # Parameters
+    ///
+    /// - `records`: A slice of `(Option<InMsg>, OutEvent)` tuples representing the log
+    /// - `cfg`: Engine configuration for constructing tools and LLM
+    /// - `root`: Root directory for tool operations (unused in core but required for consistency)
+    ///
+    /// # Returns
+    ///
+    /// A reconstructed `Session` with all state folded from the log.
+    pub fn replay(
+        records: &[(Option<InMsg>, OutEvent)],
+        cfg: &EngineConfig,
+        _root: &Path,
+    ) -> Result<Self> {
+        let default_profile = cfg
+            .profiles
+            .get("build")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("default 'build' profile not found"))?;
+
+        let mut session = Self::new_empty(cfg, default_profile);
+        let mut pending_text: String = String::new();
+        let mut pending_tools: Vec<ToolCall> = Vec::new();
+        let mut pending_tool_outputs: Vec<(String, String)> = Vec::new();
+        let mut max_seq: u64 = 0;
+
+        for (in_msg, out_event) in records {
+            max_seq = max_seq.max(out_event.seq());
+
+            if let Some(InMsg::Prompt { text, .. }) = in_msg {
+                if !pending_text.is_empty() || !pending_tools.is_empty() {
+                    session
+                        .ctx
+                        .push_assistant(pending_text.clone(), pending_tools.clone());
+                    pending_text.clear();
+                    pending_tools.clear();
+                }
+                for (request_id, output) in &pending_tool_outputs {
+                    session.ctx.push_tool(request_id.clone(), output.clone());
+                }
+                pending_tool_outputs.clear();
+
+                session.ctx.push_user(text.clone());
+            }
+
+            match out_event {
+                OutEvent::TextDelta { text, .. } => {
+                    pending_text.push_str(text);
+                }
+                OutEvent::ToolCall {
+                    request_id,
+                    tool,
+                    input,
+                    ..
+                } => {
+                    pending_tools.push(ToolCall {
+                        id: request_id.clone(),
+                        name: tool.clone(),
+                        input: input.clone(),
+                    });
+                }
+                OutEvent::ToolOutput {
+                    request_id, output, ..
+                } => {
+                    pending_tool_outputs.push((request_id.clone(), output.clone()));
+                }
+                OutEvent::AgentChanged { agent, .. } => {
+                    if let Some(profile) = cfg.profiles.get(agent) {
+                        session.profile = profile.clone();
+                    }
+                }
+                OutEvent::TaskList { tasks, .. } => {
+                    session.tasks = tasks.clone();
+                }
+                OutEvent::Plan { content, .. } => {
+                    session.plan = content.clone();
+                }
+                OutEvent::Done { .. } => {
+                    if !pending_text.is_empty() || !pending_tools.is_empty() {
+                        session
+                            .ctx
+                            .push_assistant(pending_text.clone(), pending_tools.clone());
+                        pending_text.clear();
+                        pending_tools.clear();
+                    }
+                    for (request_id, output) in &pending_tool_outputs {
+                        session.ctx.push_tool(request_id.clone(), output.clone());
+                    }
+                    pending_tool_outputs.clear();
+                }
+                _ => {}
+            }
+        }
+
+        session.seq = max_seq;
+        Ok(session)
+    }
+}
+
 /// Runs one session until `Stop` / inbox close. Emits `SessionStarted`, `Idle` status
 /// and `AgentChanged` so a head knows the starting profile.
+///
+/// If `initial_session` is provided, it's used as the starting state (for resume);
+/// otherwise, a fresh session is created.
 pub(crate) async fn session_loop(
     session: SessionId,
     mut rx: mpsc::Receiver<SessionCmd>,
     events: broadcast::Sender<OutEvent>,
     cfg: EngineConfig,
     profile: AgentProfile,
+    initial_session: Option<Session>,
 ) {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -65,16 +190,7 @@ pub(crate) async fn session_loop(
         ts,
     });
 
-    let mut s = Session {
-        ctx: Context::new(),
-        llm: (cfg.llm_factory)(),
-        profile,
-        tools: cfg.tools.clone(),
-        tasks: Vec::new(),
-        plan: String::new(),
-        seq: 0,
-        turn_count: 0,
-    };
+    let mut s = initial_session.unwrap_or_else(|| Session::new_empty(&cfg, profile));
     let mut stash: VecDeque<SessionCmd> = VecDeque::new();
 
     let _ = events.send(OutEvent::Status {

@@ -13,12 +13,13 @@ mod run;
 mod session_store;
 mod tui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{host_tools, BashTool, EngineConfig, Holly, InMsg, SessionId};
+use entanglement_core::{host_tools, BashTool, EngineConfig, Holly, InMsg, OutEvent, SessionId};
 
 use pipe::pipe;
 use run::run_one;
+use session_store::{read, LogPayload};
 use tui::tui;
 
 #[derive(Debug, Clone)]
@@ -239,6 +240,9 @@ enum Cmd {
         /// Output format.
         #[arg(long, value_name = "text|json", default_value = "text")]
         format: String,
+        /// Resume a session from log records.
+        #[arg(long)]
+        resume: Option<String>,
     },
     /// Bidirectional NDJSON relay (stdin: InMsg, stdout: OutEvent).
     Pipe {
@@ -274,16 +278,44 @@ async fn main() -> Result<()> {
             session,
             agent,
             format,
+            resume,
         }) => {
+            let session_id = SessionId::new(session);
+
+            if let Some(resume_id) = resume {
+                let resume_session_id = SessionId::new(resume_id);
+                let records = read(&cwd, &resume_session_id).with_context(|| {
+                    format!("Failed to read session records for {}", resume_session_id)
+                })?;
+
+                let mut paired_records: Vec<(Option<InMsg>, OutEvent)> = Vec::new();
+                let mut last_in: Option<InMsg> = None;
+
+                for record in &records {
+                    match &record.payload {
+                        LogPayload::In(in_msg) => {
+                            last_in = Some(in_msg.clone());
+                        }
+                        LogPayload::Out(out_event) => {
+                            paired_records.push((last_in.clone(), out_event.clone()));
+                            last_in = None;
+                        }
+                    }
+                }
+
+                holly.resume(session_id.clone(), paired_records).await?;
+            }
+
+            if let Some(ref a) = agent {
+                holly
+                    .send(InMsg::SetAgent {
+                        session: session_id.clone(),
+                        agent: a.to_string(),
+                    })
+                    .await?;
+            }
             let prompt = prompt.join(" ");
-            run_one(
-                &holly,
-                &SessionId::new(session),
-                agent.as_deref(),
-                &prompt,
-                &format,
-            )
-            .await
+            run_one(&holly, &session_id, agent.as_deref(), &prompt, &format).await
         }
         Some(Cmd::Pipe { session }) => pipe(&holly, &SessionId::new(session)).await,
         Some(Cmd::Tui { session, agent }) => {
