@@ -137,6 +137,46 @@ impl Llm for DummyLlm {
     }
 }
 
+/// Echo-mode stub backend. Returns a text summary of the messages it received,
+/// making history propagation observable without a real provider. The reply
+/// includes the total message count and all user-text snippets, so a test (or
+/// a human in the TUI) can verify at a glance whether prior turns survived.
+pub struct EchoLlm;
+
+impl EchoLlm {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for EchoLlm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Llm for EchoLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        let total = req.messages.len();
+        let users: Vec<&str> = req
+            .messages
+            .iter()
+            .filter(|m| m.role == crate::MessageRole::User)
+            .map(|m| m.text.as_str())
+            .collect();
+        let reply = format!("echo: messages={}, users={users:?}", total);
+        let events = vec![
+            Ok(LlmEvent::Text(reply)),
+            Ok(LlmEvent::Finish {
+                input_tokens: None,
+                output_tokens: None,
+            }),
+        ];
+        Ok(stream::iter(events).boxed())
+    }
+}
+
 /// Build a one-shot stream from a full [`LlmResponse`] (text + tool calls then
 /// `Finish`). Convenience for scripted/test backends.
 pub fn stream_from_response(resp: LlmResponse) -> LlmStream {

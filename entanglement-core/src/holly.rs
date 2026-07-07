@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::llm::{DummyLlm, Llm, LlmFactory};
+use crate::llm::{EchoLlm, Llm, LlmFactory};
 use crate::protocol::{
     AgentMode, AgentProfile, InMsg, OutEvent, Permission, PermissionProfile, SessionId,
 };
@@ -36,7 +36,7 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            llm_factory: Arc::new(|| Box::new(DummyLlm::default()) as Box<dyn Llm>),
+            llm_factory: Arc::new(|| Box::new(EchoLlm) as Box<dyn Llm>),
             tools: ToolRegistry::new(),
             profiles: ProfileRegistry::new(),
         }
