@@ -28,3 +28,4 @@ pulldown-cmark = { workspace = true }
 syntect = { workspace = true }
 diffy = { workspace = true }
 unicode-width = { workspace = true }
+dirs = "5"

@@ -9,6 +9,7 @@
 
 mod pipe;
 mod run;
+mod session_store;
 mod tui;
 
 use anyhow::Result;
