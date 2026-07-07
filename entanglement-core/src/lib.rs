@@ -24,7 +24,7 @@ pub use llm::{
     LlmStream, ToolCall, ToolSpec,
 };
 pub use protocol::{
-    AgentMode, AgentProfile, AgentState, InMsg, OutEvent, Permission, PermissionProfile, SessionId,
-    TaskItem, TaskStatus,
+    AgentMode, AgentProfile, AgentState, FileChangeKind, InMsg, OutEvent, Permission,
+    PermissionProfile, SessionId, TaskItem, TaskStatus,
 };
 pub use tools::{Tool, ToolRegistry};

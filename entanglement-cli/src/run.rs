@@ -81,6 +81,9 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         }
         OutEvent::Error { message, .. } => writeln!(out, "! {message}")?,
         OutEvent::Done { .. } => writeln!(out, "✓ done")?,
+        OutEvent::FileChange {
+            path, change_kind, ..
+        } => writeln!(out, "✓ {change_kind:?}: {path}")?,
     }
     Ok(())
 }

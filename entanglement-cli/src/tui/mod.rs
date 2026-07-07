@@ -10,6 +10,7 @@ mod progress;
 mod session_view;
 mod sessions;
 mod theme;
+mod tool_render;
 mod transcript;
 mod ui;
 mod wrap;

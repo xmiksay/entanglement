@@ -56,6 +56,15 @@ pub enum TaskStatus {
     Cancelled,
 }
 
+/// Kind of file change. `ApplyDiff` and `Plugin` are reserved for future work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChangeKind {
+    Edit,
+    ApplyDiff,
+    Create,
+}
+
 /// One item in the session's task outline. The engine owns the list and emits
 /// a full [`OutEvent::TaskList`] snapshot whenever it changes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +274,17 @@ pub enum OutEvent {
     },
     /// Turn finished cleanly. Heads waiting on a one-shot turn exit on this.
     Done { session: SessionId, seq: u64 },
+    /// File change record (audit log entry). Emitted after each successful edit
+    /// or create. The record carries before/after bytes and change kind for
+    /// diff rendering and audit tracking.
+    FileChange {
+        session: SessionId,
+        seq: u64,
+        path: String,
+        before: Option<Vec<u8>>,
+        after: Option<Vec<u8>>,
+        change_kind: FileChangeKind,
+    },
 }
 
 impl OutEvent {
@@ -279,7 +299,8 @@ impl OutEvent {
             | OutEvent::ToolOutput { session, .. }
             | OutEvent::TaskList { session, .. }
             | OutEvent::Error { session, .. }
-            | OutEvent::Done { session, .. } => session,
+            | OutEvent::Done { session, .. }
+            | OutEvent::FileChange { session, .. } => session,
         }
     }
 }
