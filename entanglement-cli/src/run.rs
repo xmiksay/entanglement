@@ -70,6 +70,7 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::AgentChanged { agent, .. } => writeln!(out, "# agent: {agent}")?,
         OutEvent::Plan { content, .. } => writeln!(out, "▸ plan:\n{content}")?,
         OutEvent::TextDelta { text, .. } => writeln!(out, "> {text}")?,
+        OutEvent::ToolCall { tool, input, .. } => writeln!(out, "→ {tool}: {input}")?,
         OutEvent::ToolRequest { tool, input, .. } => writeln!(out, "? {tool}: {input}")?,
         OutEvent::ToolOutput { output, .. } => writeln!(out, "= {output}")?,
         OutEvent::TaskList { tasks, .. } => {

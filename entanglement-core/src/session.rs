@@ -254,14 +254,31 @@ async fn handle_tool_call(
     stash: &mut VecDeque<SessionCmd>,
     call: ToolCall,
 ) -> bool {
+    emit_tool_call(
+        events,
+        session,
+        &call.id,
+        &call.name,
+        &call.input,
+        &mut s.seq,
+    );
+
     // Built-ins: always run, mutate session state, emit a snapshot.
     if call.name == PLAN_TOOL {
         let plan = json_field(&call.input, "content").unwrap_or_else(|| call.input.clone());
         s.plan = plan;
         emit_plan(events, session, &s.plan, &mut s.seq);
         let msg = "plan updated".to_string();
-        emit_tool_output(events, session, &call.id, msg.clone(), &mut s.seq);
-        s.ctx.push_tool(&call.id, msg);
+        emit_tool_output(
+            events,
+            session,
+            &call.id,
+            PLAN_TOOL,
+            msg.clone(),
+            &mut s.seq,
+        );
+        s.ctx.push_tool(&call.id, msg.clone());
+        tracing::debug!(tool_id = %call.id, result = %msg, "tool result pushed to context");
         return false;
     }
     if call.name == TASKS_TOOL {
@@ -274,7 +291,14 @@ async fn handle_tool_call(
             }
             Err(e) => format!("invalid task list: {e}"),
         };
-        emit_tool_output(events, session, &call.id, msg.clone(), &mut s.seq);
+        emit_tool_output(
+            events,
+            session,
+            &call.id,
+            TASKS_TOOL,
+            msg.clone(),
+            &mut s.seq,
+        );
         s.ctx.push_tool(&call.id, msg);
         return false;
     }
@@ -283,13 +307,27 @@ async fn handle_tool_call(
     match s.profile.permission.for_tool(&call.name) {
         Permission::Allow => {
             let out = s.tools.execute(&call).await;
-            emit_tool_output(events, session, &call.id, out.clone(), &mut s.seq);
+            emit_tool_output(
+                events,
+                session,
+                &call.id,
+                &call.name,
+                out.clone(),
+                &mut s.seq,
+            );
             s.ctx.push_tool(&call.id, out);
             false
         }
         Permission::Deny => {
             let out = format!("tool `{}` denied by permission profile", call.name);
-            emit_tool_output(events, session, &call.id, out.clone(), &mut s.seq);
+            emit_tool_output(
+                events,
+                session,
+                &call.id,
+                &call.name,
+                out.clone(),
+                &mut s.seq,
+            );
             s.ctx.push_tool(&call.id, out);
             false
         }
@@ -309,7 +347,14 @@ async fn handle_tool_call(
                 Approval::Approved => {
                     set_thinking(events, session);
                     let out = s.tools.execute(&call).await;
-                    emit_tool_output(events, session, &call.id, out.clone(), &mut s.seq);
+                    emit_tool_output(
+                        events,
+                        session,
+                        &call.id,
+                        &call.name,
+                        out.clone(),
+                        &mut s.seq,
+                    );
                     s.ctx.push_tool(&call.id, out);
                     false
                 }
@@ -320,7 +365,14 @@ async fn handle_tool_call(
                         call.name,
                         reason.as_deref().unwrap_or("user")
                     );
-                    emit_tool_output(events, session, &call.id, out.clone(), &mut s.seq);
+                    emit_tool_output(
+                        events,
+                        session,
+                        &call.id,
+                        &call.name,
+                        out.clone(),
+                        &mut s.seq,
+                    );
                     s.ctx.push_tool(&call.id, out);
                     false
                 }
@@ -405,6 +457,23 @@ fn set_thinking(events: &broadcast::Sender<OutEvent>, session: &SessionId) {
     });
 }
 
+fn emit_tool_call(
+    events: &broadcast::Sender<OutEvent>,
+    session: &SessionId,
+    request_id: &str,
+    tool: &str,
+    input: &str,
+    seq: &mut u64,
+) {
+    let _ = events.send(OutEvent::ToolCall {
+        session: session.clone(),
+        seq: next_seq(seq),
+        request_id: request_id.to_string(),
+        tool: tool.to_string(),
+        input: input.to_string(),
+    });
+}
+
 fn emit_plan(events: &broadcast::Sender<OutEvent>, session: &SessionId, plan: &str, seq: &mut u64) {
     let _ = events.send(OutEvent::Plan {
         session: session.clone(),
@@ -430,6 +499,7 @@ fn emit_tool_output(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
     request_id: &str,
+    tool: &str,
     output: String,
     seq: &mut u64,
 ) {
@@ -437,6 +507,7 @@ fn emit_tool_output(
         session: session.clone(),
         seq: next_seq(seq),
         request_id: request_id.to_string(),
+        tool: tool.to_string(),
         output,
     });
 }
