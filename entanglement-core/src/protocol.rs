@@ -22,6 +22,10 @@ impl SessionId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+
+    pub fn new_uuid() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
 }
 
 impl std::fmt::Display for SessionId {
@@ -348,6 +352,26 @@ impl OutEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_id_new_uuid_generates_unique_ids() {
+        let id1 = SessionId::new_uuid();
+        let id2 = SessionId::new_uuid();
+        let id3 = SessionId::new_uuid();
+
+        assert_ne!(id1, id2, "UUIDs should be unique");
+        assert_ne!(id2, id3, "UUIDs should be unique");
+        assert_ne!(id1, id3, "UUIDs should be unique");
+
+        assert!(
+            uuid::Uuid::parse_str(&id1.0).is_ok(),
+            "SessionId should contain valid UUID string"
+        );
+        assert!(
+            uuid::Uuid::parse_str(&id2.0).is_ok(),
+            "SessionId should contain valid UUID string"
+        );
+    }
 
     #[test]
     fn inbound_roundtrips_as_tagged_json() {

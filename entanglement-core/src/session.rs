@@ -42,6 +42,7 @@ pub struct Session {
     pub plan: String,
     pub seq: u64,
     pub turn_count: usize,
+    pub parent: Option<SessionId>,
 }
 
 impl Session {
@@ -56,6 +57,7 @@ impl Session {
             plan: String::new(),
             seq: 0,
             turn_count: 0,
+            parent: None,
         }
     }
 
@@ -110,6 +112,9 @@ impl Session {
             }
 
             match out_event {
+                OutEvent::SessionStarted { parent, .. } => {
+                    session.parent = parent.clone();
+                }
                 OutEvent::TextDelta { text, .. } => {
                     pending_text.push_str(text);
                 }
@@ -175,18 +180,20 @@ pub(crate) async fn session_loop(
     cfg: EngineConfig,
     profile: AgentProfile,
     initial_session: Option<Session>,
+    parent: Option<SessionId>,
 ) {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
 
+    let root = parent.is_none();
     let _ = events.send(OutEvent::SessionStarted {
         session: session.clone(),
-        parent: None,
+        parent,
         profile: profile.name.clone(),
         model: profile.model.clone(),
-        root: true,
+        root,
         ts,
     });
 
