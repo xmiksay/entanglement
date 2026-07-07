@@ -107,26 +107,58 @@ pub fn truncate_output(s: String) -> String {
     out
 }
 
+/// Result of [`list_files`]: the matched files plus enough metadata for the
+/// caller to distinguish "no match at all" from "matched only directories" or
+/// "every entry errored." Without that distinction a bare-`**` pattern (which
+/// matches directories only) looks identical to a typo, and the model has no
+/// way to self-correct — see ADR-0016.
+#[derive(Debug, Default)]
+pub struct FileList {
+    /// Files (in arbitrary glob-walk order), already capped at [`MAX_RESULTS`].
+    pub files: Vec<PathBuf>,
+    /// Entries the pattern matched but that were directories (filtered out).
+    pub matched_dirs: usize,
+    /// Entries the glob iterator yielded as `Err` (permissions, IO, etc.).
+    pub skipped_errors: usize,
+}
+
+impl FileList {
+    /// True iff the pattern matched at least one entry of any kind.
+    pub fn matched_anything(&self) -> bool {
+        !self.files.is_empty() || self.matched_dirs > 0
+    }
+}
+
 /// Enumerate files under `root` matching `pattern` (a glob relative to root),
-/// yielding display paths relative to root. Skips directories and unreadable
-/// entries. Bounds the walk at [`MAX_RESULTS`] paths.
-pub fn list_files(root: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
+/// yielding display paths relative to root. Skips directories (counted in
+/// [`FileList::matched_dirs`]) and logs unreadable entries as `warn!` (counted
+/// in [`FileList::skipped_errors`]) instead of silently dropping them. Bounds
+/// the walk at [`MAX_RESULTS`] files.
+pub fn list_files(root: &Path, pattern: &str) -> Result<FileList> {
     let abs = root.join(pattern).to_string_lossy().into_owned();
     let entries = ::glob::glob(&abs).with_context(|| format!("invalid glob: {pattern}"))?;
-    let mut out = Vec::new();
+    let mut list = FileList::default();
     for entry in entries {
         let p = match entry {
             Ok(p) => p,
-            Err(_) => continue,
-        };
-        if std::fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false) {
-            out.push(p);
-            if out.len() >= MAX_RESULTS {
-                break;
+            Err(err) => {
+                tracing::warn!(?err, pattern, "glob entry skipped");
+                list.skipped_errors += 1;
+                continue;
             }
+        };
+        match std::fs::metadata(&p) {
+            Ok(m) if m.is_file() => {
+                list.files.push(p);
+                if list.files.len() >= MAX_RESULTS {
+                    break;
+                }
+            }
+            Ok(m) if m.is_dir() => list.matched_dirs += 1,
+            _ => {}
         }
     }
-    Ok(out)
+    Ok(list)
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -204,6 +236,70 @@ mod tests {
         assert!(out.contains("src/a.rs"), "got: {out}");
         assert!(out.contains("src/b.rs"), "got: {out}");
         assert!(!out.contains("c.txt"), "got: {out}");
+    }
+
+    /// Regression for the bare-`**` trap (ADR-0016): the glob crate yields
+    /// directory paths only for `**`, which `list_files` filters out. Without
+    /// the hint, the model sees an indistinguishable-from-typo empty result.
+    #[tokio::test]
+    async fn glob_bare_doublestar_returns_directory_hint() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("root.txt"), "x\n").unwrap();
+        let tool = GlobTool::new(dir.path.clone());
+        let out = tool.run(r#"{"pattern":"**"}"#).await.unwrap();
+        assert!(
+            out.contains("matched") && out.contains("director"),
+            "expected directory-match hint, got: {out}"
+        );
+        assert!(
+            out.contains("**/*"),
+            "hint should suggest `**/*`, got: {out}"
+        );
+    }
+
+    /// `**/*` (the suggested pattern) must still work — list files in nested
+    /// directories.
+    #[tokio::test]
+    async fn glob_doublestar_slash_star_lists_files() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("root.txt"), "x\n").unwrap();
+        let tool = GlobTool::new(dir.path.clone());
+        let out = tool.run(r#"{"pattern":"**/*"}"#).await.unwrap();
+        assert!(out.contains("src/a.rs"), "got: {out}");
+        assert!(out.contains("root.txt"), "got: {out}");
+        assert!(
+            !out.contains("matched") || !out.contains("director"),
+            "should not emit dir-match hint when files exist, got: {out}"
+        );
+    }
+
+    /// `list_files` distinguishes no-files-but-matched-dirs from no-match-at-all
+    /// so callers can produce the right diagnostic.
+    #[test]
+    fn list_files_counts_matched_dirs_when_no_files() {
+        let dir = TempDir::new();
+        fs::write(dir.join("nested/a.rs"), "x\n").unwrap();
+        let list = list_files(&dir.path, "**").unwrap();
+        assert!(list.files.is_empty(), "bare ** yields no files");
+        assert!(
+            list.matched_dirs > 0,
+            "expected directories to be counted, got {:?}",
+            list
+        );
+        assert!(list.matched_anything(), "matched_anything should be true");
+    }
+
+    #[test]
+    fn list_files_clean_empty_when_pattern_matches_nothing() {
+        let dir = TempDir::new();
+        fs::write(dir.join("a.rs"), "x\n").unwrap();
+        let list = list_files(&dir.path, "does-not-exist-*").unwrap();
+        assert!(list.files.is_empty());
+        assert_eq!(list.matched_dirs, 0);
+        assert_eq!(list.skipped_errors, 0);
+        assert!(!list.matched_anything());
     }
 
     #[tokio::test]

@@ -196,6 +196,15 @@ assembled by `host_tools(root: PathBuf) -> ToolRegistry`:
 - **Bounded output:** 32 KiB byte cap with a truncation notice; `read` defaults
   to 2000 lines; `glob`/`grep` cap at 1000 results. Prevents a huge file/tree
   from blowing the context window.
+- **Empty-result contract (ADR-0016):** a host tool may not return a silent
+  zero-output when multiple distinguishable underlying states produce it.
+  `list_files` returns `FileList { files, matched_dirs, skipped_errors }`;
+  per-entry walk errors are `warn!`-logged and counted, not swallowed. When
+  `glob`'s result would be empty but the pattern matched something (the common
+  bare-`**` trap, which matches only directories), it returns a hint like
+  *"`**` matched 7 directories but no files — try `**/*`"* so the model can
+  self-correct mechanically. `grep` consumes the same `FileList` but stays
+  silent on zero matches (a clean no-match is a single well-defined state).
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
 - **Wiring (ADR-0010):** `host_tools(root)` registers the **root-contained

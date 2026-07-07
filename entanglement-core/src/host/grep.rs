@@ -58,10 +58,10 @@ impl Tool for GrepTool {
         let re = Regex::new(&parsed.pattern)
             .with_context(|| format!("invalid regex: {}", parsed.pattern))?;
         let filter = parsed.path.as_deref().unwrap_or("**/*");
-        let paths = list_files(&self.root, filter)?;
+        let list = list_files(&self.root, filter)?;
         let mut out = String::new();
         let mut matches = 0usize;
-        for p in paths {
+        for p in list.files {
             // Bound per-file work: skip files far larger than the output cap.
             let len = match std::fs::metadata(&p) {
                 Ok(m) => m.len(),
