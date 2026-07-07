@@ -11,6 +11,7 @@ pub enum Command {
     Tasks,
     Editor,
     Export,
+    Resume,
 }
 
 impl Command {
@@ -18,6 +19,7 @@ impl Command {
         match self {
             Command::Help => "help",
             Command::New => "new",
+            Command::Resume => "resume",
             Command::Exit => "exit",
             Command::Agent => "agent",
             Command::Model => "model",
@@ -39,6 +41,7 @@ impl Command {
             Command::Tasks => "Jump to task panel",
             Command::Editor => "Open editor",
             Command::Export => "Export conversation",
+            Command::Resume => "Continue a past session",
         }
     }
 
@@ -51,6 +54,7 @@ pub fn all_commands() -> Vec<Command> {
     vec![
         Command::Help,
         Command::New,
+        Command::Resume,
         Command::Exit,
         Command::Agent,
         Command::Model,

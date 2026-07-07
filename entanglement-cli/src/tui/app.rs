@@ -3,6 +3,7 @@ use ratatui::widgets::ListState;
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
+use crate::session_store::{list_sessions, SessionMeta};
 use crate::tui::commands::{Command, CommandPalette};
 use crate::tui::keybindings::{Action, LeaderKeyHandler};
 use crate::tui::markdown::MarkdownRenderer;
@@ -236,6 +237,11 @@ pub struct App {
     // Input state
     input_multiline: bool,
     help_text: String,
+
+    // Resume session modal state
+    showing_resume_modal: bool,
+    resume_state: ListState,
+    available_sessions: Vec<SessionMeta>,
 }
 
 impl App {
@@ -298,6 +304,10 @@ impl App {
         let mut model_picker_state = ListState::default();
         model_picker_state.select(Some(0));
 
+        let mut resume_state = ListState::default();
+        resume_state.select(Some(0));
+        let available_sessions = Vec::new();
+
         Self {
             sessions: SessionRegistry::new(initial_session),
             dirty: true,
@@ -329,6 +339,9 @@ impl App {
             output_tokens: 0,
             input_multiline: false,
             help_text: "Enter: send | Shift+Enter: newline | Ctrl+A: agent picker | Ctrl+L: sessions | Ctrl+P: command palette | ?: help".to_string(),
+            showing_resume_modal: false,
+            resume_state,
+            available_sessions,
         }
     }
 
@@ -802,6 +815,10 @@ impl App {
             Command::Tasks => false,
             Command::Editor => false,
             Command::Export => false,
+            Command::Resume => {
+                self.toggle_resume_modal();
+                false
+            }
         }
     }
 
@@ -923,6 +940,74 @@ impl App {
 
     pub fn help_text(&self) -> &str {
         &self.help_text
+    }
+
+    #[allow(dead_code)]
+    pub fn showing_resume_modal(&self) -> bool {
+        self.showing_resume_modal
+    }
+
+    #[allow(dead_code)]
+    pub fn resume_state(&mut self) -> &mut ListState {
+        &mut self.resume_state
+    }
+
+    #[allow(dead_code)]
+    pub fn toggle_resume_modal(&mut self) {
+        self.showing_resume_modal = !self.showing_resume_modal;
+        if self.showing_resume_modal {
+            if let Ok(sessions) = list_sessions(&std::env::current_dir().unwrap_or_default()) {
+                self.available_sessions = sessions;
+                if !self.available_sessions.is_empty() {
+                    self.resume_state.select(Some(0));
+                }
+            }
+        }
+        self.mark_dirty();
+    }
+
+    #[allow(dead_code)]
+    pub fn close_resume_modal(&mut self) {
+        self.showing_resume_modal = false;
+        self.mark_dirty();
+    }
+
+    #[allow(dead_code)]
+    pub fn resume_next(&mut self) {
+        if self.available_sessions.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.resume_state.selected() {
+            let next = (selected + 1) % self.available_sessions.len();
+            self.resume_state.select(Some(next));
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn resume_prev(&mut self) {
+        if self.available_sessions.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.resume_state.selected() {
+            let prev = if selected == 0 {
+                self.available_sessions.len() - 1
+            } else {
+                selected - 1
+            };
+            self.resume_state.select(Some(prev));
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn available_sessions(&self) -> &[SessionMeta] {
+        &self.available_sessions
+    }
+
+    #[allow(dead_code)]
+    pub fn selected_resume_session(&self) -> Option<SessionMeta> {
+        self.resume_state
+            .selected()
+            .and_then(|i| self.available_sessions.get(i).cloned())
     }
 }
 

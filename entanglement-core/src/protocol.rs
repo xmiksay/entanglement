@@ -186,6 +186,12 @@ pub enum InMsg {
     SetPlan { session: SessionId, content: String },
     /// Switch the session to a different agent profile by name (e.g. `plan`).
     SetAgent { session: SessionId, agent: String },
+    /// Resume a session from replayed log records (internal, not serialized).
+    #[serde(skip)]
+    Resume {
+        session: SessionId,
+        records: Vec<(Option<InMsg>, OutEvent)>,
+    },
 }
 
 impl InMsg {
@@ -198,7 +204,8 @@ impl InMsg {
             | InMsg::Stop { session }
             | InMsg::SetTasks { session, .. }
             | InMsg::SetPlan { session, .. }
-            | InMsg::SetAgent { session, .. } => session,
+            | InMsg::SetAgent { session, .. }
+            | InMsg::Resume { session, .. } => session,
         }
     }
 }
@@ -314,6 +321,26 @@ impl OutEvent {
             | OutEvent::Error { session, .. }
             | OutEvent::Done { session, .. }
             | OutEvent::FileChange { session, .. } => session,
+        }
+    }
+
+    /// Returns the sequence number for this event, or 0 for lifecycle events
+    /// that don't carry a seq (SessionStarted, SessionEnded, Status, AgentChanged).
+    pub fn seq(&self) -> u64 {
+        match self {
+            OutEvent::SessionStarted { .. }
+            | OutEvent::SessionEnded { .. }
+            | OutEvent::Status { .. }
+            | OutEvent::AgentChanged { .. } => 0,
+            OutEvent::Plan { seq, .. }
+            | OutEvent::TextDelta { seq, .. }
+            | OutEvent::ToolCall { seq, .. }
+            | OutEvent::ToolRequest { seq, .. }
+            | OutEvent::ToolOutput { seq, .. }
+            | OutEvent::TaskList { seq, .. }
+            | OutEvent::Error { seq, .. }
+            | OutEvent::Done { seq, .. }
+            | OutEvent::FileChange { seq, .. } => *seq,
         }
     }
 }

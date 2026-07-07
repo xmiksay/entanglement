@@ -316,3 +316,36 @@ pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
     f.render_widget(Clear, popup_area);
     f.render_widget(list, popup_area);
 }
+
+#[allow(dead_code)]
+pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
+    let sessions = app.available_sessions().to_vec();
+    let items: Vec<ListItem> = sessions
+        .iter()
+        .map(|meta| {
+            let id_string = meta.id.to_string();
+            let agent_string = meta.agent.clone();
+            let model_string = meta.model.as_deref().unwrap_or("default").to_string();
+            ListItem::new(Line::from(vec![
+                Span::styled(id_string, Style::default().bold()),
+                Span::raw(" "),
+                Span::styled("[", Style::default().dim()),
+                Span::styled(agent_string, Style::default().fg(Color::Cyan).bold()),
+                Span::styled("]", Style::default().dim()),
+                Span::raw(format!(" {:?}", model_string)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Resume Session (Enter: select, Esc: close)"),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let area = centered_rect(60, 40, f.area());
+    f.render_widget(Clear, area);
+    f.render_stateful_widget(list, area, app.resume_state());
+}
