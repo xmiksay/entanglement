@@ -191,7 +191,6 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                                     session: app.active_session_id().clone(),
                                 })
                                 .await;
-                            app.note_stop_sent();
                             app.clear_approval();
                         }
                         _ => {}
@@ -294,7 +293,6 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                                             return Ok(false);
                                         }
                                     }
-                                    app.note_prompt_sent();
                                     app.record_user_message(text.clone());
                                     if let Err(e) = holly
                                         .send(InMsg::Prompt {

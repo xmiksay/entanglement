@@ -100,6 +100,14 @@ park the task on its inbox; any non-matching message (e.g. a new prompt) is
 stashed and processed after the turn. Setup/mid-stream backend errors surface as
 `Error` + `Done` without committing a partial assistant message.
 
+**Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
+the in-flight turn (the streaming loop and tool dispatch poll `try_recv` for
+it; approval wait returns `Approval::Cancelled`) but does *not* evict the
+session from the supervisor map or end its task. The session's `Context` is
+preserved across a Stop+Prompt round-trip — Esc-in-approval or a stray Stop
+between turns no longer causes amnesia. The supervisor map entry is only
+removed on global inbox close (engine shutdown).
+
 ## 5b. Model backends (`entanglement-llm`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 
 The `Llm` **trait** lives in `entanglement-core` (the seam); concrete backends live in

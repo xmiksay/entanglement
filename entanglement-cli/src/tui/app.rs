@@ -537,16 +537,6 @@ impl App {
         self.mark_dirty();
     }
 
-    /// Call right after sending `InMsg::Stop` for the active session.
-    pub fn note_stop_sent(&mut self) {
-        self.sessions.active_view_mut().note_stop_sent();
-    }
-
-    /// Call right before sending `InMsg::Prompt` for the active session.
-    pub fn note_prompt_sent(&mut self) {
-        self.sessions.active_view_mut().note_prompt_sent();
-    }
-
     /// Records the user's prompt into the active session's transcript so the
     /// chat scrollback mirrors a real conversation (the engine never echoes
     /// `InMsg::Prompt` back as an `OutEvent`).

@@ -80,9 +80,11 @@ pub(crate) async fn session_loop(
         match cmd {
             Some(SessionCmd::Prompt(text)) => {
                 s.ctx.push_user(text);
-                if let Err(()) = run_turn(&session, &mut rx, &mut s, &events, &mut stash).await {
-                    return; // cancelled
-                }
+                // run_turn returns Err(()) only on a cancel-via-Stop during
+                // tool approval (ADR-0017). The turn is aborted but the
+                // session task stays alive — drop the cancel and keep
+                // listening for the next command, preserving Context.
+                let _ = run_turn(&session, &mut rx, &mut s, &events, &mut stash).await;
             }
             Some(SessionCmd::SetPlan(content)) => {
                 s.plan = content;
@@ -110,12 +112,19 @@ pub(crate) async fn session_loop(
             },
             // Approve/Reject with no pending tool request: stale, drop silently.
             Some(SessionCmd::Approve(_) | SessionCmd::Reject(..)) => {}
-            Some(SessionCmd::Stop) | None => return,
+            // Stop arrived while idle (a turn-in-flight Stop is caught by the
+            // try_recv inside run_turn). Cancel semantics (ADR-0017): no-op,
+            // the session is already idle; just keep listening.
+            Some(SessionCmd::Stop) => {}
+            None => return,
         }
     }
 }
 
-/// Runs one reasoning turn to completion. Returns `Err(())` if cancelled mid-turn.
+/// Runs one reasoning turn to completion. Returns `Err(())` only when a
+/// `SessionCmd::Stop` arrives during tool-request approval (cancel-via-Esc);
+/// the caller keeps the session task alive and just awaits the next command
+/// (ADR-0017). Context is preserved in either case.
 async fn run_turn(
     session: &SessionId,
     rx: &mut mpsc::Receiver<SessionCmd>,
