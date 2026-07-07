@@ -1,8 +1,7 @@
-# ADR-0020: Event-sourced session persistence
+# 0020. Event-sourced session persistence
 
-## Status
-
-Accepted
+- Status: Accepted
+- Date: 2026-07-07
 
 ## Context
 
@@ -75,8 +74,8 @@ Replay rebuilds the core `Context` (the canonical session representation in `ent
 ### Crate boundary
 
 - **`entanglement-core`** — gains lifecycle events and emits them; remains disk-free (no `dirs` dep, no I/O)
-- **`entanglement-cli`** — owns `SessionStore`, implements persistence, reads/writes JSONL
-- **`entanglement-llm`** — unchanged (uses existing `LlmRequest` transform)
+- **`entanglement-runtime`** — owns `SessionStore`, implements persistence, reads/writes JSONL
+- **`entanglement-provider`** — unchanged (uses existing `LlmRequest` transform)
 
 ## Consequences
 

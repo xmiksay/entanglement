@@ -14,15 +14,20 @@ Architecture & the four interfaces:
 - **Rust** (stable, `../rust-toolchain.toml`).
 - Async: **Tokio** (`mpsc` inbox, `broadcast` outbox). Errors: `anyhow` + `thiserror`.
 - Logging: `tracing`. Serde everywhere (the wire protocol).
-- No web framework in core; `entanglement-cli`'s future `serve` subcommand will bring `axum`.
+- No web framework in core; the runtime head's future `serve` subcommand will bring `axum`.
 
 ## Workspace
 
+Three crates, two seams (core↔provider via the `Llm` trait, core↔runtime for
+tool exec/approval over the protocol). The renames `entanglement-llm →
+entanglement-provider` and `entanglement-cli → entanglement-runtime` are the
+decided target (🚧 — code still uses the old names). Layering: [ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md).
+
 | Crate | Role | Hard rule |
 | --- | --- | --- |
-| `entanglement-core` | actor engine: `Holly`, protocol, session loop, permission dispatch, built-in tools, `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
-| `entanglement-llm` | concrete LLM backends: one generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, all via `reqwest`; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
-| `entanglement-cli` | the head crate (binary `skutter`): stdio `run`/`pipe` today; future `serve` (WS) + `tui` subcommands. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here (ADR-0010). | — |
+| `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
+| `entanglement-provider` _(🚧 from `entanglement-llm`)_ | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **connection pool, retry, rate-limit, reasoning stream, models-per-provider (🚧)**; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
+| `entanglement-runtime` _(🚧 from `entanglement-cli`)_ | the head crate (binary `skutter`): **host tools + execution, permission dispatch + approval, user sessions**, stdio `run`/`pipe` today, `serve` (WS) + `tui` next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
 
 Heads depend on core, **never** the reverse.
 
@@ -53,9 +58,12 @@ Set `ENTANGLEMENT_PROVIDER` explicitly, or let it auto-detect by key (z.ai first
 | `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_BASE` |
 | `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-4-5`) | — |
 
-z.ai/OpenAI/Ollama share one `entanglement-llm::OpenAiLlm`; Anthropic has its own client
-(distinct content-block format). No key → `DummyLlm`. Detail in
-[`../docs/architecture.md`](../docs/architecture.md) §5b.
+z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm` (🚧 crate rename
+from `entanglement-llm`); Anthropic has its own client (distinct content-block
+format). No key → `DummyLlm`. Detail in
+[`../docs/architecture.md`](../docs/architecture.md) §5b. **Pending (🚧):**
+connection pool, retry/backoff, rate-limit (429/RPM), and reasoning/thinking
+stream events all belong to this crate but are not implemented yet ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).
 
 ## The contract (read before touching the engine)
 
@@ -99,16 +107,27 @@ assembles the root-contained quartet (`read`/`glob`/`grep`/`edit`);
 
 ## Open work (current phase)
 
-- Host tools: the root-contained quartet (`read`/`glob`/`grep`/`edit`) ships in
-  `entanglement-core::host` behind `host_tools(root)` ([ADR-0008](../docs/adr/0008-host-tools-workdir-and-bounded-output.md)
-  trio + [ADR-0009](../docs/adr/0009-edit-and-bash-host-tools.md) `edit`/`bash`).
-  `bash` is opt-in: register `BashTool` at the head when
-  `ENTANGLEMENT_ENABLE_BASH=1` ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md))
-  — it runs unsandboxed; a real sandbox is the next security-focused ADR.
-- `skutter serve` (axum WS) and `skutter tui` subcommands, both inside
-  `entanglement-cli`.
+**Three-layer re-architecture** — the big active effort, tracked by epic
+[#50](https://github.com/xmiksay/entanglement/issues/50) ([ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)).
+Today core owns too much (tool loop **and** execution **and** permission dispatch
+**and** the host-tool impls **and** a per-session client); the target moves those
+to their proper layers. Backlog:
 
-LLM providers are wired (`entanglement-llm`, ADR-0007): `Llm` is a streaming trait
-returning `BoxStream<LlmEvent>`; one generic OpenAI-compat client serves z.ai
-(primary)/OpenAI/Ollama, with a separate Anthropic client. `skutter` picks
-one via `ENTANGLEMENT_PROVIDER` or key auto-detect, else `DummyLlm`.
+- **Provider** ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)):
+  rename `entanglement-llm → entanglement-provider` (#51); connection pool +
+  retry + rate-limit (#52); models-per-provider (#53); reasoning/thinking stream
+  events (#54, currently dropped); live session/connection handle (#55).
+- **Runtime** ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)):
+  rename `entanglement-cli → entanglement-runtime` (#56); move host tools out of
+  core (#57); relocate tool execution (#58) and permission dispatch (#59) out of
+  core; inter-session agent messaging / subagent spawn (#60).
+- **Core**: slim `Session` to loop + turn state (#61).
+- **Cleanup**: docs drift guard (#62); orphaned `apply_diff.rs` + `audit.rs` (#63).
+
+Already shipped: `skutter run`/`pipe` (stdio) and `tui`; LLM providers wired
+([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)) — `Llm` is a
+streaming trait returning `BoxStream<LlmEvent>`; one generic OpenAI-compat client
+serves z.ai (primary)/OpenAI/Ollama, plus a separate Anthropic client;
+`ENTANGLEMENT_PROVIDER` or key auto-detect, else `DummyLlm`. `skutter serve`
+(axum WS) is the next head. `bash` stays opt-in (`ENTANGLEMENT_ENABLE_BASH=1`),
+unsandboxed — a real sandbox is a future security-focused ADR.
