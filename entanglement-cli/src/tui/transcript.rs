@@ -6,10 +6,10 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
-use crate::tui::diff::DiffRenderer;
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 use crate::tui::theme::{RoleColors, Theme};
+use crate::tui::tool_render;
 pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
     let markdown_renderer = app.markdown_renderer();
@@ -233,28 +233,14 @@ fn append_transcript<'a>(
                     lines.push(theme.decorate(wline, tool_out, available_width));
                 }
 
-                if output.contains("---")
-                    || output.contains("+++")
-                    || output.contains("-")
-                    || output.contains("+")
-                {
-                    let diff_text = DiffRenderer::render_unified(output);
-                    for line in diff_text.lines {
-                        lines.push(theme.decorate(line, tool_out, available_width));
-                    }
-                } else {
-                    for line in output.lines() {
-                        let content_line = Line::from(format!("  {line}"));
-                        let wrapped =
-                            wrap::wrap_line(content_line, available_width.saturating_sub(4));
-                        for wline in wrapped {
-                            lines.push(
-                                theme
-                                    .decorate(wline, tool_out, available_width)
-                                    .fg(Color::DarkGray),
-                            );
-                        }
-                    }
+                let rendered = tool_render::render_tool_output(
+                    tool.as_deref(),
+                    output,
+                    theme,
+                    available_width,
+                );
+                for line in rendered.lines {
+                    lines.push(theme.decorate(line, tool_out, available_width));
                 }
                 lines.push(padding);
             }

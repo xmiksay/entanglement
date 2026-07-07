@@ -7,6 +7,7 @@ use ratatui::{
 pub struct DiffRenderer;
 
 impl DiffRenderer {
+    #[allow(dead_code)]
     pub fn render_unified(diff: &str) -> Text<'_> {
         if diff.is_empty() {
             return Text::default();

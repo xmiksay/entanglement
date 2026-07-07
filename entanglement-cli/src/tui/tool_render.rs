@@ -1,0 +1,230 @@
+use ratatui::{
+    style::{Color, Style},
+    text::{Line, Span, Text},
+};
+
+use crate::tui::theme::Theme;
+
+pub fn render_tool_output(
+    tool_name: Option<&str>,
+    output: &str,
+    theme: Theme,
+    available_width: u16,
+) -> Text<'static> {
+    match tool_name {
+        Some("edit") => render_edit_output(output, theme, available_width),
+        Some("read") => render_read_output(output, theme, available_width),
+        Some("glob") => render_glob_output(output, theme, available_width),
+        Some("grep") => render_grep_output(output, theme, available_width),
+        Some("bash") => render_plain_output(output, theme, available_width),
+        _ => render_plain_output(output, theme, available_width),
+    }
+}
+
+fn render_edit_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+    if output.contains("created file:") {
+        let line = Line::from(vec![
+            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::raw(output.to_string()),
+        ]);
+        return Text::from(vec![line]);
+    }
+
+    if output.contains("matches replaced") {
+        let line = Line::from(vec![
+            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::raw(output.to_string()),
+        ]);
+        return Text::from(vec![line]);
+    }
+
+    Text::raw(output.to_string())
+}
+
+fn render_read_output(_output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+    let line = Line::from(vec![
+        Span::styled("✓ ", Style::default().fg(Color::Green)),
+        Span::raw("File read (body suppressed in transcript)"),
+    ]);
+    Text::from(vec![line])
+}
+
+fn render_glob_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+    let mut lines = Vec::new();
+
+    let mut file_count = 0;
+    let mut dir_count = 0;
+
+    for line in output.lines() {
+        if line.contains("matched") && line.contains("director") {
+            dir_count = line
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0);
+        } else if !line.trim().is_empty() && !line.starts_with("matched") {
+            file_count += 1;
+            lines.push(Line::from(format!("  {}", line)));
+        }
+    }
+
+    let header = if file_count > 0 {
+        let msg = format!("{} files matched", file_count);
+        Line::from(vec![
+            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::styled(msg, Style::default().fg(Color::Cyan)),
+        ])
+    } else if dir_count > 0 {
+        let msg = format!(
+            "{} directories matched (use pattern/* to list files)",
+            dir_count
+        );
+        Line::from(vec![
+            Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
+            Span::styled(msg, Style::default().fg(Color::Yellow)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("✗ ", Style::default().fg(Color::Red)),
+            Span::raw("No matches found"),
+        ])
+    };
+
+    let mut result = vec![header];
+    result.extend(lines);
+    Text::from(result)
+}
+
+fn render_grep_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+    let mut lines = Vec::new();
+    let mut match_count = 0;
+
+    for line in output.lines() {
+        if line.contains(':') {
+            match_count += 1;
+            let parts: Vec<&str> = line.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}:", parts[0]), Style::default().fg(Color::Cyan)),
+                    Span::raw(parts[1].to_string()),
+                ]));
+            }
+        }
+    }
+
+    let msg = format!("{} matches found", match_count);
+    let header = Line::from(vec![
+        Span::styled("✓ ", Style::default().fg(Color::Green)),
+        Span::styled(msg, Style::default().fg(Color::Cyan)),
+    ]);
+
+    let mut result = vec![header];
+    result.extend(lines);
+    Text::from(result)
+}
+
+fn render_plain_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+    let mut lines = Vec::new();
+    for line in output.lines() {
+        lines.push(Line::from(format!("  {}", line)));
+    }
+    Text::from(lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_glob_with_hyphenated_paths() {
+        let output = "docs/adr/0001-actor-model-abi.md\ndocs/adr/0002-protocol.md\nsrc/main.rs\n";
+        let theme = Theme::default();
+        let result = render_glob_output(output, theme, 80);
+        let text: String = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            text.contains("0001-actor-model-abi.md"),
+            "Should render hyphenated paths, got: {text}"
+        );
+        assert!(
+            text.contains("0002-protocol.md"),
+            "Should render hyphenated paths, got: {text}"
+        );
+        assert!(
+            text.contains("3 files matched"),
+            "Should show file count, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_glob_with_directories_only() {
+        let output = "pattern `**` matched 3 directories but no files (files are filtered out). Try `**/*` to list files inside those directories.\n";
+        let theme = Theme::default();
+        let result = render_glob_output(output, theme, 80);
+        let text: String = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            text.contains("3 directories matched"),
+            "Should show directory hint, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_grep_with_matches() {
+        let output = "src/main.rs:10: fn main() {\nsrc/main.rs:20: println!(\"Hello\");\n";
+        let theme = Theme::default();
+        let result = render_grep_output(output, theme, 80);
+        let text: String = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("2 matches found"), "Should show match count");
+        assert!(text.contains("src/main.rs:10:"), "Should show file:line");
+        assert!(text.contains("src/main.rs:20:"), "Should show file:line");
+    }
+
+    #[test]
+    fn test_edit_creates_file() {
+        let output = "created file: test.txt";
+        let theme = Theme::default();
+        let result = render_edit_output(output, theme, 80);
+        let text: String = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("✓"), "Should show checkmark");
+        assert!(
+            text.contains("created file"),
+            "Should show creation message"
+        );
+    }
+
+    #[test]
+    fn test_read_suppresses_body() {
+        let output = "1: line 1\n2: line 2\n3: line 3\n";
+        let theme = Theme::default();
+        let result = render_read_output(output, theme, 80);
+        let text: String = result
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("✓"), "Should show checkmark");
+        assert!(text.contains("File read"), "Should show read message");
+        assert!(!text.contains("line 1"), "Should suppress body");
+    }
+}

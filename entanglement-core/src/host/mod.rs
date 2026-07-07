@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::protocol::FileChangeKind;
 use crate::tools::ToolRegistry;
 
 // pub mod apply_diff; Commented, will be fixed later!!!
@@ -174,7 +175,19 @@ pub fn host_tools(root: PathBuf) -> ToolRegistry {
     reg.register(GlobTool::new(root.clone()));
     reg.register(GrepTool::new(root.clone()));
     reg.register(EditTool::new(root.clone()));
-    //reg.register(ApplyDiffTool::new(root)); Commented, will be fixed later!!!
+    reg
+}
+
+pub fn host_tools_with_callbacks<F, G>(root: PathBuf, on_read: F, on_edit: G) -> ToolRegistry
+where
+    F: Fn(String, Vec<u8>) + Send + Sync + 'static,
+    G: Fn(String, Option<Vec<u8>>, Option<Vec<u8>>, FileChangeKind) + Send + Sync + 'static,
+{
+    let mut reg = ToolRegistry::new();
+    reg.register(ReadTool::new(root.clone()).with_on_read(on_read));
+    reg.register(GlobTool::new(root.clone()));
+    reg.register(GrepTool::new(root.clone()));
+    reg.register(EditTool::new(root.clone()).with_on_edit(on_edit));
     reg
 }
 

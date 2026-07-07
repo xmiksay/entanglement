@@ -7,13 +7,27 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 
+type OnReadCallback = Box<dyn Fn(String, Vec<u8>) + Send + Sync>;
+
 pub struct ReadTool {
     root: std::path::PathBuf,
+    on_read: Option<OnReadCallback>,
 }
 
 impl ReadTool {
     pub fn new(root: std::path::PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            on_read: None,
+        }
+    }
+
+    pub fn with_on_read<F>(mut self, f: F) -> Self
+    where
+        F: Fn(String, Vec<u8>) + Send + Sync + 'static,
+    {
+        self.on_read = Some(Box::new(f));
+        self
     }
 }
 
@@ -65,8 +79,13 @@ impl Tool for ReadTool {
         let bytes = tokio::fs::read(&full)
             .await
             .with_context(|| format!("reading {}", parsed.path))?;
-        let text = String::from_utf8(bytes)
+        let text = String::from_utf8(bytes.clone())
             .with_context(|| format!("{} is not valid UTF-8", parsed.path))?;
+
+        if let Some(ref on_read) = self.on_read {
+            on_read(parsed.path.clone(), bytes);
+        }
+
         let offset = parsed.offset.unwrap_or(1).max(1);
         let limit = parsed.limit.unwrap_or(2000);
         let mut out = String::new();
