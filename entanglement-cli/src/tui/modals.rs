@@ -40,14 +40,44 @@ pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
 
 pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
     let active = app.active_session_id().clone();
-    let rows: Vec<ListItem> = app
-        .sessions()
+    let sessions_vec: Vec<_> = app.sessions().into_iter().collect();
+    let mut parent_links: std::collections::HashMap<
+        entanglement_core::SessionId,
+        Option<entanglement_core::SessionId>,
+    > = std::collections::HashMap::new();
+
+    for (id, view) in sessions_vec.iter() {
+        parent_links.insert((*id).clone(), view.parent().cloned());
+    }
+
+    fn get_depth(
+        id: &entanglement_core::SessionId,
+        parent_links: &std::collections::HashMap<
+            entanglement_core::SessionId,
+            Option<entanglement_core::SessionId>,
+        >,
+    ) -> usize {
+        let mut depth = 0;
+        let mut current = id;
+        while let Some(parent) = parent_links.get(current).and_then(|p| p.as_ref()) {
+            depth += 1;
+            current = parent;
+            if depth > 100 {
+                break;
+            }
+        }
+        depth
+    }
+
+    let rows: Vec<ListItem> = sessions_vec
         .into_iter()
         .map(|(id, view)| {
+            let depth = get_depth(id, &parent_links);
+            let indent = "  ".repeat(depth);
             let marker = if *id == active { "▸ " } else { "  " };
             let color = app.profile_color_for(view.agent());
             let mut spans = vec![
-                Span::raw(marker),
+                Span::raw(format!("{}{}", indent, marker)),
                 Span::styled(id.to_string(), Style::default().bold()),
                 Span::raw(" "),
                 Span::styled("[", Style::default().dim()),

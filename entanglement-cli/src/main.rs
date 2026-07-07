@@ -231,9 +231,9 @@ enum Cmd {
     Run {
         /// Prompt text.
         prompt: Vec<String>,
-        /// Session id to use.
-        #[arg(long, default_value = "run")]
-        session: String,
+        /// Session id to use (generates UUID if not specified).
+        #[arg(long)]
+        session: Option<String>,
         /// Agent profile to run under (build | plan | explore | custom).
         #[arg(long)]
         agent: Option<String>,
@@ -246,13 +246,13 @@ enum Cmd {
     },
     /// Bidirectional NDJSON relay (stdin: InMsg, stdout: OutEvent).
     Pipe {
-        #[arg(long, default_value = "pipe")]
-        session: String,
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Terminal UI mode.
     Tui {
-        #[arg(long, default_value = "tui")]
-        session: String,
+        #[arg(long)]
+        session: Option<String>,
         /// Agent profile to run under (build | plan | explore | custom).
         #[arg(long)]
         agent: Option<String>,
@@ -280,7 +280,11 @@ async fn main() -> Result<()> {
             format,
             resume,
         }) => {
-            let session_id = SessionId::new(session);
+            let session_id = if let Some(resume_id) = &resume {
+                SessionId::new(resume_id.clone())
+            } else {
+                SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0))
+            };
 
             if let Some(resume_id) = resume {
                 let resume_session_id = SessionId::new(resume_id);
@@ -317,9 +321,12 @@ async fn main() -> Result<()> {
             let prompt = prompt.join(" ");
             run_one(&holly, &session_id, agent.as_deref(), &prompt, &format).await
         }
-        Some(Cmd::Pipe { session }) => pipe(&holly, &SessionId::new(session)).await,
+        Some(Cmd::Pipe { session }) => {
+            let session_id = SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0));
+            pipe(&holly, &session_id).await
+        }
         Some(Cmd::Tui { session, agent }) => {
-            let session_id = SessionId::new(session);
+            let session_id = SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0));
             if let Some(a) = agent {
                 holly
                     .send(InMsg::SetAgent {
@@ -332,7 +339,7 @@ async fn main() -> Result<()> {
         }
         None => {
             let prompt = cli.prompt.join(" ");
-            run_one(&holly, &SessionId::new("run"), None, &prompt, "text").await
+            run_one(&holly, &SessionId::new_uuid(), None, &prompt, "text").await
         }
     }
 }

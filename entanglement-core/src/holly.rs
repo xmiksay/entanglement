@@ -182,6 +182,7 @@ async fn supervisor(
 ) {
     let mut sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>> = HashMap::new();
     let mut pending_resumes: HashMap<SessionId, Vec<(Option<InMsg>, OutEvent)>> = HashMap::new();
+    let parent_links: HashMap<SessionId, Option<SessionId>> = HashMap::new();
 
     while let Some(msg) = rx.recv().await {
         let session_id = msg.session().clone();
@@ -198,7 +199,9 @@ async fn supervisor(
                 match Session::replay(&records, &cfg2, &root2) {
                     Ok(initial_session) => {
                         let profile = initial_session.profile.clone();
-                        session_loop(sid, srx, ev, cfg2, profile, Some(initial_session)).await;
+                        let parent = initial_session.parent.clone();
+                        session_loop(sid, srx, ev, cfg2, profile, Some(initial_session), parent)
+                            .await;
                     }
                     Err(e) => {
                         tracing::error!("Failed to replay session {}: {}", sid, e);
@@ -221,7 +224,10 @@ async fn supervisor(
             let ev = events.clone();
             let cfg2 = cfg.clone();
             let sid = session_id.clone();
-            tokio::spawn(async move { session_loop(sid, srx, ev, cfg2, profile, None).await });
+            let parent = parent_links.get(&session_id).cloned().flatten();
+            tokio::spawn(
+                async move { session_loop(sid, srx, ev, cfg2, profile, None, parent).await },
+            );
             sessions.insert(session_id.clone(), stx);
         }
 

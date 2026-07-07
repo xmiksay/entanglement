@@ -1,4 +1,4 @@
-use entanglement_core::{AgentState, OutEvent, TaskItem};
+use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
@@ -46,6 +46,7 @@ pub struct SessionView {
     auto_follow: bool,
     approval_mode: ApprovalMode,
     pending_tool_request: Option<(String, String, String)>,
+    parent: Option<SessionId>,
 }
 
 impl SessionView {
@@ -62,6 +63,7 @@ impl SessionView {
             auto_follow: true,
             approval_mode: ApprovalMode::Normal,
             pending_tool_request: None,
+            parent: None,
         }
     }
 
@@ -147,6 +149,10 @@ impl SessionView {
         )
     }
 
+    pub fn parent(&self) -> Option<&SessionId> {
+        self.parent.as_ref()
+    }
+
     /// Records the user's outgoing prompt into the transcript so it shows up
     /// in the chat scrollback. Unlike engine `OutEvent`s, user prompts carry
     /// no `seq` and bypass the dedupe guard — they originate here, not the
@@ -166,7 +172,10 @@ impl SessionView {
     /// if it changed anything the UI needs to redraw for.
     pub fn apply_event(&mut self, event: OutEvent) -> bool {
         match event {
-            OutEvent::SessionStarted { .. } => true,
+            OutEvent::SessionStarted { parent, .. } => {
+                self.parent = parent;
+                true
+            }
             OutEvent::SessionEnded { .. } => true,
             OutEvent::Status { state, .. } => {
                 self.state = state;
