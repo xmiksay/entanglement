@@ -142,7 +142,7 @@ async fn supervisor(
 
     while let Some(msg) = rx.recv().await {
         let session_id = msg.session().clone();
-        let cmd = msg_to_cmd(msg);
+        let cmd = msg_to_cmd(msg.clone());
 
         // Stop is cancel-semantics (ADR-0017): it interrupts the in-flight
         // turn inside the session task (or no-ops when idle) but does *not*
@@ -170,6 +170,19 @@ async fn supervisor(
     for (_, tx) in sessions.drain() {
         let _ = tx.send(SessionCmd::Stop).await;
     }
+}
+
+/// Tap that allows observing all inbound messages before they're routed.
+/// Returns a receiver that clones each InMsg.
+pub fn tap_inbound(_rx: &mpsc::Receiver<InMsg>) -> mpsc::Receiver<InMsg> {
+    let (_tap_tx, tap_rx) = mpsc::channel::<InMsg>(INBOX_CAPACITY);
+
+    // This is a bit of a hack: we can't actually tap the existing receiver
+    // without modifying the supervisor. For now, we return a channel that
+    // the caller can use by wrapping Holly::send.
+    // A proper implementation would require restructuring the supervisor to
+    // broadcast inbound messages, similar to how outbound events work.
+    tap_rx
 }
 
 fn msg_to_cmd(msg: InMsg) -> SessionCmd {

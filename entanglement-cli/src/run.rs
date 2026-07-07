@@ -61,6 +61,8 @@ pub async fn run_one(
 /// Human-friendly rendering of a single event.
 fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
     match ev {
+        OutEvent::SessionStarted { .. } => {}
+        OutEvent::SessionEnded { .. } => {}
         OutEvent::Status { state, .. } => match state {
             AgentState::Thinking => writeln!(out, "… thinking")?,
             AgentState::WaitingApproval => writeln!(out, "… waiting for approval")?,
