@@ -2,11 +2,24 @@ use entanglement_core::{AgentState, OutEvent, TaskItem};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
-    User { text: String, pending: bool },
-    TextDelta { text: String },
-    ToolRequest { tool: String, input: String },
-    ToolOutput { output: String },
-    Error { message: String },
+    User {
+        text: String,
+        pending: bool,
+    },
+    TextDelta {
+        text: String,
+    },
+    ToolCall {
+        tool: String,
+        input: String,
+    },
+    ToolOutput {
+        tool: Option<String>,
+        output: String,
+    },
+    Error {
+        message: String,
+    },
     Done,
 }
 
@@ -217,6 +230,24 @@ impl SessionView {
                     false
                 }
             }
+            OutEvent::ToolCall {
+                seq, tool, input, ..
+            } => {
+                if seq > self.last_seen_seq {
+                    self.transcript.push(TranscriptEntry::ToolCall {
+                        tool: tool.clone(),
+                        input: input.clone(),
+                    });
+                    self.last_seen_seq = seq;
+                    if self.auto_follow {
+                        self.scroll_offset = 0;
+                        self.scroll_offset_x = 0;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
             OutEvent::ToolRequest {
                 seq,
                 request_id,
@@ -225,10 +256,6 @@ impl SessionView {
                 ..
             } => {
                 if seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::ToolRequest {
-                        tool: tool.clone(),
-                        input: input.clone(),
-                    });
                     self.last_seen_seq = seq;
                     self.pending_tool_request = Some((request_id.clone(), tool, input));
                     self.approval_mode = ApprovalMode::WaitingForApproval { request_id };
@@ -241,9 +268,14 @@ impl SessionView {
                     false
                 }
             }
-            OutEvent::ToolOutput { seq, output, .. } => {
+            OutEvent::ToolOutput {
+                seq, tool, output, ..
+            } => {
                 if seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::ToolOutput { output });
+                    self.transcript.push(TranscriptEntry::ToolOutput {
+                        tool: Some(tool.clone()),
+                        output,
+                    });
                     self.last_seen_seq = seq;
                     if self.auto_follow {
                         self.scroll_offset = 0;

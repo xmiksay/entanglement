@@ -193,14 +193,14 @@ fn append_transcript<'a>(
                 }
                 lines.push(padding);
             }
-            TranscriptEntry::ToolRequest { tool, input, .. } => {
+            TranscriptEntry::ToolCall { tool, input, .. } => {
                 let padding = Line::from(vec![
                     Span::styled("▌", Style::default().fg(tool_req.fg).bg(tool_req.bg)),
                     Span::raw(" ".repeat((available_width - 1) as usize)),
                 ]);
                 lines.push(padding.clone());
                 let request_line = Line::from(vec![
-                    Span::styled("Tool Request: ", Style::default().fg(Color::Cyan)),
+                    Span::styled("Tool Call: ", Style::default().fg(Color::Cyan)),
                     Span::styled(tool, Style::default().bold()),
                 ]);
                 let wrapped = wrap::wrap_line(request_line, available_width.saturating_sub(4));
@@ -216,13 +216,18 @@ fn append_transcript<'a>(
                 }
                 lines.push(padding);
             }
-            TranscriptEntry::ToolOutput { output } => {
+            TranscriptEntry::ToolOutput { tool, output } => {
                 let padding = Line::from(vec![
                     Span::styled("▌", Style::default().fg(tool_out.fg).bg(tool_out.bg)),
                     Span::raw(" ".repeat((available_width - 1) as usize)),
                 ]);
                 lines.push(padding.clone());
-                let output_header = Line::from("Tool Output:");
+                let header_text = if let Some(tool_name) = tool {
+                    format!("Tool Output ({tool_name}):")
+                } else {
+                    "Tool Output:".to_string()
+                };
+                let output_header = Line::from(header_text);
                 let wrapped = wrap::wrap_line(output_header, available_width.saturating_sub(4));
                 for wline in wrapped {
                     lines.push(theme.decorate(wline, tool_out, available_width));

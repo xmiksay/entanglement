@@ -38,6 +38,7 @@ pub(crate) struct Session {
     pub tasks: Vec<TaskItem>,
     pub plan: String,
     pub seq: u64,
+    pub turn_count: usize,
 }
 
 /// Runs one session until `Stop` / inbox close. Emits an initial `Idle` status
@@ -57,6 +58,7 @@ pub(crate) async fn session_loop(
         tasks: Vec::new(),
         plan: String::new(),
         seq: 0,
+        turn_count: 0,
     };
     let mut stash: VecDeque<SessionCmd> = VecDeque::new();
 
@@ -121,6 +123,17 @@ async fn run_turn(
     events: &broadcast::Sender<OutEvent>,
     stash: &mut VecDeque<SessionCmd>,
 ) -> Result<(), ()> {
+    s.turn_count += 1;
+    const MAX_TURNS: usize = 50;
+    if s.turn_count > MAX_TURNS {
+        let _ = events.send(OutEvent::Error {
+            session: session.clone(),
+            seq: next_seq(&mut s.seq),
+            message: format!("exceeded maximum turn limit ({MAX_TURNS}) - possible infinite loop"),
+        });
+        return Ok(());
+    }
+
     let _ = events.send(OutEvent::Status {
         session: session.clone(),
         state: AgentState::Thinking,
@@ -183,6 +196,11 @@ async fn run_turn(
             messages: s.ctx.messages(),
             tools: &specs,
         };
+        tracing::debug!(
+            messages_count = req.messages.len(),
+            estimated_tokens = s.ctx.estimated_tokens(),
+            "sending request to LLM"
+        );
         let mut stream = match s.llm.stream(req).await {
             Ok(st) => st,
             Err(e) => {
@@ -196,6 +214,18 @@ async fn run_turn(
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut stream_err: Option<String> = None;
         while let Some(ev) = stream.next().await {
+            // Check for stop command
+            if let Ok(cmd) = rx.try_recv() {
+                if matches!(cmd, SessionCmd::Stop) {
+                    tracing::debug!("turn interrupted during streaming");
+                    drop(stream);
+                    let _ = events.send(OutEvent::Status {
+                        session: session.clone(),
+                        state: AgentState::Idle,
+                    });
+                    return Ok(());
+                }
+            }
             match ev {
                 Ok(LlmEvent::Text(delta)) => {
                     if !delta.is_empty() {
@@ -223,9 +253,20 @@ async fn run_turn(
             return Ok(());
         }
 
-        s.ctx.push_assistant(text_buf, tool_calls.clone());
+        s.ctx.push_assistant(text_buf.clone(), tool_calls.clone());
+        tracing::debug!(
+            text_len = text_buf.len(),
+            tool_calls_count = tool_calls.len(),
+            "assistant message pushed"
+        );
+        tracing::debug!(
+            context_messages = s.ctx.messages().len(),
+            "context after assistant message"
+        );
 
+        // End turn if no tool calls (conversation complete)
         if tool_calls.is_empty() {
+            tracing::debug!("no tool calls - emitting Done");
             let _ = events.send(OutEvent::Done {
                 session: session.clone(),
                 seq: next_seq(&mut s.seq),
@@ -237,7 +278,19 @@ async fn run_turn(
             return Ok(());
         }
 
+        // Execute tool calls
         for call in tool_calls {
+            // Check for stop command between tools
+            if let Ok(cmd) = rx.try_recv() {
+                if matches!(cmd, SessionCmd::Stop) {
+                    tracing::debug!("turn interrupted between tool calls");
+                    let _ = events.send(OutEvent::Status {
+                        session: session.clone(),
+                        state: AgentState::Idle,
+                    });
+                    return Ok(());
+                }
+            }
             if handle_tool_call(session, rx, s, events, stash, call).await {
                 return Err(()); // cancelled
             }
@@ -254,14 +307,31 @@ async fn handle_tool_call(
     stash: &mut VecDeque<SessionCmd>,
     call: ToolCall,
 ) -> bool {
+    emit_tool_call(
+        events,
+        session,
+        &call.id,
+        &call.name,
+        &call.input,
+        &mut s.seq,
+    );
+
     // Built-ins: always run, mutate session state, emit a snapshot.
     if call.name == PLAN_TOOL {
         let plan = json_field(&call.input, "content").unwrap_or_else(|| call.input.clone());
         s.plan = plan;
         emit_plan(events, session, &s.plan, &mut s.seq);
         let msg = "plan updated".to_string();
-        emit_tool_output(events, session, &call.id, msg.clone(), &mut s.seq);
-        s.ctx.push_tool(&call.id, msg);
+        emit_tool_output(
+            events,
+            session,
+            &call.id,
+            PLAN_TOOL,
+            msg.clone(),
+            &mut s.seq,
+        );
+        s.ctx.push_tool(&call.id, msg.clone());
+        tracing::debug!(tool_id = %call.id, result = %msg, "tool result pushed to context");
         return false;
     }
     if call.name == TASKS_TOOL {
@@ -274,7 +344,14 @@ async fn handle_tool_call(
             }
             Err(e) => format!("invalid task list: {e}"),
         };
-        emit_tool_output(events, session, &call.id, msg.clone(), &mut s.seq);
+        emit_tool_output(
+            events,
+            session,
+            &call.id,
+            TASKS_TOOL,
+            msg.clone(),
+            &mut s.seq,
+        );
         s.ctx.push_tool(&call.id, msg);
         return false;
     }
@@ -283,13 +360,27 @@ async fn handle_tool_call(
     match s.profile.permission.for_tool(&call.name) {
         Permission::Allow => {
             let out = s.tools.execute(&call).await;
-            emit_tool_output(events, session, &call.id, out.clone(), &mut s.seq);
+            emit_tool_output(
+                events,
+                session,
+                &call.id,
+                &call.name,
+                out.clone(),
+                &mut s.seq,
+            );
             s.ctx.push_tool(&call.id, out);
             false
         }
         Permission::Deny => {
             let out = format!("tool `{}` denied by permission profile", call.name);
-            emit_tool_output(events, session, &call.id, out.clone(), &mut s.seq);
+            emit_tool_output(
+                events,
+                session,
+                &call.id,
+                &call.name,
+                out.clone(),
+                &mut s.seq,
+            );
             s.ctx.push_tool(&call.id, out);
             false
         }
@@ -309,7 +400,14 @@ async fn handle_tool_call(
                 Approval::Approved => {
                     set_thinking(events, session);
                     let out = s.tools.execute(&call).await;
-                    emit_tool_output(events, session, &call.id, out.clone(), &mut s.seq);
+                    emit_tool_output(
+                        events,
+                        session,
+                        &call.id,
+                        &call.name,
+                        out.clone(),
+                        &mut s.seq,
+                    );
                     s.ctx.push_tool(&call.id, out);
                     false
                 }
@@ -320,7 +418,14 @@ async fn handle_tool_call(
                         call.name,
                         reason.as_deref().unwrap_or("user")
                     );
-                    emit_tool_output(events, session, &call.id, out.clone(), &mut s.seq);
+                    emit_tool_output(
+                        events,
+                        session,
+                        &call.id,
+                        &call.name,
+                        out.clone(),
+                        &mut s.seq,
+                    );
                     s.ctx.push_tool(&call.id, out);
                     false
                 }
@@ -405,6 +510,23 @@ fn set_thinking(events: &broadcast::Sender<OutEvent>, session: &SessionId) {
     });
 }
 
+fn emit_tool_call(
+    events: &broadcast::Sender<OutEvent>,
+    session: &SessionId,
+    request_id: &str,
+    tool: &str,
+    input: &str,
+    seq: &mut u64,
+) {
+    let _ = events.send(OutEvent::ToolCall {
+        session: session.clone(),
+        seq: next_seq(seq),
+        request_id: request_id.to_string(),
+        tool: tool.to_string(),
+        input: input.to_string(),
+    });
+}
+
 fn emit_plan(events: &broadcast::Sender<OutEvent>, session: &SessionId, plan: &str, seq: &mut u64) {
     let _ = events.send(OutEvent::Plan {
         session: session.clone(),
@@ -430,6 +552,7 @@ fn emit_tool_output(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
     request_id: &str,
+    tool: &str,
     output: String,
     seq: &mut u64,
 ) {
@@ -437,6 +560,7 @@ fn emit_tool_output(
         session: session.clone(),
         seq: next_seq(seq),
         request_id: request_id.to_string(),
+        tool: tool.to_string(),
         output,
     });
 }

@@ -224,6 +224,17 @@ pub enum OutEvent {
         seq: u64,
         text: String,
     },
+    /// A tool is being called or about to be approved (display-only). Emitted
+    /// for every tool call, before execution, so heads can show what's being called
+    /// (tool name + input arguments). Separate from `ToolRequest` which handles
+    /// approval mode.
+    ToolCall {
+        session: SessionId,
+        seq: u64,
+        request_id: String,
+        tool: String,
+        input: String,
+    },
     /// Engine wants to run a host tool (permission `Ask`) and is pausing for approval.
     ToolRequest {
         session: SessionId,
@@ -237,6 +248,7 @@ pub enum OutEvent {
         session: SessionId,
         seq: u64,
         request_id: String,
+        tool: String,
         output: String,
     },
     /// Full snapshot of the session's task outline (sent on every change).
@@ -262,6 +274,7 @@ impl OutEvent {
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }
+            | OutEvent::ToolCall { session, .. }
             | OutEvent::ToolRequest { session, .. }
             | OutEvent::ToolOutput { session, .. }
             | OutEvent::TaskList { session, .. }
