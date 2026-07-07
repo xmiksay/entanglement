@@ -2,8 +2,44 @@
 
 How the headless engine is structured and how the four interfaces share one
 contract. Overview & roadmap in [`../README.md`](../README.md). The *why* behind
-each choice here is recorded in the [decision log](adr/README.md) (ADRs); this
-document describes the current *what is*.
+each choice here is recorded in the [decision log](adr/README.md) (ADRs).
+
+This document describes the current *what is*, with the three-layer direction
+([ADR-0006](adr/0006-core-dependency-hygiene-gate.md)) marked inline:
+**✅ shipped** vs **🚧 decided but pending** (tracked in GitHub issues). The
+crate renames `entanglement-llm → entanglement-provider` and
+`entanglement-cli → entanglement-runtime` are 🚧 — the current code still uses
+the old names; this doc uses the target names so the *what-should-be* is legible.
+
+## 0. Layers: core / provider / runtime — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)
+
+Three crates, two seams. Heads depend on core; core never depends on a head.
+
+```
+┌──────────── entanglement-runtime (head, binary `skutter`) ─────────────┐
+│ user sessions · host tools · tool execution · permission dispatch ·    │
+│ approval UX · persistence · transports (stdio ✅, WS 🚧, TUI 🚧)        │
+└─────────▲──────────────────────────────────────────────▲───────────────┘
+          │ send()/subscribe() (ABI)      tool exec + approval (protocol)
+┌─────────┴──────────────── entanglement-core (engine) ───┴───────────────┐
+│ Holly actor · InMsg/OutEvent · agent turn loop · Tool *trait* · Context │
+└─────────▲────────────────────────────────────────────────────────────────┘
+          │ Llm trait: stream() + session handle
+┌─────────┴──────────── entanglement-provider (LLM I/O) ────────────────────┐
+│ OpenAI-compat + Anthropic clients · pool 🚧 · retry 🚧 · rate-limit 🚧 ·  │
+│ reasoning stream 🚧 · models-per-provider 🚧                              │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **core** — the reasoning engine: actor, protocol, turn loop, the `Tool` *trait*
+  (not implementations), `Context`. Pure, reusable, zero UI/transport deps (§7).
+- **provider** — all LLM I/O behind the `Llm` trait (§5b).
+- **runtime** — the head: host tools + their execution, permission dispatch +
+  approval, user sessions, every transport (§6, §8).
+
+**Responsibility relocation is 🚧:** today core still owns tool execution,
+permission dispatch, and the host-tool implementations. The decided end state
+moves those to the runtime (§3, §8); core keeps only the loop + `Tool` trait.
 
 ## 1. The actor model (the ABI) — [ADR-0001](adr/0001-actor-model-abi.md)
 
@@ -65,6 +101,12 @@ A session runs under exactly one [`AgentProfile`][profile]:
   - `Deny` → emit `ToolOutput("…denied…")`, never run.
 - Built-ins: `build` (all allow), `plan` (ask, read allow), `explore` (deny,
   read/glob/grep allow). Add your own via `ProfileRegistry::insert`.
+- **Where dispatch runs:** the `AgentProfile` *shape* is a core protocol type, but
+  the `Allow|Ask|Deny` decision + the approval wait are a **runtime** concern
+  (🚧, [ADR-0003](adr/0003-agent-and-permission-profiles.md) /
+  [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md)) — today they run in
+  core's turn loop; the decided end state moves them to the runtime, riding the
+  same `ToolRequest`/`Approve`/`Reject` frames.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](adr/0004-structured-plan-and-task-events.md)
 
@@ -89,8 +131,13 @@ structured events give every head a native plan/task panel to render.
 ## 5. Per-session engine (`session.rs`)
 
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
-token estimate), its own `Llm` instance (from `EngineConfig::llm_factory`), the
+token estimate), an `Llm` handle (from `EngineConfig::llm_factory`), the
 active `AgentProfile`, the `TaskList`, the `Plan`, and a per-session `seq`.
+The `Llm` handle is a **provider-owned session/connection handle** (🚧,
+[ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)): the *conversation
+history* stays in core's `Context`, but the *connection* state (pool, retry,
+rate-limit budget) belongs to the provider. Today the factory hands core a fresh
+per-session client; the decided end state hands it a pooled session handle.
 
 Turn loop: send `LlmRequest { system, model, messages, tools }` → consume the
 streamed `LlmEvent`s (emit `TextDelta` per `Text` chunk, gather `ToolCall`s,
@@ -112,41 +159,54 @@ preserved across a Stop+Prompt round-trip — Esc-in-approval or a stray Stop
 between turns no longer causes amnesia. The supervisor map entry is only
 removed on global inbox close (engine shutdown).
 
-## 5b. Model backends (`entanglement-llm`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
+## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 
-The `Llm` **trait** lives in `entanglement-core` (the seam); concrete backends live in
-**`entanglement-llm`**, a separate crate that *may* depend on transport crates
-(`reqwest`) — `entanglement-core` may not.
+The `Llm` **trait** lives in `entanglement-core` (the seam); all LLM I/O lives in
+**`entanglement-provider`** (renamed from `entanglement-llm`, 🚧), a separate
+crate that *may* depend on transport crates (`reqwest`) — `entanglement-core` may
+not.
 
 ```rust
-enum LlmEvent { Text(String), ToolCall(ToolCall), Finish { input_tokens?, output_tokens? } }
+enum LlmEvent {
+    Text(String),
+    Reasoning(String),   // 🚧 thinking/reasoning tokens, streamed distinctly
+    ToolCall(ToolCall),
+    Finish { input_tokens?, output_tokens? },
+}
 trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEvent>>> }
 ```
 
 - Streaming mirrors opencode (Vercel AI SDK `doStream`): live token-by-token
   deltas, not a buffered whole-reply. The box stream is `'static`.
+- **`LlmEvent::Reasoning` (🚧)** surfaces extended-thinking output (Anthropic
+  `thinking`/`redacted_thinking` blocks, OpenAI `reasoning_content`) instead of
+  dropping it; core re-emits it as a reasoning `OutEvent` heads render distinctly
+  from answer text. *Today both backends silently drop reasoning deltas.*
 
-**Provider topology mirrors opencode / the AI SDK** — split by *wire format*,
-not by vendor:
+**Provider topology** — split by *wire format*, not by vendor:
 
-| client (`entanglement-llm`) | wire format | serves | auth |
+| client (`entanglement-provider`) | wire format | serves | auth |
 | --- | --- | --- | --- |
 | `OpenAiLlm` (`openai.rs`) | `/chat/completions` SSE | **z.ai** (GLM, entanglement's primary), **OpenAI**, **Ollama** `/v1` | `Bearer` or none (Ollama) |
 | `AnthropicLlm` (`anthropic.rs`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
 
 - `OpenAiLlm` is one generic client `{ base_url, api_key: Option, default_model }`
-  hand-rolled over `reqwest` (no SDK crate). The three OpenAI-shape providers
-  differ only by config, so preset base constants exist (`ZAI_CODING_PLAN_BASE`
-  — entanglement default, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`).
-  `openai_factory(base, key, model)` builds an `LlmFactory`. Tool calls stream as
-  per-index `function.arguments` deltas, flushed on `finish_reason: "tool_calls"`;
-  tool results round-trip as one `role: "tool"` message each.
-- `AnthropicLlm` is separate because Anthropic's format genuinely differs: system
-  is a top-level field; tool results are merged into one user turn; tool input
-  arrives as `input_json_delta` fragments. `anthropic_factory(key, model)`.
+  hand-rolled over `reqwest` (no SDK crate). Preset base constants
+  (`ZAI_CODING_PLAN_BASE` — default, `ZAI_GENERAL_BASE`, `OPENAI_BASE`,
+  `OLLAMA_BASE`); `openai_factory(base, key, model)` builds an `LlmFactory`.
+- `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
+  top-level, tool results merged into one user turn, `input_json_delta`
+  fragments). `anthropic_factory(key, model)`.
 - `ToolSpec.schema` surfaces as `input_schema` (Anthropic) / `parameters`
-  (OpenAI-compat); `Message.tool_call_id` surfaces as `tool_use_id` (Anthropic) /
-  `tool_call_id` (OpenAI-compat).
+  (OpenAI-compat); `Message.tool_call_id` → `tool_use_id` / `tool_call_id`.
+
+**Resilience the provider layer owns (🚧):** a shared, tuned connection **pool**
+(reused across sessions, not a client-per-turn); **retry** with exponential
+backoff + jitter on transient failures and dropped streams; **rate-limit**
+handling (HTTP 429 + `Retry-After`, plus a client-side RPM throttle, surfaced as
+status not silent stalls); a **models-per-provider** registry so heads present a
+real model picker. *Today none of these exist — the clients bail on the first
+non-2xx.*
 
 **Provider selection (`skutter`):** `ENTANGLEMENT_PROVIDER` env selects
 `zai | openai | ollama | anthropic` explicitly (errors loudly if the matching key
@@ -157,10 +217,11 @@ Default models: `glm-5.2` / `gpt-4o` / `llama3.1` / `claude-sonnet-4-5`.
 
 ## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI), [0010](adr/0010-single-head-crate-and-bash-opt-in.md) (packaging), [0011](adr/0011-tui-head-ratatui-crossterm.md)–[0015](adr/0015-rich-text-pipeline-syntect.md) (TUI)
 
-All heads live in one crate, **`entanglement-cli`** (binary `skutter`), as
-subcommands. The "four interfaces" (in-process ABI + three transports) are a
-design concept, not a packaging boundary — the real seam is
-`entanglement-core` ↔ everything else (ADR-0006, ADR-0010).
+All heads live in one crate, **`entanglement-runtime`** (renamed from
+`entanglement-cli`, 🚧; binary `skutter`), as subcommands. The "four interfaces"
+(in-process ABI + three transports) are a design concept, not a packaging
+boundary — the real seam is `entanglement-core` ↔ everything else (ADR-0006,
+ADR-0010).
 
 - **ABI** — `holly.send()` / `holly.subscribe()`. Done.
 - **stdio** (`skutter run` / `skutter pipe`): one-shot `run [--format text|json]
@@ -181,16 +242,19 @@ design concept, not a packaging boundary — the real seam is
 `make tree`, which runs `cargo tree -p entanglement-core` and **fails** if any of
 `clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` appear. It
 is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
-`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`, `glob`, `regex`.
-`glob`/`regex` back the host tools (§8); the `reqwest` both LLM backends use
-lives in `entanglement-llm`, not core — see ADR-0007.
+`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`, `uuid`, `glob`,
+`regex`. `glob`/`regex` back the host tools (§8) and **leave core with them
+(🚧)** once the tools move to `entanglement-runtime`; the `reqwest` both LLM
+backends use lives in `entanglement-provider`, not core — see ADR-0007.
 
 ## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in)
 
-Concrete filesystem + shell tools the engine dispatches under the active
-permission profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)).
-They live in `entanglement-core::host` (no UI/transport deps) and are
-assembled by `host_tools(root: PathBuf) -> ToolRegistry`:
+Concrete filesystem + shell tools, dispatched under the active permission
+profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)). Core defines the
+`Tool` **trait**; the implementations live in **`entanglement-runtime`** (🚧 —
+today they are in `entanglement-core::host`) and are assembled by
+`host_tools(root: PathBuf) -> ToolRegistry`. The runtime executes them and
+returns output to core's turn loop over the protocol:
 
 | tool | input | output |
 | --- | --- | --- |

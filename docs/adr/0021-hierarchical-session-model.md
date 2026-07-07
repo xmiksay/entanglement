@@ -1,8 +1,7 @@
-# ADR 0021: Hierarchical Session Data Model
+# 0021. Hierarchical session data model
 
-## Status
-
-Accepted
+- Status: Accepted
+- Date: 2026-07-07
 
 ## Context
 

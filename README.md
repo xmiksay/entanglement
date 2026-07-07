@@ -9,9 +9,11 @@ over those two methods.
 
 ## Status
 
-**Phase 1 (foundation)** — actor core + stdio head, running end-to-end on a
-`DummyLlm`. No real LLM networking yet. WS and the opencode-style TUI are the
-next heads.
+Actor core + stdio head + TUI, with real LLM backends wired
+(`entanglement-provider`: z.ai/OpenAI/Ollama + Anthropic). WebSocket `serve` is
+the next head. A three-layer re-architecture (core / provider / runtime) is
+in progress — see [`docs/adr/0006`](docs/adr/0006-core-dependency-hygiene-gate.md)
+and the crate table below.
 
 ## The contract (one set of types, every head)
 
@@ -47,10 +49,14 @@ natively.
 
 ## Crates
 
+Three crates, two seams (core ↔ provider, core ↔ runtime). Names in **bold**
+are the target of an in-progress rename (🚧).
+
 | Crate | Role | Hard rule |
 | --- | --- | --- |
-| `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, session loop, permission dispatch, built-in tools, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm` forbidden). Enforced via `make tree`. |
-| `entanglement-cli` | the head crate (binary `skutter`): stdio `run`/`pipe` today; future `serve` (WS) + `tui` subcommands. All transports live here (ADR-0010). | — |
+| `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, the `Tool` **trait**, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm`/`reqwest` forbidden). Enforced via `make tree`. |
+| **`entanglement-provider`** _(from `entanglement-llm`)_ | all LLM I/O behind the `Llm` trait: z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream (🚧). | may depend on `reqwest`; never depended on by core. |
+| **`entanglement-runtime`** _(from `entanglement-cli`)_ | the head crate (binary `skutter`): host tools + execution, permission dispatch + approval, user sessions, all transports (stdio ✅, WS 🚧, TUI). | — |
 
 ## Build & develop
 

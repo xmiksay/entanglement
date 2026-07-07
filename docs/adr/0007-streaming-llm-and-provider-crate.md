@@ -1,34 +1,37 @@
-# 0007. Streaming `Llm` trait + out-of-core provider crate
+# 0007. `entanglement-provider`: streaming `Llm` trait, pooling, retry, rate-limit, reasoning
 
 - Status: Accepted
-- Date: 2026-07-04
+- Date: 2026-07-07
 
 ## Context
 
-The engine needs a real model backend. Two questions had to be settled together
-because they're load-bearing and hard to reverse:
+The engine needs a real model backend, and a backend needs an HTTP client
+(`reqwest`) — which [ADR-0006][0006] forbids in `entanglement-core`. So the
+backend lives in a separate crate while the abstract seam (the `Llm` trait)
+stays in core. This crate is **`entanglement-provider`**: it owns *all* LLM I/O,
+which is more than "send one request." A production coding agent hammers the
+provider — many turns, long streams, concurrent sessions — against APIs that
+impose per-minute rate limits and transient failures. The provider layer is
+where connection reuse, retry, rate-limit backoff, and reasoning/thinking
+streams belong; core must stay ignorant of all of it.
 
-1. **Streaming vs. buffered.** The original `Llm` trait (pre-0007) was buffered:
-   `async fn complete(req) -> LlmResponse`. But `entanglement` is modeled on opencode,
-   and opencode streams — it drives the Vercel AI SDK's `doStream` and surfaces
-   `text/event-stream` deltas to the UI token-by-token. `OutEvent::TextDelta`
-   was already in the protocol *implying* streaming, yet the backend handed back
-   the whole reply at once. The two reference projects studied
-   (`nexial/infra`, `f13/knowledge-base`) both converged on a buffered
-   `LlmProvider::chat` trait — deliberately *not* the model `entanglement` follows.
-
-2. **Where the backend lives.** A real backend needs an HTTP client (`reqwest`).
-   ADR-0006 forbids `reqwest` (and all transport crates) in `entanglement-core`. So the
-   backend cannot live in core — but the abstract `Llm` trait must.
+`entanglement` follows opencode, which **streams** (Vercel AI SDK `doStream`):
+`OutEvent::TextDelta` implies token-by-token deltas, so the trait must be
+streaming, not a buffered `complete()`.
 
 ## Decision
 
-**Streaming trait in core, concrete backend in a new `entanglement-llm` crate.**
+**Streaming `Llm` trait in core; everything else in `entanglement-provider`.**
 
-The `Llm` trait becomes streaming:
+### The trait (in core)
 
 ```rust
-pub enum LlmEvent { Text(String), ToolCall(ToolCall), Finish { .. } }
+pub enum LlmEvent {
+    Text(String),
+    Reasoning(String),          // thinking / reasoning tokens, streamed
+    ToolCall(ToolCall),
+    Finish { input_tokens: Option<u32>, output_tokens: Option<u32> },
+}
 
 #[async_trait]
 pub trait Llm: Send {
@@ -37,57 +40,97 @@ pub trait Llm: Send {
 }
 ```
 
-- Setup/transport errors (auth, HTTP 4xx, connection) return as the `Err` of
-  `stream()`; mid-stream errors arrive as `Err` items in the box stream.
-- The returned stream is `'static` (owns its state), so the session loop can
-  hold it across `.await` points without borrowing the backend.
-- `LlmRequest` gains `model: Option<&str>` (per-profile; `None` = backend
-  default) since the factory is profile-agnostic but the model id is per-profile.
+- Setup/transport errors return as the `Err` of `stream()`; mid-stream errors
+  arrive as `Err` items in the box stream.
+- The stream is `'static` (owns its state) so the turn loop holds it across
+  `.await` without borrowing the backend.
+- `LlmRequest` carries `model: Option<&str>` (per-profile; `None` = backend
+  default).
+- **`LlmEvent::Reasoning`** is first-class so extended-thinking output is
+  surfaced, not dropped. Core re-emits it as a reasoning `OutEvent` for heads
+  to render distinctly from answer text.
 
-`entanglement-llm` is a new workspace member that depends on `entanglement-core` **plus**
-`reqwest` (allowed there). It ships the Anthropic backend: a hand-rolled
-`POST /v1/messages` with `stream: true`, parsing the SSE frames
-(`message_start`, `content_block_delta`, `content_block_stop`, `message_delta`,
-… ) into `LlmEvent`s. **No Anthropic SDK crate** — `reqwest` directly.
+### The provider crate (out of core)
 
-Tool inputs are JSON objects (Anthropic's `input_schema`). `ToolSpec` gained a
-`schema: serde_json::Value` field surfacing as Anthropic's `input_schema`, and
-the built-in `update_plan`/`update_tasks` tools grew proper object schemas. The
-session parses fields tolerantly (`json_field`) so scripted/test backends that
-hand in raw strings still work alongside structured providers.
+`entanglement-provider` depends on `entanglement-core` **plus** `reqwest`
+(allowed there). It owns:
 
-`Message` gained `tool_call_id: Option<String>` on tool-role messages —
-Anthropic's `tool_result` block **requires** `tool_use_id`, so the link from a
-result back to its originating call is load-bearing (not just metadata).
+1. **The concrete backends**, split by *wire format*, not vendor:
+
+   | client | wire format | serves | auth |
+   | --- | --- | --- | --- |
+   | `OpenAiLlm` (`openai.rs`) | `/chat/completions` SSE | z.ai (GLM, primary), OpenAI, Ollama `/v1` | `Bearer` / none |
+   | `AnthropicLlm` (`anthropic.rs`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
+
+   Hand-rolled over `reqwest` (no SDK crate). `OpenAiLlm` is one generic client
+   `{ base_url, api_key: Option, default_model }` with preset base constants
+   (`ZAI_CODING_PLAN_BASE` — default, `ZAI_GENERAL_BASE`, `OPENAI_BASE`,
+   `OLLAMA_BASE`). Both parse reasoning deltas (Anthropic `thinking` /
+   `redacted_thinking` blocks; OpenAI `reasoning_content`) into
+   `LlmEvent::Reasoning`.
+
+2. **A connection pool** — a shared, tuned `reqwest::Client` (keep-alive, idle
+   pool) reused across sessions rather than a fresh client per turn, so TLS
+   handshakes and sockets amortize under concurrent load.
+
+3. **Retry with backoff** — transient failures (connection resets, 5xx, stream
+   drops before `Finish`) retry with exponential backoff + jitter, bounded by a
+   max-attempts budget.
+
+4. **Rate-limit handling** — respect HTTP 429 and `Retry-After`, plus a
+   client-side requests-per-minute throttle so a burst of turns/sessions does
+   not trip provider limits. Rate-limit waits surface as status, not silent
+   stalls.
+
+5. **A models-per-provider registry** — the set of available models each
+   provider exposes, so heads can present a real model picker instead of a free
+   text field.
+
+6. **A live session/connection handle** ("unified session") — a stateful object
+   the provider hands core that carries the pool/retry/rate-limit context for a
+   session's lifetime. Core wraps it per turn; the *conversation history*
+   (`Context`) stays in core, but the *connection* state is the provider's.
+
+**Provider selection** stays a head concern (see [ADR-0010][0010]):
+`ENTANGLEMENT_PROVIDER` (`zai|openai|ollama|anthropic`) or key auto-detect,
+else `DummyLlm`.
 
 ## Consequences
 
-- **(+)** Live, token-by-token UI feedback is first-class, matching opencode —
-  no future trait reshaping needed to stream.
-- **(+)** `entanglement-core` stays pure: the seam (the `Llm` trait) is in core, the
-  I/O (reqwest, SSE) is quarantined in `entanglement-llm`. `make tree` keeps passing.
-- **(+)** Other providers (OpenAI-compatible, Ollama, …) drop in as further
-  modules in `entanglement-llm` or sibling crates, all behind the same trait.
-- **(+)** Mid-stream failures are recoverable: partial text is already streamed;
-  the failed turn surfaces as an `Error` + `Done` without committing a bogus
-  assistant message to context.
-- **(−)** `'static` box stream requires an indirection: `entanglement-llm` drains
-  reqwest's borrowed `bytes_stream` on a detached task into an owned-byte mpsc
-  channel the consumer stream owns. One extra task per turn — negligible cost.
-- **(−)** Tool inputs are now JSON objects, so scripted backends/tests that
-  bypass schemas must still feed parseable input. Mitigated by tolerant
-  `json_field` extraction (raw strings fall through unchanged).
+- **(+)** Core stays pure: the seam (`Llm` trait) is in core; all I/O, pooling,
+  retry, and rate-limit logic is quarantined in `entanglement-provider`.
+  `make tree` keeps passing.
+- **(+)** Live, token-by-token UI feedback (text *and* reasoning) is
+  first-class, matching opencode.
+- **(+)** Concurrent sessions share one connection pool and one rate-limit
+  budget, so the agent degrades gracefully under provider limits instead of
+  erroring out mid-run.
+- **(+)** New providers drop in as further modules behind the same trait.
+- **(−)** The `'static` box stream requires draining `reqwest`'s borrowed
+  `bytes_stream` on a detached task into an owned-byte channel — one extra task
+  per turn, negligible.
+- **(−)** Retry/rate-limit adds hidden latency a caller can't see turn-by-turn;
+  mitigated by surfacing waits as status.
 
 ## Alternatives considered
 
-- **Buffered `complete()` (the reference projects' shape).** Rejected: `entanglement`
-  follows opencode, which streams. Keeping buffered would make `TextDelta` a lie
-  (one full-text event per turn) and force a trait rewrite later.
-- **`reqwest` inside `entanglement-core`.** Rejected outright: violates ADR-0006 and
-  destroys the headless seam every embedder relies on.
-- **An Anthropic SDK crate.** Rejected: hand-rolling against `/v1/messages` is
-  ~200 lines, keeps the dep surface to `reqwest`, and avoids coupling to a
-  third-party crate's streaming model. `reqwest` was chosen explicitly.
-- **Streaming tool-input deltas (fine-grained-tool-streaming).** Deferred: the
-  trait assembles a full `ToolCall` before emitting. Streaming partial JSON to
-  the UI can be layered on later without changing the trait's shape.
+- **Buffered `complete()` (the reference projects' shape).** Rejected:
+  `entanglement` streams; buffering makes `TextDelta` a lie and forces a trait
+  rewrite later.
+- **`reqwest` inside `entanglement-core`.** Rejected: violates [ADR-0006][0006]
+  and destroys the headless seam.
+- **A fresh `reqwest::Client` per session/turn (the prior code).** Rejected:
+  wastes TLS handshakes and connections under load; a shared pool is the point
+  of a provider layer.
+- **No retry / rate-limit (bail on the first non-2xx, the prior behavior).**
+  Rejected: a coding agent that dies on a single 429 or transient reset is not
+  usable; resilience belongs here, once, not re-implemented per head.
+- **Provider SDK crates.** Rejected: hand-rolling against the two wire formats
+  is ~200 lines each, keeps the dep surface to `reqwest`, and avoids coupling to
+  a third party's streaming model.
+- **Dropping reasoning tokens (the prior behavior).** Rejected: extended
+  thinking is valuable signal; a dedicated `LlmEvent::Reasoning` costs one enum
+  variant and one `OutEvent`.
+
+[0006]: 0006-core-dependency-hygiene-gate.md
+[0010]: 0010-single-head-crate-and-bash-opt-in.md

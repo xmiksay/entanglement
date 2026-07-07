@@ -1,4 +1,4 @@
-# 0011. TUI head: ratatui + crossterm in `entanglement-cli`
+# 0011. TUI head: ratatui + crossterm in `entanglement-runtime`
 
 - Status: Accepted
 - Date: 2026-07-05
@@ -16,7 +16,7 @@ The TUI head (`skutter tui`) needs a Rust terminal UI framework. Options:
 
 ## Decision
 
-Use **ratatui 0.29 + crossterm 0.28**, both already declared in `Cargo.toml` workspace dependencies. The TUI lives entirely in `entanglement-cli`, the single head crate (ADR-0010). `entanglement-core` imports none of these crates; `make tree` enforces this.
+Use **ratatui 0.29 + crossterm 0.28**, both already declared in `Cargo.toml` workspace dependencies. The TUI lives entirely in `entanglement-runtime`, the single head crate (ADR-0010). `entanglement-core` imports none of these crates; `make tree` enforces this.
 
 Event loop pattern: spawn a tokio task that polls crossterm key events and forwards them over an `mpsc<Event>`; the main loop `select!`s over that channel and `holly.subscribe()`. Mutate an `App` state struct and draw when dirty via `ratatui::Terminal::draw()`.
 
