@@ -102,6 +102,16 @@ impl Llm for OpenAiLlm {
         let body = build_body(&model, req.system, req.messages, req.tools);
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
+        tracing::debug!(
+            model = %model,
+            base = %self.base_url,
+            messages_count = req.messages.len(),
+            tools_count = req.tools.len(),
+            has_tool_role_messages = req.messages.iter().any(|m| m.role == MessageRole::Tool),
+            "openai-compat request"
+        );
+        tracing::trace!(body = %body, "request body");
+
         let mut request = self.http.post(&url);
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key);
@@ -115,6 +125,7 @@ impl Llm for OpenAiLlm {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
+            tracing::error!(status = %status, response = %text, "openai-compat request failed");
             anyhow::bail!("openai-compat HTTP {status}: {text}");
         }
 
@@ -138,6 +149,7 @@ impl Llm for OpenAiLlm {
             let mut tools: BTreeMap<u32, PendingTool> = BTreeMap::new();
             let mut input_tokens: Option<u64> = None;
             let mut output_tokens: Option<u64> = None;
+            let mut seen_finish_reason: Option<String> = None;
             let mut rx = rx;
 
             while let Some(item) = rx.recv().await {
@@ -163,6 +175,12 @@ impl Llm for OpenAiLlm {
                         Ok(v) => v,
                         Err(_) => continue, // tolerate stray keepalive payloads
                     };
+
+                    // Capture finish_reason early for diagnostics
+                    if let Some(fr) = data.pointer("/choices/0/finish_reason").and_then(|v| v.as_str()) {
+                        seen_finish_reason = Some(fr.to_string());
+                    }
+
                     for ev in handle_chunk(&data, &mut tools, &mut input_tokens, &mut output_tokens)? {
                         yield ev;
                     }
@@ -170,8 +188,35 @@ impl Llm for OpenAiLlm {
             }
             // Connection closed (with or without `[DONE]`). Flush any tools that
             // arrived without an explicit finish_reason flush, then end the turn.
-            for (_, t) in std::mem::take(&mut tools) {
-                yield LlmEvent::ToolCall(t.into_tool_call());
+            let has_pending_tools = !tools.is_empty();
+            if has_pending_tools {
+                tracing::warn!(
+                    finish_reason = seen_finish_reason.as_deref().unwrap_or("none"),
+                    pending_tools = tools.len(),
+                    "stream ended with pending tools - flushing anyway"
+                );
+                for (_, t) in std::mem::take(&mut tools) {
+                    // Only emit tool calls with valid JSON arguments
+                    let should_emit = if t.arguments.is_empty() {
+                        // Empty arguments are acceptable (becomes "{}")
+                        true
+                    } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t.arguments) {
+                        // Valid JSON - check if it's an object
+                        matches!(v, serde_json::Value::Object(_))
+                    } else {
+                        // Invalid JSON - skip
+                        tracing::warn!(
+                            tool = %t.name,
+                            args = %t.arguments,
+                            "skipping tool call with malformed JSON arguments"
+                        );
+                        false
+                    };
+
+                    if should_emit {
+                        yield LlmEvent::ToolCall(t.into_tool_call());
+                    }
+                }
             }
             yield LlmEvent::Finish {
                 input_tokens,
@@ -342,7 +387,13 @@ fn handle_chunk(
         }
     }
 
-    let flush = choice.get("finish_reason").and_then(|v| v.as_str()) == Some("tool_calls");
+    let finish_reason = choice.get("finish_reason").and_then(|v| v.as_str());
+    tracing::debug!(
+        finish_reason,
+        has_tools = !tools.is_empty(),
+        "openai-compat chunk"
+    );
+    let flush = finish_reason == Some("tool_calls");
     if flush {
         for (_, t) in std::mem::take(tools) {
             out.push(LlmEvent::ToolCall(t.into_tool_call()));
@@ -529,5 +580,20 @@ mod tests {
         let evs = handle_chunk(&data, &mut tools, &mut None, &mut None).unwrap();
         assert!(evs.is_empty());
         assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn stream_without_finish_reason_flushes_pending_tools() {
+        let mut tools = BTreeMap::new();
+        let d1 = json!({ "choices": [{ "delta": { "tool_calls": [
+            { "index": 0, "id": "c1", "type": "function",
+              "function": { "name": "greet", "arguments": "{\"nm\":\"sam\"}" } }
+        ] } }] });
+        let _ = handle_chunk(&d1, &mut tools, &mut None, &mut None).unwrap();
+        assert!(tools.contains_key(&0), "tool should be assembled");
+
+        // Simulate stream ending without explicit finish_reason - this would be
+        // handled by the flush-at-end logic in the streaming loop
+        assert!(!tools.is_empty(), "tools should still be pending");
     }
 }

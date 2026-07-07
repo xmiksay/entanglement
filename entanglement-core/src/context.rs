@@ -86,6 +86,13 @@ impl Context {
     }
 
     pub fn push(&mut self, message: Message) {
+        tracing::debug!(
+            role = ?message.role,
+            text_len = message.text.len(),
+            tool_calls = message.tool_calls.len(),
+            tool_call_id = message.tool_call_id.as_deref(),
+            "pushing message to context"
+        );
         self.messages.push(message);
     }
 
