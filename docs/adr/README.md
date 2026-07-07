@@ -62,3 +62,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0015](0015-rich-text-pipeline-syntect.md) | Rich-text pipeline: pulldown-cmark → ratatui Text, syntect for code blocks | Accepted |
 | [0016](0016-host-tool-empty-result-contract.md) | Host tools: empty-result contract (no silent zero-output) | Accepted |
 | [0017](0017-stop-cancels-turn-not-session.md) | `InMsg::Stop` cancels the turn, not the session | Accepted |
+| [0018](0018-turn-loop-stash-discipline.md) | Turn-loop command stash discipline | Accepted |

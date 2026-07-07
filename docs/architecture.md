@@ -98,7 +98,11 @@ note `Finish`) → for each tool call, dispatch by built-in vs host-tool-vs-
 permission → loop until the model returns no tool calls → `Done`. Approval waits
 park the task on its inbox; any non-matching message (e.g. a new prompt) is
 stashed and processed after the turn. Setup/mid-stream backend errors surface as
-`Error` + `Done` without committing a partial assistant message.
+`Error` + `Done` without committing a partial assistant message. The same
+stash discipline applies inside the streaming loop and between tool calls
+(ADR-0018): mid-turn `try_recv` polls route `Stop` to interrupt and push every
+other queued command (`Prompt`, `SetAgent`, …) onto the replay stash, so a
+follow-up sent while the engine is busy is never silently dropped.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop and tool dispatch poll `try_recv` for
