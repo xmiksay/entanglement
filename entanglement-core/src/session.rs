@@ -223,16 +223,27 @@ async fn run_turn(
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut stream_err: Option<String> = None;
         while let Some(ev) = stream.next().await {
-            // Check for stop command
-            if let Ok(cmd) = rx.try_recv() {
-                if matches!(cmd, SessionCmd::Stop) {
-                    tracing::debug!("turn interrupted during streaming");
-                    drop(stream);
-                    let _ = events.send(OutEvent::Status {
-                        session: session.clone(),
-                        state: AgentState::Idle,
-                    });
-                    return Ok(());
+            // Drain any commands queued mid-stream: Stop interrupts the turn,
+            // everything else is stashed for replay after this turn ends
+            // (ADR-0018 — previously non-Stop commands were silently dropped).
+            while let Ok(cmd) = rx.try_recv() {
+                match cmd {
+                    SessionCmd::Stop => {
+                        tracing::debug!("turn interrupted during streaming");
+                        drop(stream);
+                        let _ = events.send(OutEvent::Status {
+                            session: session.clone(),
+                            state: AgentState::Idle,
+                        });
+                        return Ok(());
+                    }
+                    other => {
+                        tracing::debug!(
+                            cmd = ?other,
+                            "command arrived mid-stream; stashed for replay after turn"
+                        );
+                        stash.push_back(other);
+                    }
                 }
             }
             match ev {
@@ -289,15 +300,25 @@ async fn run_turn(
 
         // Execute tool calls
         for call in tool_calls {
-            // Check for stop command between tools
-            if let Ok(cmd) = rx.try_recv() {
-                if matches!(cmd, SessionCmd::Stop) {
-                    tracing::debug!("turn interrupted between tool calls");
-                    let _ = events.send(OutEvent::Status {
-                        session: session.clone(),
-                        state: AgentState::Idle,
-                    });
-                    return Ok(());
+            // Drain any commands queued between tools: Stop interrupts, the
+            // rest are stashed for replay (ADR-0018).
+            while let Ok(cmd) = rx.try_recv() {
+                match cmd {
+                    SessionCmd::Stop => {
+                        tracing::debug!("turn interrupted between tool calls");
+                        let _ = events.send(OutEvent::Status {
+                            session: session.clone(),
+                            state: AgentState::Idle,
+                        });
+                        return Ok(());
+                    }
+                    other => {
+                        tracing::debug!(
+                            cmd = ?other,
+                            "command arrived between tool calls; stashed for replay after turn"
+                        );
+                        stash.push_back(other);
+                    }
                 }
             }
             if handle_tool_call(session, rx, s, events, stash, call).await {
