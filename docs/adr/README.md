@@ -60,3 +60,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0013](0013-keybinding-leader-which-key.md) | Keybinding scheme: leader key + which-key | Accepted |
 | [0014](0014-tool-approval-inline-modal.md) | Tool approval UX: inline card vs modal | Accepted |
 | [0015](0015-rich-text-pipeline-syntect.md) | Rich-text pipeline: pulldown-cmark → ratatui Text, syntect for code blocks | Accepted |
+| [0016](0016-host-tool-empty-result-contract.md) | Host tools: empty-result contract (no silent zero-output) | Accepted |
