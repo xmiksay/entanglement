@@ -345,6 +345,14 @@ fn handle_frame(
                             tool.input_buf.push_str(partial);
                         }
                     }
+                    Some("thinking_delta") => {
+                        if let Some(thinking) = delta.get("thinking").and_then(|t| t.as_str()) {
+                            out.push(LlmEvent::Reasoning(thinking.to_string()));
+                        }
+                    }
+                    Some("signature_delta") => {
+                        // Integrity signature, not content; ignore.
+                    }
                     _ => {}
                 }
             }

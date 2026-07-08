@@ -369,6 +369,16 @@ fn handle_chunk(
                 out.push(LlmEvent::Text(text.to_string()));
             }
         }
+        if let Some(text) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+                out.push(LlmEvent::Reasoning(text.to_string()));
+            }
+        }
+        if let Some(text) = delta.get("reasoning").and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+                out.push(LlmEvent::Reasoning(text.to_string()));
+            }
+        }
         if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
             for tc in tcs {
                 let Some(index) = tc.get("index").and_then(|v| v.as_u64()) else {

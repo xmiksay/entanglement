@@ -58,6 +58,8 @@ impl ToolSpec {
 pub enum LlmEvent {
     /// Incremental assistant text (a chunk, not the whole reply).
     Text(String),
+    /// Incremental reasoning/thinking text (extended thinking from models).
+    Reasoning(String),
     /// A tool the model wants to run, fully assembled (id + name + JSON input).
     ToolCall(ToolCall),
     /// Stream ended cleanly. Carries usage when the provider reports it.

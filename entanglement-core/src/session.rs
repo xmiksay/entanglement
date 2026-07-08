@@ -118,6 +118,9 @@ impl Session {
                 OutEvent::TextDelta { text, .. } => {
                     pending_text.push_str(text);
                 }
+                OutEvent::ReasoningDelta { .. } => {
+                    // Reasoning is not stored in context; it's display-only.
+                }
                 OutEvent::ToolCall {
                     request_id,
                     tool,
@@ -399,6 +402,15 @@ async fn run_turn(
                     if !delta.is_empty() {
                         text_buf.push_str(&delta);
                         let _ = events.send(OutEvent::TextDelta {
+                            session: session.clone(),
+                            seq: next_seq(&mut s.seq),
+                            text: delta,
+                        });
+                    }
+                }
+                Ok(LlmEvent::Reasoning(delta)) => {
+                    if !delta.is_empty() {
+                        let _ = events.send(OutEvent::ReasoningDelta {
                             session: session.clone(),
                             seq: next_seq(&mut s.seq),
                             text: delta,
