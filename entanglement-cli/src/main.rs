@@ -16,18 +16,18 @@ mod tui;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use entanglement_core::{host_tools, BashTool, EngineConfig, Holly, InMsg, OutEvent, SessionId};
-use entanglement_provider::HttpClient;
+use entanglement_provider::{models_for, HttpClient, ModelInfo};
 
 use pipe::pipe;
 use run::run_one;
 use session_store::{read, LogPayload};
 use tui::tui;
 
-#[derive(Debug, Clone)]
-pub struct ModelInfo {
-    pub provider: String,
-    pub model: String,
-}
+/// Provider name for model selection.
+const PROVIDER_ZAI: &str = "zai";
+const PROVIDER_OPENAI: &str = "openai";
+const PROVIDER_OLLAMA: &str = "ollama";
+const PROVIDER_ANTHROPIC: &str = "anthropic";
 
 /// Default models per provider when its `<PROVIDER>_MODEL` env is unset.
 const DEFAULT_ZAI_MODEL: &str = "glm-5.2";
@@ -115,8 +115,9 @@ fn select_provider(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
             (
                 EngineConfig::default(),
                 ModelInfo {
-                    provider: "echo".to_string(),
-                    model: "echo".to_string(),
+                    id: "echo".to_string(),
+                    display_name: "Echo (debug)".to_string(),
+                    context_window: None,
                 },
             )
         }
@@ -147,8 +148,12 @@ fn zai_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo)> {
             ..EngineConfig::default()
         },
         ModelInfo {
-            provider: "zai".to_string(),
-            model,
+            id: model.clone(),
+            display_name: model.clone(),
+            context_window: models_for(PROVIDER_ZAI)
+                .into_iter()
+                .find(|m| m.id == model)
+                .and_then(|m| m.context_window),
         },
     ))
 }
@@ -170,8 +175,12 @@ fn openai_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo)> 
             ..EngineConfig::default()
         },
         ModelInfo {
-            provider: "openai".to_string(),
-            model,
+            id: model.clone(),
+            display_name: model.clone(),
+            context_window: models_for(PROVIDER_OPENAI)
+                .into_iter()
+                .find(|m| m.id == model)
+                .and_then(|m| m.context_window),
         },
     ))
 }
@@ -192,8 +201,12 @@ fn ollama_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
             ..EngineConfig::default()
         },
         ModelInfo {
-            provider: "ollama".to_string(),
-            model,
+            id: model.clone(),
+            display_name: model.clone(),
+            context_window: models_for(PROVIDER_OLLAMA)
+                .into_iter()
+                .find(|m| m.id == model)
+                .and_then(|m| m.context_window),
         },
     )
 }
@@ -213,8 +226,12 @@ fn anthropic_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo
             ..EngineConfig::default()
         },
         ModelInfo {
-            provider: "anthropic".to_string(),
-            model,
+            id: model.clone(),
+            display_name: model.clone(),
+            context_window: models_for(PROVIDER_ANTHROPIC)
+                .into_iter()
+                .find(|m| m.id == model)
+                .and_then(|m| m.context_window),
         },
     ))
 }
@@ -224,8 +241,9 @@ fn echo_config() -> (EngineConfig, ModelInfo) {
     (
         EngineConfig::default(),
         ModelInfo {
-            provider: "echo".to_string(),
-            model: "echo".to_string(),
+            id: "echo".to_string(),
+            display_name: "Echo (debug)".to_string(),
+            context_window: None,
         },
     )
 }
