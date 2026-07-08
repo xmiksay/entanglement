@@ -109,6 +109,11 @@ fn built_in_profiles() -> [AgentProfile; 3] {
 pub struct Holly {
     inbox: mpsc::Sender<InMsg>,
     events: broadcast::Sender<OutEvent>,
+    /// Fan-out of every inbound [`InMsg`] (cloned before routing). Lets a
+    /// runtime-side service observe protocol messages it doesn't route itself —
+    /// e.g. the tool executor watching `Approve`/`Reject`/`Stop` while it owns
+    /// permission dispatch + approval (ADR-0010, #59).
+    inbound: broadcast::Sender<InMsg>,
     cfg: Arc<EngineConfig>,
     root: Arc<PathBuf>,
 }
@@ -118,16 +123,26 @@ impl Holly {
     pub fn spawn(cfg: EngineConfig) -> Self {
         let (inbox, rx) = mpsc::channel::<InMsg>(INBOX_CAPACITY);
         let (events, _) = broadcast::channel::<OutEvent>(OUTBOX_CAPACITY);
+        let (inbound, _) = broadcast::channel::<InMsg>(INBOX_CAPACITY);
         let supervisor_events = events.clone();
+        let supervisor_inbound = inbound.clone();
         let root = Arc::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let cfg_arc = Arc::new(cfg.clone());
         let root_for_supervisor = root.clone();
-        tokio::spawn(
-            async move { supervisor(rx, supervisor_events, cfg, root_for_supervisor).await },
-        );
+        tokio::spawn(async move {
+            supervisor(
+                rx,
+                supervisor_events,
+                supervisor_inbound,
+                cfg,
+                root_for_supervisor,
+            )
+            .await
+        });
         Self {
             inbox,
             events,
+            inbound,
             cfg: cfg_arc,
             root,
         }
@@ -146,6 +161,14 @@ impl Holly {
     /// Borrow the outbound sender (for heads that want to subscribe once).
     pub fn events(&self) -> &broadcast::Sender<OutEvent> {
         &self.events
+    }
+
+    /// Subscribe to the inbound [`InMsg`] fan-out. Every message sent through
+    /// [`send`][Self::send] is cloned here before the supervisor routes it, so a
+    /// runtime service (e.g. the tool executor) can react to `Approve`/`Reject`/
+    /// `Stop` without the engine having to interpret them.
+    pub fn subscribe_inbound(&self) -> broadcast::Receiver<InMsg> {
+        self.inbound.subscribe()
     }
 
     /// Resume a session from replayed log records.
@@ -181,6 +204,7 @@ impl Holly {
 async fn supervisor(
     mut rx: mpsc::Receiver<InMsg>,
     events: broadcast::Sender<OutEvent>,
+    inbound: broadcast::Sender<InMsg>,
     cfg: EngineConfig,
     root: Arc<PathBuf>,
 ) {
@@ -190,6 +214,17 @@ async fn supervisor(
 
     while let Some(msg) = rx.recv().await {
         let session_id = msg.session().clone();
+
+        // Fan the message out to inbound subscribers (runtime services) before
+        // routing it. A closed/lagging subscriber is not fatal to routing.
+        let _ = inbound.send(msg.clone());
+
+        // Approval decisions are a runtime concern now (#59): the tool executor
+        // consumes `Approve`/`Reject` off the inbound fan-out above. The engine
+        // no longer parks on them, so there is nothing to route to a session.
+        if matches!(msg, InMsg::Approve { .. } | InMsg::Reject { .. }) {
+            continue;
+        }
 
         if let InMsg::Resume { records, .. } = &msg {
             pending_resumes.insert(session_id.clone(), records.clone());
@@ -245,26 +280,9 @@ async fn supervisor(
     }
 }
 
-/// Tap that allows observing all inbound messages before they're routed.
-/// Returns a receiver that clones each InMsg.
-pub fn tap_inbound(_rx: &mpsc::Receiver<InMsg>) -> mpsc::Receiver<InMsg> {
-    let (_tap_tx, tap_rx) = mpsc::channel::<InMsg>(INBOX_CAPACITY);
-
-    // This is a bit of a hack: we can't actually tap the existing receiver
-    // without modifying the supervisor. For now, we return a channel that
-    // the caller can use by wrapping Holly::send.
-    // A proper implementation would require restructuring the supervisor to
-    // broadcast inbound messages, similar to how outbound events work.
-    tap_rx
-}
-
 fn msg_to_cmd(msg: InMsg) -> SessionCmd {
     match msg {
         InMsg::Prompt { text, .. } => SessionCmd::Prompt(text),
-        InMsg::Approve { request_id, .. } => SessionCmd::Approve(request_id),
-        InMsg::Reject {
-            request_id, reason, ..
-        } => SessionCmd::Reject(request_id, reason),
         InMsg::ToolResult {
             request_id, output, ..
         } => SessionCmd::ToolResult(request_id, output),
@@ -272,8 +290,10 @@ fn msg_to_cmd(msg: InMsg) -> SessionCmd {
         InMsg::SetPlan { content, .. } => SessionCmd::SetPlan(content),
         InMsg::SetTasks { tasks, .. } => SessionCmd::SetTasks(tasks),
         InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
-        InMsg::Resume { .. } => {
-            unreachable!("Resume messages are handled specially in the supervisor")
+        // Approve/Reject are filtered out before routing (see supervisor); Resume
+        // is handled specially. Neither reaches this mapping.
+        InMsg::Approve { .. } | InMsg::Reject { .. } | InMsg::Resume { .. } => {
+            unreachable!("Approve/Reject/Resume are not routed to sessions")
         }
     }
 }

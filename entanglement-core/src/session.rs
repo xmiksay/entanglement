@@ -1,5 +1,10 @@
-//! Per-session engine: the conversation loop, permission-driven tool dispatch,
-//! and the built-in `update_plan` / `update_tasks` tools.
+//! Per-session engine: the conversation loop, the tool-request round-trip to
+//! the runtime, and the built-in `update_plan` / `update_tasks` tools.
+//!
+//! Permission dispatch (`Allow`/`Ask`/`Deny`) and the approval wait no longer
+//! live here (#59): core emits `OutEvent::ToolExec` for every host tool and
+//! parks on `InMsg::ToolResult`; the runtime tool executor owns the policy
+//! decision and the approval UX (ADR-0003/0010).
 
 use std::collections::VecDeque;
 
@@ -8,7 +13,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::context::Context;
 use crate::llm::{Llm, LlmEvent, LlmRequest, LlmSession, ToolCall, ToolSpec};
-use crate::protocol::{AgentProfile, AgentState, InMsg, OutEvent, Permission, SessionId, TaskItem};
+use crate::protocol::{AgentProfile, AgentState, InMsg, OutEvent, SessionId, TaskItem};
 use crate::EngineConfig;
 use anyhow::Result;
 use std::path::Path;
@@ -23,10 +28,10 @@ pub(crate) const TASKS_TOOL: &str = "update_tasks";
 #[derive(Debug, Clone)]
 pub(crate) enum SessionCmd {
     Prompt(String),
-    Approve(String),
-    Reject(String, Option<String>),
     /// Output of a runtime-executed tool (`request_id`, `output`) — resolves a
-    /// pending [`OutEvent::ToolExec`] round-trip (#58).
+    /// pending [`OutEvent::ToolExec`] round-trip (#58). Approval (`Approve`/
+    /// `Reject`) is no longer a core command: the runtime tool executor owns it
+    /// (#59) and never reaches the session loop.
     ToolResult(String, String),
     SetPlan(String),
     SetTasks(Vec<TaskItem>),
@@ -256,9 +261,9 @@ pub(crate) async fn session_loop(
                     });
                 }
             },
-            // Approve/Reject/ToolResult with no pending tool request: stale
-            // (e.g. a late result after the turn was cancelled), drop silently.
-            Some(SessionCmd::Approve(_) | SessionCmd::Reject(..) | SessionCmd::ToolResult(..)) => {}
+            // A ToolResult with no pending tool request: stale (e.g. a late
+            // result after the turn was cancelled), drop silently.
+            Some(SessionCmd::ToolResult(..)) => {}
             // Stop arrived while idle (a turn-in-flight Stop is caught by the
             // try_recv inside run_turn). Cancel semantics (ADR-0017): no-op,
             // the session is already idle; just keep listening.
@@ -552,63 +557,12 @@ async fn handle_tool_call(
         return false;
     }
 
-    // Host tool: permission profile decides allow / ask / deny. Core no longer
-    // executes tools inline (#58) — a cleared tool is handed to the runtime via
-    // `run_tool_via_runtime`, which awaits an `InMsg::ToolResult`.
-    match s.profile.permission.for_tool(&call.name) {
-        Permission::Allow => run_tool_via_runtime(session, rx, s, events, stash, &call).await,
-        Permission::Deny => {
-            let out = format!("tool `{}` denied by permission profile", call.name);
-            emit_tool_output(
-                events,
-                session,
-                &call.id,
-                &call.name,
-                out.clone(),
-                &mut s.seq,
-            );
-            s.ctx.push_tool(&call.id, out);
-            false
-        }
-        Permission::Ask => {
-            let _ = events.send(OutEvent::ToolRequest {
-                session: session.clone(),
-                seq: next_seq(&mut s.seq),
-                request_id: call.id.clone(),
-                tool: call.name.clone(),
-                input: call.input.clone(),
-            });
-            let _ = events.send(OutEvent::Status {
-                session: session.clone(),
-                state: AgentState::WaitingApproval,
-            });
-            match wait_approval(rx, stash, &call.id).await {
-                Approval::Approved => {
-                    set_thinking(events, session);
-                    run_tool_via_runtime(session, rx, s, events, stash, &call).await
-                }
-                Approval::Rejected(reason) => {
-                    set_thinking(events, session);
-                    let out = format!(
-                        "tool `{}` rejected: {}",
-                        call.name,
-                        reason.as_deref().unwrap_or("user")
-                    );
-                    emit_tool_output(
-                        events,
-                        session,
-                        &call.id,
-                        &call.name,
-                        out.clone(),
-                        &mut s.seq,
-                    );
-                    s.ctx.push_tool(&call.id, out);
-                    false
-                }
-                Approval::Cancelled => true,
-            }
-        }
-    }
+    // Host tool: hand it to the runtime. Core no longer decides permission or
+    // waits for approval (#59) — that policy moved to the runtime tool executor
+    // (ADR-0003/0010), which resolves Allow/Ask/Deny, drives the approval UX,
+    // and answers every call with `InMsg::ToolResult`. Core just emits the
+    // request and parks on the result (the same #58 round-trip).
+    run_tool_via_runtime(session, rx, s, events, stash, &call).await
 }
 
 /// Hand a permission-cleared tool call to the runtime and await its result
@@ -647,12 +601,6 @@ async fn run_tool_via_runtime(
     }
 }
 
-enum Approval {
-    Approved,
-    Rejected(Option<String>),
-    Cancelled,
-}
-
 enum ToolResultOutcome {
     Ready(String),
     Cancelled,
@@ -673,25 +621,6 @@ async fn wait_tool_result(
                 return ToolResultOutcome::Ready(output)
             }
             Some(SessionCmd::Stop) | None => return ToolResultOutcome::Cancelled,
-            Some(other) => stash.push_back(other),
-        }
-    }
-}
-
-/// Wait for an approve/reject for `pending`, stashing any other commands (e.g. a
-/// new prompt or a stale approval) to be processed after the turn.
-async fn wait_approval(
-    rx: &mut mpsc::Receiver<SessionCmd>,
-    stash: &mut VecDeque<SessionCmd>,
-    pending: &str,
-) -> Approval {
-    loop {
-        match rx.recv().await {
-            Some(SessionCmd::Approve(id)) if id == pending => return Approval::Approved,
-            Some(SessionCmd::Reject(id, reason)) if id == pending => {
-                return Approval::Rejected(reason)
-            }
-            Some(SessionCmd::Stop) | None => return Approval::Cancelled,
             Some(other) => stash.push_back(other),
         }
     }
@@ -737,13 +666,6 @@ fn emit_turn_error(
     let _ = events.send(OutEvent::Status {
         session: session.clone(),
         state: AgentState::Error,
-    });
-}
-
-fn set_thinking(events: &broadcast::Sender<OutEvent>, session: &SessionId) {
-    let _ = events.send(OutEvent::Status {
-        session: session.clone(),
-        state: AgentState::Thinking,
     });
 }
 

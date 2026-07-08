@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, SessionId, ToolCall,
+    LlmStream, OutEvent, ProfileRegistry, SessionId, ToolCall,
 };
 use entanglement_runtime::host::{host_tools, BashTool};
 use entanglement_runtime::tool_runner::spawn_tool_executor;
@@ -111,7 +111,7 @@ async fn read_tool_runs_through_engine_under_build_profile() {
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
-    let _executor = spawn_tool_executor(&holly, tools);
+    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -179,7 +179,7 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
-    let _executor = spawn_tool_executor(&holly, tools);
+    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -250,7 +250,7 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
-    let _executor = spawn_tool_executor(&holly, tools);
+    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly

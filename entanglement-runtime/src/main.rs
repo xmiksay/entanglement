@@ -314,11 +314,15 @@ async fn main() -> Result<()> {
 
     let http_client = HttpClient::new();
     let (config, model_info, tools) = build_config(&http_client);
+    // The runtime keeps its own copy of the profile registry to resolve
+    // permissions (#59); the engine gets the same shape via `config`.
+    let profiles = config.profiles.clone();
     let holly = Holly::spawn(config);
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    // Runtime owns tool execution (#58): answer the engine's ToolExec round-trip.
-    let _tool_executor = tool_runner::spawn_tool_executor(&holly, tools);
+    // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
+    // answer the engine's ToolExec round-trip, gating each call on `profiles`.
+    let _tool_executor = tool_runner::spawn_tool_executor(&holly, tools, profiles);
 
     // Spawn the persistence subscriber to log all events
     let _persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
