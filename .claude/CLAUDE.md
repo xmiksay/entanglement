@@ -123,9 +123,9 @@ permissions like the built-ins; isolation/recursion limits deferred.
 **Three-layer re-architecture** — the big active effort, tracked by epic
 [#50](https://github.com/xmiksay/entanglement/issues/50) ([ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)).
 Permission dispatch now lives in the runtime (✅ #59); sub-agent spawn landed
-(✅ #60). Core is left with the loop + turn state to slim down. Remaining backlog:
-
-- **Core**: slim `Session` to loop + turn state (#61).
+(✅ #60); core's `Session` is slimmed to loop + turn state (✅ #61 — no cached
+tool set, schemas sourced from `EngineConfig.tool_specs` at turn time). The
+three-layer split is complete; no core-slimming backlog remains.
 
 Landed: **provider track** — crate renamed from `entanglement-llm` (#51),
 connection pool + retry + rate-limit (#52), models-per-provider (#53),

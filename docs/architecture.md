@@ -40,8 +40,11 @@ too — core emits `OutEvent::ToolExec` and the runtime answers with
 `InMsg::ToolResult` (✅ #58, §3, §8). *Permission dispatch* (the `Allow|Ask|Deny`
 decision + approval wait) also moved to the runtime (✅ #59, §3): core emits
 `ToolExec` for *every* host tool and no longer consults `PermissionProfile`; the
-runtime tool executor resolves the permission and drives approval. What remains
-is slimming core's `Session` to loop + turn state (#61).
+runtime tool executor resolves the permission and drives approval. Core's
+`Session` is now slimmed to loop + turn state (✅ #61): it holds the `Context`,
+the provider session handle (`llm`, #55), the profile, the plan/tasks snapshots,
+and the loop counters — no cached tool set (the schemas come from
+`EngineConfig.tool_specs` at turn time).
 
 ## 1. The actor model (the ABI) — [ADR-0001](adr/0001-actor-model-abi.md)
 
