@@ -11,8 +11,8 @@ over those two methods.
 
 Actor core + stdio head + TUI, with real LLM backends wired
 (`entanglement-provider`: z.ai/OpenAI/Ollama + Anthropic). WebSocket `serve` is
-the next head. A three-layer re-architecture (core / provider / runtime) is
-in progress — see [`docs/adr/0006`](docs/adr/0006-core-dependency-hygiene-gate.md)
+the next head. The three-layer re-architecture (core / provider / runtime) has
+landed — see [`docs/adr/0006`](docs/adr/0006-core-dependency-hygiene-gate.md)
 and the crate table below.
 
 ## The contract (one set of types, every head)
@@ -55,7 +55,7 @@ Three crates, two seams (core ↔ provider, core ↔ runtime).
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, the `Tool` **trait**, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm`/`reqwest` forbidden). Enforced via `make tree`. |
 | `entanglement-provider` | all LLM I/O behind the `Llm` trait: z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream. | may depend on `reqwest`; never depended on by core. |
-| `entanglement-runtime` | the head crate (binary `skutter`): host-tool impls (✅), tool execution + permission dispatch (🚧 #58/#59), approval, user sessions, all transports (stdio ✅, TUI ✅, WS 🚧). | — |
+| `entanglement-runtime` | the head crate (binary `skutter`): host-tool impls (✅), tool execution + permission dispatch (✅ #58/#59), approval, user sessions, all transports (stdio ✅, TUI ✅, WS 🚧). | — |
 
 ## Build & develop
 
