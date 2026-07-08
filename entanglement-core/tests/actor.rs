@@ -339,6 +339,85 @@ async fn two_sessions_are_independent() {
 }
 
 #[tokio::test]
+async fn spawn_starts_child_with_parent_link() {
+    // A `Spawn` starts a child session that runs its prompt and whose
+    // `SessionStarted` carries the parent (populating the session tree #60).
+    let holly = Holly::spawn(factory(vec![LlmResponse {
+        text: "child answer".into(),
+        tool_calls: vec![],
+    }]));
+    let parent = SessionId::new("parent");
+    let child = SessionId::new("child");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::Spawn {
+            session: child.clone(),
+            parent: parent.clone(),
+            agent: "build".into(),
+            prompt: "do the subtask".into(),
+        })
+        .await
+        .unwrap();
+    let events = collect(sub, &child).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::SessionStarted { parent: Some(p), root: false, .. } if *p == parent
+        )),
+        "child SessionStarted must carry the parent link; got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::TextDelta { text, .. } if text == "child answer")),
+        "child should run its prompt; got {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(e, OutEvent::Done { .. })));
+}
+
+#[tokio::test]
+async fn duplicate_spawn_is_ignored() {
+    // A second `Spawn` for a live child id is a no-op (one child, one start).
+    let holly = Holly::spawn(factory(vec![
+        LlmResponse {
+            text: "first".into(),
+            tool_calls: vec![],
+        },
+        LlmResponse {
+            text: "second".into(),
+            tool_calls: vec![],
+        },
+    ]));
+    let child = SessionId::new("child");
+    let mut sub = holly.subscribe();
+    for _ in 0..2 {
+        holly
+            .send(InMsg::Spawn {
+                session: child.clone(),
+                parent: SessionId::new("parent"),
+                agent: "build".into(),
+                prompt: "go".into(),
+            })
+            .await
+            .unwrap();
+    }
+
+    let mut starts = 0;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+        if let OutEvent::SessionStarted { session, .. } = &ev {
+            if session == &child {
+                starts += 1;
+            }
+        }
+        if matches!(&ev, OutEvent::Done { session, .. } if session == &child) {
+            break;
+        }
+    }
+    assert_eq!(starts, 1, "duplicate spawn must not start a second child");
+}
+
+#[tokio::test]
 async fn custom_profile_is_selectable() {
     let mut cfg = EngineConfig::default();
     cfg.profiles.insert(AgentProfile {

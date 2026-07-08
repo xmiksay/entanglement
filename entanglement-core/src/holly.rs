@@ -210,7 +210,10 @@ async fn supervisor(
 ) {
     let mut sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>> = HashMap::new();
     let mut pending_resumes: HashMap<SessionId, Vec<(Option<InMsg>, OutEvent)>> = HashMap::new();
-    let parent_links: HashMap<SessionId, Option<SessionId>> = HashMap::new();
+    // child → parent. Populated on `Spawn` (#60) so a child's `SessionStarted`
+    // (and the tree-walk helpers that read it) reflect the real hierarchy;
+    // previously nothing ever inserted here, so every session was a root.
+    let mut parent_links: HashMap<SessionId, Option<SessionId>> = HashMap::new();
 
     while let Some(msg) = rx.recv().await {
         let session_id = msg.session().clone();
@@ -248,6 +251,40 @@ async fn supervisor(
                 }
             });
             sessions.insert(session_id.clone(), stx);
+            continue;
+        }
+
+        if let InMsg::Spawn {
+            session: child,
+            parent,
+            agent,
+            prompt,
+        } = &msg
+        {
+            // A duplicate spawn for a live child is a no-op (the child already runs).
+            if sessions.contains_key(child) {
+                continue;
+            }
+            // Record the parent link *before* spawning so it's in place for any
+            // later lazy path, and so the child starts under the requested profile.
+            parent_links.insert(child.clone(), Some(parent.clone()));
+            let profile = cfg
+                .profiles
+                .get(agent)
+                .or_else(|| cfg.profiles.get(DEFAULT_PROFILE))
+                .cloned()
+                .expect("built-in `build` profile always present");
+            let (stx, srx) = mpsc::channel::<SessionCmd>(64);
+            let ev = events.clone();
+            let cfg2 = cfg.clone();
+            let sid = child.clone();
+            let parent = Some(parent.clone());
+            tokio::spawn(
+                async move { session_loop(sid, srx, ev, cfg2, profile, None, parent).await },
+            );
+            // Queue the initial prompt; the child drains it after its lifecycle events.
+            let _ = stx.send(SessionCmd::Prompt(prompt.clone())).await;
+            sessions.insert(child.clone(), stx);
             continue;
         }
 
@@ -291,9 +328,12 @@ fn msg_to_cmd(msg: InMsg) -> SessionCmd {
         InMsg::SetTasks { tasks, .. } => SessionCmd::SetTasks(tasks),
         InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
         // Approve/Reject are filtered out before routing (see supervisor); Resume
-        // is handled specially. Neither reaches this mapping.
-        InMsg::Approve { .. } | InMsg::Reject { .. } | InMsg::Resume { .. } => {
-            unreachable!("Approve/Reject/Resume are not routed to sessions")
+        // and Spawn are handled specially. None reach this mapping.
+        InMsg::Approve { .. }
+        | InMsg::Reject { .. }
+        | InMsg::Resume { .. }
+        | InMsg::Spawn { .. } => {
+            unreachable!("Approve/Reject/Resume/Spawn are not routed to sessions")
         }
     }
 }

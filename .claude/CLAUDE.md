@@ -68,7 +68,7 @@ all live in this crate now (✅ #52–#55, [ADR-0007](../docs/adr/0007-streaming
 `entanglement-core/src/protocol.rs` defines the single set of types every head uses:
 
 ```
-InMsg    : Prompt | Approve | Reject | ToolResult | Stop | SetTasks | SetPlan | SetAgent
+InMsg    : Prompt | Approve | Reject | ToolResult | Stop | SetTasks | SetPlan | SetAgent | Spawn
 OutEvent : Status | AgentChanged | Plan | TextDelta | ToolRequest | ToolExec
           | ToolOutput | TaskList | Error | Done
 ```
@@ -89,6 +89,13 @@ The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
 `input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010)
 assembles the root-contained quartet (`read`/`glob`/`grep`/`edit`);
 `BashTool` is opt-in at the head (`ENTANGLEMENT_ENABLE_BASH=1`).
+
+Sub-agent spawn (#60, [ADR-0022](../docs/adr/0022-subagent-spawn.md)): the
+runtime-owned `spawn_agent { agent, prompt }` tool issues `InMsg::Spawn`; the
+supervisor records `parent_links[child]=parent` and starts the child under the
+requested profile, then the runtime relays the child's final answer back to the
+parent as the tool's `ToolOutput` (reusing the #58 round-trip). Bypasses
+permissions like the built-ins; isolation/recursion limits deferred.
 
 ## Conventions (project-specific)
 
@@ -115,11 +122,9 @@ assembles the root-contained quartet (`read`/`glob`/`grep`/`edit`);
 
 **Three-layer re-architecture** — the big active effort, tracked by epic
 [#50](https://github.com/xmiksay/entanglement/issues/50) ([ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)).
-Permission dispatch now lives in the runtime (✅ #59); core is left with the
-loop + turn state to slim down. Remaining backlog:
+Permission dispatch now lives in the runtime (✅ #59); sub-agent spawn landed
+(✅ #60). Core is left with the loop + turn state to slim down. Remaining backlog:
 
-- **Runtime** ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)):
-  inter-session agent messaging / subagent spawn (#60).
 - **Core**: slim `Session` to loop + turn state (#61).
 
 Landed: **provider track** — crate renamed from `entanglement-llm` (#51),
@@ -129,7 +134,9 @@ reasoning/thinking stream events (#54), provider-owned session handle (#55).
 moved out of core (#57), tool execution relocated to `runtime::tool_runner` via
 the `ToolExec`/`ToolResult` round-trip (#58), permission dispatch + approval
 relocated to `runtime::tool_runner` via a per-session profile map + the engine's
-inbound `InMsg` fan-out (#59). **Cleanup** — orphaned `apply_diff.rs` + `audit.rs`
+inbound `InMsg` fan-out (#59), sub-agent spawn via `InMsg::Spawn` + the
+`spawn_agent` tool relaying the child's answer back to the parent (#60,
+[ADR-0022](../docs/adr/0022-subagent-spawn.md)). **Cleanup** — orphaned `apply_diff.rs` + `audit.rs`
 removed (#63); docs drift guard (#62) is a standing checklist flipping the
 🚧 markers in `docs/architecture.md` as each child lands.
 
