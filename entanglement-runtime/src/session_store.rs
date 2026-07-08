@@ -42,10 +42,11 @@ pub fn base_dir() -> Result<PathBuf> {
 /// # Examples
 ///
 /// ```
-/// use entanglement_cli::session_store::safe_cwd_name;
-/// assert_eq!(safe_cwd_name("/mnt/nvme/agent"), "mnt-nvme-agent");
-/// assert_eq!(safe_cwd_name("/a-b"), "a-b");
-/// assert_eq!(safe_cwd_name("C:\\Users\\test"), "C:-Users-test");
+/// use std::path::Path;
+/// use entanglement_runtime::session_store::safe_cwd_name;
+/// assert_eq!(safe_cwd_name(Path::new("/mnt/nvme/agent")), "mnt-nvme-agent");
+/// assert_eq!(safe_cwd_name(Path::new("/a-b")), "a-b");
+/// assert_eq!(safe_cwd_name(Path::new("C:\\Users\\test")), "C:-Users-test");
 /// ```
 pub fn safe_cwd_name(cwd: &Path) -> String {
     let path_str = cwd.to_string_lossy();

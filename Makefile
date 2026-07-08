@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build run run-json run-tui test test-unit test-integration lint fmt check-fmt verify clean check tree
+.PHONY: help build run run-json run-tui test test-unit test-integration lint fmt check-fmt verify clean check tree check-lean
 
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -51,7 +51,18 @@ tree: ## fail if entanglement-core pulls a forbidden UI/transport crate
 		echo "entanglement-core deps clean: no UI/transport crates"; \
 	fi
 
-verify: check-fmt tree lint test ## full CI-equivalent gate locally
+# Lean gate (ADR-0025): entanglement-runtime with --no-default-features must
+# stay free of CLI/TUI/transport crates so library consumers get a light build.
+check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI/transport crates
+	@out=$$($(CARGO) tree -p entanglement-runtime --no-default-features -e normal 2>/dev/null); \
+	if echo "$$out" | grep -Ei '(clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|reqwest|hyper|tracing-subscriber) v[0-9]'; then \
+		echo "FAIL: heavy crate leaked into lean entanglement-runtime (see ADR-0025)"; exit 1; \
+	else \
+		echo "lean entanglement-runtime deps clean"; \
+	fi
+	$(CARGO) clippy -p entanglement-runtime --no-default-features --all-targets -- -D warnings
+
+verify: check-fmt tree check-lean lint test ## full CI-equivalent gate locally
 
 clean: ## cargo clean
 	$(CARGO) clean

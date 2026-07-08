@@ -32,7 +32,13 @@ Three crates, two seams. Heads depend on core; core never depends on a head.
   (not implementations), `Context`. Pure, reusable, zero UI/transport deps (§7).
 - **provider** — all LLM I/O behind the `Llm` trait (§5b).
 - **runtime** — the head: host tools + their execution, permission dispatch +
-  approval, user sessions, every transport (§6, §8).
+  approval, user sessions, every transport (§6, §8). Feature-gated
+  ([ADR-0025](adr/0025-runtime-cargo-feature-gates.md)): `default = ["tui"]` is
+  the full `skutter` binary, while `--no-default-features` is a **lean library**
+  — `host` + `tool_runner` + `permission` + `subagent` + `persistence` +
+  `session_store` over core + tokio + glob/regex, with no CLI/TUI/transport deps
+  (`make check-lean` enforces, §7). The `cli` feature (clap + providers) sits
+  between the two, leaving room for a `ws = ["cli", …]` sibling.
 
 **Responsibility relocation is mostly landed:** the host-tool *implementations*
 now live in `entanglement-runtime` (✅ #57, §8), and tool *execution* moved there
@@ -265,6 +271,14 @@ All heads live in one crate, **`entanglement-runtime`** (✅ #56; binary
 boundary — the real seam is `entanglement-core` ↔ everything else (ADR-0006,
 ADR-0010).
 
+The heads (and the `skutter` binary that carries them) need the crate's
+**default features** — `default = ["tui"]` pulls clap + the providers + the
+render stack, and `[[bin]] skutter` declares `required-features = ["cli","tui"]`.
+Building the crate with `default-features = false` yields an **embeddable
+library** — the tool-execution loop, permission dispatch, sub-agent spawn, and
+persistence machinery with none of the CLI/TUI/transport weight
+([ADR-0025](adr/0025-runtime-cargo-feature-gates.md), §7).
+
 - **ABI** — `holly.send()` / `holly.subscribe()`. Done.
 - **stdio** (`skutter run` / `skutter pipe`): one-shot `run [--format text|json]
   [--agent <name>]`; bidirectional `pipe` NDJSON (`InMsg` in, `OutEvent` out).
@@ -278,7 +292,7 @@ ADR-0010).
   rendering with pulldown-cmark + syntect (ADR-0015). Event buffering and
   multiplexed-session rendering follow ADR-0012.
 
-## 7. Hygiene gate — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)
+## 7. Hygiene gates — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md) (`tree`), [ADR-0025](adr/0025-runtime-cargo-feature-gates.md) (`check-lean`)
 
 `entanglement-core` must stay free of UI/transport deps. Enforced by
 `make tree`, which runs `cargo tree -p entanglement-core` and **fails** if any of
@@ -288,6 +302,14 @@ is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
 (which back the host tools, §8) and `diffy` moved out with the host-tool
 implementations to `entanglement-runtime` (✅ #57); the `reqwest` both LLM
 backends use lives in `entanglement-provider`, not core — see ADR-0007.
+
+A second gate, **`make check-lean`** (ADR-0025), protects the runtime's lean
+library surface: it runs `cargo tree -p entanglement-runtime
+--no-default-features -e normal` and **fails** if `clap`/`ratatui`/`crossterm`/
+`syntect`/`pulldown-cmark`/`diffy`/`reqwest`/`hyper`/`tracing-subscriber` leak
+into the no-default-features build, then runs lean `clippy --all-targets` (which
+type-checks the lib + the integration tests with the bin auto-skipped via
+`required-features` — the load-bearing check). It joins `tree` in `make verify`.
 
 ## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in)
 

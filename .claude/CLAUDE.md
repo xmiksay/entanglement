@@ -25,7 +25,7 @@ tool exec/approval over the protocol). Layering: [ADR-0006](../docs/adr/0006-cor
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
 | `entanglement-provider` | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; connection pool, retry, rate-limit, reasoning stream, models-per-provider, provider-owned session handle; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
-| `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe` + `tui` today, `serve` (WS) next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
+| `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe` + `tui` today, `serve` (WS) next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli`/`tui` (`default = ["tui"]`) build the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). | `--no-default-features` must stay CLI/TUI/transport-free; `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). |
 
 Heads depend on core, **never** the reverse.
 
@@ -38,8 +38,9 @@ make test          # unit + integration
 make test-unit | make test-integration
 make lint          # clippy --all-targets -D warnings
 make fmt | check-fmt
-make verify        # check-fmt + tree + clippy + test  (CI-equivalent gate)
+make verify        # check-fmt + tree + check-lean + lint + test  (CI-equivalent gate)
 make tree          # entanglement-core dep hygiene gate (fails on UI/transport crates)
+make check-lean    # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
 make build | check | clean
 ```
 
