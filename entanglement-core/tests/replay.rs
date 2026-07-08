@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Llm, LlmRequest, LlmResponse, LlmStream, OutEvent,
-    SessionId,
+    stream_from_response, EngineConfig, Llm, LlmRequest, LlmResponse, LlmSession, LlmStream,
+    OutEvent, SessionId,
 };
 use std::path::Path;
 
@@ -33,7 +33,7 @@ impl Llm for ScriptedLlm {
 
 fn factory(_responses: Vec<LlmResponse>) -> EngineConfig {
     EngineConfig {
-        llm_factory: Arc::new(move || Box::new(ScriptedLlm::new(vec![])) as Box<dyn Llm>),
+        llm_factory: Arc::new(move || LlmSession::new(Box::new(ScriptedLlm::new(vec![])))),
         ..EngineConfig::default()
     }
 }

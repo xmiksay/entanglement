@@ -7,8 +7,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, TaskItem,
-    TaskStatus, ToolCall,
+    LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
+    TaskItem, TaskStatus, ToolCall,
 };
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
@@ -70,7 +70,9 @@ fn factory(responses: Vec<LlmResponse>) -> EngineConfig {
     let llm = Arc::new(ScriptedLlm::new(r));
     EngineConfig {
         llm_factory: Arc::new(move || {
-            Box::new(ScriptedLlm::new(llm.responses.lock().unwrap().clone())) as Box<dyn Llm>
+            LlmSession::new(Box::new(ScriptedLlm::new(
+                llm.responses.lock().unwrap().clone(),
+            )))
         }),
         ..EngineConfig::default()
     }

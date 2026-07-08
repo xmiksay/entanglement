@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    OutEvent, SessionId,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
+    LlmStream, OutEvent, SessionId,
 };
 
 /// Collect `TextDelta` texts for `sid` until the deadline, across as many
@@ -92,7 +92,7 @@ async fn prompt_arriving_during_streaming_is_stashed_and_replayed() {
     ]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)) as Box<dyn Llm>
+            LlmSession::new(Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)))
         }),
         ..EngineConfig::default()
     };
@@ -159,7 +159,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
     ]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)) as Box<dyn Llm>
+            LlmSession::new(Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)))
         }),
         ..EngineConfig::default()
     };

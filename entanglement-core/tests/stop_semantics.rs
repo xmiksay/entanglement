@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    Message, MessageRole, OutEvent, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
+    LlmStream, Message, MessageRole, OutEvent, SessionId, ToolCall,
 };
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
@@ -81,7 +81,7 @@ fn capturing_factory(
     r.reverse();
     EngineConfig {
         llm_factory: Arc::new(move || {
-            Box::new(CapturingLlm::new(r.clone(), seen.clone())) as Box<dyn Llm>
+            LlmSession::new(Box::new(CapturingLlm::new(r.clone(), seen.clone())))
         }),
         ..EngineConfig::default()
     }
