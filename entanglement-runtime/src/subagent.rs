@@ -53,6 +53,12 @@ impl SpawnGuard {
         self.parents.insert(session, parent);
     }
 
+    /// The recorded parent of `session`, if any. Lets the tool executor walk a
+    /// child's ancestry to clamp its permissions to the parent chain (#77).
+    pub fn parent_of(&self, session: &SessionId) -> Option<SessionId> {
+        self.parents.get(session).cloned().flatten()
+    }
+
     /// Decide whether `parent` may spawn another sub-agent. On approval, charges
     /// the spawn against the root's budget and returns `Ok`. On refusal, returns
     /// the message to relay to the parent as the `spawn_agent` tool output.

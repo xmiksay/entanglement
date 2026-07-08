@@ -189,3 +189,74 @@ async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
         "the spawn tree should be capped at MAX_SPAWN_DEPTH below the root"
     );
 }
+
+/// A model that spawns a read-only `explore` child which then tries to spawn
+/// again. The child (a Subagent-mode leaf) must be refused the spawn capability
+/// (#77) — a restricted profile cannot escalate by delegating to a fresh child.
+struct ExploreThenSpawnLlm;
+
+#[async_trait]
+impl Llm for ExploreThenSpawnLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        if req.messages.iter().any(|m| m.role == MessageRole::Tool) {
+            return Ok(stream_from_response(LlmResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+            }));
+        }
+        // Both the root and the explore child ask to spawn on their first turn;
+        // the root's spawns an `explore` child, the child's must be refused.
+        Ok(stream_from_response(LlmResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "spawn".into(),
+                name: "spawn_agent".into(),
+                input: r#"{"agent":"explore","prompt":"look"}"#.into(),
+            }],
+        }))
+    }
+}
+
+#[tokio::test]
+async fn read_only_subagent_cannot_spawn() {
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(|| LlmSession::new(Box::new(ExploreThenSpawnLlm))),
+        ..EngineConfig::default()
+    };
+    let profiles = cfg.profiles.clone();
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+
+    let root = SessionId::new("root");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: root.clone(),
+            text: "start".into(),
+        })
+        .await
+        .unwrap();
+
+    let mut sessions_started = 0usize;
+    let mut saw_capability_refusal = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        match &ev {
+            OutEvent::SessionStarted { .. } => sessions_started += 1,
+            OutEvent::ToolOutput { output, .. } if output.contains("cannot spawn") => {
+                saw_capability_refusal = true;
+            }
+            OutEvent::Done { session, .. } if session == &root => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        saw_capability_refusal,
+        "the explore child's spawn should be refused as a capability"
+    );
+    // root(0) + one explore child = 2 sessions; the child's spawn never starts a grandchild.
+    assert_eq!(
+        sessions_started, 2,
+        "a read-only sub-agent must not start a grandchild"
+    );
+}
