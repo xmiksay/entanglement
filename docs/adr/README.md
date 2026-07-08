@@ -66,3 +66,5 @@ an accepted ADR in place — supersede it with a new one that links back.
 | 0019 | — _(number skipped; no ADR-0019)_ | — |
 | [0020](0020-event-sourced-session-persistence.md) | Event-sourced session persistence | Accepted |
 | [0021](0021-hierarchical-session-model.md) | Hierarchical session data model | Accepted |
+| [0022](0022-subagent-spawn.md) | Sub-agent spawn and parent→child answer relay | Accepted |
+| [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | Accepted |

@@ -11,11 +11,103 @@
 //! executor runs it *before* permission resolution — it bypasses the permission
 //! profile exactly like core's `update_plan` / `update_tasks` built-ins.
 
+use std::collections::{HashMap, HashSet};
+
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId, ToolSpec};
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 /// Tool name the model calls to spawn a sub-agent.
 pub const SPAWN_TOOL: &str = "spawn_agent";
+
+/// Maximum spawn nesting: the root (user-initiated) session is depth 0, so this
+/// lets the root spawn a child (depth 1), that child spawn (depth 2), and so on
+/// up to and including depth `MAX_SPAWN_DEPTH`. A spawn that would exceed it is
+/// refused. Bounds unbounded recursion — a sub-agent that keeps calling
+/// `spawn_agent` (#76, follow-up to ADR-0022).
+const MAX_SPAWN_DEPTH: usize = 3;
+
+/// Maximum sub-agents spawned beneath a single root, summed across the whole
+/// tree. Cumulative and never decremented — sequential spawns count too, so a
+/// session cannot dodge the cap by letting each child finish before the next.
+const MAX_SPAWNS_PER_ROOT: usize = 16;
+
+/// Tracks the live session tree so the runtime can bound sub-agent spawning
+/// (#76). Fed each `SessionStarted` (for the parent link) and consulted on every
+/// `spawn_agent` call before a child is started. Lives in the tool executor's
+/// single-threaded event loop, so it needs no synchronization.
+#[derive(Default)]
+pub struct SpawnGuard {
+    /// child → parent, from `SessionStarted`. Absent or `None` ⇒ a root.
+    parents: HashMap<SessionId, Option<SessionId>>,
+    /// root → cumulative sub-agents spawned beneath it (never decremented).
+    spawns_per_root: HashMap<SessionId, usize>,
+}
+
+impl SpawnGuard {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a session's parent from its `SessionStarted` event.
+    pub fn record_start(&mut self, session: SessionId, parent: Option<SessionId>) {
+        self.parents.insert(session, parent);
+    }
+
+    /// Decide whether `parent` may spawn another sub-agent. On approval, charges
+    /// the spawn against the root's budget and returns `Ok`. On refusal, returns
+    /// the message to relay to the parent as the `spawn_agent` tool output.
+    pub fn try_spawn(&mut self, parent: &SessionId) -> Result<(), String> {
+        let child_depth = self.depth(parent) + 1;
+        if child_depth > MAX_SPAWN_DEPTH {
+            return Err(format!(
+                "sub-agent spawn refused: max spawn depth ({MAX_SPAWN_DEPTH}) reached — \
+                 this sub-agent is too deeply nested to spawn another. Do the work directly."
+            ));
+        }
+        let root = self.root_of(parent);
+        let count = self.spawns_per_root.entry(root).or_insert(0);
+        if *count >= MAX_SPAWNS_PER_ROOT {
+            return Err(format!(
+                "sub-agent spawn refused: per-root spawn budget ({MAX_SPAWNS_PER_ROOT}) \
+                 exhausted — too many sub-agents already spawned in this session tree. \
+                 Do the work directly."
+            ));
+        }
+        *count += 1;
+        Ok(())
+    }
+
+    /// Number of ancestors of `session` (a root is depth 0). The `visited` set
+    /// guards against a malformed cycle in the parent links.
+    fn depth(&self, session: &SessionId) -> usize {
+        let mut depth = 0;
+        let mut current = session.clone();
+        let mut visited = HashSet::new();
+        while visited.insert(current.clone()) {
+            match self.parents.get(&current).cloned().flatten() {
+                Some(parent) => {
+                    depth += 1;
+                    current = parent;
+                }
+                None => break,
+            }
+        }
+        depth
+    }
+
+    /// Walk to the root of `session`'s tree (itself if it has no parent).
+    fn root_of(&self, session: &SessionId) -> SessionId {
+        let mut current = session.clone();
+        let mut visited = HashSet::new();
+        while visited.insert(current.clone()) {
+            match self.parents.get(&current).cloned().flatten() {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+        current
+    }
+}
 
 /// Sub-agent profile used when the model omits `agent` — read-only explore is
 /// the safe default.
@@ -169,5 +261,63 @@ mod tests {
         let (agent, prompt) = parse_input("just a prompt");
         assert_eq!(agent, DEFAULT_SUBAGENT);
         assert_eq!(prompt, "just a prompt");
+    }
+
+    /// Build a guard with a linear ancestry chain `root → a → b → …` recorded.
+    fn guard_with_chain(chain: &[&str]) -> (SpawnGuard, Vec<SessionId>) {
+        let mut guard = SpawnGuard::new();
+        let ids: Vec<SessionId> = chain.iter().map(|c| SessionId::new(*c)).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let parent = i.checked_sub(1).map(|p| ids[p].clone());
+            guard.record_start(id.clone(), parent);
+        }
+        (guard, ids)
+    }
+
+    #[test]
+    fn root_may_spawn_and_charges_the_budget() {
+        let (mut guard, ids) = guard_with_chain(&["root"]);
+        assert!(guard.try_spawn(&ids[0]).is_ok());
+        assert_eq!(guard.spawns_per_root.get(&ids[0]).copied(), Some(1));
+    }
+
+    #[test]
+    fn spawn_refused_past_max_depth() {
+        // root(0) → a(1) → b(2) → c(3): c is at MAX_SPAWN_DEPTH, so its spawn
+        // (which would be depth 4) is refused.
+        let (mut guard, ids) = guard_with_chain(&["root", "a", "b", "c"]);
+        let deepest = ids.last().unwrap();
+        let err = guard.try_spawn(deepest).unwrap_err();
+        assert!(err.contains("max spawn depth"), "got: {err}");
+        // A shallower ancestor (depth 2 → child depth 3) is still allowed.
+        assert!(guard.try_spawn(&ids[2]).is_ok());
+    }
+
+    #[test]
+    fn spawn_refused_past_per_root_budget() {
+        let (mut guard, ids) = guard_with_chain(&["root"]);
+        for _ in 0..MAX_SPAWNS_PER_ROOT {
+            assert!(guard.try_spawn(&ids[0]).is_ok());
+        }
+        let err = guard.try_spawn(&ids[0]).unwrap_err();
+        assert!(err.contains("per-root spawn budget"), "got: {err}");
+    }
+
+    #[test]
+    fn budget_is_shared_across_the_whole_tree() {
+        // A grandchild's spawns count against the same root budget as the root's.
+        let (mut guard, ids) = guard_with_chain(&["root", "child"]);
+        guard.try_spawn(&ids[0]).unwrap();
+        guard.try_spawn(&ids[1]).unwrap();
+        assert_eq!(guard.spawns_per_root.get(&ids[0]).copied(), Some(2));
+        assert!(!guard.spawns_per_root.contains_key(&ids[1]));
+    }
+
+    #[test]
+    fn unknown_session_treated_as_root() {
+        let mut guard = SpawnGuard::new();
+        let orphan = SessionId::new("orphan");
+        // No `record_start`: depth 0, its own root — the spawn is allowed.
+        assert!(guard.try_spawn(&orphan).is_ok());
     }
 }

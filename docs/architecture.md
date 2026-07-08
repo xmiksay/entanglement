@@ -189,8 +189,13 @@ the child's `SessionStarted` carries the parent link and the tree-walk helpers
 (`children_of` / `root_of`) reflect reality. The runtime watches the child's
 events and, on the child's `Done`, relays its final answer back to the parent as
 the `spawn_agent` `ToolOutput` — reusing the #58 tool round-trip, so core's turn
-loop needs no notion of a "child session". Isolation, recursion limits, and
-bidirectional session-to-session messaging are deferred (see ADR-0022).
+loop needs no notion of a "child session". The runtime executor bounds the spawn
+tree (✅ #76, [ADR-0023](adr/0023-subagent-spawn-limits.md)): a `SpawnGuard`
+folds parent links from `SessionStarted` and, before each spawn, refuses past a
+depth cap (`MAX_SPAWN_DEPTH`) or a cumulative per-root budget
+(`MAX_SPAWNS_PER_ROOT`) — replying with a clear refusal `ToolOutput` instead of
+starting a child. Isolation/permissions and bidirectional session-to-session
+messaging are still deferred (see ADR-0022).
 
 ## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 
