@@ -118,6 +118,7 @@ pub enum Action {
     ScrollDown,
     ShowHelp,
     CommandPalette,
+    ToggleReasoning,
 }
 
 impl Action {
@@ -137,6 +138,7 @@ impl Action {
             Action::ScrollDown => "Scroll down",
             Action::ShowHelp => "Show help",
             Action::CommandPalette => "Open command palette",
+            Action::ToggleReasoning => "Toggle the most recent thinking block",
         }
     }
 
@@ -156,6 +158,7 @@ impl Action {
             Action::ScrollDown => "Navigation",
             Action::ShowHelp => "Help",
             Action::CommandPalette => "General",
+            Action::ToggleReasoning => "Navigation",
         }
     }
 }
@@ -216,6 +219,12 @@ impl KeyMap {
         bindings.insert(
             leader.clone().extend_with(Key::Char('p')),
             Action::CommandPalette,
+        );
+
+        // Transcript
+        bindings.insert(
+            leader.clone().extend_with(Key::Char('t')),
+            Action::ToggleReasoning,
         );
 
         // Help

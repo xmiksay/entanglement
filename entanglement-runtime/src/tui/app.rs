@@ -1,5 +1,6 @@
 use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
 use entanglement_provider::{models_for, ModelInfo};
+use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
@@ -237,6 +238,14 @@ pub struct App {
     showing_resume_modal: bool,
     resume_state: ListState,
     available_sessions: Vec<SessionMeta>,
+
+    // Chat click hit-testing: geometry + per-rendered-line block provenance
+    // captured at draw time so a later mouse click maps back to a transcript
+    // block. `chat_scroll_offset` is the resolved vertical offset the paragraph
+    // was drawn at.
+    chat_area: Rect,
+    chat_scroll_offset: usize,
+    chat_line_blocks: Vec<Option<usize>>,
 }
 
 impl App {
@@ -338,6 +347,9 @@ impl App {
             showing_resume_modal: false,
             resume_state,
             available_sessions,
+            chat_area: Rect::default(),
+            chat_scroll_offset: 0,
+            chat_line_blocks: Vec::new(),
         }
     }
 
@@ -434,6 +446,72 @@ impl App {
     pub fn scroll_to_bottom(&mut self) {
         self.sessions.active_view_mut().scroll_to_bottom();
         self.mark_dirty();
+    }
+
+    /// Whether the reasoning run `id` (transcript index of its first delta) is
+    /// expanded in the active session.
+    pub fn reasoning_expanded(&self, id: usize) -> bool {
+        self.sessions.active_view().reasoning_expanded(id)
+    }
+
+    /// Flips a reasoning run between collapsed and expanded.
+    pub fn toggle_reasoning_block(&mut self, id: usize) {
+        self.sessions.active_view_mut().toggle_reasoning(id);
+        self.mark_dirty();
+    }
+
+    /// Stores the chat viewport geometry + line provenance captured this frame
+    /// so a later mouse click can be mapped back to a transcript block.
+    pub fn set_chat_hit_test(
+        &mut self,
+        area: Rect,
+        scroll_offset: usize,
+        line_blocks: Vec<Option<usize>>,
+    ) {
+        self.chat_area = area;
+        self.chat_scroll_offset = scroll_offset;
+        self.chat_line_blocks = line_blocks;
+    }
+
+    /// Maps a terminal click at `(col, row)` to the reasoning block under it, or
+    /// `None` when the click lands outside the chat area or on a non-block line.
+    pub fn reasoning_block_at(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.chat_area;
+        if area.width == 0 || area.height == 0 {
+            return None;
+        }
+        if col < area.x || col >= area.x + area.width {
+            return None;
+        }
+        if row < area.y || row >= area.y + area.height {
+            return None;
+        }
+        let line_idx = (row - area.y) as usize + self.chat_scroll_offset;
+        self.chat_line_blocks.get(line_idx).copied().flatten()
+    }
+
+    /// Keyboard fallback for the click: toggles the most recent reasoning run.
+    pub fn toggle_last_reasoning_block(&mut self) {
+        if let Some(id) = self.last_reasoning_block_id() {
+            self.toggle_reasoning_block(id);
+        }
+    }
+
+    /// Transcript index of the first delta of the last coalesced reasoning run.
+    fn last_reasoning_block_id(&self) -> Option<usize> {
+        let mut last = None;
+        let mut prev_was_reasoning = false;
+        for (idx, entry) in self.transcript().iter().enumerate() {
+            if matches!(entry, TranscriptEntry::ReasoningDelta { .. }) {
+                if !prev_was_reasoning {
+                    last = Some(idx);
+                }
+                prev_was_reasoning = true;
+            } else {
+                prev_was_reasoning = false;
+            }
+        }
+        last
     }
 
     pub fn input(&mut self) -> &mut SimpleInput {
@@ -885,6 +963,10 @@ impl App {
                 self.toggle_command_palette();
                 false
             }
+            Action::ToggleReasoning => {
+                self.toggle_last_reasoning_block();
+                false
+            }
         }
     }
 
@@ -1057,6 +1139,44 @@ mod tests {
 
         assert_ne!(hash_color, override_color);
         assert_eq!(override_color, ratatui::style::Color::Magenta);
+    }
+
+    #[test]
+    fn reasoning_block_at_maps_row_plus_offset_to_block() {
+        let sid = SessionId::new("test");
+        let mut app = App::new(sid);
+        // Chat area at (x=2, y=1), 10 wide, 4 tall, scrolled down by 3 lines.
+        let area = Rect::new(2, 1, 10, 4);
+        // Rendered lines: only indices 3 and 5 belong to reasoning block 7.
+        let line_blocks = vec![None, None, None, Some(7), None, Some(7), None];
+        app.set_chat_hit_test(area, 3, line_blocks);
+
+        // Top row of the area (row 1) + offset 3 → line index 3 → block 7.
+        assert_eq!(app.reasoning_block_at(3, 1), Some(7));
+        // row 3 + offset 3 → line 5 → block 7.
+        assert_eq!(app.reasoning_block_at(5, 3), Some(7));
+        // row 2 + offset 3 → line 4 → padding line, no block.
+        assert_eq!(app.reasoning_block_at(5, 2), None);
+    }
+
+    #[test]
+    fn reasoning_block_at_rejects_clicks_outside_chat_rect() {
+        let sid = SessionId::new("test");
+        let mut app = App::new(sid);
+        let area = Rect::new(2, 1, 10, 4);
+        app.set_chat_hit_test(area, 3, vec![None, None, None, Some(7)]);
+
+        assert_eq!(app.reasoning_block_at(1, 1), None, "left of area");
+        assert_eq!(app.reasoning_block_at(12, 1), None, "right of area");
+        assert_eq!(app.reasoning_block_at(3, 0), None, "above area");
+        assert_eq!(app.reasoning_block_at(3, 5), None, "below area");
+    }
+
+    #[test]
+    fn reasoning_block_at_is_empty_before_first_draw() {
+        let sid = SessionId::new("test");
+        let app = App::new(sid);
+        assert_eq!(app.reasoning_block_at(0, 0), None);
     }
 
     #[test]

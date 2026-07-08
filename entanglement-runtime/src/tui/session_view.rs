@@ -1,4 +1,5 @@
 use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
@@ -58,6 +59,10 @@ pub struct SessionView {
     approval_mode: ApprovalMode,
     pending_tool_request: Option<(String, String, String)>,
     parent: Option<SessionId>,
+    /// Reasoning runs the user has expanded, keyed by the transcript index of
+    /// the run's first `ReasoningDelta` (a stable id — runs are coalesced from
+    /// consecutive deltas at render time). Absent = collapsed (the default).
+    expanded_reasoning: HashSet<usize>,
 }
 
 impl SessionView {
@@ -77,6 +82,20 @@ impl SessionView {
             approval_mode: ApprovalMode::Normal,
             pending_tool_request: None,
             parent: None,
+            expanded_reasoning: HashSet::new(),
+        }
+    }
+
+    /// Whether the reasoning run identified by `id` (transcript index of its
+    /// first `ReasoningDelta`) is currently expanded.
+    pub fn reasoning_expanded(&self, id: usize) -> bool {
+        self.expanded_reasoning.contains(&id)
+    }
+
+    /// Flips a reasoning run between collapsed and expanded.
+    pub fn toggle_reasoning(&mut self, id: usize) {
+        if !self.expanded_reasoning.remove(&id) {
+            self.expanded_reasoning.insert(id);
         }
     }
 

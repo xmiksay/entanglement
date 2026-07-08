@@ -10,8 +10,20 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
 use crate::tui::theme::{RoleColors, Theme};
 use crate::tui::tool_render;
-pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Vec<Line<'a>> {
+/// Rendered transcript plus per-line provenance. `line_blocks[i]` holds the
+/// reasoning-run id (transcript index of the run's first `ReasoningDelta`) that
+/// produced rendered line `i`, or `None` for lines that aren't part of a
+/// clickable block. Click hit-testing (`App::reasoning_block_at`) maps a
+/// `row + scroll_offset` back to a block through this vector.
+pub(crate) struct RenderedBody<'a> {
+    pub lines: Vec<Line<'a>>,
+    pub line_blocks: Vec<Option<usize>>,
+}
+
+pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> RenderedBody<'a> {
     let mut lines = Vec::new();
+    // (block_id, start_line, end_line_exclusive) for each rendered reasoning run.
+    let mut regions: Vec<(usize, usize, usize)> = Vec::new();
     let markdown_renderer = app.markdown_renderer();
     let theme = app.theme();
     let user = theme.user_colors(app.profile_color_for(app.agent()));
@@ -42,6 +54,7 @@ pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Vec<L
 
     append_transcript(
         &mut lines,
+        &mut regions,
         markdown_renderer,
         app,
         theme,
@@ -90,7 +103,14 @@ pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Vec<L
         }
     }
 
-    lines
+    let mut line_blocks = vec![None; lines.len()];
+    for (id, start, end) in regions {
+        for slot in line_blocks.iter_mut().take(end).skip(start) {
+            *slot = Some(id);
+        }
+    }
+
+    RenderedBody { lines, line_blocks }
 }
 
 /// Append the transcript entries. Consecutive `TextDelta`s are streamed
@@ -99,6 +119,7 @@ pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Vec<L
 /// its own hard line break, wrecking word wrap.
 fn append_transcript<'a>(
     lines: &mut Vec<Line<'a>>,
+    regions: &mut Vec<(usize, usize, usize)>,
     markdown_renderer: &'a MarkdownRenderer,
     app: &'a App,
     theme: Theme,
@@ -188,6 +209,55 @@ fn append_transcript<'a>(
         }
     }
 
+    /// Renders a coalesced reasoning run as a collapsible block: a one-line
+    /// `▸ Thinking (N lines)` header (collapsed, the default) or `▾ …` plus the
+    /// italic body (expanded). Records the rendered line range under `block_id`
+    /// so a click anywhere in the block toggles it.
+    #[allow(clippy::too_many_arguments)]
+    fn flush_reasoning<'a>(
+        lines: &mut Vec<Line<'a>>,
+        regions: &mut Vec<(usize, usize, usize)>,
+        markdown_renderer: &'a MarkdownRenderer,
+        run: &str,
+        theme: Theme,
+        colors: RoleColors,
+        available_width: u16,
+        block_id: usize,
+        expanded: bool,
+    ) {
+        if run.trim().is_empty() {
+            return;
+        }
+        let start = lines.len();
+        let source_lines = run.lines().filter(|l| !l.trim().is_empty()).count().max(1);
+        let padding = Line::from(vec![
+            Span::styled("▌", Style::default().fg(colors.fg).bg(colors.bg)),
+            Span::raw(" ".repeat((available_width - 1) as usize)),
+        ]);
+        lines.push(padding.clone());
+
+        let arrow = if expanded { "▾" } else { "▸" };
+        let header = Line::from(vec![Span::styled(
+            format!("{arrow} Thinking ({source_lines} lines)"),
+            Style::default().fg(colors.fg).italic(),
+        )]);
+        lines.push(theme.decorate(header, colors, available_width));
+
+        if expanded {
+            render_reasoning_run(
+                lines,
+                markdown_renderer,
+                run,
+                theme,
+                colors,
+                available_width,
+            );
+        }
+
+        lines.push(padding);
+        regions.push((block_id, start, lines.len()));
+    }
+
     let assistant = theme.assistant_colors();
     let reasoning = theme.reasoning_colors();
     let tool_req = theme.tool_req_colors();
@@ -196,12 +266,18 @@ fn append_transcript<'a>(
 
     let mut pending_text = String::new();
     let mut pending_reasoning = String::new();
-    for entry in app.transcript() {
+    // Transcript index of the first `ReasoningDelta` in the current run — its
+    // stable click id, resolved once per coalesced run.
+    let mut reasoning_start: Option<usize> = None;
+    for (idx, entry) in app.transcript().iter().enumerate() {
         if let TranscriptEntry::TextDelta { text } = entry {
             pending_text.push_str(text);
             continue;
         }
         if let TranscriptEntry::ReasoningDelta { text } = entry {
+            if pending_reasoning.is_empty() {
+                reasoning_start = Some(idx);
+            }
             pending_reasoning.push_str(text);
             continue;
         }
@@ -223,20 +299,18 @@ fn append_transcript<'a>(
             pending_text.clear();
         }
         if !pending_reasoning.is_empty() {
-            let padding = Line::from(vec![
-                Span::styled("▌", Style::default().fg(reasoning.fg).bg(reasoning.bg)),
-                Span::raw(" ".repeat((available_width - 1) as usize)),
-            ]);
-            lines.push(padding.clone());
-            render_reasoning_run(
+            let block_id = reasoning_start.take().unwrap_or(idx);
+            flush_reasoning(
                 lines,
+                regions,
                 markdown_renderer,
                 &pending_reasoning,
                 theme,
                 reasoning,
                 available_width,
+                block_id,
+                app.reasoning_expanded(block_id),
             );
-            lines.push(padding);
             pending_reasoning.clear();
         }
 
@@ -349,13 +423,17 @@ fn append_transcript<'a>(
         );
     }
     if !pending_reasoning.is_empty() {
-        render_text_run(
+        let block_id = reasoning_start.unwrap_or(app.transcript().len());
+        flush_reasoning(
             lines,
+            regions,
             markdown_renderer,
             &pending_reasoning,
             theme,
             reasoning,
             available_width,
+            block_id,
+            app.reasoning_expanded(block_id),
         );
     }
 }
@@ -366,6 +444,79 @@ mod tests {
     use crate::tui::app::App;
     use crate::tui::theme::hash_profile_color;
     use entanglement_core::{OutEvent, SessionId};
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn feed_reasoning(app: &mut App, sid: &SessionId, body: &str) {
+        for (i, chunk) in body.split_inclusive('\n').enumerate() {
+            app.handle_out_event(OutEvent::ReasoningDelta {
+                session: sid.clone(),
+                seq: i as u64 + 1,
+                text: chunk.to_string(),
+            });
+        }
+    }
+
+    #[test]
+    fn reasoning_collapsed_by_default_shows_only_header() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new(sid.clone());
+        feed_reasoning(&mut app, &sid, "alpha\nbeta\nSECRETBODY\n");
+
+        let body = render_body_lines(&app, 80);
+        assert!(
+            body.lines
+                .iter()
+                .any(|l| line_text(l).contains("▸ Thinking")),
+            "collapsed run should show a ▸ header"
+        );
+        assert!(
+            !body
+                .lines
+                .iter()
+                .any(|l| line_text(l).contains("SECRETBODY")),
+            "collapsed run must hide the reasoning body"
+        );
+        // The header line is tagged with the run's block id (transcript index 0).
+        let header_idx = body
+            .lines
+            .iter()
+            .position(|l| line_text(l).contains("▸ Thinking"))
+            .unwrap();
+        assert_eq!(body.line_blocks[header_idx], Some(0));
+    }
+
+    #[test]
+    fn reasoning_expands_on_toggle() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new(sid.clone());
+        feed_reasoning(&mut app, &sid, "alpha\nbeta\nSECRETBODY\n");
+
+        app.toggle_reasoning_block(0);
+        let body = render_body_lines(&app, 80);
+        assert!(
+            body.lines
+                .iter()
+                .any(|l| line_text(l).contains("▾ Thinking")),
+            "expanded run should show a ▾ header"
+        );
+        assert!(
+            body.lines
+                .iter()
+                .any(|l| line_text(l).contains("SECRETBODY")),
+            "expanded run must show the reasoning body"
+        );
+
+        // Toggle round-trip collapses it again.
+        app.toggle_reasoning_block(0);
+        let body = render_body_lines(&app, 80);
+        assert!(!body
+            .lines
+            .iter()
+            .any(|l| line_text(l).contains("SECRETBODY")));
+    }
 
     #[test]
     fn streamed_table_renders_as_grid_after_all_deltas() {
@@ -386,7 +537,7 @@ mod tests {
             });
         }
 
-        let lines = render_body_lines(&app, 80);
+        let lines = render_body_lines(&app, 80).lines;
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -414,7 +565,7 @@ mod tests {
         let mut app = App::new(sid.clone());
         app.record_user_message("Hello world".to_string());
 
-        let lines = render_body_lines(&app, 80);
+        let lines = render_body_lines(&app, 80).lines;
         let user_color = hash_profile_color("build");
         let theme = app.theme();
         let expected_user_bg = theme.user_colors(user_color).bg;
@@ -449,7 +600,7 @@ mod tests {
             text: "Response".to_string(),
         });
 
-        let lines = render_body_lines(&app, 80);
+        let lines = render_body_lines(&app, 80).lines;
         let theme = app.theme();
         let expected_bg = theme.assistant_colors().bg;
 

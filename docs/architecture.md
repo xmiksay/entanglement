@@ -290,7 +290,12 @@ persistence machinery with none of the CLI/TUI/transport weight
   ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
   (ADR-0013), inline tool approval cards (ADR-0014), and rich markdown
   rendering with pulldown-cmark + syntect (ADR-0015). Event buffering and
-  multiplexed-session rendering follow ADR-0012.
+  multiplexed-session rendering follow ADR-0012. Mouse capture is on by default
+  (opt out with `ENTANGLEMENT_TUI_NO_MOUSE=1`, which restores native text
+  selection): the wheel scrolls the chat (or the open modal's selection), and a
+  left click hit-tests the chat area to toggle a transcript block — reasoning
+  runs render collapsed as a `▸ Thinking (N lines)` header, expanded on click
+  (or via the leader `t` key).
 
 ## 7. Hygiene gates — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md) (`tree`), [ADR-0025](adr/0025-runtime-cargo-feature-gates.md) (`check-lean`)
 

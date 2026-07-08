@@ -21,7 +21,8 @@ use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
         event::{
-            KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+            DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+            KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
             PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
         },
         execute,
@@ -51,6 +52,12 @@ pub async fn tui(holly: Holly, initial_session: SessionId, model_info: ModelInfo
                 | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
         )
     );
+    // Mouse capture lets the wheel scroll the chat and blocks become clickable.
+    // The trade-off is losing native text selection (use Shift+drag), so allow
+    // opting out via `ENTANGLEMENT_TUI_NO_MOUSE`.
+    if std::env::var_os("ENTANGLEMENT_TUI_NO_MOUSE").is_none() {
+        let _ = execute!(stdout, EnableMouseCapture);
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -353,15 +360,7 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                 }
             }
         }
-        Event::Mouse(mouse_event) => match mouse_event.kind {
-            crossterm::event::MouseEventKind::ScrollUp => {
-                app.scroll_up(3);
-            }
-            crossterm::event::MouseEventKind::ScrollDown => {
-                app.scroll_down(3);
-            }
-            _ => {}
-        },
+        Event::Mouse(mouse_event) => handle_mouse(app, mouse_event),
         Event::Resize => {}
         Event::FocusGained | Event::FocusLost => {}
         Event::Paste(s) => {
@@ -371,6 +370,73 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// Routes a mouse event. The wheel prefers an open modal's selection (mirroring
+/// `j`/`k`), else scrolls the chat transcript; a left click hit-tests the chat
+/// area and toggles the reasoning block it lands on.
+fn handle_mouse(app: &mut App, ev: MouseEvent) {
+    match ev.kind {
+        MouseEventKind::ScrollUp => {
+            if !wheel_modal_prev(app) {
+                app.scroll_up(3);
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if !wheel_modal_next(app) {
+                app.scroll_down(3);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) if !any_modal_open(app) => {
+            if let Some(id) = app.reasoning_block_at(ev.column, ev.row) {
+                app.toggle_reasoning_block(id);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn any_modal_open(app: &App) -> bool {
+    app.showing_sessions_modal()
+        || app.showing_profile_picker()
+        || app.showing_model_picker()
+        || app.showing_command_palette()
+        || app.showing_help()
+}
+
+/// Moves the open modal's selection forward for a wheel-down; returns whether a
+/// modal consumed the event (so the chat isn't scrolled underneath it).
+fn wheel_modal_next(app: &mut App) -> bool {
+    if app.showing_sessions_modal() {
+        app.sessions_modal_next();
+    } else if app.showing_profile_picker() {
+        app.profile_picker_next();
+    } else if app.showing_model_picker() {
+        app.model_picker_next();
+    } else if app.showing_command_palette() {
+        app.command_palette().select_next();
+    } else if app.showing_help() {
+        // Consume without acting — the help dialog has no selection.
+    } else {
+        return false;
+    }
+    true
+}
+
+fn wheel_modal_prev(app: &mut App) -> bool {
+    if app.showing_sessions_modal() {
+        app.sessions_modal_prev();
+    } else if app.showing_profile_picker() {
+        app.profile_picker_prev();
+    } else if app.showing_model_picker() {
+        app.model_picker_prev();
+    } else if app.showing_command_palette() {
+        app.command_palette().select_prev();
+    } else if app.showing_help() {
+    } else {
+        return false;
+    }
+    true
 }
 
 async fn handle_profile_picker_event(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool> {
@@ -489,8 +555,11 @@ async fn handle_command_palette_event(app: &mut App, key: KeyEvent) -> Result<bo
 fn setup_panic_handler() {
     std::panic::set_hook(Box::new(|_| {
         let _ = disable_raw_mode();
+        // Disable mouse capture unconditionally — harmless if it was never
+        // enabled — so a crash never leaves the terminal eating mouse input.
         let _ = execute!(
             std::io::stdout(),
+            DisableMouseCapture,
             LeaveAlternateScreen,
             PopKeyboardEnhancementFlags
         );
@@ -501,6 +570,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) 
     disable_raw_mode()?;
     let _ = execute!(
         terminal.backend_mut(),
+        DisableMouseCapture,
         LeaveAlternateScreen,
         PopKeyboardEnhancementFlags
     );
@@ -527,5 +597,52 @@ fn drain_engine_events(
 ) {
     while let Ok(event) = holly_sub.try_recv() {
         app.handle_out_event(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use entanglement_core::SessionId;
+
+    fn wheel(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        }
+    }
+
+    #[test]
+    fn wheel_moves_modal_selection_not_chat() {
+        let mut app = App::new(SessionId::new("s1"));
+        app.create_session();
+        app.create_session();
+        // Give the active transcript headroom so a chat scroll *would* freeze
+        // auto-follow — proving the wheel didn't touch it.
+        app.set_viewport_metrics(20, 5);
+        app.toggle_sessions_modal();
+
+        let before = app.sessions_modal_state().selected();
+        handle_mouse(&mut app, wheel(MouseEventKind::ScrollUp));
+        let after = app.sessions_modal_state().selected();
+
+        assert_ne!(before, after, "wheel should move the modal selection");
+        assert!(
+            app.auto_follow(),
+            "chat must not scroll while a modal is open"
+        );
+    }
+
+    #[test]
+    fn wheel_scrolls_chat_when_no_modal_open() {
+        let mut app = App::new(SessionId::new("s1"));
+        app.set_viewport_metrics(20, 5);
+        handle_mouse(&mut app, wheel(MouseEventKind::ScrollUp));
+        assert!(
+            !app.auto_follow(),
+            "wheel up should scroll (freeze) the chat when no modal is open"
+        );
     }
 }
