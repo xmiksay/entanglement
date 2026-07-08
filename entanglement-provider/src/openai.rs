@@ -30,8 +30,8 @@
 //! `entanglement-core`.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
+use crate::client::HttpClient;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use entanglement_core::{
@@ -49,8 +49,6 @@ pub const OPENAI_BASE: &str = "https://api.openai.com/v1";
 /// Local Ollama (OpenAI-compatible `/v1`). Keyless.
 pub const OLLAMA_BASE: &str = "http://localhost:11434/v1";
 
-const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
-
 /// Streaming OpenAI-compatible client. `api_key = None` skips the
 /// `Authorization` header (for keyless backends like local Ollama). Cheap to
 /// clone (the HTTP client is `Arc`-shared internally); build one per session via
@@ -60,7 +58,7 @@ pub struct OpenAiLlm {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
-    http: reqwest::Client,
+    http: HttpClient,
 }
 
 impl OpenAiLlm {
@@ -70,11 +68,8 @@ impl OpenAiLlm {
         base_url: impl Into<String>,
         api_key: Option<String>,
         default_model: impl Into<String>,
+        http: HttpClient,
     ) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .expect("failed to build reqwest client for OpenAI-compatible backend");
         Self {
             base_url: base_url.into(),
             api_key,
@@ -90,8 +85,9 @@ pub fn openai_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
     default_model: impl Into<String>,
+    http: HttpClient,
 ) -> entanglement_core::LlmFactory {
-    let llm = OpenAiLlm::new(base_url, api_key, default_model);
+    let llm = OpenAiLlm::new(base_url, api_key, default_model, http);
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -112,40 +108,58 @@ impl Llm for OpenAiLlm {
         );
         tracing::trace!(body = %body, "request body");
 
-        let mut request = self.http.post(&url);
-        if let Some(key) = &self.api_key {
-            request = request.bearer_auth(key);
-        }
-        let response = request
-            .json(&body)
-            .send()
+        let response = self
+            .http
+            .execute_with_retry(|| {
+                let mut request = self.http.client().post(&url);
+                if let Some(key) = &self.api_key {
+                    request = request.bearer_auth(key);
+                }
+                request.json(&body).send()
+            })
             .await
-            .map_err(|e| anyhow::anyhow!("openai-compat request failed: {e}"))?;
+            .map_err(|e| match e {
+                crate::client::RetryError::Permanent(e) => {
+                    anyhow::anyhow!("openai-compat request failed: {e}")
+                }
+                crate::client::RetryError::Exhausted(attempts, e) => anyhow::anyhow!(
+                    "openai-compat request failed after {} attempts: {e}",
+                    attempts
+                ),
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after = crate::client::extract_retry_after_from_response(&response);
             let text = response.text().await.unwrap_or_default();
             tracing::error!(status = %status, response = %text, "openai-compat request failed");
+
+            if status.as_u16() == 429 {
+                if let Some(retry_after) = retry_after {
+                    tracing::warn!(retry_after = ?retry_after, "rate limited, backing off");
+                    return Err(anyhow::anyhow!(
+                        "openai-compat rate limited, retry after {:?}",
+                        retry_after
+                    ));
+                }
+            }
+
             anyhow::bail!("openai-compat HTTP {status}: {text}");
         }
 
-        // reqwest's `bytes_stream` borrows the response, so it isn't `'static`.
-        // Drain it on a detached task into an owned-byte mpsc; the consumer owns
-        // only the receiver and is thus `'static`.
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, anyhow::Error>>(8);
         tokio::spawn(async move {
             let mut bytes = response.bytes_stream();
             while let Some(item) = bytes.next().await {
                 let chunk = item.map_err(|e| anyhow::anyhow!("openai-compat stream read: {e}"));
                 if tx.send(chunk.map(|c| c.to_vec())).await.is_err() {
-                    break; // consumer gone
+                    break;
                 }
             }
         });
 
         let stream = try_stream! {
             let mut buf = String::new();
-            // Per-index tool assembly. BTreeMap so flush order is stable (by index).
             let mut tools: BTreeMap<u32, PendingTool> = BTreeMap::new();
             let mut input_tokens: Option<u64> = None;
             let mut output_tokens: Option<u64> = None;
@@ -155,7 +169,6 @@ impl Llm for OpenAiLlm {
             while let Some(item) = rx.recv().await {
                 let chunk = item?;
                 buf.push_str(&String::from_utf8_lossy(&chunk));
-                // Process whole lines (handles `\r\n` and `\n\n` separators).
                 while let Some(idx) = buf.find('\n') {
                     let line: String = buf.drain(..idx + 1).collect();
                     let line = line.trim();
@@ -163,20 +176,17 @@ impl Llm for OpenAiLlm {
                         continue;
                     }
                     let Some(payload) = line.strip_prefix("data:") else {
-                        continue; // SSE comments / event lines we don't use
+                        continue;
                     };
                     let payload = payload.trim();
                     if payload == "[DONE]" {
-                        // Stream terminator. Usage precedes [DONE] and is already
-                        // captured; the terminal Finish is emitted after this loop.
                         continue;
                     }
                     let data: Value = match serde_json::from_str(payload) {
                         Ok(v) => v,
-                        Err(_) => continue, // tolerate stray keepalive payloads
+                        Err(_) => continue,
                     };
 
-                    // Capture finish_reason early for diagnostics
                     if let Some(fr) = data.pointer("/choices/0/finish_reason").and_then(|v| v.as_str()) {
                         seen_finish_reason = Some(fr.to_string());
                     }
@@ -186,8 +196,6 @@ impl Llm for OpenAiLlm {
                     }
                 }
             }
-            // Connection closed (with or without `[DONE]`). Flush any tools that
-            // arrived without an explicit finish_reason flush, then end the turn.
             let has_pending_tools = !tools.is_empty();
             if has_pending_tools {
                 tracing::warn!(
@@ -196,15 +204,11 @@ impl Llm for OpenAiLlm {
                     "stream ended with pending tools - flushing anyway"
                 );
                 for (_, t) in std::mem::take(&mut tools) {
-                    // Only emit tool calls with valid JSON arguments
                     let should_emit = if t.arguments.is_empty() {
-                        // Empty arguments are acceptable (becomes "{}")
                         true
                     } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t.arguments) {
-                        // Valid JSON - check if it's an object
                         matches!(v, serde_json::Value::Object(_))
                     } else {
-                        // Invalid JSON - skip
                         tracing::warn!(
                             tool = %t.name,
                             args = %t.arguments,
