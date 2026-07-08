@@ -15,7 +15,7 @@ Three crates, two seams. Heads depend on core; core never depends on a head.
 ```
 ┌──────────── entanglement-runtime (head, binary `skutter`) ─────────────┐
 │ user sessions · host tools · tool execution · permission dispatch ·    │
-│ approval UX · persistence · transports (stdio ✅, WS 🚧, TUI 🚧)        │
+│ approval UX · persistence · transports (stdio ✅, TUI ✅, WS 🚧)        │
 └─────────▲──────────────────────────────────────────────▲───────────────┘
           │ send()/subscribe() (ABI)      tool exec + approval (protocol)
 ┌─────────┴──────────────── entanglement-core (engine) ───┴───────────────┐
@@ -34,9 +34,11 @@ Three crates, two seams. Heads depend on core; core never depends on a head.
 - **runtime** — the head: host tools + their execution, permission dispatch +
   approval, user sessions, every transport (§6, §8).
 
-**Responsibility relocation is 🚧:** today core still owns tool execution,
-permission dispatch, and the host-tool implementations. The decided end state
-moves those to the runtime (§3, §8); core keeps only the loop + `Tool` trait.
+**Responsibility relocation is partly landed:** the host-tool *implementations*
+now live in `entanglement-runtime` (✅ #57, §8). Tool *execution* and *permission
+dispatch* still run inside core's turn loop (🚧 #58 / #59, §3); the decided end
+state moves those to the runtime too, leaving core with only the loop + `Tool`
+trait (#61).
 
 ## 1. The actor model (the ABI) — [ADR-0001](adr/0001-actor-model-abi.md)
 
@@ -212,8 +214,8 @@ Default models: `glm-5.2` / `gpt-4o` / `llama3.1` / `claude-sonnet-4-5`.
 
 ## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI), [0010](adr/0010-single-head-crate-and-bash-opt-in.md) (packaging), [0011](adr/0011-tui-head-ratatui-crossterm.md)–[0015](adr/0015-rich-text-pipeline-syntect.md) (TUI)
 
-All heads live in one crate, **`entanglement-runtime`** (renamed from
-`entanglement-cli`, 🚧; binary `skutter`), as subcommands. The "four interfaces"
+All heads live in one crate, **`entanglement-runtime`** (✅ #56; binary
+`skutter`), as subcommands. The "four interfaces"
 (in-process ABI + three transports) are a design concept, not a packaging
 boundary — the real seam is `entanglement-core` ↔ everything else (ADR-0006,
 ADR-0010).
@@ -237,19 +239,19 @@ ADR-0010).
 `make tree`, which runs `cargo tree -p entanglement-core` and **fails** if any of
 `clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` appear. It
 is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
-`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`, `uuid`, `glob`,
-`regex`. `glob`/`regex` back the host tools (§8) and **leave core with them
-(🚧)** once the tools move to `entanglement-runtime`; the `reqwest` both LLM
+`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`, `uuid`. `glob`/`regex`
+(which back the host tools, §8) and `diffy` moved out with the host-tool
+implementations to `entanglement-runtime` (✅ #57); the `reqwest` both LLM
 backends use lives in `entanglement-provider`, not core — see ADR-0007.
 
 ## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in)
 
 Concrete filesystem + shell tools, dispatched under the active permission
 profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)). Core defines the
-`Tool` **trait**; the implementations live in **`entanglement-runtime`** (🚧 —
-today they are in `entanglement-core::host`) and are assembled by
-`host_tools(root: PathBuf) -> ToolRegistry`. The runtime executes them and
-returns output to core's turn loop over the protocol:
+`Tool` **trait**; the implementations live in **`entanglement-runtime::host`**
+(✅ #57) and are assembled by `host_tools(root: PathBuf) -> ToolRegistry`. Core's
+turn loop still executes them in-process today; relocating execution to the
+runtime over the protocol is pending (🚧 #58):
 
 | tool | input | output |
 | --- | --- | --- |

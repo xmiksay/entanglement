@@ -25,7 +25,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-sha2 = { workspace = true }
 # TUI dependencies
 ratatui = { workspace = true }
 crossterm = { workspace = true }

@@ -1,8 +1,8 @@
 //! Host tools that execute against the local filesystem and shell — `read`,
-//! `glob`, `grep`, `edit`, `apply_diff`, and the opt-in `bash`. The read-only trio
-//! (`read`/`glob`/`grep`) is covered by ADR-0008; `edit`/`apply_diff`/`bash` by ADR-0009/ADR-0012;
+//! `glob`, `grep`, `edit`, and the opt-in `bash`. The read-only trio
+//! (`read`/`glob`/`grep`) is covered by ADR-0008; `edit`/`bash` by ADR-0009/ADR-0012;
 //! [`host_tools`] assembles the **root-contained set** (`read`/`glob`/
-//! `grep`/`edit`/`apply_diff`) and a head explicitly opts into [`BashTool`] (gated by
+//! `grep`/`edit`) and a head explicitly opts into [`BashTool`] (gated by
 //! `ENTANGLEMENT_ENABLE_BASH`) — see ADR-0010.
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
@@ -20,14 +20,12 @@ use anyhow::{Context, Result};
 use entanglement_core::protocol::FileChangeKind;
 use entanglement_core::tools::ToolRegistry;
 
-// pub mod apply_diff; Commented, will be fixed later!!!
 pub mod bash;
 pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod read;
 
-// pub use apply_diff::ApplyDiffTool; Commented, will be fixed later!!!
 pub use bash::BashTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
@@ -48,24 +46,6 @@ const MAX_RESULTS: usize = 1000;
 // ┃ Shared helpers
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/*
-fn count_patch_changes(patch_text: &str) -> (usize, usize) {
-    let mut insertions = 0;
-    let mut deletions = 0;
-    for line in patch_text.lines() {
-        let trimmed = line.trim_start_matches(' ');
-        if trimmed.starts_with('+') && !trimmed.starts_with("+++") && !trimmed.starts_with("@@") {
-            insertions += 1;
-        } else if trimmed.starts_with('-')
-            && !trimmed.starts_with("---")
-            && !trimmed.starts_with("@@")
-        {
-            deletions += 1;
-        }
-    }
-    (insertions, deletions)
-}
-*/
 /// Resolve `rel` against `root`, rejecting paths that escape the root via `..`
 /// (and absolute paths that don't live under it). Lexical only — symlinks can
 /// still point outside, which is accepted for now (ADR-0008).
@@ -167,7 +147,7 @@ pub fn list_files(root: &Path, pattern: &str) -> Result<FileList> {
 // ┃ host_tools registry
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Build the **root-contained set** (`read`/`glob`/`grep`/`edit`/`apply_diff`).
+/// Build the **root-contained set** (`read`/`glob`/`grep`/`edit`).
 /// Bash is opt-in at the head level (ADR-0010): call [`BashTool::new`] directly and
 /// register it when `ENTANGLEMENT_ENABLE_BASH=1`.
 pub fn host_tools(root: PathBuf) -> ToolRegistry {
@@ -366,7 +346,6 @@ mod tests {
         assert!(names.contains(&"glob"), "{names:?}");
         assert!(names.contains(&"grep"), "{names:?}");
         assert!(names.contains(&"edit"), "{names:?}");
-        //assert!(names.contains(&"apply_diff"), "{names:?}");
         assert!(!names.contains(&"bash"), "{names:?}");
         for s in &specs {
             assert!(

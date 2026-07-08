@@ -25,7 +25,6 @@ async-stream = "0.3"
 futures = "0.3"
 rand = "0.8"
 httpdate = "1"
-sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
 # Pure-Rust, no network deps; both hygiene-gate-clean for entanglement-core
 # (ADR-0008). `glob` drives glob + grep file enumeration; `regex` drives grep.
