@@ -6,9 +6,7 @@ each choice here is recorded in the [decision log](adr/README.md) (ADRs).
 
 This document describes the current *what is*, with the three-layer direction
 ([ADR-0006](adr/0006-core-dependency-hygiene-gate.md)) marked inline:
-**✅ shipped** vs **🚧 decided but pending** (tracked in GitHub issues). The
-crate rename `entanglement-cli → entanglement-runtime` is 🚧 — the current code still uses
-the old name; this doc uses the target name so the *what-should-be* is legible.
+**✅ shipped** vs **🚧 decided but pending** (tracked in GitHub issues).
 
 ## 0. Layers: core / provider / runtime — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)
 
