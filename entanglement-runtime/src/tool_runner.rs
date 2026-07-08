@@ -29,6 +29,8 @@ use entanglement_core::{
 };
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::permission::{effective_permission, spawn_capability_refusal};
+
 /// Spawn the per-engine tool executor. Subscribes synchronously (so no
 /// `ToolExec` emitted before the task is scheduled is missed) and runs until the
 /// engine's outbox closes. `profiles` is the runtime's copy of the engine's
@@ -77,11 +79,21 @@ pub fn spawn_tool_executor(
                     ..
                 }) => {
                     // `spawn_agent` only orchestrates sessions (touches no host
-                    // resource), so it bypasses the permission profile like core's
-                    // `update_plan`/`update_tasks` built-ins (#60). Subscribe
-                    // *before* handing off so the child's `Done` can't race ahead
-                    // of the watcher.
+                    // resource), so it bypasses per-tool approval like core's
+                    // `update_plan`/`update_tasks` built-ins (#60). It is instead
+                    // gated as a *capability* (#77): a read-only sub-agent leaf
+                    // (Subagent-mode profile, e.g. `explore`) may not spawn, which
+                    // closes the path where a restricted profile spawns a
+                    // privileged child. Subscribe *before* handing off so the
+                    // child's `Done` can't race ahead of the watcher.
                     if tool == crate::subagent::SPAWN_TOOL {
+                        if let Some(refusal) = spawn_capability_refusal(active.get(&session)) {
+                            let holly = holly.clone();
+                            tokio::spawn(async move {
+                                reply(&holly, session, request_id, refusal).await;
+                            });
+                            continue;
+                        }
                         match spawn_guard.try_spawn(&session) {
                             Ok(()) => {
                                 let child_events = holly.subscribe();
@@ -110,12 +122,13 @@ pub fn spawn_tool_executor(
                         continue;
                     }
                     // Resolve permission before spawning so the read of `active`
-                    // stays ordered with the lifecycle events above. A session we
-                    // never saw start defaults to `Allow` (nothing to gate on).
-                    let perm = active
-                        .get(&session)
-                        .map(|p| p.permission.for_tool(&tool))
-                        .unwrap_or(Permission::Allow);
+                    // stays ordered with the lifecycle events above. A child
+                    // sub-agent is clamped to its parent chain (#77): its effective
+                    // permission can never exceed any ancestor's, so a child cannot
+                    // touch the shared tree in ways the parent couldn't. A root
+                    // session (no ancestors) resolves to its own profile unchanged;
+                    // a session we never saw start defaults to `Allow`.
+                    let perm = effective_permission(&active, &spawn_guard, &session, &tool);
                     let tools = tools.clone();
                     let holly = holly.clone();
                     tokio::spawn(async move {

@@ -68,3 +68,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0021](0021-hierarchical-session-model.md) | Hierarchical session data model | Accepted |
 | [0022](0022-subagent-spawn.md) | Sub-agent spawn and parent→child answer relay | Accepted |
 | [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | Accepted |
+| [0024](0024-subagent-permission-gating.md) | Sub-agent spawn permission gating and privilege ceiling | Accepted |

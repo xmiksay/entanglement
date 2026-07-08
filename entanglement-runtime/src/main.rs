@@ -8,6 +8,7 @@
 //!   `OutEvent` lines on stdout. For scripting / editor integration.
 
 mod host;
+mod permission;
 mod persistence;
 mod pipe;
 mod run;

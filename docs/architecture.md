@@ -181,7 +181,7 @@ removed on global inbox close (engine shutdown).
 **Sub-agent spawn** (✅ #60, [ADR-0022](adr/0022-subagent-spawn.md), builds on the
 [ADR-0021](adr/0021-hierarchical-session-model.md) tree). The model calls a
 runtime-owned `spawn_agent { agent, prompt }` tool. The runtime executor
-intercepts it (bypassing the permission profile, like core's built-ins), mints a
+intercepts it (bypassing per-tool approval, like core's built-ins), mints a
 child `SessionId`, and sends `InMsg::Spawn { session: child, parent, agent,
 prompt }`. The **supervisor** records `parent_links[child] = parent` and starts
 the child `session_loop` under the requested profile with the prompt queued — so
@@ -194,8 +194,14 @@ tree (✅ #76, [ADR-0023](adr/0023-subagent-spawn-limits.md)): a `SpawnGuard`
 folds parent links from `SessionStarted` and, before each spawn, refuses past a
 depth cap (`MAX_SPAWN_DEPTH`) or a cumulative per-root budget
 (`MAX_SPAWNS_PER_ROOT`) — replying with a clear refusal `ToolOutput` instead of
-starting a child. Isolation/permissions and bidirectional session-to-session
-messaging are still deferred (see ADR-0022).
+starting a child. Spawn is also **permission-gated** (✅ #77,
+[ADR-0024](adr/0024-subagent-permission-gating.md), `runtime::permission`): a
+`Subagent`-mode leaf profile (read-only `explore`) is refused the spawn
+capability outright, and every child's per-tool permission is clamped to the
+least-privileged rule across its whole ancestor chain (`Deny < Ask < Allow`), so
+a child can never touch the shared tree in ways a parent couldn't. Filesystem
+isolation (a separate child root) and bidirectional session-to-session messaging
+are still deferred (see ADR-0022/0024).
 
 ## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 
