@@ -24,9 +24,9 @@ Three crates, two seams. Heads depend on core; core never depends on a head.
 │ Holly actor · InMsg/OutEvent · agent turn loop · Tool *trait* · Context │
 └─────────▲────────────────────────────────────────────────────────────────┘
           │ Llm trait: stream() + session handle
-┌─────────┴──────────── entanglement-provider (LLM I/O) ────────────────────┐
-│ OpenAI-compat + Anthropic clients · pool 🚧 · retry 🚧 · rate-limit 🚧 ·  │
-│ reasoning stream 🚧 · models-per-provider 🚧                              │
+ ┌─────────┴──────────── entanglement-provider (LLM I/O) ────────────────────┐
+│ OpenAI-compat + Anthropic clients · pool · retry · rate-limit ·           │
+│ reasoning stream · models-per-provider                                    │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -130,13 +130,13 @@ structured events give every head a native plan/task panel to render.
 ## 5. Per-session engine (`session.rs`)
 
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
-token estimate), an `Llm` handle (from `EngineConfig::llm_factory`), the
+token estimate), an `LlmSession` handle (from `EngineConfig::llm_factory`), the
 active `AgentProfile`, the `TaskList`, the `Plan`, and a per-session `seq`.
-The `Llm` handle is a **provider-owned session/connection handle** (🚧,
-[ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)): the *conversation
+The `LlmSession` is a **provider-owned session/connection handle**
+([ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)): the *conversation
 history* stays in core's `Context`, but the *connection* state (pool, retry,
-rate-limit budget) belongs to the provider. Today the factory hands core a fresh
-per-session client; the decided end state hands it a pooled session handle.
+rate-limit budget) belongs to the provider. The factory hands core a pooled
+session handle that wraps the streaming backend.
 
 Turn loop: send `LlmRequest { system, model, messages, tools }` → consume the
 streamed `LlmEvent`s (emit `TextDelta` per `Text` chunk, gather `ToolCall`s,
@@ -167,7 +167,7 @@ crates (`reqwest`) — `entanglement-core` may not.
 ```rust
 enum LlmEvent {
     Text(String),
-    Reasoning(String),   // 🚧 thinking/reasoning tokens, streamed distinctly
+    Reasoning(String),   // thinking/reasoning tokens, streamed distinctly
     ToolCall(ToolCall),
     Finish { input_tokens?, output_tokens? },
 }
@@ -176,10 +176,10 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 
 - Streaming mirrors opencode (Vercel AI SDK `doStream`): live token-by-token
   deltas, not a buffered whole-reply. The box stream is `'static`.
-- **`LlmEvent::Reasoning` (🚧)** surfaces extended-thinking output (Anthropic
+- **`LlmEvent::Reasoning`** surfaces extended-thinking output (Anthropic
   `thinking`/`redacted_thinking` blocks, OpenAI `reasoning_content`) instead of
   dropping it; core re-emits it as a reasoning `OutEvent` heads render distinctly
-  from answer text. *Today both backends silently drop reasoning deltas.*
+  from answer text.
 
 **Provider topology** — split by *wire format*, not by vendor:
 
@@ -198,13 +198,12 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 - `ToolSpec.schema` surfaces as `input_schema` (Anthropic) / `parameters`
   (OpenAI-compat); `Message.tool_call_id` → `tool_use_id` / `tool_call_id`.
 
-**Resilience the provider layer owns (🚧):** a shared, tuned connection **pool**
+**Resilience the provider layer owns:** a shared, tuned connection **pool**
 (reused across sessions, not a client-per-turn); **retry** with exponential
 backoff + jitter on transient failures and dropped streams; **rate-limit**
 handling (HTTP 429 + `Retry-After`, plus a client-side RPM throttle, surfaced as
 status not silent stalls); a **models-per-provider** registry so heads present a
-real model picker. *Today none of these exist — the clients bail on the first
-non-2xx.*
+real model picker.
 
 **Provider selection (`skutter`):** `ENTANGLEMENT_PROVIDER` env selects
 `zai | openai | ollama | anthropic` explicitly (errors loudly if the matching key

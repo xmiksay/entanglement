@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     host_tools, stream_from_response, BashTool, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, SessionId, ToolCall,
+    LlmResponse, LlmSession, LlmStream, OutEvent, SessionId, ToolCall,
 };
 
 /// An LLM that replays a scripted list of responses in order, then a plain
@@ -100,7 +100,7 @@ async fn read_tool_runs_through_engine_under_build_profile() {
     let scripted = Arc::new(vec![read_call, finish]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tools: host_tools(root.clone()),
         ..EngineConfig::default()
@@ -164,7 +164,7 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
     let scripted = Arc::new(vec![edit_call, finish]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tools: host_tools(root.clone()),
         ..EngineConfig::default()
@@ -230,7 +230,7 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     // ENTANGLEMENT_ENABLE_BASH=1 by registering BashTool explicitly.
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tools: {
             let mut reg = host_tools(root.clone());

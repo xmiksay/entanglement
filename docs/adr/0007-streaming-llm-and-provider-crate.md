@@ -89,7 +89,9 @@ pub trait Llm: Send {
 6. **A live session/connection handle** ("unified session") — a stateful object
    the provider hands core that carries the pool/retry/rate-limit context for a
    session's lifetime. Core wraps it per turn; the *conversation history*
-   (`Context`) stays in core, but the *connection* state is the provider's.
+   (`Context`) stays in core, but the *connection* state is the provider's. This
+   is implemented as `LlmSession` (a newtype around `Box<dyn Llm>`), which makes
+   the architectural separation explicit.
 
 **Provider selection** stays a head concern (see [ADR-0010][0010]):
 `ENTANGLEMENT_PROVIDER` (`zai|openai|ollama|anthropic`) or key auto-detect,

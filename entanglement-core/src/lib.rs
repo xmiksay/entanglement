@@ -21,7 +21,7 @@ pub use holly::{EngineConfig, Holly, ProfileRegistry};
 pub use host::{host_tools, BashTool, EditTool, GlobTool, GrepTool, ReadTool};
 pub use llm::{
     stream_from_response, DummyLlm, EchoLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse,
-    LlmStream, ToolCall, ToolSpec,
+    LlmSession, LlmStream, ToolCall, ToolSpec,
 };
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, FileChangeKind, InMsg, OutEvent, Permission,

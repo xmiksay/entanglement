@@ -7,7 +7,7 @@ use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::context::Context;
-use crate::llm::{Llm, LlmEvent, LlmRequest, ToolCall, ToolSpec};
+use crate::llm::{Llm, LlmEvent, LlmRequest, LlmSession, ToolCall, ToolSpec};
 use crate::protocol::{AgentProfile, AgentState, InMsg, OutEvent, Permission, SessionId, TaskItem};
 use crate::tools::ToolRegistry;
 use crate::EngineConfig;
@@ -35,7 +35,7 @@ pub(crate) enum SessionCmd {
 /// Mutable per-session state.
 pub struct Session {
     pub ctx: Context,
-    pub llm: Box<dyn Llm>,
+    pub llm: LlmSession,
     pub profile: AgentProfile,
     pub tools: ToolRegistry,
     pub tasks: Vec<TaskItem>,

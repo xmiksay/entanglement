@@ -35,7 +35,7 @@ use crate::client::HttpClient;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use entanglement_core::{
-    Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, ToolCall, ToolSpec,
+    Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, Message, MessageRole, ToolCall, ToolSpec,
 };
 use futures::StreamExt;
 use serde_json::{json, Value};
@@ -88,7 +88,7 @@ pub fn openai_factory(
     http: HttpClient,
 ) -> entanglement_core::LlmFactory {
     let llm = OpenAiLlm::new(base_url, api_key, default_model, http);
-    std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
+    std::sync::Arc::new(move || LlmSession::new(Box::new(llm.clone())))
 }
 
 #[async_trait]

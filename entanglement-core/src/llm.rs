@@ -103,7 +103,33 @@ pub trait Llm: Send {
 
 /// Factory that produces a fresh per-session LLM instance. Sessions run
 /// concurrently, so each gets its own (cheaply-clonable) backend.
-pub type LlmFactory = std::sync::Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>;
+pub type LlmFactory = std::sync::Arc<dyn Fn() -> LlmSession + Send + Sync>;
+
+/// Provider-owned "live session/connection handle" — the object a session holds
+/// for its LLM backend. Carries the shared pool/retry/rate-limit context from
+/// the provider layer, distinct from `Context` (the conversation history), which
+/// stays in core. Today this is a newtype around `Box<dyn Llm>`; in the future it
+/// may carry per-session connection state (retry accounting, rate-limit budget).
+pub struct LlmSession {
+    inner: Box<dyn Llm>,
+}
+
+impl LlmSession {
+    pub fn new(llm: Box<dyn Llm>) -> Self {
+        Self { inner: llm }
+    }
+
+    pub fn inner_mut(&mut self) -> &mut dyn Llm {
+        &mut *self.inner
+    }
+}
+
+#[async_trait]
+impl Llm for LlmSession {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        self.inner.stream(req).await
+    }
+}
 
 /// Deterministic stub backend. Emits a configured reply as a single text chunk
 /// then `Finish` — ideal for bootstrap wiring and unit tests.
