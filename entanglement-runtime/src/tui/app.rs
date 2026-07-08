@@ -399,6 +399,18 @@ impl App {
         self.sessions.active_view().scroll_offset_x()
     }
 
+    pub fn auto_follow(&self) -> bool {
+        self.sessions.active_view().auto_follow()
+    }
+
+    /// Feeds the metrics `draw_body` measured back to the active session so the
+    /// next scroll can clamp and follow can re-arm.
+    pub fn set_viewport_metrics(&mut self, content_height: usize, viewport_height: usize) {
+        self.sessions
+            .active_view_mut()
+            .set_viewport_metrics(content_height, viewport_height);
+    }
+
     pub fn scroll_down(&mut self, lines: usize) {
         self.sessions.active_view_mut().scroll_down(lines);
         self.mark_dirty();

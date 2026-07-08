@@ -242,14 +242,24 @@ mod tests {
         let b = reg.create();
 
         reg.switch_to(a.clone());
-        reg.active_view_mut().scroll_down(3);
-        assert_eq!(reg.active_view().scroll_offset(), 3);
+        // Scroll is now clamped against draw-time metrics, so give session `a`
+        // headroom (20 lines of content in a 10-row viewport) before freezing
+        // it at a manual offset by scrolling up from the bottom.
+        {
+            let view = reg.active_view_mut();
+            view.set_viewport_metrics(20, 10);
+            view.scroll_up(3);
+        }
+        assert_eq!(reg.active_view().scroll_offset(), 7);
+        assert!(!reg.active_view().auto_follow());
 
         reg.switch_to(b.clone());
         assert_eq!(reg.active_view().scroll_offset(), 0);
+        assert!(reg.active_view().auto_follow());
 
         reg.switch_to(a);
-        assert_eq!(reg.active_view().scroll_offset(), 3);
+        assert_eq!(reg.active_view().scroll_offset(), 7);
+        assert!(!reg.active_view().auto_follow());
     }
 
     #[test]
