@@ -25,7 +25,7 @@ tool exec/approval over the protocol). Layering: [ADR-0006](../docs/adr/0006-cor
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
 | `entanglement-provider` | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; connection pool, retry, rate-limit, reasoning stream, models-per-provider, provider-owned session handle; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
-| `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), permission dispatch + approval (🚧 still in core, #59), user sessions, stdio `run`/`pipe` + `tui` today, `serve` (WS) next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
+| `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe` + `tui` today, `serve` (WS) next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
 
 Heads depend on core, **never** the reverse.
 
@@ -73,14 +73,17 @@ OutEvent : Status | AgentChanged | Plan | TextDelta | ToolRequest | ToolExec
           | ToolOutput | TaskList | Error | Done
 ```
 
-Tool execution is a protocol round-trip (#58): core emits `ToolExec` for a
-cleared call (`Allow`, or `Ask` after approval) and awaits the runtime's
-`ToolResult`; `ToolRequest` stays purely the `Ask` approval prompt. Core holds
-no executable tools — only their schemas (`EngineConfig.tool_specs`).
+Tool execution is a protocol round-trip (#58): core emits `ToolExec` for *every*
+host tool and awaits the runtime's `ToolResult`. Permission dispatch and approval
+moved out too (#59): core no longer reads `PermissionProfile` — the runtime
+`tool_runner` resolves `Allow`/`Ask`/`Deny` per call, emits the `ToolRequest`
+prompt on `Ask`, and consumes `Approve`/`Reject` off the engine's inbound
+fan-out (`Holly::subscribe_inbound()`). Core holds no executable tools and makes
+no policy decision — only tool schemas (`EngineConfig.tool_specs`).
 
 Session-multiplexed (every frame carries `SessionId`); content frames carry
 monotonic `seq`. Agent profiles (`build`/`plan`/`explore` + custom) drive
-permission dispatch (`Allow`/`Ask`/`Deny`). `Plan` and `TaskList` are
+permission dispatch (`Allow`/`Ask`/`Deny`), resolved in the runtime. `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
 `input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010)
@@ -112,21 +115,21 @@ assembles the root-contained quartet (`read`/`glob`/`grep`/`edit`);
 
 **Three-layer re-architecture** — the big active effort, tracked by epic
 [#50](https://github.com/xmiksay/entanglement/issues/50) ([ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)).
-Core still owns *permission dispatch* inside the turn loop; the target moves it
-to the runtime. Remaining backlog:
+Permission dispatch now lives in the runtime (✅ #59); core is left with the
+loop + turn state to slim down. Remaining backlog:
 
 - **Runtime** ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)):
-  relocate permission dispatch (#59) out of core (turns the approval into a
-  protocol round-trip, like #58 did for execution); inter-session agent
-  messaging / subagent spawn (#60).
-- **Core**: slim `Session` to loop + turn state (#61, after #59).
+  inter-session agent messaging / subagent spawn (#60).
+- **Core**: slim `Session` to loop + turn state (#61).
 
 Landed: **provider track** — crate renamed from `entanglement-llm` (#51),
 connection pool + retry + rate-limit (#52), models-per-provider (#53),
 reasoning/thinking stream events (#54), provider-owned session handle (#55).
 **Runtime track** — crate renamed from `entanglement-cli` (#56), host-tool impls
 moved out of core (#57), tool execution relocated to `runtime::tool_runner` via
-the `ToolExec`/`ToolResult` round-trip (#58). **Cleanup** — orphaned `apply_diff.rs` + `audit.rs`
+the `ToolExec`/`ToolResult` round-trip (#58), permission dispatch + approval
+relocated to `runtime::tool_runner` via a per-session profile map + the engine's
+inbound `InMsg` fan-out (#59). **Cleanup** — orphaned `apply_diff.rs` + `audit.rs`
 removed (#63); docs drift guard (#62) is a standing checklist flipping the
 🚧 markers in `docs/architecture.md` as each child lands.
 

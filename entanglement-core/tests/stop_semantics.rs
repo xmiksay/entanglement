@@ -167,14 +167,17 @@ async fn stop_while_idle_preserves_context_for_next_prompt() {
 }
 
 #[tokio::test]
-async fn stop_during_tool_approval_keeps_session_alive() {
-    // plan profile → bash Ask. The engine pauses in `wait_approval`; we send
-    // Stop to cancel (the Esc-in-approval path) and then re-prompt. The
-    // session task must still be alive to handle the new prompt.
+async fn stop_during_tool_exec_keeps_session_alive() {
+    // A tool call parks the engine in `wait_tool_result` (it emitted `ToolExec`
+    // and awaits the runtime's `ToolResult`, #58). With no tool executor wired
+    // here, that wait never resolves on its own; we send Stop to cancel it (the
+    // Esc-in-approval path is the same cancel now that permission dispatch and
+    // approval live in the runtime, #59) and re-prompt. The session task must
+    // still be alive to handle the new prompt.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let holly = Holly::spawn(capturing_factory(
         vec![
-            // First turn: emit a tool call so the engine enters wait_approval.
+            // First turn: emit a tool call so the engine parks on the result.
             LlmResponse {
                 text: "".into(),
                 tool_calls: vec![ToolCall {
@@ -192,13 +195,6 @@ async fn stop_during_tool_approval_keeps_session_alive() {
         seen.clone(),
     ));
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "plan".into(),
-        })
-        .await
-        .unwrap();
 
     let _sub = holly.subscribe();
     holly
@@ -209,18 +205,21 @@ async fn stop_during_tool_approval_keeps_session_alive() {
         .await
         .unwrap();
 
-    // Wait for the ToolRequest (engine is now paused in wait_approval).
+    // Wait for the ToolExec (engine is now parked in wait_tool_result).
     let mut sub2 = holly.subscribe();
     let mut got_request = false;
     while let Ok(ev) = tokio::time::timeout(Duration::from_secs(2), sub2.recv()).await {
-        if let Ok(OutEvent::ToolRequest { .. }) = ev {
+        if let Ok(OutEvent::ToolExec { .. }) = ev {
             got_request = true;
             break;
         }
     }
-    assert!(got_request, "expected ToolRequest under plan profile");
+    assert!(
+        got_request,
+        "expected ToolExec while the tool call is pending"
+    );
 
-    // Esc-in-approval path: send Stop instead of Approve.
+    // Cancel the pending tool call with Stop.
     holly
         .send(InMsg::Stop {
             session: sid.clone(),

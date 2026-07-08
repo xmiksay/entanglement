@@ -38,9 +38,10 @@ Three crates, two seams. Heads depend on core; core never depends on a head.
 now live in `entanglement-runtime` (✅ #57, §8), and tool *execution* moved there
 too — core emits `OutEvent::ToolExec` and the runtime answers with
 `InMsg::ToolResult` (✅ #58, §3, §8). *Permission dispatch* (the `Allow|Ask|Deny`
-decision + approval wait) still runs inside core's turn loop (🚧 #59, §3); the
-decided end state moves it to the runtime too, leaving core with only the loop +
-`Tool` trait (#61).
+decision + approval wait) also moved to the runtime (✅ #59, §3): core emits
+`ToolExec` for *every* host tool and no longer consults `PermissionProfile`; the
+runtime tool executor resolves the permission and drives approval. What remains
+is slimming core's `Session` to loop + turn state (#61).
 
 ## 1. The actor model (the ABI) — [ADR-0001](adr/0001-actor-model-abi.md)
 
@@ -68,8 +69,8 @@ One set of serde-tagged types crosses every transport:
 
 ```
 #[serde(tag = "kind", rename_all = "snake_case")]
-InMsg    = Prompt{session,text} | Approve{session,request_id}
-         | Reject{session,request_id,reason?}
+InMsg    = Prompt{session,text} | Approve{session,request_id}   // approval →
+         | Reject{session,request_id,reason?}                   // runtime, not core (#59)
          | ToolResult{session,request_id,output}   // runtime → core: tool ran (#58)
          | Stop{session}
          | SetTasks{session,tasks} | SetPlan{session,content} | SetAgent{session,agent}
@@ -78,8 +79,8 @@ OutEvent = Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent}        // point-in-time, no seq
          | Plan{session,seq,content}          // markdown prose snapshot
          | TextDelta{session,seq,text}
-         | ToolRequest{session,seq,request_id,tool,input}   // Ask: human approval
-         | ToolExec{session,seq,request_id,tool,input}      // core → runtime: run it (#58)
+         | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
+         | ToolExec{session,seq,request_id,tool,input}      // core → runtime: dispatch it (#58/#59)
          | ToolOutput{session,seq,request_id,output}
          | TaskList{session,seq,tasks}        // full outline snapshot
          | Error{session,seq,message}
@@ -99,22 +100,26 @@ A session runs under exactly one [`AgentProfile`][profile]:
 
 - Switch with `InMsg::SetAgent { agent }`; engine emits `AgentChanged`.
 - [`PermissionProfile`][perm] resolves `Allow | Ask | Deny` per tool
-  (last-matching-rule-wins, `*` wildcard):
-  - `Allow` → emit `ToolExec`, park until the runtime returns `ToolResult`,
-    then emit `ToolOutput` (execution is a runtime round-trip now, #58).
+  (last-matching-rule-wins, `*` wildcard), **in the runtime tool executor** (✅ #59):
+  - `Allow` → run the tool, reply `ToolResult` → core emits `ToolOutput`.
   - `Ask` → emit `ToolRequest`, park at `WaitingApproval` until `Approve`/`Reject`;
-    on approve, run the same `ToolExec`→`ToolResult` round-trip.
-  - `Deny` → emit `ToolOutput("…denied…")`, never run (no `ToolExec`).
+    on approve, run the tool and reply `ToolResult`; on reject, reply
+    `ToolResult("…rejected…")`.
+  - `Deny` → reply `ToolResult("…denied…")` without running the tool.
 - Built-ins: `build` (all allow), `plan` (ask, read allow), `explore` (deny,
   read/glob/grep allow). Add your own via `ProfileRegistry::insert`.
-- **Where dispatch runs:** the `AgentProfile` *shape* is a core protocol type, but
-  the `Allow|Ask|Deny` decision + the approval wait are a **runtime** concern
-  (🚧 #59, [ADR-0003](adr/0003-agent-and-permission-profiles.md) /
-  [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md)) — today they still run
-  in core's turn loop; the decided end state moves them to the runtime, riding the
-  same `ToolRequest`/`Approve`/`Reject` frames. Tool *execution* has already moved
-  out (✅ #58): whatever clears a call, core hands it to the runtime as `ToolExec`
-  and awaits `ToolResult`.
+- **Where dispatch runs (✅ #59):** the `AgentProfile` *shape* stays a core
+  protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
+  **runtime** concern ([ADR-0003](adr/0003-agent-and-permission-profiles.md) /
+  [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md)). Core emits
+  `ToolExec` for *every* host tool and parks on `ToolResult` (§8); it never reads
+  `PermissionProfile`. The runtime `tool_runner` (§8) tracks each session's active
+  profile (folded from `SessionStarted`/`AgentChanged` against a `ProfileRegistry`
+  copy it holds), resolves the permission, and — for `Ask` — emits the
+  `ToolRequest` prompt and awaits `Approve`/`Reject`/`Stop` off the engine's
+  **inbound fan-out** (`Holly::subscribe_inbound()`), so every head stays a thin
+  protocol adapter (it just sends the same frames; the runtime, not core, acts on
+  them).
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](adr/0004-structured-plan-and-task-events.md)
 
@@ -149,9 +154,11 @@ session handle that wraps the streaming backend.
 
 Turn loop: send `LlmRequest { system, model, messages, tools }` → consume the
 streamed `LlmEvent`s (emit `TextDelta` per `Text` chunk, gather `ToolCall`s,
-note `Finish`) → for each tool call, dispatch by built-in vs host-tool-vs-
-permission → loop until the model returns no tool calls → `Done`. Approval waits
-park the task on its inbox; any non-matching message (e.g. a new prompt) is
+note `Finish`) → for each tool call, run built-ins inline or hand host tools to
+the runtime (emit `ToolExec`, park on `ToolResult`) → loop until the model
+returns no tool calls → `Done`. Permission dispatch and approval no longer run
+here — the runtime tool executor owns them (§3, §8, ✅ #59). The tool-result
+wait parks the task on its inbox; any non-matching message (e.g. a new prompt) is
 stashed and processed after the turn. Setup/mid-stream backend errors surface as
 `Error` + `Done` without committing a partial assistant message. The same
 stash discipline applies inside the streaming loop and between tool calls
@@ -161,7 +168,7 @@ follow-up sent while the engine is busy is never silently dropped.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop and tool dispatch poll `try_recv` for
-it; approval wait returns `Approval::Cancelled`) but does *not* evict the
+it; the tool-result wait returns cancelled) but does *not* evict the
 session from the supervisor map or end its task. The session's `Context` is
 preserved across a Stop+Prompt round-trip — Esc-in-approval or a stray Stop
 between turns no longer causes amnesia. The supervisor map entry is only
@@ -259,10 +266,14 @@ Concrete filesystem + shell tools, dispatched under the active permission
 profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)). Core defines the
 `Tool` **trait**; the implementations live in **`entanglement-runtime::host`**
 (✅ #57) and are assembled by `host_tools(root: PathBuf) -> ToolRegistry`.
-Execution now runs in the runtime too (✅ #58): `entanglement-runtime::tool_runner`
-subscribes to the engine, runs each `ToolExec` against that registry, and replies
-with `InMsg::ToolResult`. Core only advertises the tool *schemas*
-(`EngineConfig.tool_specs`) — it holds no executable tools:
+Execution *and* permission dispatch now run in the runtime (✅ #58, #59):
+`entanglement-runtime::tool_runner` subscribes to the engine, resolves each
+`ToolExec`'s `Allow|Ask|Deny` against the session's active profile (§3), runs the
+cleared tool against the registry, and replies with `InMsg::ToolResult`. `Ask`
+emits the `ToolRequest` prompt and waits for the head's decision on
+`Holly::subscribe_inbound()` (the engine's inbound `InMsg` fan-out). Core only
+advertises the tool *schemas* (`EngineConfig.tool_specs`) — it holds no executable
+tools and makes no policy decision:
 
 | tool | input | output |
 | --- | --- | --- |
