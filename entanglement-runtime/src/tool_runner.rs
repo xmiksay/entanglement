@@ -68,6 +68,26 @@ pub fn spawn_tool_executor(
                     input,
                     ..
                 }) => {
+                    // `spawn_agent` only orchestrates sessions (touches no host
+                    // resource), so it bypasses the permission profile like core's
+                    // `update_plan`/`update_tasks` built-ins (#60). Subscribe
+                    // *before* handing off so the child's `Done` can't race ahead
+                    // of the watcher.
+                    if tool == crate::subagent::SPAWN_TOOL {
+                        let child_events = holly.subscribe();
+                        let holly = holly.clone();
+                        tokio::spawn(async move {
+                            crate::subagent::spawn_subagent(
+                                holly,
+                                child_events,
+                                session,
+                                request_id,
+                                input,
+                            )
+                            .await;
+                        });
+                        continue;
+                    }
                     // Resolve permission before spawning so the read of `active`
                     // stays ordered with the lifecycle events above. A session we
                     // never saw start defaults to `Allow` (nothing to gate on).

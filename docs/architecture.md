@@ -74,6 +74,7 @@ InMsg    = Prompt{session,text} | Approve{session,request_id}   // approval →
          | ToolResult{session,request_id,output}   // runtime → core: tool ran (#58)
          | Stop{session}
          | SetTasks{session,tasks} | SetPlan{session,content} | SetAgent{session,agent}
+         | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
 
 OutEvent = Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent}        // point-in-time, no seq
@@ -173,6 +174,20 @@ session from the supervisor map or end its task. The session's `Context` is
 preserved across a Stop+Prompt round-trip — Esc-in-approval or a stray Stop
 between turns no longer causes amnesia. The supervisor map entry is only
 removed on global inbox close (engine shutdown).
+
+**Sub-agent spawn** (✅ #60, [ADR-0022](adr/0022-subagent-spawn.md), builds on the
+[ADR-0021](adr/0021-hierarchical-session-model.md) tree). The model calls a
+runtime-owned `spawn_agent { agent, prompt }` tool. The runtime executor
+intercepts it (bypassing the permission profile, like core's built-ins), mints a
+child `SessionId`, and sends `InMsg::Spawn { session: child, parent, agent,
+prompt }`. The **supervisor** records `parent_links[child] = parent` and starts
+the child `session_loop` under the requested profile with the prompt queued — so
+the child's `SessionStarted` carries the parent link and the tree-walk helpers
+(`children_of` / `root_of`) reflect reality. The runtime watches the child's
+events and, on the child's `Done`, relays its final answer back to the parent as
+the `spawn_agent` `ToolOutput` — reusing the #58 tool round-trip, so core's turn
+loop needs no notion of a "child session". Isolation, recursion limits, and
+bidirectional session-to-session messaging are deferred (see ADR-0022).
 
 ## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 

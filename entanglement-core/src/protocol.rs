@@ -200,6 +200,18 @@ pub enum InMsg {
     SetPlan { session: SessionId, content: String },
     /// Switch the session to a different agent profile by name (e.g. `plan`).
     SetAgent { session: SessionId, agent: String },
+    /// Spawn a child session (sub-agent) under `parent`, running `prompt` beneath
+    /// the named `agent` profile (#60, ADR-0021). `session` is the *child's* id.
+    /// The supervisor records the parent link (populating the session tree the
+    /// tree-walk helpers read) and starts the child. The runtime's `spawn_agent`
+    /// tool issues this, then relays the child's final answer back to the parent
+    /// as a tool result — core needs no notion of "child session" in its loop.
+    Spawn {
+        session: SessionId,
+        parent: SessionId,
+        agent: String,
+        prompt: String,
+    },
     /// Resume a session from replayed log records (internal, not serialized).
     #[serde(skip)]
     Resume {
@@ -220,6 +232,7 @@ impl InMsg {
             | InMsg::SetTasks { session, .. }
             | InMsg::SetPlan { session, .. }
             | InMsg::SetAgent { session, .. }
+            | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => session,
         }
     }

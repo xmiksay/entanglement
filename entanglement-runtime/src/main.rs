@@ -12,6 +12,7 @@ mod persistence;
 mod pipe;
 mod run;
 mod session_store;
+mod subagent;
 mod tool_runner;
 mod tui;
 
@@ -78,6 +79,9 @@ fn build_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo, ToolRegis
         );
     }
     cfg.tool_specs = tools.specs();
+    // `spawn_agent` is orchestration, not a registry tool (#60): the runtime
+    // executor handles it directly, so it only needs advertising to the model.
+    cfg.tool_specs.push(subagent::spawn_agent_spec());
     (cfg, model_info, tools)
 }
 
