@@ -44,9 +44,17 @@ pub struct SessionView {
     plan: Option<String>,
     task_list: Option<Vec<TaskItem>>,
     last_seen_seq: u64,
+    /// Top-anchored vertical offset (line index of the first visible row).
+    /// Only meaningful while frozen; when `auto_follow` is set the view is
+    /// pinned to the bottom at draw time and this value is ignored.
     scroll_offset: usize,
     scroll_offset_x: usize,
     auto_follow: bool,
+    /// Rendered line count and viewport height cached from the last draw so
+    /// scroll math can clamp/anchor without re-deriving them — only `draw_body`
+    /// knows the wrapped line count and `area.height`.
+    last_content_height: usize,
+    last_viewport_height: usize,
     approval_mode: ApprovalMode,
     pending_tool_request: Option<(String, String, String)>,
     parent: Option<SessionId>,
@@ -64,6 +72,8 @@ impl SessionView {
             scroll_offset: 0,
             scroll_offset_x: 0,
             auto_follow: true,
+            last_content_height: 0,
+            last_viewport_height: 0,
             approval_mode: ApprovalMode::Normal,
             pending_tool_request: None,
             parent: None,
@@ -102,28 +112,62 @@ impl SessionView {
         self.scroll_offset_x
     }
 
+    pub fn auto_follow(&self) -> bool {
+        self.auto_follow
+    }
+
+    /// Largest valid top-anchored offset for the last-drawn content: the line
+    /// index at which the final line sits on the bottom row of the viewport.
+    fn max_offset(&self) -> usize {
+        self.last_content_height
+            .saturating_sub(self.last_viewport_height)
+    }
+
+    /// The offset the view should actually render at, resolving auto-follow
+    /// (pinned to the bottom) and clamping a frozen offset to the content.
+    pub fn effective_scroll_offset(&self) -> usize {
+        if self.auto_follow {
+            self.max_offset()
+        } else {
+            self.scroll_offset.min(self.max_offset())
+        }
+    }
+
+    /// Caches the metrics `draw_body` measured this frame. A resize/shrink that
+    /// leaves a frozen view sitting at the bottom re-arms follow.
+    pub fn set_viewport_metrics(&mut self, content_height: usize, viewport_height: usize) {
+        self.last_content_height = content_height;
+        self.last_viewport_height = viewport_height;
+        if !self.auto_follow && self.scroll_offset >= self.max_offset() {
+            self.auto_follow = true;
+        }
+    }
+
     pub fn scroll_down(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_add(lines);
-        self.auto_follow = false;
+        let max = self.max_offset();
+        let next = (self.effective_scroll_offset() + lines).min(max);
+        self.scroll_offset = next;
+        // Reaching the last line re-arms follow; otherwise stay frozen.
+        self.auto_follow = next >= max;
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        // Anchor at the currently displayed position before moving: while
+        // auto-following the stored offset is stale (draw uses `max_offset`).
+        self.scroll_offset = self.effective_scroll_offset().saturating_sub(lines);
         self.auto_follow = false;
     }
 
     pub fn scroll_right(&mut self, cols: usize) {
         self.scroll_offset_x = self.scroll_offset_x.saturating_add(cols);
-        self.auto_follow = false;
     }
 
     pub fn scroll_left(&mut self, cols: usize) {
         self.scroll_offset_x = self.scroll_offset_x.saturating_sub(cols);
-        self.auto_follow = false;
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = 0;
+        self.scroll_offset = self.max_offset();
         self.scroll_offset_x = 0;
         self.auto_follow = true;
     }
@@ -165,10 +209,6 @@ impl SessionView {
             text,
             pending: true,
         });
-        if self.auto_follow {
-            self.scroll_offset = 0;
-            self.scroll_offset_x = 0;
-        }
     }
 
     /// Applies an `OutEvent` already routed to this session. Returns `true`
@@ -213,10 +253,6 @@ impl SessionView {
                     }
                     self.transcript.push(TranscriptEntry::TextDelta { text });
                     self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                        self.scroll_offset_x = 0;
-                    }
                     true
                 } else {
                     false
@@ -227,10 +263,6 @@ impl SessionView {
                     self.transcript
                         .push(TranscriptEntry::ReasoningDelta { text });
                     self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                        self.scroll_offset_x = 0;
-                    }
                     true
                 } else {
                     false
@@ -245,10 +277,6 @@ impl SessionView {
                         input: input.clone(),
                     });
                     self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                        self.scroll_offset_x = 0;
-                    }
                     true
                 } else {
                     false
@@ -265,10 +293,6 @@ impl SessionView {
                     self.last_seen_seq = seq;
                     self.pending_tool_request = Some((request_id.clone(), tool, input));
                     self.approval_mode = ApprovalMode::WaitingForApproval { request_id };
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                        self.scroll_offset_x = 0;
-                    }
                     true
                 } else {
                     false
@@ -286,10 +310,6 @@ impl SessionView {
                         output,
                     });
                     self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                        self.scroll_offset_x = 0;
-                    }
                     true
                 } else {
                     false
@@ -308,10 +328,6 @@ impl SessionView {
                 if seq > self.last_seen_seq {
                     self.transcript.push(TranscriptEntry::Error { message });
                     self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                        self.scroll_offset_x = 0;
-                    }
                     true
                 } else {
                     false
@@ -321,10 +337,6 @@ impl SessionView {
                 if seq > self.last_seen_seq {
                     self.transcript.push(TranscriptEntry::Done);
                     self.last_seen_seq = seq;
-                    if self.auto_follow {
-                        self.scroll_offset = 0;
-                        self.scroll_offset_x = 0;
-                    }
                     true
                 } else {
                     false

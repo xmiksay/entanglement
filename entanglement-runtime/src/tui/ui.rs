@@ -141,7 +141,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(paragraph, area);
 }
 
-fn draw_body(f: &mut Frame, area: Rect, app: &App) {
+fn draw_body(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = app.theme();
     let margin = theme.chat_margin_left;
 
@@ -152,12 +152,31 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let lines = crate::tui::transcript::render_body_lines(app, inner_area.width);
+    let content_height = lines.len();
+    let viewport_height = inner_area.height as usize;
+
+    // Bottom-anchor: offset 0 is ratatui's *first* line, so following the
+    // newest line means scrolling to `content - viewport`. Resolve here where
+    // both counts exist; clamp a frozen offset to the same bound.
+    let max_offset = content_height.saturating_sub(viewport_height);
+    let offset = if app.auto_follow() {
+        max_offset
+    } else {
+        app.scroll_offset().min(max_offset)
+    };
 
     let text = Text::from(lines);
-    let paragraph =
-        Paragraph::new(text).scroll((app.scroll_offset() as u16, app.scroll_offset_x() as u16));
+    // Clamp rather than truncate: `Paragraph::scroll` takes u16, and a very
+    // long transcript would otherwise wrap silently at 65 536 lines.
+    let offset_y = offset.min(u16::MAX as usize) as u16;
+    let offset_x = app.scroll_offset_x().min(u16::MAX as usize) as u16;
+    let paragraph = Paragraph::new(text).scroll((offset_y, offset_x));
 
     f.render_widget(paragraph, inner_area);
+
+    // Feed the measured metrics back so the next scroll clamps and follow
+    // re-arms; done after the immutable `lines` borrow is consumed above.
+    app.set_viewport_metrics(content_height, viewport_height);
 }
 
 fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
@@ -273,7 +292,7 @@ mod tests {
 
         let backend = TestBackend::new(30, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw_body(f, f.area(), &app)).unwrap();
+        terminal.draw(|f| draw_body(f, f.area(), &mut app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
 
         let non_empty_rows = (0..10)
@@ -288,5 +307,124 @@ mod tests {
             non_empty_rows <= 4,
             "expected a wrapped paragraph, got {non_empty_rows} non-empty rows"
         );
+    }
+
+    /// Feeds N distinctly-labelled one-line deltas so the transcript grows
+    /// taller than any small viewport. Each delta carries a trailing newline,
+    /// so the coalesced run renders one content line per delta.
+    fn app_with_lines(sid: &SessionId, count: u64) -> App {
+        let mut app = App::new(sid.clone());
+        for i in 1..=count {
+            app.handle_out_event(OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: i,
+                text: format!("row{i}.\n"),
+            });
+        }
+        app
+    }
+
+    /// Renders `draw_body` into a fresh backend and returns the visible text as
+    /// one newline-joined string (padding/gutter glyphs included).
+    fn render_text(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| draw_body(f, f.area(), app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn auto_follow_keeps_newest_line_visible() {
+        let sid = SessionId::new("s1");
+        let mut app = app_with_lines(&sid, 30);
+
+        // Following pins the view to the newest line, not the oldest.
+        let text = render_text(&mut app, 20, 8);
+        assert!(text.contains("row30."), "newest line should be visible");
+        assert!(
+            !text.contains("row1."),
+            "oldest line should be scrolled off"
+        );
+
+        // A further delta after a draw keeps following the newest line.
+        app.handle_out_event(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: 31,
+            text: "row31.\n".into(),
+        });
+        let text = render_text(&mut app, 20, 8);
+        assert!(text.contains("row31."), "new delta should be visible");
+    }
+
+    #[test]
+    fn scroll_up_freezes_view_across_new_events() {
+        let sid = SessionId::new("s1");
+        let mut app = app_with_lines(&sid, 30);
+        // Prime metrics with one draw, then scroll up off the bottom.
+        render_text(&mut app, 20, 8);
+        app.scroll_up(5);
+        assert!(!app.auto_follow());
+
+        let before = render_text(&mut app, 20, 8);
+
+        // New content must not shift the frozen viewport.
+        app.handle_out_event(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: 31,
+            text: "row31.\n".into(),
+        });
+        let after = render_text(&mut app, 20, 8);
+        assert_eq!(before, after, "frozen view must not move on new events");
+        assert!(!after.contains("row31."));
+    }
+
+    #[test]
+    fn scroll_down_to_bottom_rearms_follow() {
+        let sid = SessionId::new("s1");
+        let mut app = app_with_lines(&sid, 30);
+        render_text(&mut app, 20, 8);
+        app.scroll_up(4);
+        assert!(!app.auto_follow());
+        render_text(&mut app, 20, 8);
+
+        // Scrolling back down to the last line re-arms follow.
+        app.scroll_down(4);
+        assert!(app.auto_follow());
+        let text = render_text(&mut app, 20, 8);
+        assert!(text.contains("row30."), "bottom line visible after re-arm");
+    }
+
+    #[test]
+    fn scroll_down_clamps_at_bottom() {
+        let sid = SessionId::new("s1");
+        let mut app = app_with_lines(&sid, 30);
+        render_text(&mut app, 20, 8);
+        app.scroll_up(2);
+        render_text(&mut app, 20, 8);
+        // Overscroll far past the end: it stops at the bottom and re-arms.
+        app.scroll_down(9999);
+        assert!(app.auto_follow());
+        let text = render_text(&mut app, 20, 8);
+        assert!(text.contains("row30."), "clamped at bottom, newest visible");
+        assert!(!text.contains("row1."));
+    }
+
+    #[test]
+    fn scroll_up_clamps_at_top() {
+        let sid = SessionId::new("s1");
+        let mut app = app_with_lines(&sid, 30);
+        render_text(&mut app, 20, 8);
+        // Overscroll up: never past the first line.
+        app.scroll_up(9999);
+        let text = render_text(&mut app, 20, 8);
+        assert!(text.contains("row1."), "top line visible");
+        assert!(!text.contains("row30."), "must not still show the bottom");
     }
 }
