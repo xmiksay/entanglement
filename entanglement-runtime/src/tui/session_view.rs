@@ -274,6 +274,9 @@ impl SessionView {
                     false
                 }
             }
+            // Runtime plumbing (#58): the tool executor answers this, not the
+            // UI. The call is already shown via `ToolCall`.
+            OutEvent::ToolExec { .. } => false,
             OutEvent::ToolOutput {
                 seq, tool, output, ..
             } => {

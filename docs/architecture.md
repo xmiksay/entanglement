@@ -34,11 +34,13 @@ Three crates, two seams. Heads depend on core; core never depends on a head.
 - **runtime** — the head: host tools + their execution, permission dispatch +
   approval, user sessions, every transport (§6, §8).
 
-**Responsibility relocation is partly landed:** the host-tool *implementations*
-now live in `entanglement-runtime` (✅ #57, §8). Tool *execution* and *permission
-dispatch* still run inside core's turn loop (🚧 #58 / #59, §3); the decided end
-state moves those to the runtime too, leaving core with only the loop + `Tool`
-trait (#61).
+**Responsibility relocation is mostly landed:** the host-tool *implementations*
+now live in `entanglement-runtime` (✅ #57, §8), and tool *execution* moved there
+too — core emits `OutEvent::ToolExec` and the runtime answers with
+`InMsg::ToolResult` (✅ #58, §3, §8). *Permission dispatch* (the `Allow|Ask|Deny`
+decision + approval wait) still runs inside core's turn loop (🚧 #59, §3); the
+decided end state moves it to the runtime too, leaving core with only the loop +
+`Tool` trait (#61).
 
 ## 1. The actor model (the ABI) — [ADR-0001](adr/0001-actor-model-abi.md)
 
@@ -67,14 +69,17 @@ One set of serde-tagged types crosses every transport:
 ```
 #[serde(tag = "kind", rename_all = "snake_case")]
 InMsg    = Prompt{session,text} | Approve{session,request_id}
-         | Reject{session,request_id,reason?} | Stop{session}
+         | Reject{session,request_id,reason?}
+         | ToolResult{session,request_id,output}   // runtime → core: tool ran (#58)
+         | Stop{session}
          | SetTasks{session,tasks} | SetPlan{session,content} | SetAgent{session,agent}
 
 OutEvent = Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent}        // point-in-time, no seq
          | Plan{session,seq,content}          // markdown prose snapshot
          | TextDelta{session,seq,text}
-         | ToolRequest{session,seq,request_id,tool,input}
+         | ToolRequest{session,seq,request_id,tool,input}   // Ask: human approval
+         | ToolExec{session,seq,request_id,tool,input}      // core → runtime: run it (#58)
          | ToolOutput{session,seq,request_id,output}
          | TaskList{session,seq,tasks}        // full outline snapshot
          | Error{session,seq,message}
@@ -95,17 +100,21 @@ A session runs under exactly one [`AgentProfile`][profile]:
 - Switch with `InMsg::SetAgent { agent }`; engine emits `AgentChanged`.
 - [`PermissionProfile`][perm] resolves `Allow | Ask | Deny` per tool
   (last-matching-rule-wins, `*` wildcard):
-  - `Allow` → run immediately, emit `ToolOutput`.
-  - `Ask` → emit `ToolRequest`, park at `WaitingApproval` until `Approve`/`Reject`.
-  - `Deny` → emit `ToolOutput("…denied…")`, never run.
+  - `Allow` → emit `ToolExec`, park until the runtime returns `ToolResult`,
+    then emit `ToolOutput` (execution is a runtime round-trip now, #58).
+  - `Ask` → emit `ToolRequest`, park at `WaitingApproval` until `Approve`/`Reject`;
+    on approve, run the same `ToolExec`→`ToolResult` round-trip.
+  - `Deny` → emit `ToolOutput("…denied…")`, never run (no `ToolExec`).
 - Built-ins: `build` (all allow), `plan` (ask, read allow), `explore` (deny,
   read/glob/grep allow). Add your own via `ProfileRegistry::insert`.
 - **Where dispatch runs:** the `AgentProfile` *shape* is a core protocol type, but
   the `Allow|Ask|Deny` decision + the approval wait are a **runtime** concern
-  (🚧, [ADR-0003](adr/0003-agent-and-permission-profiles.md) /
-  [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md)) — today they run in
-  core's turn loop; the decided end state moves them to the runtime, riding the
-  same `ToolRequest`/`Approve`/`Reject` frames.
+  (🚧 #59, [ADR-0003](adr/0003-agent-and-permission-profiles.md) /
+  [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md)) — today they still run
+  in core's turn loop; the decided end state moves them to the runtime, riding the
+  same `ToolRequest`/`Approve`/`Reject` frames. Tool *execution* has already moved
+  out (✅ #58): whatever clears a call, core hands it to the runtime as `ToolExec`
+  and awaits `ToolResult`.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](adr/0004-structured-plan-and-task-events.md)
 
@@ -249,9 +258,11 @@ backends use lives in `entanglement-provider`, not core — see ADR-0007.
 Concrete filesystem + shell tools, dispatched under the active permission
 profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)). Core defines the
 `Tool` **trait**; the implementations live in **`entanglement-runtime::host`**
-(✅ #57) and are assembled by `host_tools(root: PathBuf) -> ToolRegistry`. Core's
-turn loop still executes them in-process today; relocating execution to the
-runtime over the protocol is pending (🚧 #58):
+(✅ #57) and are assembled by `host_tools(root: PathBuf) -> ToolRegistry`.
+Execution now runs in the runtime too (✅ #58): `entanglement-runtime::tool_runner`
+subscribes to the engine, runs each `ToolExec` against that registry, and replies
+with `InMsg::ToolResult`. Core only advertises the tool *schemas*
+(`EngineConfig.tool_specs`) — it holds no executable tools:
 
 | tool | input | output |
 | --- | --- | --- |

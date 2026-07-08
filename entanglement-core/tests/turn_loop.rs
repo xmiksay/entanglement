@@ -13,8 +13,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, SessionId,
+    LlmStream, OutEvent, SessionId, ToolRegistry,
 };
+
+mod common;
+use common::spawn_tool_executor;
 
 /// Collect `TextDelta` texts for `sid` until the deadline, across as many
 /// turns as happen. (Unlike `actor.rs::collect`, this does *not* break on
@@ -164,6 +167,9 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    // The tool call is an unknown tool; execution is now a runtime round-trip
+    // (#58) so the turn only completes once the executor answers.
+    spawn_tool_executor(&holly, ToolRegistry::new());
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
 
