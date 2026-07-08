@@ -3,10 +3,10 @@
 //! Only writes under the working directory (path-escape rejected).
 
 use super::resolve_under_root;
-use crate::protocol::FileChangeKind;
-use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use entanglement_core::protocol::FileChangeKind;
+use entanglement_core::tools::Tool;
 use serde::Deserialize;
 
 type CanEditCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
@@ -28,6 +28,7 @@ impl EditTool {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_can_edit<F>(mut self, f: F) -> Self
     where
         F: Fn(&str) -> Result<()> + Send + Sync + 'static,
@@ -36,6 +37,7 @@ impl EditTool {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_on_edit<F>(mut self, f: F) -> Self
     where
         F: Fn(String, Option<Vec<u8>>, Option<Vec<u8>>, FileChangeKind) + Send + Sync + 'static,

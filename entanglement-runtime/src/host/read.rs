@@ -2,9 +2,9 @@
 //! as `{lineno}: {line}` so the model can address ranges precisely.
 
 use super::{resolve_under_root, truncate_output};
-use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use entanglement_core::tools::Tool;
 use serde::Deserialize;
 
 type OnReadCallback = Box<dyn Fn(String, Vec<u8>) + Send + Sync>;
@@ -22,6 +22,7 @@ impl ReadTool {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_on_read<F>(mut self, f: F) -> Self
     where
         F: Fn(String, Vec<u8>) + Send + Sync + 'static,

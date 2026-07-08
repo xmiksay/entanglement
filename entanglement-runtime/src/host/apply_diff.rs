@@ -6,10 +6,10 @@
 //! This is the implementation of ADR-0012.
 
 use super::{count_patch_changes, resolve_under_root, truncate_output};
-use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use diffy::{patch_set, patch_set::ParseOptions};
+use entanglement_core::tools::Tool;
 use serde::Deserialize;
 
 const MAX_DIFF_INPUT_BYTES: usize = 256 * 1024; // 256 KiB

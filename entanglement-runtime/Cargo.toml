@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "entanglement_runtime"
+path = "src/lib.rs"
+
 [[bin]]
 name = "skutter"
 path = "src/main.rs"
@@ -30,6 +34,11 @@ syntect = { workspace = true }
 diffy = { workspace = true }
 unicode-width = { workspace = true }
 dirs = "5"
+# Host tool dependencies
+glob = { workspace = true }
+regex = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+async-trait = { workspace = true }
