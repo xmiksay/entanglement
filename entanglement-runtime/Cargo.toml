@@ -1,5 +1,5 @@
 [package]
-name = "entanglement-cli"
+name = "entanglement-runtime"
 description = "Head crate for the entanglement agent engine (binary `skutter`): stdio `run`/`pipe` today; future WebSocket `serve` and TUI `tui` subcommands."
 version.workspace = true
 edition.workspace = true

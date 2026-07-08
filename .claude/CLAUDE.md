@@ -25,7 +25,7 @@ tool exec/approval over the protocol). Layering: [ADR-0006](../docs/adr/0006-cor
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
 | `entanglement-provider` | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **connection pool, retry, rate-limit, reasoning stream, models-per-provider (🚧)**; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
-| `entanglement-cli` _(🚧 to be renamed `entanglement-runtime`)_ | the head crate (binary `skutter`): **host tools + execution, permission dispatch + approval, user sessions**, stdio `run`/`pipe` today, `serve` (WS) + `tui` next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
+| `entanglement-runtime` | the head crate (binary `skutter`): **host tools + execution, permission dispatch + approval, user sessions**, stdio `run`/`pipe` today, `serve` (WS) + `tui` next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
 
 Heads depend on core, **never** the reverse.
 
@@ -114,8 +114,7 @@ to their proper layers. Backlog:
   connection pool + retry + rate-limit (#52); models-per-provider (#53); reasoning/thinking stream
   events (#54, currently dropped); live session/connection handle (#55).
 - **Runtime** ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)):
-  rename `entanglement-cli → entanglement-runtime` (#56); move host tools out of
-  core (#57); relocate tool execution (#58) and permission dispatch (#59) out of
+  move host tools out of core (#57); relocate tool execution (#58) and permission dispatch (#59) out of
   core; inter-session agent messaging / subagent spawn (#60).
 - **Core**: slim `Session` to loop + turn state (#61).
 - **Cleanup**: docs drift guard (#62); orphaned `apply_diff.rs` + `audit.rs` (#63).

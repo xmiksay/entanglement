@@ -1,5 +1,5 @@
 [workspace]
-members = ["entanglement-core", "entanglement-provider", "entanglement-cli"]
+members = ["entanglement-core", "entanglement-provider", "entanglement-runtime"]
 resolver = "2"
 
 [workspace.package]
@@ -34,7 +34,7 @@ regex = "1"
 diffy = "0.5"
 # rustls (not native-tls) so builds need no system OpenSSL headers.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "charset"] }
-# TUI dependencies (for entanglement-cli only)
+# TUI dependencies (for entanglement-runtime only)
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }

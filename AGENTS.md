@@ -25,12 +25,12 @@ Build jobs are capped at 4 via `.cargo/config.toml`; don't override unless asked
 
 ## The one crate boundary that matters
 
-Workspace = `entanglement-core`, `entanglement-provider`, `entanglement-cli`. The seam
+Workspace = `entanglement-core`, `entanglement-provider`, `entanglement-runtime`. The seam
 is **core ↔ everything else**:
 
 - **`entanglement-core`** — the actor engine. **Zero UI/transport deps** (enforced by `make tree`). This is where `reqwest`/`clap`/`axum`/`crossterm` are *forbidden*. The `Llm` *trait* lives here; concrete backends do not.
 - **`entanglement-provider`** — concrete LLM backends over `reqwest` (may depend on transport). Implements `entanglement_core::Llm`.
-- **`entanglement-cli`** — the only head crate, binary **`skutter`**. All transports (stdio today; `serve`/`tui` next) live here (ADR-0010). Note the binary name differs from the crate name.
+- **`entanglement-runtime`** — the only head crate, binary **`skutter`**. All transports (stdio today; `serve`/`tui` next) live here (ADR-0010). Note the binary name differs from the crate name.
 
 Heads depend on core, **never the reverse.**
 

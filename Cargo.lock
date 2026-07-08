@@ -510,30 +510,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "entanglement-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "diffy",
- "dirs",
- "entanglement-core",
- "entanglement-provider",
- "pulldown-cmark",
- "ratatui",
- "serde",
- "serde_json",
- "sha2",
- "syntect",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "unicode-width",
-]
-
-[[package]]
 name = "entanglement-core"
 version = "0.1.0"
 dependencies = [
@@ -569,6 +545,30 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "entanglement-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "diffy",
+ "dirs",
+ "entanglement-core",
+ "entanglement-provider",
+ "pulldown-cmark",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syntect",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-width",
 ]
 
 [[package]]
