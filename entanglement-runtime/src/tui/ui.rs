@@ -214,22 +214,20 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
                 Event::End(TagEnd::Heading(_)) => {
                     current_level = 0;
                 }
-                Event::Text(text) => {
-                    if current_level > 0 {
-                        let indent = "  ".repeat(current_level.min(3));
-                        let prefix = match current_level {
-                            1 => "# ",
-                            2 => "## ",
-                            _ => "• ",
-                        };
-                        let content = format!("{}{}{}", indent, prefix, text);
-                        let truncated = if content.len() > 40 {
-                            format!("{}...", &content[..40 - 3])
-                        } else {
-                            content
-                        };
-                        lines.push(Line::from(truncated));
-                    }
+                Event::Text(text) if current_level > 0 => {
+                    let indent = "  ".repeat(current_level.min(3));
+                    let prefix = match current_level {
+                        1 => "# ",
+                        2 => "## ",
+                        _ => "• ",
+                    };
+                    let content = format!("{}{}{}", indent, prefix, text);
+                    let truncated = if content.len() > 40 {
+                        format!("{}...", &content[..40 - 3])
+                    } else {
+                        content
+                    };
+                    lines.push(Line::from(truncated));
                 }
                 _ => {}
             }
