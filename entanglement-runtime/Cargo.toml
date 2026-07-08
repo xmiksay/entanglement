@@ -1,6 +1,6 @@
 [package]
 name = "entanglement-runtime"
-description = "Head crate for the entanglement agent engine (binary `skutter`): stdio `run`/`pipe` today; future WebSocket `serve` and TUI `tui` subcommands."
+description = "Head crate for the entanglement agent engine (binary `skutter`): stdio `run`/`pipe` + TUI `tui` today; future WebSocket `serve`. With `--no-default-features` it is a lean library exposing the tool-execution loop, permission dispatch, sub-agent spawn, and persistence machinery (no CLI/TUI/transport deps — see ADR-0025)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,24 +14,34 @@ path = "src/lib.rs"
 [[bin]]
 name = "skutter"
 path = "src/main.rs"
+required-features = ["cli", "tui"]
+
+[features]
+default = ["tui"]
+# Head plumbing for `skutter`: arg parsing (clap), log init, LLM providers (reqwest).
+cli = ["dep:clap", "dep:tracing-subscriber", "dep:entanglement-provider"]
+# Terminal UI head (`skutter tui`). Implies `cli`: the TUI is only reachable
+# through the clap CLI, and tui/ itself imports entanglement-provider
+# (ModelInfo, models_for, HttpClient in tui/app.rs + tui/mod.rs).
+tui = ["cli", "dep:ratatui", "dep:crossterm", "dep:pulldown-cmark", "dep:syntect", "dep:diffy", "dep:unicode-width"]
 
 [dependencies]
 entanglement-core = { workspace = true }
-entanglement-provider = { workspace = true }
+entanglement-provider = { workspace = true, optional = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-clap = { workspace = true }
+clap = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-# TUI dependencies
-ratatui = { workspace = true }
-crossterm = { workspace = true }
-pulldown-cmark = { workspace = true }
-syntect = { workspace = true }
-diffy = { workspace = true }
-unicode-width = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
+# TUI dependencies (behind the `tui` feature — ADR-0025)
+ratatui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
+pulldown-cmark = { workspace = true, optional = true }
+syntect = { workspace = true, optional = true }
+diffy = { workspace = true, optional = true }
+unicode-width = { workspace = true, optional = true }
 dirs = "5"
 # Host tool dependencies
 glob = { workspace = true }

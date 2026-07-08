@@ -55,7 +55,7 @@ Three crates, two seams (core ↔ provider, core ↔ runtime).
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, the `Tool` **trait**, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm`/`reqwest` forbidden). Enforced via `make tree`. |
 | `entanglement-provider` | all LLM I/O behind the `Llm` trait: z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream. | may depend on `reqwest`; never depended on by core. |
-| `entanglement-runtime` | the head crate (binary `skutter`): host-tool impls (✅), tool execution + permission dispatch (✅ #58/#59), approval, user sessions, all transports (stdio ✅, TUI ✅, WS 🚧). | — |
+| `entanglement-runtime` | the head crate (binary `skutter`): host-tool impls (✅), tool execution + permission dispatch (✅ #58/#59), approval, user sessions, all transports (stdio ✅, TUI ✅, WS 🚧). Feature-gated `cli`/`tui` (`default = ["tui"]`); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
 
 ## Build & develop
 
@@ -67,8 +67,9 @@ make run          # one dummy turn, text output
 make run-json     # one dummy turn, NDJSON events
 make test         # unit + integration
 make lint         # clippy --all-targets -D warnings
-make verify       # check-fmt + clippy + test (CI-equivalent)
+make verify       # check-fmt + tree + check-lean + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI-dep hygiene gate)
+make check-lean   # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
 make build | check | fmt | clean
 ```
 

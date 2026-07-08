@@ -69,3 +69,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0022](0022-subagent-spawn.md) | Sub-agent spawn and parent→child answer relay | Accepted |
 | [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | Accepted |
 | [0024](0024-subagent-permission-gating.md) | Sub-agent spawn permission gating and privilege ceiling | Accepted |
+| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | Accepted |
