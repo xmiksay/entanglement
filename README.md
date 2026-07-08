@@ -55,7 +55,7 @@ are the target of an in-progress rename (🚧).
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, the `Tool` **trait**, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm`/`reqwest` forbidden). Enforced via `make tree`. |
-| **`entanglement-provider`** _(from `entanglement-llm`)_ | all LLM I/O behind the `Llm` trait: z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream (🚧). | may depend on `reqwest`; never depended on by core. |
+| **`entanglement-provider`** | all LLM I/O behind the `Llm` trait: z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream (🚧). | may depend on `reqwest`; never depended on by core. |
 | **`entanglement-runtime`** _(from `entanglement-cli`)_ | the head crate (binary `skutter`): host tools + execution, permission dispatch + approval, user sessions, all transports (stdio ✅, WS 🚧, TUI). | — |
 
 ## Build & develop

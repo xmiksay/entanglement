@@ -7,9 +7,8 @@ each choice here is recorded in the [decision log](adr/README.md) (ADRs).
 This document describes the current *what is*, with the three-layer direction
 ([ADR-0006](adr/0006-core-dependency-hygiene-gate.md)) marked inline:
 **✅ shipped** vs **🚧 decided but pending** (tracked in GitHub issues). The
-crate renames `entanglement-llm → entanglement-provider` and
-`entanglement-cli → entanglement-runtime` are 🚧 — the current code still uses
-the old names; this doc uses the target names so the *what-should-be* is legible.
+crate rename `entanglement-cli → entanglement-runtime` is 🚧 — the current code still uses
+the old name; this doc uses the target name so the *what-should-be* is legible.
 
 ## 0. Layers: core / provider / runtime — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)
 
@@ -162,9 +161,8 @@ removed on global inbox close (engine shutdown).
 ## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 
 The `Llm` **trait** lives in `entanglement-core` (the seam); all LLM I/O lives in
-**`entanglement-provider`** (renamed from `entanglement-llm`, 🚧), a separate
-crate that *may* depend on transport crates (`reqwest`) — `entanglement-core` may
-not.
+**`entanglement-provider`**, a separate crate that *may* depend on transport
+crates (`reqwest`) — `entanglement-core` may not.
 
 ```rust
 enum LlmEvent {
