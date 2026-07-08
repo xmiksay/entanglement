@@ -58,7 +58,7 @@ pub async fn tui(holly: Holly, initial_session: SessionId, model_info: ModelInfo
     spawn_crossterm_task(event_tx.clone());
 
     let mut app = App::new(initial_session);
-    app.set_model_info(model_info.provider, model_info.model);
+    app.set_model_info(model_info.id.clone(), model_info.display_name.clone());
 
     let mut holly_sub = holly.subscribe();
 

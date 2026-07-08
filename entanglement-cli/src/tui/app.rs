@@ -1,4 +1,5 @@
 use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
+use entanglement_provider::{models_for, ModelInfo};
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
@@ -181,12 +182,6 @@ impl SimpleInput {
 const HISTORY_CAPACITY: usize = 100;
 
 #[derive(Clone)]
-pub struct ModelInfo {
-    pub provider: String,
-    pub model: String,
-}
-
-#[derive(Clone)]
 pub struct ProfileInfo {
     pub name: String,
     pub description: String,
@@ -324,8 +319,9 @@ impl App {
             model_picker_state,
             available_models,
             model_info: ModelInfo {
-                provider: "dummy".to_string(),
-                model: "dummy".to_string(),
+                id: "dummy".to_string(),
+                display_name: "dummy".to_string(),
+                context_window: None,
             },
             leader_handler: LeaderKeyHandler::new(),
             showing_help: false,
@@ -745,7 +741,16 @@ impl App {
     }
 
     pub fn set_model_info(&mut self, provider: String, model: String) {
-        self.model_info = ModelInfo { provider, model };
+        let display_name = model.clone();
+        let context_window = models_for(&provider)
+            .into_iter()
+            .find(|m| m.id == model)
+            .and_then(|m| m.context_window);
+        self.model_info = ModelInfo {
+            id: model,
+            display_name,
+            context_window,
+        };
         self.mark_dirty();
     }
 

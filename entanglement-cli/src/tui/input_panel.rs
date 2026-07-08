@@ -116,7 +116,11 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme();
     let model_info = app.model_info();
 
-    let model_display = format!("{}/{}", model_info.provider, model_info.model);
+    let model_display = if model_info.id.is_empty() {
+        "unknown".to_string()
+    } else {
+        model_info.display_name.clone()
+    };
     let tokens_display = format!("{} in / {} out", app.input_tokens(), app.output_tokens());
     let help_text = app.help_text();
 
