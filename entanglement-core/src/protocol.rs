@@ -179,6 +179,16 @@ pub enum InMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// Result of a runtime-executed tool (`request_id` from
+    /// [`OutEvent::ToolExec`]). The runtime owns tool execution (ADR-0006/0010):
+    /// core emits a `ToolExec` request and parks the turn until this arrives.
+    /// Distinct from [`Approve`][InMsg::Approve]/[`Reject`][InMsg::Reject], which
+    /// stay for approval semantics.
+    ToolResult {
+        session: SessionId,
+        request_id: String,
+        output: String,
+    },
     /// Cancel the current turn and park the session at idle.
     Stop { session: SessionId },
     /// Rewrite the session's task outline from the harness (user-edited plan).
@@ -205,6 +215,7 @@ impl InMsg {
             InMsg::Prompt { session, .. }
             | InMsg::Approve { session, .. }
             | InMsg::Reject { session, .. }
+            | InMsg::ToolResult { session, .. }
             | InMsg::Stop { session }
             | InMsg::SetTasks { session, .. }
             | InMsg::SetPlan { session, .. }
@@ -280,6 +291,19 @@ pub enum OutEvent {
         tool: String,
         input: String,
     },
+    /// Core asks the runtime to execute a host tool that is cleared to run
+    /// (permission `Allow`, or `Ask` after approval). The runtime executes it
+    /// and replies with [`InMsg::ToolResult`]. Distinct from
+    /// [`ToolRequest`][OutEvent::ToolRequest] (human approval) and
+    /// [`ToolCall`][OutEvent::ToolCall] (display-only): only `ToolExec` drives
+    /// execution, so a denied tool never runs (ADR-0006/0010).
+    ToolExec {
+        session: SessionId,
+        seq: u64,
+        request_id: String,
+        tool: String,
+        input: String,
+    },
     /// Result of an executed tool, a denied tool, or a built-in tool.
     ToolOutput {
         session: SessionId,
@@ -327,6 +351,7 @@ impl OutEvent {
             | OutEvent::ReasoningDelta { session, .. }
             | OutEvent::ToolCall { session, .. }
             | OutEvent::ToolRequest { session, .. }
+            | OutEvent::ToolExec { session, .. }
             | OutEvent::ToolOutput { session, .. }
             | OutEvent::TaskList { session, .. }
             | OutEvent::Error { session, .. }
@@ -348,6 +373,7 @@ impl OutEvent {
             | OutEvent::ReasoningDelta { seq, .. }
             | OutEvent::ToolCall { seq, .. }
             | OutEvent::ToolRequest { seq, .. }
+            | OutEvent::ToolExec { seq, .. }
             | OutEvent::ToolOutput { seq, .. }
             | OutEvent::TaskList { seq, .. }
             | OutEvent::Error { seq, .. }

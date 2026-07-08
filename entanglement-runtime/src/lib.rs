@@ -4,3 +4,4 @@
 //! for the headless agent engine defined in `entanglement-core`.
 
 pub mod host;
+pub mod tool_runner;

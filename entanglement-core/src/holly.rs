@@ -13,24 +13,28 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::llm::{EchoLlm, LlmFactory, LlmSession};
+use crate::llm::{EchoLlm, LlmFactory, LlmSession, ToolSpec};
 use crate::protocol::{
     AgentMode, AgentProfile, InMsg, OutEvent, Permission, PermissionProfile, SessionId,
 };
 use crate::session::{session_loop, Session, SessionCmd};
-use crate::tools::ToolRegistry;
 
 const INBOX_CAPACITY: usize = 256;
 const OUTBOX_CAPACITY: usize = 1024;
 /// Profile a new session starts under (opencode-style: `build` is the default).
 const DEFAULT_PROFILE: &str = "build";
 
-/// Engine configuration: how to build per-session LLMs, which host tools exist,
-/// and the named agent profiles sessions can switch between.
+/// Engine configuration: how to build per-session LLMs, which host tools to
+/// advertise to the model, and the named agent profiles sessions can switch
+/// between.
+///
+/// Core advertises tool *schemas* ([`tool_specs`][Self::tool_specs]) but no
+/// longer holds executable tools — the runtime owns execution and answers
+/// [`OutEvent::ToolExec`] with [`InMsg::ToolResult`] (ADR-0006/0010).
 #[derive(Clone)]
 pub struct EngineConfig {
     pub llm_factory: LlmFactory,
-    pub tools: ToolRegistry,
+    pub tool_specs: Vec<ToolSpec>,
     pub profiles: ProfileRegistry,
 }
 
@@ -38,7 +42,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             llm_factory: Arc::new(|| LlmSession::new(Box::new(EchoLlm))),
-            tools: ToolRegistry::new(),
+            tool_specs: Vec::new(),
             profiles: ProfileRegistry::new(),
         }
     }
@@ -261,6 +265,9 @@ fn msg_to_cmd(msg: InMsg) -> SessionCmd {
         InMsg::Reject {
             request_id, reason, ..
         } => SessionCmd::Reject(request_id, reason),
+        InMsg::ToolResult {
+            request_id, output, ..
+        } => SessionCmd::ToolResult(request_id, output),
         InMsg::Stop { .. } => SessionCmd::Stop,
         InMsg::SetPlan { content, .. } => SessionCmd::SetPlan(content),
         InMsg::SetTasks { tasks, .. } => SessionCmd::SetTasks(tasks),

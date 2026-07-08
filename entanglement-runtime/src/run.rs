@@ -75,6 +75,8 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::ReasoningDelta { text, .. } => writeln!(out, "· {text}")?,
         OutEvent::ToolCall { tool, input, .. } => writeln!(out, "→ {tool}: {input}")?,
         OutEvent::ToolRequest { tool, input, .. } => writeln!(out, "? {tool}: {input}")?,
+        // Runtime plumbing (#58): execution round-trip, not user-facing.
+        OutEvent::ToolExec { .. } => {}
         OutEvent::ToolOutput { output, .. } => writeln!(out, "= {output}")?,
         OutEvent::TaskList { tasks, .. } => {
             writeln!(out, "▢ tasks:")?;

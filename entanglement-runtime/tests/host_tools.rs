@@ -13,6 +13,7 @@ use entanglement_core::{
     LlmStream, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::host::{host_tools, BashTool};
+use entanglement_runtime::tool_runner::spawn_tool_executor;
 
 /// An LLM that replays a scripted list of responses in order, then a plain
 /// text reply (so a turn loop that re-prompts after a tool call terminates).
@@ -104,10 +105,13 @@ async fn read_tool_runs_through_engine_under_build_profile() {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
-        tools: tools.clone(),
+        tool_specs: tools.specs(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    // Core relocated execution to the runtime (#58): the executor answers the
+    // ToolExec round-trip against the real host-tool registry.
+    let _executor = spawn_tool_executor(&holly, tools);
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -169,10 +173,13 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
-        tools: tools.clone(),
+        tool_specs: tools.specs(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    // Core relocated execution to the runtime (#58): the executor answers the
+    // ToolExec round-trip against the real host-tool registry.
+    let _executor = spawn_tool_executor(&holly, tools);
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -237,10 +244,13 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
-        tools: tools.clone(),
+        tool_specs: tools.specs(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    // Core relocated execution to the runtime (#58): the executor answers the
+    // ToolExec round-trip against the real host-tool registry.
+    let _executor = spawn_tool_executor(&holly, tools);
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly

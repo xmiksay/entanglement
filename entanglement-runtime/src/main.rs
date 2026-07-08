@@ -12,11 +12,12 @@ mod persistence;
 mod pipe;
 mod run;
 mod session_store;
+mod tool_runner;
 mod tui;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, SessionId};
+use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, SessionId, ToolRegistry};
 use entanglement_provider::{models_for, HttpClient, ModelInfo};
 
 use host::{host_tools, BashTool};
@@ -60,7 +61,12 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 /// box. `bash` is opt-in: set `ENTANGLEMENT_ENABLE_BASH=1` to register
 /// `BashTool` — it runs unsandboxed with the engine's full privileges
 /// (ADR-0009 / ADR-0010).
-fn build_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
+///
+/// Core no longer executes tools (#58): it only advertises their schemas
+/// (`cfg.tool_specs`). The returned [`ToolRegistry`] stays in the runtime and
+/// is handed to [`tool_runner::spawn_tool_executor`], which answers the
+/// [`entanglement_core::OutEvent::ToolExec`] round-trip.
+fn build_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo, ToolRegistry) {
     let (mut cfg, model_info) = select_provider(http_client);
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut tools = host_tools(root.clone());
@@ -71,8 +77,8 @@ fn build_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
              runs unsandboxed with full privileges"
         );
     }
-    cfg.tools = tools;
-    (cfg, model_info)
+    cfg.tool_specs = tools.specs();
+    (cfg, model_info, tools)
 }
 
 fn select_provider(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
@@ -307,9 +313,12 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let http_client = HttpClient::new();
-    let (config, model_info) = build_config(&http_client);
+    let (config, model_info, tools) = build_config(&http_client);
     let holly = Holly::spawn(config);
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Runtime owns tool execution (#58): answer the engine's ToolExec round-trip.
+    let _tool_executor = tool_runner::spawn_tool_executor(&holly, tools);
 
     // Spawn the persistence subscriber to log all events
     let _persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());

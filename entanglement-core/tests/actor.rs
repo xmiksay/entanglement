@@ -8,8 +8,11 @@ use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
-    TaskItem, TaskStatus, ToolCall,
+    TaskItem, TaskStatus, ToolCall, ToolRegistry,
 };
+
+mod common;
+use common::spawn_tool_executor;
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
 async fn collect(
@@ -112,6 +115,9 @@ async fn allow_permission_runs_without_approval() {
             input: "echo hi".into(),
         }],
     }]));
+    // Allow runs without approval, but execution is now a runtime round-trip
+    // (#58): an empty registry reports "unknown tool", as inline exec once did.
+    spawn_tool_executor(&holly, ToolRegistry::new());
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -135,6 +141,65 @@ async fn allow_permission_runs_without_approval() {
 }
 
 #[tokio::test]
+async fn allow_tool_round_trips_through_toolexec() {
+    // Core relocated execution (#58): an Allow tool must be emitted as a
+    // ToolExec (never a ToolRequest), and the runtime executor's output must
+    // surface as ToolOutput. A real tool proves the value round-trips.
+    struct EchoTool;
+    #[async_trait]
+    impl entanglement_core::Tool for EchoTool {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+        async fn run(&self, input: &str) -> anyhow::Result<String> {
+            Ok(format!("echoed: {input}"))
+        }
+    }
+
+    let holly = Holly::spawn(factory(vec![LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "t1".into(),
+            name: "echo".into(),
+            input: "ping".into(),
+        }],
+    }]));
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoTool);
+    spawn_tool_executor(&holly, reg);
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "go".into(),
+        })
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolExec { tool, request_id, .. } if tool == "echo" && request_id == "t1"
+        )),
+        "Allow tool should be handed to the runtime via ToolExec; got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "Allow must not ask for approval"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output == "echoed: ping")),
+        "executor output should surface as ToolOutput; got {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn ask_permission_emits_request_then_runs_on_approve() {
     // plan profile: bash → Ask. Send Approve after the request.
     let holly = Holly::spawn(factory(vec![LlmResponse {
@@ -145,6 +210,9 @@ async fn ask_permission_emits_request_then_runs_on_approve() {
             input: "ls".into(),
         }],
     }]));
+    // Ask emits ToolRequest for approval; after Approve, execution is a runtime
+    // round-trip (#58) the executor answers.
+    spawn_tool_executor(&holly, ToolRegistry::new());
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {

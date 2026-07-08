@@ -9,7 +9,6 @@ use tokio::sync::{broadcast, mpsc};
 use crate::context::Context;
 use crate::llm::{Llm, LlmEvent, LlmRequest, LlmSession, ToolCall, ToolSpec};
 use crate::protocol::{AgentProfile, AgentState, InMsg, OutEvent, Permission, SessionId, TaskItem};
-use crate::tools::ToolRegistry;
 use crate::EngineConfig;
 use anyhow::Result;
 use std::path::Path;
@@ -26,6 +25,9 @@ pub(crate) enum SessionCmd {
     Prompt(String),
     Approve(String),
     Reject(String, Option<String>),
+    /// Output of a runtime-executed tool (`request_id`, `output`) — resolves a
+    /// pending [`OutEvent::ToolExec`] round-trip (#58).
+    ToolResult(String, String),
     SetPlan(String),
     SetTasks(Vec<TaskItem>),
     SetAgent(String),
@@ -37,7 +39,10 @@ pub struct Session {
     pub ctx: Context,
     pub llm: LlmSession,
     pub profile: AgentProfile,
-    pub tools: ToolRegistry,
+    /// Tool schemas advertised to the model. Core no longer executes tools
+    /// (the runtime does, via the [`OutEvent::ToolExec`] round-trip); it only
+    /// tells the model which tools exist.
+    pub tool_specs: Vec<ToolSpec>,
     pub tasks: Vec<TaskItem>,
     pub plan: String,
     pub seq: u64,
@@ -52,7 +57,7 @@ impl Session {
             ctx: Context::new(),
             llm: (cfg.llm_factory)(),
             profile,
-            tools: cfg.tools.clone(),
+            tool_specs: cfg.tool_specs.clone(),
             tasks: Vec::new(),
             plan: String::new(),
             seq: 0,
@@ -251,8 +256,9 @@ pub(crate) async fn session_loop(
                     });
                 }
             },
-            // Approve/Reject with no pending tool request: stale, drop silently.
-            Some(SessionCmd::Approve(_) | SessionCmd::Reject(..)) => {}
+            // Approve/Reject/ToolResult with no pending tool request: stale
+            // (e.g. a late result after the turn was cancelled), drop silently.
+            Some(SessionCmd::Approve(_) | SessionCmd::Reject(..) | SessionCmd::ToolResult(..)) => {}
             // Stop arrived while idle (a turn-in-flight Stop is caught by the
             // try_recv inside run_turn). Cancel semantics (ADR-0017): no-op,
             // the session is already idle; just keep listening.
@@ -300,7 +306,7 @@ async fn run_turn(
     });
 
     // Tool set advertised to the model = host tools + the two built-ins.
-    let mut specs: Vec<ToolSpec> = s.tools.specs();
+    let mut specs: Vec<ToolSpec> = s.tool_specs.clone();
     specs.push(ToolSpec::with_schema(
         PLAN_TOOL,
         "Replace the strategy plan (markdown prose).",
@@ -546,21 +552,11 @@ async fn handle_tool_call(
         return false;
     }
 
-    // Host tool: permission profile decides allow / ask / deny.
+    // Host tool: permission profile decides allow / ask / deny. Core no longer
+    // executes tools inline (#58) — a cleared tool is handed to the runtime via
+    // `run_tool_via_runtime`, which awaits an `InMsg::ToolResult`.
     match s.profile.permission.for_tool(&call.name) {
-        Permission::Allow => {
-            let out = s.tools.execute(&call).await;
-            emit_tool_output(
-                events,
-                session,
-                &call.id,
-                &call.name,
-                out.clone(),
-                &mut s.seq,
-            );
-            s.ctx.push_tool(&call.id, out);
-            false
-        }
+        Permission::Allow => run_tool_via_runtime(session, rx, s, events, stash, &call).await,
         Permission::Deny => {
             let out = format!("tool `{}` denied by permission profile", call.name);
             emit_tool_output(
@@ -589,17 +585,7 @@ async fn handle_tool_call(
             match wait_approval(rx, stash, &call.id).await {
                 Approval::Approved => {
                     set_thinking(events, session);
-                    let out = s.tools.execute(&call).await;
-                    emit_tool_output(
-                        events,
-                        session,
-                        &call.id,
-                        &call.name,
-                        out.clone(),
-                        &mut s.seq,
-                    );
-                    s.ctx.push_tool(&call.id, out);
-                    false
+                    run_tool_via_runtime(session, rx, s, events, stash, &call).await
                 }
                 Approval::Rejected(reason) => {
                     set_thinking(events, session);
@@ -625,10 +611,71 @@ async fn handle_tool_call(
     }
 }
 
+/// Hand a permission-cleared tool call to the runtime and await its result
+/// (#58). Emits [`OutEvent::ToolExec`], parks the turn on [`wait_tool_result`],
+/// then surfaces the output as a [`OutEvent::ToolOutput`] and folds it into
+/// context. Returns `true` if the turn was cancelled while waiting.
+async fn run_tool_via_runtime(
+    session: &SessionId,
+    rx: &mut mpsc::Receiver<SessionCmd>,
+    s: &mut Session,
+    events: &broadcast::Sender<OutEvent>,
+    stash: &mut VecDeque<SessionCmd>,
+    call: &ToolCall,
+) -> bool {
+    let _ = events.send(OutEvent::ToolExec {
+        session: session.clone(),
+        seq: next_seq(&mut s.seq),
+        request_id: call.id.clone(),
+        tool: call.name.clone(),
+        input: call.input.clone(),
+    });
+    match wait_tool_result(rx, stash, &call.id).await {
+        ToolResultOutcome::Ready(out) => {
+            emit_tool_output(
+                events,
+                session,
+                &call.id,
+                &call.name,
+                out.clone(),
+                &mut s.seq,
+            );
+            s.ctx.push_tool(&call.id, out);
+            false
+        }
+        ToolResultOutcome::Cancelled => true,
+    }
+}
+
 enum Approval {
     Approved,
     Rejected(Option<String>),
     Cancelled,
+}
+
+enum ToolResultOutcome {
+    Ready(String),
+    Cancelled,
+}
+
+/// Wait for the runtime's [`SessionCmd::ToolResult`] matching `pending`,
+/// stashing any other commands for replay after the turn. `Stop`/inbox-close
+/// cancels the turn (ADR-0017); a late result for a cancelled call arrives at
+/// the idle loop and is dropped as stale.
+async fn wait_tool_result(
+    rx: &mut mpsc::Receiver<SessionCmd>,
+    stash: &mut VecDeque<SessionCmd>,
+    pending: &str,
+) -> ToolResultOutcome {
+    loop {
+        match rx.recv().await {
+            Some(SessionCmd::ToolResult(id, output)) if id == pending => {
+                return ToolResultOutcome::Ready(output)
+            }
+            Some(SessionCmd::Stop) | None => return ToolResultOutcome::Cancelled,
+            Some(other) => stash.push_back(other),
+        }
+    }
 }
 
 /// Wait for an approve/reject for `pending`, stashing any other commands (e.g. a
