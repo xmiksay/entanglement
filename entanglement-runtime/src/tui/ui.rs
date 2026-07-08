@@ -151,8 +151,8 @@ fn draw_body(f: &mut Frame, area: Rect, app: &mut App) {
         area
     };
 
-    let lines = crate::tui::transcript::render_body_lines(app, inner_area.width);
-    let content_height = lines.len();
+    let body = crate::tui::transcript::render_body_lines(app, inner_area.width);
+    let content_height = body.lines.len();
     let viewport_height = inner_area.height as usize;
 
     // Bottom-anchor: offset 0 is ratatui's *first* line, so following the
@@ -165,7 +165,11 @@ fn draw_body(f: &mut Frame, area: Rect, app: &mut App) {
         app.scroll_offset().min(max_offset)
     };
 
-    let text = Text::from(lines);
+    // Owned (no borrow of `app`), so it can outlive the `body.lines` borrow and
+    // be handed back after rendering consumes the lines below.
+    let line_blocks = body.line_blocks;
+
+    let text = Text::from(body.lines);
     // Clamp rather than truncate: `Paragraph::scroll` takes u16, and a very
     // long transcript would otherwise wrap silently at 65 536 lines.
     let offset_y = offset.min(u16::MAX as usize) as u16;
@@ -174,8 +178,11 @@ fn draw_body(f: &mut Frame, area: Rect, app: &mut App) {
 
     f.render_widget(paragraph, inner_area);
 
-    // Feed the measured metrics back so the next scroll clamps and follow
-    // re-arms; done after the immutable `lines` borrow is consumed above.
+    // Record the geometry + line provenance so a mouse click can map a
+    // (col, row) back to the transcript block it landed on; and feed the
+    // measured metrics back so the next scroll clamps and follow re-arms. Both
+    // run after the immutable `body.lines` borrow is consumed above.
+    app.set_chat_hit_test(inner_area, offset, line_blocks);
     app.set_viewport_metrics(content_height, viewport_height);
 }
 
