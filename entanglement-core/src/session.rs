@@ -39,15 +39,16 @@ pub(crate) enum SessionCmd {
     Stop,
 }
 
-/// Mutable per-session state.
+/// Mutable per-session loop + turn state (#61). Holds the conversation
+/// [`Context`], the provider session handle (`llm`, #55), the active profile,
+/// the plan/tasks snapshots, and the loop counters — nothing pointing at the
+/// filesystem or a fixed tool set. The tool schemas advertised to the model are
+/// config, not session state: they come from [`EngineConfig::tool_specs`] at
+/// turn time (see [`run_turn`]).
 pub struct Session {
     pub ctx: Context,
     pub llm: LlmSession,
     pub profile: AgentProfile,
-    /// Tool schemas advertised to the model. Core no longer executes tools
-    /// (the runtime does, via the [`OutEvent::ToolExec`] round-trip); it only
-    /// tells the model which tools exist.
-    pub tool_specs: Vec<ToolSpec>,
     pub tasks: Vec<TaskItem>,
     pub plan: String,
     pub seq: u64,
@@ -62,7 +63,6 @@ impl Session {
             ctx: Context::new(),
             llm: (cfg.llm_factory)(),
             profile,
-            tool_specs: cfg.tool_specs.clone(),
             tasks: Vec::new(),
             plan: String::new(),
             seq: 0,
@@ -235,7 +235,15 @@ pub(crate) async fn session_loop(
                 // tool approval (ADR-0017). The turn is aborted but the
                 // session task stays alive — drop the cancel and keep
                 // listening for the next command, preserving Context.
-                let _ = run_turn(&session, &mut rx, &mut s, &events, &mut stash).await;
+                let _ = run_turn(
+                    &session,
+                    &mut rx,
+                    &mut s,
+                    &events,
+                    &mut stash,
+                    &cfg.tool_specs,
+                )
+                .await;
             }
             Some(SessionCmd::SetPlan(content)) => {
                 s.plan = content;
@@ -293,6 +301,7 @@ async fn run_turn(
     s: &mut Session,
     events: &broadcast::Sender<OutEvent>,
     stash: &mut VecDeque<SessionCmd>,
+    tool_specs: &[ToolSpec],
 ) -> Result<(), ()> {
     s.turn_count += 1;
     const MAX_TURNS: usize = 50;
@@ -310,8 +319,10 @@ async fn run_turn(
         state: AgentState::Thinking,
     });
 
-    // Tool set advertised to the model = host tools + the two built-ins.
-    let mut specs: Vec<ToolSpec> = s.tool_specs.clone();
+    // Tool set advertised to the model = host tools (from config, #61) + the
+    // two built-ins. Core caches no fixed tool set on the session; the schemas
+    // come from `EngineConfig.tool_specs` at turn time.
+    let mut specs: Vec<ToolSpec> = tool_specs.to_vec();
     specs.push(ToolSpec::with_schema(
         PLAN_TOOL,
         "Replace the strategy plan (markdown prose).",
