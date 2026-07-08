@@ -16,6 +16,7 @@ mod tui;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use entanglement_core::{host_tools, BashTool, EngineConfig, Holly, InMsg, OutEvent, SessionId};
+use entanglement_provider::HttpClient;
 
 use pipe::pipe;
 use run::run_one;
@@ -57,8 +58,8 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 /// box. `bash` is opt-in: set `ENTANGLEMENT_ENABLE_BASH=1` to register
 /// `BashTool` — it runs unsandboxed with the engine's full privileges
 /// (ADR-0009 / ADR-0010).
-fn build_config() -> (EngineConfig, ModelInfo) {
-    let (mut cfg, model_info) = select_provider();
+fn build_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
+    let (mut cfg, model_info) = select_provider(http_client);
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut tools = host_tools(root.clone());
     if std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1") {
@@ -72,20 +73,21 @@ fn build_config() -> (EngineConfig, ModelInfo) {
     (cfg, model_info)
 }
 
-fn select_provider() -> (EngineConfig, ModelInfo) {
+fn select_provider(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
     match std::env::var("ENTANGLEMENT_PROVIDER").ok().as_deref() {
         Some("zai") => {
-            let (cfg, info) = zai_config().expect("ENTANGLEMENT_PROVIDER=zai requires ZAI_API_KEY");
+            let (cfg, info) =
+                zai_config(http_client).expect("ENTANGLEMENT_PROVIDER=zai requires ZAI_API_KEY");
             (cfg, info)
         }
         Some("openai") => {
-            let (cfg, info) =
-                openai_config().expect("ENTANGLEMENT_PROVIDER=openai requires OPENAI_API_KEY");
+            let (cfg, info) = openai_config(http_client)
+                .expect("ENTANGLEMENT_PROVIDER=openai requires OPENAI_API_KEY");
             (cfg, info)
         }
-        Some("ollama") => ollama_config(),
+        Some("ollama") => ollama_config(http_client),
         Some("anthropic") => {
-            let (cfg, info) = anthropic_config()
+            let (cfg, info) = anthropic_config(http_client)
                 .expect("ENTANGLEMENT_PROVIDER=anthropic requires ANTHROPIC_API_KEY");
             (cfg, info)
         }
@@ -97,13 +99,13 @@ fn select_provider() -> (EngineConfig, ModelInfo) {
             std::process::exit(2);
         }
         None => {
-            if let Some((c, info)) = zai_config() {
+            if let Some((c, info)) = zai_config(http_client) {
                 return (c, info);
             }
-            if let Some((c, info)) = openai_config() {
+            if let Some((c, info)) = openai_config(http_client) {
                 return (c, info);
             }
-            if let Some((c, info)) = anthropic_config() {
+            if let Some((c, info)) = anthropic_config(http_client) {
                 return (c, info);
             }
             eprintln!(
@@ -128,7 +130,7 @@ fn env_nonempty(name: &str) -> Option<String> {
     }
 }
 
-fn zai_config() -> Option<(EngineConfig, ModelInfo)> {
+fn zai_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo)> {
     let key = env_nonempty("ZAI_API_KEY")?;
     let model = std::env::var("ZAI_MODEL").unwrap_or_else(|_| DEFAULT_ZAI_MODEL.to_string());
     let base = std::env::var("ZAI_API_BASE")
@@ -136,7 +138,12 @@ fn zai_config() -> Option<(EngineConfig, ModelInfo)> {
     eprintln!("skutter: provider=zai model={model} base={base}");
     Some((
         EngineConfig {
-            llm_factory: entanglement_provider::openai_factory(base, Some(key), model.clone()),
+            llm_factory: entanglement_provider::openai_factory(
+                base,
+                Some(key),
+                model.clone(),
+                http_client.clone(),
+            ),
             ..EngineConfig::default()
         },
         ModelInfo {
@@ -146,7 +153,7 @@ fn zai_config() -> Option<(EngineConfig, ModelInfo)> {
     ))
 }
 
-fn openai_config() -> Option<(EngineConfig, ModelInfo)> {
+fn openai_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo)> {
     let key = env_nonempty("OPENAI_API_KEY")?;
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_OPENAI_MODEL.to_string());
     let base = std::env::var("OPENAI_API_BASE")
@@ -154,7 +161,12 @@ fn openai_config() -> Option<(EngineConfig, ModelInfo)> {
     eprintln!("skutter: provider=openai model={model} base={base}");
     Some((
         EngineConfig {
-            llm_factory: entanglement_provider::openai_factory(base, Some(key), model.clone()),
+            llm_factory: entanglement_provider::openai_factory(
+                base,
+                Some(key),
+                model.clone(),
+                http_client.clone(),
+            ),
             ..EngineConfig::default()
         },
         ModelInfo {
@@ -164,14 +176,19 @@ fn openai_config() -> Option<(EngineConfig, ModelInfo)> {
     ))
 }
 
-fn ollama_config() -> (EngineConfig, ModelInfo) {
+fn ollama_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
     let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| DEFAULT_OLLAMA_MODEL.to_string());
     let base = std::env::var("OLLAMA_BASE")
         .unwrap_or_else(|_| entanglement_provider::OLLAMA_BASE.to_string());
     eprintln!("skutter: provider=ollama model={model} base={base}");
     (
         EngineConfig {
-            llm_factory: entanglement_provider::openai_factory(base, None, model.clone()),
+            llm_factory: entanglement_provider::openai_factory(
+                base,
+                None,
+                model.clone(),
+                http_client.clone(),
+            ),
             ..EngineConfig::default()
         },
         ModelInfo {
@@ -181,14 +198,18 @@ fn ollama_config() -> (EngineConfig, ModelInfo) {
     )
 }
 
-fn anthropic_config() -> Option<(EngineConfig, ModelInfo)> {
+fn anthropic_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo)> {
     let key = env_nonempty("ANTHROPIC_API_KEY")?;
     let model =
         std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| DEFAULT_ANTHROPIC_MODEL.to_string());
     eprintln!("skutter: provider=anthropic model={model}");
     Some((
         EngineConfig {
-            llm_factory: entanglement_provider::anthropic_factory(key, model.clone()),
+            llm_factory: entanglement_provider::anthropic_factory(
+                key,
+                model.clone(),
+                http_client.clone(),
+            ),
             ..EngineConfig::default()
         },
         ModelInfo {
@@ -265,7 +286,8 @@ async fn main() -> Result<()> {
     let filter = if cli.verbose { "debug" } else { "warn" };
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    let (config, model_info) = build_config();
+    let http_client = HttpClient::new();
+    let (config, model_info) = build_config(&http_client);
     let holly = Holly::spawn(config);
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 

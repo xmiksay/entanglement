@@ -14,9 +14,11 @@
 //! than flags on one client.
 
 pub mod anthropic;
+pub mod client;
 pub mod openai;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm};
+pub use client::HttpClient;
 pub use openai::{
     openai_factory, OpenAiLlm, OLLAMA_BASE, OPENAI_BASE, ZAI_CODING_PLAN_BASE, ZAI_GENERAL_BASE,
 };

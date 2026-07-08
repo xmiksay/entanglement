@@ -17,8 +17,7 @@
 //! See ADR-0007 for why this lives outside `entanglement-core` (reqwest is a transport
 //! dep; core stays pure).
 
-use std::time::Duration;
-
+use crate::client::HttpClient;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use entanglement_core::{Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, ToolSpec};
@@ -28,7 +27,6 @@ use serde_json::{json, Value};
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 16_384;
-const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Streaming Anthropic Messages client. Cheap to clone (the HTTP client is
 /// `Arc`-shared internally); build one per session via [`anthropic_factory`].
@@ -37,23 +35,24 @@ pub struct AnthropicLlm {
     api_key: String,
     default_model: String,
     max_tokens: u32,
-    http: reqwest::Client,
+    http: HttpClient,
 }
 
 impl AnthropicLlm {
-    pub fn new(api_key: impl Into<String>, default_model: impl Into<String>) -> Self {
-        Self::with_max_tokens(api_key, default_model, DEFAULT_MAX_TOKENS)
+    pub fn new(
+        api_key: impl Into<String>,
+        default_model: impl Into<String>,
+        http: HttpClient,
+    ) -> Self {
+        Self::with_max_tokens(api_key, default_model, DEFAULT_MAX_TOKENS, http)
     }
 
     pub fn with_max_tokens(
         api_key: impl Into<String>,
         default_model: impl Into<String>,
         max_tokens: u32,
+        http: HttpClient,
     ) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .expect("failed to build reqwest client for Anthropic");
         Self {
             api_key: api_key.into(),
             default_model: default_model.into(),
@@ -68,8 +67,9 @@ impl AnthropicLlm {
 pub fn anthropic_factory(
     api_key: impl Into<String>,
     default_model: impl Into<String>,
+    http: HttpClient,
 ) -> entanglement_core::LlmFactory {
-    let llm = AnthropicLlm::new(api_key, default_model);
+    let llm = AnthropicLlm::new(api_key, default_model, http);
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -81,30 +81,50 @@ impl Llm for AnthropicLlm {
 
         let response = self
             .http
-            .post(ANTHROPIC_API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
+            .execute_with_retry(|| {
+                self.http
+                    .client()
+                    .post(ANTHROPIC_API_URL)
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION)
+                    .json(&body)
+                    .send()
+            })
             .await
-            .map_err(|e| anyhow::anyhow!("anthropic request failed: {e}"))?;
+            .map_err(|e| match e {
+                crate::client::RetryError::Permanent(e) => {
+                    anyhow::anyhow!("anthropic request failed: {e}")
+                }
+                crate::client::RetryError::Exhausted(attempts, e) => {
+                    anyhow::anyhow!("anthropic request failed after {} attempts: {e}", attempts)
+                }
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after = crate::client::extract_retry_after_from_response(&response);
             let text = response.text().await.unwrap_or_default();
+
+            if status.as_u16() == 429 {
+                if let Some(retry_after) = retry_after {
+                    tracing::warn!(retry_after = ?retry_after, "rate limited, backing off");
+                    return Err(anyhow::anyhow!(
+                        "anthropic rate limited, retry after {:?}",
+                        retry_after
+                    ));
+                }
+            }
+
             anyhow::bail!("anthropic HTTP {status}: {text}");
         }
 
-        // reqwest's `bytes_stream` borrows the response, so it can't be `'static`.
-        // Drain it on a detached task into an owned-byte mpsc channel; the consumer
-        // below owns only the receiver and is thus `'static`.
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, anyhow::Error>>(8);
         tokio::spawn(async move {
             let mut bytes = response.bytes_stream();
             while let Some(item) = bytes.next().await {
                 let chunk = item.map_err(|e| anyhow::anyhow!("anthropic stream read: {e}"));
                 if tx.send(chunk.map(|c| c.to_vec())).await.is_err() {
-                    break; // consumer gone
+                    break;
                 }
             }
         });
@@ -119,7 +139,6 @@ impl Llm for AnthropicLlm {
             while let Some(item) = rx.recv().await {
                 let chunk = item?;
                 buf.push_str(&String::from_utf8_lossy(&chunk));
-                // Drain every complete frame (separated by a blank line).
                 while let Some(idx) = buf.find("\n\n") {
                     let frame: String = buf.drain(..idx + 2).collect();
                     let (event, data) = parse_frame(&frame);
@@ -134,8 +153,6 @@ impl Llm for AnthropicLlm {
                     }
                 }
             }
-            // Always emit a terminal Finish so the engine sees turn end even if
-            // the connection closed without a `message_stop`.
             yield LlmEvent::Finish {
                 input_tokens,
                 output_tokens,
