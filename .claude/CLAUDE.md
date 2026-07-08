@@ -24,8 +24,8 @@ tool exec/approval over the protocol). Layering: [ADR-0006](../docs/adr/0006-cor
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
-| `entanglement-provider` | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **connection pool, retry, rate-limit, reasoning stream, models-per-provider (🚧)**; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
-| `entanglement-runtime` | the head crate (binary `skutter`): **host tools + execution, permission dispatch + approval, user sessions**, stdio `run`/`pipe` today, `serve` (WS) + `tui` next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
+| `entanglement-provider` | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; connection pool, retry, rate-limit, reasoning stream, models-per-provider, provider-owned session handle; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
+| `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), tool execution + permission dispatch + approval (🚧 still in core, #58/#59), user sessions, stdio `run`/`pipe` + `tui` today, `serve` (WS) next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). | — |
 
 Heads depend on core, **never** the reverse.
 
@@ -58,9 +58,10 @@ Set `ENTANGLEMENT_PROVIDER` explicitly, or let it auto-detect by key (z.ai first
 
 z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
 format). No key → `DummyLlm`. Detail in
-[`../docs/architecture.md`](../docs/architecture.md) §5b. **Pending (🚧):**
-connection pool, retry/backoff, rate-limit (429/RPM), and reasoning/thinking
-stream events all belong to this crate but are not implemented yet ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).
+[`../docs/architecture.md`](../docs/architecture.md) §5b. Connection pool,
+retry/backoff, rate-limit (429/`Retry-After`/RPM), reasoning/thinking stream
+events, the models-per-provider registry, and the provider-owned session handle
+all live in this crate now (✅ #52–#55, [ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).
 
 ## The contract (read before touching the engine)
 
@@ -106,18 +107,22 @@ assembles the root-contained quartet (`read`/`glob`/`grep`/`edit`);
 
 **Three-layer re-architecture** — the big active effort, tracked by epic
 [#50](https://github.com/xmiksay/entanglement/issues/50) ([ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)).
-Today core owns too much (tool loop **and** execution **and** permission dispatch
-**and** the host-tool impls **and** a per-session client); the target moves those
-to their proper layers. Backlog:
+Core still owns tool *execution* and *permission dispatch* inside the turn loop;
+the target moves those to the runtime. Remaining backlog:
 
-- **Provider** ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)):
-  connection pool + retry + rate-limit (#52); models-per-provider (#53); reasoning/thinking stream
-  events (#54, currently dropped); live session/connection handle (#55).
 - **Runtime** ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)):
-  move host tools out of core (#57); relocate tool execution (#58) and permission dispatch (#59) out of
-  core; inter-session agent messaging / subagent spawn (#60).
-- **Core**: slim `Session` to loop + turn state (#61).
-- **Cleanup**: docs drift guard (#62); orphaned `apply_diff.rs` + `audit.rs` (#63).
+  relocate tool execution (#58) and permission dispatch (#59) out of core (both
+  turn the tool call into a `ToolRequest`/`ToolResult` protocol round-trip);
+  inter-session agent messaging / subagent spawn (#60).
+- **Core**: slim `Session` to loop + turn state (#61, after #58/#59).
+
+Landed: **provider track** — crate renamed from `entanglement-llm` (#51),
+connection pool + retry + rate-limit (#52), models-per-provider (#53),
+reasoning/thinking stream events (#54), provider-owned session handle (#55).
+**Runtime track** — crate renamed from `entanglement-cli` (#56), host-tool impls
+moved out of core (#57). **Cleanup** — orphaned `apply_diff.rs` + `audit.rs`
+removed (#63); docs drift guard (#62) is a standing checklist flipping the
+🚧 markers in `docs/architecture.md` as each child lands.
 
 Already shipped: `skutter run`/`pipe` (stdio) and `tui`; LLM providers wired
 ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)) — `Llm` is a

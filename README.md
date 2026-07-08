@@ -32,8 +32,8 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | --- | --- | --- |
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
 | **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. |
+| **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
 | **WebSocket** (`skutter serve`) | next | axum `/ws`, in-band auth first frame, `broadcast` fan-out, multiplexed by `SessionId`. Model from the `agent`/`design` references. |
-| **TUI** (`skutter tui`) | next | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. Design & issue breakdown tracked in [GitHub issue #1](https://github.com/xmiksay/entanglement/issues/1). |
 
 ## Agent profiles (opencode-style)
 
@@ -49,14 +49,13 @@ natively.
 
 ## Crates
 
-Three crates, two seams (core ↔ provider, core ↔ runtime). Names in **bold**
-are the target of an in-progress rename (🚧).
+Three crates, two seams (core ↔ provider, core ↔ runtime).
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, the `Tool` **trait**, `Context`. | **Zero UI/transport deps** (`clap`/`axum`/`crossterm`/`reqwest` forbidden). Enforced via `make tree`. |
-| **`entanglement-provider`** | all LLM I/O behind the `Llm` trait: z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream (🚧). | may depend on `reqwest`; never depended on by core. |
-| **`entanglement-runtime`** _(from `entanglement-cli`)_ | the head crate (binary `skutter`): host tools + execution, permission dispatch + approval, user sessions, all transports (stdio ✅, WS 🚧, TUI). | — |
+| `entanglement-provider` | all LLM I/O behind the `Llm` trait: z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream. | may depend on `reqwest`; never depended on by core. |
+| `entanglement-runtime` | the head crate (binary `skutter`): host-tool impls (✅), tool execution + permission dispatch (🚧 #58/#59), approval, user sessions, all transports (stdio ✅, TUI ✅, WS 🚧). | — |
 
 ## Build & develop
 
