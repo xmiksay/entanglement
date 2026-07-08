@@ -95,7 +95,12 @@ runtime-owned `spawn_agent { agent, prompt }` tool issues `InMsg::Spawn`; the
 supervisor records `parent_links[child]=parent` and starts the child under the
 requested profile, then the runtime relays the child's final answer back to the
 parent as the tool's `ToolOutput` (reusing the #58 round-trip). Bypasses
-permissions like the built-ins; isolation/recursion limits deferred.
+permissions like the built-ins. Spawn limits (✅ #76,
+[ADR-0023](../docs/adr/0023-subagent-spawn-limits.md)): the runtime executor's
+`SpawnGuard` folds parent links from `SessionStarted` and refuses a spawn past a
+depth cap (`MAX_SPAWN_DEPTH`) or a cumulative per-root budget
+(`MAX_SPAWNS_PER_ROOT`), replying with a clear refusal `ToolOutput`.
+Isolation/permissions for sub-sessions still deferred.
 
 ## Conventions (project-specific)
 

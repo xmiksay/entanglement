@@ -46,11 +46,19 @@ pub fn spawn_tool_executor(
         // the engine emits them (a session's `AgentChanged` always precedes any
         // `ToolExec` it produces under that profile).
         let mut active: HashMap<SessionId, AgentProfile> = HashMap::new();
+        // Bounds the spawn tree (#76): tracks parent links from lifecycle events
+        // and per-root spawn budgets. Lives in this single-threaded loop, so the
+        // spawn decision below is race-free.
+        let mut spawn_guard = crate::subagent::SpawnGuard::new();
         loop {
             match sub.recv().await {
                 Ok(OutEvent::SessionStarted {
-                    session, profile, ..
+                    session,
+                    parent,
+                    profile,
+                    ..
                 }) => {
+                    spawn_guard.record_start(session.clone(), parent);
                     if let Some(p) = profiles.get(&profile) {
                         active.insert(session, p.clone());
                     }
@@ -74,18 +82,31 @@ pub fn spawn_tool_executor(
                     // *before* handing off so the child's `Done` can't race ahead
                     // of the watcher.
                     if tool == crate::subagent::SPAWN_TOOL {
-                        let child_events = holly.subscribe();
-                        let holly = holly.clone();
-                        tokio::spawn(async move {
-                            crate::subagent::spawn_subagent(
-                                holly,
-                                child_events,
-                                session,
-                                request_id,
-                                input,
-                            )
-                            .await;
-                        });
+                        match spawn_guard.try_spawn(&session) {
+                            Ok(()) => {
+                                let child_events = holly.subscribe();
+                                let holly = holly.clone();
+                                tokio::spawn(async move {
+                                    crate::subagent::spawn_subagent(
+                                        holly,
+                                        child_events,
+                                        session,
+                                        request_id,
+                                        input,
+                                    )
+                                    .await;
+                                });
+                            }
+                            // Over a limit: refuse without starting a child, but
+                            // still answer the parent's parked tool call so its
+                            // turn continues with a clear explanation.
+                            Err(refusal) => {
+                                let holly = holly.clone();
+                                tokio::spawn(async move {
+                                    reply(&holly, session, request_id, refusal).await;
+                                });
+                            }
+                        }
                         continue;
                     }
                     // Resolve permission before spawning so the read of `active`
