@@ -10,7 +10,6 @@
 
 pub mod context;
 pub mod holly;
-pub mod host;
 pub mod llm;
 pub mod protocol;
 pub mod session;
@@ -18,7 +17,6 @@ pub mod tools;
 
 pub use context::{Message, MessageRole};
 pub use holly::{EngineConfig, Holly, ProfileRegistry};
-pub use host::{host_tools, BashTool, EditTool, GlobTool, GrepTool, ReadTool};
 pub use llm::{
     stream_from_response, DummyLlm, EchoLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse,
     LlmSession, LlmStream, ToolCall, ToolSpec,

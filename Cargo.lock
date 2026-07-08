@@ -515,10 +515,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "diffy",
  "futures",
- "glob",
- "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -552,14 +549,17 @@ name = "entanglement-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "crossterm",
  "diffy",
  "dirs",
  "entanglement-core",
  "entanglement-provider",
+ "glob",
  "pulldown-cmark",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

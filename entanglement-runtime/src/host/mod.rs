@@ -17,8 +17,8 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::protocol::FileChangeKind;
-use crate::tools::ToolRegistry;
+use entanglement_core::protocol::FileChangeKind;
+use entanglement_core::tools::ToolRegistry;
 
 // pub mod apply_diff; Commented, will be fixed later!!!
 pub mod bash;
@@ -125,6 +125,7 @@ pub struct FileList {
 
 impl FileList {
     /// True iff the pattern matched at least one entry of any kind.
+    #[allow(dead_code)]
     pub fn matched_anything(&self) -> bool {
         !self.files.is_empty() || self.matched_dirs > 0
     }
@@ -178,6 +179,7 @@ pub fn host_tools(root: PathBuf) -> ToolRegistry {
     reg
 }
 
+#[allow(dead_code)]
 pub fn host_tools_with_callbacks<F, G>(root: PathBuf, on_read: F, on_edit: G) -> ToolRegistry
 where
     F: Fn(String, Vec<u8>) + Send + Sync + 'static,
@@ -194,7 +196,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::Tool;
+    use entanglement_core::tools::Tool;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};

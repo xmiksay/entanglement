@@ -9,9 +9,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    host_tools, stream_from_response, BashTool, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmSession, LlmStream, OutEvent, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
+    LlmStream, OutEvent, SessionId, ToolCall,
 };
+use entanglement_runtime::host::{host_tools, BashTool};
 
 /// An LLM that replays a scripted list of responses in order, then a plain
 /// text reply (so a turn loop that re-prompts after a tool call terminates).
@@ -98,11 +99,12 @@ async fn read_tool_runs_through_engine_under_build_profile() {
     // [read_call, finish] yields read_call first, then the tool-free turn that
     // ends the loop.
     let scripted = Arc::new(vec![read_call, finish]);
+    let tools = host_tools(root.clone());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
-        tools: host_tools(root.clone()),
+        tools: tools.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -162,11 +164,12 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![edit_call, finish]);
+    let tools = host_tools(root.clone());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
-        tools: host_tools(root.clone()),
+        tools: tools.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -228,15 +231,13 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     let scripted = Arc::new(vec![bash_call, finish]);
     // bash is opt-in (ADR-0010); mirror what `skutter` does when
     // ENTANGLEMENT_ENABLE_BASH=1 by registering BashTool explicitly.
+    let mut tools = host_tools(root.clone());
+    tools.register(BashTool::new(root.clone()));
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
-        tools: {
-            let mut reg = host_tools(root.clone());
-            reg.register(BashTool::new(root.clone()));
-            reg
-        },
+        tools: tools.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);

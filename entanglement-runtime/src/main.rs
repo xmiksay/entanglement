@@ -7,6 +7,7 @@
 //! - `pipe` is a bidirectional NDJSON relay: `InMsg` lines on stdin,
 //!   `OutEvent` lines on stdout. For scripting / editor integration.
 
+mod host;
 mod persistence;
 mod pipe;
 mod run;
@@ -15,9 +16,10 @@ mod tui;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{host_tools, BashTool, EngineConfig, Holly, InMsg, OutEvent, SessionId};
+use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, SessionId};
 use entanglement_provider::{models_for, HttpClient, ModelInfo};
 
+use host::{host_tools, BashTool};
 use pipe::pipe;
 use run::run_one;
 use session_store::{read, LogPayload};
