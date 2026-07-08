@@ -137,8 +137,8 @@ relocated to `runtime::tool_runner` via a per-session profile map + the engine's
 inbound `InMsg` fan-out (#59), sub-agent spawn via `InMsg::Spawn` + the
 `spawn_agent` tool relaying the child's answer back to the parent (#60,
 [ADR-0022](../docs/adr/0022-subagent-spawn.md)). **Cleanup** — orphaned `apply_diff.rs` + `audit.rs`
-removed (#63); docs drift guard (#62) is a standing checklist flipping the
-🚧 markers in `docs/architecture.md` as each child lands.
+removed (#63); docs drift guard (#62) closed out the epic by flipping every
+🚧 marker in `docs/architecture.md`/`README.md` to ✅ as each child landed.
 
 Already shipped: `skutter run`/`pipe` (stdio) and `tui`; LLM providers wired
 ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)) — `Llm` is a
