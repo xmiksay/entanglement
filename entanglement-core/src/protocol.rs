@@ -255,6 +255,12 @@ pub enum OutEvent {
         seq: u64,
         text: String,
     },
+    /// Incremental reasoning/thinking text.
+    ReasoningDelta {
+        session: SessionId,
+        seq: u64,
+        text: String,
+    },
     /// A tool is being called or about to be approved (display-only). Emitted
     /// for every tool call, before execution, so heads can show what's being called
     /// (tool name + input arguments). Separate from `ToolRequest` which handles
@@ -318,6 +324,7 @@ impl OutEvent {
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }
+            | OutEvent::ReasoningDelta { session, .. }
             | OutEvent::ToolCall { session, .. }
             | OutEvent::ToolRequest { session, .. }
             | OutEvent::ToolOutput { session, .. }
@@ -338,6 +345,7 @@ impl OutEvent {
             | OutEvent::AgentChanged { .. } => 0,
             OutEvent::Plan { seq, .. }
             | OutEvent::TextDelta { seq, .. }
+            | OutEvent::ReasoningDelta { seq, .. }
             | OutEvent::ToolCall { seq, .. }
             | OutEvent::ToolRequest { seq, .. }
             | OutEvent::ToolOutput { seq, .. }

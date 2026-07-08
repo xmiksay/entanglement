@@ -69,6 +69,13 @@ impl Theme {
         }
     }
 
+    pub fn reasoning_colors(&self) -> RoleColors {
+        RoleColors {
+            fg: Color::Gray,
+            bg: self.message_bg,
+        }
+    }
+
     pub fn tool_req_colors(&self) -> RoleColors {
         RoleColors {
             fg: self.tool_req_fg,

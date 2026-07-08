@@ -9,6 +9,9 @@ pub enum TranscriptEntry {
     TextDelta {
         text: String,
     },
+    ReasoningDelta {
+        text: String,
+    },
     ToolCall {
         tool: String,
         input: String,
@@ -209,6 +212,20 @@ impl SessionView {
                         }
                     }
                     self.transcript.push(TranscriptEntry::TextDelta { text });
+                    self.last_seen_seq = seq;
+                    if self.auto_follow {
+                        self.scroll_offset = 0;
+                        self.scroll_offset_x = 0;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            OutEvent::ReasoningDelta { seq, text, .. } => {
+                if seq > self.last_seen_seq {
+                    self.transcript
+                        .push(TranscriptEntry::ReasoningDelta { text });
                     self.last_seen_seq = seq;
                     if self.auto_follow {
                         self.scroll_offset = 0;

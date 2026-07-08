@@ -110,7 +110,7 @@ fn append_transcript<'a>(
         markdown_renderer: &'a MarkdownRenderer,
         run: &str,
         theme: Theme,
-        assistant: RoleColors,
+        colors: RoleColors,
         available_width: u16,
     ) {
         if run.trim().is_empty() {
@@ -128,12 +128,60 @@ fn append_transcript<'a>(
                 line.spans.len() > 1 && line.spans.iter().skip(1).any(|s| s.style.fg.is_some());
 
             if is_table || is_code {
-                let decorated = theme.decorate(line, assistant, available_width);
+                let decorated = theme.decorate(line, colors, available_width);
                 lines.push(decorated);
             } else {
                 let wrapped = wrap::wrap_line(line, available_width.saturating_sub(4));
                 for wline in wrapped {
-                    let decorated = theme.decorate(wline, assistant, available_width);
+                    let decorated = theme.decorate(wline, colors, available_width);
+                    lines.push(decorated);
+                }
+            }
+        }
+    }
+
+    fn render_reasoning_run<'a>(
+        lines: &mut Vec<Line<'a>>,
+        markdown_renderer: &'a MarkdownRenderer,
+        run: &str,
+        theme: Theme,
+        colors: RoleColors,
+        available_width: u16,
+    ) {
+        if run.trim().is_empty() {
+            return;
+        }
+        let rendered = markdown_renderer.render(run);
+        for line in rendered.lines {
+            let is_table = line
+                .spans
+                .first()
+                .map(|s| s.content.as_ref().starts_with('|'))
+                .unwrap_or(false);
+
+            let is_code =
+                line.spans.len() > 1 && line.spans.iter().skip(1).any(|s| s.style.fg.is_some());
+
+            let styled_line = if is_table || is_code {
+                line
+            } else {
+                let styled_spans: Vec<Span> = line
+                    .spans
+                    .iter()
+                    .map(|s| {
+                        Span::styled(s.content.clone(), Style::default().fg(colors.fg).italic())
+                    })
+                    .collect();
+                Line::from(styled_spans)
+            };
+
+            if is_table || is_code {
+                let decorated = theme.decorate(styled_line, colors, available_width);
+                lines.push(decorated);
+            } else {
+                let wrapped = wrap::wrap_line(styled_line, available_width.saturating_sub(4));
+                for wline in wrapped {
+                    let decorated = theme.decorate(wline, colors, available_width);
                     lines.push(decorated);
                 }
             }
@@ -141,14 +189,20 @@ fn append_transcript<'a>(
     }
 
     let assistant = theme.assistant_colors();
+    let reasoning = theme.reasoning_colors();
     let tool_req = theme.tool_req_colors();
     let tool_out = theme.tool_out_colors();
     let error = theme.error_colors();
 
     let mut pending_text = String::new();
+    let mut pending_reasoning = String::new();
     for entry in app.transcript() {
         if let TranscriptEntry::TextDelta { text } = entry {
             pending_text.push_str(text);
+            continue;
+        }
+        if let TranscriptEntry::ReasoningDelta { text } = entry {
+            pending_reasoning.push_str(text);
             continue;
         }
         if !pending_text.is_empty() {
@@ -168,9 +222,28 @@ fn append_transcript<'a>(
             lines.push(padding);
             pending_text.clear();
         }
+        if !pending_reasoning.is_empty() {
+            let padding = Line::from(vec![
+                Span::styled("▌", Style::default().fg(reasoning.fg).bg(reasoning.bg)),
+                Span::raw(" ".repeat((available_width - 1) as usize)),
+            ]);
+            lines.push(padding.clone());
+            render_reasoning_run(
+                lines,
+                markdown_renderer,
+                &pending_reasoning,
+                theme,
+                reasoning,
+                available_width,
+            );
+            lines.push(padding);
+            pending_reasoning.clear();
+        }
 
         match entry {
-            TranscriptEntry::TextDelta { .. } => unreachable!(),
+            TranscriptEntry::TextDelta { .. } | TranscriptEntry::ReasoningDelta { .. } => {
+                unreachable!()
+            }
             TranscriptEntry::User { text, pending } => {
                 let padding = Line::from(vec![
                     Span::styled("▌", Style::default().fg(user.fg).bg(user.bg)),
@@ -272,6 +345,16 @@ fn append_transcript<'a>(
             &pending_text,
             theme,
             assistant,
+            available_width,
+        );
+    }
+    if !pending_reasoning.is_empty() {
+        render_text_run(
+            lines,
+            markdown_renderer,
+            &pending_reasoning,
+            theme,
+            reasoning,
             available_width,
         );
     }
