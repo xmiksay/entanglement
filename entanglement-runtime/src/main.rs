@@ -27,7 +27,7 @@ use entanglement_provider::{models_for, HttpClient, ModelInfo};
 use host::{host_tools, BashTool};
 use pipe::pipe;
 use run::run_one;
-use session_store::{list_sessions, pair_records, read};
+use session_store::{integrity_gap, list_sessions, pair_records, read};
 use tui::tui;
 
 /// Provider name for model selection.
@@ -373,6 +373,14 @@ async fn main() -> Result<()> {
                 let records = read(&cwd, &resume_session_id).with_context(|| {
                     format!("Failed to read session records for {}", resume_session_id)
                 })?;
+
+                if let Some(dropped) = integrity_gap(&records) {
+                    anyhow::bail!(
+                        "Refusing to resume {resume_session_id}: its session log is missing \
+                         {dropped} record(s) dropped during recording, so replay would \
+                         reconstruct an incomplete conversation. Start a fresh session instead."
+                    );
+                }
 
                 holly
                     .resume(session_id.clone(), pair_records(&records))

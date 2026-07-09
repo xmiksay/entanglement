@@ -165,6 +165,9 @@ impl SessionRegistry {
                 LogPayload::Out(event) => {
                     view.apply_event(event.clone());
                 }
+                // A gap tombstone carries no transcript content. Resume refuses a
+                // gapped log upstream, so this only guards a stray restore.
+                LogPayload::Gap { .. } => {}
             }
         }
 
