@@ -87,6 +87,7 @@ InMsg    = Prompt{session,text} | Approve{session,request_id}   // approval →
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
          | ListSessions{session}   // supervisor-global query; session = correlation id (#21)
          | CloseSession{session}   // explicit destroy → SessionEnded (#21)
+         | Resume{session,records}   // internal, not serialized (#[serde(skip)]); replay log → session (§6b)
 
 OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle, no seq
          | SessionEnded{session,ts}           // lifecycle, no seq
@@ -95,13 +96,16 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | AgentChanged{session,agent}        // point-in-time, no seq
          | Plan{session,seq,content}          // markdown prose snapshot
          | TextDelta{session,seq,text}
+         | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
+         | ToolCall{session,seq,request_id,tool,input}      // display-only, every call (before exec)
          | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
          | ToolExec{session,seq,request_id,tool,input}      // core → runtime: dispatch it (#58/#59)
          | UserQuestion{session,seq,request_id,question,options,allow_free_form}  // ask_user prompt (#90)
-         | ToolOutput{session,seq,request_id,output}
+         | ToolOutput{session,seq,request_id,tool,output}
          | TaskList{session,seq,tasks}        // full outline snapshot
          | Error{session,seq,message}
          | Done{session,seq}
+         | FileChange{session,seq,path,before?,after?,change_kind}   // file-change audit record (#41)
 ```
 
 `AnswerQuestion` mirrors `Approve`/`Reject`: the supervisor drops it off the

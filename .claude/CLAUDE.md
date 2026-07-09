@@ -71,9 +71,10 @@ all live in this crate now (✅ #52–#55, [ADR-0007](../docs/adr/0007-streaming
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
           | SetTasks | SetPlan | SetAgent | Spawn | ListSessions | CloseSession
+          | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged
-          | Plan | TextDelta | ToolRequest | ToolExec | UserQuestion | ToolOutput
-          | TaskList | Error | Done
+          | Plan | TextDelta | ReasoningDelta | ToolCall | ToolRequest | ToolExec
+          | UserQuestion | ToolOutput | TaskList | Error | Done | FileChange
 ```
 
 Tool execution is a protocol round-trip (#58): core emits `ToolExec` for *every*
