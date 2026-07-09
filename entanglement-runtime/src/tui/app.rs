@@ -9,7 +9,7 @@ use crate::session_store::{list_sessions, SessionMeta};
 use crate::tui::commands::{Command, CommandPalette};
 use crate::tui::keybindings::{Action, LeaderKeyHandler};
 use crate::tui::markdown::MarkdownRenderer;
-use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
+use crate::tui::session_view::{ApprovalMode, PendingQuestion, TranscriptEntry};
 use crate::tui::sessions::SessionRegistry;
 use crate::tui::theme::Theme;
 
@@ -633,6 +633,34 @@ impl App {
 
     pub fn clear_approval(&mut self) {
         self.sessions.active_view_mut().clear_approval();
+        self.mark_dirty();
+    }
+
+    pub fn pending_question(&self) -> Option<&PendingQuestion> {
+        self.sessions.active_view().pending_question()
+    }
+
+    pub fn is_asking(&self) -> bool {
+        self.sessions.active_view().is_asking()
+    }
+
+    pub fn question_move(&mut self, delta: isize) {
+        self.sessions.active_view_mut().question_move(delta);
+        self.mark_dirty();
+    }
+
+    pub fn question_begin_free_form(&mut self) {
+        self.sessions.active_view_mut().question_begin_free_form();
+        self.mark_dirty();
+    }
+
+    pub fn question_cancel_free_form(&mut self) {
+        self.sessions.active_view_mut().question_cancel_free_form();
+        self.mark_dirty();
+    }
+
+    pub fn clear_question(&mut self) {
+        self.sessions.active_view_mut().clear_question();
         self.mark_dirty();
     }
 

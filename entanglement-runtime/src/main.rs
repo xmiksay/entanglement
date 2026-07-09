@@ -7,6 +7,7 @@
 //! - `pipe` is a bidirectional NDJSON relay: `InMsg` lines on stdin,
 //!   `OutEvent` lines on stdout. For scripting / editor integration.
 
+mod ask_user;
 mod host;
 mod permission;
 mod persistence;
@@ -83,6 +84,9 @@ fn build_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo, ToolRegis
     // `spawn_agent` is orchestration, not a registry tool (#60): the runtime
     // executor handles it directly, so it only needs advertising to the model.
     cfg.tool_specs.push(subagent::spawn_agent_spec());
+    // `ask_user` is likewise runtime-owned (#90): the executor intercepts it to
+    // surface a decision prompt to the head, not a host-tool call.
+    cfg.tool_specs.push(ask_user::ask_user_spec());
     (cfg, model_info, tools)
 }
 

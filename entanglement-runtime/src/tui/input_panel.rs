@@ -79,7 +79,17 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let approval_mode = app.approval_mode().clone();
     let theme = app.theme();
 
-    let placeholder_text = match &approval_mode {
+    // A pending `ask_user` question (ADR-0027) commandeers input; its own
+    // placeholder wins over the approval-mode ones below.
+    let question_placeholder = app.pending_question().map(|q| {
+        if q.entering_free_form {
+            "Type your answer... (Enter to submit, Esc to go back)"
+        } else {
+            "Answer the question above — [↑/↓] select, [1-9] pick, [Enter] choose, [Esc] interrupt"
+        }
+    });
+
+    let placeholder_text = question_placeholder.unwrap_or(match &approval_mode {
         ApprovalMode::Normal => {
             "Type a message... | Shift+Enter: newline | Ctrl+J: newline | Enter: send"
         }
@@ -89,7 +99,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
         ApprovalMode::EnteringRejectReason { .. } => {
             "Enter rejection reason... (Enter to send, Esc to cancel)"
         }
-    };
+    });
 
     let input_text = app.input_text();
     let display_text = if input_text.is_empty() {
@@ -107,7 +117,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
         f.set_cursor_position((area.x + cursor_pos, area.y));
     }
 
-    if matches!(approval_mode, ApprovalMode::Normal) {
+    if matches!(approval_mode, ApprovalMode::Normal) && !app.is_asking() {
         modals::draw_slash_autocomplete(f, app, area);
     }
 }

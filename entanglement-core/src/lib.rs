@@ -23,6 +23,6 @@ pub use llm::{
 };
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, FileChangeKind, InMsg, OutEvent, Permission,
-    PermissionProfile, SessionId, TaskItem, TaskStatus,
+    PermissionProfile, QuestionOption, SessionId, TaskItem, TaskStatus,
 };
 pub use tools::{Tool, ToolRegistry};

@@ -152,6 +152,11 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                 if app.showing_command_palette() {
                     return handle_command_palette_event(app, key).await;
                 }
+                // A model-driven `ask_user` question takes over input until
+                // answered (ADR-0027), just like an approval prompt.
+                if app.is_asking() {
+                    return handle_question_event(app, holly, key).await;
+                }
 
                 let current_mode = app.approval_mode().clone();
 
@@ -546,6 +551,90 @@ async fn handle_command_palette_event(app: &mut App, key: KeyEvent) -> Result<bo
             let mut query = app.command_palette().query().to_string();
             query.pop();
             app.command_palette().set_query(query);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+/// Drive a pending `ask_user` question (ADR-0027): arrow/number selection over
+/// the labelled options plus an "Other" entry that opens the shared input box
+/// for a free-text answer. The picked label or typed text returns as
+/// [`InMsg::AnswerQuestion`]; `Esc` interrupts the turn like an approval.
+async fn handle_question_event(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool> {
+    let Some(q) = app.pending_question() else {
+        return Ok(false);
+    };
+    let request_id = q.request_id.clone();
+    let entering = q.entering_free_form;
+    let free_form_selected = q.free_form_selected();
+    let selected_label = q.options.get(q.selected).map(|o| o.label.clone());
+
+    let session = app.active_session_id().clone();
+    let answer = |text: String| InMsg::AnswerQuestion {
+        session: session.clone(),
+        request_id: request_id.clone(),
+        answer: text,
+    };
+
+    if entering {
+        match key.code {
+            KeyCode::Esc => {
+                let _ = app.take_input_text();
+                app.question_cancel_free_form();
+            }
+            KeyCode::Enter => {
+                let text = app.take_input_text();
+                if !text.is_empty() {
+                    let _ = holly.send(answer(text)).await;
+                    app.clear_question();
+                }
+            }
+            KeyCode::Char(c) => app.input().insert_char(c),
+            KeyCode::Backspace => app.input().delete_char(),
+            KeyCode::Left => app.input().move_cursor_left(),
+            KeyCode::Right => app.input().move_cursor_right(),
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        KeyCode::Up | KeyCode::Char('k') => app.question_move(-1),
+        KeyCode::Down | KeyCode::Char('j') => app.question_move(1),
+        // Quick-pick by number: options are 1-based; the "Other" entry follows.
+        KeyCode::Char(c @ '1'..='9') => {
+            let idx = (c as u8 - b'1') as usize;
+            let (opt_count, allow_free_form) = app
+                .pending_question()
+                .map(|q| (q.options.len(), q.allow_free_form))
+                .unwrap_or((0, false));
+            if idx < opt_count {
+                if let Some(label) = app
+                    .pending_question()
+                    .and_then(|q| q.options.get(idx).map(|o| o.label.clone()))
+                {
+                    let _ = holly.send(answer(label)).await;
+                    app.clear_question();
+                }
+            } else if allow_free_form && idx == opt_count {
+                app.question_begin_free_form();
+            }
+        }
+        KeyCode::Enter => {
+            if free_form_selected {
+                app.question_begin_free_form();
+            } else if let Some(label) = selected_label {
+                let _ = holly.send(answer(label)).await;
+                app.clear_question();
+            }
+        }
+        KeyCode::Esc => {
+            let _ = holly.send(InMsg::Stop { session }).await;
+            app.clear_question();
         }
         _ => {}
     }

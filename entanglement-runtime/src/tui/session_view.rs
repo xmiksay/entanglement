@@ -1,4 +1,4 @@
-use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
+use entanglement_core::{AgentState, OutEvent, QuestionOption, SessionId, TaskItem};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +34,35 @@ pub enum ApprovalMode {
     EnteringRejectReason { request_id: String },
 }
 
+/// A model-driven `ask_user` question awaiting the user's answer (ADR-0027).
+/// Distinct from [`ApprovalMode`]: approval is binary, this carries labelled
+/// choices plus an optional free-text "Other" escape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingQuestion {
+    pub request_id: String,
+    pub question: String,
+    pub options: Vec<QuestionOption>,
+    pub allow_free_form: bool,
+    /// Highlighted choice. Indices `0..options.len()` are the options; when
+    /// `allow_free_form`, index `options.len()` is the "Other" entry.
+    pub selected: usize,
+    /// True while the "Other" free-text field is being typed into (answer flows
+    /// through the shared input box, like a reject reason).
+    pub entering_free_form: bool,
+}
+
+impl PendingQuestion {
+    /// Total selectable choices, including the "Other" entry when allowed.
+    pub fn choice_count(&self) -> usize {
+        self.options.len() + usize::from(self.allow_free_form)
+    }
+
+    /// Whether the highlighted choice is the free-text "Other" entry.
+    pub fn free_form_selected(&self) -> bool {
+        self.allow_free_form && self.selected == self.options.len()
+    }
+}
+
 /// All state scoped to a single `SessionId`: the engine spawns one task per
 /// session with its own history/profile/seq, so the head mirrors that split
 /// to keep transcripts, approvals, and scroll position from bleeding across
@@ -58,6 +87,7 @@ pub struct SessionView {
     last_viewport_height: usize,
     approval_mode: ApprovalMode,
     pending_tool_request: Option<(String, String, String)>,
+    pending_question: Option<PendingQuestion>,
     parent: Option<SessionId>,
     /// Reasoning runs the user has expanded, keyed by the transcript index of
     /// the run's first `ReasoningDelta` (a stable id — runs are coalesced from
@@ -81,6 +111,7 @@ impl SessionView {
             last_viewport_height: 0,
             approval_mode: ApprovalMode::Normal,
             pending_tool_request: None,
+            pending_question: None,
             parent: None,
             expanded_reasoning: HashSet::new(),
         }
@@ -215,6 +246,47 @@ impl SessionView {
         )
     }
 
+    pub fn pending_question(&self) -> Option<&PendingQuestion> {
+        self.pending_question.as_ref()
+    }
+
+    /// Whether an `ask_user` question is awaiting an answer.
+    pub fn is_asking(&self) -> bool {
+        self.pending_question.is_some()
+    }
+
+    /// Move the highlighted choice by `delta`, wrapping around all choices
+    /// (options plus the "Other" entry when allowed).
+    pub fn question_move(&mut self, delta: isize) {
+        if let Some(q) = &mut self.pending_question {
+            let count = q.choice_count() as isize;
+            if count > 0 {
+                q.selected = (q.selected as isize + delta).rem_euclid(count) as usize;
+            }
+        }
+    }
+
+    /// Enter free-text mode for the "Other" entry (no-op without free-form).
+    pub fn question_begin_free_form(&mut self) {
+        if let Some(q) = &mut self.pending_question {
+            if q.allow_free_form {
+                q.selected = q.options.len();
+                q.entering_free_form = true;
+            }
+        }
+    }
+
+    /// Leave free-text mode, returning to choice selection.
+    pub fn question_cancel_free_form(&mut self) {
+        if let Some(q) = &mut self.pending_question {
+            q.entering_free_form = false;
+        }
+    }
+
+    pub fn clear_question(&mut self) {
+        self.pending_question = None;
+    }
+
     pub fn parent(&self) -> Option<&SessionId> {
         self.parent.as_ref()
     }
@@ -246,6 +318,7 @@ impl SessionView {
                     || state == AgentState::Error
                 {
                     self.clear_approval();
+                    self.clear_question();
                 }
                 true
             }
@@ -312,6 +385,29 @@ impl SessionView {
                     self.last_seen_seq = seq;
                     self.pending_tool_request = Some((request_id.clone(), tool, input));
                     self.approval_mode = ApprovalMode::WaitingForApproval { request_id };
+                    true
+                } else {
+                    false
+                }
+            }
+            OutEvent::UserQuestion {
+                seq,
+                request_id,
+                question,
+                options,
+                allow_free_form,
+                ..
+            } => {
+                if seq > self.last_seen_seq {
+                    self.last_seen_seq = seq;
+                    self.pending_question = Some(PendingQuestion {
+                        request_id,
+                        question,
+                        options,
+                        allow_free_form,
+                        selected: 0,
+                        entering_free_form: false,
+                    });
                     true
                 } else {
                     false
@@ -428,6 +524,47 @@ mod tests {
         });
         assert!(!v.is_waiting_approval());
         assert!(v.pending_tool_request().is_none());
+    }
+
+    #[test]
+    fn user_question_sets_pending_then_status_clears() {
+        use entanglement_core::QuestionOption;
+        let mut v = SessionView::new();
+        v.apply_event(OutEvent::UserQuestion {
+            session: sid(),
+            seq: 1,
+            request_id: "q1".into(),
+            question: "Which?".into(),
+            options: vec![
+                QuestionOption {
+                    label: "A".into(),
+                    description: None,
+                },
+                QuestionOption {
+                    label: "B".into(),
+                    description: None,
+                },
+            ],
+            allow_free_form: true,
+        });
+        assert!(v.is_asking());
+        let q = v.pending_question().unwrap();
+        // 2 options + the "Other" entry = 3 choices.
+        assert_eq!(q.choice_count(), 3);
+        assert_eq!(q.selected, 0);
+
+        // Wrap past the last option onto "Other", then back to the top.
+        v.question_move(-1);
+        assert!(v.pending_question().unwrap().free_form_selected());
+        v.question_move(1);
+        assert_eq!(v.pending_question().unwrap().selected, 0);
+
+        // A terminal status clears the pending question.
+        v.apply_event(OutEvent::Status {
+            session: sid(),
+            state: AgentState::Done,
+        });
+        assert!(!v.is_asking());
     }
 
     #[test]

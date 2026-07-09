@@ -225,7 +225,11 @@ async fn supervisor(
         // Approval decisions are a runtime concern now (#59): the tool executor
         // consumes `Approve`/`Reject` off the inbound fan-out above. The engine
         // no longer parks on them, so there is nothing to route to a session.
-        if matches!(msg, InMsg::Approve { .. } | InMsg::Reject { .. }) {
+        // `AnswerQuestion` is the same shape for the `ask_user` tool (ADR-0027).
+        if matches!(
+            msg,
+            InMsg::Approve { .. } | InMsg::Reject { .. } | InMsg::AnswerQuestion { .. }
+        ) {
             continue;
         }
 
@@ -327,13 +331,14 @@ fn msg_to_cmd(msg: InMsg) -> SessionCmd {
         InMsg::SetPlan { content, .. } => SessionCmd::SetPlan(content),
         InMsg::SetTasks { tasks, .. } => SessionCmd::SetTasks(tasks),
         InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
-        // Approve/Reject are filtered out before routing (see supervisor); Resume
-        // and Spawn are handled specially. None reach this mapping.
+        // Approve/Reject/AnswerQuestion are filtered out before routing (see
+        // supervisor); Resume and Spawn are handled specially. None reach here.
         InMsg::Approve { .. }
         | InMsg::Reject { .. }
+        | InMsg::AnswerQuestion { .. }
         | InMsg::Resume { .. }
         | InMsg::Spawn { .. } => {
-            unreachable!("Approve/Reject/Resume/Spawn are not routed to sessions")
+            unreachable!("Approve/Reject/AnswerQuestion/Resume/Spawn are not routed to sessions")
         }
     }
 }

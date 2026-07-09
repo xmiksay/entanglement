@@ -21,6 +21,7 @@
 //! permission dispatch, sub-agent spawn, and event-sourced persistence without
 //! compiling any CLI/TUI/transport dependency. `make check-lean` enforces this.
 
+pub mod ask_user;
 pub mod host;
 pub mod permission;
 pub mod persistence;

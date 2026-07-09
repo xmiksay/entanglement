@@ -69,9 +69,10 @@ all live in this crate now (✅ #52–#55, [ADR-0007](../docs/adr/0007-streaming
 `entanglement-core/src/protocol.rs` defines the single set of types every head uses:
 
 ```
-InMsg    : Prompt | Approve | Reject | ToolResult | Stop | SetTasks | SetPlan | SetAgent | Spawn
+InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
+          | SetTasks | SetPlan | SetAgent | Spawn
 OutEvent : Status | AgentChanged | Plan | TextDelta | ToolRequest | ToolExec
-          | ToolOutput | TaskList | Error | Done
+          | UserQuestion | ToolOutput | TaskList | Error | Done
 ```
 
 Tool execution is a protocol round-trip (#58): core emits `ToolExec` for *every*
@@ -107,6 +108,16 @@ can't spawn at all, and each child's per-tool permission is clamped to the
 least-privileged rule across its ancestor chain (`Deny < Ask < Allow`) — a child
 is never more privileged than its parent. Filesystem isolation (a separate child
 root) for sub-sessions still deferred.
+
+Ask-user prompt (✅ #90, [ADR-0027](../docs/adr/0027-ask-user-interactive-prompt.md)):
+the runtime-owned `ask_user { question, options, allow_free_form }` tool is
+intercepted on `ToolExec` before permission resolution (like `spawn_agent`,
+`runtime::ask_user`). It emits a dedicated `OutEvent::UserQuestion`, parks for
+the head's `InMsg::AnswerQuestion` (consumed off the inbound fan-out like
+`Approve`/`Reject`), and folds the picked label or free-form text back as the
+tool's `ToolOutput`. The TUI adds a `PendingQuestion` interaction state (labelled
+choices + an "Other" free-text escape) alongside `ApprovalMode`; the one-shot
+`run` head auto-answers so it never parks.
 
 ## Conventions (project-specific)
 

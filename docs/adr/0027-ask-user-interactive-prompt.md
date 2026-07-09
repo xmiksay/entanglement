@@ -1,11 +1,7 @@
 # 0027. `ask_user` tool — model-driven user decision prompt
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-09
-
-> **Stub.** Captures the decision direction for issue #90. Flesh out
-> (event/round-trip shape, TUI interaction mode, answer encoding) before
-> implementation; promote to `Accepted` when the change lands.
 
 ## Context
 
@@ -17,42 +13,55 @@ approaches should I take?" — the way Claude Code's *AskUserQuestion* renders a
 multiple-choice prompt. Users want that: model-initiated questions, with
 multiple-choice options **plus** a free-text ("Other") escape.
 
-## Decision (direction)
+## Decision
 
 Add a **runtime-owned `ask_user` tool**, intercepted on `ToolExec` before
 permission resolution — the same pattern as `spawn_agent` (ADR-0022) — so the
 model triggers it by calling the tool and the round-trip reuses the existing
-`ToolExec` → … → `ToolResult` machinery. No new *core* protocol semantics
-required; core stays unaware of the interaction.
-
-Sketch:
+`ToolExec` → … → `ToolResult` machinery. Core stays unaware of the *interaction*:
+it emits the `ToolExec` for `ask_user` like any other call and parks on the
+`ToolResult`. The runtime executor (`ask_user.rs`) intercepts the call, drives
+the head, and answers the parked turn.
 
 - **Tool schema (model-facing):** `ask_user { question, options: [{label,
-  description}], allow_free_form: bool }` — advertised via
-  `EngineConfig.tool_specs`. Mirrors Claude's shape (labelled choices + optional
-  free text).
-- **Runtime → TUI:** the executor surfaces the question to the head. Reuse
-  `ToolRequest` semantics or add a dedicated `OutEvent::UserQuestion` (decide in
-  fleshing-out — a dedicated event keeps the TUI rendering clean and is reusable
-  by future heads without overloading approval). The TUI enters a new interaction
-  mode alongside `ApprovalMode` (`session_view.rs`): render the question + choices
-  Claude-style, arrow/enter to select, an "Other" entry that opens free-text
-  input.
-- **TUI → runtime:** the selected label (or typed free-form text) flows back;
-  the executor returns it as the `ask_user` tool's `ToolOutput`, which the
-  parent turn folds into `Context` like any tool result.
+  description}], allow_free_form }` — advertised via `EngineConfig.tool_specs`
+  (`ask_user::ask_user_spec()`, pushed alongside `spawn_agent`). Mirrors Claude's
+  *AskUserQuestion* shape (labelled choices + optional free text). `options` is
+  required; `allow_free_form` defaults to false but is forced true when `options`
+  is empty (so there is always an answer path).
+- **Runtime → head:** a **dedicated `OutEvent::UserQuestion { seq, request_id,
+  question, options, allow_free_form }`**, plus a `WaitingApproval` status. The
+  TUI enters a new interaction state (`PendingQuestion` in `session_view.rs`,
+  distinct from `ApprovalMode`): the question + numbered choices render
+  Claude-style, arrow/number keys select, an "Other" entry opens the shared input
+  box for free text, `Esc` interrupts.
+- **Head → runtime:** a **dedicated `InMsg::AnswerQuestion { request_id,
+  answer }`**. Like `Approve`/`Reject`, the supervisor filters it out before
+  routing (core never sees it) and the `ask_user` executor consumes it off the
+  inbound fan-out (`Holly::subscribe_inbound`), then replies with a
+  `ToolResult(answer)` the parent turn folds into `Context`.
+
+### Resolved open questions
+
+- **Dedicated events, not overloaded `ToolRequest`.** `UserQuestion` /
+  `AnswerQuestion` are added purely so heads render multiple choice cleanly and
+  future heads reuse them without conflating "approve this action" with "answer
+  this question". They are protocol *types* only — the engine's turn loop gains
+  no new logic (the supervisor drops `AnswerQuestion` off the fan-out exactly
+  like `Approve`/`Reject`, #59).
+- **Answer encoding.** The output fed back to the model is the answer text
+  verbatim — the picked option's `label`, or the typed free-form string. No
+  wrapper: the label *is* a meaningful answer, and a wrapper would only add noise.
+- **Non-interactive heads.** `pipe` (raw NDJSON relay) already forwards
+  `UserQuestion` and accepts `AnswerQuestion`, so a script answers normally. The
+  one-shot `run` head has no user: it auto-answers with the first option's label
+  (or `"(no interactive user available)"` when only free-form was offered) so the
+  turn proceeds instead of parking forever.
+- **`Stop` while pending.** Handled like approval: a `Stop` for the session
+  unwinds the parked executor silently — core's `wait_tool_result` sees the same
+  `Stop` and cancels the turn, so no `ToolResult` is owed.
 
 Answer type: **both** — a fixed option list *and* a free-form escape.
-
-## Open questions (resolve before Accepted)
-
-- Reuse `ToolRequest` vs. new `OutEvent::UserQuestion` + `InMsg::AnswerQuestion`.
-  (Leaning: a dedicated event for clean rendering; weigh protocol surface.)
-- How free-form vs. selected-option answers are distinguished in the output
-  string fed back to the model.
-- Behaviour of the stdio / non-interactive heads (auto-decline? first option?
-  error?) so the tool degrades safely without a TUI.
-- Interaction with `Stop` while a question is pending.
 
 ## Consequences
 

@@ -78,6 +78,16 @@ pub struct TaskItem {
     pub status: TaskStatus,
 }
 
+/// One labelled choice in a model-driven [`OutEvent::UserQuestion`] prompt
+/// (ADR-0027). The `label` is what flows back as the answer when picked; the
+/// optional `description` is a short hint shown beneath it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Agent profiles (opencode-style: system prompt + permission profile)
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -189,6 +199,18 @@ pub enum InMsg {
         request_id: String,
         output: String,
     },
+    /// Answer a pending model-driven question (`request_id` from
+    /// [`OutEvent::UserQuestion`]). Like [`Approve`][InMsg::Approve]/
+    /// [`Reject`][InMsg::Reject], it is consumed by the runtime off the inbound
+    /// fan-out (the `ask_user` executor parks on it), not routed to a session —
+    /// core stays unaware of the interaction (ADR-0027). `answer` is the picked
+    /// option's label or the free-form text; the runtime folds it back as the
+    /// `ask_user` tool's [`ToolResult`][InMsg::ToolResult].
+    AnswerQuestion {
+        session: SessionId,
+        request_id: String,
+        answer: String,
+    },
     /// Cancel the current turn and park the session at idle.
     Stop { session: SessionId },
     /// Rewrite the session's task outline from the harness (user-edited plan).
@@ -228,6 +250,7 @@ impl InMsg {
             | InMsg::Approve { session, .. }
             | InMsg::Reject { session, .. }
             | InMsg::ToolResult { session, .. }
+            | InMsg::AnswerQuestion { session, .. }
             | InMsg::Stop { session }
             | InMsg::SetTasks { session, .. }
             | InMsg::SetPlan { session, .. }
@@ -317,6 +340,20 @@ pub enum OutEvent {
         tool: String,
         input: String,
     },
+    /// The model asked the user a decision question via the runtime-owned
+    /// `ask_user` tool (ADR-0027). Carries the prompt, labelled `options`, and
+    /// whether a free-form ("Other") answer is allowed. A head renders it as a
+    /// multiple-choice prompt and replies with [`InMsg::AnswerQuestion`]; the
+    /// runtime folds that answer back as the tool's output. Dedicated (not
+    /// [`ToolRequest`][OutEvent::ToolRequest]) so choices render cleanly.
+    UserQuestion {
+        session: SessionId,
+        seq: u64,
+        request_id: String,
+        question: String,
+        options: Vec<QuestionOption>,
+        allow_free_form: bool,
+    },
     /// Result of an executed tool, a denied tool, or a built-in tool.
     ToolOutput {
         session: SessionId,
@@ -365,6 +402,7 @@ impl OutEvent {
             | OutEvent::ToolCall { session, .. }
             | OutEvent::ToolRequest { session, .. }
             | OutEvent::ToolExec { session, .. }
+            | OutEvent::UserQuestion { session, .. }
             | OutEvent::ToolOutput { session, .. }
             | OutEvent::TaskList { session, .. }
             | OutEvent::Error { session, .. }
@@ -387,6 +425,7 @@ impl OutEvent {
             | OutEvent::ToolCall { seq, .. }
             | OutEvent::ToolRequest { seq, .. }
             | OutEvent::ToolExec { seq, .. }
+            | OutEvent::UserQuestion { seq, .. }
             | OutEvent::ToolOutput { seq, .. }
             | OutEvent::TaskList { seq, .. }
             | OutEvent::Error { seq, .. }
@@ -469,6 +508,46 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn user_question_roundtrips_with_options() {
+        let ev = OutEvent::UserQuestion {
+            session: SessionId::new("s1"),
+            seq: 4,
+            request_id: "q1".into(),
+            question: "Which approach?".into(),
+            options: vec![
+                QuestionOption {
+                    label: "REST".into(),
+                    description: Some("HTTP + JSON".into()),
+                },
+                QuestionOption {
+                    label: "gRPC".into(),
+                    description: None,
+                },
+            ],
+            allow_free_form: true,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: OutEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn answer_question_roundtrips_as_tagged_json() {
+        let msg = InMsg::AnswerQuestion {
+            session: SessionId::new("s1"),
+            request_id: "q1".into(),
+            answer: "REST".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"answer_question","session":"s1","request_id":"q1","answer":"REST"}"#
+        );
+        let back: InMsg = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, back);
     }
 
     #[test]
