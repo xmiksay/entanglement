@@ -399,7 +399,8 @@ async fn main() -> Result<()> {
                     })
                     .await?;
             }
-            tui(&holly, session_id, model_info).await
+            let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
+            tui(&holly, session_id, model_info, cwd.clone(), bash_enabled).await
         }
         Some(Cmd::Sessions) => unreachable!("sessions is handled before engine setup"),
         None => {

@@ -8,6 +8,7 @@ mod export;
 mod input_panel;
 mod keybindings;
 mod markdown;
+mod mention;
 mod modals;
 mod progress;
 mod session_view;
@@ -43,7 +44,13 @@ use attention::Attention;
 use event::Event;
 use session_view::ApprovalMode;
 
-pub async fn tui(holly: &Holly, initial_session: SessionId, model_info: ModelInfo) -> Result<()> {
+pub async fn tui(
+    holly: &Holly,
+    initial_session: SessionId,
+    model_info: ModelInfo,
+    root: std::path::PathBuf,
+    bash_enabled: bool,
+) -> Result<()> {
     setup_panic_handler();
 
     let mut stdout = std::io::stdout();
@@ -74,6 +81,7 @@ pub async fn tui(holly: &Holly, initial_session: SessionId, model_info: ModelInf
 
     let mut app = App::new(initial_session);
     app.set_model_info(model_info.id.clone(), model_info.display_name.clone());
+    app.init_head_context(root, bash_enabled);
 
     let mut attention = Attention::from_env();
     let mut holly_sub = holly.subscribe();
@@ -271,6 +279,9 @@ async fn handle_event(
                         _ => {}
                     },
                     ApprovalMode::Normal => match key.code {
+                        KeyCode::Tab if app.mention_visible() => {
+                            app.accept_mention();
+                        }
                         KeyCode::Tab => {
                             let input_text = app.input().lines().join("\n");
                             if input_text.starts_with('/') && input_text.chars().count() == 1 {
@@ -311,7 +322,9 @@ async fn handle_event(
                             app.scroll_right(10);
                         }
                         KeyCode::Esc => {
-                            if app.is_input_multiline() {
+                            if app.mention_visible() {
+                                app.hide_mention();
+                            } else if app.is_input_multiline() {
                                 app.set_input_multiline(false);
                             } else {
                                 return Ok(true);
@@ -320,6 +333,9 @@ async fn handle_event(
                         KeyCode::Enter => {
                             if key.modifiers.contains(KeyModifiers::SHIFT) {
                                 app.input().insert_newline();
+                                app.update_mention();
+                            } else if app.mention_visible() {
+                                app.accept_mention();
                             } else {
                                 let text = app.take_input_text();
                                 if !text.is_empty() {
@@ -332,6 +348,15 @@ async fn handle_event(
                                             }
                                             return Ok(false);
                                         }
+                                    }
+                                    // `!bash` passthrough (ADR-0030): run head-side,
+                                    // inject output locally — never sent to the engine.
+                                    if let Some(cmd) = text.strip_prefix('!') {
+                                        let cmd = cmd.trim().to_string();
+                                        if !cmd.is_empty() {
+                                            run_bash_passthrough(app, &cmd).await;
+                                        }
+                                        return Ok(false);
                                     }
                                     app.record_user_message(text.clone());
                                     if let Err(e) = holly
@@ -348,16 +373,21 @@ async fn handle_event(
                         }
                         KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.input().insert_newline();
+                            app.update_mention();
                         }
                         KeyCode::Up => {
-                            if app.input().cursor() == (0, 0) {
+                            if app.mention_visible() {
+                                app.mention_select_prev();
+                            } else if app.input().cursor() == (0, 0) {
                                 app.history_up();
                             } else {
                                 app.input().move_cursor_up();
                             }
                         }
                         KeyCode::Down => {
-                            if app.input().cursor() == (0, 0) {
+                            if app.mention_visible() {
+                                app.mention_select_next();
+                            } else if app.input().cursor() == (0, 0) {
                                 app.history_down();
                             } else {
                                 app.input().move_cursor_down();
@@ -374,18 +404,23 @@ async fn handle_event(
                                     _ => app.input().insert_char(c),
                                 }
                             }
+                            app.update_mention();
                         }
                         KeyCode::Char(c) => {
                             app.input().insert_char(c);
+                            app.update_mention();
                         }
                         KeyCode::Backspace => {
                             app.input().delete_char();
+                            app.update_mention();
                         }
                         KeyCode::Left => {
                             app.input().move_cursor_left();
+                            app.update_mention();
                         }
                         KeyCode::Right => {
                             app.input().move_cursor_right();
+                            app.update_mention();
                         }
                         _ => {}
                     },
@@ -399,10 +434,34 @@ async fn handle_event(
         Event::Paste(s) => {
             if matches!(app.approval_mode(), ApprovalMode::Normal) {
                 app.input().insert_str(&s);
+                app.update_mention();
             }
         }
     }
     Ok(false)
+}
+
+/// Runs a `!bash` passthrough command head-side and injects the output into the
+/// transcript (ADR-0030). Gated on `ENTANGLEMENT_ENABLE_BASH` — the same opt-in
+/// as the model-facing `bash` tool (ADR-0010), since it runs unsandboxed. When
+/// disabled, a hint is recorded instead of running anything.
+async fn run_bash_passthrough(app: &mut App, command: &str) {
+    if !app.bash_enabled() {
+        app.record_bash_passthrough(
+            command.to_string(),
+            "[bash passthrough disabled] set ENTANGLEMENT_ENABLE_BASH=1 to run `!` commands"
+                .to_string(),
+        );
+        return;
+    }
+    use entanglement_core::tools::Tool;
+    let tool = crate::host::bash::BashTool::new(app.root().to_path_buf());
+    let input = serde_json::json!({ "command": command }).to_string();
+    let output = match tool.run(&input).await {
+        Ok(out) => out,
+        Err(e) => format!("[bash error] {e:#}"),
+    };
+    app.record_bash_passthrough(command.to_string(), output);
 }
 
 /// Routes a mouse event. The wheel prefers an open modal's selection (mirroring

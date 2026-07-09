@@ -74,3 +74,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | Proposed |
 | [0028](0028-session-lifecycle-enumeration-and-backpressure.md) | Session lifecycle: enumeration, explicit close, non-blocking routing | Accepted |
 | [0029](0029-external-editor-and-markdown-export.md) | External `$EDITOR` compose + Markdown transcript export | Accepted |
+| [0030](0030-tui-file-mentions-and-bash-passthrough.md) | TUI `@file` mention completion + `!bash` passthrough | Accepted |

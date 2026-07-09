@@ -119,6 +119,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
 
     if matches!(approval_mode, ApprovalMode::Normal) && !app.is_asking() {
         modals::draw_slash_autocomplete(f, app, area);
+        modals::draw_mention_popup(f, app, area);
     }
 }
 
