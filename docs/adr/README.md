@@ -70,3 +70,5 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | Accepted |
 | [0024](0024-subagent-permission-gating.md) | Sub-agent spawn permission gating and privilege ceiling | Accepted |
 | [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | Accepted |
+| [0026](0026-async-subagent-spawn-and-poll.md) | Non-blocking sub-agent spawn with handle + `agent_poll` | Proposed |
+| [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | Proposed |
