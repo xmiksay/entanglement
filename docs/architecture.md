@@ -424,6 +424,19 @@ into the no-default-features build, then runs lean `clippy --all-targets` (which
 type-checks the lib + the integration tests with the bin auto-skipped via
 `required-features` — the load-bearing check). It joins `tree` in `make verify`.
 
+**CI (issue #107).** Both gates now run in GitHub Actions
+([`.github/workflows/`](../.github/workflows/)), driven through the same `make`
+targets. `ci.yml` runs `make verify` (`check-fmt` + `tree` + `check-lean` +
+`lint` + `test`) on every PR and every push to `master` — the first time the
+`tree`/`check-lean` hygiene gates run automatically rather than at developer
+discretion. `release.yml` fires on a `v*` tag: it runs `make verify` and then a
+coverage job, `make coverage` (`cargo llvm-cov --workspace`, fails under
+`COV_MIN`% — baselined from the first measured run and ratcheted up, never
+lowered), uploading the lcov + Cobertura reports as an artifact so a release is
+blocked on green tests with a coverage report attached. Both cache cargo
+artifacts (`Swatinem/rust-cache`) and inherit the committed `CARGO_BUILD_JOBS=4`
+cap from `.cargo/config.toml`.
+
 ## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in)
 
 Concrete filesystem + shell tools, dispatched under the active permission

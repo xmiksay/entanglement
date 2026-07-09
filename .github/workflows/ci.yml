@@ -1,0 +1,36 @@
+# PR / push gate (issue #107): run the full `make verify` CI-equivalent gate
+# (check-fmt + tree + check-lean + lint + test) on every PR and every push to
+# master. Puts the ADR-0006 (`tree`) and ADR-0025 (`check-lean`) hygiene gates
+# under automation for the first time. Drives everything through `make`.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+# Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: make verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Honors rust-toolchain.toml (stable + rustfmt + clippy components).
+      - name: Install Rust toolchain
+        run: rustup show
+
+      # Caches the registry, git deps, and target/ dir. Build jobs stay capped
+      # at 4 via the committed .cargo/config.toml.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: make verify
+        run: make verify

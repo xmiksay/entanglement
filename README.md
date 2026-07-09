@@ -70,10 +70,25 @@ make lint         # clippy --all-targets -D warnings
 make verify       # check-fmt + tree + check-lean + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI-dep hygiene gate)
 make check-lean   # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
+make coverage     # cargo llvm-cov --workspace, fails under COV_MIN% (release gate)
 make build | check | fmt | clean
 ```
 
 Drive commands through `make`, not raw `cargo`.
+
+## CI
+
+GitHub Actions drives the same `make` targets ([`.github/workflows/`](.github/workflows/)):
+
+- **`ci.yml`** — runs `make verify` on every PR and every push to `master`,
+  putting the `tree` (ADR-0006) and `check-lean` (ADR-0025) hygiene gates under
+  automation.
+- **`release.yml`** — on a `v*` tag, runs `make verify` **plus** `make coverage`
+  (`cargo llvm-cov --workspace`, fails under `COV_MIN`%) and uploads the
+  lcov/Cobertura reports as an artifact, so a release is blocked on green tests.
+
+`make coverage` needs `cargo-llvm-cov` locally: `cargo install cargo-llvm-cov
+--locked`.
 
 ## License
 
