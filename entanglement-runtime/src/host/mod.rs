@@ -1,9 +1,10 @@
 //! Host tools that execute against the local filesystem and shell — `read`,
-//! `glob`, `grep`, `edit`, and the opt-in `bash`. The read-only trio
+//! `glob`, `grep`, `edit`, `write`, and the opt-in `bash`. The read-only trio
 //! (`read`/`glob`/`grep`) is covered by ADR-0008; `edit`/`bash` by ADR-0009/ADR-0012;
-//! [`host_tools`] assembles the **root-contained set** (`read`/`glob`/
-//! `grep`/`edit`) and a head explicitly opts into [`BashTool`] (gated by
-//! `ENTANGLEMENT_ENABLE_BASH`) — see ADR-0010.
+//! whole-file `write` by ADR-0031; [`host_tools`] assembles the
+//! **root-contained quintet** (`read`/`glob`/`grep`/`edit`/`write`) and a head
+//! explicitly opts into [`BashTool`] (gated by `ENTANGLEMENT_ENABLE_BASH`) —
+//! see ADR-0010.
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
 //! paths resolve against it and are **rejected on `..` escape** (lexical only
@@ -25,12 +26,14 @@ pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod read;
+pub mod write;
 
 pub use bash::BashTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
+pub use write::WriteTool;
 
 /// Hard cap on a single tool's textual output, in bytes. Larger output is
 /// truncated with a notice. Picked generously below the context budget so a
@@ -147,7 +150,7 @@ pub fn list_files(root: &Path, pattern: &str) -> Result<FileList> {
 // ┃ host_tools registry
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Build the **root-contained set** (`read`/`glob`/`grep`/`edit`).
+/// Build the **root-contained quintet** (`read`/`glob`/`grep`/`edit`/`write`).
 /// Bash is opt-in at the head level (ADR-0010): call [`BashTool::new`] directly and
 /// register it when `ENTANGLEMENT_ENABLE_BASH=1`.
 pub fn host_tools(root: PathBuf) -> ToolRegistry {
@@ -156,6 +159,7 @@ pub fn host_tools(root: PathBuf) -> ToolRegistry {
     reg.register(GlobTool::new(root.clone()));
     reg.register(GrepTool::new(root.clone()));
     reg.register(EditTool::new(root.clone()));
+    reg.register(WriteTool::new(root.clone()));
     reg
 }
 
@@ -170,6 +174,7 @@ where
     reg.register(GlobTool::new(root.clone()));
     reg.register(GrepTool::new(root.clone()));
     reg.register(EditTool::new(root.clone()).with_on_edit(on_edit));
+    reg.register(WriteTool::new(root.clone()));
     reg
 }
 
@@ -346,6 +351,7 @@ mod tests {
         assert!(names.contains(&"glob"), "{names:?}");
         assert!(names.contains(&"grep"), "{names:?}");
         assert!(names.contains(&"edit"), "{names:?}");
+        assert!(names.contains(&"write"), "{names:?}");
         assert!(!names.contains(&"bash"), "{names:?}");
         for s in &specs {
             assert!(

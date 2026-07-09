@@ -461,7 +461,8 @@ tools and makes no policy decision:
 | `read` | `{path, offset?, limit?}` | file contents, `{lineno}: {line}`, 1-based, line-ranged |
 | `glob` | `{pattern}` | matching paths (relative to root), one per line |
 | `grep` | `{pattern, path?}` | matches as `path:lineno:line` over files matched by `path` (default `**/*`) |
-| `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists); non-unique match errors unless `replaceAll` |
+| `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists → hints `write`); non-unique match errors unless `replaceAll` |
+| `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
 | `bash` ⚠ | `{command, timeout?}` | `sh -c` rooted at root; `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600, `kill_on_drop` reaps on expiry |
 
 - **Working directory:** each tool holds a `root`; model-supplied paths resolve
@@ -484,14 +485,15 @@ tools and makes no policy decision:
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
 - **Wiring (ADR-0010):** `host_tools(root)` registers the **root-contained
-  quartet** (`read`/`glob`/`grep`/`edit`). `bash` is opt-in — the `skutter`
+  quintet** (`read`/`glob`/`grep`/`edit`/`write`; `write` added in ADR-0031).
+  `bash` is opt-in — the `skutter`
   binary registers `BashTool` only when `ENTANGLEMENT_ENABLE_BASH=1`, because
   it runs unsandboxed (ADR-0009). `EngineConfig::default()` ships an empty
   registry (embedders opt in via `host_tools`).
 
-`edit`/`bash` slot into the existing permission profiles with no profile
-changes: `build` auto-allows both (default `Allow`), `plan` asks for both
-(default `Ask`), `explore` denies both (default `Deny`). The opt-in gate is
+`edit`/`write`/`bash` slot into the existing permission profiles with no profile
+changes: `build` auto-allows them (default `Allow`), `plan` asks (default
+`Ask`), `explore` denies (default `Deny`). The opt-in gate is
 orthogonal to the permission profile: it controls *registration* (whether the
 tool is advertised at all), the profile controls *dispatch* (Allow/Ask/Deny
 when the model calls it).
