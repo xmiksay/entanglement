@@ -16,7 +16,7 @@ pub mod session;
 pub mod tools;
 
 pub use context::{Message, MessageRole};
-pub use holly::{EngineConfig, Holly, ProfileRegistry};
+pub use holly::{ConfigError, EngineConfig, Holly, ProfileRegistry};
 pub use llm::{
     stream_from_response, DummyLlm, EchoLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse,
     LlmSession, LlmStream, ToolCall, ToolSpec,

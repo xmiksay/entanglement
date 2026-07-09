@@ -45,6 +45,15 @@ pub struct EngineConfig {
     pub profiles: ProfileRegistry,
 }
 
+impl EngineConfig {
+    /// Fail if the config can't back a running engine — currently, a profile
+    /// registry without the required `build` profile. Lets an embedder reject a
+    /// bad config up front instead of relying on the supervisor's fallback.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        self.profiles.validate()
+    }
+}
+
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
@@ -53,6 +62,16 @@ impl Default for EngineConfig {
             profiles: ProfileRegistry::new(),
         }
     }
+}
+
+/// A malformed [`EngineConfig`]/[`ProfileRegistry`] the engine can't run with.
+/// Surfaced by [`EngineConfig::validate`]/[`ProfileRegistry::validate`] so an
+/// embedder gets a clean error instead of a panicking supervisor task.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ConfigError {
+    /// The registry lacks the `build` profile every new session starts under.
+    #[error("profile registry is missing the required `{DEFAULT_PROFILE}` profile")]
+    MissingDefaultProfile,
 }
 
 /// Named set of [`AgentProfile`]s. Comes with `build`, `plan`, `explore`
@@ -78,6 +97,42 @@ impl ProfileRegistry {
     pub fn insert(&mut self, profile: AgentProfile) {
         self.profiles.insert(profile.name.clone(), profile);
     }
+
+    /// Fail if the required `build` profile is absent. Embedders that assemble a
+    /// custom registry should call this before handing it to [`Holly::spawn`];
+    /// the supervisor otherwise falls back to a synthesized default (see
+    /// [`resolve`][Self::resolve]) rather than panicking.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.profiles.contains_key(DEFAULT_PROFILE) {
+            Ok(())
+        } else {
+            Err(ConfigError::MissingDefaultProfile)
+        }
+    }
+
+    /// Resolve a profile by name, falling back to the default `build` profile
+    /// and finally to a synthesized built-in `build`. Never panics: a registry
+    /// missing `build` (an unvalidated custom one) yields a degraded-but-safe
+    /// session instead of crashing the supervisor and taking down every session.
+    fn resolve(&self, name: &str) -> AgentProfile {
+        self.get(name)
+            .or_else(|| self.get(DEFAULT_PROFILE))
+            .cloned()
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "profile registry missing `{DEFAULT_PROFILE}` and `{name}`; \
+                     falling back to a synthesized default profile"
+                );
+                default_profile()
+            })
+    }
+}
+
+/// The built-in `build` profile — the synthesized fallback the supervisor uses
+/// when a custom registry omits it (see [`ProfileRegistry::resolve`]).
+fn default_profile() -> AgentProfile {
+    let [build, ..] = built_in_profiles();
+    build
 }
 
 fn built_in_profiles() -> [AgentProfile; 3] {
@@ -306,12 +361,7 @@ async fn supervisor(
             // Record the parent link *before* spawning so it's in place for any
             // later lazy path, and so the child starts under the requested profile.
             parent_links.insert(child.clone(), Some(parent.clone()));
-            let profile = cfg
-                .profiles
-                .get(agent)
-                .or_else(|| cfg.profiles.get(DEFAULT_PROFILE))
-                .cloned()
-                .expect("built-in `build` profile always present");
+            let profile = cfg.profiles.resolve(agent);
             session_meta.insert(
                 child.clone(),
                 SessionInfo {
@@ -338,11 +388,7 @@ async fn supervisor(
         let cmd = msg_to_cmd(msg.clone());
 
         if !sessions.contains_key(&session_id) {
-            let profile = cfg
-                .profiles
-                .get(DEFAULT_PROFILE)
-                .cloned()
-                .expect("built-in `build` profile always present");
+            let profile = cfg.profiles.resolve(DEFAULT_PROFILE);
             let parent = parent_links.get(&session_id).cloned().flatten();
             session_meta.insert(
                 session_id.clone(),

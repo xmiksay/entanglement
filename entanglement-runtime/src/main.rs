@@ -97,21 +97,13 @@ fn build_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo, ToolRegis
 fn select_provider(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
     match std::env::var("ENTANGLEMENT_PROVIDER").ok().as_deref() {
         Some("zai") => {
-            let (cfg, info) =
-                zai_config(http_client).expect("ENTANGLEMENT_PROVIDER=zai requires ZAI_API_KEY");
-            (cfg, info)
+            zai_config(http_client).unwrap_or_else(|| exit_missing_key("zai", "ZAI_API_KEY"))
         }
-        Some("openai") => {
-            let (cfg, info) = openai_config(http_client)
-                .expect("ENTANGLEMENT_PROVIDER=openai requires OPENAI_API_KEY");
-            (cfg, info)
-        }
+        Some("openai") => openai_config(http_client)
+            .unwrap_or_else(|| exit_missing_key("openai", "OPENAI_API_KEY")),
         Some("ollama") => ollama_config(http_client),
-        Some("anthropic") => {
-            let (cfg, info) = anthropic_config(http_client)
-                .expect("ENTANGLEMENT_PROVIDER=anthropic requires ANTHROPIC_API_KEY");
-            (cfg, info)
-        }
+        Some("anthropic") => anthropic_config(http_client)
+            .unwrap_or_else(|| exit_missing_key("anthropic", "ANTHROPIC_API_KEY")),
         Some("echo") => echo_config(),
         Some(other) => {
             eprintln!(
@@ -143,6 +135,13 @@ fn select_provider(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
             )
         }
     }
+}
+
+/// Explicit `ENTANGLEMENT_PROVIDER` set but its key env var is absent: exit
+/// cleanly (like the unknown-provider branch) instead of panicking on `.expect`.
+fn exit_missing_key(provider: &str, key_env: &str) -> ! {
+    eprintln!("skutter: ENTANGLEMENT_PROVIDER={provider} requires {key_env} to be set");
+    std::process::exit(2);
 }
 
 fn env_nonempty(name: &str) -> Option<String> {
@@ -336,6 +335,12 @@ async fn main() -> Result<()> {
 
     let http_client = HttpClient::new();
     let (config, model_info, tools) = build_config(&http_client);
+    // Fail fast on a malformed config (e.g. a profile registry without `build`)
+    // rather than leaning on the supervisor's synthesized fallback.
+    if let Err(e) = config.validate() {
+        eprintln!("skutter: invalid engine configuration: {e}");
+        std::process::exit(2);
+    }
     // The runtime keeps its own copy of the profile registry to resolve
     // permissions (#59); the engine gets the same shape via `config`.
     let profiles = config.profiles.clone();
