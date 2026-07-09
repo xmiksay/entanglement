@@ -356,7 +356,14 @@ persistence machinery with none of the CLI/TUI/transport weight
   `OutEvent` variants but only `Status` is watched, so a turn end rings once.
   Focus reporting (crossterm `EnableFocusChange`) mutes signals while the
   terminal is focused, but best-effort only — terminals that never report focus
-  always signal.
+  always signal. **External editor + export** (✅ #13,
+  [ADR-0029](adr/0029-external-editor-and-markdown-export.md), `tui::editor` +
+  `tui::export`): `<leader>e` / `/editor` suspends the TUI and opens `$EDITOR`
+  (`$VISUAL`→`$EDITOR`→`vi`) on the input draft, reading the result back into the
+  input box; `<leader>E` / `/export` writes the transcript to
+  `<session>-<unix_secs>.md` and opens it. Both defer through a `UiEffect` on
+  `App` that the event loop (terminal owner) runs, restoring the alternate screen
+  symmetrically; an editor failure is logged, not fatal.
 
 ## 6b. Session persistence & resume (`persistence` + `session_store`)
 
