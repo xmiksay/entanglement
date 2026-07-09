@@ -312,7 +312,9 @@ persistence machinery with none of the CLI/TUI/transport weight
 
 - **ABI** — `holly.send()` / `holly.subscribe()`. Done.
 - **stdio** (`skutter run` / `skutter pipe`): one-shot `run [--format text|json]
-  [--agent <name>]`; bidirectional `pipe` NDJSON (`InMsg` in, `OutEvent` out).
+  [--agent <name>] [--session <id> | --resume <id>]`; bidirectional `pipe` NDJSON
+  (`InMsg` in, `OutEvent` out). `skutter sessions` lists past root sessions for
+  the cwd (see §6b).
 - **WebSocket** (`skutter serve`, _next_): axum `GET /ws`, in-band auth first
   frame, stateless handler, one `subscribe()` per socket, inbound frame →
   `InMsg` → `send()`, 30s ping, `continue` on `broadcast::Lagged`. (Recipe
@@ -327,6 +329,36 @@ persistence machinery with none of the CLI/TUI/transport weight
   left click hit-tests the chat area to toggle a transcript block — reasoning
   runs render collapsed as a `▸ Thinking (N lines)` header, expanded on click
   (or via the leader `t` key).
+
+## 6b. Session persistence & resume (`persistence` + `session_store`)
+
+Sessions are event-sourced to disk, one JSONL file per **root** session under
+`<data_dir>/entanglement/sessions/<safe-cwd>/<root_id>.jsonl` (`session_store`).
+`spawn_persistence_subscriber` (`persistence`) taps **both** directions of the
+ABI — `holly.subscribe()` for `OutEvent`s and `holly.subscribe_inbound()` for
+`InMsg`s — and appends each frame as a `LogRecord { ts, session, payload }` where
+`payload` is `LogPayload::In(InMsg) | Out(OutEvent)`. Logging inbound messages is
+what makes a session resumable: `Session::replay` reconstructs user turns from
+the logged `InMsg::Prompt` records, so without them a resumed context holds only
+assistant/tool messages and the model appears to forget the conversation.
+
+- **Inbound is biased ahead of outbound** so a prompt lands on disk before the
+  events it produces (`pair_records` pairs each `Out` with the preceding `In`).
+  `InMsg::Resume` is skipped (it carries the whole prior log → recursion/bloat)
+  and `InMsg::Spawn` is skipped (a child's turns are already captured in the
+  root's file via out events; logging the spawn would create a stray child root).
+- **Spawned children fold into the root file** via a `roots` map built from
+  `SessionStarted { root, parent }`, so each root file is a self-contained,
+  replayable record of the whole session tree.
+- **Resume** reads the file, `pair_records` builds the `(Option<InMsg>, OutEvent)`
+  stream, and `Holly::resume` seeds a session from `Session::replay`. The CLI
+  exposes `skutter run --resume <id>` and `skutter sessions` (lists past root
+  sessions for the cwd); the TUI `/resume` modal restores the full visible
+  transcript (`restore_from_records`) *and* reseeds engine context.
+- **One-shot flush**: a `run` invocation ends the moment the turn does, so `main`
+  aborts the tool executor and drops its `Holly` handle to close the broadcast
+  channels, then awaits the persistence task so buffered events reach disk before
+  the process exits.
 
 ## 7. Hygiene gates — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md) (`tree`), [ADR-0025](adr/0025-runtime-cargo-feature-gates.md) (`check-lean`)
 

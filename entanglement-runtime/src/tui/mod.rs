@@ -39,7 +39,7 @@ use app::App;
 use event::Event;
 use session_view::ApprovalMode;
 
-pub async fn tui(holly: Holly, initial_session: SessionId, model_info: ModelInfo) -> Result<()> {
+pub async fn tui(holly: &Holly, initial_session: SessionId, model_info: ModelInfo) -> Result<()> {
     setup_panic_handler();
 
     let mut stdout = std::io::stdout();
@@ -90,7 +90,7 @@ pub async fn tui(holly: Holly, initial_session: SessionId, model_info: ModelInfo
         tokio::select! {
             biased;
             Some(ev) = event_rx.recv() => {
-                if handle_event(&mut app, &holly, ev).await? {
+                if handle_event(&mut app, holly, ev).await? {
                     break;
                 }
             }
@@ -104,7 +104,7 @@ pub async fn tui(holly: Holly, initial_session: SessionId, model_info: ModelInfo
             }
         }
 
-        if drain_terminal_events(&mut event_rx, &mut app, &holly).await? {
+        if drain_terminal_events(&mut event_rx, &mut app, holly).await? {
             break;
         }
         drain_engine_events(&mut holly_sub, &mut app);
@@ -151,6 +151,9 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
                 }
                 if app.showing_command_palette() {
                     return handle_command_palette_event(app, key).await;
+                }
+                if app.showing_resume_modal() {
+                    return handle_resume_modal_event(app, holly, key).await;
                 }
                 // A model-driven `ask_user` question takes over input until
                 // answered (ADR-0027), just like an approval prompt.
@@ -406,6 +409,7 @@ fn any_modal_open(app: &App) -> bool {
         || app.showing_profile_picker()
         || app.showing_model_picker()
         || app.showing_command_palette()
+        || app.showing_resume_modal()
         || app.showing_help()
 }
 
@@ -420,6 +424,8 @@ fn wheel_modal_next(app: &mut App) -> bool {
         app.model_picker_next();
     } else if app.showing_command_palette() {
         app.command_palette().select_next();
+    } else if app.showing_resume_modal() {
+        app.resume_next();
     } else if app.showing_help() {
         // Consume without acting — the help dialog has no selection.
     } else {
@@ -437,6 +443,8 @@ fn wheel_modal_prev(app: &mut App) -> bool {
         app.model_picker_prev();
     } else if app.showing_command_palette() {
         app.command_palette().select_prev();
+    } else if app.showing_resume_modal() {
+        app.resume_prev();
     } else if app.showing_help() {
     } else {
         return false;
@@ -551,6 +559,49 @@ async fn handle_command_palette_event(app: &mut App, key: KeyEvent) -> Result<bo
             let mut query = app.command_palette().query().to_string();
             query.pop();
             app.command_palette().set_query(query);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+/// Drives the resume modal: navigate the past-session list and, on Enter,
+/// restore the picked session's full transcript into a fresh view and reseed the
+/// engine's context from the same log (`Holly::resume`). Read/resume failures are
+/// logged, not fatal — the modal simply closes.
+async fn handle_resume_modal_event(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_resume_modal();
+        }
+        KeyCode::Enter => {
+            if let Some(meta) = app.selected_resume_session() {
+                let id = meta.id.clone();
+                let cwd = std::env::current_dir().unwrap_or_default();
+                match crate::session_store::read(&cwd, &id) {
+                    Ok(records) => {
+                        // Visible transcript first, then engine context.
+                        app.restore_session(id.clone(), &records);
+                        let paired = crate::session_store::pair_records(&records);
+                        if let Err(e) = holly.resume(id.clone(), paired).await {
+                            tracing::error!("Failed to resume session {}: {}", id, e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to read session {}: {}", id, e);
+                    }
+                }
+            }
+            app.close_resume_modal();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.resume_next();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.resume_prev();
+        }
+        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
         }
         _ => {}
     }

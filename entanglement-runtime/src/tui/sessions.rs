@@ -1,7 +1,8 @@
-use entanglement_core::{OutEvent, SessionId};
+use entanglement_core::{InMsg, OutEvent, SessionId};
 use ratatui::widgets::ListState;
 use std::collections::HashMap;
 
+use crate::session_store::{LogPayload, LogRecord};
 use crate::tui::session_view::SessionView;
 
 /// Owns every `SessionView` the head has seen and which one is active.
@@ -146,6 +147,32 @@ impl SessionRegistry {
             };
             self.modal_state.select(Some(prev));
         }
+    }
+
+    /// Rebuilds a `SessionView` from persisted log records and switches to it,
+    /// restoring the full visible transcript of a resumed session. The view is
+    /// built fresh (seq-dedupe starts at 0) by folding `In(Prompt)` records as
+    /// user messages and `Out` events through the normal `apply_event` path — the
+    /// same reducers a live session uses.
+    pub fn restore_from_records(&mut self, id: SessionId, records: &[LogRecord]) {
+        let mut view = SessionView::new();
+        for record in records {
+            match &record.payload {
+                LogPayload::In(InMsg::Prompt { text, .. }) => {
+                    view.record_user_message(text.clone());
+                }
+                LogPayload::In(_) => {}
+                LogPayload::Out(event) => {
+                    view.apply_event(event.clone());
+                }
+            }
+        }
+
+        if !self.order.contains(&id) {
+            self.order.push(id.clone());
+        }
+        self.views.insert(id.clone(), view);
+        self.switch_to(id);
     }
 
     /// Switches to the highlighted session and closes the modal.
@@ -370,6 +397,63 @@ mod tests {
                 .map(|(_, view)| !view.transcript().is_empty())
                 .unwrap_or(false),
             "New session transcript exists"
+        );
+    }
+
+    #[test]
+    fn restore_from_records_rebuilds_transcript_and_switches() {
+        use crate::session_store::{LogPayload, LogRecord};
+
+        let initial = SessionId::new("live");
+        let restored = SessionId::new("old");
+        let mut reg = SessionRegistry::new(initial.clone());
+
+        let prompt = LogRecord::new(
+            restored.clone(),
+            LogPayload::In(InMsg::Prompt {
+                session: restored.clone(),
+                text: "My name is Miksa".to_string(),
+            }),
+        );
+        let reply = LogRecord::new(
+            restored.clone(),
+            LogPayload::Out(OutEvent::TextDelta {
+                session: restored.clone(),
+                seq: 1,
+                text: "Hello Miksa".to_string(),
+            }),
+        );
+        // Approve is a non-Prompt inbound record — it must not enter the transcript.
+        let approve = LogRecord::new(
+            restored.clone(),
+            LogPayload::In(InMsg::Approve {
+                session: restored.clone(),
+                request_id: "r1".to_string(),
+            }),
+        );
+
+        reg.restore_from_records(restored.clone(), &[prompt, reply, approve]);
+
+        assert_eq!(
+            reg.active_id(),
+            &restored,
+            "restored session becomes active"
+        );
+        let transcript = reg.active_view().transcript();
+        assert_eq!(transcript.len(), 2);
+        assert!(matches!(
+            &transcript[0],
+            TranscriptEntry::User { text, pending } if text == "My name is Miksa" && !pending
+        ));
+        assert!(matches!(
+            &transcript[1],
+            TranscriptEntry::TextDelta { text } if text == "Hello Miksa"
+        ));
+
+        // The restored id appears exactly once in the tab order.
+        assert_eq!(
+            reg.all().iter().filter(|(id, _)| **id == restored).count(),
+            1
         );
     }
 
