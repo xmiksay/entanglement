@@ -2,6 +2,10 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# coverage artifacts (make coverage / release gate — issue #107)
+/lcov.info
+/cobertura.xml
+
 # env / secrets
 .env
 .env.*

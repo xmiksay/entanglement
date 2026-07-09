@@ -3,7 +3,12 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build run run-json run-tui test test-unit test-integration lint fmt check-fmt verify clean check tree check-lean
+.PHONY: help build run run-json run-tui test test-unit test-integration lint fmt check-fmt verify clean check tree check-lean coverage
+
+# Minimum line-coverage % the release gate enforces. First measured baseline
+# (issue #107) was 65% workspace lines; floor set just under it to absorb CI
+# variance. Ratchet up as coverage improves — never lower it.
+COV_MIN ?= 60
 
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -63,6 +68,15 @@ check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI/transpor
 	$(CARGO) clippy -p entanglement-runtime --no-default-features --all-targets -- -D warnings
 
 verify: check-fmt tree check-lean lint test ## full CI-equivalent gate locally
+
+# Release gate (issue #107): workspace line coverage via cargo-llvm-cov. Fails
+# below COV_MIN, writes lcov.info + a Cobertura XML for artifact upload / badges.
+# Install the tool locally with: cargo install cargo-llvm-cov --locked
+coverage: ## cargo llvm-cov --workspace, fail under COV_MIN%
+	$(CARGO) llvm-cov --no-report --workspace
+	$(CARGO) llvm-cov report --lcov --output-path lcov.info
+	$(CARGO) llvm-cov report --cobertura --output-path cobertura.xml
+	$(CARGO) llvm-cov report --fail-under-lines $(COV_MIN)
 
 clean: ## cargo clean
 	$(CARGO) clean

@@ -1,0 +1,56 @@
+# Release gate (issue #107): on a version tag, a release is blocked on the full
+# `make verify` gate PLUS a coverage job (`make coverage` → cargo-llvm-cov). The
+# coverage run fails below COV_MIN and uploads its lcov + Cobertura reports as a
+# build artifact. Drives everything through `make`.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: make verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: make verify
+        run: make verify
+
+  coverage:
+    name: make coverage
+    runs-on: ubuntu-latest
+    # Only spend the (slower, instrumented) coverage build once the gate is green.
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      # cargo-llvm-cov needs the llvm-tools component + the cargo subcommand.
+      - name: Install coverage tooling
+        run: |
+          rustup component add llvm-tools-preview
+          curl -LsSf https://github.com/taiki-e/cargo-llvm-cov/releases/latest/download/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz | tar xzf - -C "$HOME/.cargo/bin"
+
+      # Fails below COV_MIN (see Makefile); writes lcov.info + cobertura.xml.
+      - name: make coverage
+        run: make coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            lcov.info
+            cobertura.xml
