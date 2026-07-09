@@ -323,7 +323,7 @@ fn append_transcript<'a>(
         if with_padding {
             let padding = Line::from(vec![
                 Span::styled("▌", Style::default().fg(colors.fg).bg(colors.bg)),
-                Span::raw(" ".repeat((available_width - 1) as usize)),
+                Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
             ]);
             lines.push(padding.clone());
             render_text_run(
@@ -371,7 +371,7 @@ fn append_transcript<'a>(
         let source_lines = run.lines().filter(|l| !l.trim().is_empty()).count().max(1);
         let padding = Line::from(vec![
             Span::styled("▌", Style::default().fg(colors.fg).bg(colors.bg)),
-            Span::raw(" ".repeat((available_width - 1) as usize)),
+            Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
         ]);
         lines.push(padding.clone());
 
@@ -486,7 +486,7 @@ fn append_transcript<'a>(
             TranscriptEntry::User { text, pending } => {
                 let padding = Line::from(vec![
                     Span::styled("▌", Style::default().fg(user.fg).bg(user.bg)),
-                    Span::raw(" ".repeat((available_width - 1) as usize)),
+                    Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
                 ]);
                 lines.push(padding.clone());
                 for line in text.lines() {
@@ -508,7 +508,7 @@ fn append_transcript<'a>(
             TranscriptEntry::ToolCall { tool, input, .. } => {
                 let padding = Line::from(vec![
                     Span::styled("▌", Style::default().fg(tool_req.fg).bg(tool_req.bg)),
-                    Span::raw(" ".repeat((available_width - 1) as usize)),
+                    Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
                 ]);
                 lines.push(padding.clone());
                 let request_line = Line::from(vec![
@@ -531,7 +531,7 @@ fn append_transcript<'a>(
             TranscriptEntry::ToolOutput { tool, output } => {
                 let padding = Line::from(vec![
                     Span::styled("▌", Style::default().fg(tool_out.fg).bg(tool_out.bg)),
-                    Span::raw(" ".repeat((available_width - 1) as usize)),
+                    Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
                 ]);
                 lines.push(padding.clone());
                 let header_text = if let Some(tool_name) = tool {
@@ -559,7 +559,7 @@ fn append_transcript<'a>(
             TranscriptEntry::Error { message } => {
                 let padding = Line::from(vec![
                     Span::styled("▌", Style::default().fg(error.fg).bg(error.bg)),
-                    Span::raw(" ".repeat((available_width - 1) as usize)),
+                    Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
                 ]);
                 lines.push(padding.clone());
                 let error_line = Line::from(vec![
@@ -820,6 +820,50 @@ mod tests {
             has_grid,
             "streamed table did not render as a grid: {joined}"
         );
+    }
+
+    #[test]
+    fn narrow_widths_do_not_panic() {
+        // The padding rows compute `" ".repeat(width - 1)`; at width 0 or 1 a
+        // raw `u16` subtraction underflows (panic in debug, 65535 in release).
+        // Feed one of every padded entry kind and render at the degenerate
+        // widths — this must not panic and must produce lines.
+        let sid = SessionId::new("s1");
+        let mut app = App::new(sid.clone());
+        app.record_user_message("hello".to_string());
+        app.handle_out_event(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: 1,
+            text: "assistant reply\n".to_string(),
+        });
+        app.handle_out_event(OutEvent::ToolCall {
+            session: sid.clone(),
+            seq: 2,
+            request_id: "c1".to_string(),
+            tool: "read".to_string(),
+            input: "{\"path\":\"x\"}".to_string(),
+        });
+        app.handle_out_event(OutEvent::ToolOutput {
+            session: sid.clone(),
+            seq: 3,
+            request_id: "c1".to_string(),
+            tool: "read".to_string(),
+            output: "file body".to_string(),
+        });
+        app.handle_out_event(OutEvent::Error {
+            session: sid.clone(),
+            seq: 4,
+            message: "boom".to_string(),
+        });
+        feed_reasoning(&mut app, &sid, "thinking hard\n");
+
+        for width in [0u16, 1, 2] {
+            let body = render_body_lines(&app, width);
+            assert!(
+                !body.lines.is_empty(),
+                "width {width} should still render lines"
+            );
+        }
     }
 
     #[test]

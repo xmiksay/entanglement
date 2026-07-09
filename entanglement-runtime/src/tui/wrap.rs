@@ -1,4 +1,33 @@
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthChar;
+
+/// Truncate `text` to at most `max_width` display columns, appending `...` when
+/// it overflows. Char-boundary safe: it walks whole `char`s and never slices
+/// mid-codepoint (unlike a raw byte slice), and it measures display width so
+/// wide CJK/emoji glyphs count as they render, not as one byte each.
+pub fn truncate(text: &str, max_width: usize) -> String {
+    let total: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
+    if total <= max_width {
+        return text.to_string();
+    }
+    // Not enough room for content beside the ellipsis: emit as many dots as fit.
+    if max_width <= 3 {
+        return ".".repeat(max_width);
+    }
+    let budget = max_width - 3;
+    let mut used = 0;
+    let mut out = String::new();
+    for ch in text.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if used + cw > budget {
+            break;
+        }
+        used += cw;
+        out.push(ch);
+    }
+    out.push_str("...");
+    out
+}
 
 pub fn wrap_line(line: Line<'_>, width: u16) -> Vec<Line<'_>> {
     if width == 0 || line.spans.is_empty() {
@@ -144,6 +173,39 @@ mod tests {
         let line = Line::from("supercalifragilisticexpialidocious");
         let wrapped = wrap_line(line, 10);
         assert!(!wrapped.is_empty());
+    }
+
+    #[test]
+    fn truncate_short_string_untouched() {
+        assert_eq!(truncate("hello", 40), "hello");
+    }
+
+    #[test]
+    fn truncate_ascii_appends_ellipsis() {
+        let s = "a".repeat(50);
+        let out = truncate(&s, 40);
+        assert_eq!(out.chars().count(), 40);
+        assert!(out.ends_with("..."));
+        assert_eq!(&out[..37], &"a".repeat(37));
+    }
+
+    #[test]
+    fn truncate_multibyte_never_panics_and_stays_within_width() {
+        // Accented + CJK + emoji, each glyph several bytes: a byte slice at
+        // offset 37 would land mid-codepoint and panic. Width-based truncation
+        // must not, and must never exceed the budget.
+        let s = "héllo café 日本語テキスト 🚀🚀🚀 more text here padding padding";
+        let out = truncate(s, 40);
+        let width: usize = out.chars().map(|c| c.width().unwrap_or(0)).sum();
+        assert!(width <= 40, "truncated width {width} exceeds 40");
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_tiny_width_degrades_to_dots() {
+        assert_eq!(truncate("hello", 3), "...");
+        assert_eq!(truncate("hello", 2), "..");
+        assert_eq!(truncate("hello", 0), "");
     }
 
     #[test]
