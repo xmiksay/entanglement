@@ -308,6 +308,46 @@ fn append_transcript<'a>(
         }
     }
 
+    /// Renders a coalesced assistant text run, optionally wrapped in the
+    /// colored left-bar padding. Streaming (uncommitted) trailing text renders
+    /// without padding; a run committed by a following entry gets the bar.
+    fn flush_text<'a>(
+        lines: &mut Vec<Line<'a>>,
+        markdown_renderer: &'a MarkdownRenderer,
+        run: &mut String,
+        theme: Theme,
+        colors: RoleColors,
+        available_width: u16,
+        with_padding: bool,
+    ) {
+        if with_padding {
+            let padding = Line::from(vec![
+                Span::styled("▌", Style::default().fg(colors.fg).bg(colors.bg)),
+                Span::raw(" ".repeat((available_width - 1) as usize)),
+            ]);
+            lines.push(padding.clone());
+            render_text_run(
+                lines,
+                markdown_renderer,
+                run,
+                theme,
+                colors,
+                available_width,
+            );
+            lines.push(padding);
+        } else {
+            render_text_run(
+                lines,
+                markdown_renderer,
+                run,
+                theme,
+                colors,
+                available_width,
+            );
+        }
+        run.clear();
+    }
+
     /// Renders a coalesced reasoning run as a collapsible block: a one-line
     /// `▸ Thinking (N lines)` header (collapsed, the default) or `▾ …` plus the
     /// italic body (expanded). Records the rendered line range under `block_id`
@@ -370,32 +410,58 @@ fn append_transcript<'a>(
     let mut reasoning_start: Option<usize> = None;
     for (idx, entry) in app.transcript().iter().enumerate() {
         if let TranscriptEntry::TextDelta { text } = entry {
+            // Switching text→reasoning would break arrival order, so commit any
+            // reasoning run in progress before this text run starts.
+            if !pending_reasoning.is_empty() {
+                let block_id = reasoning_start.take().unwrap_or(idx);
+                flush_reasoning(
+                    lines,
+                    regions,
+                    markdown_renderer,
+                    &pending_reasoning,
+                    theme,
+                    reasoning,
+                    available_width,
+                    block_id,
+                    app.reasoning_expanded(block_id),
+                );
+                pending_reasoning.clear();
+            }
             pending_text.push_str(text);
             continue;
         }
         if let TranscriptEntry::ReasoningDelta { text } = entry {
+            // Symmetric flush: commit the text run before the reasoning run so a
+            // thinking block that arrives after text renders after it.
+            if !pending_text.is_empty() {
+                flush_text(
+                    lines,
+                    markdown_renderer,
+                    &mut pending_text,
+                    theme,
+                    assistant,
+                    available_width,
+                    true,
+                );
+            }
             if pending_reasoning.is_empty() {
                 reasoning_start = Some(idx);
             }
             pending_reasoning.push_str(text);
             continue;
         }
+        // Flush-on-switch keeps the two accumulators mutually exclusive, so at a
+        // non-delta boundary at most one is non-empty — flush order is immaterial.
         if !pending_text.is_empty() {
-            let padding = Line::from(vec![
-                Span::styled("▌", Style::default().fg(assistant.fg).bg(assistant.bg)),
-                Span::raw(" ".repeat((available_width - 1) as usize)),
-            ]);
-            lines.push(padding.clone());
-            render_text_run(
+            flush_text(
                 lines,
                 markdown_renderer,
-                &pending_text,
+                &mut pending_text,
                 theme,
                 assistant,
                 available_width,
+                true,
             );
-            lines.push(padding);
-            pending_text.clear();
         }
         if !pending_reasoning.is_empty() {
             let block_id = reasoning_start.take().unwrap_or(idx);
@@ -511,14 +577,17 @@ fn append_transcript<'a>(
             }
         }
     }
+    // End of stream: at most one accumulator survives (flush-on-switch). The
+    // trailing text run is still being streamed, so it renders bar-less.
     if !pending_text.is_empty() {
-        render_text_run(
+        flush_text(
             lines,
             markdown_renderer,
-            &pending_text,
+            &mut pending_text,
             theme,
             assistant,
             available_width,
+            false,
         );
     }
     if !pending_reasoning.is_empty() {
@@ -556,6 +625,101 @@ mod tests {
                 text: chunk.to_string(),
             });
         }
+    }
+
+    /// Index of the first rendered line whose text contains `needle`.
+    fn line_index_of(body: &RenderedBody, needle: &str) -> usize {
+        body.lines
+            .iter()
+            .position(|l| line_text(l).contains(needle))
+            .unwrap_or_else(|| panic!("no rendered line contains {needle:?}"))
+    }
+
+    #[test]
+    fn text_then_reasoning_renders_in_arrival_order() {
+        // A turn that streams assistant text and *then* a thinking block must
+        // render the thinking header after the text, not before it (#88).
+        let sid = SessionId::new("s1");
+        let mut app = App::new(sid.clone());
+        app.handle_out_event(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: 1,
+            text: "ANSWERTEXT\n".to_string(),
+        });
+        app.handle_out_event(OutEvent::ReasoningDelta {
+            session: sid.clone(),
+            seq: 2,
+            text: "afterthought\n".to_string(),
+        });
+
+        let body = render_body_lines(&app, 80);
+        let text_at = line_index_of(&body, "ANSWERTEXT");
+        let thinking_at = line_index_of(&body, "▸ Thinking");
+        assert!(
+            text_at < thinking_at,
+            "text (line {text_at}) must render before the trailing thinking block (line {thinking_at})"
+        );
+    }
+
+    #[test]
+    fn reasoning_then_text_renders_thinking_first() {
+        // The common case — model thinks, then answers. The thinking block must
+        // render before the assistant text, not after it (the #88 regression).
+        let sid = SessionId::new("s1");
+        let mut app = App::new(sid.clone());
+        app.handle_out_event(OutEvent::ReasoningDelta {
+            session: sid.clone(),
+            seq: 1,
+            text: "forethought\n".to_string(),
+        });
+        app.handle_out_event(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: 2,
+            text: "ANSWERTEXT\n".to_string(),
+        });
+
+        let body = render_body_lines(&app, 80);
+        let thinking_at = line_index_of(&body, "▸ Thinking");
+        let text_at = line_index_of(&body, "ANSWERTEXT");
+        assert!(
+            thinking_at < text_at,
+            "leading thinking block (line {thinking_at}) must render before the text (line {text_at})"
+        );
+    }
+
+    #[test]
+    fn interleaved_runs_stay_ordered_and_distinct() {
+        // text → reasoning → text produces two text runs bracketing one thinking
+        // block, each a separately-toggleable run keyed by its own block id.
+        let sid = SessionId::new("s1");
+        let mut app = App::new(sid.clone());
+        app.handle_out_event(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: 1,
+            text: "FIRSTTEXT\n".to_string(),
+        });
+        app.handle_out_event(OutEvent::ReasoningDelta {
+            session: sid.clone(),
+            seq: 2,
+            text: "mid think\n".to_string(),
+        });
+        app.handle_out_event(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: 3,
+            text: "SECONDTEXT\n".to_string(),
+        });
+
+        let body = render_body_lines(&app, 80);
+        let first = line_index_of(&body, "FIRSTTEXT");
+        let thinking = line_index_of(&body, "▸ Thinking");
+        let second = line_index_of(&body, "SECONDTEXT");
+        assert!(
+            first < thinking && thinking < second,
+            "expected FIRSTTEXT ({first}) < Thinking ({thinking}) < SECONDTEXT ({second})"
+        );
+        // The reasoning run's block id is the transcript index of its first
+        // `ReasoningDelta` (entry 1), tagged on its rendered header.
+        assert_eq!(body.line_blocks[thinking], Some(1));
     }
 
     #[test]
