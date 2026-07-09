@@ -7,7 +7,7 @@
 //! [`Holly::subscribe`] for [`OutEvent`]s — no serialization. Every transport
 //! (stdio, WS, TUI) is a thin adapter over these two methods.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -276,7 +276,11 @@ async fn supervisor(
     // task only exits when its channel is dropped (CloseSession / shutdown), so
     // `sessions` is the liveness source of truth and this never drifts.
     let mut session_meta: HashMap<SessionId, SessionInfo> = HashMap::new();
-    let mut pending_resumes: HashMap<SessionId, Vec<(Option<InMsg>, OutEvent)>> = HashMap::new();
+    // Tombstone set of session ids retired by `CloseSession`. Ids are single-use
+    // (ADR-0028): once closed, no path — lazy prompt, `Resume`, or `Spawn` — may
+    // resurrect the id under a fresh, blank session (issue #105). A head that
+    // already rendered `SessionEnded` must never see a second `SessionStarted`.
+    let mut closed: HashSet<SessionId> = HashSet::new();
     // child → parent. Populated on `Spawn` (#60) so a child's `SessionStarted`
     // (and the tree-walk helpers that read it) reflect the real hierarchy;
     // previously nothing ever inserted here, so every session was a root.
@@ -318,30 +322,58 @@ async fn supervisor(
                 session_meta.remove(session);
                 parent_links.remove(session);
             }
+            // Tombstone the id regardless of liveness: it is spent (ADR-0028), so
+            // a `Prompt` queued behind this `CloseSession` can't respawn it blank.
+            closed.insert(session.clone());
             continue;
         }
 
         if let InMsg::Resume { records, .. } = &msg {
-            pending_resumes.insert(session_id.clone(), records.clone());
+            // A retired id is single-use; refuse rather than resurrect (ADR-0028).
+            if closed.contains(&session_id) {
+                emit_supervisor_error(
+                    &events,
+                    &session_id,
+                    "cannot resume a closed session id (ids are single-use)",
+                );
+                continue;
+            }
+            // Resuming a live id would overwrite its sender and orphan the running
+            // task (it sees its channel close mid-turn). Refuse, like `Spawn`.
+            if sessions.contains_key(&session_id) {
+                emit_supervisor_error(
+                    &events,
+                    &session_id,
+                    "cannot resume an already-live session id",
+                );
+                continue;
+            }
+            // Replay *before* registering the session. A failed replay used to
+            // still insert the sender while its task returned early, leaving a
+            // dead id that showed in `ListSessions` and silently swallowed every
+            // routed `Prompt` (issue #105). Register only on success; on failure
+            // surface an `Error` and leave the id unclaimed.
+            let initial_session = match Session::replay(records, &cfg, root.as_path()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to replay session {}: {}", session_id, e);
+                    emit_supervisor_error(
+                        &events,
+                        &session_id,
+                        &format!("failed to resume session: {e}"),
+                    );
+                    continue;
+                }
+            };
             session_meta.insert(session_id.clone(), resume_meta(&session_id, records));
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
             let ev = events.clone();
             let cfg2 = cfg.clone();
-            let root2 = root.clone();
             let sid = session_id.clone();
-            let records = pending_resumes.remove(&sid).unwrap_or_default();
+            let profile = initial_session.profile.clone();
+            let parent = initial_session.parent.clone();
             tokio::spawn(async move {
-                match Session::replay(&records, &cfg2, &root2) {
-                    Ok(initial_session) => {
-                        let profile = initial_session.profile.clone();
-                        let parent = initial_session.parent.clone();
-                        session_loop(sid, srx, ev, cfg2, profile, Some(initial_session), parent)
-                            .await;
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to replay session {}: {}", sid, e);
-                    }
-                }
+                session_loop(sid, srx, ev, cfg2, profile, Some(initial_session), parent).await;
             });
             sessions.insert(session_id.clone(), stx);
             continue;
@@ -356,6 +388,15 @@ async fn supervisor(
         {
             // A duplicate spawn for a live child is a no-op (the child already runs).
             if sessions.contains_key(child) {
+                continue;
+            }
+            // A retired id is single-use; never respawn it (ADR-0028, issue #105).
+            if closed.contains(child) {
+                emit_supervisor_error(
+                    &events,
+                    child,
+                    "cannot spawn a closed session id (ids are single-use)",
+                );
                 continue;
             }
             // Record the parent link *before* spawning so it's in place for any
@@ -388,6 +429,17 @@ async fn supervisor(
         let cmd = msg_to_cmd(msg.clone());
 
         if !sessions.contains_key(&session_id) {
+            // A closed id is spent (ADR-0028): a `Prompt` that raced behind its
+            // `CloseSession` must not lazily respawn a blank session under it
+            // (issue #105). Refuse with feedback instead of silently resurrecting.
+            if closed.contains(&session_id) {
+                emit_supervisor_error(
+                    &events,
+                    &session_id,
+                    "session id is closed (ids are single-use); mint a fresh session id",
+                );
+                continue;
+            }
             let profile = cfg.profiles.resolve(DEFAULT_PROFILE);
             let parent = parent_links.get(&session_id).cloned().flatten();
             session_meta.insert(
@@ -445,13 +497,24 @@ async fn route_to_session(
         }
     }
     tracing::warn!(%session, "session command channel saturated; command shed");
-    // seq 0: a supervisor-issued error can't mint the session's monotonic seq
-    // (the session task owns it). Exceptional path — the tracing warn is the
-    // primary signal; the event tells any listening head the session is wedged.
+    emit_supervisor_error(
+        events,
+        session,
+        "session busy: command dropped (command channel saturated)",
+    );
+}
+
+/// Emit a supervisor-level [`OutEvent::Error`] for a session the supervisor
+/// rejects or sheds (a refused resurrection, a failed replay, a saturated
+/// channel). `seq` is `0` because the supervisor can't mint the session's
+/// monotonic seq — the session task owns it. On these exceptional paths the
+/// tracing log is the primary signal; the event tells any listening head the
+/// message did not land, rather than letting it vanish silently.
+fn emit_supervisor_error(events: &broadcast::Sender<OutEvent>, session: &SessionId, message: &str) {
     let _ = events.send(OutEvent::Error {
         session: session.clone(),
         seq: 0,
-        message: "session busy: command dropped (command channel saturated)".to_string(),
+        message: message.to_string(),
     });
 }
 
