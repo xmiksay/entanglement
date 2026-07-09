@@ -112,7 +112,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
         .style(Style::default().fg(Color::White).bg(theme.input_bg))
         .scroll((app.input().scroll_offset(), 0));
     f.render_widget(paragraph, area);
-    let cursor_pos = app.input().cursor_col() as u16;
+    let cursor_pos = app.input().cursor_display_col() as u16;
     if cursor_pos < area.width {
         f.set_cursor_position((area.x + cursor_pos, area.y));
     }
