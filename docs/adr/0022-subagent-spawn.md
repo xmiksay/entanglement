@@ -43,6 +43,13 @@ via `EngineConfig.tool_specs` (appended in the head's `build_config`).
 
 ### Answer relay — child's final text as a synthetic tool result
 
+> **Superseded (#89, [ADR-0026](0026-async-subagent-spawn-and-poll.md)).** The
+> *synchronous* relay described here — `spawn_agent` blocking the parent turn
+> until the child's `Done` — was replaced by a non-blocking launch: `spawn_agent`
+> now returns the child handle immediately and a separate `agent_poll` tool joins
+> on it. The spawn-request path and supervisor branch below are unchanged; only
+> the "block until `Done`, then reply with the answer" step moved to `agent_poll`.
+
 The runtime executor, on intercepting `spawn_agent`, subscribes to the outbox
 *before* sending `Spawn` (so the child's `Done` cannot race ahead of the
 watcher), sends the `Spawn`, then watches the child's events — accumulating its

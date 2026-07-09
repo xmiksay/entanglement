@@ -1,11 +1,14 @@
-//! Sub-agent spawn orchestration (#60, ADR-0021/0010).
+//! Sub-agent spawn orchestration (#60, ADR-0021/0010; non-blocking #89, ADR-0026).
 //!
 //! `spawn_agent` is not a filesystem tool in the [`ToolRegistry`] — it is an
 //! engine-coordination primitive owned by the runtime. When the model calls it,
-//! [`spawn_subagent`] creates a child session via [`InMsg::Spawn`], lets it run
-//! to completion, and relays the child's final answer back to the parent as the
-//! tool's output. The parent's turn loop sees an ordinary tool result (#58), so
-//! core needs no notion of "child session".
+//! [`launch_subagent`] creates a child session via [`InMsg::Spawn`] and replies
+//! to the parent *immediately* with the child's handle (`agent_id`) — it does
+//! **not** wait for the child's `Done`, so it never blocks the parent turn
+//! (ADR-0026 supersedes ADR-0022's synchronous answer-relay). It then keeps
+//! watching the child in the same detached task, recording the final answer +
+//! duration into the shared [`AgentRegistry`] keyed by the handle; the parent
+//! collects it later with `agent_poll` (see [`crate::agent_poll`]).
 //!
 //! Because it only orchestrates sessions (it touches no host resource), the
 //! executor runs it *before* permission resolution — it bypasses the permission
@@ -15,6 +18,8 @@ use std::collections::{HashMap, HashSet};
 
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId, ToolSpec};
 use tokio::sync::broadcast::{error::RecvError, Receiver};
+
+use crate::agent_poll::{AgentRegistry, AgentStatus};
 
 /// Tool name the model calls to spawn a sub-agent.
 pub const SPAWN_TOOL: &str = "spawn_agent";
@@ -124,9 +129,11 @@ const DEFAULT_SUBAGENT: &str = "explore";
 pub fn spawn_agent_spec() -> ToolSpec {
     ToolSpec::with_schema(
         SPAWN_TOOL,
-        "Spawn a sub-agent session to handle a focused subtask. The sub-agent \
-         runs to completion under the named agent profile and its final answer \
-         becomes this tool's output.",
+        "Launch a sub-agent session to handle a focused subtask. Returns \
+         immediately with an agent_id handle (it does not wait for the \
+         sub-agent to finish), so you can launch several in a row and let them \
+         run concurrently. Collect a sub-agent's answer by calling agent_poll \
+         with its agent_id.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -144,32 +151,38 @@ pub fn spawn_agent_spec() -> ToolSpec {
     )
 }
 
-/// Orchestrate one `spawn_agent` call: start a child session, run `prompt`
-/// under `agent`, and reply to `parent` with the child's final text.
+/// Orchestrate one `spawn_agent` call (ADR-0026): start a child session, reply
+/// to `parent` *immediately* with the child handle, then keep watching the child
+/// and record its answer + duration into `registry` for a later `agent_poll`.
 ///
 /// `events` must be a receiver subscribed *before* the [`InMsg::Spawn`] is sent
 /// (the caller subscribes synchronously), so the child's events — including its
 /// terminal `Done` — cannot race ahead of the watcher.
-pub async fn spawn_subagent(
+pub async fn launch_subagent(
     holly: Holly,
     mut events: Receiver<OutEvent>,
+    registry: AgentRegistry,
     parent: SessionId,
     request_id: String,
     input: String,
 ) {
     let (agent, prompt) = parse_input(&input);
     let child = SessionId::new_uuid();
+    // Register *before* sending Spawn so a poll can never precede the handle
+    // (the parent only learns the id from the reply below, which comes after).
+    let (status_tx, started) = registry.register(child.clone());
 
     if holly
         .send(InMsg::Spawn {
             session: child.clone(),
             parent: parent.clone(),
-            agent,
+            agent: agent.clone(),
             prompt,
         })
         .await
         .is_err()
     {
+        registry.forget(&child);
         reply(
             &holly,
             parent,
@@ -180,8 +193,26 @@ pub async fn spawn_subagent(
         return;
     }
 
-    let output = collect_child_answer(&mut events, &child).await;
-    reply(&holly, parent, request_id, output).await;
+    // Hand the handle back now — the parent turn continues instead of blocking
+    // on the child's `Done` (ADR-0026 supersedes ADR-0022's synchronous relay).
+    reply(
+        &holly,
+        parent,
+        request_id,
+        format!(
+            "Sub-agent launched under the `{agent}` profile. agent_id: {child}. \
+             Call agent_poll with this agent_id to await its answer."
+        ),
+    )
+    .await;
+
+    // Keep accumulating the child's answer; publish it (with timing) for poll.
+    let answer = collect_child_answer(&mut events, &child).await;
+    // The registry keeps a receiver, so the completed value survives this drop.
+    let _ = status_tx.send(AgentStatus::Complete {
+        answer,
+        elapsed: started.elapsed(),
+    });
 }
 
 /// Watch the child's event stream, accumulating its assistant text until the

@@ -69,6 +69,12 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
         depth
     }
 
+    // Wall clock (ms) for the live spawn-duration of in-flight sub-agents (#89).
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
     let rows: Vec<ListItem> = sessions_vec
         .into_iter()
         .map(|(id, view)| {
@@ -90,6 +96,18 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
                     " ⏳ approval",
                     Style::default().fg(Color::Yellow),
                 ));
+            }
+            // Sub-agents (depth > 0) show their spawn duration: live while
+            // running, fixed once ended (#89, ADR-0026).
+            if depth > 0 {
+                if let Some(secs) = view.elapsed_secs(now_ms) {
+                    let (glyph, style) = if view.has_ended() {
+                        (" ✓ ", Style::default().dim())
+                    } else {
+                        (" ⏱ ", Style::default().fg(Color::Cyan))
+                    };
+                    spans.push(Span::styled(format!("{glyph}{secs}s"), style));
+                }
             }
             ListItem::new(Line::from(spans))
         })
