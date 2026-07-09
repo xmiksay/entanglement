@@ -3,12 +3,14 @@ use entanglement_provider::{models_for, ModelInfo};
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::session_store::{list_sessions, LogRecord, SessionMeta};
 use crate::tui::commands::{Command, CommandPalette};
 use crate::tui::keybindings::{Action, LeaderKeyHandler};
 use crate::tui::markdown::MarkdownRenderer;
+use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::session_view::{ApprovalMode, PendingQuestion, TranscriptEntry};
 use crate::tui::sessions::SessionRegistry;
 use crate::tui::theme::Theme;
@@ -178,6 +180,31 @@ impl SimpleInput {
     pub fn scroll_offset(&self) -> u16 {
         self.scroll_offset
     }
+
+    /// The cursor's line, truncated to the bytes left of the cursor. Used to
+    /// detect an active `@file` mention token (ADR-0030).
+    pub fn current_line_before_cursor(&self) -> &str {
+        let line = self
+            .lines
+            .get(self.cursor_row)
+            .map(String::as_str)
+            .unwrap_or("");
+        let col = self.cursor_col.min(line.len());
+        &line[..col]
+    }
+
+    /// Replace the byte range `[start, end)` on the cursor's line with `text`,
+    /// leaving the cursor just past the inserted text. Used to swap an `@query`
+    /// token for the selected path.
+    pub fn replace_on_cursor_line(&mut self, start: usize, end: usize, text: &str) {
+        let Some(line) = self.lines.get_mut(self.cursor_row) else {
+            return;
+        };
+        let end = end.min(line.len());
+        let start = start.min(end);
+        line.replace_range(start..end, text);
+        self.cursor_col = start + text.len();
+    }
 }
 
 const HISTORY_CAPACITY: usize = 100;
@@ -261,6 +288,12 @@ pub struct App {
 
     // Deferred terminal-owning effect (editor / export) for the event loop to run.
     pending_effect: Option<UiEffect>,
+
+    // `@file` mention completion + `!bash` passthrough (ADR-0030). `root` is the
+    // working directory both the file index and `!bash` execution are rooted at.
+    root: PathBuf,
+    bash_enabled: bool,
+    mention: MentionPopup,
 }
 
 impl App {
@@ -366,6 +399,9 @@ impl App {
             chat_scroll_offset: 0,
             chat_line_blocks: Vec::new(),
             pending_effect: None,
+            root: PathBuf::from("."),
+            bash_enabled: false,
+            mention: MentionPopup::new(FileIndex::default()),
         }
     }
 
@@ -542,6 +578,84 @@ impl App {
     pub fn set_input_text(&mut self, text: String) {
         self.input = SimpleInput::default();
         self.input.insert_str(&text);
+        self.mark_dirty();
+    }
+
+    /// Wire the working directory into the head features that need it: builds
+    /// the `@file` completion index and records whether `!bash` passthrough is
+    /// allowed (ADR-0030). Called once by the event loop at startup.
+    pub fn init_head_context(&mut self, root: PathBuf, bash_enabled: bool) {
+        self.mention = MentionPopup::new(FileIndex::build(&root));
+        self.root = root;
+        self.bash_enabled = bash_enabled;
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn bash_enabled(&self) -> bool {
+        self.bash_enabled
+    }
+
+    pub fn mention(&self) -> &MentionPopup {
+        &self.mention
+    }
+
+    pub fn mention_mut(&mut self) -> &mut MentionPopup {
+        &mut self.mention
+    }
+
+    pub fn mention_visible(&self) -> bool {
+        self.mention.visible()
+    }
+
+    /// Recompute the `@file` popup from the current input line. Call after any
+    /// key that changes the input text or cursor position.
+    pub fn update_mention(&mut self) {
+        let before = self.input.current_line_before_cursor().to_string();
+        self.mention.update(&before);
+        self.mark_dirty();
+    }
+
+    pub fn hide_mention(&mut self) {
+        self.mention.hide();
+        self.mark_dirty();
+    }
+
+    pub fn mention_select_next(&mut self) {
+        self.mention.select_next();
+        self.mark_dirty();
+    }
+
+    pub fn mention_select_prev(&mut self) {
+        self.mention.select_prev();
+        self.mark_dirty();
+    }
+
+    /// Swap the active `@query` token for the highlighted path (`@path `).
+    /// Returns false (no-op) when the popup has no selection.
+    pub fn accept_mention(&mut self) -> bool {
+        let Some(path) = self.mention.selected().cloned() else {
+            return false;
+        };
+        let before = self.input.current_line_before_cursor().to_string();
+        if let Some(range) = crate::tui::mention::active_mention_range(&before) {
+            self.input
+                .replace_on_cursor_line(range.start, range.end, &format!("@{path} "));
+        }
+        self.mention.hide();
+        self.mark_dirty();
+        true
+    }
+
+    /// Record a `!bash` passthrough round-trip in the transcript (ADR-0030):
+    /// the command and its captured output, rendered like a tool call/output.
+    pub fn record_bash_passthrough(&mut self, command: String, output: String) {
+        self.sessions
+            .active_view_mut()
+            .record_bash_passthrough(command, output);
+        self.scroll_to_bottom();
         self.mark_dirty();
     }
 
@@ -1279,5 +1393,35 @@ mod tests {
         app.tick_thinking();
 
         assert!(app.thinking_since().is_none());
+    }
+
+    #[test]
+    fn accept_mention_replaces_at_token_with_path() {
+        let mut app = App::new(SessionId::new("test"));
+        app.mention = MentionPopup::new(FileIndex::from_paths(vec!["src/tui/app.rs".to_string()]));
+        app.input.insert_str("explain @app");
+
+        app.update_mention();
+        assert!(app.mention_visible());
+
+        assert!(app.accept_mention());
+        assert_eq!(app.input_text(), "explain @src/tui/app.rs ");
+        assert!(!app.mention_visible());
+    }
+
+    #[test]
+    fn record_bash_passthrough_appends_tool_call_and_output() {
+        let mut app = App::new(SessionId::new("test"));
+        app.record_bash_passthrough("echo hi".to_string(), "[exit 0]\nhi\n".to_string());
+
+        let entries = app.transcript();
+        assert!(matches!(
+            &entries[entries.len() - 2],
+            TranscriptEntry::ToolCall { tool, input } if tool == "!bash" && input == "echo hi"
+        ));
+        assert!(matches!(
+            &entries[entries.len() - 1],
+            TranscriptEntry::ToolOutput { tool: Some(t), output } if t == "!bash" && output.contains("hi")
+        ));
     }
 }

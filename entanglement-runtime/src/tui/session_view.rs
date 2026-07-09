@@ -324,6 +324,20 @@ impl SessionView {
         });
     }
 
+    /// Records a head-side `!bash` passthrough (ADR-0030): the command and its
+    /// captured output, reusing the tool call/output entries so it renders like
+    /// any other tool run. Local only — not sent to the engine or the model.
+    pub fn record_bash_passthrough(&mut self, command: String, output: String) {
+        self.transcript.push(TranscriptEntry::ToolCall {
+            tool: "!bash".to_string(),
+            input: command,
+        });
+        self.transcript.push(TranscriptEntry::ToolOutput {
+            tool: Some("!bash".to_string()),
+            output,
+        });
+    }
+
     /// Applies an `OutEvent` already routed to this session. Returns `true`
     /// if it changed anything the UI needs to redraw for.
     pub fn apply_event(&mut self, event: OutEvent) -> bool {

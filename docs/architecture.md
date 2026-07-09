@@ -363,7 +363,17 @@ persistence machinery with none of the CLI/TUI/transport weight
   input box; `<leader>E` / `/export` writes the transcript to
   `<session>-<unix_secs>.md` and opens it. Both defer through a `UiEffect` on
   `App` that the event loop (terminal owner) runs, restoring the alternate screen
-  symmetrically; an editor failure is logged, not fatal.
+  symmetrically; an editor failure is logged, not fatal. **`@file` mentions +
+  `!bash` passthrough** (✅ #15,
+  [ADR-0030](adr/0030-tui-file-mentions-and-bash-passthrough.md), `tui::mention`):
+  typing `@` opens a fuzzy file-completion popup over a startup snapshot of the
+  working dir (`host::list_files`, minus `target`/`node_modules`/… trees);
+  Tab/Enter inserts the pick as `@path` prompt text (the model reads it via the
+  `read` tool — no content pre-expansion). An input starting with `!` is a
+  head-side shell escape: the command runs through the existing `BashTool` and its
+  output is injected into the transcript as a `!bash` tool call/output pair, local
+  only (never sent to the engine). Gated on `ENTANGLEMENT_ENABLE_BASH=1`, the same
+  opt-in as the model-facing `bash` tool (ADR-0010).
 
 ## 6b. Session persistence & resume (`persistence` + `session_store`)
 

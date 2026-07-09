@@ -365,6 +365,48 @@ pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
     f.render_widget(list, popup_area);
 }
 
+/// `@file` completion popup (ADR-0030). Anchored above the input like the slash
+/// autocomplete, listing the fuzzy-matched relative paths with the current pick
+/// highlighted.
+pub fn draw_mention_popup(f: &mut Frame, app: &mut App, input_area: Rect) {
+    if !app.mention().visible() {
+        return;
+    }
+    let matches: Vec<String> = app.mention().matches().to_vec();
+    if matches.is_empty() {
+        return;
+    }
+
+    let items: Vec<ListItem> = matches
+        .iter()
+        .map(|p| {
+            ListItem::new(Line::from(Span::styled(
+                p.clone(),
+                Style::default().fg(Color::Cyan),
+            )))
+        })
+        .collect();
+
+    let height = (matches.len() as u16 + 2).min(15).min(input_area.y);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Files (Tab/Enter to insert, Esc to dismiss)"),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let popup_area = Rect {
+        x: input_area.x,
+        y: input_area.y.saturating_sub(height),
+        width: input_area.width.min(70),
+        height,
+    };
+
+    f.render_widget(Clear, popup_area);
+    f.render_stateful_widget(list, popup_area, app.mention_mut().state());
+}
+
 pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
     let sessions = app.available_sessions().to_vec();
     let items: Vec<ListItem> = sessions
