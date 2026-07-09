@@ -72,3 +72,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | Accepted |
 | [0026](0026-async-subagent-spawn-and-poll.md) | Non-blocking sub-agent spawn with handle + `agent_poll` | Proposed |
 | [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | Proposed |
+| [0028](0028-session-lifecycle-enumeration-and-backpressure.md) | Session lifecycle: enumeration, explicit close, non-blocking routing | Accepted |

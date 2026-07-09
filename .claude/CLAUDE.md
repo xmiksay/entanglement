@@ -70,9 +70,10 @@ all live in this crate now (✅ #52–#55, [ADR-0007](../docs/adr/0007-streaming
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetTasks | SetPlan | SetAgent | Spawn
-OutEvent : Status | AgentChanged | Plan | TextDelta | ToolRequest | ToolExec
-          | UserQuestion | ToolOutput | TaskList | Error | Done
+          | SetTasks | SetPlan | SetAgent | Spawn | ListSessions | CloseSession
+OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged
+          | Plan | TextDelta | ToolRequest | ToolExec | UserQuestion | ToolOutput
+          | TaskList | Error | Done
 ```
 
 Tool execution is a protocol round-trip (#58): core emits `ToolExec` for *every*
@@ -127,6 +128,20 @@ the head's `InMsg::AnswerQuestion` (consumed off the inbound fan-out like
 tool's `ToolOutput`. The TUI adds a `PendingQuestion` interaction state (labelled
 choices + an "Other" free-text escape) alongside `ApprovalMode`; the one-shot
 `run` head auto-answers so it never parks.
+
+Session lifecycle (✅ #21, [ADR-0028](../docs/adr/0028-session-lifecycle-enumeration-and-backpressure.md)):
+two supervisor-global messages the supervisor answers/acts on directly (never
+routed to a session). `ListSessions { session }` returns one
+`OutEvent::SessionList { session, sessions: Vec<SessionInfo> }` snapshot of the
+live sessions (`SessionInfo { session, parent, profile, root }`) — a
+reconnecting head enumerates in one round-trip; `session` is a correlation id the
+reply echoes. `CloseSession { session }` drops the session's command channel so
+its task exits and emits `SessionEnded` — the explicit destroy `Stop`
+(cancel-semantics, ADR-0017) does not perform. Session ids are single-use: mint a
+fresh `SessionId::new_uuid()` after close rather than reuse (which restarts
+`seq`). The supervisor routes with a non-blocking `try_send` + bounded retry,
+shedding to a saturated session (an `Error` + `warn`) rather than blocking its
+loop and stalling every other session.
 
 ## Conventions (project-specific)
 

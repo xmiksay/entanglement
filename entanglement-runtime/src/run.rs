@@ -84,6 +84,7 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
     match ev {
         OutEvent::SessionStarted { .. } => {}
         OutEvent::SessionEnded { .. } => {}
+        OutEvent::SessionList { .. } => {}
         OutEvent::Status { state, .. } => match state {
             AgentState::Thinking => writeln!(out, "… thinking")?,
             AgentState::WaitingApproval => writeln!(out, "… waiting for approval")?,

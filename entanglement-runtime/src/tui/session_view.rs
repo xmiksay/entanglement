@@ -337,6 +337,9 @@ impl SessionView {
                 self.ended_ms = Some(ts);
                 true
             }
+            // Supervisor-global enumeration reply (ADR-0028): not a per-session
+            // view update — the app handles it, if at all.
+            OutEvent::SessionList { .. } => false,
             OutEvent::Status { state, .. } => {
                 self.state = state;
                 if state == AgentState::Idle
