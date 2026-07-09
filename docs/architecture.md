@@ -85,8 +85,13 @@ InMsg    = Prompt{session,text} | Approve{session,request_id}   // approval →
          | Stop{session}
          | SetTasks{session,tasks} | SetPlan{session,content} | SetAgent{session,agent}
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
+         | ListSessions{session}   // supervisor-global query; session = correlation id (#21)
+         | CloseSession{session}   // explicit destroy → SessionEnded (#21)
 
-OutEvent = Status{session,state}              // point-in-time, no seq
+OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle, no seq
+         | SessionEnded{session,ts}           // lifecycle, no seq
+         | SessionList{session,sessions:[SessionInfo]}   // reply to ListSessions, no seq (#21)
+         | Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent}        // point-in-time, no seq
          | Plan{session,seq,content}          // markdown prose snapshot
          | TextDelta{session,seq,text}
@@ -102,6 +107,20 @@ OutEvent = Status{session,state}              // point-in-time, no seq
 `AnswerQuestion` mirrors `Approve`/`Reject`: the supervisor drops it off the
 inbound fan-out (core never routes it) and the `ask_user` executor consumes it
 (§8, [ADR-0027](adr/0027-ask-user-interactive-prompt.md)).
+
+**Session lifecycle** (✅ #21, [ADR-0028](adr/0028-session-lifecycle-enumeration-and-backpressure.md)).
+`ListSessions` and `CloseSession` are **supervisor-global**: the supervisor
+answers/acts on them directly rather than routing to a session task.
+`ListSessions` returns one `SessionList` snapshot of the live
+`SessionInfo{session,parent?,profile,root}` set — a reconnecting head enumerates
+in one round-trip instead of folding the whole broadcast; its `session` field is
+a correlation id the reply echoes. `CloseSession` drops the session's command
+channel so its task exits and emits `SessionEnded` — the explicit destroy `Stop`
+(cancel-semantics, ADR-0017) does not perform. Session ids are single-use: after
+`SessionEnded`, mint a fresh `SessionId::new_uuid()` rather than reuse a closed
+id (which would restart `seq` at 0). The supervisor routes to sessions with a
+non-blocking `try_send` + bounded retry, shedding to a saturated session rather
+than parking its single loop and stalling every other session.
 
 - **Session-multiplexed** like the `agent` reference's `task_id`: one connection
   routes many sessions by `SessionId`.

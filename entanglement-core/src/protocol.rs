@@ -78,6 +78,21 @@ pub struct TaskItem {
     pub status: TaskStatus,
 }
 
+/// A live session's identity + lineage, as reported in an
+/// [`OutEvent::SessionList`] enumeration snapshot (ADR-0028). Mirrors the fields
+/// a head would otherwise have to reconstruct by folding the `SessionStarted` /
+/// `SessionEnded` broadcast itself. `profile` is the session's *starting*
+/// profile (the supervisor tracks creation, not per-turn `SetAgent` switches —
+/// a head follows those via [`OutEvent::AgentChanged`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub session: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<SessionId>,
+    pub profile: String,
+    pub root: bool,
+}
+
 /// One labelled choice in a model-driven [`OutEvent::UserQuestion`] prompt
 /// (ADR-0027). The `label` is what flows back as the answer when picked; the
 /// optional `description` is a short hint shown beneath it.
@@ -213,6 +228,20 @@ pub enum InMsg {
     },
     /// Cancel the current turn and park the session at idle.
     Stop { session: SessionId },
+    /// Enumerate the engine's currently-live sessions. The supervisor answers
+    /// with a single [`OutEvent::SessionList`] snapshot (ADR-0028); this message
+    /// is supervisor-global, not routed to a session task. `session` is a
+    /// correlation id echoed back on the reply so a multiplexed head can match
+    /// the snapshot to its request (pass any id the head owns).
+    ListSessions { session: SessionId },
+    /// Explicitly terminate a live session: the supervisor drops its command
+    /// channel and the session task exits, emitting [`OutEvent::SessionEnded`]
+    /// (ADR-0028). Distinct from [`Stop`][InMsg::Stop], which only cancels the
+    /// in-flight turn and leaves the session alive (ADR-0017) — `CloseSession`
+    /// is the lifecycle destroy Stop no longer performs. Unknown / already-closed
+    /// ids are a no-op. Session ids are single-use: mint a fresh one
+    /// ([`SessionId::new_uuid`]) rather than reusing a closed id.
+    CloseSession { session: SessionId },
     /// Rewrite the session's task outline from the harness (user-edited plan).
     SetTasks {
         session: SessionId,
@@ -252,6 +281,8 @@ impl InMsg {
             | InMsg::ToolResult { session, .. }
             | InMsg::AnswerQuestion { session, .. }
             | InMsg::Stop { session }
+            | InMsg::ListSessions { session }
+            | InMsg::CloseSession { session }
             | InMsg::SetTasks { session, .. }
             | InMsg::SetPlan { session, .. }
             | InMsg::SetAgent { session, .. }
@@ -283,6 +314,14 @@ pub enum OutEvent {
     },
     /// Session ended (lifecycle event, no `seq`). Emits when a session exits.
     SessionEnded { session: SessionId, ts: u64 },
+    /// Snapshot of every currently-live session (lifecycle event, no `seq`),
+    /// sent in reply to [`InMsg::ListSessions`] (ADR-0028). `session` echoes the
+    /// requester's correlation id from that message so a multiplexed head can
+    /// pair the reply with its request.
+    SessionList {
+        session: SessionId,
+        sessions: Vec<SessionInfo>,
+    },
     /// Lifecycle state change (point-in-time, no `seq`).
     Status {
         session: SessionId,
@@ -394,6 +433,7 @@ impl OutEvent {
         match self {
             OutEvent::SessionStarted { session, .. }
             | OutEvent::SessionEnded { session, .. }
+            | OutEvent::SessionList { session, .. }
             | OutEvent::Status { session, .. }
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::Plan { session, .. }
@@ -412,11 +452,13 @@ impl OutEvent {
     }
 
     /// Returns the sequence number for this event, or 0 for lifecycle events
-    /// that don't carry a seq (SessionStarted, SessionEnded, Status, AgentChanged).
+    /// that don't carry a seq (SessionStarted, SessionEnded, SessionList,
+    /// Status, AgentChanged).
     pub fn seq(&self) -> u64 {
         match self {
             OutEvent::SessionStarted { .. }
             | OutEvent::SessionEnded { .. }
+            | OutEvent::SessionList { .. }
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. } => 0,
             OutEvent::Plan { seq, .. }
@@ -548,6 +590,54 @@ mod tests {
         );
         let back: InMsg = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn list_and_close_session_roundtrip_as_tagged_json() {
+        let list = InMsg::ListSessions {
+            session: SessionId::new("q1"),
+        };
+        assert_eq!(
+            serde_json::to_string(&list).unwrap(),
+            r#"{"kind":"list_sessions","session":"q1"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<InMsg>(&serde_json::to_string(&list).unwrap()).unwrap(),
+            list
+        );
+
+        let close = InMsg::CloseSession {
+            session: SessionId::new("s1"),
+        };
+        assert_eq!(
+            serde_json::to_string(&close).unwrap(),
+            r#"{"kind":"close_session","session":"s1"}"#
+        );
+    }
+
+    #[test]
+    fn session_list_event_roundtrips() {
+        let ev = OutEvent::SessionList {
+            session: SessionId::new("q1"),
+            sessions: vec![
+                SessionInfo {
+                    session: SessionId::new("root"),
+                    parent: None,
+                    profile: "build".into(),
+                    root: true,
+                },
+                SessionInfo {
+                    session: SessionId::new("child"),
+                    parent: Some(SessionId::new("root")),
+                    profile: "explore".into(),
+                    root: false,
+                },
+            ],
+        };
+        assert_eq!(ev.seq(), 0, "SessionList is a lifecycle event, no seq");
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: OutEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
     }
 
     #[test]

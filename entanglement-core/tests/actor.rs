@@ -44,6 +44,153 @@ async fn collect(
     out
 }
 
+/// Wait for the first event matching `pred`, tolerating broadcast lag and
+/// events for other sessions. Used by the lifecycle tests, which watch for
+/// point-in-time events (`SessionList`, `SessionEnded`) that carry no `Done`.
+async fn recv_until(
+    sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
+    pred: impl Fn(&OutEvent) -> bool,
+) -> OutEvent {
+    loop {
+        let recv = tokio::time::timeout(Duration::from_secs(3), sub.recv())
+            .await
+            .expect("timed out waiting for a matching event");
+        match recv {
+            Ok(ev) if pred(&ev) => return ev,
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(_) => panic!("event stream closed before a matching event"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn list_sessions_enumerates_live_sessions() {
+    // Two live sessions plus a supervisor-global `ListSessions` query returns a
+    // snapshot naming both, with lineage (ADR-0028). The correlation id echoes.
+    let holly = Holly::spawn(factory(vec![]));
+    let s1 = SessionId::new("s1");
+    let s2 = SessionId::new("s2");
+    let mut sub = holly.subscribe();
+    for s in [&s1, &s2] {
+        holly
+            .send(InMsg::Prompt {
+                session: s.clone(),
+                text: "hi".into(),
+            })
+            .await
+            .unwrap();
+    }
+    let corr = SessionId::new("query");
+    holly
+        .send(InMsg::ListSessions {
+            session: corr.clone(),
+        })
+        .await
+        .unwrap();
+
+    let ev = recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::SessionList { session, .. } if *session == corr),
+    )
+    .await;
+    let OutEvent::SessionList { sessions, .. } = ev else {
+        unreachable!()
+    };
+    let ids: Vec<_> = sessions.iter().map(|i| i.session.clone()).collect();
+    assert!(ids.contains(&s1) && ids.contains(&s2), "got {ids:?}");
+    let info = sessions.iter().find(|i| i.session == s1).unwrap();
+    assert_eq!(info.profile, "build");
+    assert!(info.root && info.parent.is_none());
+}
+
+#[tokio::test]
+async fn close_session_terminates_and_drops_from_list() {
+    // `CloseSession` destroys a live session: it emits `SessionEnded` and no
+    // longer appears in a subsequent `ListSessions` snapshot (ADR-0028).
+    let holly = Holly::spawn(factory(vec![]));
+    let s1 = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: s1.clone(),
+            text: "hi".into(),
+        })
+        .await
+        .unwrap();
+    // Let the turn finish before closing, so `SessionEnded` follows `Done`.
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == s1),
+    )
+    .await;
+    holly
+        .send(InMsg::CloseSession {
+            session: s1.clone(),
+        })
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::SessionEnded { session, .. } if *session == s1),
+    )
+    .await;
+
+    let corr = SessionId::new("query");
+    holly
+        .send(InMsg::ListSessions {
+            session: corr.clone(),
+        })
+        .await
+        .unwrap();
+    let ev = recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::SessionList { session, .. } if *session == corr),
+    )
+    .await;
+    let OutEvent::SessionList { sessions, .. } = ev else {
+        unreachable!()
+    };
+    assert!(
+        !sessions.iter().any(|i| i.session == s1),
+        "closed session must be gone from the list; got {sessions:?}"
+    );
+}
+
+#[tokio::test]
+async fn close_unknown_session_is_a_noop() {
+    // Closing an id that was never live must not panic or emit `SessionEnded`.
+    let holly = Holly::spawn(factory(vec![]));
+    let ghost = SessionId::new("never-existed");
+    let corr = SessionId::new("query");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::CloseSession {
+            session: ghost.clone(),
+        })
+        .await
+        .unwrap();
+    holly
+        .send(InMsg::ListSessions {
+            session: corr.clone(),
+        })
+        .await
+        .unwrap();
+    // The `SessionList` reply proves the supervisor survived the no-op close.
+    let ev = recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::SessionList { session, .. } if *session == corr),
+    )
+    .await;
+    let OutEvent::SessionList { sessions, .. } = ev else {
+        unreachable!()
+    };
+    assert!(
+        sessions.is_empty(),
+        "no sessions should be live; got {sessions:?}"
+    );
+}
+
 /// An LLM that replays a scripted list of responses, in order.
 struct ScriptedLlm {
     responses: Mutex<Vec<LlmResponse>>,

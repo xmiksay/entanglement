@@ -15,12 +15,19 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::llm::{EchoLlm, LlmFactory, LlmSession, ToolSpec};
 use crate::protocol::{
-    AgentMode, AgentProfile, InMsg, OutEvent, Permission, PermissionProfile, SessionId,
+    AgentMode, AgentProfile, InMsg, OutEvent, Permission, PermissionProfile, SessionId, SessionInfo,
 };
 use crate::session::{session_loop, Session, SessionCmd};
 
 const INBOX_CAPACITY: usize = 256;
 const OUTBOX_CAPACITY: usize = 1024;
+/// Bound on a per-session command channel (also the supervisor's routing cap).
+const SESSION_CMD_CAPACITY: usize = 64;
+/// How many non-blocking `try_send` attempts the supervisor makes before it
+/// sheds a command destined for a saturated session (ADR-0028). Yielding
+/// between attempts lets a merely-behind session drain; a genuinely stalled one
+/// sheds after the last attempt rather than blocking routing to other sessions.
+const ROUTE_ATTEMPTS: usize = 8;
 /// Profile a new session starts under (opencode-style: `build` is the default).
 const DEFAULT_PROFILE: &str = "build";
 
@@ -209,6 +216,11 @@ async fn supervisor(
     root: Arc<PathBuf>,
 ) {
     let mut sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>> = HashMap::new();
+    // Live-session directory, kept in lockstep with `sessions`, so `ListSessions`
+    // can answer without folding the outbound broadcast (ADR-0028). A session
+    // task only exits when its channel is dropped (CloseSession / shutdown), so
+    // `sessions` is the liveness source of truth and this never drifts.
+    let mut session_meta: HashMap<SessionId, SessionInfo> = HashMap::new();
     let mut pending_resumes: HashMap<SessionId, Vec<(Option<InMsg>, OutEvent)>> = HashMap::new();
     // child → parent. Populated on `Spawn` (#60) so a child's `SessionStarted`
     // (and the tree-walk helpers that read it) reflect the real hierarchy;
@@ -233,9 +245,31 @@ async fn supervisor(
             continue;
         }
 
+        // Supervisor-global lifecycle queries (ADR-0028): answered here, never
+        // routed to a session task.
+        if let InMsg::ListSessions { session } = &msg {
+            let mut list: Vec<SessionInfo> = session_meta.values().cloned().collect();
+            list.sort_by(|a, b| a.session.0.cmp(&b.session.0));
+            let _ = events.send(OutEvent::SessionList {
+                session: session.clone(),
+                sessions: list,
+            });
+            continue;
+        }
+        if let InMsg::CloseSession { session } = &msg {
+            // Dropping the command channel makes the task's `rx.recv()` return
+            // `None`; it emits `SessionEnded` and exits. Unknown id → no-op.
+            if sessions.remove(session).is_some() {
+                session_meta.remove(session);
+                parent_links.remove(session);
+            }
+            continue;
+        }
+
         if let InMsg::Resume { records, .. } = &msg {
             pending_resumes.insert(session_id.clone(), records.clone());
-            let (stx, srx) = mpsc::channel::<SessionCmd>(64);
+            session_meta.insert(session_id.clone(), resume_meta(&session_id, records));
+            let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
             let ev = events.clone();
             let cfg2 = cfg.clone();
             let root2 = root.clone();
@@ -278,7 +312,16 @@ async fn supervisor(
                 .or_else(|| cfg.profiles.get(DEFAULT_PROFILE))
                 .cloned()
                 .expect("built-in `build` profile always present");
-            let (stx, srx) = mpsc::channel::<SessionCmd>(64);
+            session_meta.insert(
+                child.clone(),
+                SessionInfo {
+                    session: child.clone(),
+                    parent: Some(parent.clone()),
+                    profile: profile.name.clone(),
+                    root: false,
+                },
+            );
+            let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
             let ev = events.clone();
             let cfg2 = cfg.clone();
             let sid = child.clone();
@@ -300,11 +343,20 @@ async fn supervisor(
                 .get(DEFAULT_PROFILE)
                 .cloned()
                 .expect("built-in `build` profile always present");
-            let (stx, srx) = mpsc::channel::<SessionCmd>(64);
+            let parent = parent_links.get(&session_id).cloned().flatten();
+            session_meta.insert(
+                session_id.clone(),
+                SessionInfo {
+                    session: session_id.clone(),
+                    parent: parent.clone(),
+                    profile: profile.name.clone(),
+                    root: parent.is_none(),
+                },
+            );
+            let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
             let ev = events.clone();
             let cfg2 = cfg.clone();
             let sid = session_id.clone();
-            let parent = parent_links.get(&session_id).cloned().flatten();
             tokio::spawn(
                 async move { session_loop(sid, srx, ev, cfg2, profile, None, parent).await },
             );
@@ -312,12 +364,76 @@ async fn supervisor(
         }
 
         if let Some(tx) = sessions.get(&session_id) {
-            let _ = tx.send(cmd).await;
+            route_to_session(tx, cmd, &session_id, &events).await;
         }
     }
     // Inbox closed: signal every session to stop. Their tasks return on receipt.
     for (_, tx) in sessions.drain() {
         let _ = tx.send(SessionCmd::Stop).await;
+    }
+}
+
+/// Route a command to a session without letting one saturated session block the
+/// supervisor's single loop — and thereby delay routing to *every* other
+/// session (ADR-0028). Tries a non-blocking send first; on a full channel it
+/// retries a bounded number of times, yielding between attempts so a
+/// merely-behind session can drain, then sheds the command with an
+/// [`OutEvent::Error`] rather than parking the supervisor. A closed channel
+/// (session already gone) is dropped silently.
+async fn route_to_session(
+    tx: &mpsc::Sender<SessionCmd>,
+    cmd: SessionCmd,
+    session: &SessionId,
+    events: &broadcast::Sender<OutEvent>,
+) {
+    use mpsc::error::TrySendError;
+    let mut cmd = cmd;
+    for _ in 0..ROUTE_ATTEMPTS {
+        match tx.try_send(cmd) {
+            Ok(()) => return,
+            Err(TrySendError::Closed(_)) => return,
+            Err(TrySendError::Full(returned)) => {
+                cmd = returned;
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+    tracing::warn!(%session, "session command channel saturated; command shed");
+    // seq 0: a supervisor-issued error can't mint the session's monotonic seq
+    // (the session task owns it). Exceptional path — the tracing warn is the
+    // primary signal; the event tells any listening head the session is wedged.
+    let _ = events.send(OutEvent::Error {
+        session: session.clone(),
+        seq: 0,
+        message: "session busy: command dropped (command channel saturated)".to_string(),
+    });
+}
+
+/// Best-effort [`SessionInfo`] for a resumed session, read from the first
+/// `SessionStarted` record in its replay log. Absent (an older log), it's
+/// treated as a root under the base `build` profile.
+fn resume_meta(session: &SessionId, records: &[(Option<InMsg>, OutEvent)]) -> SessionInfo {
+    for (_, ev) in records {
+        if let OutEvent::SessionStarted {
+            parent,
+            profile,
+            root,
+            ..
+        } = ev
+        {
+            return SessionInfo {
+                session: session.clone(),
+                parent: parent.clone(),
+                profile: profile.clone(),
+                root: *root,
+            };
+        }
+    }
+    SessionInfo {
+        session: session.clone(),
+        parent: None,
+        profile: DEFAULT_PROFILE.to_string(),
+        root: true,
     }
 }
 
@@ -331,14 +447,17 @@ fn msg_to_cmd(msg: InMsg) -> SessionCmd {
         InMsg::SetPlan { content, .. } => SessionCmd::SetPlan(content),
         InMsg::SetTasks { tasks, .. } => SessionCmd::SetTasks(tasks),
         InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
-        // Approve/Reject/AnswerQuestion are filtered out before routing (see
-        // supervisor); Resume and Spawn are handled specially. None reach here.
+        // Approve/Reject/AnswerQuestion and the ListSessions/CloseSession
+        // lifecycle queries are filtered out before routing (see supervisor);
+        // Resume and Spawn are handled specially. None reach here.
         InMsg::Approve { .. }
         | InMsg::Reject { .. }
         | InMsg::AnswerQuestion { .. }
+        | InMsg::ListSessions { .. }
+        | InMsg::CloseSession { .. }
         | InMsg::Resume { .. }
         | InMsg::Spawn { .. } => {
-            unreachable!("Approve/Reject/AnswerQuestion/Resume/Spawn are not routed to sessions")
+            unreachable!("Approve/Reject/AnswerQuestion/ListSessions/CloseSession/Resume/Spawn are not routed to sessions")
         }
     }
 }
