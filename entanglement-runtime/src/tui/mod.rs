@@ -1,4 +1,5 @@
 mod app;
+mod attention;
 mod commands;
 mod diff;
 mod event;
@@ -21,9 +22,9 @@ use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
         event::{
-            DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-            KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-            PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+            DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+            KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+            MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
         },
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -36,6 +37,7 @@ use tracing::debug;
 
 use crate::ModelInfo;
 use app::App;
+use attention::Attention;
 use event::Event;
 use session_view::ApprovalMode;
 
@@ -58,6 +60,10 @@ pub async fn tui(holly: &Holly, initial_session: SessionId, model_info: ModelInf
     if std::env::var_os("ENTANGLEMENT_TUI_NO_MOUSE").is_none() {
         let _ = execute!(stdout, EnableMouseCapture);
     }
+    // Focus reporting lets attention signals mute while the terminal is focused
+    // (issue #14). Best-effort: many terminals never report it, and we default to
+    // signalling in that case.
+    let _ = execute!(stdout, EnableFocusChange);
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -67,6 +73,7 @@ pub async fn tui(holly: &Holly, initial_session: SessionId, model_info: ModelInf
     let mut app = App::new(initial_session);
     app.set_model_info(model_info.id.clone(), model_info.display_name.clone());
 
+    let mut attention = Attention::from_env();
     let mut holly_sub = holly.subscribe();
 
     const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -90,12 +97,12 @@ pub async fn tui(holly: &Holly, initial_session: SessionId, model_info: ModelInf
         tokio::select! {
             biased;
             Some(ev) = event_rx.recv() => {
-                if handle_event(&mut app, holly, ev).await? {
+                if handle_event(&mut app, holly, &mut attention, ev).await? {
                     break;
                 }
             }
             recv = tokio::time::timeout(Duration::from_millis(50), holly_sub.recv()) => match recv {
-                Ok(Ok(event)) => app.handle_out_event(event),
+                Ok(Ok(event)) => dispatch_engine_event(&mut app, &mut attention, event),
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
                     tracing::warn!("TUI lagged, skipped {n} engine events");
                 }
@@ -104,10 +111,10 @@ pub async fn tui(holly: &Holly, initial_session: SessionId, model_info: ModelInf
             }
         }
 
-        if drain_terminal_events(&mut event_rx, &mut app, holly).await? {
+        if drain_terminal_events(&mut event_rx, &mut app, holly, &mut attention).await? {
             break;
         }
-        drain_engine_events(&mut holly_sub, &mut app);
+        drain_engine_events(&mut holly_sub, &mut app, &mut attention);
     }
 
     restore_terminal(&mut terminal)?;
@@ -129,7 +136,12 @@ fn spawn_crossterm_task(tx: mpsc::Sender<Event>) {
     });
 }
 
-async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
+async fn handle_event(
+    app: &mut App,
+    holly: &Holly,
+    attention: &mut Attention,
+    ev: Event,
+) -> Result<bool> {
     app.mark_dirty();
     match ev {
         Event::Key(key) => {
@@ -370,7 +382,8 @@ async fn handle_event(app: &mut App, holly: &Holly, ev: Event) -> Result<bool> {
         }
         Event::Mouse(mouse_event) => handle_mouse(app, mouse_event),
         Event::Resize => {}
-        Event::FocusGained | Event::FocusLost => {}
+        Event::FocusGained => attention.set_focused(true),
+        Event::FocusLost => attention.set_focused(false),
         Event::Paste(s) => {
             if matches!(app.approval_mode(), ApprovalMode::Normal) {
                 app.input().insert_str(&s);
@@ -700,6 +713,7 @@ fn setup_panic_handler() {
         let _ = execute!(
             std::io::stdout(),
             DisableMouseCapture,
+            DisableFocusChange,
             LeaveAlternateScreen,
             PopKeyboardEnhancementFlags
         );
@@ -711,6 +725,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) 
     let _ = execute!(
         terminal.backend_mut(),
         DisableMouseCapture,
+        DisableFocusChange,
         LeaveAlternateScreen,
         PopKeyboardEnhancementFlags
     );
@@ -722,9 +737,10 @@ async fn drain_terminal_events(
     event_rx: &mut mpsc::Receiver<Event>,
     app: &mut App,
     holly: &Holly,
+    attention: &mut Attention,
 ) -> Result<bool> {
     while let Ok(ev) = event_rx.try_recv() {
-        if handle_event(app, holly, ev).await? {
+        if handle_event(app, holly, attention, ev).await? {
             return Ok(true);
         }
     }
@@ -734,10 +750,23 @@ async fn drain_terminal_events(
 fn drain_engine_events(
     holly_sub: &mut tokio::sync::broadcast::Receiver<entanglement_core::OutEvent>,
     app: &mut App,
+    attention: &mut Attention,
 ) {
     while let Ok(event) = holly_sub.try_recv() {
-        app.handle_out_event(event);
+        dispatch_engine_event(app, attention, event);
     }
+}
+
+/// Routes one engine event to the UI, first letting the attention layer ring the
+/// bell / raise a desktop notification on a signal-worthy `Status` transition
+/// (issue #14).
+fn dispatch_engine_event(
+    app: &mut App,
+    attention: &mut Attention,
+    event: entanglement_core::OutEvent,
+) {
+    attention.observe(&event, &mut std::io::stdout());
+    app.handle_out_event(event);
 }
 
 #[cfg(test)]
