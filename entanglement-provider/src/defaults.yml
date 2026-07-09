@@ -1,0 +1,96 @@
+# Embedded provider/model catalog — entanglement defaults.
+#
+# Deep-merged under an optional user override at
+# `${dirs::config_dir}/entanglement/providers.yml` (override the whole path via
+# `ENTANGLEMENT_PROVIDERS_FILE`). Merge identity: providers by `name`, models by
+# `id`. See `catalog.rs` for the schema and merge semantics.
+#
+# Pricing is USD per million tokens. Only well-documented public rates are
+# filled in; unknown rates are left unset rather than invented. Ollama is local,
+# so it carries no pricing.
+#
+# Provider order is also the key auto-detect priority (z.ai first).
+
+providers:
+  - name: zai
+    base_url: https://api.z.ai/api/coding/paas/v4
+    key_env: ZAI_API_KEY
+    default_model: glm-5.2
+    models:
+      - id: glm-5.2
+        display_name: GLM-5.2
+        context_window: 128000
+        max_output_tokens: 16384
+        supports_thinking: true
+        supports_temperature: true
+        default_temperature: 0.7
+        pricing:
+          input: 0.6
+          output: 2.2
+          cached_input: 0.11
+      - id: glm-4.7
+        display_name: GLM-4.7
+        context_window: 128000
+        supports_thinking: true
+
+  - name: openai
+    base_url: https://api.openai.com/v1
+    key_env: OPENAI_API_KEY
+    default_model: gpt-4o
+    models:
+      - id: gpt-4o
+        display_name: GPT-4o
+        context_window: 128000
+        pricing:
+          input: 2.5
+          output: 10.0
+          cached_input: 1.25
+      - id: gpt-4-turbo
+        display_name: GPT-4 Turbo
+        context_window: 128000
+        pricing:
+          input: 10.0
+          output: 30.0
+      - id: gpt-3.5-turbo
+        display_name: GPT-3.5 Turbo
+        context_window: 16385
+        pricing:
+          input: 0.5
+          output: 1.5
+
+  - name: ollama
+    base_url: http://localhost:11434/v1
+    default_model: llama3.1
+    models:
+      - id: llama3.1
+        display_name: Llama 3.1
+        context_window: 128000
+      - id: llama3
+        display_name: Llama 3
+        context_window: 8192
+      - id: mistral
+        display_name: Mistral
+        context_window: 32768
+
+  - name: anthropic
+    wire: anthropic
+    key_env: ANTHROPIC_API_KEY
+    default_model: claude-sonnet-4-5
+    models:
+      - id: claude-sonnet-4-5
+        display_name: Claude Sonnet 4.5
+        context_window: 200000
+        supports_thinking: true
+        pricing:
+          input: 3.0
+          output: 15.0
+          cached_input: 0.3
+          cache_write: 3.75
+      - id: claude-3-5-sonnet-20241022
+        display_name: Claude 3.5 Sonnet
+        context_window: 200000
+        pricing:
+          input: 3.0
+          output: 15.0
+          cached_input: 0.3
+          cache_write: 3.75

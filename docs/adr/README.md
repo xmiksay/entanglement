@@ -76,3 +76,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0029](0029-external-editor-and-markdown-export.md) | External `$EDITOR` compose + Markdown transcript export | Accepted |
 | [0030](0030-tui-file-mentions-and-bash-passthrough.md) | TUI `@file` mention completion + `!bash` passthrough | Accepted |
 | [0031](0031-write-host-tool-whole-file.md) | Host tool `write`: whole-file create/overwrite (quartet → quintet) | Accepted |
+| [0032](0032-yaml-provider-model-catalog.md) | YAML provider/model catalog: embedded defaults + user override | Accepted |

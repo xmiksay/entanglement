@@ -42,7 +42,7 @@ pulldown-cmark = { workspace = true, optional = true }
 syntect = { workspace = true, optional = true }
 diffy = { workspace = true, optional = true }
 unicode-width = { workspace = true, optional = true }
-dirs = "5"
+dirs = { workspace = true }
 # Host tool dependencies
 glob = { workspace = true }
 regex = { workspace = true }

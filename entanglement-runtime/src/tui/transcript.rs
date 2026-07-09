@@ -640,7 +640,7 @@ mod tests {
         // A turn that streams assistant text and *then* a thinking block must
         // render the thinking header after the text, not before it (#88).
         let sid = SessionId::new("s1");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         app.handle_out_event(OutEvent::TextDelta {
             session: sid.clone(),
             seq: 1,
@@ -666,7 +666,7 @@ mod tests {
         // The common case — model thinks, then answers. The thinking block must
         // render before the assistant text, not after it (the #88 regression).
         let sid = SessionId::new("s1");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         app.handle_out_event(OutEvent::ReasoningDelta {
             session: sid.clone(),
             seq: 1,
@@ -692,7 +692,7 @@ mod tests {
         // text → reasoning → text produces two text runs bracketing one thinking
         // block, each a separately-toggleable run keyed by its own block id.
         let sid = SessionId::new("s1");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         app.handle_out_event(OutEvent::TextDelta {
             session: sid.clone(),
             seq: 1,
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn reasoning_collapsed_by_default_shows_only_header() {
         let sid = SessionId::new("s1");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         feed_reasoning(&mut app, &sid, "alpha\nbeta\nSECRETBODY\n");
 
         let body = render_body_lines(&app, 80);
@@ -754,7 +754,7 @@ mod tests {
     #[test]
     fn reasoning_expands_on_toggle() {
         let sid = SessionId::new("s1");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         feed_reasoning(&mut app, &sid, "alpha\nbeta\nSECRETBODY\n");
 
         app.toggle_reasoning_block(0);
@@ -784,7 +784,7 @@ mod tests {
     #[test]
     fn streamed_table_renders_as_grid_after_all_deltas() {
         let sid = SessionId::new("s1");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         // A table streamed token-by-token, exactly as the engine emits it.
         let deltas = [
             "| name | role |\n",
@@ -829,7 +829,7 @@ mod tests {
         // Feed one of every padded entry kind and render at the degenerate
         // widths — this must not panic and must produce lines.
         let sid = SessionId::new("s1");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         app.record_user_message("hello".to_string());
         app.handle_out_event(OutEvent::TextDelta {
             session: sid.clone(),
@@ -869,7 +869,7 @@ mod tests {
     #[test]
     fn user_messages_use_profile_colors() {
         let sid = SessionId::new("test");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         app.record_user_message("Hello world".to_string());
 
         let lines = render_body_lines(&app, 80).lines;
@@ -900,7 +900,7 @@ mod tests {
     #[test]
     fn assistant_lines_use_theme_colors() {
         let sid = SessionId::new("test");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         app.handle_out_event(OutEvent::TextDelta {
             session: sid.clone(),
             seq: 1,
