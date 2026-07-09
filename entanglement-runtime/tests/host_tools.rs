@@ -211,6 +211,241 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
 }
 
 #[tokio::test]
+async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-write-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    // Two write calls in one turn: create a nested file, then overwrite it.
+    let create_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            input: r#"{"path":"pkg/out.txt","content":"a\nb\n"}"#.into(),
+        }],
+    };
+    let overwrite_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w2".into(),
+            name: "write".into(),
+            input: r#"{"path":"pkg/out.txt","content":"only\n"}"#.into(),
+        }],
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![create_call, overwrite_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+        }),
+        tool_specs: tools.specs(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "write the file".into(),
+        })
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "write should auto-run under build"
+    );
+    let outputs: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        outputs
+            .iter()
+            .any(|o| o.contains("created") && o.contains("2 lines")),
+        "expected a create confirmation; got {outputs:?}"
+    );
+    assert!(
+        outputs
+            .iter()
+            .any(|o| o.contains("overwrote") && o.contains("1 lines, was 2")),
+        "expected an overwrite confirmation; got {outputs:?}"
+    );
+    // Confirmations must not echo file content.
+    assert!(
+        !outputs.iter().any(|o| o.contains("only")),
+        "write output must not echo content; got {outputs:?}"
+    );
+    let on_disk = std::fs::read_to_string(root.join("pkg/out.txt")).unwrap();
+    assert_eq!(on_disk, "only\n");
+}
+
+#[tokio::test]
+async fn write_tool_denied_under_explore_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-write-deny-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let write_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            input: r#"{"path":"blocked.txt","content":"nope\n"}"#.into(),
+        }],
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![write_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+        }),
+        tool_specs: tools.specs(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "try to write".into(),
+        })
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("denied"))),
+        "explore should deny write; got {events:?}"
+    );
+    assert!(!root.join("blocked.txt").exists(), "write must not land");
+}
+
+#[tokio::test]
+async fn write_tool_asks_then_runs_under_plan_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-write-ask-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let write_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            input: r#"{"path":"asked.txt","content":"yes\n"}"#.into(),
+        }],
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![write_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+        }),
+        tool_specs: tools.specs(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "plan".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    let mut watch = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "write it".into(),
+        })
+        .await
+        .unwrap();
+
+    let mut got_request = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "write") {
+            got_request = true;
+            break;
+        }
+    }
+    assert!(got_request, "plan should ask before write");
+
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "w1".into(),
+        })
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("created"))
+        ),
+        "approved write should run; got {events:?}"
+    );
+    let on_disk = std::fs::read_to_string(root.join("asked.txt")).unwrap();
+    assert_eq!(on_disk, "yes\n");
+}
+
+#[tokio::test]
 async fn bash_tool_runs_through_engine_under_build_profile() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-bash-e2e-{id}"));

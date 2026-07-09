@@ -66,7 +66,8 @@ impl Tool for EditTool {
     fn description(&self) -> &str {
         "Exact-string replace within a file under the working directory. \
          Empty `oldString` creates a new file (refused if exists). \
-         Non-unique match errors unless `replaceAll` is set."
+         Non-unique match errors unless `replaceAll` is set. \
+         Replacing most of a file? Use `write` instead."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -104,7 +105,7 @@ impl Tool for EditTool {
         if parsed.old_string.is_empty() {
             if target_abs.exists() {
                 return Err(anyhow::anyhow!(
-                    "create patch targets existing file: {}",
+                    "create patch targets existing file: {} — use `write` to overwrite it",
                     parsed.path
                 ));
             }

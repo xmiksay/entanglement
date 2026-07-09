@@ -90,9 +90,10 @@ monotonic `seq`. Agent profiles (`build`/`plan`/`explore` + custom) drive
 permission dispatch (`Allow`/`Ask`/`Deny`), resolved in the runtime. `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
-`input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010)
-assembles the root-contained quartet (`read`/`glob`/`grep`/`edit`);
-`BashTool` is opt-in at the head (`ENTANGLEMENT_ENABLE_BASH=1`).
+`input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010 + ADR-0031)
+assembles the root-contained quintet (`read`/`glob`/`grep`/`edit`/`write` —
+`write` is whole-file create/overwrite, ADR-0031); `BashTool` is opt-in at the
+head (`ENTANGLEMENT_ENABLE_BASH=1`).
 
 Sub-agent spawn (#60, [ADR-0022](../docs/adr/0022-subagent-spawn.md)): the
 runtime-owned `spawn_agent { agent, prompt }` tool issues `InMsg::Spawn`; the
