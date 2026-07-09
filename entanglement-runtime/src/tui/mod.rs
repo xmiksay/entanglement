@@ -5,6 +5,7 @@ mod diff;
 mod editor;
 mod event;
 mod export;
+mod input;
 mod input_panel;
 mod keybindings;
 mod markdown;

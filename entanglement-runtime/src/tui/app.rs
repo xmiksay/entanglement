@@ -8,204 +8,13 @@ use std::time::Instant;
 
 use crate::session_store::{list_sessions, LogRecord, SessionMeta};
 use crate::tui::commands::{Command, CommandPalette};
+use crate::tui::input::SimpleInput;
 use crate::tui::keybindings::{Action, LeaderKeyHandler};
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::session_view::{ApprovalMode, PendingQuestion, TranscriptEntry};
 use crate::tui::sessions::SessionRegistry;
 use crate::tui::theme::Theme;
-
-#[derive(Debug, Clone, Default)]
-pub struct SimpleInput {
-    lines: Vec<String>,
-    cursor_row: usize,
-    cursor_col: usize,
-    scroll_offset: u16,
-}
-
-impl SimpleInput {
-    pub fn lines(&self) -> &[String] {
-        &self.lines
-    }
-
-    pub fn cursor(&self) -> (usize, usize) {
-        (self.cursor_row, self.cursor_col)
-    }
-
-    #[allow(dead_code)]
-    pub fn cursor_row(&self) -> usize {
-        self.cursor_row
-    }
-
-    pub fn cursor_col(&self) -> usize {
-        self.cursor_col
-    }
-
-    pub fn insert_char(&mut self, c: char) {
-        if self.cursor_row >= self.lines.len() {
-            self.lines.resize(self.cursor_row + 1, String::new());
-        }
-        let line = &mut self.lines[self.cursor_row];
-        if self.cursor_col > line.len() {
-            line.extend(std::iter::repeat_n(' ', self.cursor_col - line.len()));
-        }
-        line.insert(self.cursor_col, c);
-        self.cursor_col += 1;
-    }
-
-    pub fn insert_str(&mut self, s: &str) {
-        for c in s.chars() {
-            self.insert_char(c);
-        }
-    }
-
-    pub fn insert_newline(&mut self) {
-        let current_line = self.lines.get(self.cursor_row).cloned().unwrap_or_default();
-        let (before, after) = current_line.split_at(self.cursor_col);
-        self.lines[self.cursor_row] = before.to_string();
-        self.lines.insert(self.cursor_row + 1, after.to_string());
-        self.cursor_row += 1;
-        self.cursor_col = 0;
-    }
-
-    pub fn delete_char(&mut self) {
-        if self.cursor_col > 0 {
-            let line = &mut self.lines[self.cursor_row];
-            if self.cursor_col <= line.len() {
-                line.remove(self.cursor_col - 1);
-            }
-            self.cursor_col -= 1;
-        } else if self.cursor_row > 0 {
-            let current_line = self.lines.remove(self.cursor_row);
-            let prev_line = &mut self.lines[self.cursor_row - 1];
-            self.cursor_col = prev_line.len();
-            prev_line.push_str(&current_line);
-            self.cursor_row -= 1;
-        }
-    }
-
-    pub fn delete_line_by_end(&mut self) {
-        let line = &mut self.lines[self.cursor_row];
-        line.truncate(self.cursor_col);
-    }
-
-    pub fn delete_line_by_head(&mut self) {
-        let line = &mut self.lines[self.cursor_row];
-        let after = line.split_off(self.cursor_col);
-        *line = after;
-        self.cursor_col = 0;
-    }
-
-    pub fn delete_word(&mut self) {
-        let line = &mut self.lines[self.cursor_row];
-        if self.cursor_col > 0 {
-            let before = &line[..self.cursor_col];
-            let after = &line[self.cursor_col..];
-            let new_before = before.trim_end();
-            let removed = before.len() - new_before.len();
-            if removed > 0 {
-                *line = format!("{}{}", new_before, after);
-                self.cursor_col -= removed;
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.lines = vec![String::new()];
-        self.cursor_row = 0;
-        self.cursor_col = 0;
-        self.scroll_offset = 0;
-    }
-
-    pub fn move_cursor_up(&mut self) {
-        if self.cursor_row > 0 {
-            self.cursor_row -= 1;
-            let line_len = self
-                .lines
-                .get(self.cursor_row)
-                .map(|l| l.len())
-                .unwrap_or(0);
-            self.cursor_col = self.cursor_col.min(line_len);
-        }
-    }
-
-    pub fn move_cursor_down(&mut self) {
-        if self.cursor_row < self.lines.len().saturating_sub(1) {
-            self.cursor_row += 1;
-            let line_len = self
-                .lines
-                .get(self.cursor_row)
-                .map(|l| l.len())
-                .unwrap_or(0);
-            self.cursor_col = self.cursor_col.min(line_len);
-        }
-    }
-
-    pub fn move_cursor_left(&mut self) {
-        if self.cursor_col > 0 {
-            self.cursor_col -= 1;
-        }
-    }
-
-    pub fn move_cursor_right(&mut self) {
-        let line_len = self
-            .lines
-            .get(self.cursor_row)
-            .map(|l| l.len())
-            .unwrap_or(0);
-        if self.cursor_col < line_len {
-            self.cursor_col += 1;
-        }
-    }
-
-    pub fn move_cursor_to_head(&mut self) {
-        self.cursor_col = 0;
-    }
-
-    pub fn move_cursor_to_end(&mut self) {
-        let line_len = self
-            .lines
-            .get(self.cursor_row)
-            .map(|l| l.len())
-            .unwrap_or(0);
-        self.cursor_col = line_len;
-    }
-
-    #[allow(dead_code)]
-    pub fn set_scroll_offset(&mut self, offset: u16) {
-        self.scroll_offset = offset;
-    }
-
-    pub fn scroll_offset(&self) -> u16 {
-        self.scroll_offset
-    }
-
-    /// The cursor's line, truncated to the bytes left of the cursor. Used to
-    /// detect an active `@file` mention token (ADR-0030).
-    pub fn current_line_before_cursor(&self) -> &str {
-        let line = self
-            .lines
-            .get(self.cursor_row)
-            .map(String::as_str)
-            .unwrap_or("");
-        let col = self.cursor_col.min(line.len());
-        &line[..col]
-    }
-
-    /// Replace the byte range `[start, end)` on the cursor's line with `text`,
-    /// leaving the cursor just past the inserted text. Used to swap an `@query`
-    /// token for the selected path.
-    pub fn replace_on_cursor_line(&mut self, start: usize, end: usize, text: &str) {
-        let Some(line) = self.lines.get_mut(self.cursor_row) else {
-            return;
-        };
-        let end = end.min(line.len());
-        let start = start.min(end);
-        line.replace_range(start..end, text);
-        self.cursor_col = start + text.len();
-    }
-}
 
 const HISTORY_CAPACITY: usize = 100;
 
@@ -1307,6 +1116,45 @@ impl App {
 mod tests {
     use super::*;
     use entanglement_core::OutEvent;
+
+    #[test]
+    fn history_up_down_navigates_and_restores_draft() {
+        let mut app = App::new(SessionId::new("test"));
+        app.input.insert_str("first");
+        assert_eq!(app.take_input_text(), "first");
+        app.input.insert_str("second");
+        assert_eq!(app.take_input_text(), "second");
+
+        // A draft is preserved as the search term and restored on the way down.
+        app.input.insert_str("draft");
+        app.history_up();
+        assert_eq!(app.input_text(), "second");
+        app.history_up();
+        assert_eq!(app.input_text(), "first");
+        app.history_up(); // clamps at the oldest entry
+        assert_eq!(app.input_text(), "first");
+        app.history_down();
+        assert_eq!(app.input_text(), "second");
+        app.history_down(); // past the newest → restore the draft
+        assert_eq!(app.input_text(), "draft");
+    }
+
+    #[test]
+    fn history_navigation_is_a_noop_with_empty_history() {
+        let mut app = App::new(SessionId::new("test"));
+        app.history_up();
+        app.history_down();
+        assert_eq!(app.input_text(), "");
+    }
+
+    #[test]
+    fn history_up_preserves_multibyte_entry() {
+        let mut app = App::new(SessionId::new("test"));
+        app.input.insert_str("héllo 🚀");
+        assert_eq!(app.take_input_text(), "héllo 🚀");
+        app.history_up();
+        assert_eq!(app.input_text(), "héllo 🚀");
+    }
 
     #[test]
     fn test_profile_color_for_hash() {
