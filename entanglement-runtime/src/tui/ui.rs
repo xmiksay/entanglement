@@ -252,12 +252,7 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
                         _ => "• ",
                     };
                     let content = format!("{}{}{}", indent, prefix, text);
-                    let truncated = if content.len() > 40 {
-                        format!("{}...", &content[..40 - 3])
-                    } else {
-                        content
-                    };
-                    lines.push(Line::from(truncated));
+                    lines.push(Line::from(crate::tui::wrap::truncate(&content, 40)));
                 }
                 _ => {}
             }
@@ -285,6 +280,45 @@ mod tests {
     use crate::tui::app::App;
     use entanglement_core::{OutEvent, SessionId};
     use ratatui::{backend::TestBackend, Terminal};
+
+    /// Renders `draw_sidebar` into a fresh backend and returns the visible text
+    /// as one newline-joined string.
+    fn render_sidebar(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| draw_sidebar(f, f.area(), app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn sidebar_truncates_multibyte_heading_without_panic() {
+        // A plan heading whose bytes exceed 40 but whose chars are multibyte
+        // (CJK): a fixed byte slice at offset 37 lands mid-codepoint and panics.
+        // Width-based truncation must render it and cap it with an ellipsis.
+        let sid = SessionId::new("s1");
+        let mut app = App::new(sid.clone());
+        app.handle_out_event(OutEvent::Plan {
+            session: sid.clone(),
+            seq: 1,
+            content: "# 日本語のとても長い見出しテキストで四十バイトを優に超える長さ".to_string(),
+        });
+
+        // Draw wide enough for the sidebar column; the assertion is that this
+        // does not panic while building the truncated outline line.
+        let text = render_sidebar(&app, 44, 12);
+        assert!(text.contains("..."), "long heading should be truncated");
+        assert!(
+            text.contains("Plan Outline"),
+            "sidebar should show the plan outline section"
+        );
+    }
 
     #[test]
     fn streamed_text_deltas_wrap_as_one_paragraph() {
