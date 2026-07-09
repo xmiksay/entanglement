@@ -5,7 +5,7 @@ use ratatui::widgets::ListState;
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use crate::session_store::{list_sessions, SessionMeta};
+use crate::session_store::{list_sessions, LogRecord, SessionMeta};
 use crate::tui::commands::{Command, CommandPalette};
 use crate::tui::keybindings::{Action, LeaderKeyHandler};
 use crate::tui::markdown::MarkdownRenderer;
@@ -1069,37 +1069,46 @@ impl App {
         &self.help_text
     }
 
-    #[allow(dead_code)]
     pub fn showing_resume_modal(&self) -> bool {
         self.showing_resume_modal
     }
 
-    #[allow(dead_code)]
     pub fn resume_state(&mut self) -> &mut ListState {
         &mut self.resume_state
     }
 
-    #[allow(dead_code)]
     pub fn toggle_resume_modal(&mut self) {
         self.showing_resume_modal = !self.showing_resume_modal;
         if self.showing_resume_modal {
-            if let Ok(sessions) = list_sessions(&std::env::current_dir().unwrap_or_default()) {
+            if let Ok(mut sessions) = list_sessions(&std::env::current_dir().unwrap_or_default()) {
+                // Only root sessions are independently resumable; spawned
+                // children live inside their root's file. Most-recent first.
+                sessions.retain(|s| s.root);
+                sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
                 self.available_sessions = sessions;
-                if !self.available_sessions.is_empty() {
-                    self.resume_state.select(Some(0));
-                }
             }
+            self.resume_state
+                .select(if self.available_sessions.is_empty() {
+                    None
+                } else {
+                    Some(0)
+                });
         }
         self.mark_dirty();
     }
 
-    #[allow(dead_code)]
     pub fn close_resume_modal(&mut self) {
         self.showing_resume_modal = false;
         self.mark_dirty();
     }
 
-    #[allow(dead_code)]
+    /// Rebuilds and switches to a session's view from persisted records,
+    /// restoring its full visible transcript.
+    pub fn restore_session(&mut self, id: SessionId, records: &[LogRecord]) {
+        self.sessions.restore_from_records(id, records);
+        self.mark_dirty();
+    }
+
     pub fn resume_next(&mut self) {
         if self.available_sessions.is_empty() {
             return;
@@ -1110,7 +1119,6 @@ impl App {
         }
     }
 
-    #[allow(dead_code)]
     pub fn resume_prev(&mut self) {
         if self.available_sessions.is_empty() {
             return;
@@ -1125,12 +1133,10 @@ impl App {
         }
     }
 
-    #[allow(dead_code)]
     pub fn available_sessions(&self) -> &[SessionMeta] {
         &self.available_sessions
     }
 
-    #[allow(dead_code)]
     pub fn selected_resume_session(&self) -> Option<SessionMeta> {
         self.resume_state
             .selected()

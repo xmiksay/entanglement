@@ -183,6 +183,31 @@ pub fn read(cwd: &Path, root_session_id: &SessionId) -> Result<Vec<LogRecord>> {
     Ok(records)
 }
 
+/// Pairs a log's records into the `(Option<InMsg>, OutEvent)` tuples that
+/// [`entanglement_core::Holly::resume`] / `Session::replay` expect.
+///
+/// Each `Out` record is paired with the most recent preceding `In` record (the
+/// message that produced it); the `In` is then consumed so it pairs with exactly
+/// one `Out`. `In` records with no following `Out` are dropped — replay folds
+/// state from events, so an unanswered inbound message carries nothing to restore.
+pub fn pair_records(records: &[LogRecord]) -> Vec<(Option<InMsg>, OutEvent)> {
+    let mut paired: Vec<(Option<InMsg>, OutEvent)> = Vec::new();
+    let mut last_in: Option<InMsg> = None;
+
+    for record in records {
+        match &record.payload {
+            LogPayload::In(in_msg) => {
+                last_in = Some(in_msg.clone());
+            }
+            LogPayload::Out(out_event) => {
+                paired.push((last_in.take(), out_event.clone()));
+            }
+        }
+    }
+
+    paired
+}
+
 /// Lists all sessions in the current working directory's session folder.
 ///
 /// Reads the first line of each `.jsonl` file to extract metadata.
@@ -219,9 +244,12 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
             .unwrap_or(0);
 
         let records = read(cwd, &session_id)?;
+        // The first record is now the opening `Prompt` (inbound logging landed
+        // ahead of `SessionStarted`), so scan for the `SessionStarted` event
+        // rather than assuming it's record zero.
         let meta = records
-            .first()
-            .and_then(|r| match &r.payload {
+            .iter()
+            .find_map(|r| match &r.payload {
                 LogPayload::Out(OutEvent::SessionStarted {
                     profile,
                     model,
@@ -368,6 +396,81 @@ mod tests {
             LogPayload::Out(OutEvent::Done { .. }) => {}
             _ => panic!("Expected Done"),
         }
+    }
+
+    #[test]
+    fn pair_records_associates_each_prompt_with_following_events() {
+        let sid = SessionId::new("s");
+        let prompt = |t: &str| {
+            LogRecord::new(
+                sid.clone(),
+                LogPayload::In(InMsg::Prompt {
+                    session: sid.clone(),
+                    text: t.to_string(),
+                }),
+            )
+        };
+        let text = |seq: u64, t: &str| {
+            LogRecord::new(
+                sid.clone(),
+                LogPayload::Out(OutEvent::TextDelta {
+                    session: sid.clone(),
+                    seq,
+                    text: t.to_string(),
+                }),
+            )
+        };
+        let done = |seq: u64| {
+            LogRecord::new(
+                sid.clone(),
+                LogPayload::Out(OutEvent::Done {
+                    session: sid.clone(),
+                    seq,
+                }),
+            )
+        };
+
+        let records = vec![
+            prompt("hi"),
+            text(1, "hello"),
+            done(2),
+            prompt("again"),
+            text(3, "yo"),
+            done(4),
+        ];
+
+        let paired = pair_records(&records);
+        assert_eq!(paired.len(), 4);
+
+        // First prompt pairs with the first out event; it's consumed so the
+        // trailing events of that turn pair with `None`.
+        match &paired[0] {
+            (Some(InMsg::Prompt { text, .. }), OutEvent::TextDelta { .. }) => {
+                assert_eq!(text, "hi")
+            }
+            other => panic!("unexpected pairing: {other:?}"),
+        }
+        assert!(matches!(paired[1], (None, OutEvent::Done { .. })));
+        match &paired[2] {
+            (Some(InMsg::Prompt { text, .. }), OutEvent::TextDelta { .. }) => {
+                assert_eq!(text, "again")
+            }
+            other => panic!("unexpected pairing: {other:?}"),
+        }
+        assert!(matches!(paired[3], (None, OutEvent::Done { .. })));
+    }
+
+    #[test]
+    fn pair_records_drops_trailing_inbound_without_output() {
+        let sid = SessionId::new("s");
+        let records = vec![LogRecord::new(
+            sid.clone(),
+            LogPayload::In(InMsg::Prompt {
+                session: sid.clone(),
+                text: "no reply yet".to_string(),
+            }),
+        )];
+        assert!(pair_records(&records).is_empty());
     }
 
     #[test]

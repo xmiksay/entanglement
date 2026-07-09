@@ -347,7 +347,6 @@ pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
     f.render_widget(list, popup_area);
 }
 
-#[allow(dead_code)]
 pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
     let sessions = app.available_sessions().to_vec();
     let items: Vec<ListItem> = sessions
@@ -362,7 +361,7 @@ pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
                 Span::styled("[", Style::default().dim()),
                 Span::styled(agent_string, Style::default().fg(Color::Cyan).bold()),
                 Span::styled("]", Style::default().dim()),
-                Span::raw(format!(" {:?}", model_string)),
+                Span::raw(format!(" {}", model_string)),
             ]))
         })
         .collect();

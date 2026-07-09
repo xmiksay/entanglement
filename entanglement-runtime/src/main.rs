@@ -20,13 +20,13 @@ mod tui;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, SessionId, ToolRegistry};
+use entanglement_core::{EngineConfig, Holly, InMsg, SessionId, ToolRegistry};
 use entanglement_provider::{models_for, HttpClient, ModelInfo};
 
 use host::{host_tools, BashTool};
 use pipe::pipe;
 use run::run_one;
-use session_store::{read, LogPayload};
+use session_store::{list_sessions, pair_records, read};
 use tui::tui;
 
 /// Provider name for model selection.
@@ -313,6 +313,8 @@ enum Cmd {
         #[arg(long)]
         agent: Option<String>,
     },
+    /// List past root sessions for the current directory.
+    Sessions,
 }
 
 #[tokio::main]
@@ -320,6 +322,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let filter = if cli.verbose { "debug" } else { "warn" };
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // `sessions` only reads the log store — handle it before spinning up a
+    // provider/engine so it stays cheap and prints nothing about providers.
+    if matches!(cli.cmd, Some(Cmd::Sessions)) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        return print_sessions(&cwd);
+    }
 
     let http_client = HttpClient::new();
     let (config, model_info, tools) = build_config(&http_client);
@@ -331,12 +340,12 @@ async fn main() -> Result<()> {
 
     // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
     // answer the engine's ToolExec round-trip, gating each call on `profiles`.
-    let _tool_executor = tool_runner::spawn_tool_executor(&holly, tools, profiles);
+    let tool_executor = tool_runner::spawn_tool_executor(&holly, tools, profiles);
 
-    // Spawn the persistence subscriber to log all events
-    let _persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
+    // Spawn the persistence subscriber to log all inbound + outbound frames.
+    let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
 
-    match cli.cmd {
+    let result = match cli.cmd {
         Some(Cmd::Run {
             prompt,
             session,
@@ -356,22 +365,9 @@ async fn main() -> Result<()> {
                     format!("Failed to read session records for {}", resume_session_id)
                 })?;
 
-                let mut paired_records: Vec<(Option<InMsg>, OutEvent)> = Vec::new();
-                let mut last_in: Option<InMsg> = None;
-
-                for record in &records {
-                    match &record.payload {
-                        LogPayload::In(in_msg) => {
-                            last_in = Some(in_msg.clone());
-                        }
-                        LogPayload::Out(out_event) => {
-                            paired_records.push((last_in.clone(), out_event.clone()));
-                            last_in = None;
-                        }
-                    }
-                }
-
-                holly.resume(session_id.clone(), paired_records).await?;
+                holly
+                    .resume(session_id.clone(), pair_records(&records))
+                    .await?;
             }
 
             if let Some(ref a) = agent {
@@ -399,11 +395,69 @@ async fn main() -> Result<()> {
                     })
                     .await?;
             }
-            tui(holly, session_id, model_info).await
+            tui(&holly, session_id, model_info).await
         }
+        Some(Cmd::Sessions) => unreachable!("sessions is handled before engine setup"),
         None => {
             let prompt = cli.prompt.join(" ");
             run_one(&holly, &SessionId::new_uuid(), None, &prompt, "text").await
         }
+    };
+
+    // Shut the engine down and let the persistence task flush before exit: a
+    // one-shot `run` ends the instant the turn does, and the detached subscriber
+    // still holds broadcast-buffered events it hasn't written. The tool executor
+    // holds a `Holly` clone (an inbox + event sender), so aborting it is required
+    // for the channels to actually close.
+    tool_executor.abort();
+    drop(holly);
+    let _ = persistence_handle.await;
+
+    result
+}
+
+/// Prints past root sessions for `cwd`, most-recently-active first.
+fn print_sessions(cwd: &std::path::Path) -> Result<()> {
+    let mut sessions = list_sessions(cwd)?;
+    sessions.retain(|s| s.root);
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
+
+    if sessions.is_empty() {
+        println!("No sessions found for this directory.");
+        println!("Start one with:  skutter run --session <id> \"<prompt>\"");
+        println!("Then resume it:  skutter run --resume <id> \"<prompt>\"");
+        return Ok(());
+    }
+
+    println!(
+        "{:<28}  {:<10}  {:<20}  LAST ACTIVE",
+        "ID", "AGENT", "MODEL"
+    );
+    for s in &sessions {
+        let model = s.model.as_deref().unwrap_or("default");
+        println!(
+            "{:<28}  {:<10}  {:<20}  {}",
+            s.id.0,
+            s.agent,
+            model,
+            format_relative(s.last_active)
+        );
+    }
+    Ok(())
+}
+
+/// Formats a Unix-ms timestamp as a compact "time ago" relative to now
+/// (clamped to `0s ago` if the record's timestamp is ahead of the clock).
+fn format_relative(ts_ms: u64) -> String {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let secs = now_ms.saturating_sub(ts_ms) / 1000;
+    match secs {
+        0..=59 => format!("{secs}s ago"),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86399 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86400),
     }
 }
