@@ -328,7 +328,16 @@ persistence machinery with none of the CLI/TUI/transport weight
   selection): the wheel scrolls the chat (or the open modal's selection), and a
   left click hit-tests the chat area to toggle a transcript block — reasoning
   runs render collapsed as a `▸ Thinking (N lines)` header, expanded on click
-  (or via the leader `t` key).
+  (or via the leader `t` key). **Attention signals** (issue #14, `tui::attention`):
+  a `Status` transition into `WaitingApproval`, `Done`, or `Error` rings the
+  terminal bell — and, opt-in via `ENTANGLEMENT_TUI_NOTIFY=1`, emits an OSC 9
+  desktop notification (iTerm2/kitty/WezTerm; silently dropped elsewhere). Core
+  emits `Status` only on a state change, so signalling on those states *is*
+  signalling on the transitions; `Done`/`Error` also arrive as their own
+  `OutEvent` variants but only `Status` is watched, so a turn end rings once.
+  Focus reporting (crossterm `EnableFocusChange`) mutes signals while the
+  terminal is focused, but best-effort only — terminals that never report focus
+  always signal.
 
 ## 6b. Session persistence & resume (`persistence` + `session_store`)
 
