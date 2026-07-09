@@ -386,7 +386,8 @@ Sessions are event-sourced to disk, one JSONL file per **root** session under
 `spawn_persistence_subscriber` (`persistence`) taps **both** directions of the
 ABI — `holly.subscribe()` for `OutEvent`s and `holly.subscribe_inbound()` for
 `InMsg`s — and appends each frame as a `LogRecord { ts, session, payload }` where
-`payload` is `LogPayload::In(InMsg) | Out(OutEvent)`. Logging inbound messages is
+`payload` is `LogPayload::In(InMsg) | Out(OutEvent) | Gap { dropped }` (the last
+is a tombstone, below). Logging inbound messages is
 what makes a session resumable: `Session::replay` reconstructs user turns from
 the logged `InMsg::Prompt` records, so without them a resumed context holds only
 assistant/tool messages and the model appears to forget the conversation.
@@ -408,6 +409,17 @@ assistant/tool messages and the model appears to forget the conversation.
   aborts the tool executor and drops its `Holly` handle to close the broadcast
   channels, then awaits the persistence task so buffered events reach disk before
   the process exits.
+- **Log integrity — never resume a hole** (#104). The persistence tap reads
+  Holly's *lossy* broadcast, so a fast turn that outruns disk appends can drop a
+  contiguous run of events (`RecvError::Lagged`) — a well-formed file whose
+  history is silently incomplete. On lag the tap writes a `Gap { dropped }`
+  tombstone into every known root file (a lag can't say *which* session lost
+  records, so all are marked); `integrity_gap` detects it and both resume paths
+  (`skutter run --resume`, the TUI modal) **refuse** rather than fold an
+  incomplete context. `session_store::read` likewise distinguishes a
+  crash-truncated *tail* line (tolerated with a warning) from *interior*
+  corruption (a hole → hard error), and `list_sessions` skips-and-warns per bad
+  file instead of aborting the whole enumeration.
 
 ## 7. Hygiene gates — [ADR-0006](adr/0006-core-dependency-hygiene-gate.md) (`tree`), [ADR-0025](adr/0025-runtime-cargo-feature-gates.md) (`check-lean`)
 

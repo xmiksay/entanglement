@@ -665,11 +665,22 @@ async fn handle_resume_modal_event(app: &mut App, holly: &Holly, key: KeyEvent) 
                 let cwd = std::env::current_dir().unwrap_or_default();
                 match crate::session_store::read(&cwd, &id) {
                     Ok(records) => {
-                        // Visible transcript first, then engine context.
-                        app.restore_session(id.clone(), &records);
-                        let paired = crate::session_store::pair_records(&records);
-                        if let Err(e) = holly.resume(id.clone(), paired).await {
-                            tracing::error!("Failed to resume session {}: {}", id, e);
+                        // A gap tombstone means the log lost a contiguous run of
+                        // events (#104); replaying it would silently rebuild a
+                        // wrong context, so refuse rather than resume.
+                        if let Some(dropped) = crate::session_store::integrity_gap(&records) {
+                            tracing::error!(
+                                "Refusing to resume session {}: log is missing {} dropped record(s)",
+                                id,
+                                dropped
+                            );
+                        } else {
+                            // Visible transcript first, then engine context.
+                            app.restore_session(id.clone(), &records);
+                            let paired = crate::session_store::pair_records(&records);
+                            if let Err(e) = holly.resume(id.clone(), paired).await {
+                                tracing::error!("Failed to resume session {}: {}", id, e);
+                            }
                         }
                     }
                     Err(e) => {
