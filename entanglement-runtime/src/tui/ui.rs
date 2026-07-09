@@ -110,9 +110,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
     let sessions = app.sessions();
-    let background_waiting = sessions
-        .iter()
-        .any(|(id, view)| *id != app.active_session_id() && view.is_waiting_approval());
+    let background_waiting = sessions.iter().any(|(id, view)| {
+        *id != app.active_session_id() && (view.is_waiting_approval() || view.is_asking())
+    });
 
     let mut spans = vec![
         Span::styled("skutter", Style::default().bold()),

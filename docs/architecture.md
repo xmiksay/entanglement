@@ -81,6 +81,7 @@ One set of serde-tagged types crosses every transport:
 InMsg    = Prompt{session,text} | Approve{session,request_id}   // approval →
          | Reject{session,request_id,reason?}                   // runtime, not core (#59)
          | ToolResult{session,request_id,output}   // runtime → core: tool ran (#58)
+         | AnswerQuestion{session,request_id,answer}  // ask_user answer → runtime (#90)
          | Stop{session}
          | SetTasks{session,tasks} | SetPlan{session,content} | SetAgent{session,agent}
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
@@ -91,11 +92,16 @@ OutEvent = Status{session,state}              // point-in-time, no seq
          | TextDelta{session,seq,text}
          | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
          | ToolExec{session,seq,request_id,tool,input}      // core → runtime: dispatch it (#58/#59)
+         | UserQuestion{session,seq,request_id,question,options,allow_free_form}  // ask_user prompt (#90)
          | ToolOutput{session,seq,request_id,output}
          | TaskList{session,seq,tasks}        // full outline snapshot
          | Error{session,seq,message}
          | Done{session,seq}
 ```
+
+`AnswerQuestion` mirrors `Approve`/`Reject`: the supervisor drops it off the
+inbound fan-out (core never routes it) and the `ask_user` executor consumes it
+(§8, [ADR-0027](adr/0027-ask-user-interactive-prompt.md)).
 
 - **Session-multiplexed** like the `agent` reference's `task_id`: one connection
   routes many sessions by `SessionId`.
@@ -208,6 +214,21 @@ least-privileged rule across its whole ancestor chain (`Deny < Ask < Allow`), so
 a child can never touch the shared tree in ways a parent couldn't. Filesystem
 isolation (a separate child root) and bidirectional session-to-session messaging
 are still deferred (see ADR-0022/0024).
+
+**Ask-user prompt** (✅ #90, [ADR-0027](adr/0027-ask-user-interactive-prompt.md)).
+The model calls a runtime-owned `ask_user { question, options, allow_free_form }`
+tool. The runtime executor (`ask_user.rs`) intercepts it on `ToolExec` — before
+permission resolution, like `spawn_agent` — emits a dedicated
+`OutEvent::UserQuestion` and parks at `WaitingApproval`. The head renders the labelled choices
+Claude-style (the TUI adds a `PendingQuestion` interaction state alongside
+`ApprovalMode`, with an "Other" entry that opens free-text input) and replies
+`InMsg::AnswerQuestion { request_id, answer }`. Like `Approve`/`Reject`, the
+supervisor drops it off the inbound fan-out and the executor consumes it, then
+folds the answer (the picked label or typed text, verbatim) back as the
+`ask_user` `ToolOutput` — reusing the #58 round-trip, so core needs no new turn
+logic. A `Stop` while pending unwinds silently (core cancels the turn). The
+non-interactive `run` head auto-answers (first option, else a canned note) so it
+never parks; `pipe` forwards the question and accepts the answer as-is.
 
 ## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 
@@ -370,6 +391,12 @@ changes: `build` auto-allows both (default `Allow`), `plan` asks for both
 orthogonal to the permission profile: it controls *registration* (whether the
 tool is advertised at all), the profile controls *dispatch* (Allow/Ask/Deny
 when the model calls it).
+
+Two **runtime-owned orchestration tools** are *not* in the registry — the
+`tool_runner` intercepts them on `ToolExec` before permission resolution (they
+touch no host resource) and advertises their schemas separately:
+`spawn_agent { agent, prompt }` (§5, ADR-0022) and
+`ask_user { question, options, allow_free_form }` (§5, ADR-0027).
 
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs

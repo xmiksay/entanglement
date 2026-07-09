@@ -51,6 +51,27 @@ pub async fn run_one(
             render_text(&mut out, &ev)?;
         }
         out.flush()?;
+        // No interactive user on the one-shot head: auto-answer an `ask_user`
+        // prompt (first option, or a canned note when only free-form) so the
+        // turn proceeds instead of parking forever (ADR-0027 fallback).
+        if let OutEvent::UserQuestion {
+            request_id,
+            options,
+            ..
+        } = &ev
+        {
+            let answer = options
+                .first()
+                .map(|o| o.label.clone())
+                .unwrap_or_else(|| "(no interactive user available)".to_string());
+            holly
+                .send(InMsg::AnswerQuestion {
+                    session: session.clone(),
+                    request_id: request_id.clone(),
+                    answer,
+                })
+                .await?;
+        }
         if matches!(ev, OutEvent::Done { .. }) {
             break;
         }
@@ -75,6 +96,14 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::ReasoningDelta { text, .. } => writeln!(out, "· {text}")?,
         OutEvent::ToolCall { tool, input, .. } => writeln!(out, "→ {tool}: {input}")?,
         OutEvent::ToolRequest { tool, input, .. } => writeln!(out, "? {tool}: {input}")?,
+        OutEvent::UserQuestion {
+            question, options, ..
+        } => {
+            writeln!(out, "? {question}")?;
+            for opt in options {
+                writeln!(out, "  - {}", opt.label)?;
+            }
+        }
         // Runtime plumbing (#58): execution round-trip, not user-facing.
         OutEvent::ToolExec { .. } => {}
         OutEvent::ToolOutput { output, .. } => writeln!(out, "= {output}")?,

@@ -121,6 +121,22 @@ pub fn spawn_tool_executor(
                         }
                         continue;
                     }
+                    // `ask_user` is a runtime-owned prompt tool (#90, ADR-0027):
+                    // like `spawn_agent` it touches no host resource, so it
+                    // bypasses permission and instead surfaces a question to the
+                    // head. Subscribe *before* handing off so a fast answer can't
+                    // race ahead of the parked executor task.
+                    if tool == crate::ask_user::ASK_USER_TOOL {
+                        let inbound = holly.subscribe_inbound();
+                        let holly = holly.clone();
+                        tokio::spawn(async move {
+                            crate::ask_user::run_ask_user(
+                                holly, inbound, session, seq, request_id, input,
+                            )
+                            .await;
+                        });
+                        continue;
+                    }
                     // Resolve permission before spawning so the read of `active`
                     // stays ordered with the lifecycle events above. A child
                     // sub-agent is clamped to its parent chain (#77): its effective
