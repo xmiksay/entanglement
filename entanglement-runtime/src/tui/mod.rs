@@ -2,7 +2,9 @@ mod app;
 mod attention;
 mod commands;
 mod diff;
+mod editor;
 mod event;
+mod export;
 mod input_panel;
 mod keybindings;
 mod markdown;
@@ -57,7 +59,7 @@ pub async fn tui(holly: &Holly, initial_session: SessionId, model_info: ModelInf
     // Mouse capture lets the wheel scroll the chat and blocks become clickable.
     // The trade-off is losing native text selection (use Shift+drag), so allow
     // opting out via `ENTANGLEMENT_TUI_NO_MOUSE`.
-    if std::env::var_os("ENTANGLEMENT_TUI_NO_MOUSE").is_none() {
+    if editor::mouse_capture_enabled() {
         let _ = execute!(stdout, EnableMouseCapture);
     }
     // Focus reporting lets attention signals mute while the terminal is focused
@@ -115,6 +117,16 @@ pub async fn tui(holly: &Holly, initial_session: SessionId, model_info: ModelInf
             break;
         }
         drain_engine_events(&mut holly_sub, &mut app, &mut attention);
+
+        // A command/action may have requested a terminal-owning effect (open
+        // `$EDITOR`, export). Run it here — the loop owns the `Terminal` — and
+        // keep the session alive on failure rather than propagating.
+        if let Some(effect) = app.take_pending_effect() {
+            if let Err(e) = editor::run_effect(&mut terminal, &mut app, effect) {
+                tracing::error!("external editor / export failed: {e:#}");
+            }
+            app.mark_dirty();
+        }
     }
 
     restore_terminal(&mut terminal)?;

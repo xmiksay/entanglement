@@ -182,6 +182,18 @@ impl SimpleInput {
 
 const HISTORY_CAPACITY: usize = 100;
 
+/// A deferred, terminal-owning side effect a command/action requests but cannot
+/// perform itself: the `App` has no `Terminal`, so it records the intent here
+/// and the event loop (which does) runs it via `tui::editor::run_effect`
+/// (ADR-0029).
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiEffect {
+    /// Suspend the TUI, edit the input draft in `$EDITOR`, read it back.
+    OpenEditor,
+    /// Export the transcript to Markdown and open it in `$EDITOR`.
+    Export,
+}
+
 #[derive(Clone)]
 pub struct ProfileInfo {
     pub name: String,
@@ -246,6 +258,9 @@ pub struct App {
     chat_area: Rect,
     chat_scroll_offset: usize,
     chat_line_blocks: Vec<Option<usize>>,
+
+    // Deferred terminal-owning effect (editor / export) for the event loop to run.
+    pending_effect: Option<UiEffect>,
 }
 
 impl App {
@@ -350,6 +365,7 @@ impl App {
             chat_area: Rect::default(),
             chat_scroll_offset: 0,
             chat_line_blocks: Vec::new(),
+            pending_effect: None,
         }
     }
 
@@ -520,6 +536,23 @@ impl App {
 
     pub fn input_text(&self) -> String {
         self.input.lines().join("\n")
+    }
+
+    /// Replaces the input buffer wholesale (used after an `$EDITOR` round-trip).
+    pub fn set_input_text(&mut self, text: String) {
+        self.input = SimpleInput::default();
+        self.input.insert_str(&text);
+        self.mark_dirty();
+    }
+
+    /// Records a deferred terminal-owning effect for the event loop to run.
+    pub fn request_effect(&mut self, effect: UiEffect) {
+        self.pending_effect = Some(effect);
+    }
+
+    /// Takes the pending terminal-owning effect, if any (event loop drains it).
+    pub fn take_pending_effect(&mut self) -> Option<UiEffect> {
+        self.pending_effect.take()
     }
 
     #[allow(dead_code)]
@@ -936,8 +969,14 @@ impl App {
             }
             Command::Plan => false,
             Command::Tasks => false,
-            Command::Editor => false,
-            Command::Export => false,
+            Command::Editor => {
+                self.request_effect(UiEffect::OpenEditor);
+                false
+            }
+            Command::Export => {
+                self.request_effect(UiEffect::Export);
+                false
+            }
             Command::Resume => {
                 self.toggle_resume_modal();
                 false
@@ -972,8 +1011,14 @@ impl App {
                 self.toggle_sidebar();
                 false
             }
-            Action::OpenEditor => false,
-            Action::Export => false,
+            Action::OpenEditor => {
+                self.request_effect(UiEffect::OpenEditor);
+                false
+            }
+            Action::Export => {
+                self.request_effect(UiEffect::Export);
+                false
+            }
             Action::Interrupt => false,
             Action::ScrollUp => {
                 self.scroll_up(5);
