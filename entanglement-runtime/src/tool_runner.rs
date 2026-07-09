@@ -52,6 +52,9 @@ pub fn spawn_tool_executor(
         // and per-root spawn budgets. Lives in this single-threaded loop, so the
         // spawn decision below is race-free.
         let mut spawn_guard = crate::subagent::SpawnGuard::new();
+        // Answer + timing per launched sub-agent, keyed by its handle (#89).
+        // Shared with the detached launch watchers and `agent_poll` tasks.
+        let registry = crate::agent_poll::AgentRegistry::default();
         loop {
             match sub.recv().await {
                 Ok(OutEvent::SessionStarted {
@@ -97,11 +100,13 @@ pub fn spawn_tool_executor(
                         match spawn_guard.try_spawn(&session) {
                             Ok(()) => {
                                 let child_events = holly.subscribe();
+                                let registry = registry.clone();
                                 let holly = holly.clone();
                                 tokio::spawn(async move {
-                                    crate::subagent::spawn_subagent(
+                                    crate::subagent::launch_subagent(
                                         holly,
                                         child_events,
+                                        registry,
                                         session,
                                         request_id,
                                         input,
@@ -119,6 +124,21 @@ pub fn spawn_tool_executor(
                                 });
                             }
                         }
+                        continue;
+                    }
+                    // `agent_poll` is the join half of non-blocking spawn (#89,
+                    // ADR-0026): it starts no session and touches no host
+                    // resource — it only reads accumulated spawn state — so like
+                    // `spawn_agent` it bypasses permission and the spawn budget.
+                    if tool == crate::agent_poll::AGENT_POLL_TOOL {
+                        let registry = registry.clone();
+                        let holly = holly.clone();
+                        tokio::spawn(async move {
+                            crate::agent_poll::run_agent_poll(
+                                holly, registry, session, request_id, input,
+                            )
+                            .await;
+                        });
                         continue;
                     }
                     // `ask_user` is a runtime-owned prompt tool (#90, ADR-0027):

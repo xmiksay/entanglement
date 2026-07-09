@@ -89,6 +89,11 @@ pub struct SessionView {
     pending_tool_request: Option<(String, String, String)>,
     pending_question: Option<PendingQuestion>,
     parent: Option<SessionId>,
+    /// Wall-clock (ms since epoch) the session started / ended, from
+    /// `SessionStarted` / `SessionEnded`. Drives the live spawn-duration shown
+    /// for sub-agent (child) sessions in the sessions list (#89, ADR-0026).
+    started_ms: Option<u64>,
+    ended_ms: Option<u64>,
     /// Reasoning runs the user has expanded, keyed by the transcript index of
     /// the run's first `ReasoningDelta` (a stable id — runs are coalesced from
     /// consecutive deltas at render time). Absent = collapsed (the default).
@@ -113,6 +118,8 @@ impl SessionView {
             pending_tool_request: None,
             pending_question: None,
             parent: None,
+            started_ms: None,
+            ended_ms: None,
             expanded_reasoning: HashSet::new(),
         }
     }
@@ -291,6 +298,21 @@ impl SessionView {
         self.parent.as_ref()
     }
 
+    /// Elapsed run time in whole seconds given the current wall clock (`now_ms`,
+    /// ms since epoch): the span from `SessionStarted` to `SessionEnded`, or to
+    /// `now_ms` while still running. `None` until the session's start is known.
+    /// Used to surface a sub-agent's spawn duration in the sessions list (#89).
+    pub fn elapsed_secs(&self, now_ms: u64) -> Option<u64> {
+        let started = self.started_ms?;
+        let end = self.ended_ms.unwrap_or(now_ms).max(started);
+        Some((end - started) / 1000)
+    }
+
+    /// Whether the session has ended (its final duration is now fixed).
+    pub fn has_ended(&self) -> bool {
+        self.ended_ms.is_some()
+    }
+
     /// Records the user's outgoing prompt into the transcript so it shows up
     /// in the chat scrollback. Unlike engine `OutEvent`s, user prompts carry
     /// no `seq` and bypass the dedupe guard — they originate here, not the
@@ -306,11 +328,15 @@ impl SessionView {
     /// if it changed anything the UI needs to redraw for.
     pub fn apply_event(&mut self, event: OutEvent) -> bool {
         match event {
-            OutEvent::SessionStarted { parent, .. } => {
+            OutEvent::SessionStarted { parent, ts, .. } => {
                 self.parent = parent;
+                self.started_ms = Some(ts);
                 true
             }
-            OutEvent::SessionEnded { .. } => true,
+            OutEvent::SessionEnded { ts, .. } => {
+                self.ended_ms = Some(ts);
+                true
+            }
             OutEvent::Status { state, .. } => {
                 self.state = state;
                 if state == AgentState::Idle
@@ -565,6 +591,33 @@ mod tests {
             state: AgentState::Done,
         });
         assert!(!v.is_asking());
+    }
+
+    #[test]
+    fn elapsed_tracks_running_then_freezes_on_end() {
+        let mut v = SessionView::new();
+        // Unknown until the session start is seen.
+        assert_eq!(v.elapsed_secs(10_000), None);
+
+        v.apply_event(OutEvent::SessionStarted {
+            session: sid(),
+            parent: Some(SessionId::new("root")),
+            profile: "explore".into(),
+            model: None,
+            root: false,
+            ts: 1_000,
+        });
+        // Running: measured against the current wall clock.
+        assert_eq!(v.elapsed_secs(4_000), Some(3));
+        assert!(!v.has_ended());
+
+        v.apply_event(OutEvent::SessionEnded {
+            session: sid(),
+            ts: 6_500,
+        });
+        // Ended: fixed span regardless of the clock advancing further.
+        assert!(v.has_ended());
+        assert_eq!(v.elapsed_secs(999_999), Some(5));
     }
 
     #[test]

@@ -95,9 +95,18 @@ assembles the root-contained quartet (`read`/`glob`/`grep`/`edit`);
 Sub-agent spawn (#60, [ADR-0022](../docs/adr/0022-subagent-spawn.md)): the
 runtime-owned `spawn_agent { agent, prompt }` tool issues `InMsg::Spawn`; the
 supervisor records `parent_links[child]=parent` and starts the child under the
-requested profile, then the runtime relays the child's final answer back to the
-parent as the tool's `ToolOutput` (reusing the #58 round-trip). Bypasses per-tool
-approval like the built-ins. Spawn limits (✅ #76,
+requested profile. Bypasses per-tool approval like the built-ins. Non-blocking
+spawn (✅ #89, [ADR-0026](../docs/adr/0026-async-subagent-spawn-and-poll.md),
+`runtime::agent_poll`): `spawn_agent` returns the child handle (`agent_id`)
+*immediately* instead of parking the parent turn on the child's `Done`, so one
+turn can launch several sub-agents that run concurrently. The launch task records
+the child's answer + duration into a shared `AgentRegistry` keyed by the handle;
+the parent collects it with a second runtime-owned tool
+`agent_poll { agent_id, timeout_secs }` (also intercepted before permission),
+which blocks up to `timeout_secs` and returns the answer + elapsed or a
+still-running status (unknown handle → error). Supersedes ADR-0022's synchronous
+answer-relay; the TUI sessions list shows each sub-agent's live spawn duration.
+Spawn limits (✅ #76,
 [ADR-0023](../docs/adr/0023-subagent-spawn-limits.md)): the runtime executor's
 `SpawnGuard` folds parent links from `SessionStarted` and refuses a spawn past a
 depth cap (`MAX_SPAWN_DEPTH`) or a cumulative per-root budget
@@ -162,7 +171,10 @@ inbound `InMsg` fan-out (#59), sub-agent spawn via `InMsg::Spawn` + the
 per-root fan-out (#76, [ADR-0023](../docs/adr/0023-subagent-spawn-limits.md)),
 spawn permission-gated — `Subagent`-mode leaves can't spawn + child permissions
 clamped to the ancestor chain (#77,
-[ADR-0024](../docs/adr/0024-subagent-permission-gating.md)). **Cleanup** — orphaned `apply_diff.rs` + `audit.rs`
+[ADR-0024](../docs/adr/0024-subagent-permission-gating.md)), non-blocking spawn —
+`spawn_agent` returns a handle immediately + `agent_poll` awaits it, for true
+fan-out (#89, [ADR-0026](../docs/adr/0026-async-subagent-spawn-and-poll.md)).
+**Cleanup** — orphaned `apply_diff.rs` + `audit.rs`
 removed (#63); docs drift guard (#62) closed out the epic by flipping every
 🚧 marker in `docs/architecture.md`/`README.md` to ✅ as each child landed.
 

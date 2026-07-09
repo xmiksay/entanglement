@@ -198,10 +198,20 @@ child `SessionId`, and sends `InMsg::Spawn { session: child, parent, agent,
 prompt }`. The **supervisor** records `parent_links[child] = parent` and starts
 the child `session_loop` under the requested profile with the prompt queued — so
 the child's `SessionStarted` carries the parent link and the tree-walk helpers
-(`children_of` / `root_of`) reflect reality. The runtime watches the child's
-events and, on the child's `Done`, relays its final answer back to the parent as
-the `spawn_agent` `ToolOutput` — reusing the #58 tool round-trip, so core's turn
-loop needs no notion of a "child session". The runtime executor bounds the spawn
+(`children_of` / `root_of`) reflect reality. Spawn is **non-blocking** (✅ #89,
+[ADR-0026](adr/0026-async-subagent-spawn-and-poll.md), supersedes ADR-0022's
+synchronous relay): `spawn_agent` replies to the parent *immediately* with the
+child handle (`agent_id`) instead of parking the turn on the child's `Done`, so
+one turn can launch several sub-agents that then run concurrently. The launch
+task keeps watching the child and records its final answer + duration into a
+shared `AgentRegistry` (`runtime::agent_poll`) keyed by the handle. The parent
+collects a result with a second runtime-owned tool, `agent_poll { agent_id,
+timeout_secs }` — also intercepted before permission resolution (it starts no
+session and touches no host resource): it blocks up to `timeout_secs` for that
+child and returns its answer (with elapsed time) as the tool `ToolOutput`, or a
+still-running status on timeout so the model can poll again or do other work.
+Both tools reuse the #58 round-trip, so core's turn loop needs no notion of a
+"child session". The runtime executor bounds the spawn
 tree (✅ #76, [ADR-0023](adr/0023-subagent-spawn-limits.md)): a `SpawnGuard`
 folds parent links from `SessionStarted` and, before each spawn, refuses past a
 depth cap (`MAX_SPAWN_DEPTH`) or a cumulative per-root budget
@@ -392,10 +402,11 @@ orthogonal to the permission profile: it controls *registration* (whether the
 tool is advertised at all), the profile controls *dispatch* (Allow/Ask/Deny
 when the model calls it).
 
-Two **runtime-owned orchestration tools** are *not* in the registry — the
+Three **runtime-owned orchestration tools** are *not* in the registry — the
 `tool_runner` intercepts them on `ToolExec` before permission resolution (they
 touch no host resource) and advertises their schemas separately:
-`spawn_agent { agent, prompt }` (§5, ADR-0022) and
+`spawn_agent { agent, prompt }` (§5, ADR-0022) and its non-blocking join
+`agent_poll { agent_id, timeout_secs }` (§5, ADR-0026), plus
 `ask_user { question, options, allow_free_form }` (§5, ADR-0027).
 
 [holly]: ../entanglement-core/src/holly.rs

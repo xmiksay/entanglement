@@ -1,11 +1,7 @@
 # 0026. Non-blocking sub-agent spawn with handle + `agent_poll`
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-09
-
-> **Stub.** Captures the decision direction for issue #89. Flesh out
-> (precise protocol shape, guard interaction, timeout semantics) before
-> implementation; promote to `Accepted` when the change lands.
 
 ## Context
 
@@ -50,15 +46,38 @@ tracked from `Spawn` send to child `Done` and surfaced through `agent_poll`
 supervisor branch and spawn limits/gating of ADR-0023/0024 are unchanged and
 still apply to each launch).
 
-## Open questions (resolve before Accepted)
+## Resolved questions
 
-- Where the pending-child answer/timing table lives (executor state vs. a new
-  registry) and its lifetime / cleanup after a poll drains it.
-- `agent_poll` on an unknown / already-drained `agent_id` — error vs. empty.
-- Interaction with `SpawnGuard` budgets (ADR-0023) and permission clamping
-  (ADR-0024) — unchanged at launch, but confirm poll needs no gating.
-- Whether `Stop` on the parent should cancel outstanding un-polled children.
-- TUI affordance for in-flight children + their running duration.
+- **Handle-table location & lifetime.** A shared `AgentRegistry`
+  (`Arc<Mutex<HashMap<SessionId, Entry>>>` in `runtime::agent_poll`) cloned into
+  each detached launch-watcher and `agent_poll` task — *not* the executor's
+  single-threaded loop, since both writers and readers are separate tasks. Each
+  entry holds the launch `Instant` plus a `watch::Receiver<AgentStatus>`; the
+  watcher owns the `Sender` and flips it to `Complete { answer, elapsed }` on the
+  child's `Done`. The mutex is only held to insert or clone a receiver, never
+  across an `.await`. Entries **persist for the executor's lifetime** (bounded by
+  `MAX_SPAWNS_PER_ROOT` = 16 per root), so re-polling a finished child is
+  idempotent — no drain-on-read. Because the registry keeps a receiver, a
+  completed `watch` value survives the watcher dropping its sender, so a late
+  poll still reads the answer.
+- **`agent_poll` on an unknown `agent_id`** → a clear **error** `ToolOutput`
+  ("no sub-agent found for agent_id …"), not an empty result. A missing/empty
+  `agent_id` argument gets its own guidance message.
+- **Guard/permission interaction.** `SpawnGuard` budgets (ADR-0023) and ancestor
+  permission clamping (ADR-0024) are charged/enforced **only at launch**, exactly
+  as before. `agent_poll` starts no session and touches no host resource — it
+  only reads accumulated state — so it is intercepted before permission
+  resolution and needs no gating or budget charge.
+- **`Stop` on the parent** does **not** cascade to cancel outstanding un-polled
+  children — a launched child runs to completion regardless (the documented
+  "runs unobserved" trade-off below). This matches the prior behavior (a `Stop`
+  while parked on the synchronous relay already left the child running) and keeps
+  cross-session cancellation out of scope; a `Stop`-cascade is deferred.
+- **TUI affordance.** The sessions list (`tui::modals::draw_sessions_modal`)
+  shows each sub-agent's (depth > 0) spawn duration next to its state — a live
+  `⏱ Ns` while running, a fixed `✓ Ns` once ended — computed by `SessionView`
+  from the `SessionStarted`/`SessionEnded` `ts` against the current wall clock.
+  This is independent of the runtime registry (a head only sees `OutEvent`s).
 
 ## Consequences
 
