@@ -202,7 +202,30 @@ only field a spawning model sees).
   the model's own reasoning** — no keyword router or embedding gate; the model
   matches its task against the `description` in its forward pass, so description
   quality is the contract. Bodies + payload (`references/`/`scripts/`) are tier-2,
-  loaded on demand (`load_skill`, #115).
+  loaded on demand (`load_skill`, ✅ #115, below).
+- **Tier-2 skill loading (✅ #115, [ADR-0037](adr/0037-load-skill-tool-deterministic-resolution.md)):**
+  one generic `load_skill { skill_name }` tool (not one-per-skill) resolves a
+  skill's body on demand. Unlike the orchestration-only runtime tools
+  (`agent_spawn`/`ask_user`/`agent_poll`), it **reads the filesystem**, so it is a
+  *real host tool* in the `ToolRegistry` (`entanglement_runtime::skills::load_skill::LoadSkillTool`,
+  holding a shared `Arc<SkillRegistry>`) and flows through the *same* per-call
+  permission gate as `read` — a read-only `explore` profile denies it, no
+  exemption. The handler resolves **deterministically** (never model reasoning):
+  look the `SkillMeta` up by name; reject a `user_only` skill (withheld from
+  disclosure, only an explicit user command may trigger it); then **substitute
+  every relative payload path to an absolute one** before the text reaches the
+  model — closing Claude Code's bug class where the *model* resolves
+  `references/x.md` against the wrong base (anthropics/claude-code#17741, #11011).
+  `SKILL_DIR` and the project root stay two strictly separate coordinate systems: a
+  ref that does not resolve under the skill dir (a project-root path) is left
+  untouched; no implicit CWD fallback; a `${SKILL_DIR}` placeholder is the
+  author's explicit escape hatch. The result is an ordinary `tool_result` carrying
+  `skill_id`, the substituted body, and `available_refs` (supporting files listed
+  as absolute paths, **not** loaded) — never a spoofed user message, so the
+  authorship trail stays honest. Provenance (carrying `skill_id` onto tool calls
+  made while a skill is active, to scope its `allowed_tools` mask) is a
+  tool-execution-record field that lands with mask *enforcement* (#116); `skill_id`
+  is surfaced in the result today.
 - **Where dispatch runs (✅ #59):** the `AgentProfile` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
   **runtime** concern ([ADR-0003](adr/0003-agent-and-permission-profiles.md) /

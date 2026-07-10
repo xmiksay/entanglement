@@ -32,6 +32,7 @@ use host::{host_tools, BashTool};
 use pipe::pipe;
 use run::run_one;
 use session_store::{integrity_gap, list_sessions, pair_records, read};
+use skills::LoadSkillTool;
 use tui::tui;
 
 /// Pick a provider and build the engine config.
@@ -66,6 +67,7 @@ fn build_config(
     catalog: &Catalog,
     http_client: &HttpClient,
     profiles: ProfileRegistry,
+    skills: std::sync::Arc<skills::SkillRegistry>,
 ) -> (EngineConfig, ModelInfo, ToolRegistry) {
     let (mut cfg, model_info) = select_provider(catalog, http_client);
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
@@ -79,6 +81,10 @@ fn build_config(
              runs unsandboxed with full privileges"
         );
     }
+    // `load_skill` is tier-2 progressive disclosure (#115): a real host tool (it
+    // reads the filesystem), so it is registered here and goes through the *same*
+    // per-call permission gate as `read` — no runtime-executor interception.
+    tools.register(LoadSkillTool::new(skills));
     cfg.tool_specs = tools.specs();
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
@@ -337,13 +343,17 @@ async fn main() -> Result<()> {
     // malformed SKILL.md is a loud error. Only `name` + `description` reach the
     // model, folded into the assembled system prompt as a tier-1 disclosure list
     // (user_only skills withheld) — selection stays the model's own reasoning.
-    let skill_registry = skills::load_registry(&cwd).context("loading skill definitions")?;
+    let skill_registry =
+        std::sync::Arc::new(skills::load_registry(&cwd).context("loading skill definitions")?);
     let mut prompt_ctx = system_prompt::PromptContext::load(&cwd);
     prompt_ctx.skills = skill_registry.disclosures();
     let profiles = agents::load_registry(&cwd, &prompt_ctx).context("loading agent definitions")?;
 
     let http_client = HttpClient::new();
-    let (config, model_info, tools) = build_config(&catalog, &http_client, profiles);
+    // The skill registry is shared: its tier-1 disclosures fed the system prompt
+    // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
+    let (config, model_info, tools) =
+        build_config(&catalog, &http_client, profiles, skill_registry);
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.
     if let Err(e) = config.validate() {

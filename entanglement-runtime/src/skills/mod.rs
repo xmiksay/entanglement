@@ -36,6 +36,9 @@ use serde::Deserialize;
 
 use crate::system_prompt::SkillDisclosure;
 
+pub mod load_skill;
+pub use load_skill::LoadSkillTool;
+
 /// Embedded stock skills, parsed through the same loader as user/project files.
 /// `(filename, contents)` — the filename only feeds parse-error messages; the
 /// skill's identity is its frontmatter `name`.
@@ -90,10 +93,8 @@ pub struct SkillRegistry {
 }
 
 impl SkillRegistry {
-    /// Look a skill up by `name`. The tier-1 disclosure path does not need this;
-    /// tier-2 loading (`load_skill`, #115) resolves the body + `root_dir` through
-    /// it — so it is exercised by tests until that consumer lands.
-    #[allow(dead_code)]
+    /// Look a skill up by `name`. Tier-2 loading (`load_skill`, #115) resolves
+    /// the body + `root_dir` through it.
     pub fn get(&self, name: &str) -> Option<&SkillMeta> {
         self.skills.get(name)
     }
