@@ -99,6 +99,7 @@ mod tests {
     fn profile(name: &str, mode: AgentMode, permission: PermissionProfile) -> AgentProfile {
         AgentProfile {
             name: name.into(),
+            description: String::new(),
             mode,
             system_prompt: String::new(),
             model: None,

@@ -15,6 +15,7 @@ use entanglement_core::{
 fn custom_profile(name: &str) -> AgentProfile {
     AgentProfile {
         name: name.to_string(),
+        description: String::new(),
         mode: AgentMode::Primary,
         system_prompt: "custom".to_string(),
         model: None,

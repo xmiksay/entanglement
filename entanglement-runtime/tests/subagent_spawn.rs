@@ -695,12 +695,22 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
 #[test]
 fn specs_advertise_the_agent_family_names() {
     // The rename + new blocking tool are reflected in the advertised specs (#120).
-    let spawn = entanglement_runtime::subagent::agent_spawn_spec();
+    let reg = entanglement_core::ProfileRegistry::new();
+    let spawn = entanglement_runtime::subagent::agent_spawn_spec(&reg);
     assert_eq!(spawn.name, "agent_spawn");
-    let agent = entanglement_runtime::subagent::agent_spec();
+    let agent = entanglement_runtime::subagent::agent_spec(&reg);
     assert_eq!(agent.name, "agent");
     let poll = entanglement_runtime::agent_poll::agent_poll_spec();
     assert_eq!(poll.name, "agent_poll");
     // Both spawning tools take the same `{ agent, prompt }` input shape.
     assert_eq!(spawn.schema, agent.schema);
+    // The registry roster is disclosed in both the description and the enum (#112).
+    assert!(
+        spawn.description.contains("build:"),
+        "roster in description"
+    );
+    let enum_names = spawn.schema["properties"]["agent"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(enum_names.iter().any(|n| n == "explore"));
 }

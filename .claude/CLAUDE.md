@@ -101,7 +101,19 @@ no policy decision — only tool schemas (`EngineConfig.tool_specs`).
 
 Session-multiplexed (every frame carries `SessionId`); content frames carry
 monotonic `seq`. Agent profiles (`build`/`plan`/`explore` + custom) drive
-permission dispatch (`Allow`/`Ask`/`Deny`), resolved in the runtime. `Plan` and `TaskList` are
+permission dispatch (`Allow`/`Ask`/`Deny`), resolved in the runtime. Profiles are
+**file-defined** (✅ #112, [ADR-0034](../docs/adr/0034-file-based-agent-definitions.md)):
+markdown + YAML frontmatter (`name`/`description`/`mode`/`model`/`permission`,
+body = system prompt), discovered by `entanglement_runtime::agents::load_registry`
+into a `ProfileRegistry` — embedded built-ins < user
+(`${config_dir}/entanglement/agents/*.md`) < project
+(`<root>/.entanglement/agents/*.md`), later wins on `name` collision, same
+defaults+override shape as the provider catalog (#118). Editing a built-in = a
+same-`name` file in a higher layer. `description` is the one field disclosed to a
+spawning model (roster in the `agent`/`agent_spawn` tool descriptions + name
+enum). Frontmatter `tools`/`disallowed_tools`/`can_spawn`/`spawnable_agents` parse
+now, enforcement deferred (needs per-session specs #116/#119). `AgentMode` gained
+`all` (primary + spawnable). `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
 `input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010 + ADR-0031)

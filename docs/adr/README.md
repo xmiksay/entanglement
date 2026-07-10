@@ -78,3 +78,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0031](0031-write-host-tool-whole-file.md) | Host tool `write`: whole-file create/overwrite (quartet → quintet) | Accepted |
 | [0032](0032-yaml-provider-model-catalog.md) | YAML provider/model catalog: embedded defaults + user override | Accepted |
 | [0033](0033-agent-tool-family-and-blocking-agent.md) | `agent_*` tool family: rename `spawn_agent` → `agent_spawn`, add blocking `agent` | Accepted |
+| [0034](0034-file-based-agent-definitions.md) | File-based agent definitions: discovery, frontmatter, registry | Accepted |

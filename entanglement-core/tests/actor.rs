@@ -569,6 +569,7 @@ async fn custom_profile_is_selectable() {
     let mut cfg = EngineConfig::default();
     cfg.profiles.insert(AgentProfile {
         name: "paranoid".into(),
+        description: String::new(),
         mode: AgentMode::Primary,
         system_prompt: "Ask before anything.".into(),
         model: None,
