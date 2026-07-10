@@ -18,17 +18,20 @@
 //! With `--no-default-features` the crate is a **lean library**: the modules
 //! below import only `entanglement-core` + tokio + serde/serde_yaml/anyhow/
 //! tracing + `glob`/`regex`/`dirs`, so a consumer can reuse the tool-execution
-//! loop, permission dispatch, sub-agent spawn, file-based agent definitions, and
-//! event-sourced persistence without compiling any CLI/TUI/transport dependency.
+//! loop, permission dispatch, sub-agent spawn, file-based agent definitions,
+//! skill discovery, and event-sourced persistence without compiling any
+//! CLI/TUI/transport dependency.
 //! `make check-lean` enforces this.
 
 pub mod agent_poll;
 pub mod agents;
 pub mod ask_user;
+pub mod frontmatter;
 pub mod host;
 pub mod permission;
 pub mod persistence;
 pub mod session_store;
+pub mod skills;
 pub mod subagent;
 pub mod system_prompt;
 pub mod tool_runner;

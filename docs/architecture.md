@@ -180,8 +180,29 @@ only field a spawning model sees).
   flag). Composition is a pure, unit-tested harness function baked into
   `AgentProfile.system_prompt` at load time, so session start / `SetAgent` / spawn
   all read the finished prompt and core stays a verbatim pass-through into
-  `LlmRequest.system`. The skill index is empty until the skill registry lands
-  (#115); filtering by the agent's tool mask (#116) is the caller's job.
+  `LlmRequest.system`. The skill index is populated from the skill registry
+  (✅ #114, below); per-agent tool-mask filtering of that list is deferred (#116).
+- **Skill discovery + registry (✅ #114, [ADR-0036](adr/0036-skill-discovery-and-registry.md)):**
+  tier 1 of progressive disclosure. A **skill** is a directory with a `SKILL.md`
+  (YAML frontmatter + markdown body) plus optional supporting files
+  (`references/*.md`, `scripts/*`). The **runtime**
+  (`entanglement_runtime::skills::load_registry`) discovers them into a
+  `SkillRegistry` — three layers, later wins on a `name` collision: embedded stock
+  skills (single-file, `include_str!` `SKILL.md`, parsed through the *same* loader)
+  < user (`${config_dir}/entanglement/skills/**/SKILL.md`, override
+  `ENTANGLEMENT_SKILLS_DIR`) < project (`<root>/.entanglement/skills/**/SKILL.md`).
+  Discovery is a recursive walk for `SKILL.md` markers; symlinked duplicates and
+  directory cycles are deduped by canonical path; a malformed file is a loud
+  error. Frontmatter: `name` + `description` (required), `user_only` (only explicit
+  user invocation — withheld from the model's disclosure list), and `allowed_tools`
+  (tool mask, enforcement deferred to #116). Each `SkillMeta` resolves its
+  `root_dir` **once** at discovery. **Disclosure is tier-1 only**: `SkillRegistry::disclosures`
+  emits one `name: description` line per non-`user_only` skill into the assembled
+  system prompt (~100 tokens/skill); bodies are never preloaded. **Selection stays
+  the model's own reasoning** — no keyword router or embedding gate; the model
+  matches its task against the `description` in its forward pass, so description
+  quality is the contract. Bodies + payload (`references/`/`scripts/`) are tier-2,
+  loaded on demand (`load_skill`, #115).
 - **Where dispatch runs (✅ #59):** the `AgentProfile` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
   **runtime** concern ([ADR-0003](adr/0003-agent-and-permission-profiles.md) /

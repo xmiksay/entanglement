@@ -80,3 +80,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0033](0033-agent-tool-family-and-blocking-agent.md) | `agent_*` tool family: rename `spawn_agent` → `agent_spawn`, add blocking `agent` | Accepted |
 | [0034](0034-file-based-agent-definitions.md) | File-based agent definitions: discovery, frontmatter, registry | Accepted |
 | [0035](0035-deterministic-system-prompt-assembly.md) | Deterministic system-prompt assembly: preamble + body + brief + env + skills | Accepted |
+| [0036](0036-skill-discovery-and-registry.md) | Skill discovery + registry: SKILL.md frontmatter, tier-1 disclosure | Accepted |
