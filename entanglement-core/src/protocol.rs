@@ -254,9 +254,10 @@ pub enum InMsg {
     /// Spawn a child session (sub-agent) under `parent`, running `prompt` beneath
     /// the named `agent` profile (#60, ADR-0021). `session` is the *child's* id.
     /// The supervisor records the parent link (populating the session tree the
-    /// tree-walk helpers read) and starts the child. The runtime's `spawn_agent`
-    /// tool issues this, then relays the child's final answer back to the parent
-    /// as a tool result — core needs no notion of "child session" in its loop.
+    /// tree-walk helpers read) and starts the child. The runtime's `agent_spawn`
+    /// tool (or blocking `agent`) issues this, then relays the child's final answer
+    /// back to the parent as a tool result — core needs no notion of "child
+    /// session" in its loop.
     Spawn {
         session: SessionId,
         parent: SessionId,

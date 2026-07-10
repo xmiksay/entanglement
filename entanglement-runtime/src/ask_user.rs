@@ -1,6 +1,6 @@
 //! `ask_user` — model-driven user-decision prompt (#90, ADR-0027).
 //!
-//! Like `spawn_agent` (ADR-0022), `ask_user` is a runtime-owned tool intercepted
+//! Like `agent_spawn` (ADR-0022), `ask_user` is a runtime-owned tool intercepted
 //! on [`OutEvent::ToolExec`] *before* permission resolution: it touches no host
 //! resource, so it bypasses the permission profile. When the model calls it,
 //! [`run_ask_user`] surfaces the question to the head via a dedicated
@@ -20,7 +20,7 @@ use tokio::sync::broadcast::{error::RecvError, Receiver};
 pub const ASK_USER_TOOL: &str = "ask_user";
 
 /// The `ask_user` tool schema advertised to the model. Appended to the engine's
-/// `tool_specs` alongside the host quartet and `spawn_agent`.
+/// `tool_specs` alongside the host quartet and `agent_spawn`.
 pub fn ask_user_spec() -> ToolSpec {
     ToolSpec::with_schema(
         ASK_USER_TOOL,

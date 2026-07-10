@@ -110,19 +110,27 @@ assembles the root-contained quintet (`read`/`glob`/`grep`/`edit`/`write` —
 head (`ENTANGLEMENT_ENABLE_BASH=1`).
 
 Sub-agent spawn (#60, [ADR-0022](../docs/adr/0022-subagent-spawn.md)): the
-runtime-owned `spawn_agent { agent, prompt }` tool issues `InMsg::Spawn`; the
+runtime-owned `agent_spawn { agent, prompt }` tool (renamed from `spawn_agent`,
+✅ #120, [ADR-0033](../docs/adr/0033-agent-tool-family-and-blocking-agent.md))
+issues `InMsg::Spawn`; the
 supervisor records `parent_links[child]=parent` and starts the child under the
 requested profile. Bypasses per-tool approval like the built-ins. Non-blocking
 spawn (✅ #89, [ADR-0026](../docs/adr/0026-async-subagent-spawn-and-poll.md),
-`runtime::agent_poll`): `spawn_agent` returns the child handle (`agent_id`)
+`runtime::agent_poll`): `agent_spawn` returns the child handle (`agent_id`)
 *immediately* instead of parking the parent turn on the child's `Done`, so one
 turn can launch several sub-agents that run concurrently. The launch task records
 the child's answer + duration into a shared `AgentRegistry` keyed by the handle;
 the parent collects it with a second runtime-owned tool
 `agent_poll { agent_id, timeout_secs }` (also intercepted before permission),
 which blocks up to `timeout_secs` and returns the answer + elapsed or a
-still-running status (unknown handle → error). Supersedes ADR-0022's synchronous
-answer-relay; the TUI sessions list shows each sub-agent's live spawn duration.
+still-running status (unknown handle → error). A third tool `agent { agent,
+prompt }` (✅ #120) is the **blocking** single-delegation path: it runs the exact
+`agent_spawn` launch (same guard/clamp/`Spawn`), then waits for the child's
+answer and returns it directly — one call, no poll. Refusals are identical across
+`agent`/`agent_spawn` (one shared guard path); a parent `Stop` while `agent` is
+parked leaves the child collectable via `agent_poll`. Supersedes ADR-0022's
+synchronous answer-relay; the TUI sessions list shows each sub-agent's live
+spawn duration.
 Spawn limits (✅ #76,
 [ADR-0023](../docs/adr/0023-subagent-spawn-limits.md)): the runtime executor's
 `SpawnGuard` folds parent links from `SessionStarted` and refuses a spawn past a
@@ -137,7 +145,7 @@ root) for sub-sessions still deferred.
 
 Ask-user prompt (✅ #90, [ADR-0027](../docs/adr/0027-ask-user-interactive-prompt.md)):
 the runtime-owned `ask_user { question, options, allow_free_form }` tool is
-intercepted on `ToolExec` before permission resolution (like `spawn_agent`,
+intercepted on `ToolExec` before permission resolution (like `agent_spawn`,
 `runtime::ask_user`). It emits a dedicated `OutEvent::UserQuestion`, parks for
 the head's `InMsg::AnswerQuestion` (consumed off the inbound fan-out like
 `Approve`/`Reject`), and folds the picked label or free-form text back as the

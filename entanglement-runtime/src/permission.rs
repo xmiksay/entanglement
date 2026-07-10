@@ -2,7 +2,7 @@
 //! on top of the per-tool `Allow | Ask | Deny` dispatch (#59):
 //!
 //! - **Spawn capability** — [`spawn_capability_refusal`]: only `Primary`-mode
-//!   profiles may call `spawn_agent`. A read-only sub-agent leaf (`Subagent`
+//!   profiles may call `agent_spawn`. A read-only sub-agent leaf (`Subagent`
 //!   mode, e.g. `explore`) is refused, closing the path where a restricted
 //!   profile escalates by spawning a privileged child.
 //! - **Privilege ceiling** — [`effective_permission`]: a child sub-agent is never

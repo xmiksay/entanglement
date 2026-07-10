@@ -1,7 +1,7 @@
 //! Integration test for the runtime-owned `ask_user` tool (#90, ADR-0027).
 //!
 //! The model calls `ask_user`; the executor intercepts it on `ToolExec` (before
-//! permission resolution, like `spawn_agent`), emits `OutEvent::UserQuestion`,
+//! permission resolution, like `agent_spawn`), emits `OutEvent::UserQuestion`,
 //! and parks for the head's `InMsg::AnswerQuestion`. The picked answer is folded
 //! back as the tool's `ToolResult` so the parent turn continues.
 
