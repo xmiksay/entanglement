@@ -303,7 +303,7 @@ mod tests {
         // (CJK): a fixed byte slice at offset 37 lands mid-codepoint and panics.
         // Width-based truncation must render it and cap it with an ellipsis.
         let sid = SessionId::new("s1");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         app.handle_out_event(OutEvent::Plan {
             session: sid.clone(),
             seq: 1,
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn streamed_text_deltas_wrap_as_one_paragraph() {
         let sid = SessionId::new("s1");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         let words = [
             "This", "is", "a", "fairly", "long", "sentence", "that", "should", "wrap", "nicely",
         ];
@@ -358,7 +358,7 @@ mod tests {
     /// taller than any small viewport. Each delta carries a trailing newline,
     /// so the coalesced run renders one content line per delta.
     fn app_with_lines(sid: &SessionId, count: u64) -> App {
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
         for i in 1..=count {
             app.handle_out_event(OutEvent::TextDelta {
                 session: sid.clone(),

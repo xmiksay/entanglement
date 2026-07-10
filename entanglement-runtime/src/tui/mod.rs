@@ -42,6 +42,7 @@ use tracing::debug;
 use crate::ModelInfo;
 use app::App;
 use attention::Attention;
+use entanglement_provider::Catalog;
 use event::Event;
 use session_view::ApprovalMode;
 
@@ -49,6 +50,7 @@ pub async fn tui(
     holly: &Holly,
     initial_session: SessionId,
     model_info: ModelInfo,
+    catalog: Catalog,
     root: std::path::PathBuf,
     bash_enabled: bool,
 ) -> Result<()> {
@@ -80,8 +82,8 @@ pub async fn tui(
     let (event_tx, mut event_rx) = mpsc::channel(128);
     spawn_crossterm_task(event_tx.clone());
 
-    let mut app = App::new(initial_session);
-    app.set_model_info(model_info.id.clone(), model_info.display_name.clone());
+    let mut app = App::new(initial_session, catalog);
+    app.set_model_info(model_info.id.clone());
     app.init_head_context(root, bash_enabled);
 
     let mut attention = Attention::from_env();
@@ -868,7 +870,7 @@ mod tests {
 
     #[test]
     fn wheel_moves_modal_selection_not_chat() {
-        let mut app = App::new(SessionId::new("s1"));
+        let mut app = App::new_for_test(SessionId::new("s1"));
         app.create_session();
         app.create_session();
         // Give the active transcript headroom so a chat scroll *would* freeze
@@ -889,7 +891,7 @@ mod tests {
 
     #[test]
     fn wheel_scrolls_chat_when_no_modal_open() {
-        let mut app = App::new(SessionId::new("s1"));
+        let mut app = App::new_for_test(SessionId::new("s1"));
         app.set_viewport_metrics(20, 5);
         handle_mouse(&mut app, wheel(MouseEventKind::ScrollUp));
         assert!(

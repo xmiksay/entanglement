@@ -1,5 +1,5 @@
 use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
-use entanglement_provider::{models_for, ModelInfo};
+use entanglement_provider::{Catalog, ModelInfo};
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, VecDeque};
@@ -57,6 +57,8 @@ pub struct App {
     model_picker_state: ListState,
     available_models: Vec<(String, Vec<String>)>,
     model_info: ModelInfo,
+    // The provider/model catalog, for model metadata lookups (context window).
+    catalog: Catalog,
 
     // Leader key state
     leader_handler: LeaderKeyHandler,
@@ -106,7 +108,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(initial_session: SessionId) -> Self {
+    /// Test constructor: builds an `App` over the embedded default catalog.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(initial_session: SessionId) -> Self {
+        Self::new(initial_session, Catalog::builtin())
+    }
+
+    pub fn new(initial_session: SessionId, catalog: Catalog) -> Self {
         let available_profiles = vec![
             ProfileInfo {
                 name: "build".to_string(),
@@ -132,35 +140,18 @@ impl App {
         let mut profile_picker_state = ListState::default();
         profile_picker_state.select(Some(0));
 
-        let available_models = vec![
-            (
-                "zai".to_string(),
-                vec!["glm-5.2".to_string(), "glm-4.7".to_string()],
-            ),
-            (
-                "openai".to_string(),
-                vec![
-                    "gpt-4o".to_string(),
-                    "gpt-4-turbo".to_string(),
-                    "gpt-3.5-turbo".to_string(),
-                ],
-            ),
-            (
-                "ollama".to_string(),
-                vec![
-                    "llama3.1".to_string(),
-                    "llama3".to_string(),
-                    "mistral".to_string(),
-                ],
-            ),
-            (
-                "anthropic".to_string(),
-                vec![
-                    "claude-sonnet-4-5".to_string(),
-                    "claude-3-5-sonnet-20241022".to_string(),
-                ],
-            ),
-        ];
+        // Model picker groups: one (provider, [model ids]) pair per catalog
+        // provider, in catalog order.
+        let available_models: Vec<(String, Vec<String>)> = catalog
+            .providers
+            .iter()
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    p.models.iter().map(|m| m.id.clone()).collect(),
+                )
+            })
+            .collect();
 
         let mut model_picker_state = ListState::default();
         model_picker_state.select(Some(0));
@@ -189,6 +180,7 @@ impl App {
                 display_name: "dummy".to_string(),
                 context_window: None,
             },
+            catalog,
             leader_handler: LeaderKeyHandler::new(),
             showing_help: false,
             command_palette: CommandPalette::new(),
@@ -814,17 +806,11 @@ impl App {
         &self.model_info
     }
 
-    pub fn set_model_info(&mut self, provider: String, model: String) {
-        let display_name = model.clone();
-        let context_window = models_for(&provider)
-            .into_iter()
-            .find(|m| m.id == model)
-            .and_then(|m| m.context_window);
-        self.model_info = ModelInfo {
-            id: model,
-            display_name,
-            context_window,
-        };
+    /// Set the active model by id, pulling display name + context window from
+    /// the catalog (searched across all providers — the picker only carries the
+    /// id). Falls back to the id itself when it isn't in the catalog.
+    pub fn set_model_info(&mut self, model_id: String) {
+        self.model_info = ModelInfo::from_catalog(self.catalog.model_by_id(&model_id), &model_id);
         self.mark_dirty();
     }
 
@@ -1119,7 +1105,7 @@ mod tests {
 
     #[test]
     fn history_up_down_navigates_and_restores_draft() {
-        let mut app = App::new(SessionId::new("test"));
+        let mut app = App::new_for_test(SessionId::new("test"));
         app.input.insert_str("first");
         assert_eq!(app.take_input_text(), "first");
         app.input.insert_str("second");
@@ -1141,7 +1127,7 @@ mod tests {
 
     #[test]
     fn history_navigation_is_a_noop_with_empty_history() {
-        let mut app = App::new(SessionId::new("test"));
+        let mut app = App::new_for_test(SessionId::new("test"));
         app.history_up();
         app.history_down();
         assert_eq!(app.input_text(), "");
@@ -1149,7 +1135,7 @@ mod tests {
 
     #[test]
     fn history_up_preserves_multibyte_entry() {
-        let mut app = App::new(SessionId::new("test"));
+        let mut app = App::new_for_test(SessionId::new("test"));
         app.input.insert_str("héllo 🚀");
         assert_eq!(app.take_input_text(), "héllo 🚀");
         app.history_up();
@@ -1159,7 +1145,7 @@ mod tests {
     #[test]
     fn test_profile_color_for_hash() {
         let sid = SessionId::new("test");
-        let app = App::new(sid);
+        let app = App::new_for_test(sid);
         let color1 = app.profile_color_for("build");
         let color2 = app.profile_color_for("plan");
         let color3 = app.profile_color_for("build");
@@ -1171,7 +1157,7 @@ mod tests {
     #[test]
     fn test_profile_color_for_override() {
         let sid = SessionId::new("test");
-        let mut app = App::new(sid);
+        let mut app = App::new_for_test(sid);
         let hash_color = app.profile_color_for("build");
 
         app.profile_colors
@@ -1185,7 +1171,7 @@ mod tests {
     #[test]
     fn reasoning_block_at_maps_row_plus_offset_to_block() {
         let sid = SessionId::new("test");
-        let mut app = App::new(sid);
+        let mut app = App::new_for_test(sid);
         // Chat area at (x=2, y=1), 10 wide, 4 tall, scrolled down by 3 lines.
         let area = Rect::new(2, 1, 10, 4);
         // Rendered lines: only indices 3 and 5 belong to reasoning block 7.
@@ -1203,7 +1189,7 @@ mod tests {
     #[test]
     fn reasoning_block_at_rejects_clicks_outside_chat_rect() {
         let sid = SessionId::new("test");
-        let mut app = App::new(sid);
+        let mut app = App::new_for_test(sid);
         let area = Rect::new(2, 1, 10, 4);
         app.set_chat_hit_test(area, 3, vec![None, None, None, Some(7)]);
 
@@ -1216,14 +1202,14 @@ mod tests {
     #[test]
     fn reasoning_block_at_is_empty_before_first_draw() {
         let sid = SessionId::new("test");
-        let app = App::new(sid);
+        let app = App::new_for_test(sid);
         assert_eq!(app.reasoning_block_at(0, 0), None);
     }
 
     #[test]
     fn test_thinking_state_tracking() {
         let sid = SessionId::new("test");
-        let mut app = App::new(sid.clone());
+        let mut app = App::new_for_test(sid.clone());
 
         app.handle_out_event(OutEvent::Status {
             session: sid.clone(),
@@ -1245,7 +1231,7 @@ mod tests {
 
     #[test]
     fn accept_mention_replaces_at_token_with_path() {
-        let mut app = App::new(SessionId::new("test"));
+        let mut app = App::new_for_test(SessionId::new("test"));
         app.mention = MentionPopup::new(FileIndex::from_paths(vec!["src/tui/app.rs".to_string()]));
         app.input.insert_str("explain @app");
 
@@ -1259,7 +1245,7 @@ mod tests {
 
     #[test]
     fn record_bash_passthrough_appends_tool_call_and_output() {
-        let mut app = App::new(SessionId::new("test"));
+        let mut app = App::new_for_test(SessionId::new("test"));
         app.record_bash_passthrough("echo hi".to_string(), "[exit 0]\nhi\n".to_string());
 
         let entries = app.transcript();

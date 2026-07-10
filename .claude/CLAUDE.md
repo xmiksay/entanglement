@@ -57,12 +57,26 @@ Set `ENTANGLEMENT_PROVIDER` explicitly, or let it auto-detect by key (z.ai first
 | `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_BASE` |
 | `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-4-5`) | — |
 
+That table is now **catalog data, not hardcode** (✅ #118): the provider/model
+list is YAML — an embedded default (`entanglement-provider/src/defaults.yml`)
+deep-merged with an optional user override at
+`${config_dir}/entanglement/providers.yml` (path override:
+`ENTANGLEMENT_PROVIDERS_FILE`). Merge is by `name` (providers) / `id` (models) at
+the `serde_yaml::Value` level, `deny_unknown_fields` on the final parse. A
+`wire: openai | anthropic` tag lets a user add **any** OpenAI-compatible endpoint
+(proxy, vLLM, new vendor) with zero code change; `ENTANGLEMENT_PROVIDER=<name>`
+resolves against the catalog, so custom providers are selectable. `ModelEntry`
+adds capability flags (`supports_thinking`/`supports_temperature`/
+`default_temperature`) + **pricing** (USD/M: input/output/cached_input/
+cache_write). Precedence: **env > user YAML > embedded defaults**. See
+`entanglement-provider::catalog`.
+
 z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
-format). No key → `DummyLlm`. Detail in
+format). No key → `EchoLlm`. Detail in
 [`../docs/architecture.md`](../docs/architecture.md) §5b. Connection pool,
 retry/backoff, rate-limit (429/`Retry-After`/RPM), reasoning/thinking stream
-events, the models-per-provider registry, and the provider-owned session handle
-all live in this crate now (✅ #52–#55, [ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).
+events, the YAML provider/model catalog, and the provider-owned session handle
+all live in this crate now (✅ #52–#55, #118, [ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).
 
 ## The contract (read before touching the engine)
 

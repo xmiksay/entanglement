@@ -295,8 +295,9 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 
 - `OpenAiLlm` is one generic client `{ base_url, api_key: Option, default_model }`
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
-  (`ZAI_CODING_PLAN_BASE` — default, `ZAI_GENERAL_BASE`, `OPENAI_BASE`,
-  `OLLAMA_BASE`); `openai_factory(base, key, model)` builds an `LlmFactory`.
+  (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
+  exist, but the *default* base per provider now comes from the catalog (below);
+  `openai_factory(base, key, model)` builds an `LlmFactory`.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
   fragments). `anthropic_factory(key, model)`.
@@ -307,15 +308,37 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 (reused across sessions, not a client-per-turn); **retry** with exponential
 backoff + jitter on transient failures and dropped streams; **rate-limit**
 handling (HTTP 429 + `Retry-After`, plus a client-side RPM throttle, surfaced as
-status not silent stalls); a **models-per-provider** registry so heads present a
-real model picker.
+status not silent stalls).
 
-**Provider selection (`skutter`):** `ENTANGLEMENT_PROVIDER` env selects
-`zai | openai | ollama | anthropic` explicitly (errors loudly if the matching key
-is missing); if unset, auto-detect by key presence with z.ai first, then OpenAI,
-then Anthropic; else `DummyLlm`. Per-provider env: `<PROV>_API_KEY` (z.ai/OpenAI/
-Anthropic; Ollama is keyless), `<PROV>_MODEL`, `<PROV>_BASE`/`<PROV>_API_BASE`.
-Default models: `glm-5.2` / `gpt-4o` / `llama3.1` / `claude-sonnet-4-5`.
+**Provider/model catalog (`entanglement-provider::catalog`, #118,
+[ADR-0032](adr/0032-yaml-provider-model-catalog.md)):** the
+provider + model list is **YAML, not code** — an embedded default
+(`src/defaults.yml`, `include_str!`) deep-merged with an optional user override at
+`${config_dir}/entanglement/providers.yml` (override the path via
+`ENTANGLEMENT_PROVIDERS_FILE`). The merge runs at the `serde_yaml::Value` level
+*before* deserializing, so field-level override falls out for free: `providers`
+merge by `name`, `models` by `id`, mappings recurse, other scalars/sequences are
+replaced; the final `Catalog` deserialize is `deny_unknown_fields` (typos are
+loud). A `wire: openai | anthropic` tag on each provider is what makes
+user-defined providers work with **zero code change** — any OpenAI-compatible
+endpoint (proxy, local vLLM, new vendor) is `wire: openai` + `base_url` +
+`key_env`. `ModelEntry` carries capability flags (`supports_thinking`,
+`supports_temperature`, `default_temperature`) and **pricing** (USD/M tokens:
+`input`/`output`/`cached_input`/`cache_write`, all optional). Lookups:
+`Catalog::{builtin,load,load_from}`, `provider(name)`, `model(provider,id)`,
+`model_by_id(id)`.
+
+**Provider selection (`skutter`):** the catalog loads once at startup; a
+malformed user file is a loud error, never a silent fallback. `ENTANGLEMENT_PROVIDER=<name>`
+looks `<name>` up **in the catalog** (so custom providers work; `echo` stays a
+built-in stub), erroring loudly if its key env is missing; if unset, auto-detect
+by iterating catalog order and picking the first provider whose `key_env` is set
+and non-empty (keyless Ollama is skipped) — preserving z.ai → OpenAI → Anthropic;
+else `EchoLlm`. Precedence overall is **env > user YAML > embedded defaults**.
+Per-provider env still wins: `<PROV>_API_KEY` (name from the entry's `key_env`),
+`<PROV>_MODEL`, `<PROV>_BASE`/`<PROV>_API_BASE`. Default models come from each
+provider's `default_model` (`glm-5.2` / `gpt-4o` / `llama3.1` /
+`claude-sonnet-4-5`). The TUI model picker + context bar read the same catalog.
 
 ## 6. Heads — ADRs [0005](adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI), [0010](adr/0010-single-head-crate-and-bash-opt-in.md) (packaging), [0011](adr/0011-tui-head-ratatui-crossterm.md)–[0015](adr/0015-rich-text-pipeline-syntect.md) (TUI)
 

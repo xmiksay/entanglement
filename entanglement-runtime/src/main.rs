@@ -22,25 +22,13 @@ mod tui;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use entanglement_core::{EngineConfig, Holly, InMsg, SessionId, ToolRegistry};
-use entanglement_provider::{models_for, HttpClient, ModelInfo};
+use entanglement_provider::{Catalog, HttpClient, ModelInfo, ProviderEntry, Wire};
 
 use host::{host_tools, BashTool};
 use pipe::pipe;
 use run::run_one;
 use session_store::{integrity_gap, list_sessions, pair_records, read};
 use tui::tui;
-
-/// Provider name for model selection.
-const PROVIDER_ZAI: &str = "zai";
-const PROVIDER_OPENAI: &str = "openai";
-const PROVIDER_OLLAMA: &str = "ollama";
-const PROVIDER_ANTHROPIC: &str = "anthropic";
-
-/// Default models per provider when its `<PROVIDER>_MODEL` env is unset.
-const DEFAULT_ZAI_MODEL: &str = "glm-5.2";
-const DEFAULT_OPENAI_MODEL: &str = "gpt-4o";
-const DEFAULT_OLLAMA_MODEL: &str = "llama3.1";
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 
 /// Pick a provider and build the engine config.
 ///
@@ -70,8 +58,11 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 /// (`cfg.tool_specs`). The returned [`ToolRegistry`] stays in the runtime and
 /// is handed to [`tool_runner::spawn_tool_executor`], which answers the
 /// [`entanglement_core::OutEvent::ToolExec`] round-trip.
-fn build_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo, ToolRegistry) {
-    let (mut cfg, model_info) = select_provider(http_client);
+fn build_config(
+    catalog: &Catalog,
+    http_client: &HttpClient,
+) -> (EngineConfig, ModelInfo, ToolRegistry) {
+    let (mut cfg, model_info) = select_provider(catalog, http_client);
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut tools = host_tools(root.clone());
     if std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1") {
@@ -94,47 +85,60 @@ fn build_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo, ToolRegis
     (cfg, model_info, tools)
 }
 
-fn select_provider(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
+/// Resolve the active provider from the catalog:
+///
+/// - `ENTANGLEMENT_PROVIDER=<name>` looks `<name>` up **in the catalog** (so
+///   user-defined providers work); `echo` stays a built-in stub. A missing key
+///   for the named provider exits cleanly.
+/// - unset → auto-detect by iterating catalog order and picking the first
+///   provider whose `key_env` is set and non-empty (keyless Ollama is skipped),
+///   else fall back to `EchoLlm`.
+fn select_provider(catalog: &Catalog, http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
     match std::env::var("ENTANGLEMENT_PROVIDER").ok().as_deref() {
-        Some("zai") => {
-            zai_config(http_client).unwrap_or_else(|| exit_missing_key("zai", "ZAI_API_KEY"))
-        }
-        Some("openai") => openai_config(http_client)
-            .unwrap_or_else(|| exit_missing_key("openai", "OPENAI_API_KEY")),
-        Some("ollama") => ollama_config(http_client),
-        Some("anthropic") => anthropic_config(http_client)
-            .unwrap_or_else(|| exit_missing_key("anthropic", "ANTHROPIC_API_KEY")),
         Some("echo") => echo_config(),
-        Some(other) => {
-            eprintln!(
-                "skutter: unknown ENTANGLEMENT_PROVIDER='{other}' (expected: zai|openai|ollama|anthropic|echo)"
-            );
-            std::process::exit(2);
+        Some(name) => {
+            let Some(entry) = catalog.provider(name) else {
+                eprintln!(
+                    "skutter: unknown ENTANGLEMENT_PROVIDER='{name}' \
+                     (not in catalog: {}, or echo)",
+                    catalog_names(catalog)
+                );
+                std::process::exit(2);
+            };
+            wire_config(entry, http_client, catalog).unwrap_or_else(|| {
+                exit_missing_key(
+                    &entry.name,
+                    entry.key_env.as_deref().unwrap_or("its API key"),
+                )
+            })
         }
         None => {
-            if let Some((c, info)) = zai_config(http_client) {
-                return (c, info);
-            }
-            if let Some((c, info)) = openai_config(http_client) {
-                return (c, info);
-            }
-            if let Some((c, info)) = anthropic_config(http_client) {
-                return (c, info);
+            for entry in &catalog.providers {
+                // Auto-detect only over keyed providers (keyless Ollama can't be
+                // sniffed and stays opt-in), first one with a key present wins.
+                if entry.key_env.as_deref().and_then(env_nonempty).is_some() {
+                    if let Some(cfg) = wire_config(entry, http_client, catalog) {
+                        return cfg;
+                    }
+                }
             }
             eprintln!(
                 "skutter: no provider key set — using EchoLlm \
                  (set ENTANGLEMENT_PROVIDER=ollama for local, or a *_API_KEY, or echo)"
             );
-            (
-                EngineConfig::default(),
-                ModelInfo {
-                    id: "echo".to_string(),
-                    display_name: "Echo (debug)".to_string(),
-                    context_window: None,
-                },
-            )
+            (EngineConfig::default(), echo_model_info())
         }
     }
+}
+
+/// Comma-joined provider names, for the unknown-provider diagnostic.
+fn catalog_names(catalog: &Catalog) -> String {
+    catalog
+        .providers
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 /// Explicit `ENTANGLEMENT_PROVIDER` set but its key env var is absent: exit
@@ -151,91 +155,72 @@ fn env_nonempty(name: &str) -> Option<String> {
     }
 }
 
-fn zai_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo)> {
-    let key = env_nonempty("ZAI_API_KEY")?;
-    let model = std::env::var("ZAI_MODEL").unwrap_or_else(|_| DEFAULT_ZAI_MODEL.to_string());
-    let base = std::env::var("ZAI_API_BASE")
-        .unwrap_or_else(|_| entanglement_provider::ZAI_CODING_PLAN_BASE.to_string());
-    eprintln!("skutter: provider=zai model={model} base={base}");
+/// Build the engine config for a catalog provider, dispatching on its wire.
+/// Returns `None` when a required key env is absent (keyed provider, no key).
+fn wire_config(
+    entry: &ProviderEntry,
+    http_client: &HttpClient,
+    catalog: &Catalog,
+) -> Option<(EngineConfig, ModelInfo)> {
+    match entry.wire {
+        Wire::Openai => openai_wire_config(entry, http_client, catalog),
+        Wire::Anthropic => anthropic_wire_config(entry, http_client, catalog),
+    }
+}
+
+/// Model id from `{NAME}_MODEL` env, else the entry's `default_model`.
+fn resolve_model(entry: &ProviderEntry) -> String {
+    let name = entry.name.to_uppercase();
+    env_nonempty(&format!("{name}_MODEL")).unwrap_or_else(|| entry.default_model.clone())
+}
+
+/// Summarize the chosen model against the catalog (context window, display name).
+fn model_info_for(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> ModelInfo {
+    ModelInfo::from_catalog(catalog.model(&entry.name, model), model)
+}
+
+/// OpenAI-compatible provider (z.ai/OpenAI/Ollama/any proxy). Key from
+/// `entry.key_env` (absent → `None` = skip a keyed provider); base from
+/// `{NAME}_API_BASE` else `{NAME}_BASE` env else `entry.base_url`.
+fn openai_wire_config(
+    entry: &ProviderEntry,
+    http_client: &HttpClient,
+    catalog: &Catalog,
+) -> Option<(EngineConfig, ModelInfo)> {
+    let key = match &entry.key_env {
+        Some(k) => Some(env_nonempty(k)?), // keyed provider missing its key: skip
+        None => None,                      // keyless (Ollama)
+    };
+    let name = entry.name.to_uppercase();
+    let model = resolve_model(entry);
+    let base = env_nonempty(&format!("{name}_API_BASE"))
+        .or_else(|| env_nonempty(&format!("{name}_BASE")))
+        .or_else(|| entry.base_url.clone())
+        .unwrap_or_else(|| entanglement_provider::OPENAI_BASE.to_string());
+    eprintln!("skutter: provider={} model={model} base={base}", entry.name);
     Some((
         EngineConfig {
             llm_factory: entanglement_provider::openai_factory(
                 base,
-                Some(key),
+                key,
                 model.clone(),
                 http_client.clone(),
             ),
             ..EngineConfig::default()
         },
-        ModelInfo {
-            id: model.clone(),
-            display_name: model.clone(),
-            context_window: models_for(PROVIDER_ZAI)
-                .into_iter()
-                .find(|m| m.id == model)
-                .and_then(|m| m.context_window),
-        },
+        model_info_for(entry, &model, catalog),
     ))
 }
 
-fn openai_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo)> {
-    let key = env_nonempty("OPENAI_API_KEY")?;
-    let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_OPENAI_MODEL.to_string());
-    let base = std::env::var("OPENAI_API_BASE")
-        .unwrap_or_else(|_| entanglement_provider::OPENAI_BASE.to_string());
-    eprintln!("skutter: provider=openai model={model} base={base}");
-    Some((
-        EngineConfig {
-            llm_factory: entanglement_provider::openai_factory(
-                base,
-                Some(key),
-                model.clone(),
-                http_client.clone(),
-            ),
-            ..EngineConfig::default()
-        },
-        ModelInfo {
-            id: model.clone(),
-            display_name: model.clone(),
-            context_window: models_for(PROVIDER_OPENAI)
-                .into_iter()
-                .find(|m| m.id == model)
-                .and_then(|m| m.context_window),
-        },
-    ))
-}
-
-fn ollama_config(http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
-    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| DEFAULT_OLLAMA_MODEL.to_string());
-    let base = std::env::var("OLLAMA_BASE")
-        .unwrap_or_else(|_| entanglement_provider::OLLAMA_BASE.to_string());
-    eprintln!("skutter: provider=ollama model={model} base={base}");
-    (
-        EngineConfig {
-            llm_factory: entanglement_provider::openai_factory(
-                base,
-                None,
-                model.clone(),
-                http_client.clone(),
-            ),
-            ..EngineConfig::default()
-        },
-        ModelInfo {
-            id: model.clone(),
-            display_name: model.clone(),
-            context_window: models_for(PROVIDER_OLLAMA)
-                .into_iter()
-                .find(|m| m.id == model)
-                .and_then(|m| m.context_window),
-        },
-    )
-}
-
-fn anthropic_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo)> {
-    let key = env_nonempty("ANTHROPIC_API_KEY")?;
-    let model =
-        std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| DEFAULT_ANTHROPIC_MODEL.to_string());
-    eprintln!("skutter: provider=anthropic model={model}");
+/// Anthropic-wire provider. Always keyed; base is the client's own default.
+fn anthropic_wire_config(
+    entry: &ProviderEntry,
+    http_client: &HttpClient,
+    catalog: &Catalog,
+) -> Option<(EngineConfig, ModelInfo)> {
+    let key = env_nonempty(entry.key_env.as_deref()?)?;
+    let model = resolve_model(entry);
+    eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
             llm_factory: entanglement_provider::anthropic_factory(
@@ -245,27 +230,21 @@ fn anthropic_config(http_client: &HttpClient) -> Option<(EngineConfig, ModelInfo
             ),
             ..EngineConfig::default()
         },
-        ModelInfo {
-            id: model.clone(),
-            display_name: model.clone(),
-            context_window: models_for(PROVIDER_ANTHROPIC)
-                .into_iter()
-                .find(|m| m.id == model)
-                .and_then(|m| m.context_window),
-        },
+        model_info_for(entry, &model, catalog),
     ))
+}
+
+fn echo_model_info() -> ModelInfo {
+    ModelInfo {
+        id: "echo".to_string(),
+        display_name: "Echo (debug)".to_string(),
+        context_window: None,
+    }
 }
 
 fn echo_config() -> (EngineConfig, ModelInfo) {
     eprintln!("skutter: provider=echo (history-debugging stub)");
-    (
-        EngineConfig::default(),
-        ModelInfo {
-            id: "echo".to_string(),
-            display_name: "Echo (debug)".to_string(),
-            context_window: None,
-        },
-    )
+    (EngineConfig::default(), echo_model_info())
 }
 
 #[derive(Parser)]
@@ -333,8 +312,12 @@ async fn main() -> Result<()> {
         return print_sessions(&cwd);
     }
 
+    // Load the provider/model catalog once (embedded defaults + user override).
+    // A malformed user file is a loud error, never a silent fallback.
+    let catalog = Catalog::load().context("loading provider catalog")?;
+
     let http_client = HttpClient::new();
-    let (config, model_info, tools) = build_config(&http_client);
+    let (config, model_info, tools) = build_config(&catalog, &http_client);
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.
     if let Err(e) = config.validate() {
@@ -413,7 +396,15 @@ async fn main() -> Result<()> {
                     .await?;
             }
             let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
-            tui(&holly, session_id, model_info, cwd.clone(), bash_enabled).await
+            tui(
+                &holly,
+                session_id,
+                model_info,
+                catalog,
+                cwd.clone(),
+                bash_enabled,
+            )
+            .await
         }
         Some(Cmd::Sessions) => unreachable!("sessions is handled before engine setup"),
         None => {
