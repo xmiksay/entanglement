@@ -324,6 +324,19 @@ impl SessionView {
         });
     }
 
+    /// Clears the `pending` (dimmed) flag on the most recent user prompt. Called
+    /// on the first content event of a turn — the model often opens with a
+    /// reasoning block or tool call rather than text, so keying this off text
+    /// alone would leave the prompt greyed out for the whole turn (issue #103).
+    fn clear_pending_user(&mut self) {
+        for entry in self.transcript.iter_mut().rev() {
+            if let TranscriptEntry::User { pending, .. } = entry {
+                *pending = false;
+                break;
+            }
+        }
+    }
+
     /// Records a head-side `!bash` passthrough (ADR-0030): the command and its
     /// captured output, reusing the tool call/output entries so it renders like
     /// any other tool run. Local only — not sent to the engine or the model.
@@ -380,12 +393,7 @@ impl SessionView {
             }
             OutEvent::TextDelta { seq, text, .. } => {
                 if seq > self.last_seen_seq {
-                    for entry in self.transcript.iter_mut().rev() {
-                        if let TranscriptEntry::User { pending, .. } = entry {
-                            *pending = false;
-                            break;
-                        }
-                    }
+                    self.clear_pending_user();
                     self.transcript.push(TranscriptEntry::TextDelta { text });
                     self.last_seen_seq = seq;
                     true
@@ -395,6 +403,7 @@ impl SessionView {
             }
             OutEvent::ReasoningDelta { seq, text, .. } => {
                 if seq > self.last_seen_seq {
+                    self.clear_pending_user();
                     self.transcript
                         .push(TranscriptEntry::ReasoningDelta { text });
                     self.last_seen_seq = seq;
@@ -407,6 +416,7 @@ impl SessionView {
                 seq, tool, input, ..
             } => {
                 if seq > self.last_seen_seq {
+                    self.clear_pending_user();
                     self.transcript.push(TranscriptEntry::ToolCall {
                         tool: tool.clone(),
                         input: input.clone(),
@@ -655,5 +665,46 @@ mod tests {
         assert!(matches!(entries[0], TranscriptEntry::User { ref text, .. } if text == "hello?"));
         assert!(matches!(entries[1], TranscriptEntry::TextDelta { .. }));
         assert_eq!(entries.len(), 2);
+    }
+
+    fn user_pending(v: &SessionView) -> bool {
+        matches!(
+            v.transcript().first(),
+            Some(TranscriptEntry::User { pending: true, .. })
+        )
+    }
+
+    #[test]
+    fn reasoning_first_clears_pending_prompt() {
+        // Regression (issue #103): a turn that opens with a thinking block must
+        // still un-dim the user prompt, not only on the first text delta.
+        let mut v = SessionView::new();
+        v.record_user_message("go".into());
+        assert!(user_pending(&v));
+
+        v.apply_event(OutEvent::ReasoningDelta {
+            session: sid(),
+            seq: 1,
+            text: "thinking...".into(),
+        });
+        assert!(!user_pending(&v));
+    }
+
+    #[test]
+    fn tool_call_first_clears_pending_prompt() {
+        // Regression (issue #103): a turn that opens with a tool call must also
+        // un-dim the user prompt.
+        let mut v = SessionView::new();
+        v.record_user_message("go".into());
+        assert!(user_pending(&v));
+
+        v.apply_event(OutEvent::ToolCall {
+            session: sid(),
+            seq: 1,
+            request_id: "t1".into(),
+            tool: "read".into(),
+            input: "{}".into(),
+        });
+        assert!(!user_pending(&v));
     }
 }

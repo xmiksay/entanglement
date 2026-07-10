@@ -83,7 +83,7 @@ pub async fn tui(
     spawn_crossterm_task(event_tx.clone());
 
     let mut app = App::new(initial_session, catalog);
-    app.set_model_info(model_info.id.clone());
+    app.set_model_info(model_info);
     app.init_head_context(root, bash_enabled);
 
     let mut attention = Attention::from_env();

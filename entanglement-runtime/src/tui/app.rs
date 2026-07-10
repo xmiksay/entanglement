@@ -57,8 +57,6 @@ pub struct App {
     model_picker_state: ListState,
     available_models: Vec<(String, Vec<String>)>,
     model_info: ModelInfo,
-    // The provider/model catalog, for model metadata lookups (context window).
-    catalog: Catalog,
 
     // Leader key state
     leader_handler: LeaderKeyHandler,
@@ -180,7 +178,6 @@ impl App {
                 display_name: "dummy".to_string(),
                 context_window: None,
             },
-            catalog,
             leader_handler: LeaderKeyHandler::new(),
             showing_help: false,
             command_palette: CommandPalette::new(),
@@ -806,11 +803,12 @@ impl App {
         &self.model_info
     }
 
-    /// Set the active model by id, pulling display name + context window from
-    /// the catalog (searched across all providers — the picker only carries the
-    /// id). Falls back to the id itself when it isn't in the catalog.
-    pub fn set_model_info(&mut self, model_id: String) {
-        self.model_info = ModelInfo::from_catalog(self.catalog.model_by_id(&model_id), &model_id);
+    /// Set the active model, carrying the resolved `ModelInfo` (id, display
+    /// name, context window) verbatim. The context window is already resolved on
+    /// the incoming `ModelInfo` — re-deriving it from the catalog by id here
+    /// would drop it (the id isn't always a catalog key), so we store as-is.
+    pub fn set_model_info(&mut self, model_info: ModelInfo) {
+        self.model_info = model_info;
         self.mark_dirty();
     }
 
@@ -1257,5 +1255,23 @@ mod tests {
             &entries[entries.len() - 1],
             TranscriptEntry::ToolOutput { tool: Some(t), output } if t == "!bash" && output.contains("hi")
         ));
+    }
+
+    #[test]
+    fn set_model_info_preserves_resolved_context_window() {
+        // Regression (issue #103): the resolved `ModelInfo` — context window
+        // included — must be carried verbatim. Re-deriving it from the catalog
+        // by id would drop the window for ids that aren't catalog keys.
+        let mut app = App::new_for_test(SessionId::new("test"));
+        app.set_model_info(ModelInfo {
+            id: "claude-sonnet-4-5".to_string(),
+            display_name: "Claude Sonnet 4.5".to_string(),
+            context_window: Some(200_000),
+        });
+
+        let info = app.model_info();
+        assert_eq!(info.id, "claude-sonnet-4-5");
+        assert_eq!(info.display_name, "Claude Sonnet 4.5");
+        assert_eq!(info.context_window, Some(200_000));
     }
 }
