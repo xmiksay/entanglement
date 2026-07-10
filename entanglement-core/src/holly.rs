@@ -94,6 +94,16 @@ impl ProfileRegistry {
         self.profiles.get(name)
     }
 
+    /// Every registered profile, name-sorted for a stable roster (the runtime
+    /// discloses this to a spawning model — see the `agent`/`agent_spawn` tool
+    /// descriptions). Sorting keeps the advertised order deterministic across
+    /// runs regardless of `HashMap` iteration order.
+    pub fn iter(&self) -> impl Iterator<Item = &AgentProfile> {
+        let mut profiles: Vec<&AgentProfile> = self.profiles.values().collect();
+        profiles.sort_by(|a, b| a.name.cmp(&b.name));
+        profiles.into_iter()
+    }
+
     pub fn insert(&mut self, profile: AgentProfile) {
         self.profiles.insert(profile.name.clone(), profile);
     }
@@ -139,6 +149,7 @@ fn built_in_profiles() -> [AgentProfile; 3] {
     [
         AgentProfile {
             name: "build".into(),
+            description: "Coding agent — implements changes using the available tools.".into(),
             mode: AgentMode::Primary,
             system_prompt: "You are a coding agent. Implement the requested changes using the available tools.".into(),
             model: None,
@@ -146,6 +157,7 @@ fn built_in_profiles() -> [AgentProfile; 3] {
         },
         AgentProfile {
             name: "plan".into(),
+            description: "Planning agent — produces a plan without making changes.".into(),
             mode: AgentMode::Primary,
             system_prompt: "You are a planning agent. Analyze the request and produce a plan without making changes. Use the update_plan and update_tasks tools to record your strategy and outline.".into(),
             model: None,
@@ -153,6 +165,7 @@ fn built_in_profiles() -> [AgentProfile; 3] {
         },
         AgentProfile {
             name: "explore".into(),
+            description: "Read-only exploration agent — answers questions about the codebase.".into(),
             mode: AgentMode::Subagent,
             system_prompt: "You are a read-only exploration agent. Answer questions about the codebase using only read tools.".into(),
             model: None,

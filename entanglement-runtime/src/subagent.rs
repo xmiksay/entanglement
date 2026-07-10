@@ -25,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use entanglement_core::{Holly, InMsg, OutEvent, SessionId, ToolSpec};
+use entanglement_core::{Holly, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec};
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 use crate::agent_poll::{AgentRegistry, AgentStatus};
@@ -138,43 +138,65 @@ impl SpawnGuard {
 const DEFAULT_SUBAGENT: &str = "explore";
 
 /// The `agent_spawn` tool schema advertised to the model. Appended to the
-/// engine's `tool_specs` alongside the host quartet.
-pub fn agent_spawn_spec() -> ToolSpec {
+/// engine's `tool_specs` alongside the host quartet. The registry roster is
+/// disclosed inline (#112): each spawnable agent's `name: description` is listed
+/// in the tool description and the `agent` argument is constrained to that set.
+pub fn agent_spawn_spec(registry: &ProfileRegistry) -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_SPAWN_TOOL,
-        "Launch a sub-agent session to handle a focused subtask. Returns \
-         immediately with an agent_id handle (it does not wait for the \
-         sub-agent to finish), so you can launch several in a row and let them \
-         run concurrently. Collect a sub-agent's answer by calling agent_poll \
-         with its agent_id. To delegate a single subtask and get the answer in \
-         one call, use `agent` instead.",
-        agent_input_schema(),
+        format!(
+            "Launch a sub-agent session to handle a focused subtask. Returns \
+             immediately with an agent_id handle (it does not wait for the \
+             sub-agent to finish), so you can launch several in a row and let \
+             them run concurrently. Collect a sub-agent's answer by calling \
+             agent_poll with its agent_id. To delegate a single subtask and get \
+             the answer in one call, use `agent` instead.\n\n{}",
+            roster(registry)
+        ),
+        agent_input_schema(registry),
     )
 }
 
 /// The blocking `agent` tool schema (#120). Same input shape as `agent_spawn`,
 /// but it waits for the sub-agent and returns its final answer directly.
-pub fn agent_spec() -> ToolSpec {
+pub fn agent_spec(registry: &ProfileRegistry) -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_TOOL,
-        "Delegate a focused subtask to a sub-agent and wait for its answer. \
-         Spawns the sub-agent, blocks until it finishes, and returns its final \
-         answer directly — the one-call path for a single delegation. To launch \
-         several sub-agents and let them run concurrently, use agent_spawn + \
-         agent_poll instead.",
-        agent_input_schema(),
+        format!(
+            "Delegate a focused subtask to a sub-agent and wait for its answer. \
+             Spawns the sub-agent, blocks until it finishes, and returns its \
+             final answer directly — the one-call path for a single delegation. \
+             To launch several sub-agents and let them run concurrently, use \
+             agent_spawn + agent_poll instead.\n\n{}",
+            roster(registry)
+        ),
+        agent_input_schema(registry),
     )
 }
 
+/// The `name: description` roster line block disclosed to the spawning model —
+/// `description` is the only field of a definition a parent ever sees (#112).
+fn roster(registry: &ProfileRegistry) -> String {
+    let mut out = String::from("Available agents:");
+    for p in registry.iter() {
+        out.push_str(&format!("\n- {}: {}", p.name, p.description));
+    }
+    out
+}
+
 /// Shared `{ agent, prompt }` input schema for the `agent_spawn` and `agent`
-/// tools — both take the same arguments; only their return shape differs.
-fn agent_input_schema() -> serde_json::Value {
+/// tools — both take the same arguments; only their return shape differs. The
+/// `agent` name is constrained to the registry's roster (an enum) so the model
+/// can only pick a real profile.
+fn agent_input_schema(registry: &ProfileRegistry) -> serde_json::Value {
+    let names: Vec<&str> = registry.iter().map(|p| p.name.as_str()).collect();
     serde_json::json!({
         "type": "object",
         "properties": {
             "agent": {
                 "type": "string",
-                "description": "Agent profile for the sub-agent (build | plan | explore | custom). Defaults to explore (read-only)."
+                "enum": names,
+                "description": "Which agent profile to run the sub-agent under. Defaults to explore (read-only)."
             },
             "prompt": {
                 "type": "string",

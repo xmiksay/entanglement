@@ -135,7 +135,9 @@ than parking its single loop and stalling every other session.
 ## 3. Agent profiles + permissions (opencode-style) — [ADR-0003](adr/0003-agent-and-permission-profiles.md)
 
 A session runs under exactly one [`AgentProfile`][profile]:
-`{ name, mode, system_prompt, model?, permission }`.
+`{ name, description, mode, system_prompt, model?, permission }`. `mode` is
+`primary | subagent | all`; `description` drives delegation matching (§8, the
+only field a spawning model sees).
 
 - Switch with `InMsg::SetAgent { agent }`; engine emits `AgentChanged`.
 - [`PermissionProfile`][perm] resolves `Allow | Ask | Deny` per tool
@@ -145,8 +147,22 @@ A session runs under exactly one [`AgentProfile`][profile]:
     on approve, run the tool and reply `ToolResult`; on reject, reply
     `ToolResult("…rejected…")`.
   - `Deny` → reply `ToolResult("…denied…")` without running the tool.
-- Built-ins: `build` (all allow), `plan` (ask, read allow), `explore` (deny,
-  read/glob/grep allow). Add your own via `ProfileRegistry::insert`.
+- **File-defined (✅ #112, [ADR-0034](adr/0034-file-based-agent-definitions.md)):**
+  profiles are markdown files with YAML frontmatter (the config bundle) + a body
+  (the system prompt), discovered at startup by the **runtime**
+  (`entanglement_runtime::agents::load_registry`) into a `ProfileRegistry`. Three
+  layers, later wins on a `name` collision: embedded built-ins (`build`/`plan`/
+  `explore`, shipped as `include_str!` `.md` and parsed through the *same* loader)
+  < user (`${config_dir}/entanglement/agents/*.md`) < project
+  (`<root>/.entanglement/agents/*.md`). Editing a built-in = dropping a same-`name`
+  file in a higher layer — one mechanism for all three, same defaults+override
+  shape as the provider catalog (#118). A malformed file is a loud error. The
+  frontmatter also declares `tools`/`disallowed_tools` (tool mask) and
+  `can_spawn`/`spawnable_agents` (spawn control), parsed + validated now but with
+  enforcement deferred to their own sub-issues of #111 (they need per-session tool
+  specs, #116/#119). Embedders using core directly still get a hardcoded
+  `build`/`plan`/`explore` fallback via `ProfileRegistry::new()`; add your own with
+  `ProfileRegistry::insert`.
 - **Where dispatch runs (✅ #59):** the `AgentProfile` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
   **runtime** concern ([ADR-0003](adr/0003-agent-and-permission-profiles.md) /
@@ -257,6 +273,15 @@ least-privileged rule across its whole ancestor chain (`Deny < Ask < Allow`), so
 a child can never touch the shared tree in ways a parent couldn't. Filesystem
 isolation (a separate child root) and bidirectional session-to-session messaging
 are still deferred (see ADR-0022/0024).
+
+**Roster disclosure** (✅ #112, [ADR-0034](adr/0034-file-based-agent-definitions.md)).
+The `agent`/`agent_spawn` tool descriptions carry one `name: description` line per
+registered agent (built from the loaded `ProfileRegistry`), and the `agent`
+argument's schema constrains the name to an `enum` of the registered set — so the
+model learns *who it may spawn* at the call site, and `description` is the one
+field of a definition ever exposed to a parent. Per-profile filtering of the
+roster (via `spawnable_agents`, and per-session specs #116/#119) is the deferred
+follow-up; today the full roster is advertised.
 
 **Ask-user prompt** (✅ #90, [ADR-0027](adr/0027-ask-user-interactive-prompt.md)).
 The model calls a runtime-owned `ask_user { question, options, allow_free_form }`

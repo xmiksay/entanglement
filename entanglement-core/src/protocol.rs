@@ -159,21 +159,37 @@ impl PermissionProfile {
     }
 }
 
-/// Whether an agent is directly user-facing or invoked by other agents.
+/// Whether an agent is directly user-facing, invoked by other agents, or both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
+    /// User-facing entry agent; may spawn sub-agents.
     Primary,
+    /// Only reachable via spawn; a read-only leaf that cannot spawn further
+    /// (gated in the runtime, ADR-0024).
     Subagent,
+    /// Usable as both a primary entry agent *and* a spawnable sub-agent; spawns
+    /// like a `Primary`. Lets one file-defined agent serve both roles
+    /// (ADR-0034).
+    All,
 }
 
 /// A bundle of system prompt + model + permissions that defines how a session
 /// reasons and what it may do. A session runs under exactly one profile at a
 /// time; switching (e.g. Build ↔ Plan) changes the profile. Mirrors opencode's
 /// agent concept. The `name` is the switch key in [`InMsg::SetAgent`].
+///
+/// Profiles are **file-defined** in the runtime (markdown + YAML frontmatter,
+/// ADR-0034): `name`/`mode`/`model`/`permission` come from the frontmatter and
+/// `system_prompt` is the file body. `description` drives delegation matching —
+/// it is the one field disclosed to a spawning model (via the `agent`/
+/// `agent_spawn` tool descriptions).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub name: String,
+    /// One-line summary; disclosed to a spawning model for delegation matching.
+    #[serde(default)]
+    pub description: String,
     pub mode: AgentMode,
     pub system_prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

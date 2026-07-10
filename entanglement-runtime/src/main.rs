@@ -8,6 +8,7 @@
 //!   `OutEvent` lines on stdout. For scripting / editor integration.
 
 mod agent_poll;
+mod agents;
 mod ask_user;
 mod host;
 mod permission;
@@ -21,7 +22,7 @@ mod tui;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, InMsg, SessionId, ToolRegistry};
+use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId, ToolRegistry};
 use entanglement_provider::{Catalog, HttpClient, ModelInfo, ProviderEntry, Wire};
 
 use host::{host_tools, BashTool};
@@ -61,8 +62,11 @@ use tui::tui;
 fn build_config(
     catalog: &Catalog,
     http_client: &HttpClient,
+    profiles: ProfileRegistry,
 ) -> (EngineConfig, ModelInfo, ToolRegistry) {
     let (mut cfg, model_info) = select_provider(catalog, http_client);
+    // File-based agent definitions (#112) replace core's hardcoded fallback trio.
+    cfg.profiles = profiles;
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut tools = host_tools(root.clone());
     if std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1") {
@@ -77,8 +81,9 @@ fn build_config(
     // runtime executor handles them directly, so they only need advertising to
     // the model. `agent_spawn` launches a sub-agent (non-blocking handle);
     // `agent` launches one and blocks for its answer.
-    cfg.tool_specs.push(subagent::agent_spawn_spec());
-    cfg.tool_specs.push(subagent::agent_spec());
+    cfg.tool_specs
+        .push(subagent::agent_spawn_spec(&cfg.profiles));
+    cfg.tool_specs.push(subagent::agent_spec(&cfg.profiles));
     // `agent_poll` is the join half of non-blocking spawn (#89): it awaits a
     // launched sub-agent's answer. Runtime-owned like `agent_spawn`.
     cfg.tool_specs.push(agent_poll::agent_poll_spec());
@@ -315,12 +320,18 @@ async fn main() -> Result<()> {
         return print_sessions(&cwd);
     }
 
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
     // Load the provider/model catalog once (embedded defaults + user override).
     // A malformed user file is a loud error, never a silent fallback.
     let catalog = Catalog::load().context("loading provider catalog")?;
 
+    // Discover file-based agent definitions (#112): embedded built-ins, then the
+    // user dir, then the project dir. A malformed file is a loud error.
+    let profiles = agents::load_registry(&cwd).context("loading agent definitions")?;
+
     let http_client = HttpClient::new();
-    let (config, model_info, tools) = build_config(&catalog, &http_client);
+    let (config, model_info, tools) = build_config(&catalog, &http_client, profiles);
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.
     if let Err(e) = config.validate() {
@@ -331,7 +342,6 @@ async fn main() -> Result<()> {
     // permissions (#59); the engine gets the same shape via `config`.
     let profiles = config.profiles.clone();
     let holly = Holly::spawn(config);
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
     // answer the engine's ToolExec round-trip, gating each call on `profiles`.
