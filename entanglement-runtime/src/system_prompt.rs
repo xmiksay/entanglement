@@ -9,9 +9,10 @@
 //!    automatically; we make it an explicit opt-in so shared rules are never
 //!    silently dropped when an agent supplies its own body.
 //! 2. **agent body** — the markdown body of the agent definition.
-//! 3. **project brief** — a project-instructions file (`.entanglement/BRIEF.md`
-//!    or `AGENTS.md`), included only when the agent definition sets
-//!    `include_brief: true`.
+//! 3. **project brief** — a standard project-instructions file (`AGENTS.md` /
+//!    `.agents/AGENTS.md`, or Anthropic's `.claude/CLAUDE.md` / `CLAUDE.md`),
+//!    included only when the agent definition sets `include_brief: true`. We
+//!    read whatever the ecosystem already puts in the repo — no bespoke file.
 //! 4. **environment block** — cwd/root, platform, date; *generated* here so the
 //!    model never has to guess them.
 //! 5. **skill index** — tier-1 disclosure lines (`name` + `description` only)
@@ -108,7 +109,7 @@ impl PromptContext {
     /// tool mask (#116) before handing the list here.
     pub fn load(root: &Path) -> Self {
         Self {
-            preamble: load_preamble(root),
+            preamble: load_preamble(),
             brief: load_brief(root),
             env: Some(EnvBlock::detect(root)),
             skills: Vec::new(),
@@ -165,37 +166,39 @@ fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|t| !t.is_empty())
 }
 
-/// Resolve the shared preamble: `ENTANGLEMENT_PREAMBLE_FILE`, then a project
-/// `<root>/.entanglement/preamble.md`, then the user
-/// `${config_dir}/entanglement/preamble.md`, else the built-in default. A file
-/// that exists but is empty disables the preamble (`None`).
-fn load_preamble(root: &Path) -> Option<String> {
+/// Resolve the shared preamble: an explicit `ENTANGLEMENT_PREAMBLE_FILE`, else
+/// the built-in default. Unlike the brief there is no cross-vendor file
+/// convention for a shared preamble — it is a harness invariant, not a
+/// project-authored doc — so it ships embedded and is only overridable by the
+/// env var (an empty override file disables it, `None`).
+fn load_preamble() -> Option<String> {
     if let Some(path) = std::env::var_os(PREAMBLE_FILE_ENV) {
         return read_non_empty(Path::new(&path));
-    }
-    let project = root.join(".entanglement").join("preamble.md");
-    if project.exists() {
-        return read_non_empty(&project);
-    }
-    if let Some(user) = dirs::config_dir().map(|d| d.join("entanglement").join("preamble.md")) {
-        if user.exists() {
-            return read_non_empty(&user);
-        }
     }
     Some(DEFAULT_PREAMBLE.to_string())
 }
 
-/// Resolve the project brief: `ENTANGLEMENT_BRIEF_FILE`, then
-/// `<root>/.entanglement/BRIEF.md`, then `<root>/AGENTS.md`. Missing ⇒ `None`
-/// (the `include_brief` flag then becomes a no-op).
+/// Standard project-instruction files, in precedence order (first found wins):
+/// the cross-vendor `AGENTS.md` convention (root + `.agents/`) then Anthropic's
+/// `CLAUDE.md` (`.claude/CLAUDE.md` preferred over the repo-root `CLAUDE.md`, per
+/// the workspace rule). No bespoke `.entanglement/BRIEF.md` — the brief is
+/// whatever the ecosystem already puts in the repo.
+const BRIEF_FILES: &[&str] = &[
+    "AGENTS.md",
+    ".agents/AGENTS.md",
+    ".claude/CLAUDE.md",
+    "CLAUDE.md",
+];
+
+/// Resolve the project brief: an explicit `ENTANGLEMENT_BRIEF_FILE`, else the
+/// first existing [`BRIEF_FILES`] entry under `root`. Missing ⇒ `None` (the
+/// `include_brief` flag then becomes a no-op).
 fn load_brief(root: &Path) -> Option<String> {
     if let Some(path) = std::env::var_os(BRIEF_FILE_ENV) {
         return read_non_empty(Path::new(&path));
     }
-    for candidate in [
-        root.join(".entanglement").join("BRIEF.md"),
-        root.join("AGENTS.md"),
-    ] {
+    for rel in BRIEF_FILES {
+        let candidate = root.join(rel);
         if candidate.exists() {
             return read_non_empty(&candidate);
         }
@@ -351,6 +354,24 @@ mod tests {
             &PromptContext::default(),
         );
         assert_eq!(out, "BODY");
+    }
+
+    #[test]
+    fn brief_discovers_standard_files_with_agents_md_first() {
+        // Only Anthropic's `.claude/CLAUDE.md` present → found.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude/CLAUDE.md"), "claude brief").unwrap();
+        assert_eq!(load_brief(root).as_deref(), Some("claude brief"));
+
+        // The cross-vendor `AGENTS.md` wins over `CLAUDE.md`.
+        std::fs::write(root.join("AGENTS.md"), "agents brief").unwrap();
+        assert_eq!(load_brief(root).as_deref(), Some("agents brief"));
+
+        // No standard file ⇒ no brief (the include_brief flag is then a no-op).
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(load_brief(empty.path()), None);
     }
 
     #[test]

@@ -116,8 +116,9 @@ now, enforcement deferred (needs per-session specs #116/#119). `AgentMode` gaine
 `all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
 raw body (✅ #113, [ADR-0035](../docs/adr/0035-deterministic-system-prompt-assembly.md)):
 `entanglement_runtime::system_prompt::assemble` composes shared preamble + agent
-body + project brief (frontmatter `include_brief: true`, from
-`.entanglement/BRIEF.md`/`AGENTS.md`) + generated env block (cwd/platform/date) +
+body + project brief (frontmatter `include_brief: true`, from the standard
+`AGENTS.md`/`.agents/AGENTS.md`/`.claude/CLAUDE.md`/`CLAUDE.md`, first found wins)
++ generated env block (cwd/platform/date) +
 skill index — each optional, in that fixed order — at load time. A subagent gets
 `preamble + body (+ brief)` only (no env/skills, never the parent's prompt);
 inputs come from `PromptContext::load` (overridable via

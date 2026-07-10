@@ -32,8 +32,10 @@ Compose the system prompt from up to five ordered, individually-optional parts:
    output). Applied to *every* agent, including subagents — the opt-out is an
    empty preamble file, not "an agent defined its own body".
 2. **agent body** — the markdown body of the definition.
-3. **project brief** — a project-instructions file (`.entanglement/BRIEF.md` or
-   `AGENTS.md`), folded in only when the definition sets `include_brief: true`.
+3. **project brief** — a *standard* project-instructions file (`AGENTS.md` /
+   `.agents/AGENTS.md`, or Anthropic's `.claude/CLAUDE.md` / `CLAUDE.md`), folded
+   in only when the definition sets `include_brief: true`. No bespoke file
+   name — we read whatever the OpenAI/Anthropic ecosystem already puts in a repo.
 4. **environment block** — cwd/root, platform, date; *generated* by the harness,
    never model-guessed.
 5. **skill index** — tier-1 disclosure lines (`name` + `description` only)
@@ -52,12 +54,14 @@ start, `SetAgent`, spawn — reads the already-assembled prompt and core stays a
 verbatim pass-through into `LlmRequest.system`.
 
 `PromptContext::load(root)` resolves the inputs once at startup: the shared
-preamble (built-in default, overridable by `ENTANGLEMENT_PREAMBLE_FILE` / a
-project or user `preamble.md`), the project brief (`ENTANGLEMENT_BRIEF_FILE` /
-`.entanglement/BRIEF.md` / `AGENTS.md`), and the generated env block. The skill
-index is empty until the skill registry lands (#115); once it does, callers
-filter by the agent's tool mask (omit when `load_skill` is masked, #116) and drop
-`user_only` skills before handing the list to `assemble`.
+preamble (built-in default, overridable only by the explicit
+`ENTANGLEMENT_PREAMBLE_FILE` — there is no cross-vendor file convention for a
+preamble, so we do not invent a config path for it), the project brief (the
+standard files above, or an explicit `ENTANGLEMENT_BRIEF_FILE`), and the
+generated env block. The skill index is empty until the skill registry lands
+(#115); once it does, callers filter by the agent's tool mask (omit when
+`load_skill` is masked, #116) and drop `user_only` skills before handing the list
+to `assemble`.
 
 ## Rejected alternatives
 

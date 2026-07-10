@@ -167,13 +167,14 @@ only field a spawning model sees).
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five
   ordered, optional parts — **shared preamble** (safety/tool-use/output invariants
-  applied to *every* agent) + **agent body** + **project brief** (from
-  `.entanglement/BRIEF.md` / `AGENTS.md`, only when the frontmatter sets
+  applied to *every* agent) + **agent body** + **project brief** (the standard
+  `AGENTS.md` / `.agents/AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md`, first
+  found wins — no bespoke file — only when the frontmatter sets
   `include_brief: true`) + **generated env block** (cwd/root, platform, date —
   never model-guessed) + **skill index** (tier-1 `name`+`description` disclosure
   lines from the skill registry). Inputs come from `PromptContext::load(root)`
-  (preamble overridable via `ENTANGLEMENT_PREAMBLE_FILE` / a project or user
-  `preamble.md`; brief via `ENTANGLEMENT_BRIEF_FILE`). A **subagent** gets
+  (preamble overridable via `ENTANGLEMENT_PREAMBLE_FILE`; brief via
+  `ENTANGLEMENT_BRIEF_FILE`). A **subagent** gets
   `preamble + body (+ brief)` only — no env/skills, and never the parent's
   assembled prompt (each agent is composed from *its own* body + `include_brief`
   flag). Composition is a pure, unit-tested harness function baked into
