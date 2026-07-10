@@ -1,17 +1,26 @@
-//! Sub-agent spawn orchestration (#60, ADR-0021/0010; non-blocking #89, ADR-0026).
+//! Sub-agent spawn orchestration (#60, ADR-0021/0010; non-blocking #89, ADR-0026;
+//! `agent_*` tool family + blocking `agent`, #120, ADR-0033).
 //!
-//! `spawn_agent` is not a filesystem tool in the [`ToolRegistry`] — it is an
-//! engine-coordination primitive owned by the runtime. When the model calls it,
-//! [`launch_subagent`] creates a child session via [`InMsg::Spawn`] and replies
-//! to the parent *immediately* with the child's handle (`agent_id`) — it does
-//! **not** wait for the child's `Done`, so it never blocks the parent turn
-//! (ADR-0026 supersedes ADR-0022's synchronous answer-relay). It then keeps
-//! watching the child in the same detached task, recording the final answer +
-//! duration into the shared [`AgentRegistry`] keyed by the handle; the parent
-//! collects it later with `agent_poll` (see [`crate::agent_poll`]).
+//! The `agent_*` family are not filesystem tools in the [`ToolRegistry`] — they
+//! are engine-coordination primitives owned by the runtime:
 //!
-//! Because it only orchestrates sessions (it touches no host resource), the
-//! executor runs it *before* permission resolution — it bypasses the permission
+//! - `agent_spawn` (renamed from `spawn_agent`) — [`launch_subagent`] creates a
+//!   child session via [`InMsg::Spawn`] and replies to the parent *immediately*
+//!   with the child's handle (`agent_id`); it does **not** wait for the child's
+//!   `Done`, so it never blocks the parent turn (ADR-0026 supersedes ADR-0022's
+//!   synchronous answer-relay). It then keeps watching the child in the same
+//!   detached task, recording the final answer + duration into the shared
+//!   [`AgentRegistry`] keyed by the handle; the parent collects it later with
+//!   `agent_poll` (see [`crate::agent_poll`]).
+//! - `agent` (blocking, #120) — [`run_agent`] runs the exact same launch path
+//!   (guard, clamp, `Spawn`), but instead of handing back the handle it parks on
+//!   the child's `Done` and folds the child's answer + elapsed straight into the
+//!   `ToolOutput` — the one-call path for a single delegation. It still records
+//!   into the registry, so a parent `Stop` while parked leaves the child
+//!   collectable via `agent_poll`.
+//!
+//! Because they only orchestrate sessions (they touch no host resource), the
+//! executor runs them *before* permission resolution — they bypass the permission
 //! profile exactly like core's `update_plan` / `update_tasks` built-ins.
 
 use std::collections::{HashMap, HashSet};
@@ -21,14 +30,18 @@ use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 use crate::agent_poll::{AgentRegistry, AgentStatus};
 
-/// Tool name the model calls to spawn a sub-agent.
-pub const SPAWN_TOOL: &str = "spawn_agent";
+/// Tool name the model calls to spawn a sub-agent (non-blocking; renamed from
+/// `spawn_agent` in #120).
+pub const AGENT_SPAWN_TOOL: &str = "agent_spawn";
+
+/// Tool name the model calls to spawn a sub-agent and block for its answer (#120).
+pub const AGENT_TOOL: &str = "agent";
 
 /// Maximum spawn nesting: the root (user-initiated) session is depth 0, so this
 /// lets the root spawn a child (depth 1), that child spawn (depth 2), and so on
 /// up to and including depth `MAX_SPAWN_DEPTH`. A spawn that would exceed it is
 /// refused. Bounds unbounded recursion — a sub-agent that keeps calling
-/// `spawn_agent` (#76, follow-up to ADR-0022).
+/// `agent_spawn` (#76, follow-up to ADR-0022).
 const MAX_SPAWN_DEPTH: usize = 3;
 
 /// Maximum sub-agents spawned beneath a single root, summed across the whole
@@ -38,7 +51,7 @@ const MAX_SPAWNS_PER_ROOT: usize = 16;
 
 /// Tracks the live session tree so the runtime can bound sub-agent spawning
 /// (#76). Fed each `SessionStarted` (for the parent link) and consulted on every
-/// `spawn_agent` call before a child is started. Lives in the tool executor's
+/// `agent_spawn`/`agent` call before a child is started. Lives in the tool executor's
 /// single-threaded event loop, so it needs no synchronization.
 #[derive(Default)]
 pub struct SpawnGuard {
@@ -66,7 +79,7 @@ impl SpawnGuard {
 
     /// Decide whether `parent` may spawn another sub-agent. On approval, charges
     /// the spawn against the root's budget and returns `Ok`. On refusal, returns
-    /// the message to relay to the parent as the `spawn_agent` tool output.
+    /// the message to relay to the parent as the `agent_spawn`/`agent` tool output.
     pub fn try_spawn(&mut self, parent: &SessionId) -> Result<(), String> {
         let child_depth = self.depth(parent) + 1;
         if child_depth > MAX_SPAWN_DEPTH {
@@ -124,34 +137,65 @@ impl SpawnGuard {
 /// the safe default.
 const DEFAULT_SUBAGENT: &str = "explore";
 
-/// The `spawn_agent` tool schema advertised to the model. Appended to the
+/// The `agent_spawn` tool schema advertised to the model. Appended to the
 /// engine's `tool_specs` alongside the host quartet.
-pub fn spawn_agent_spec() -> ToolSpec {
+pub fn agent_spawn_spec() -> ToolSpec {
     ToolSpec::with_schema(
-        SPAWN_TOOL,
+        AGENT_SPAWN_TOOL,
         "Launch a sub-agent session to handle a focused subtask. Returns \
          immediately with an agent_id handle (it does not wait for the \
          sub-agent to finish), so you can launch several in a row and let them \
          run concurrently. Collect a sub-agent's answer by calling agent_poll \
-         with its agent_id.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "agent": {
-                    "type": "string",
-                    "description": "Agent profile for the sub-agent (build | plan | explore | custom). Defaults to explore (read-only)."
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "The task or question for the sub-agent to work on."
-                }
-            },
-            "required": ["agent", "prompt"]
-        }),
+         with its agent_id. To delegate a single subtask and get the answer in \
+         one call, use `agent` instead.",
+        agent_input_schema(),
     )
 }
 
-/// Orchestrate one `spawn_agent` call (ADR-0026): start a child session, reply
+/// The blocking `agent` tool schema (#120). Same input shape as `agent_spawn`,
+/// but it waits for the sub-agent and returns its final answer directly.
+pub fn agent_spec() -> ToolSpec {
+    ToolSpec::with_schema(
+        AGENT_TOOL,
+        "Delegate a focused subtask to a sub-agent and wait for its answer. \
+         Spawns the sub-agent, blocks until it finishes, and returns its final \
+         answer directly — the one-call path for a single delegation. To launch \
+         several sub-agents and let them run concurrently, use agent_spawn + \
+         agent_poll instead.",
+        agent_input_schema(),
+    )
+}
+
+/// Shared `{ agent, prompt }` input schema for the `agent_spawn` and `agent`
+/// tools — both take the same arguments; only their return shape differs.
+fn agent_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "agent": {
+                "type": "string",
+                "description": "Agent profile for the sub-agent (build | plan | explore | custom). Defaults to explore (read-only)."
+            },
+            "prompt": {
+                "type": "string",
+                "description": "The task or question for the sub-agent to work on."
+            }
+        },
+        "required": ["agent", "prompt"]
+    })
+}
+
+/// Whether a launch hands the handle back immediately (`agent_spawn`) or parks
+/// for the child's answer and returns it directly (`agent`, #120).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LaunchMode {
+    /// Non-blocking: reply the handle at once, then record the answer for poll.
+    Detached,
+    /// Blocking: record the answer, then reply it (with timing) to the parent.
+    AwaitAnswer,
+}
+
+/// Orchestrate one `agent_spawn` call (ADR-0026): start a child session, reply
 /// to `parent` *immediately* with the child handle, then keep watching the child
 /// and record its answer + duration into `registry` for a later `agent_poll`.
 ///
@@ -160,11 +204,60 @@ pub fn spawn_agent_spec() -> ToolSpec {
 /// terminal `Done` — cannot race ahead of the watcher.
 pub async fn launch_subagent(
     holly: Holly,
+    events: Receiver<OutEvent>,
+    registry: AgentRegistry,
+    parent: SessionId,
+    request_id: String,
+    input: String,
+) {
+    launch(
+        holly,
+        events,
+        registry,
+        parent,
+        request_id,
+        input,
+        LaunchMode::Detached,
+    )
+    .await;
+}
+
+/// Orchestrate one blocking `agent` call (#120): run the exact `agent_spawn`
+/// launch path, then park on the child's `Done` and fold its answer + elapsed
+/// straight into the `ToolOutput`. Still records into `registry`, so a parent
+/// `Stop` while parked leaves the child collectable via `agent_poll`.
+pub async fn run_agent(
+    holly: Holly,
+    events: Receiver<OutEvent>,
+    registry: AgentRegistry,
+    parent: SessionId,
+    request_id: String,
+    input: String,
+) {
+    launch(
+        holly,
+        events,
+        registry,
+        parent,
+        request_id,
+        input,
+        LaunchMode::AwaitAnswer,
+    )
+    .await;
+}
+
+/// Shared launch path for `agent_spawn` (`Detached`) and `agent` (`AwaitAnswer`).
+/// The two differ only in *when* and *what* they reply: a detached launch hands
+/// the handle back before watching the child; a blocking launch watches first,
+/// then replies the answer. Both record the answer into `registry`.
+async fn launch(
+    holly: Holly,
     mut events: Receiver<OutEvent>,
     registry: AgentRegistry,
     parent: SessionId,
     request_id: String,
     input: String,
+    mode: LaunchMode,
 ) {
     let (agent, prompt) = parse_input(&input);
     let child = SessionId::new_uuid();
@@ -193,26 +286,46 @@ pub async fn launch_subagent(
         return;
     }
 
-    // Hand the handle back now — the parent turn continues instead of blocking
-    // on the child's `Done` (ADR-0026 supersedes ADR-0022's synchronous relay).
-    reply(
-        &holly,
-        parent,
-        request_id,
-        format!(
-            "Sub-agent launched under the `{agent}` profile. agent_id: {child}. \
-             Call agent_poll with this agent_id to await its answer."
-        ),
-    )
-    .await;
+    // Non-blocking: hand the handle back now — the parent turn continues instead
+    // of blocking on the child's `Done` (ADR-0026 supersedes ADR-0022's relay).
+    if mode == LaunchMode::Detached {
+        reply(
+            &holly,
+            parent.clone(),
+            request_id.clone(),
+            format!(
+                "Sub-agent launched under the `{agent}` profile. agent_id: {child}. \
+                 Call agent_poll with this agent_id to await its answer."
+            ),
+        )
+        .await;
+    }
 
     // Keep accumulating the child's answer; publish it (with timing) for poll.
     let answer = collect_child_answer(&mut events, &child).await;
-    // The registry keeps a receiver, so the completed value survives this drop.
+    let elapsed = started.elapsed();
+    // The registry keeps a receiver, so the completed value survives this drop —
+    // a blocking `agent` whose parent `Stop`ped is still poll-able by handle.
     let _ = status_tx.send(AgentStatus::Complete {
-        answer,
-        elapsed: started.elapsed(),
+        answer: answer.clone(),
+        elapsed,
     });
+
+    // Blocking: the parent parked on this call — fold the answer back directly.
+    // If the parent already `Stop`ped, core cancels its turn and ignores this
+    // reply; the answer above stays collectable via `agent_poll`.
+    if mode == LaunchMode::AwaitAnswer {
+        reply(
+            &holly,
+            parent,
+            request_id,
+            format!(
+                "sub-agent `{child}` completed in {:.1}s:\n\n{answer}",
+                elapsed.as_secs_f64()
+            ),
+        )
+        .await;
+    }
 }
 
 /// Watch the child's event stream, accumulating its assistant text until the
@@ -242,7 +355,7 @@ async fn collect_child_answer(events: &mut Receiver<OutEvent>, child: &SessionId
     }
 }
 
-/// Parse the `spawn_agent` tool input. Providers send a JSON object
+/// Parse the `agent_spawn`/`agent` tool input. Providers send a JSON object
 /// `{"agent": …, "prompt": …}`; scripted/raw backends may send a bare string,
 /// which is treated as the prompt under the default sub-agent profile.
 fn parse_input(input: &str) -> (String, String) {

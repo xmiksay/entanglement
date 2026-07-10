@@ -1,9 +1,10 @@
 //! Integration tests for sub-agent spawn. Drives the real runtime tool
-//! executor: the parent model calls `spawn_agent`, which now returns a handle
+//! executor: the parent model calls `agent_spawn`, which returns a handle
 //! immediately (#89, ADR-0026), then `agent_poll` awaits the child's answer.
+//! The blocking `agent` tool (#120, ADR-0033) spawns and waits in one call.
 //! Spawn limits (#76) and permission gating (#77) still apply per launch.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -12,8 +13,9 @@ use entanglement_core::{
     LlmStream, MessageRole, OutEvent, SessionId, ToolCall, ToolRegistry,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
+use tokio::sync::Notify;
 
-/// Pull an `agent_id` out of a `spawn_agent` result string (format:
+/// Pull an `agent_id` out of an `agent_spawn` result string (format:
 /// `… agent_id: <uuid>. Call agent_poll …`).
 fn extract_agent_id(s: &str) -> Option<String> {
     let start = s.find("agent_id: ")? + "agent_id: ".len();
@@ -65,7 +67,7 @@ fn last_user<'a>(req: &'a LlmRequest<'_>) -> &'a str {
 /// answers directly. Parameterized by the profile the parent spawns under and
 /// the child's answer, so it drives the limit/gating tests too.
 struct SpawnPollLlm {
-    spawn_agent: &'static str,
+    agent_spawn: &'static str,
     child_answer: &'static str,
 }
 
@@ -90,10 +92,10 @@ impl Llm for SpawnPollLlm {
             // First parent turn: launch a sub-agent.
             None => Ok(call(
                 "spawn1",
-                "spawn_agent",
+                "agent_spawn",
                 format!(
                     r#"{{"agent":"{}","prompt":"child-task"}}"#,
-                    self.spawn_agent
+                    self.agent_spawn
                 ),
             )),
         }
@@ -110,12 +112,12 @@ fn config(make: impl Fn() -> SpawnPollLlm + Send + Sync + 'static) -> EngineConf
 #[tokio::test]
 async fn spawn_launches_child_and_poll_collects_its_answer() {
     let cfg = config(|| SpawnPollLlm {
-        spawn_agent: "build",
+        agent_spawn: "build",
         child_answer: "child-answer",
     });
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    // Empty registry: `spawn_agent`/`agent_poll` are orchestration, handled
+    // Empty registry: `agent_spawn`/`agent_poll` are orchestration, handled
     // before execution.
     spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
 
@@ -146,7 +148,7 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
                 output,
                 ..
             } if session == &parent => {
-                if tool == "spawn_agent" && output.contains("agent_id:") {
+                if tool == "agent_spawn" && output.contains("agent_id:") {
                     saw_launch_handle = true;
                 }
                 if tool == "agent_poll" && output.contains("child-answer") {
@@ -167,7 +169,7 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
     );
     assert!(
         saw_launch_handle,
-        "spawn_agent should return an agent_id handle immediately"
+        "agent_spawn should return an agent_id handle immediately"
     );
     assert!(
         saw_polled_answer,
@@ -231,12 +233,12 @@ impl Llm for FanOutLlm {
                 tool_calls: vec![
                     ToolCall {
                         id: "s1".into(),
-                        name: "spawn_agent".into(),
+                        name: "agent_spawn".into(),
                         input: r#"{"agent":"build","prompt":"task-a"}"#.into(),
                     },
                     ToolCall {
                         id: "s2".into(),
-                        name: "spawn_agent".into(),
+                        name: "agent_spawn".into(),
                         input: r#"{"agent":"build","prompt":"task-b"}"#.into(),
                     },
                 ],
@@ -368,7 +370,7 @@ impl Llm for RecursiveLlm {
             },
             None => Ok(call(
                 "spawn",
-                "spawn_agent",
+                "agent_spawn",
                 r#"{"agent":"build","prompt":"recurse"}"#.into(),
             )),
         }
@@ -377,10 +379,26 @@ impl Llm for RecursiveLlm {
 
 #[tokio::test]
 async fn read_only_subagent_cannot_spawn() {
-    // The root spawns a read-only `explore` child and polls it; the child (a
-    // Subagent-mode leaf) tries to spawn and must be refused the capability (#77).
+    // A Subagent-mode `explore` leaf is refused the spawn *capability* (#77).
+    assert_leaf_spawn_refused("agent_spawn").await;
+}
+
+#[tokio::test]
+async fn read_only_subagent_cannot_use_blocking_agent() {
+    // Refusal parity (#120): the blocking `agent` shares `agent_spawn`'s guard
+    // path, so a read-only leaf is refused it identically.
+    assert_leaf_spawn_refused("agent").await;
+}
+
+/// Drive a root that spawns a read-only `explore` child; the child (a
+/// Subagent-mode leaf) tries to spawn again with `leaf_tool` and must be refused
+/// the capability. Asserts exactly one child starts and the refusal is relayed —
+/// shared by the `agent_spawn` and `agent` parity tests.
+async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
     let cfg = EngineConfig {
-        llm_factory: Arc::new(|| LlmSession::new(Box::new(ExploreThenSpawnLlm))),
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(ExploreThenSpawnLlm { tool: leaf_tool }))
+        }),
         ..EngineConfig::default()
     };
     let profiles = cfg.profiles.clone();
@@ -412,18 +430,22 @@ async fn read_only_subagent_cannot_spawn() {
 
     assert!(
         saw_capability_refusal,
-        "the explore child's spawn should be refused as a capability"
+        "the explore child's `{leaf_tool}` call should be refused as a capability"
     );
     // root(0) + one explore child = 2 sessions; the child's spawn never starts a grandchild.
     assert_eq!(
         sessions_started, 2,
-        "a read-only sub-agent must not start a grandchild"
+        "a read-only sub-agent must not start a grandchild via `{leaf_tool}`"
     );
 }
 
-/// Spawns an `explore` sub-agent then polls it; the child (same factory) tries
-/// to spawn and is refused, so the chain stops at one child.
-struct ExploreThenSpawnLlm;
+/// The root spawns an `explore` sub-agent (always via non-blocking `agent_spawn`)
+/// and polls it; the child (same factory) tries to spawn again with `tool` and is
+/// refused, so the chain stops at one child. Parametrized so the leaf's tool is
+/// either `agent_spawn` or the blocking `agent` — both hit the same guard.
+struct ExploreThenSpawnLlm {
+    tool: &'static str,
+}
 
 #[async_trait]
 impl Llm for ExploreThenSpawnLlm {
@@ -439,9 +461,246 @@ impl Llm for ExploreThenSpawnLlm {
             },
             None => Ok(call(
                 "spawn",
-                "spawn_agent",
+                self.tool,
                 r#"{"agent":"explore","prompt":"look"}"#.into(),
             )),
         }
     }
+}
+
+/// Parent delegates once with the blocking `agent` tool; the child answers
+/// directly. One round-trip: the parent's tool result already carries the answer,
+/// so there is no separate poll (#120).
+struct BlockingAgentLlm;
+
+#[async_trait]
+impl Llm for BlockingAgentLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        if last_user(&req) == "child-task" && last_tool(&req).is_none() {
+            return Ok(finish("child-answer"));
+        }
+        match last_tool(&req) {
+            // The blocking `agent` result already holds the child's answer → done.
+            Some(_) => Ok(finish("parent done")),
+            None => Ok(call(
+                "agent1",
+                "agent",
+                r#"{"agent":"build","prompt":"child-task"}"#.into(),
+            )),
+        }
+    }
+}
+
+#[tokio::test]
+async fn agent_blocks_and_returns_child_answer_in_one_call() {
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(|| LlmSession::new(Box::new(BlockingAgentLlm))),
+        ..EngineConfig::default()
+    };
+    let profiles = cfg.profiles.clone();
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+
+    let parent = SessionId::new("parent");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: parent.clone(),
+            text: "delegate".into(),
+        })
+        .await
+        .unwrap();
+
+    let mut child_started = false;
+    let mut agent_output_has_answer = false;
+    let mut parent_finished = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        match &ev {
+            OutEvent::SessionStarted {
+                parent: Some(p),
+                root: false,
+                ..
+            } if p == &parent => child_started = true,
+            OutEvent::ToolOutput {
+                session,
+                tool,
+                output,
+                ..
+            } if session == &parent && tool == "agent" => {
+                if output.contains("child-answer") {
+                    agent_output_has_answer = true;
+                }
+            }
+            OutEvent::Done { session, .. } if session == &parent && agent_output_has_answer => {
+                parent_finished = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        child_started,
+        "the blocking `agent` should start a child session"
+    );
+    assert!(
+        agent_output_has_answer,
+        "the `agent` tool output should carry the child's answer directly, in one call"
+    );
+    assert!(
+        parent_finished,
+        "the parent finishes after a single blocking `agent` call — no poll needed"
+    );
+}
+
+/// Parent delegates with the blocking `agent` tool, but the child is gated on a
+/// release signal so the parent is provably parked. After a `Stop`, the parent
+/// re-asks with `agent_poll` for the (now captured) child handle — proving the
+/// answer stays collectable even though the blocking call was cancelled (#120).
+struct StopThenPollLlm {
+    release: Arc<Notify>,
+    poll_id: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait]
+impl Llm for StopThenPollLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        // Child: block until the test releases it, then answer.
+        if last_user(&req) == "child-task" && last_tool(&req).is_none() {
+            self.release.notified().await;
+            return Ok(finish("late-child-answer"));
+        }
+        // Parent's second prompt: poll the captured handle for the parked child.
+        if last_user(&req) == "poll-now" && last_tool(&req).is_none() {
+            let id = self.poll_id.lock().unwrap().clone().unwrap_or_default();
+            return Ok(call(
+                "poll1",
+                "agent_poll",
+                format!(r#"{{"agent_id":"{id}","timeout_secs":5}}"#),
+            ));
+        }
+        // Any tool result folds back → finish.
+        if last_tool(&req).is_some() {
+            return Ok(finish("parent done"));
+        }
+        // Parent's first prompt: delegate with the blocking `agent` tool.
+        Ok(call(
+            "agent1",
+            "agent",
+            r#"{"agent":"build","prompt":"child-task"}"#.into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
+    let release = Arc::new(Notify::new());
+    let poll_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let (r, p) = (release.clone(), poll_id.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(StopThenPollLlm {
+                release: r.clone(),
+                poll_id: p.clone(),
+            }))
+        }),
+        ..EngineConfig::default()
+    };
+    let profiles = cfg.profiles.clone();
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+
+    let parent = SessionId::new("parent");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: parent.clone(),
+            text: "delegate".into(),
+        })
+        .await
+        .unwrap();
+
+    // Wait for the child to start (the `agent` call is now parked on it), and
+    // capture the child's id — that handle is what a later `agent_poll` needs.
+    let child_id = loop {
+        match tokio::time::timeout(Duration::from_secs(5), sub.recv())
+            .await
+            .expect("child should start")
+            .unwrap()
+        {
+            OutEvent::SessionStarted {
+                session,
+                parent: Some(p),
+                root: false,
+                ..
+            } if p == parent => break session.to_string(),
+            _ => {}
+        }
+    };
+    *poll_id.lock().unwrap() = Some(child_id);
+
+    // Cancel the parent's turn while the blocking `agent` is parked (ADR-0017).
+    holly
+        .send(InMsg::Stop {
+            session: parent.clone(),
+        })
+        .await
+        .unwrap();
+    // Now let the child finish; its answer is recorded into the registry even
+    // though the parent's blocking call was cancelled.
+    release.notify_one();
+
+    // Re-ask: poll the captured handle. The answer must still be collectable.
+    holly
+        .send(InMsg::Prompt {
+            session: parent.clone(),
+            text: "poll-now".into(),
+        })
+        .await
+        .unwrap();
+
+    let mut polled_answer = false;
+    let mut parent_finished = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        match &ev {
+            OutEvent::ToolOutput {
+                session,
+                tool,
+                output,
+                ..
+            } if session == &parent
+                && tool == "agent_poll"
+                && output.contains("late-child-answer") =>
+            {
+                polled_answer = true;
+            }
+            OutEvent::Done { session, .. } if session == &parent && polled_answer => {
+                parent_finished = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        polled_answer,
+        "the cancelled `agent` child's answer must remain collectable via agent_poll"
+    );
+    assert!(
+        parent_finished,
+        "the parent finishes its second turn after polling the parked child"
+    );
+}
+
+#[test]
+fn specs_advertise_the_agent_family_names() {
+    // The rename + new blocking tool are reflected in the advertised specs (#120).
+    let spawn = entanglement_runtime::subagent::agent_spawn_spec();
+    assert_eq!(spawn.name, "agent_spawn");
+    let agent = entanglement_runtime::subagent::agent_spec();
+    assert_eq!(agent.name, "agent");
+    let poll = entanglement_runtime::agent_poll::agent_poll_spec();
+    assert_eq!(poll.name, "agent_poll");
+    // Both spawning tools take the same `{ agent, prompt }` input shape.
+    assert_eq!(spawn.schema, agent.schema);
 }

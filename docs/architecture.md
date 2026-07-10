@@ -215,7 +215,9 @@ removed on global inbox close (engine shutdown).
 
 **Sub-agent spawn** (✅ #60, [ADR-0022](adr/0022-subagent-spawn.md), builds on the
 [ADR-0021](adr/0021-hierarchical-session-model.md) tree). The model calls a
-runtime-owned `spawn_agent { agent, prompt }` tool. The runtime executor
+runtime-owned `agent_spawn { agent, prompt }` tool (renamed from `spawn_agent`,
+✅ #120, [ADR-0033](adr/0033-agent-tool-family-and-blocking-agent.md)). The
+runtime executor
 intercepts it (bypassing per-tool approval, like core's built-ins), mints a
 child `SessionId`, and sends `InMsg::Spawn { session: child, parent, agent,
 prompt }`. The **supervisor** records `parent_links[child] = parent` and starts
@@ -223,7 +225,7 @@ the child `session_loop` under the requested profile with the prompt queued — 
 the child's `SessionStarted` carries the parent link and the tree-walk helpers
 (`children_of` / `root_of`) reflect reality. Spawn is **non-blocking** (✅ #89,
 [ADR-0026](adr/0026-async-subagent-spawn-and-poll.md), supersedes ADR-0022's
-synchronous relay): `spawn_agent` replies to the parent *immediately* with the
+synchronous relay): `agent_spawn` replies to the parent *immediately* with the
 child handle (`agent_id`) instead of parking the turn on the child's `Done`, so
 one turn can launch several sub-agents that then run concurrently. The launch
 task keeps watching the child and records its final answer + duration into a
@@ -233,7 +235,15 @@ timeout_secs }` — also intercepted before permission resolution (it starts no
 session and touches no host resource): it blocks up to `timeout_secs` for that
 child and returns its answer (with elapsed time) as the tool `ToolOutput`, or a
 still-running status on timeout so the model can poll again or do other work.
-Both tools reuse the #58 round-trip, so core's turn loop needs no notion of a
+For the single-delegation case, a third tool `agent { agent, prompt }` (✅ #120,
+[ADR-0033](adr/0033-agent-tool-family-and-blocking-agent.md)) **blocks**: it runs
+the exact `agent_spawn` launch path (same guard, clamp, `Spawn`), then parks on
+the child's `Done` and folds its answer directly into the `ToolOutput` — one call
+instead of launch-then-poll. It still records into the `AgentRegistry`, so a
+parent `Stop` while parked leaves the child collectable via `agent_poll`.
+Refusals (depth, budget, capability) are identical across `agent` and
+`agent_spawn` — one shared guard path.
+All three reuse the #58 round-trip, so core's turn loop needs no notion of a
 "child session". The runtime executor bounds the spawn
 tree (✅ #76, [ADR-0023](adr/0023-subagent-spawn-limits.md)): a `SpawnGuard`
 folds parent links from `SessionStarted` and, before each spawn, refuses past a
@@ -251,7 +261,7 @@ are still deferred (see ADR-0022/0024).
 **Ask-user prompt** (✅ #90, [ADR-0027](adr/0027-ask-user-interactive-prompt.md)).
 The model calls a runtime-owned `ask_user { question, options, allow_free_form }`
 tool. The runtime executor (`ask_user.rs`) intercepts it on `ToolExec` — before
-permission resolution, like `spawn_agent` — emits a dedicated
+permission resolution, like `agent_spawn` — emits a dedicated
 `OutEvent::UserQuestion` and parks at `WaitingApproval`. The head renders the labelled choices
 Claude-style (the TUI adds a `PendingQuestion` interaction state alongside
 `ApprovalMode`, with an "Other" entry that opens free-text input) and replies
@@ -533,11 +543,13 @@ orthogonal to the permission profile: it controls *registration* (whether the
 tool is advertised at all), the profile controls *dispatch* (Allow/Ask/Deny
 when the model calls it).
 
-Three **runtime-owned orchestration tools** are *not* in the registry — the
+Four **runtime-owned orchestration tools** are *not* in the registry — the
 `tool_runner` intercepts them on `ToolExec` before permission resolution (they
-touch no host resource) and advertises their schemas separately:
-`spawn_agent { agent, prompt }` (§5, ADR-0022) and its non-blocking join
-`agent_poll { agent_id, timeout_secs }` (§5, ADR-0026), plus
+touch no host resource) and advertises their schemas separately: the `agent_*`
+family (§5, ADR-0033) —
+`agent_spawn { agent, prompt }` (renamed from `spawn_agent`, ADR-0022), its
+non-blocking join `agent_poll { agent_id, timeout_secs }` (ADR-0026), and the
+blocking `agent { agent, prompt }` (spawn-and-wait in one call) — plus
 `ask_user { question, options, allow_free_form }` (§5, ADR-0027).
 
 [holly]: ../entanglement-core/src/holly.rs

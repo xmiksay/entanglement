@@ -73,11 +73,14 @@ fn build_config(
         );
     }
     cfg.tool_specs = tools.specs();
-    // `spawn_agent` is orchestration, not a registry tool (#60): the runtime
-    // executor handles it directly, so it only needs advertising to the model.
-    cfg.tool_specs.push(subagent::spawn_agent_spec());
+    // The `agent_*` family is orchestration, not registry tools (#60, #120): the
+    // runtime executor handles them directly, so they only need advertising to
+    // the model. `agent_spawn` launches a sub-agent (non-blocking handle);
+    // `agent` launches one and blocks for its answer.
+    cfg.tool_specs.push(subagent::agent_spawn_spec());
+    cfg.tool_specs.push(subagent::agent_spec());
     // `agent_poll` is the join half of non-blocking spawn (#89): it awaits a
-    // launched sub-agent's answer. Runtime-owned like `spawn_agent`.
+    // launched sub-agent's answer. Runtime-owned like `agent_spawn`.
     cfg.tool_specs.push(agent_poll::agent_poll_spec());
     // `ask_user` is likewise runtime-owned (#90): the executor intercepts it to
     // surface a decision prompt to the head, not a host-tool call.

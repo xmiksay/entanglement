@@ -8,7 +8,7 @@
 //! and returns the final answer (with elapsed time) once it completes, or a
 //! still-running status on timeout so the model can poll again or do other work.
 //!
-//! Like `spawn_agent`/`ask_user`, `agent_poll` is a runtime-owned tool the
+//! Like `agent_spawn`/`ask_user`, `agent_poll` is a runtime-owned tool the
 //! executor intercepts *before* permission resolution: it starts no session and
 //! touches no host resource — it only reads accumulated spawn state — so it needs
 //! no permission gating or spawn-budget charge (those apply per launch, ADR-0023/
@@ -51,7 +51,7 @@ struct Entry {
 }
 
 /// Shared table of launched sub-agents keyed by child `SessionId` (the handle
-/// `spawn_agent` returns). Cloned into every launch/poll task — the `Arc<Mutex>`
+/// `agent_spawn` returns). Cloned into every launch/poll task — the `Arc<Mutex>`
 /// is only ever held briefly to insert or clone a receiver, never across an
 /// `.await`, so pollers block on the watch channel, not the lock.
 #[derive(Clone, Default)]
@@ -98,11 +98,11 @@ impl AgentRegistry {
 }
 
 /// The `agent_poll` tool schema advertised to the model. Appended to the
-/// engine's `tool_specs` alongside `spawn_agent`.
+/// engine's `tool_specs` alongside `agent_spawn`.
 pub fn agent_poll_spec() -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_POLL_TOOL,
-        "Await a sub-agent previously launched with spawn_agent. Pass the \
+        "Await a sub-agent previously launched with agent_spawn. Pass the \
          agent_id it returned; blocks up to timeout_secs for that child and \
          returns its final answer once complete (with how long it ran), or a \
          still-running status on timeout so you can poll again or do other work \
@@ -113,7 +113,7 @@ pub fn agent_poll_spec() -> ToolSpec {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "description": "The handle returned by spawn_agent for the sub-agent to await."
+                    "description": "The handle returned by agent_spawn for the sub-agent to await."
                 },
                 "timeout_secs": {
                     "type": "integer",
@@ -141,7 +141,7 @@ pub async fn run_agent_poll(
             &holly,
             session,
             request_id,
-            "agent_poll: missing agent_id — pass the handle returned by spawn_agent.".to_string(),
+            "agent_poll: missing agent_id — pass the handle returned by agent_spawn.".to_string(),
         )
         .await;
         return;
@@ -155,7 +155,7 @@ pub async fn run_agent_poll(
             request_id,
             format!(
                 "agent_poll: no sub-agent found for agent_id `{agent_id}` — it was never launched \
-                 from this session (use the id returned by spawn_agent)."
+                 from this session (use the id returned by agent_spawn)."
             ),
         )
         .await;

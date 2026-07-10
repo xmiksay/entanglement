@@ -81,15 +81,18 @@ pub fn spawn_tool_executor(
                     input,
                     ..
                 }) => {
-                    // `spawn_agent` only orchestrates sessions (touches no host
-                    // resource), so it bypasses per-tool approval like core's
-                    // `update_plan`/`update_tasks` built-ins (#60). It is instead
-                    // gated as a *capability* (#77): a read-only sub-agent leaf
-                    // (Subagent-mode profile, e.g. `explore`) may not spawn, which
-                    // closes the path where a restricted profile spawns a
-                    // privileged child. Subscribe *before* handing off so the
-                    // child's `Done` can't race ahead of the watcher.
-                    if tool == crate::subagent::SPAWN_TOOL {
+                    // The `agent_spawn`/`agent` family only orchestrates sessions
+                    // (touches no host resource), so it bypasses per-tool approval
+                    // like core's `update_plan`/`update_tasks` built-ins (#60). It
+                    // is instead gated as a *capability* (#77): a read-only
+                    // sub-agent leaf (Subagent-mode profile, e.g. `explore`) may
+                    // not spawn, which closes the path where a restricted profile
+                    // spawns a privileged child. Both variants share this guard
+                    // path — refusals are identical (#120); they differ only in
+                    // whether the launch blocks. Subscribe *before* handing off so
+                    // the child's `Done` can't race ahead of the watcher.
+                    let blocking = tool == crate::subagent::AGENT_TOOL;
+                    if tool == crate::subagent::AGENT_SPAWN_TOOL || blocking {
                         if let Some(refusal) = spawn_capability_refusal(active.get(&session)) {
                             let holly = holly.clone();
                             tokio::spawn(async move {
@@ -103,15 +106,30 @@ pub fn spawn_tool_executor(
                                 let registry = registry.clone();
                                 let holly = holly.clone();
                                 tokio::spawn(async move {
-                                    crate::subagent::launch_subagent(
-                                        holly,
-                                        child_events,
-                                        registry,
-                                        session,
-                                        request_id,
-                                        input,
-                                    )
-                                    .await;
+                                    // `agent` parks for the answer; `agent_spawn`
+                                    // hands the handle back at once — one guard
+                                    // path, two return shapes (#120).
+                                    if blocking {
+                                        crate::subagent::run_agent(
+                                            holly,
+                                            child_events,
+                                            registry,
+                                            session,
+                                            request_id,
+                                            input,
+                                        )
+                                        .await;
+                                    } else {
+                                        crate::subagent::launch_subagent(
+                                            holly,
+                                            child_events,
+                                            registry,
+                                            session,
+                                            request_id,
+                                            input,
+                                        )
+                                        .await;
+                                    }
                                 });
                             }
                             // Over a limit: refuse without starting a child, but
@@ -129,7 +147,7 @@ pub fn spawn_tool_executor(
                     // `agent_poll` is the join half of non-blocking spawn (#89,
                     // ADR-0026): it starts no session and touches no host
                     // resource — it only reads accumulated spawn state — so like
-                    // `spawn_agent` it bypasses permission and the spawn budget.
+                    // `agent_spawn` it bypasses permission and the spawn budget.
                     if tool == crate::agent_poll::AGENT_POLL_TOOL {
                         let registry = registry.clone();
                         let holly = holly.clone();
@@ -142,7 +160,7 @@ pub fn spawn_tool_executor(
                         continue;
                     }
                     // `ask_user` is a runtime-owned prompt tool (#90, ADR-0027):
-                    // like `spawn_agent` it touches no host resource, so it
+                    // like `agent_spawn` it touches no host resource, so it
                     // bypasses permission and instead surfaces a question to the
                     // head. Subscribe *before* handing off so a fast answer can't
                     // race ahead of the parked executor task.
