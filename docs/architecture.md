@@ -163,6 +163,25 @@ only field a spawning model sees).
   specs, #116/#119). Embedders using core directly still get a hardcoded
   `build`/`plan`/`explore` fallback via `ProfileRegistry::new()`; add your own with
   `ProfileRegistry::insert`.
+- **System-prompt assembly (✅ #113, [ADR-0035](adr/0035-deterministic-system-prompt-assembly.md)):**
+  the definition body is *not* stored as the raw `system_prompt`. As each profile
+  is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five
+  ordered, optional parts — **shared preamble** (safety/tool-use/output invariants
+  applied to *every* agent) + **agent body** + **project brief** (the standard
+  `AGENTS.md` / `.agents/AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md`, first
+  found wins — no bespoke file — only when the frontmatter sets
+  `include_brief: true`) + **generated env block** (cwd/root, platform, date —
+  never model-guessed) + **skill index** (tier-1 `name`+`description` disclosure
+  lines from the skill registry). Inputs come from `PromptContext::load(root)`
+  (preamble overridable via `ENTANGLEMENT_PREAMBLE_FILE`; brief via
+  `ENTANGLEMENT_BRIEF_FILE`). A **subagent** gets
+  `preamble + body (+ brief)` only — no env/skills, and never the parent's
+  assembled prompt (each agent is composed from *its own* body + `include_brief`
+  flag). Composition is a pure, unit-tested harness function baked into
+  `AgentProfile.system_prompt` at load time, so session start / `SetAgent` / spawn
+  all read the finished prompt and core stays a verbatim pass-through into
+  `LlmRequest.system`. The skill index is empty until the skill registry lands
+  (#115); filtering by the agent's tool mask (#116) is the caller's job.
 - **Where dispatch runs (✅ #59):** the `AgentProfile` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
   **runtime** concern ([ADR-0003](adr/0003-agent-and-permission-profiles.md) /

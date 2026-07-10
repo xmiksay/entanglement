@@ -113,7 +113,18 @@ same-`name` file in a higher layer. `description` is the one field disclosed to 
 spawning model (roster in the `agent`/`agent_spawn` tool descriptions + name
 enum). Frontmatter `tools`/`disallowed_tools`/`can_spawn`/`spawnable_agents` parse
 now, enforcement deferred (needs per-session specs #116/#119). `AgentMode` gained
-`all` (primary + spawnable). `Plan` and `TaskList` are
+`all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
+raw body (✅ #113, [ADR-0035](../docs/adr/0035-deterministic-system-prompt-assembly.md)):
+`entanglement_runtime::system_prompt::assemble` composes shared preamble + agent
+body + project brief (frontmatter `include_brief: true`, from the standard
+`AGENTS.md`/`.agents/AGENTS.md`/`.claude/CLAUDE.md`/`CLAUDE.md`, first found wins)
++ generated env block (cwd/platform/date) +
+skill index — each optional, in that fixed order — at load time. A subagent gets
+`preamble + body (+ brief)` only (no env/skills, never the parent's prompt);
+inputs come from `PromptContext::load` (overridable via
+`ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE`). Skill index stays empty
+until the registry lands (#115); core still ships `system_prompt` verbatim as
+`LlmRequest.system`. `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
 `input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010 + ADR-0031)

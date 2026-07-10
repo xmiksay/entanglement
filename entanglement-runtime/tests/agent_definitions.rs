@@ -13,8 +13,15 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
     LlmStream, MessageRole, OutEvent, Permission, SessionId, ToolCall, ToolRegistry,
 };
+use std::sync::Mutex;
+
 use entanglement_runtime::agents::load_registry;
+use entanglement_runtime::system_prompt::PromptContext;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
+
+/// `ENTANGLEMENT_AGENTS_DIR` is process-global; every test that sets it must
+/// serialize through this lock so parallel runs don't clobber each other's dir.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Point the loader's user + project dirs at temp dirs, run `load_registry`, and
 /// restore the env. Serialized via a mutex because env vars are process-global.
@@ -22,14 +29,14 @@ fn load_with_dirs(
     user: Option<&std::path::Path>,
     project_root: &std::path::Path,
 ) -> entanglement_core::ProfileRegistry {
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
     let _guard = ENV_LOCK.lock().unwrap();
     match user {
         Some(p) => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", p),
         None => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir"),
     }
-    let reg = load_registry(project_root).expect("load_registry");
+    // Identity context: assert the raw file bodies, not composed prompts (the
+    // composition itself is covered by `system_prompt_assembly.rs`).
+    let reg = load_registry(project_root, &PromptContext::default()).expect("load_registry");
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
     reg
 }
@@ -104,8 +111,9 @@ fn malformed_project_file_aborts_load() {
         "---\nname: broken\n---\nno description field",
     );
     // The missing `description` must surface as an error, not a silent skip.
+    let _guard = ENV_LOCK.lock().unwrap();
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-    let result = load_registry(project.path());
+    let result = load_registry(project.path(), &PromptContext::default());
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
     let err = result.err().expect("malformed file must error");
     let msg = format!("{err:#}");

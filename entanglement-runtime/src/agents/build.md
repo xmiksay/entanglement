@@ -2,6 +2,7 @@
 name: build
 description: Coding agent — implements changes using the available tools.
 mode: primary
+include_brief: true
 permission:
   default: allow
 ---
