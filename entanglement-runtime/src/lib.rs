@@ -30,4 +30,5 @@ pub mod permission;
 pub mod persistence;
 pub mod session_store;
 pub mod subagent;
+pub mod system_prompt;
 pub mod tool_runner;

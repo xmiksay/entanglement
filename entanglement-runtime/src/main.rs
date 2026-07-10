@@ -17,6 +17,7 @@ mod pipe;
 mod run;
 mod session_store;
 mod subagent;
+mod system_prompt;
 mod tool_runner;
 mod tui;
 
@@ -327,8 +328,11 @@ async fn main() -> Result<()> {
     let catalog = Catalog::load().context("loading provider catalog")?;
 
     // Discover file-based agent definitions (#112): embedded built-ins, then the
-    // user dir, then the project dir. A malformed file is a loud error.
-    let profiles = agents::load_registry(&cwd).context("loading agent definitions")?;
+    // user dir, then the project dir. A malformed file is a loud error. Each
+    // agent body is composed with the shared preamble, project brief, env block,
+    // and skill index into its final system prompt (#113) as it is loaded.
+    let prompt_ctx = system_prompt::PromptContext::load(&cwd);
+    let profiles = agents::load_registry(&cwd, &prompt_ctx).context("loading agent definitions")?;
 
     let http_client = HttpClient::new();
     let (config, model_info, tools) = build_config(&catalog, &http_client, profiles);

@@ -2,8 +2,14 @@
 //!
 //! An agent is a markdown file with YAML frontmatter: the frontmatter is the
 //! config bundle (`name`/`description`/`mode`/`model`/`permission`/…), the body
-//! below the closing `---` is the agent's system prompt. Definitions are
+//! below the closing `---` is the agent's system-prompt body. Definitions are
 //! discovered at startup and folded into a core [`ProfileRegistry`].
+//!
+//! The body is not stored raw: as each definition is parsed it is composed into
+//! the final `system_prompt` by [`crate::system_prompt::assemble`] (shared
+//! preamble + body + project brief + env block + skill index, #113). Baking the
+//! assembled prompt into the registry here keeps every downstream consumer
+//! (session start, `SetAgent`, spawn) a pass-through.
 //!
 //! # Layers & precedence
 //!
@@ -33,6 +39,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile, ProfileRegistry};
 use serde::Deserialize;
+
+use crate::system_prompt::{assemble, PromptContext};
 
 /// Embedded built-in definitions, parsed through the same loader as user/project
 /// files. `(filename, contents)` — the filename only feeds parse-error messages;
@@ -64,6 +72,10 @@ struct AgentDefinition {
     /// Per-tool `Allow | Ask | Deny` rules. Omitted ⇒ allow-all.
     #[serde(default)]
     permission: Option<serde_yaml::Value>,
+    /// Fold the project brief into this agent's system prompt (#113). Opt-in:
+    /// omitted ⇒ the brief is not included even when a brief file exists.
+    #[serde(default)]
+    include_brief: bool,
     // ── declared here, enforcement deferred (see module docs) ──────────────
     /// Tool allowlist; omitted ⇒ inherit all.
     #[serde(default)]
@@ -90,26 +102,31 @@ fn default_mode() -> AgentMode {
 /// Load the agent registry for `root`: embedded built-ins, then the user dir,
 /// then the project dir — later layers replace earlier ones on a `name`
 /// collision (project > user > built-in). A malformed file in any layer aborts.
-pub fn load_registry(root: &Path) -> Result<ProfileRegistry> {
+///
+/// `ctx` carries the deterministic system-prompt inputs (shared preamble,
+/// project brief, environment block, skill index): each profile's body is
+/// composed into a final `system_prompt` via [`assemble`] as it is parsed
+/// (#113). Pass [`PromptContext::default`] for the raw, un-composed bodies.
+pub fn load_registry(root: &Path, ctx: &PromptContext) -> Result<ProfileRegistry> {
     let mut reg = ProfileRegistry::default();
     for (file, contents) in BUILT_INS {
         // Embedded built-ins are guarded by `built_ins_parse`, so a failure here
         // is a build-time bug, not a runtime condition — surface it loudly.
-        let profile = parse_definition(contents)
+        let profile = parse_definition(contents, ctx)
             .with_context(|| format!("parsing built-in agent `{file}`"))?;
         reg.insert(profile);
     }
     if let Some(dir) = user_agents_dir() {
-        load_dir(&dir, &mut reg)?;
+        load_dir(&dir, &mut reg, ctx)?;
     }
-    load_dir(&root.join(".entanglement").join("agents"), &mut reg)?;
+    load_dir(&root.join(".entanglement").join("agents"), &mut reg, ctx)?;
     Ok(reg)
 }
 
 /// Parse every `*.md` file in `dir` (if it exists) into `reg`, replacing any
 /// same-`name` entry already present. A missing dir is fine (no definitions);
 /// an unreadable dir or a malformed file is an error.
-fn load_dir(dir: &Path, reg: &mut ProfileRegistry) -> Result<()> {
+fn load_dir(dir: &Path, reg: &mut ProfileRegistry, ctx: &PromptContext) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -124,7 +141,7 @@ fn load_dir(dir: &Path, reg: &mut ProfileRegistry) -> Result<()> {
     for path in files {
         let contents = std::fs::read_to_string(&path)
             .with_context(|| format!("reading agent definition {}", path.display()))?;
-        let profile = parse_definition(&contents)
+        let profile = parse_definition(&contents, ctx)
             .with_context(|| format!("parsing agent definition {}", path.display()))?;
         reg.insert(profile);
     }
@@ -132,8 +149,11 @@ fn load_dir(dir: &Path, reg: &mut ProfileRegistry) -> Result<()> {
 }
 
 /// Split frontmatter from body, parse the frontmatter as YAML, and build a core
-/// [`AgentProfile`] (the body becomes its `system_prompt`).
-fn parse_definition(content: &str) -> Result<AgentProfile> {
+/// [`AgentProfile`]. The body is composed with `ctx` into the final
+/// `system_prompt` via [`assemble`]: shared preamble + body + brief (if
+/// `include_brief`) + env + skills, with subagents getting the reduced form
+/// (#113).
+fn parse_definition(content: &str, ctx: &PromptContext) -> Result<AgentProfile> {
     let (frontmatter, body) = split_frontmatter(content)?;
     let def: AgentDefinition =
         serde_yaml::from_str(&frontmatter).context("invalid agent frontmatter")?;
@@ -148,7 +168,7 @@ fn parse_definition(content: &str) -> Result<AgentProfile> {
         name: def.name,
         description: def.description,
         mode: def.mode,
-        system_prompt: body.trim().to_string(),
+        system_prompt: assemble(&body, def.include_brief, def.mode, ctx),
         model: def.model.filter(|m| m != "inherit"),
         permission,
     })
@@ -216,13 +236,18 @@ fn user_agents_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Parse with an identity context so tests assert the raw body verbatim.
+    fn parse(content: &str) -> Result<AgentProfile> {
+        parse_definition(content, &PromptContext::default())
+    }
+
     #[test]
     fn built_ins_parse_with_expected_shape() {
         // The embedded built-ins must parse — this is what lets `load_registry`
         // treat their parse as infallible.
         let mut reg = ProfileRegistry::default();
         for (file, contents) in BUILT_INS {
-            let p = parse_definition(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
+            let p = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
             reg.insert(p);
         }
         let build = reg.get("build").expect("build built-in");
@@ -242,43 +267,41 @@ mod tests {
 
     #[test]
     fn missing_frontmatter_is_an_error() {
-        let err = parse_definition("no frontmatter here").unwrap_err();
+        let err = parse("no frontmatter here").unwrap_err();
         assert!(err.to_string().contains("frontmatter"), "got: {err}");
     }
 
     #[test]
     fn unterminated_frontmatter_is_an_error() {
-        let err = parse_definition("---\nname: x\ndescription: y\n").unwrap_err();
+        let err = parse("---\nname: x\ndescription: y\n").unwrap_err();
         assert!(err.to_string().contains("unterminated"), "got: {err}");
     }
 
     #[test]
     fn missing_required_field_is_an_error() {
         // `description` is required; the serde detail rides the error's cause chain.
-        let err = parse_definition("---\nname: x\n---\nbody").unwrap_err();
+        let err = parse("---\nname: x\n---\nbody").unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("description"), "got: {msg}");
     }
 
     #[test]
     fn unknown_field_is_rejected() {
-        let err =
-            parse_definition("---\nname: x\ndescription: y\ntypo_field: 1\n---\nbody").unwrap_err();
+        let err = parse("---\nname: x\ndescription: y\ntypo_field: 1\n---\nbody").unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("typo_field"), "got: {msg}");
     }
 
     #[test]
     fn bad_yaml_is_an_error() {
-        let err = parse_definition("---\nname: [unclosed\n---\nbody").unwrap_err();
+        let err = parse("---\nname: [unclosed\n---\nbody").unwrap_err();
         assert!(err.to_string().contains("frontmatter"), "got: {err}");
     }
 
     #[test]
     fn body_becomes_system_prompt_and_model_inherit_is_none() {
         let p =
-            parse_definition("---\nname: x\ndescription: d\nmodel: inherit\n---\nDo the thing.\n")
-                .unwrap();
+            parse("---\nname: x\ndescription: d\nmodel: inherit\n---\nDo the thing.\n").unwrap();
         assert_eq!(p.system_prompt, "Do the thing.");
         assert_eq!(p.model, None);
         // Omitted permission ⇒ allow-all.
@@ -287,14 +310,13 @@ mod tests {
 
     #[test]
     fn explicit_model_is_kept() {
-        let p =
-            parse_definition("---\nname: x\ndescription: d\nmodel: glm-4.7\n---\nbody").unwrap();
+        let p = parse("---\nname: x\ndescription: d\nmodel: glm-4.7\n---\nbody").unwrap();
         assert_eq!(p.model.as_deref(), Some("glm-4.7"));
     }
 
     #[test]
     fn mode_all_and_deferred_fields_parse() {
-        let p = parse_definition(
+        let p = parse(
             "---\nname: x\ndescription: d\nmode: all\ntools: [read, grep]\n\
              disallowed_tools: [bash]\ncan_spawn: true\nspawnable_agents: [explore]\n---\nbody",
         )

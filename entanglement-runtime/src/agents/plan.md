@@ -2,6 +2,7 @@
 name: plan
 description: Planning agent — produces a plan without making changes.
 mode: primary
+include_brief: true
 permission:
   default: ask
   read: allow
