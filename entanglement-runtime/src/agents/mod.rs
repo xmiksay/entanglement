@@ -154,7 +154,7 @@ fn load_dir(dir: &Path, reg: &mut ProfileRegistry, ctx: &PromptContext) -> Resul
 /// `include_brief`) + env + skills, with subagents getting the reduced form
 /// (#113).
 fn parse_definition(content: &str, ctx: &PromptContext) -> Result<AgentProfile> {
-    let (frontmatter, body) = split_frontmatter(content)?;
+    let (frontmatter, body) = crate::frontmatter::split(content)?;
     let def: AgentDefinition =
         serde_yaml::from_str(&frontmatter).context("invalid agent frontmatter")?;
     if def.name.trim().is_empty() {
@@ -172,30 +172,6 @@ fn parse_definition(content: &str, ctx: &PromptContext) -> Result<AgentProfile> 
         model: def.model.filter(|m| m != "inherit"),
         permission,
     })
-}
-
-/// Split a `---`-delimited YAML frontmatter block from the body below it.
-/// Requires the file to open with a `---` line and to carry a closing `---`.
-fn split_frontmatter(content: &str) -> Result<(String, String)> {
-    let mut lines = content.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        bail!("missing YAML frontmatter: the file must start with a `---` line");
-    }
-    let mut frontmatter = String::new();
-    let mut closed = false;
-    for line in lines.by_ref() {
-        if line.trim() == "---" {
-            closed = true;
-            break;
-        }
-        frontmatter.push_str(line);
-        frontmatter.push('\n');
-    }
-    if !closed {
-        bail!("unterminated frontmatter: missing the closing `---` line");
-    }
-    let body = lines.collect::<Vec<_>>().join("\n");
-    Ok((frontmatter, body))
 }
 
 /// Convert a frontmatter `permission` mapping into a core [`PermissionProfile`].

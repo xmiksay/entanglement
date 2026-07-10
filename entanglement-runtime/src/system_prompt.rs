@@ -104,9 +104,11 @@ pub struct PromptContext {
 impl PromptContext {
     /// Discover the composition inputs for `root`: the shared preamble (built-in
     /// default unless a file overrides it), the project brief (if a brief file
-    /// exists), and the generated environment block. The skill index stays empty
-    /// until the skill registry lands (#115); once it does, filter by the agent's
-    /// tool mask (#116) before handing the list here.
+    /// exists), and the generated environment block. The skill index is left
+    /// empty here; the head populates it from
+    /// [`crate::skills::SkillRegistry::disclosures`] (#114) before handing the
+    /// context to the agent loader. Per-agent tool-mask filtering of that list is
+    /// deferred (#116).
     pub fn load(root: &Path) -> Self {
         Self {
             preamble: load_preamble(),

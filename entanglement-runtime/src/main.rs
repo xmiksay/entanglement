@@ -10,12 +10,14 @@
 mod agent_poll;
 mod agents;
 mod ask_user;
+mod frontmatter;
 mod host;
 mod permission;
 mod persistence;
 mod pipe;
 mod run;
 mod session_store;
+mod skills;
 mod subagent;
 mod system_prompt;
 mod tool_runner;
@@ -331,7 +333,13 @@ async fn main() -> Result<()> {
     // user dir, then the project dir. A malformed file is a loud error. Each
     // agent body is composed with the shared preamble, project brief, env block,
     // and skill index into its final system prompt (#113) as it is loaded.
-    let prompt_ctx = system_prompt::PromptContext::load(&cwd);
+    // Discover skills (#114): embedded stock skills, then user, then project. A
+    // malformed SKILL.md is a loud error. Only `name` + `description` reach the
+    // model, folded into the assembled system prompt as a tier-1 disclosure list
+    // (user_only skills withheld) — selection stays the model's own reasoning.
+    let skill_registry = skills::load_registry(&cwd).context("loading skill definitions")?;
+    let mut prompt_ctx = system_prompt::PromptContext::load(&cwd);
+    prompt_ctx.skills = skill_registry.disclosures();
     let profiles = agents::load_registry(&cwd, &prompt_ctx).context("loading agent definitions")?;
 
     let http_client = HttpClient::new();

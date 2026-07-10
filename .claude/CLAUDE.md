@@ -122,9 +122,25 @@ body + project brief (frontmatter `include_brief: true`, from the standard
 skill index — each optional, in that fixed order — at load time. A subagent gets
 `preamble + body (+ brief)` only (no env/skills, never the parent's prompt);
 inputs come from `PromptContext::load` (overridable via
-`ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE`). Skill index stays empty
-until the registry lands (#115); core still ships `system_prompt` verbatim as
-`LlmRequest.system`. `Plan` and `TaskList` are
+`ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE`). The skill index is
+populated from the skill registry (✅ #114,
+[ADR-0036](../docs/adr/0036-skill-discovery-and-registry.md)): a **skill** is a
+directory with a `SKILL.md` (YAML frontmatter + markdown body) + optional
+`references/*.md`/`scripts/*`, discovered by
+`entanglement_runtime::skills::load_registry` into a `SkillRegistry` — embedded
+stock skills (single-file) < user (`${config_dir}/entanglement/skills/**/SKILL.md`,
+override `ENTANGLEMENT_SKILLS_DIR`) < project
+(`<root>/.entanglement/skills/**/SKILL.md`), later wins on `name` collision, same
+defaults+override shape as agents/catalog. Recursive walk for `SKILL.md` markers;
+symlinked dups + dir cycles deduped by canonical path; malformed file = loud
+error; `root_dir` resolved once at discovery. Frontmatter: `name`/`description`
+required, `user_only` (only explicit user invocation — withheld from disclosure),
+`allowed_tools` (mask, enforcement deferred #116). **Tier-1 disclosure only**:
+`disclosures()` emits one `name: description` line per non-`user_only` skill
+(~100 tokens each); bodies never preloaded. Selection stays LLM reasoning — no
+keyword/embedding gate; description quality is the contract. Bodies + payload are
+tier-2, loaded on demand (`load_skill`, #115). Core still ships `system_prompt`
+verbatim as `LlmRequest.system`. `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
 `input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010 + ADR-0031)
