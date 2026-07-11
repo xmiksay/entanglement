@@ -89,3 +89,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0042](0042-plan-acceptance-via-propose-plan-approval-roundtrip.md) | Plan acceptance via `propose_plan` approval round-trip: accept → fresh root `build` session (head-policy handoff) | Accepted |
 | [0043](0043-skill-preload-vs-access-independent-mechanisms.md) | Skill preload (`skills:` frontmatter) vs access (`load_skill` tool mask) as two independent agent-definition mechanisms | Accepted |
 | [0044](0044-agents-skills-system-prompt-epic-synthesis.md) | Agents, skills & system prompt — epic synthesis: six principles → enforcement map, disclosure tiers, enforcement-locus split, deferred follow-ups | Accepted |
+| [0045](0045-call-host-tool-argv-exec-tailed-output.md) | Host tool `call`: argv exec (no shell) with auto-tailed output (`tail=30`, `tail=0` = full) | Accepted |

@@ -1,10 +1,11 @@
 //! Host tools that execute against the local filesystem and shell — `read`,
-//! `glob`, `grep`, `edit`, `write`, and the opt-in `bash`. The read-only trio
-//! (`read`/`glob`/`grep`) is covered by ADR-0008; `edit`/`bash` by ADR-0009/ADR-0012;
-//! whole-file `write` by ADR-0031; [`host_tools`] assembles the
+//! `glob`, `grep`, `edit`, `write`, and the opt-in exec pair `bash`/`call`. The
+//! read-only trio (`read`/`glob`/`grep`) is covered by ADR-0008; `edit`/`bash`
+//! by ADR-0009/ADR-0012; whole-file `write` by ADR-0031; the argv-exec `call`
+//! (no shell, auto-tailed output) by ADR-0045; [`host_tools`] assembles the
 //! **root-contained quintet** (`read`/`glob`/`grep`/`edit`/`write`) and a head
-//! explicitly opts into [`BashTool`] (gated by `ENTANGLEMENT_ENABLE_BASH`) —
-//! see ADR-0010.
+//! explicitly opts into the exec pair [`BashTool`]/[`CallTool`] (gated by
+//! `ENTANGLEMENT_ENABLE_BASH`) — see ADR-0010.
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
 //! paths resolve against it and are **rejected on `..` escape** (lexical only
@@ -22,6 +23,7 @@ use entanglement_core::protocol::FileChangeKind;
 use entanglement_core::tools::ToolRegistry;
 
 pub mod bash;
+pub mod call;
 pub mod edit;
 pub mod glob;
 pub mod grep;
@@ -29,6 +31,7 @@ pub mod read;
 pub mod write;
 
 pub use bash::BashTool;
+pub use call::CallTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
