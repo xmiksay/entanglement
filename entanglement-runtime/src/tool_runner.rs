@@ -29,7 +29,7 @@ use entanglement_core::{
 };
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::permission::{effective_permission, spawn_capability_refusal, tool_masked};
+use crate::permission::{effective_permission, spawn_refusal, tool_masked};
 
 /// Spawn the per-engine tool executor. Subscribes synchronously (so no
 /// `ToolExec` emitted before the task is scheduled is missed) and runs until the
@@ -101,16 +101,20 @@ pub fn spawn_tool_executor(
                     // The `agent_spawn`/`agent` family only orchestrates sessions
                     // (touches no host resource), so it bypasses per-tool approval
                     // like core's `update_plan`/`update_tasks` built-ins (#60). It
-                    // is instead gated as a *capability* (#77): a read-only
-                    // sub-agent leaf (Subagent-mode profile, e.g. `explore`) may
-                    // not spawn, which closes the path where a restricted profile
-                    // spawns a privileged child. Both variants share this guard
-                    // path — refusals are identical (#120); they differ only in
-                    // whether the launch blocks. Subscribe *before* handing off so
-                    // the child's `Done` can't race ahead of the watcher.
+                    // is instead gated by the per-profile spawn control (#119): the
+                    // spawner must `may_spawn` and the *target* must be spawnable
+                    // and on its allowlist — refused before a child is minted, in
+                    // front of the ADR-0023 budget and the ADR-0024 clamp. Both
+                    // variants share this guard path — refusals are identical
+                    // (#120); they differ only in whether the launch blocks.
+                    // Subscribe *before* handing off so the child's `Done` can't
+                    // race ahead of the watcher.
                     let blocking = tool == crate::subagent::AGENT_TOOL;
                     if tool == crate::subagent::AGENT_SPAWN_TOOL || blocking {
-                        if let Some(refusal) = spawn_capability_refusal(active.get(&session)) {
+                        let target = crate::subagent::target_agent(&input);
+                        if let Some(refusal) =
+                            spawn_refusal(active.get(&session), &target, &profiles)
+                        {
                             let holly = holly.clone();
                             tokio::spawn(async move {
                                 reply(&holly, session, request_id, refusal).await;

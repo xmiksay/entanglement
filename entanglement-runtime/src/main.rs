@@ -88,16 +88,22 @@ fn build_config(
     cfg.tool_specs = tools.specs();
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
-    // the model. `agent_spawn` launches a sub-agent (non-blocking handle);
-    // `agent` launches one and blocks for its answer.
-    cfg.tool_specs
-        .push(subagent::agent_spawn_spec(&cfg.profiles));
-    cfg.tool_specs.push(subagent::agent_spec(&cfg.profiles));
-    // `agent_poll` is the join half of non-blocking spawn (#89): it awaits a
-    // launched sub-agent's answer. Runtime-owned like `agent_spawn`.
-    cfg.tool_specs.push(agent_poll::agent_poll_spec());
-    // `ask_user` is likewise runtime-owned (#90): the executor intercepts it to
-    // surface a decision prompt to the head, not a host-tool call.
+    // the model. Per-profile spawn control (#119, ADR-0040) makes the family
+    // *per-profile* — each profile's roster + target enum is scoped to who it may
+    // spawn, and a non-spawning profile gets nothing — so it lives in
+    // `profile_tool_specs` (appended by core for the active profile), not the
+    // shared `tool_specs`. Empty entries are simply omitted.
+    let profile_tool_specs = cfg
+        .profiles
+        .iter()
+        .filter_map(|p| {
+            let specs = subagent::spawn_specs_for(p, &cfg.profiles);
+            (!specs.is_empty()).then(|| (p.name.clone(), specs))
+        })
+        .collect();
+    cfg.profile_tool_specs = profile_tool_specs;
+    // `ask_user` is likewise runtime-owned (#90) but not a spawn tool: every
+    // profile may surface a decision prompt, so it stays in the shared specs.
     cfg.tool_specs.push(ask_user::ask_user_spec());
     (cfg, model_info, tools)
 }
@@ -367,7 +373,9 @@ async fn main() -> Result<()> {
 
     // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
     // answer the engine's ToolExec round-trip, gating each call on `profiles`.
-    let tool_executor = tool_runner::spawn_tool_executor(&holly, tools, profiles);
+    // The TUI also needs the registry (its entry-agent picker is registry-driven,
+    // #119), so hand the executor a clone and keep `profiles` for the head below.
+    let tool_executor = tool_runner::spawn_tool_executor(&holly, tools, profiles.clone());
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
@@ -436,6 +444,7 @@ async fn main() -> Result<()> {
                 session_id,
                 model_info,
                 catalog,
+                profiles,
                 cwd.clone(),
                 bash_enabled,
             )

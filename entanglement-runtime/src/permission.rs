@@ -1,10 +1,16 @@
-//! Sub-agent permission gating (#77, ADR-0024). Two runtime-only policies layered
-//! on top of the per-tool `Allow | Ask | Deny` dispatch (#59):
+//! Sub-agent permission gating (#77, ADR-0024; #119, ADR-0040). Runtime-only
+//! policies layered on top of the per-tool `Allow | Ask | Deny` dispatch (#59):
 //!
-//! - **Spawn capability** — [`spawn_capability_refusal`]: only `Primary`-mode
-//!   profiles may call `agent_spawn`. A read-only sub-agent leaf (`Subagent`
-//!   mode, e.g. `explore`) is refused, closing the path where a restricted
-//!   profile escalates by spawning a privileged child.
+//! - **Spawn control** — [`spawn_refusal`] (#119): the per-profile spawn gate,
+//!   checked *before* the SpawnGuard budget (ADR-0023) and the ancestor clamp
+//!   (ADR-0024). It layers four checks in front of them: the spawner
+//!   [`may_spawn`][entanglement_core::AgentProfile::may_spawn] at all (absorbs
+//!   the old ADR-0024 capability gate — a `Subagent` leaf or `can_spawn: false`
+//!   profile is refused the whole family); the target resolves to a real
+//!   profile; the target is spawnable-mode (a `primary` entry agent is never a
+//!   valid target, so `build`/`plan` are unreachable via spawn); and the target
+//!   is on the spawner's `spawnable_agents` allowlist. Checked against the
+//!   spawner's *own* profile, so the allowlist is not transitive.
 //! - **Privilege ceiling** — [`effective_permission`]: a child sub-agent is never
 //!   more privileged than its ancestors. Its effective permission for a tool is
 //!   the least-privileged `for_tool` across the session and every ancestor
@@ -22,22 +28,58 @@
 
 use std::collections::{HashMap, HashSet};
 
-use entanglement_core::{AgentMode, AgentProfile, Permission, SessionId};
+use entanglement_core::{AgentProfile, Permission, ProfileRegistry, SessionId};
 
 use crate::subagent::SpawnGuard;
 
-/// Whether the active `profile` may spawn a sub-agent. Returns `None` when
-/// spawning is allowed (`Primary` mode, or an unknown session — nothing to gate
-/// on), else the refusal message to relay to the parent's parked tool call.
-pub fn spawn_capability_refusal(profile: Option<&AgentProfile>) -> Option<String> {
-    match profile.map(|p| p.mode) {
-        Some(AgentMode::Subagent) => Some(
-            "sub-agent spawn refused: a read-only sub-agent profile cannot spawn \
-             further sub-agents. Do the work directly."
+/// Per-profile spawn gate for `spawner` launching `target` (#119, ADR-0040),
+/// checked *before* the SpawnGuard budget (ADR-0023) and the ancestor clamp
+/// (ADR-0024). Returns `None` when the spawn is permitted, else the refusal
+/// message to relay to the parent's parked tool call. Layered checks, in order:
+///
+/// 1. spawner may not spawn ([`may_spawn`][AgentProfile::may_spawn]) — a leaf or
+///    `can_spawn: false` profile is refused the whole family (this absorbs the
+///    old capability gate, same "cannot spawn" phrasing);
+/// 2. unknown target — the name resolves to no registered profile;
+/// 3. target not spawnable-mode — a `primary` entry agent is never a valid
+///    target, so `build`/`plan` are unreachable via spawn;
+/// 4. target outside the spawner's `spawnable_agents` allowlist.
+///
+/// An unknown spawner session (never started) is not gated — nothing to check.
+pub fn spawn_refusal(
+    spawner: Option<&AgentProfile>,
+    target: &str,
+    registry: &ProfileRegistry,
+) -> Option<String> {
+    let spawner = spawner?;
+    if !spawner.may_spawn() {
+        return Some(
+            "sub-agent spawn refused: this agent profile cannot spawn further \
+             sub-agents. Do the work directly."
                 .to_string(),
-        ),
-        _ => None,
+        );
     }
+    let target_profile = match registry.get(target) {
+        Some(p) => p,
+        None => {
+            return Some(format!(
+                "sub-agent spawn refused: unknown agent profile `{target}`."
+            ))
+        }
+    };
+    if !target_profile.spawnable_as_subagent() {
+        return Some(format!(
+            "sub-agent spawn refused: `{target}` is a primary entry agent, not a \
+             spawnable sub-agent. Pick a sub-agent profile."
+        ));
+    }
+    if !spawner.spawn_target_allowed(target) {
+        return Some(format!(
+            "sub-agent spawn refused: this agent profile is not allowed to spawn \
+             `{target}`. Pick one of its permitted sub-agents."
+        ));
+    }
+    None
 }
 
 /// Effective permission for `tool` in `session`, clamped so a child sub-agent is
@@ -132,7 +174,7 @@ fn rank(p: Permission) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::PermissionProfile;
+    use entanglement_core::{AgentMode, PermissionProfile};
 
     fn profile(name: &str, mode: AgentMode, permission: PermissionProfile) -> AgentProfile {
         masked_profile(name, mode, permission, None, Vec::new())
@@ -154,26 +196,55 @@ mod tests {
             permission,
             tools: tools.map(|v| v.into_iter().map(String::from).collect()),
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),
+            can_spawn: None,
+            spawnable_agents: None,
         }
     }
 
     #[test]
-    fn primary_may_spawn_subagent_may_not() {
-        let build = profile(
-            "build",
+    fn spawn_refusal_layers_the_four_checks() {
+        use entanglement_core::ProfileRegistry;
+        let reg = ProfileRegistry::new(); // build/plan (Primary), explore (Subagent)
+        let build = reg.get("build").unwrap();
+        let explore = reg.get("explore").unwrap();
+
+        // Spawner may not spawn: an explore leaf is refused the capability.
+        let refusal = spawn_refusal(Some(explore), "explore", &reg).expect("leaf refused");
+        assert!(refusal.contains("cannot spawn"), "got: {refusal}");
+        // Unknown spawner session (never started) is not gated.
+        assert!(spawn_refusal(None, "explore", &reg).is_none());
+        // A primary may spawn a spawnable-mode target.
+        assert!(spawn_refusal(Some(build), "explore", &reg).is_none());
+        // Unknown target name is refused.
+        let r = spawn_refusal(Some(build), "ghost", &reg).expect("unknown refused");
+        assert!(r.contains("unknown agent profile"), "got: {r}");
+        // A primary target (`plan`) is not a valid spawn target.
+        let r = spawn_refusal(Some(build), "plan", &reg).expect("primary target refused");
+        assert!(r.contains("primary entry agent"), "got: {r}");
+    }
+
+    #[test]
+    fn spawn_refusal_honors_the_allowlist() {
+        use entanglement_core::ProfileRegistry;
+        let mut reg = ProfileRegistry::new();
+        // A worker leaf (Subagent) plus a second spawnable target.
+        reg.insert(masked_profile(
+            "worker",
+            AgentMode::Subagent,
+            PermissionProfile::new(Permission::Allow),
+            None,
+            Vec::new(),
+        ));
+        // A spawner scoped to only `explore`.
+        let mut scoped = profile(
+            "scoped",
             AgentMode::Primary,
             PermissionProfile::new(Permission::Allow),
         );
-        let explore = profile(
-            "explore",
-            AgentMode::Subagent,
-            PermissionProfile::new(Permission::Deny),
-        );
-        assert!(spawn_capability_refusal(Some(&build)).is_none());
-        // Unknown session (never started) is not gated on.
-        assert!(spawn_capability_refusal(None).is_none());
-        let refusal = spawn_capability_refusal(Some(&explore)).expect("subagent must be refused");
-        assert!(refusal.contains("cannot spawn"), "got: {refusal}");
+        scoped.spawnable_agents = Some(vec!["explore".into()]);
+        assert!(spawn_refusal(Some(&scoped), "explore", &reg).is_none());
+        let r = spawn_refusal(Some(&scoped), "worker", &reg).expect("out-of-list refused");
+        assert!(r.contains("not allowed to spawn"), "got: {r}");
     }
 
     #[test]

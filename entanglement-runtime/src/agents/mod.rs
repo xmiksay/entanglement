@@ -34,11 +34,11 @@
 //! masked call at dispatch, so a restricted agent's model never sees the schema
 //! and a hallucinated call is still refused.
 //!
-//! `can_spawn`/`spawnable_agents` (fine-grained spawn control) are still parsed
-//! and validated here so a definition file is a stable contract, but their
-//! enforcement is tracked in a follow-up of the agents/skills epic (#111) — the
-//! `AgentMode` capability gate (ADR-0024) is the current spawn boundary. They do
-//! not yet reach the core [`AgentProfile`].
+//! `can_spawn`/`spawnable_agents` (fine-grained spawn control) now reach the core
+//! [`AgentProfile`] and are **enforced** (#119, ADR-0040): `can_spawn` gates the
+//! whole `agent_*` family (withheld from the model + refused at dispatch when a
+//! profile may not spawn) and `spawnable_agents` scopes which profiles it may
+//! spawn — both layered in front of the ADR-0023 budget and the ADR-0024 clamp.
 
 use std::path::{Path, PathBuf};
 
@@ -89,14 +89,13 @@ struct AgentDefinition {
     /// Tool denylist, applied after the allowlist (#116, ADR-0038).
     #[serde(default)]
     disallowed_tools: Vec<String>,
-    // ── declared here, enforcement deferred (see module docs) ──────────────
-    /// Whether this profile may spawn sub-agents.
+    /// Whether this profile may spawn sub-agents (#119, ADR-0040). Omitted ⇒
+    /// derive from `mode` (`subagent` closed, otherwise open).
     #[serde(default)]
-    #[allow(dead_code)]
     can_spawn: Option<bool>,
-    /// Which agents this profile may spawn (by name).
+    /// Which agents this profile may spawn, by name (#119, ADR-0040). Omitted ⇒
+    /// any registered profile whose `mode` permits sub-agent use.
     #[serde(default)]
-    #[allow(dead_code)]
     spawnable_agents: Option<Vec<String>>,
 }
 
@@ -178,6 +177,8 @@ fn parse_definition(content: &str, ctx: &PromptContext) -> Result<AgentProfile> 
         permission,
         tools: def.tools,
         disallowed_tools: def.disallowed_tools,
+        can_spawn: def.can_spawn,
+        spawnable_agents: def.spawnable_agents,
     })
 }
 
@@ -320,5 +321,20 @@ mod tests {
         assert!(p.advertises_tool("read"));
         assert!(!p.advertises_tool("edit"));
         assert!(!p.advertises_tool("bash"));
+        // `can_spawn`/`spawnable_agents` now reach the core profile too (#119).
+        assert!(p.may_spawn());
+        assert!(p.spawn_target_allowed("explore"));
+        assert!(!p.spawn_target_allowed("build"));
+    }
+
+    #[test]
+    fn spawn_fields_default_from_mode_when_omitted() {
+        // A subagent leaf with no `can_spawn` defaults closed; a primary opens.
+        let leaf = parse("---\nname: x\ndescription: d\nmode: subagent\n---\nbody").unwrap();
+        assert!(!leaf.may_spawn());
+        let primary = parse("---\nname: y\ndescription: d\n---\nbody").unwrap();
+        assert!(primary.may_spawn());
+        // An omitted allowlist is open to any target.
+        assert!(primary.spawn_target_allowed("anything"));
     }
 }

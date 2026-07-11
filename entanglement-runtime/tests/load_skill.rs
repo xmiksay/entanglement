@@ -231,6 +231,8 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
         permission: PermissionProfile::new(Permission::Deny),
         tools: None,
         disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
     });
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
@@ -238,6 +240,7 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
         }),
         tool_specs: tools.specs(),
         profiles: profiles.clone(),
+        ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(&holly, tools, profiles);
