@@ -254,6 +254,27 @@ ADR-0008 byte cap; drops prepend a self-correcting omission notice). Same
 envelope as `bash` (cwd = root, 120 s/600 s timeout, `kill_on_drop`, `[exit N]` +
 `[stderr]`).
 
+Sandboxed script tool `rhai` (✅ #122,
+[ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md), `runtime::script`):
+a runtime-owned, capability-sandboxed [Rhai](https://rhai.rs) engine — the
+sanctioned way to run multi-step logic in one call, replacing the "shell out to
+`python3`/`node`" pattern. `Engine::new_raw()` + the IO-free `StandardPackage`:
+no filesystem/network/process/env access, no module resolver (`import` can't
+escape), `eval` disabled; resource-bounded by `max_operations` + wall-clock
+timeout (default 5s, max 30s, via `on_progress`) + `max_call_levels` +
+string/array/map size caps. The only bindings are the root-contained quintet as
+script functions, each **delegating to the registered `Tool`** and resolving
+permission **per call exactly like a `ToolExec`** — `Deny`/mask throws a
+catchable script error, `Allow` runs, `Ask` parks on the standard `ToolRequest`
+round-trip (resolved **once per function per run**). Because its bindings *are*
+the always-registered quintet, `rhai` is exactly as privileged as those tools —
+registered by default in the shared `tool_specs`, gated by the #116 mask like
+any tool (`explore` never sees it). The executor intercepts it before dispatch
+(it needs per-session profile state to snapshot each binding's mask + clamped
+permission); the sync engine runs under `spawn_blocking` with each binding
+crossing an `mpsc`/`oneshot` **bridge** to the async resolver. No exec bindings
+in v1.
+
 Sub-agent spawn (#60, [ADR-0022](../docs/adr/0022-subagent-spawn.md)): the
 runtime-owned `agent_spawn { agent, prompt }` tool (renamed from `spawn_agent`,
 ✅ #120, [ADR-0033](../docs/adr/0033-agent-tool-family-and-blocking-agent.md))

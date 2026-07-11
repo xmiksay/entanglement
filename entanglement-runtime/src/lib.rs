@@ -31,6 +31,7 @@ pub mod host;
 pub mod permission;
 pub mod persistence;
 pub mod propose_plan;
+pub mod script;
 pub mod session_store;
 pub mod skills;
 pub mod subagent;
