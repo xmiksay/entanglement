@@ -1,0 +1,318 @@
+use super::*;
+use crate::tui::app::App;
+use crate::tui::theme::hash_profile_color;
+use entanglement_core::{OutEvent, SessionId};
+
+fn line_text(line: &Line) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+fn feed_reasoning(app: &mut App, sid: &SessionId, body: &str) {
+    for (i, chunk) in body.split_inclusive('\n').enumerate() {
+        app.handle_out_event(OutEvent::ReasoningDelta {
+            session: sid.clone(),
+            seq: i as u64 + 1,
+            text: chunk.to_string(),
+        });
+    }
+}
+
+/// Index of the first rendered line whose text contains `needle`.
+fn line_index_of(body: &RenderedBody, needle: &str) -> usize {
+    body.lines
+        .iter()
+        .position(|l| line_text(l).contains(needle))
+        .unwrap_or_else(|| panic!("no rendered line contains {needle:?}"))
+}
+
+#[test]
+fn text_then_reasoning_renders_in_arrival_order() {
+    // A turn that streams assistant text and *then* a thinking block must
+    // render the thinking header after the text, not before it (#88).
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: "ANSWERTEXT\n".to_string(),
+    });
+    app.handle_out_event(OutEvent::ReasoningDelta {
+        session: sid.clone(),
+        seq: 2,
+        text: "afterthought\n".to_string(),
+    });
+
+    let body = render_body_lines(&app, 80);
+    let text_at = line_index_of(&body, "ANSWERTEXT");
+    let thinking_at = line_index_of(&body, "▸ Thinking");
+    assert!(
+        text_at < thinking_at,
+        "text (line {text_at}) must render before the trailing thinking block (line {thinking_at})"
+    );
+}
+
+#[test]
+fn reasoning_then_text_renders_thinking_first() {
+    // The common case — model thinks, then answers. The thinking block must
+    // render before the assistant text, not after it (the #88 regression).
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.handle_out_event(OutEvent::ReasoningDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: "forethought\n".to_string(),
+    });
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 2,
+        text: "ANSWERTEXT\n".to_string(),
+    });
+
+    let body = render_body_lines(&app, 80);
+    let thinking_at = line_index_of(&body, "▸ Thinking");
+    let text_at = line_index_of(&body, "ANSWERTEXT");
+    assert!(
+        thinking_at < text_at,
+        "leading thinking block (line {thinking_at}) must render before the text (line {text_at})"
+    );
+}
+
+#[test]
+fn interleaved_runs_stay_ordered_and_distinct() {
+    // text → reasoning → text produces two text runs bracketing one thinking
+    // block, each a separately-toggleable run keyed by its own block id.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: "FIRSTTEXT\n".to_string(),
+    });
+    app.handle_out_event(OutEvent::ReasoningDelta {
+        session: sid.clone(),
+        seq: 2,
+        text: "mid think\n".to_string(),
+    });
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 3,
+        text: "SECONDTEXT\n".to_string(),
+    });
+
+    let body = render_body_lines(&app, 80);
+    let first = line_index_of(&body, "FIRSTTEXT");
+    let thinking = line_index_of(&body, "▸ Thinking");
+    let second = line_index_of(&body, "SECONDTEXT");
+    assert!(
+        first < thinking && thinking < second,
+        "expected FIRSTTEXT ({first}) < Thinking ({thinking}) < SECONDTEXT ({second})"
+    );
+    // The reasoning run's block id is the transcript index of its first
+    // `ReasoningDelta` (entry 1), tagged on its rendered header.
+    assert_eq!(body.line_blocks[thinking], Some(1));
+}
+
+#[test]
+fn reasoning_collapsed_by_default_shows_only_header() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_reasoning(&mut app, &sid, "alpha\nbeta\nSECRETBODY\n");
+
+    let body = render_body_lines(&app, 80);
+    assert!(
+        body.lines
+            .iter()
+            .any(|l| line_text(l).contains("▸ Thinking")),
+        "collapsed run should show a ▸ header"
+    );
+    assert!(
+        !body
+            .lines
+            .iter()
+            .any(|l| line_text(l).contains("SECRETBODY")),
+        "collapsed run must hide the reasoning body"
+    );
+    // The header line is tagged with the run's block id (transcript index 0).
+    let header_idx = body
+        .lines
+        .iter()
+        .position(|l| line_text(l).contains("▸ Thinking"))
+        .unwrap();
+    assert_eq!(body.line_blocks[header_idx], Some(0));
+}
+
+#[test]
+fn reasoning_expands_on_toggle() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_reasoning(&mut app, &sid, "alpha\nbeta\nSECRETBODY\n");
+
+    app.toggle_reasoning_block(0);
+    let body = render_body_lines(&app, 80);
+    assert!(
+        body.lines
+            .iter()
+            .any(|l| line_text(l).contains("▾ Thinking")),
+        "expanded run should show a ▾ header"
+    );
+    assert!(
+        body.lines
+            .iter()
+            .any(|l| line_text(l).contains("SECRETBODY")),
+        "expanded run must show the reasoning body"
+    );
+
+    // Toggle round-trip collapses it again.
+    app.toggle_reasoning_block(0);
+    let body = render_body_lines(&app, 80);
+    assert!(!body
+        .lines
+        .iter()
+        .any(|l| line_text(l).contains("SECRETBODY")));
+}
+
+#[test]
+fn streamed_table_renders_as_grid_after_all_deltas() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    // A table streamed token-by-token, exactly as the engine emits it.
+    let deltas = [
+        "| name | role |\n",
+        "| --- | --- |\n",
+        "| holly | engine |\n",
+        "| tui | head |\n",
+    ];
+    for (i, d) in deltas.iter().enumerate() {
+        app.handle_out_event(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: i as u64 + 1,
+            text: (*d).to_string(),
+        });
+    }
+
+    let lines = render_body_lines(&app, 80).lines;
+    let joined: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<String>()
+        .replace('\n', "\\n");
+    println!("STREAMED TABLE LINES:");
+    for l in &lines {
+        let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        println!("  {s:?}");
+    }
+    let has_grid = lines.iter().any(|l| {
+        let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        s.contains("---")
+    });
+    assert!(
+        has_grid,
+        "streamed table did not render as a grid: {joined}"
+    );
+}
+
+#[test]
+fn narrow_widths_do_not_panic() {
+    // The padding rows compute `" ".repeat(width - 1)`; at width 0 or 1 a
+    // raw `u16` subtraction underflows (panic in debug, 65535 in release).
+    // Feed one of every padded entry kind and render at the degenerate
+    // widths — this must not panic and must produce lines.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.record_user_message("hello".to_string());
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: "assistant reply\n".to_string(),
+    });
+    app.handle_out_event(OutEvent::ToolCall {
+        session: sid.clone(),
+        seq: 2,
+        request_id: "c1".to_string(),
+        tool: "read".to_string(),
+        input: "{\"path\":\"x\"}".to_string(),
+    });
+    app.handle_out_event(OutEvent::ToolOutput {
+        session: sid.clone(),
+        seq: 3,
+        request_id: "c1".to_string(),
+        tool: "read".to_string(),
+        output: "file body".to_string(),
+    });
+    app.handle_out_event(OutEvent::Error {
+        session: sid.clone(),
+        seq: 4,
+        message: "boom".to_string(),
+    });
+    feed_reasoning(&mut app, &sid, "thinking hard\n");
+
+    for width in [0u16, 1, 2] {
+        let body = render_body_lines(&app, width);
+        assert!(
+            !body.lines.is_empty(),
+            "width {width} should still render lines"
+        );
+    }
+}
+
+#[test]
+fn user_messages_use_profile_colors() {
+    let sid = SessionId::new("test");
+    let mut app = App::new_for_test(sid.clone());
+    app.record_user_message("Hello world".to_string());
+
+    let lines = render_body_lines(&app, 80).lines;
+    let user_color = hash_profile_color("build");
+    let theme = app.theme();
+    let expected_user_bg = theme.user_colors(user_color).bg;
+
+    let user_lines: Vec<_> = lines
+        .iter()
+        .filter(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.content.contains("Hello") || s.content.contains("world"))
+        })
+        .collect();
+
+    assert!(!user_lines.is_empty(), "Should have user message lines");
+    for line in user_lines {
+        if let Some(bg) = line.style.bg {
+            assert_eq!(
+                bg, expected_user_bg,
+                "User message should have message background"
+            );
+        }
+    }
+}
+
+#[test]
+fn assistant_lines_use_theme_colors() {
+    let sid = SessionId::new("test");
+    let mut app = App::new_for_test(sid.clone());
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: "Response".to_string(),
+    });
+
+    let lines = render_body_lines(&app, 80).lines;
+    let theme = app.theme();
+    let expected_bg = theme.assistant_colors().bg;
+
+    let assistant_lines: Vec<_> = lines
+        .iter()
+        .filter(|l| l.spans.iter().any(|s| s.content.contains("Response")))
+        .collect();
+
+    assert!(!assistant_lines.is_empty(), "Should have assistant lines");
+    for line in assistant_lines {
+        if let Some(bg) = line.style.bg {
+            assert_eq!(
+                bg, expected_bg,
+                "Assistant lines should use theme message background"
+            );
+        }
+    }
+}
