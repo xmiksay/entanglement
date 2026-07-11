@@ -21,7 +21,7 @@ mod ui;
 mod wrap;
 
 use anyhow::Result;
-use entanglement_core::{Holly, InMsg, SessionId};
+use entanglement_core::{AgentMode, Holly, InMsg, ProfileRegistry, SessionId};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -51,6 +51,7 @@ pub async fn tui(
     initial_session: SessionId,
     model_info: ModelInfo,
     catalog: Catalog,
+    profiles: ProfileRegistry,
     root: std::path::PathBuf,
     bash_enabled: bool,
 ) -> Result<()> {
@@ -82,7 +83,19 @@ pub async fn tui(
     let (event_tx, mut event_rx) = mpsc::channel(128);
     spawn_crossterm_task(event_tx.clone());
 
-    let mut app = App::new(initial_session, catalog);
+    // Registry-driven entry-agent roster (#119): the `/agent` picker and
+    // Tab-cycle offer only entry agents (`mode ∈ {primary, all}`) — a `subagent`
+    // leaf like `explore` is a spawn target, never a manual entry agent. Ordered
+    // by the registry's stable `iter` (name-sorted).
+    let entry_profiles: Vec<app::ProfileInfo> = profiles
+        .iter()
+        .filter(|p| matches!(p.mode, AgentMode::Primary | AgentMode::All))
+        .map(|p| app::ProfileInfo {
+            name: p.name.clone(),
+            description: p.description.clone(),
+        })
+        .collect();
+    let mut app = App::new(initial_session, catalog, entry_profiles);
     app.set_model_info(model_info);
     app.init_head_context(root, bash_enabled);
 

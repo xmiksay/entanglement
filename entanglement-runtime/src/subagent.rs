@@ -25,7 +25,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use entanglement_core::{Holly, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec};
+use entanglement_core::{
+    AgentProfile, Holly, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec,
+};
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 use crate::agent_poll::{AgentRegistry, AgentStatus};
@@ -137,11 +139,40 @@ impl SpawnGuard {
 /// the safe default.
 const DEFAULT_SUBAGENT: &str = "explore";
 
-/// The `agent_spawn` tool schema advertised to the model. Appended to the
-/// engine's `tool_specs` alongside the host quartet. The registry roster is
+/// The per-profile spawn tool specs (#119, ADR-0040): the `agent_spawn`/`agent`/
+/// `agent_poll` triple advertised to a session running under `profile`, with the
+/// roster + `agent` enum scoped to exactly the profiles `profile` may spawn (its
+/// `spawnable_agents` allowlist ∩ the target-side mode gate). Empty when the
+/// profile may not spawn or has no valid targets — so the whole family is
+/// **withheld** from that session's model (the structural half of the gate; the
+/// runtime executor refuses a stale call regardless). Stored in
+/// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig] and
+/// appended by core's `run_turn` for the active profile.
+pub fn spawn_specs_for(profile: &AgentProfile, registry: &ProfileRegistry) -> Vec<ToolSpec> {
+    if !profile.may_spawn() {
+        return Vec::new();
+    }
+    // A valid target is spawnable-mode (subagent/all) *and* on this profile's
+    // allowlist — checked against `profile`'s own list, so the roster is not
+    // transitive down the tree (each hop re-checks the spawner).
+    let targets: Vec<&AgentProfile> = registry
+        .iter()
+        .filter(|t| t.spawnable_as_subagent() && profile.spawn_target_allowed(&t.name))
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        agent_spawn_spec(&targets),
+        agent_spec(&targets),
+        crate::agent_poll::agent_poll_spec(),
+    ]
+}
+
+/// The `agent_spawn` tool schema advertised to the model. The `targets` roster is
 /// disclosed inline (#112): each spawnable agent's `name: description` is listed
 /// in the tool description and the `agent` argument is constrained to that set.
-pub fn agent_spawn_spec(registry: &ProfileRegistry) -> ToolSpec {
+pub fn agent_spawn_spec(targets: &[&AgentProfile]) -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_SPAWN_TOOL,
         format!(
@@ -151,15 +182,15 @@ pub fn agent_spawn_spec(registry: &ProfileRegistry) -> ToolSpec {
              them run concurrently. Collect a sub-agent's answer by calling \
              agent_poll with its agent_id. To delegate a single subtask and get \
              the answer in one call, use `agent` instead.\n\n{}",
-            roster(registry)
+            roster(targets)
         ),
-        agent_input_schema(registry),
+        agent_input_schema(targets),
     )
 }
 
 /// The blocking `agent` tool schema (#120). Same input shape as `agent_spawn`,
 /// but it waits for the sub-agent and returns its final answer directly.
-pub fn agent_spec(registry: &ProfileRegistry) -> ToolSpec {
+pub fn agent_spec(targets: &[&AgentProfile]) -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_TOOL,
         format!(
@@ -168,17 +199,18 @@ pub fn agent_spec(registry: &ProfileRegistry) -> ToolSpec {
              final answer directly — the one-call path for a single delegation. \
              To launch several sub-agents and let them run concurrently, use \
              agent_spawn + agent_poll instead.\n\n{}",
-            roster(registry)
+            roster(targets)
         ),
-        agent_input_schema(registry),
+        agent_input_schema(targets),
     )
 }
 
 /// The `name: description` roster line block disclosed to the spawning model —
 /// `description` is the only field of a definition a parent ever sees (#112).
-fn roster(registry: &ProfileRegistry) -> String {
+/// Scoped to the profiles this spawner may target (#119).
+fn roster(targets: &[&AgentProfile]) -> String {
     let mut out = String::from("Available agents:");
-    for p in registry.iter() {
+    for p in targets {
         out.push_str(&format!("\n- {}: {}", p.name, p.description));
     }
     out
@@ -186,10 +218,10 @@ fn roster(registry: &ProfileRegistry) -> String {
 
 /// Shared `{ agent, prompt }` input schema for the `agent_spawn` and `agent`
 /// tools — both take the same arguments; only their return shape differs. The
-/// `agent` name is constrained to the registry's roster (an enum) so the model
-/// can only pick a real profile.
-fn agent_input_schema(registry: &ProfileRegistry) -> serde_json::Value {
-    let names: Vec<&str> = registry.iter().map(|p| p.name.as_str()).collect();
+/// `agent` name is constrained to `targets` (an enum) so the model can only pick
+/// a profile it is actually allowed to spawn (#119).
+fn agent_input_schema(targets: &[&AgentProfile]) -> serde_json::Value {
+    let names: Vec<&str> = targets.iter().map(|p| p.name.as_str()).collect();
     serde_json::json!({
         "type": "object",
         "properties": {
@@ -377,6 +409,14 @@ async fn collect_child_answer(events: &mut Receiver<OutEvent>, child: &SessionId
     }
 }
 
+/// The spawn *target* named in an `agent_spawn`/`agent` tool input — the runtime
+/// executor reads it to apply the per-profile allowlist + target-mode gate before
+/// a child is minted (#119). Mirrors [`parse_input`]'s agent resolution (a bare
+/// string / omitted `agent` ⇒ the read-only default).
+pub fn target_agent(input: &str) -> String {
+    parse_input(input).0
+}
+
 /// Parse the `agent_spawn`/`agent` tool input. Providers send a JSON object
 /// `{"agent": …, "prompt": …}`; scripted/raw backends may send a bare string,
 /// which is treated as the prompt under the default sub-agent profile.
@@ -433,6 +473,32 @@ mod tests {
         let (agent, prompt) = parse_input("just a prompt");
         assert_eq!(agent, DEFAULT_SUBAGENT);
         assert_eq!(prompt, "just a prompt");
+    }
+
+    #[test]
+    fn spawn_specs_scope_the_enum_to_valid_targets() {
+        // The default registry: build/plan (Primary, not targets), explore
+        // (Subagent, a target). `build` may spawn, so it gets the triple — but
+        // only `explore` is a valid target, so the enum lists it alone.
+        let reg = ProfileRegistry::new();
+        let build = reg.get("build").unwrap();
+        let specs = spawn_specs_for(build, &reg);
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec![AGENT_SPAWN_TOOL, AGENT_TOOL, "agent_poll"]);
+        let enum_names = specs[0].schema["properties"]["agent"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(enum_names.iter().any(|n| n == "explore"));
+        assert!(!enum_names.iter().any(|n| n == "build"));
+        assert!(!enum_names.iter().any(|n| n == "plan"));
+    }
+
+    #[test]
+    fn spawn_specs_empty_for_a_non_spawning_profile() {
+        // `explore` is a Subagent leaf — it may not spawn, so it gets no family.
+        let reg = ProfileRegistry::new();
+        let explore = reg.get("explore").unwrap();
+        assert!(spawn_specs_for(explore, &reg).is_empty());
     }
 
     /// Build a guard with a linear ancestry chain `root → a → b → …` recorded.

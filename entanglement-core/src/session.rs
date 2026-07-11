@@ -6,7 +6,7 @@
 //! parks on `InMsg::ToolResult`; the runtime tool executor owns the policy
 //! decision and the approval UX (ADR-0003/0010).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
@@ -242,6 +242,7 @@ pub(crate) async fn session_loop(
                     &events,
                     &mut stash,
                     &cfg.tool_specs,
+                    &cfg.profile_tool_specs,
                 )
                 .await;
             }
@@ -302,6 +303,7 @@ async fn run_turn(
     events: &broadcast::Sender<OutEvent>,
     stash: &mut VecDeque<SessionCmd>,
     tool_specs: &[ToolSpec],
+    profile_tool_specs: &HashMap<String, Vec<ToolSpec>>,
 ) -> Result<(), ()> {
     s.turn_count += 1;
     const MAX_TURNS: usize = 50;
@@ -332,6 +334,20 @@ async fn run_turn(
         .filter(|spec| s.profile.advertises_tool(&spec.name))
         .cloned()
         .collect();
+    // Per-profile specs (#119, ADR-0040): the active profile's spawnable roster
+    // (the `agent_*` family with a target enum scoped to who *this* profile may
+    // spawn) lives outside the shared `tool_specs` so a masked schema never
+    // reaches the model. The runtime leaves the entry empty for a profile that
+    // may not spawn. Still filtered through the #116 mask, so a `disallowed_tools`
+    // list can subtract even a per-profile tool.
+    if let Some(profile_specs) = profile_tool_specs.get(&s.profile.name) {
+        specs.extend(
+            profile_specs
+                .iter()
+                .filter(|spec| s.profile.advertises_tool(&spec.name))
+                .cloned(),
+        );
+    }
     specs.push(ToolSpec::with_schema(
         PLAN_TOOL,
         "Replace the strategy plan (markdown prose).",

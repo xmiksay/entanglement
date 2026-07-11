@@ -84,3 +84,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0037](0037-load-skill-tool-deterministic-resolution.md) | `load_skill` tool: deterministic resolution + path substitution | Accepted |
 | [0038](0038-physical-per-agent-tool-restriction.md) | Physical per-agent tool restriction: allowlist/denylist masks specs + dispatch | Accepted |
 | [0039](0039-markdown-task-list.md) | Markdown task list: structured `Vec<TaskItem>` → plain snapshot | Accepted |
+| [0040](0040-per-profile-spawn-control.md) | Per-profile spawn control: `can_spawn` + spawnable-agents allowlist + target-mode gate | Accepted |

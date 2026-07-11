@@ -144,12 +144,13 @@ impl PermissionProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
-    /// User-facing entry agent; may spawn sub-agents. Intended to never be a
-    /// spawn *target* itself — the target-side gate lands with #119; today the
-    /// roster does not filter primaries out.
+    /// User-facing entry agent; may spawn sub-agents. Never a valid spawn
+    /// *target* itself — the target-side mode gate (#119, ADR-0040) refuses it,
+    /// so `build`/`plan` are unreachable via spawn (see
+    /// [`AgentProfile::spawnable_as_subagent`]).
     Primary,
-    /// Intended to be reachable only via spawn; a read-only leaf that cannot
-    /// spawn further (spawner-side gate enforced in the runtime, ADR-0024).
+    /// Reachable only via spawn; a read-only leaf that defaults to not spawning
+    /// further (the `may_spawn` derivation, #119; spawner-side gate, ADR-0024).
     Subagent,
     /// Usable as both a primary entry agent *and* a spawnable sub-agent; spawns
     /// like a `Primary`. Lets one file-defined agent serve both roles
@@ -190,6 +191,21 @@ pub struct AgentProfile {
     /// inherit-all `None`) would otherwise include it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
+    /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
+    /// ⇒ derive from [`mode`][Self::mode]: a `Subagent` leaf defaults closed,
+    /// every other mode open. When it (or the derived default) is `false`, the
+    /// whole `agent`/`agent_spawn`/`agent_poll` family is withheld from the model
+    /// and refused at dispatch — the physical principle of #116 applied to spawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_spawn: Option<bool>,
+    /// Allowlist of agent names this profile may spawn (#119, ADR-0040). `None` ⇒
+    /// any registered profile whose `mode` permits sub-agent use. A target
+    /// outside the list is refused before a child session is minted. Checked per
+    /// spawning session against *its own* profile, so the allowlist is not
+    /// transitive (profile A allowed to spawn B does not imply A can spawn what B
+    /// can).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawnable_agents: Option<Vec<String>>,
 }
 
 impl AgentProfile {
@@ -208,6 +224,35 @@ impl AgentProfile {
             Some(allow) => allow.iter().any(|t| t == tool),
             None => true,
         }
+    }
+
+    /// Whether this profile may spawn sub-agents at all (#119, ADR-0040).
+    /// [`can_spawn`][Self::can_spawn] overrides the mode-derived default: a
+    /// `Subagent` leaf defaults closed, every other mode open. When this is
+    /// `false` the runtime withholds the whole `agent`/`agent_spawn`/`agent_poll`
+    /// family and refuses a stale call.
+    pub fn may_spawn(&self) -> bool {
+        self.can_spawn.unwrap_or(self.mode != AgentMode::Subagent)
+    }
+
+    /// Whether this profile may spawn the named target (#119, ADR-0040). A `None`
+    /// [`spawnable_agents`][Self::spawnable_agents] allowlist is open to any
+    /// spawnable target; otherwise the name must be listed. Orthogonal to
+    /// [`spawnable_as_subagent`][Self::spawnable_as_subagent], which gates the
+    /// *target's* mode.
+    pub fn spawn_target_allowed(&self, name: &str) -> bool {
+        match &self.spawnable_agents {
+            Some(list) => list.iter().any(|n| n == name),
+            None => true,
+        }
+    }
+
+    /// Whether this profile is a valid spawn *target* (#119, ADR-0040): only
+    /// `subagent`/`all` modes are reachable via spawn; a `primary` entry agent
+    /// never is, so `build`/`plan` fall out of the hierarchy from mode defaults
+    /// with zero frontmatter changes.
+    pub fn spawnable_as_subagent(&self) -> bool {
+        matches!(self.mode, AgentMode::Subagent | AgentMode::All)
     }
 }
 
@@ -695,7 +740,61 @@ mod tests {
             permission: PermissionProfile::new(Permission::Allow),
             tools: tools.map(|v| v.into_iter().map(String::from).collect()),
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),
+            can_spawn: None,
+            spawnable_agents: None,
         }
+    }
+
+    fn spawn_profile(
+        mode: AgentMode,
+        can_spawn: Option<bool>,
+        spawnable_agents: Option<Vec<&str>>,
+    ) -> AgentProfile {
+        AgentProfile {
+            name: "s".into(),
+            description: String::new(),
+            mode,
+            system_prompt: String::new(),
+            model: None,
+            permission: PermissionProfile::new(Permission::Allow),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn,
+            spawnable_agents: spawnable_agents.map(|v| v.into_iter().map(String::from).collect()),
+        }
+    }
+
+    #[test]
+    fn may_spawn_defaults_from_mode() {
+        // Primary/all default open; a subagent leaf defaults closed.
+        assert!(spawn_profile(AgentMode::Primary, None, None).may_spawn());
+        assert!(spawn_profile(AgentMode::All, None, None).may_spawn());
+        assert!(!spawn_profile(AgentMode::Subagent, None, None).may_spawn());
+    }
+
+    #[test]
+    fn can_spawn_overrides_the_mode_default() {
+        // An explicit `can_spawn` wins over the mode-derived default either way.
+        assert!(!spawn_profile(AgentMode::Primary, Some(false), None).may_spawn());
+        assert!(spawn_profile(AgentMode::Subagent, Some(true), None).may_spawn());
+    }
+
+    #[test]
+    fn spawn_target_allowlist_gates_by_name() {
+        // `None` ⇒ open to any target; a list restricts to its entries.
+        let open = spawn_profile(AgentMode::Primary, None, None);
+        assert!(open.spawn_target_allowed("explore"));
+        let scoped = spawn_profile(AgentMode::Primary, None, Some(vec!["explore"]));
+        assert!(scoped.spawn_target_allowed("explore"));
+        assert!(!scoped.spawn_target_allowed("build"));
+    }
+
+    #[test]
+    fn spawnable_as_subagent_only_for_subagent_and_all() {
+        assert!(spawn_profile(AgentMode::Subagent, None, None).spawnable_as_subagent());
+        assert!(spawn_profile(AgentMode::All, None, None).spawnable_as_subagent());
+        // A primary entry agent is never a valid spawn target.
+        assert!(!spawn_profile(AgentMode::Primary, None, None).spawnable_as_subagent());
     }
 
     #[test]

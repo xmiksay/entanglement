@@ -97,7 +97,9 @@ moved out too (#59): core no longer reads `PermissionProfile` — the runtime
 `tool_runner` resolves `Allow`/`Ask`/`Deny` per call, emits the `ToolRequest`
 prompt on `Ask`, and consumes `Approve`/`Reject` off the engine's inbound
 fan-out (`Holly::subscribe_inbound()`). Core holds no executable tools and makes
-no policy decision — only tool schemas (`EngineConfig.tool_specs`).
+no policy decision — only tool schemas (shared `EngineConfig.tool_specs` +
+per-profile `EngineConfig.profile_tool_specs`, the latter appended by `run_turn`
+for the active profile only, #119).
 
 Session-multiplexed (every frame carries `SessionId`); content frames carry
 monotonic `seq`. Agent profiles (`build`/`plan`/`explore` + custom) drive
@@ -121,18 +123,31 @@ and `runtime::permission::tool_masked` refuses a masked `ToolExec` **first**
 (before the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions +
 permission), clamping down the ancestor chain like ADR-0024's ceiling. `explore`
 is now the reference read-only agent (`tools: [read, glob, grep]` — no `edit`/
-`write`/`bash`/`agent_spawn`). `can_spawn`/`spawnable_agents` parse now,
-enforcement deferred (🚧 #119) — the `AgentMode` gate (ADR-0024) is the current
-spawn boundary and it is **spawner-side only**: spawn *targets* are unfiltered,
-so a model can today spawn a `primary` (`build`/`plan`), and an unknown `Spawn`
-name silently resolves to `build`. The **agent hierarchy** track closes this:
-#119 (target-side mode gate — spawnable ⇔ `mode ∈ {subagent, all}` — +
-per-profile spawn roster via an `EngineConfig.profile_tool_specs` seam), #140
-(`owns_plan` — default-closed `update_plan` authority, built-in `plan` gets it
-plus a physical read-only mask), #141 (`propose_plan` — plan acceptance rides
-the tool-approval round-trip; approve = `SetPlan` + head mints a **fresh root
-`build` session** with the plan as its first user message, reject + typed
-reason = in-band revision). `AgentMode` gained `all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
+`write`/`bash`/`agent_spawn`). Fine-grained spawn control is now **enforced**
+(✅ #119, [ADR-0040](../docs/adr/0040-per-profile-spawn-control.md)):
+`can_spawn`/`spawnable_agents` ride the core `AgentProfile` with helpers
+(`may_spawn` = `can_spawn.unwrap_or(mode != subagent)`; `spawn_target_allowed`;
+`spawnable_as_subagent` = `mode ∈ {subagent, all}`). The spawn boundary is now
+both spawner- **and** target-side: `runtime::permission::spawn_refusal(spawner,
+target, registry)` layers four checks before the ADR-0023 budget + ADR-0024
+clamp — `!may_spawn` (absorbs the old capability gate) → unknown target → target
+not spawnable-mode (a `primary` is never a valid target, so `build`/`plan` are
+unreachable) → target off `spawnable_agents` — each a clear `ToolOutput`, no
+child minted. Checked per spawning session against *its own* profile (not
+transitive). The `agent_spawn`/`agent`/`agent_poll` triple moves out of shared
+`tool_specs` into `EngineConfig.profile_tool_specs`
+(`HashMap<profile, Vec<ToolSpec>>`, filled by `subagent::spawn_specs_for`, empty
+when `!may_spawn`); `run_turn` appends the active profile's entry (roster + enum
+scoped to who it may spawn, still `advertises_tool`-filtered), so an out-of-list
+spawn is a schema violation first. Supervisor hardened: an unknown `Spawn` name
+now `get()`s + emits an `Error` instead of escalating to `build`. TUI `/agent`
+picker/Tab-cycle is registry-driven, filtered to `mode ∈ {primary, all}`.
+Follow-ups reuse the seam: #140 (`owns_plan` — default-closed `update_plan`
+authority, built-in `plan` gets it plus a physical read-only mask), #141
+(`propose_plan` — plan acceptance rides the tool-approval round-trip; approve =
+`SetPlan` + head mints a **fresh root `build` session** with the plan as its
+first user message, reject + typed reason = in-band revision). `AgentMode` gained
+`all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
 raw body (✅ #113, [ADR-0035](../docs/adr/0035-deterministic-system-prompt-assembly.md)):
 `entanglement_runtime::system_prompt::assemble` composes shared preamble + agent
 body + project brief (frontmatter `include_brief: true`, from the standard
@@ -176,7 +191,7 @@ separate follow-up, distinct from the #116 agent tool mask). Core still
 ships `system_prompt` verbatim as `LlmRequest.system`. `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages;
 both are plain markdown `content` now (✅ #142,
-[ADR-0039](../docs/adr/0039-markdown-task-list.md)) — `update_tasks { content }`
+[ADR-0040](../docs/adr/0039-markdown-task-list.md)) — `update_tasks { content }`
 mirrors `update_plan`, the structured `TaskItem`/`TaskStatus` types are gone
 (the outline is user-facing progress info, never engine-consumed).
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
@@ -213,11 +228,14 @@ Spawn limits (✅ #76,
 depth cap (`MAX_SPAWN_DEPTH`) or a cumulative per-root budget
 (`MAX_SPAWNS_PER_ROOT`), replying with a clear refusal `ToolOutput`. Spawn
 permission gating (✅ #77, [ADR-0024](../docs/adr/0024-subagent-permission-gating.md),
-`runtime::permission`): a `Subagent`-mode leaf profile (read-only `explore`)
-can't spawn at all, and each child's per-tool permission is clamped to the
+`runtime::permission`): each child's per-tool permission is clamped to the
 least-privileged rule across its ancestor chain (`Deny < Ask < Allow`) — a child
-is never more privileged than its parent. Filesystem isolation (a separate child
-root) for sub-sessions still deferred.
+is never more privileged than its parent. Layered in front of that (and the
+ADR-0023 budget) is per-profile spawn control (✅ #119, ADR-0040,
+`spawn_refusal`): a profile must `may_spawn` (a `Subagent` leaf like `explore`
+defaults closed — absorbs ADR-0024's capability gate) and its *target* must be
+spawnable-mode + on its `spawnable_agents` allowlist. Filesystem isolation (a
+separate child root) for sub-sessions still deferred.
 
 Ask-user prompt (✅ #90, [ADR-0027](../docs/adr/0027-ask-user-interactive-prompt.md)):
 the runtime-owned `ask_user { question, options, allow_free_form }` tool is

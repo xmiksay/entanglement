@@ -43,6 +43,15 @@ pub struct EngineConfig {
     pub llm_factory: LlmFactory,
     pub tool_specs: Vec<ToolSpec>,
     pub profiles: ProfileRegistry,
+    /// Per-profile tool specs appended to [`tool_specs`][Self::tool_specs] for
+    /// the active profile only (#119, ADR-0040). `run_turn` looks the running
+    /// session's profile name up here and appends its entry (also filtered
+    /// through [`AgentProfile::advertises_tool`]) after the #116 mask. Populated
+    /// by the runtime with each profile's spawnable roster (the
+    /// `agent_spawn`/`agent`/`agent_poll` triple, target-name enum + description
+    /// scoped to that profile). A generic table — later per-profile features
+    /// reuse it. Empty for a profile that may not spawn or has no valid targets.
+    pub profile_tool_specs: HashMap<String, Vec<ToolSpec>>,
 }
 
 impl EngineConfig {
@@ -60,6 +69,7 @@ impl Default for EngineConfig {
             llm_factory: Arc::new(|| LlmSession::new(Box::new(EchoLlm))),
             tool_specs: Vec::new(),
             profiles: ProfileRegistry::new(),
+            profile_tool_specs: HashMap::new(),
         }
     }
 }
@@ -156,6 +166,11 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             permission: PermissionProfile::new(Permission::Allow),
             tools: None,
             disallowed_tools: Vec::new(),
+            // `build` spawns everything except primaries (the target-side mode
+            // gate, #119) — no `spawnable_agents` list, so user-defined
+            // exploration agents stay spawnable without editing this built-in.
+            can_spawn: None,
+            spawnable_agents: None,
         },
         AgentProfile {
             name: "plan".into(),
@@ -166,6 +181,10 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             permission: PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
             tools: None,
             disallowed_tools: Vec::new(),
+            // `plan` may spawn (a primary), but omits `spawnable_agents` so any
+            // user-defined exploration agent stays reachable (#119).
+            can_spawn: None,
+            spawnable_agents: None,
         },
         AgentProfile {
             name: "explore".into(),
@@ -182,6 +201,10 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             // boundary, matching the `permission` denies above.
             tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
             disallowed_tools: Vec::new(),
+            // Reference leaf: a `Subagent` mode defaults `can_spawn` closed (#119),
+            // so the whole `agent_*` family is withheld — matching the tool mask.
+            can_spawn: None,
+            spawnable_agents: None,
         },
     ]
 }
@@ -421,10 +444,26 @@ async fn supervisor(
                 );
                 continue;
             }
+            // An unknown spawn target must not silently escalate to `build` (the
+            // most-privileged default): `resolve` would fall back there, so a
+            // typo'd `Spawn` would launch a full coding agent. `get` + a
+            // supervisor error refuses instead (#119). The lazy-Prompt path below
+            // still uses `resolve` — that fallback is a blank user session, not a
+            // model-chosen spawn target.
+            let profile = match cfg.profiles.get(agent) {
+                Some(p) => p.clone(),
+                None => {
+                    emit_supervisor_error(
+                        &events,
+                        child,
+                        &format!("cannot spawn unknown agent profile `{agent}`"),
+                    );
+                    continue;
+                }
+            };
             // Record the parent link *before* spawning so it's in place for any
             // later lazy path, and so the child starts under the requested profile.
             parent_links.insert(child.clone(), Some(parent.clone()));
-            let profile = cfg.profiles.resolve(agent);
             session_meta.insert(
                 child.clone(),
                 SessionInfo {

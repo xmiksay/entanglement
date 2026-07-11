@@ -159,14 +159,13 @@ only field a spawning model sees).
   shape as the provider catalog (#118). A malformed file is a loud error. The
   frontmatter also declares `tools`/`disallowed_tools` (the tool mask, **enforced**
   ✅ #116, below) and `can_spawn`/`spawnable_agents` (fine-grained spawn control,
-  still parsed-but-deferred — 🚧 #119). Note the current spawn boundary — the
-  `AgentMode` capability gate, ADR-0024 — is **spawner-side only**: it refuses a
-  `subagent`-mode leaf the spawn capability, but nothing yet gates the spawn
-  *target*, so a model can today spawn a `primary` profile (`build`, `plan`).
-  #119 adds the target-side mode gate (spawnable ⇔ `mode ∈ {subagent, all}`) and
-  per-profile roster filtering; `update_plan` ownership (#140) and the
-  plan-accept handoff (#141) complete the agent hierarchy on that seam.
-  Embedders using core directly still get a hardcoded
+  **enforced** ✅ #119, below). The spawn boundary is now both spawner- and
+  target-side: a profile must `may_spawn` and its *target* must be spawnable-mode
+  (`subagent`/`all`) and on its `spawnable_agents` allowlist — so `build`/`plan`
+  (primaries) are unreachable spawn targets from mode defaults alone. `update_plan`
+  ownership (#140) and the plan-accept handoff (#141) complete the agent hierarchy
+  on the same `profile_tool_specs` seam. Embedders using core directly still get a
+  hardcoded
   `build`/`plan`/`explore` fallback via `ProfileRegistry::new()`; add your own with
   `ProfileRegistry::insert`.
 - **Physical tool restriction (✅ #116, [ADR-0038](adr/0038-physical-per-agent-tool-restriction.md)):**
@@ -185,6 +184,27 @@ only field a spawning model sees).
   the ancestor chain** (a child never gains a tool an ancestor lacked, mirroring
   ADR-0024's privilege ceiling). `explore` is now the reference read-only agent:
   `tools: [read, glob, grep]` — no `edit`/`write`, no `bash`, no `agent_spawn`.
+- **Per-profile spawn control (✅ #119, [ADR-0040](adr/0040-per-profile-spawn-control.md)):**
+  spawning is a per-profile capability declared in the definition — *whether* a
+  profile may spawn (`can_spawn`, default: open for primaries/`all`, closed for a
+  `subagent` leaf) and *which* profiles it may spawn (`spawnable_agents`, omitted ⇒
+  any spawnable target). Both ride the core `AgentProfile` with helpers
+  (`may_spawn`, `spawn_target_allowed`, `spawnable_as_subagent`); core = semantics,
+  runtime = enforcement. **Structural half:** the `agent_spawn`/`agent`/`agent_poll`
+  triple moves out of the shared `tool_specs` into
+  `EngineConfig.profile_tool_specs` (a `HashMap<profile, Vec<ToolSpec>>` the runtime
+  fills via `subagent::spawn_specs_for`); `run_turn` appends the active profile's
+  entry (roster + `agent` enum scoped to who *it* may spawn, empty when it may not),
+  so an out-of-list spawn is a schema violation before an executor refusal.
+  **Executor half:** `runtime::permission::spawn_refusal(spawner, target, registry)`
+  layers four checks before the ADR-0023 budget + ADR-0024 clamp — `!may_spawn`
+  (absorbs the old capability gate) → unknown target → target not spawnable-mode
+  (a `primary` is never a valid target) → target off the `spawnable_agents` list —
+  each a clear `ToolOutput` with no child minted. The allowlist is checked per
+  spawning session against *its own* profile (**not transitive**). Supervisor
+  hardening: `InMsg::Spawn` with an unknown name now `get()`s + errors instead of
+  silently escalating to `build`. The TUI `/agent` picker/Tab-cycle is
+  registry-driven, filtered to `mode ∈ {primary, all}`.
 - **System-prompt assembly (✅ #113, [ADR-0035](adr/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five
@@ -274,7 +294,7 @@ render/dedupe):
 - **Plan** — markdown strategy prose (`OutEvent::Plan`).
 - **TaskList** — markdown task outline, typically a `- [ ]`/`- [x]` checklist
   (`OutEvent::TaskList`). Plain `content` like the plan (✅ #142,
-  [ADR-0039](adr/0039-markdown-task-list.md), supersedes ADR-0004's structured
+  [ADR-0040](adr/0039-markdown-task-list.md), supersedes ADR-0004's structured
   `Vec<TaskItem>`): the outline is **user-facing progress info** — the engine
   never consumed the item structure and the list is not fed back to the model,
   so the per-item id/status JSON envelope was pure model overhead.
@@ -359,27 +379,34 @@ folds parent links from `SessionStarted` and, before each spawn, refuses past a
 depth cap (`MAX_SPAWN_DEPTH`) or a cumulative per-root budget
 (`MAX_SPAWNS_PER_ROOT`) — replying with a clear refusal `ToolOutput` instead of
 starting a child. Spawn is also **permission-gated** (✅ #77,
-[ADR-0024](adr/0024-subagent-permission-gating.md), `runtime::permission`): a
-`Subagent`-mode leaf profile (read-only `explore`) is refused the spawn
-capability outright, and every child's per-tool permission is clamped to the
-least-privileged rule across its whole ancestor chain (`Deny < Ask < Allow`), so
-a child can never touch the shared tree in ways a parent couldn't. Filesystem
-isolation (a separate child root) and bidirectional session-to-session messaging
-are still deferred (see ADR-0022/0024).
+[ADR-0024](adr/0024-subagent-permission-gating.md), `runtime::permission`): every
+child's per-tool permission is clamped to the least-privileged rule across its
+whole ancestor chain (`Deny < Ask < Allow`), so a child can never touch the
+shared tree in ways a parent couldn't. Layered in front of that clamp and the
+ADR-0023 budget is **per-profile spawn control** (✅ #119,
+[ADR-0040](adr/0040-per-profile-spawn-control.md), `spawn_refusal`): a profile
+must `may_spawn` (a `subagent` leaf like `explore` defaults closed — this absorbs
+ADR-0024's capability gate) and its *target* must be spawnable-mode
+(`subagent`/`all`) and on its `spawnable_agents` allowlist. Filesystem isolation
+(a separate child root) and bidirectional session-to-session messaging are still
+deferred (see ADR-0022/0024).
 
-**Roster disclosure** (✅ #112, [ADR-0034](adr/0034-file-based-agent-definitions.md)).
+**Roster disclosure** (✅ #112, [ADR-0034](adr/0034-file-based-agent-definitions.md);
+scoped ✅ #119, [ADR-0040](adr/0040-per-profile-spawn-control.md)).
 The `agent`/`agent_spawn` tool descriptions carry one `name: description` line per
-registered agent (built from the loaded `ProfileRegistry`), and the `agent`
-argument's schema constrains the name to an `enum` of the registered set — so the
-model learns *who it may spawn* at the call site, and `description` is the one
-field of a definition ever exposed to a parent. Per-profile filtering of the
-*spawnable* roster (via `spawnable_agents` + a target-side mode gate) is the
-deferred follow-up (🚧 #119); today the full roster is advertised — **including
-the `primary` profiles**, so nothing stops a model from spawning `build` or
-`plan`. A related supervisor wart lands with the same issue: an `InMsg::Spawn`
-naming an unknown profile silently resolves to the `build` default instead of
-being refused. (The #116 tool mask, now live, restricts each agent's *tool*
-set — a different axis than which agents it may spawn.)
+spawnable agent, and the `agent` argument's schema constrains the name to an
+`enum` — so the model learns *who it may spawn* at the call site, and
+`description` is the one field of a definition ever exposed to a parent. The
+roster + enum are now **per-profile**: `subagent::spawn_specs_for` scopes them to
+exactly the profiles the spawning profile may target (its `spawnable_agents` ∩ the
+target-mode gate), and the whole `agent_*` triple lives in
+`EngineConfig.profile_tool_specs` (empty when the profile may not spawn), so a
+`primary` like `build`/`plan` is never advertised as a target and an out-of-list
+spawn is a schema violation before an executor refusal. The related supervisor
+wart is fixed too: an `InMsg::Spawn` naming an unknown profile now emits a
+supervisor `Error` instead of silently resolving to the `build` default. (The
+#116 tool mask restricts each agent's *tool* set — a different axis than which
+agents it may spawn.)
 
 **Ask-user prompt** (✅ #90, [ADR-0027](adr/0027-ask-user-interactive-prompt.md)).
 The model calls a runtime-owned `ask_user { question, options, allow_free_form }`

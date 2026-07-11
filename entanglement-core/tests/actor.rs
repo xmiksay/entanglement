@@ -522,6 +522,47 @@ async fn spawn_starts_child_with_parent_link() {
 }
 
 #[tokio::test]
+async fn spawn_of_unknown_agent_errors_instead_of_falling_back_to_build() {
+    // An unknown spawn target must not silently escalate to `build` (#119): the
+    // supervisor emits an Error and starts no child.
+    let holly = Holly::spawn(factory(vec![LlmResponse {
+        text: "unused".into(),
+        tool_calls: vec![],
+    }]));
+    let child = SessionId::new("ghost-child");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Spawn {
+            session: child.clone(),
+            parent: SessionId::new("parent"),
+            agent: "does-not-exist".into(),
+            prompt: "go".into(),
+        })
+        .await
+        .unwrap();
+
+    let mut saw_error = false;
+    let mut saw_start = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+        match &ev {
+            OutEvent::Error {
+                session, message, ..
+            } if session == &child && message.contains("unknown agent profile") => {
+                saw_error = true;
+                break;
+            }
+            OutEvent::SessionStarted { session, .. } if session == &child => saw_start = true,
+            _ => {}
+        }
+    }
+    assert!(saw_error, "an unknown spawn target should emit an Error");
+    assert!(
+        !saw_start,
+        "no child session should start for an unknown target"
+    );
+}
+
+#[tokio::test]
 async fn duplicate_spawn_is_ignored() {
     // A second `Spawn` for a live child id is a no-op (one child, one start).
     let holly = Holly::spawn(factory(vec![
@@ -574,6 +615,8 @@ async fn custom_profile_is_selectable() {
         permission: PermissionProfile::new(Permission::Ask),
         tools: None,
         disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
     });
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");

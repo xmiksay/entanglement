@@ -155,6 +155,8 @@ async fn deny_refuses_without_request() {
         permission: PermissionProfile::new(Permission::Deny),
         tools: None,
         disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
     });
     let holly = spawn_with_bash_call_using("rm -rf", profiles);
     let sid = SessionId::new("s1");
