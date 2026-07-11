@@ -26,13 +26,19 @@
 //! user/project file is a loud error, never a silent fallback; the embedded
 //! built-ins are guarded by a unit test so their parse is provably infallible.
 //!
-//! # Deferred frontmatter
+//! # Tool mask (#116) and deferred frontmatter
 //!
-//! `tools`/`disallowed_tools` (tool mask) and `can_spawn`/`spawnable_agents`
-//! (spawn control) are parsed and validated here so a definition file is a
-//! stable contract, but their **enforcement** is tracked in follow-up sub-issues
-//! of the agents/skills epic (#111) — per-session tool specs (#116/#119) are the
-//! prerequisite. They do not yet reach the core [`AgentProfile`].
+//! `tools`/`disallowed_tools` (the tool mask) now reach the core
+//! [`AgentProfile`] and are **enforced** (#116, ADR-0038): core filters the
+//! advertised specs by the mask at turn time and the runtime executor refuses a
+//! masked call at dispatch, so a restricted agent's model never sees the schema
+//! and a hallucinated call is still refused.
+//!
+//! `can_spawn`/`spawnable_agents` (fine-grained spawn control) are still parsed
+//! and validated here so a definition file is a stable contract, but their
+//! enforcement is tracked in a follow-up of the agents/skills epic (#111) — the
+//! `AgentMode` capability gate (ADR-0024) is the current spawn boundary. They do
+//! not yet reach the core [`AgentProfile`].
 
 use std::path::{Path, PathBuf};
 
@@ -76,15 +82,14 @@ struct AgentDefinition {
     /// omitted ⇒ the brief is not included even when a brief file exists.
     #[serde(default)]
     include_brief: bool,
-    // ── declared here, enforcement deferred (see module docs) ──────────────
-    /// Tool allowlist; omitted ⇒ inherit all.
+    /// Tool allowlist; omitted ⇒ inherit all. Enforced (#116, ADR-0038): masks
+    /// both the advertised specs and dispatch.
     #[serde(default)]
-    #[allow(dead_code)]
     tools: Option<Vec<String>>,
-    /// Tool denylist, applied before the allowlist.
+    /// Tool denylist, applied after the allowlist (#116, ADR-0038).
     #[serde(default)]
-    #[allow(dead_code)]
     disallowed_tools: Vec<String>,
+    // ── declared here, enforcement deferred (see module docs) ──────────────
     /// Whether this profile may spawn sub-agents.
     #[serde(default)]
     #[allow(dead_code)]
@@ -171,6 +176,8 @@ fn parse_definition(content: &str, ctx: &PromptContext) -> Result<AgentProfile> 
         system_prompt: assemble(&body, def.include_brief, def.mode, ctx),
         model: def.model.filter(|m| m != "inherit"),
         permission,
+        tools: def.tools,
+        disallowed_tools: def.disallowed_tools,
     })
 }
 
@@ -239,6 +246,11 @@ mod tests {
         assert_eq!(explore.mode, AgentMode::Subagent);
         assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
         assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);
+        // Reference read-only agent (#116): its tool mask is the read trio only.
+        assert!(explore.advertises_tool("read"));
+        assert!(explore.advertises_tool("grep"));
+        assert!(!explore.advertises_tool("edit"));
+        assert!(!explore.advertises_tool("agent_spawn"));
     }
 
     #[test]
@@ -291,12 +303,22 @@ mod tests {
     }
 
     #[test]
-    fn mode_all_and_deferred_fields_parse() {
+    fn mode_all_and_tool_mask_reach_the_profile() {
         let p = parse(
             "---\nname: x\ndescription: d\nmode: all\ntools: [read, grep]\n\
              disallowed_tools: [bash]\ncan_spawn: true\nspawnable_agents: [explore]\n---\nbody",
         )
         .unwrap();
         assert_eq!(p.mode, AgentMode::All);
+        // `tools`/`disallowed_tools` now reach the core profile and drive the
+        // advertised-set mask (#116).
+        assert_eq!(
+            p.tools.as_deref(),
+            Some(&["read".to_string(), "grep".to_string()][..])
+        );
+        assert_eq!(p.disallowed_tools, vec!["bash".to_string()]);
+        assert!(p.advertises_tool("read"));
+        assert!(!p.advertises_tool("edit"));
+        assert!(!p.advertises_tool("bash"));
     }
 }

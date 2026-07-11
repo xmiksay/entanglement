@@ -111,9 +111,19 @@ into a `ProfileRegistry` — embedded built-ins < user
 defaults+override shape as the provider catalog (#118). Editing a built-in = a
 same-`name` file in a higher layer. `description` is the one field disclosed to a
 spawning model (roster in the `agent`/`agent_spawn` tool descriptions + name
-enum). Frontmatter `tools`/`disallowed_tools`/`can_spawn`/`spawnable_agents` parse
-now, enforcement deferred (needs per-session specs #116/#119). `AgentMode` gained
-`all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
+enum). Frontmatter `tools`/`disallowed_tools` (the tool mask) are **enforced**
+(✅ #116, [ADR-0038](../docs/adr/0038-physical-per-agent-tool-restriction.md)):
+they ride the core `AgentProfile` (`tools`/`disallowed_tools` + `advertises_tool`,
+`registry ∩ allowlist − denylist`), orthogonal to `permission`. Core's `run_turn`
+filters `tool_specs` by the active profile (advertisement — a masked schema never
+reaches the model; the `update_plan`/`update_tasks` built-ins are never masked),
+and `runtime::permission::tool_masked` refuses a masked `ToolExec` **first**
+(before the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions +
+permission), clamping down the ancestor chain like ADR-0024's ceiling. `explore`
+is now the reference read-only agent (`tools: [read, glob, grep]` — no `edit`/
+`write`/`bash`/`agent_spawn`). `can_spawn`/`spawnable_agents` parse now,
+enforcement deferred (the `AgentMode` gate is the current spawn boundary).
+`AgentMode` gained `all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
 raw body (✅ #113, [ADR-0035](../docs/adr/0035-deterministic-system-prompt-assembly.md)):
 `entanglement_runtime::system_prompt::assemble` composes shared preamble + agent
 body + project brief (frontmatter `include_brief: true`, from the standard
@@ -135,7 +145,8 @@ defaults+override shape as agents/catalog. Recursive walk for `SKILL.md` markers
 symlinked dups + dir cycles deduped by canonical path; malformed file = loud
 error; `root_dir` resolved once at discovery. Frontmatter: `name`/`description`
 required, `user_only` (only explicit user invocation — withheld from disclosure),
-`allowed_tools` (mask, enforcement deferred #116). **Tier-1 disclosure only**:
+`allowed_tools` (a *skill-scoped* mask, enforcement deferred — needs skill
+provenance, distinct from the #116 agent tool mask). **Tier-1 disclosure only**:
 `disclosures()` emits one `name: description` line per non-`user_only` skill
 (~100 tokens each); bodies never preloaded. Selection stays LLM reasoning — no
 keyword/embedding gate; description quality is the contract. Bodies + payload are
@@ -151,7 +162,8 @@ and project root stay separate coordinate systems, a `${SKILL_DIR}` placeholder 
 the explicit escape hatch, no implicit CWD fallback) — and returns an ordinary
 `tool_result` with `skill_id` + substituted body + `available_refs` (listed, not
 loaded), never a spoofed user message. Provenance (carrying `skill_id` onto
-in-skill tool calls) lands with `allowed_tools` enforcement (#116). Core still
+in-skill tool calls) lands with skill-scoped `allowed_tools` enforcement (a
+separate follow-up, distinct from the #116 agent tool mask). Core still
 ships `system_prompt` verbatim as `LlmRequest.system`. `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's

@@ -354,11 +354,15 @@ async fn write_tool_denied_under_explore_profile() {
         .unwrap();
 
     let events = collect(sub, &sid).await;
+    // `write` is now *masked* out of `explore`'s tool set (#116, ADR-0038): the
+    // executor refuses it as "not available" before permission even resolves —
+    // a strictly stronger block than the earlier permission `Deny`.
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("denied"))),
-        "explore should deny write; got {events:?}"
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { output, .. } if output.contains("not available")
+        )),
+        "explore should refuse write as unavailable; got {events:?}"
     );
     assert!(!root.join("blocked.txt").exists(), "write must not land");
 }

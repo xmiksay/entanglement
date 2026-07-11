@@ -574,6 +574,8 @@ async fn custom_profile_is_selectable() {
         system_prompt: "Ask before anything.".into(),
         model: None,
         permission: PermissionProfile::new(Permission::Ask),
+        tools: None,
+        disallowed_tools: Vec::new(),
     });
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");

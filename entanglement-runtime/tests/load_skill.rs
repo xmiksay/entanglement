@@ -5,16 +5,19 @@
 //! ref to an absolute path. Turn 2 feeds that exact absolute path back into the
 //! `read` tool, proving the model can open a substituted ref without guessing a
 //! base directory (the bug class ADR-0037 closes). A third case checks that a
-//! read-only `explore` profile denies `load_skill` like any other host tool —
-//! no special exemption.
+//! profile denying `load_skill` via *permission* refuses it like any other host
+//! tool — no special exemption (ADR-0037). It uses a profile that still
+//! advertises `load_skill` (no tool mask), so the denial comes from permission,
+//! not the #116 physical mask (which the `tool_mask` tests cover).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, ProfileRegistry, SessionId, ToolCall,
+    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
+    SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::skills::{load_registry, LoadSkillTool};
@@ -182,7 +185,7 @@ async fn load_skill_then_read_a_substituted_ref() {
 }
 
 #[tokio::test]
-async fn load_skill_denied_under_explore_profile() {
+async fn load_skill_denied_via_permission_has_no_exemption() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-loadskill-deny-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -214,22 +217,35 @@ async fn load_skill_denied_under_explore_profile() {
 
     let mut tools = host_tools(root.clone());
     tools.register(LoadSkillTool::new(registry));
+    // A profile that *advertises* `load_skill` (no tool mask) but denies it via
+    // permission (default Deny): `load_skill` is gated exactly like `read`, no
+    // exemption (ADR-0037). Using a non-masked profile keeps this focused on the
+    // permission path, distinct from the #116 tool mask.
+    let mut profiles = ProfileRegistry::new();
+    profiles.insert(AgentProfile {
+        name: "denyskill".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Deny),
+        tools: None,
+        disallowed_tools: Vec::new(),
+    });
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tool_specs: tools.specs(),
-        ..EngineConfig::default()
+        profiles: profiles.clone(),
     };
     let holly = Holly::spawn(cfg);
-    // `explore` is the built-in read-only profile: default Deny — `load_skill`
-    // is gated exactly like `read`, no exemption (ADR-0037).
-    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(&holly, tools, profiles);
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {
             session: sid.clone(),
-            agent: "explore".into(),
+            agent: "denyskill".into(),
         })
         .await
         .unwrap();
@@ -248,7 +264,7 @@ async fn load_skill_denied_under_explore_profile() {
             e,
             OutEvent::ToolOutput { output, .. } if output.contains("denied")
         )),
-        "explore should deny load_skill; got {events:?}"
+        "permission Deny should refuse load_skill (no exemption); got {events:?}"
     );
     assert!(
         !events.iter().any(|e| matches!(

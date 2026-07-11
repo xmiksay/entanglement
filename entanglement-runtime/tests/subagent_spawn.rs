@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, MessageRole, OutEvent, SessionId, ToolCall, ToolRegistry,
+    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmSession, LlmStream, MessageRole, OutEvent, Permission, PermissionProfile,
+    ProfileRegistry, SessionId, ToolCall, ToolRegistry,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use tokio::sync::Notify;
@@ -395,10 +396,34 @@ async fn read_only_subagent_cannot_use_blocking_agent() {
 /// the capability. Asserts exactly one child starts and the refusal is relayed —
 /// shared by the `agent_spawn` and `agent` parity tests.
 async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
+    // Isolate the ADR-0024 capability gate from the #116 tool mask: give this
+    // test's `explore` an allowlist that *advertises* the spawn tools, so the
+    // mask does not preempt — the refusal must then come from the Subagent-mode
+    // capability gate ("cannot spawn"), not the mask ("not available"). (The
+    // stock `explore` masks the spawn tools too; that path is covered by the
+    // `tool_mask` tests.)
+    let mut profiles = ProfileRegistry::new();
+    profiles.insert(AgentProfile {
+        name: "explore".into(),
+        description: "read-only leaf".into(),
+        mode: AgentMode::Subagent,
+        system_prompt: String::new(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
+        tools: Some(vec![
+            "read".into(),
+            "glob".into(),
+            "grep".into(),
+            "agent_spawn".into(),
+            "agent".into(),
+        ]),
+        disallowed_tools: Vec::new(),
+    });
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ExploreThenSpawnLlm { tool: leaf_tool }))
         }),
+        profiles: profiles.clone(),
         ..EngineConfig::default()
     };
     let profiles = cfg.profiles.clone();

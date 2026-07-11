@@ -10,9 +10,15 @@
 //!   the least-privileged `for_tool` across the session and every ancestor
 //!   (`Deny < Ask < Allow`), so a child cannot touch the shared working tree in
 //!   ways the parent couldn't.
+//! - **Tool mask** — [`tool_masked`] (#116, ADR-0038): a tool omitted from a
+//!   profile's allowlist (or listed in its denylist) does not *exist* for that
+//!   session — a call is refused before permission is even resolved. Like the
+//!   ceiling it clamps down the ancestor chain (a child never gains a tool an
+//!   ancestor lacked). This is the enforcement half of the physical restriction
+//!   whose advertisement half lives in core's `run_turn`.
 //!
-//! Both live in the runtime tool executor's single-threaded loop, folded from the
-//! same lifecycle events as permission dispatch — zero core surface.
+//! All three live in the runtime tool executor's single-threaded loop, folded
+//! from the same lifecycle events as permission dispatch — zero core surface.
 
 use std::collections::{HashMap, HashSet};
 
@@ -61,6 +67,38 @@ pub fn effective_permission(
     perm
 }
 
+/// Whether `tool` is masked out for `session` — refused because it is not in the
+/// effective advertised set (#116, ADR-0038). A tool is available only if the
+/// session's own profile *and* every ancestor's profile advertise it: the mask
+/// intersects down the chain, so a child never gains a tool an ancestor lacked
+/// (mirrors [`effective_permission`]'s privilege ceiling). An unseen session in
+/// the chain masks nothing (default-open, matching the permission fallback).
+///
+/// Orthogonal to permission: this decides a tool's *existence*, the `for_tool`
+/// grade decides `Allow`/`Ask`/`Deny` among the tools that survive here.
+pub fn tool_masked(
+    active: &HashMap<SessionId, AgentProfile>,
+    guard: &SpawnGuard,
+    session: &SessionId,
+    tool: &str,
+) -> bool {
+    let mut current = session.clone();
+    // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
+    let mut visited = HashSet::new();
+    while visited.insert(current.clone()) {
+        if let Some(profile) = active.get(&current) {
+            if !profile.advertises_tool(tool) {
+                return true;
+            }
+        }
+        match guard.parent_of(&current) {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+    false
+}
+
 /// A session's own permission for `tool`; an unseen session defaults to `Allow`
 /// (nothing to gate on), matching the pre-#77 fallback.
 fn permission_for(
@@ -97,6 +135,16 @@ mod tests {
     use entanglement_core::PermissionProfile;
 
     fn profile(name: &str, mode: AgentMode, permission: PermissionProfile) -> AgentProfile {
+        masked_profile(name, mode, permission, None, Vec::new())
+    }
+
+    fn masked_profile(
+        name: &str,
+        mode: AgentMode,
+        permission: PermissionProfile,
+        tools: Option<Vec<&str>>,
+        disallowed: Vec<&str>,
+    ) -> AgentProfile {
         AgentProfile {
             name: name.into(),
             description: String::new(),
@@ -104,6 +152,8 @@ mod tests {
             system_prompt: String::new(),
             model: None,
             permission,
+            tools: tools.map(|v| v.into_iter().map(String::from).collect()),
+            disallowed_tools: disallowed.into_iter().map(String::from).collect(),
         }
     }
 
@@ -165,6 +215,67 @@ mod tests {
             effective_permission(&active, &guard, &parent, "edit"),
             Permission::Ask
         );
+    }
+
+    #[test]
+    fn tool_mask_refuses_tool_absent_from_allowlist() {
+        // A read-only leaf: only read/glob/grep advertised.
+        let explore = masked_profile(
+            "explore",
+            AgentMode::Subagent,
+            PermissionProfile::new(Permission::Deny),
+            Some(vec!["read", "glob", "grep"]),
+            Vec::new(),
+        );
+        let s = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(s.clone(), explore);
+        let guard = SpawnGuard::new();
+        assert!(!tool_masked(&active, &guard, &s, "read"));
+        assert!(tool_masked(&active, &guard, &s, "edit"));
+        assert!(tool_masked(&active, &guard, &s, "agent_spawn"));
+        // An unseen session masks nothing (default-open).
+        assert!(!tool_masked(
+            &active,
+            &guard,
+            &SessionId::new("other"),
+            "edit"
+        ));
+    }
+
+    #[test]
+    fn tool_mask_clamps_down_the_ancestor_chain() {
+        // Parent restricted to [read]; child would advertise [read, edit] on its
+        // own, but the intersection down the chain drops `edit`.
+        let parent = masked_profile(
+            "restricted",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+            Some(vec!["read"]),
+            Vec::new(),
+        );
+        let child = masked_profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+            Some(vec!["read", "edit"]),
+            Vec::new(),
+        );
+        let p = SessionId::new("parent");
+        let c = SessionId::new("child");
+        let mut active = HashMap::new();
+        active.insert(p.clone(), parent);
+        active.insert(c.clone(), child);
+        let mut guard = SpawnGuard::new();
+        guard.record_start(p.clone(), None);
+        guard.record_start(c.clone(), Some(p.clone()));
+
+        // `read` survives both → available on the child.
+        assert!(!tool_masked(&active, &guard, &c, "read"));
+        // `edit` is on the child alone but masked by the parent → refused.
+        assert!(tool_masked(&active, &guard, &c, "edit"));
+        // The parent (a root) keeps its own mask unchanged.
+        assert!(tool_masked(&active, &guard, &p, "edit"));
     }
 
     #[test]
