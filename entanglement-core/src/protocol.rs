@@ -163,10 +163,12 @@ impl PermissionProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
-    /// User-facing entry agent; may spawn sub-agents.
+    /// User-facing entry agent; may spawn sub-agents. Intended to never be a
+    /// spawn *target* itself — the target-side gate lands with #119; today the
+    /// roster does not filter primaries out.
     Primary,
-    /// Only reachable via spawn; a read-only leaf that cannot spawn further
-    /// (gated in the runtime, ADR-0024).
+    /// Intended to be reachable only via spawn; a read-only leaf that cannot
+    /// spawn further (spawner-side gate enforced in the runtime, ADR-0024).
     Subagent,
     /// Usable as both a primary entry agent *and* a spawnable sub-agent; spawns
     /// like a `Primary`. Lets one file-defined agent serve both roles
@@ -195,6 +197,37 @@ pub struct AgentProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub permission: PermissionProfile,
+    /// Tool allowlist (#116, ADR-0038). `Some` ⇒ only these tools are
+    /// advertised to the model and accepted at dispatch (the registry is
+    /// intersected with this set); `None` ⇒ inherit every advertised tool.
+    /// Distinct from [`permission`][Self::permission]: this controls a tool's
+    /// *existence*, not `Allow`/`Ask`/`Deny` among tools that exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// Tool denylist (#116, ADR-0038), applied *after* the allowlist. A tool
+    /// named here is never advertised nor accepted, even if the allowlist (or an
+    /// inherit-all `None`) would otherwise include it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
+}
+
+impl AgentProfile {
+    /// Whether `tool` is in this profile's advertised set: present unless the
+    /// denylist removes it, or an allowlist is set and omits it. This is the
+    /// *physical* restriction of #116 — orthogonal to
+    /// [`PermissionProfile::for_tool`], which grades `Allow`/`Ask`/`Deny` among
+    /// the tools that survive this mask. The engine built-ins (`update_plan`/
+    /// `update_tasks`) are session-state tools, not host tools, and are never
+    /// passed through this mask.
+    pub fn advertises_tool(&self, tool: &str) -> bool {
+        if self.disallowed_tools.iter().any(|t| t == tool) {
+            return false;
+        }
+        match &self.tools {
+            Some(allow) => allow.iter().any(|t| t == tool),
+            None => true,
+        }
+    }
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -671,5 +704,49 @@ mod tests {
     fn permission_defaults_when_no_rule() {
         let p = PermissionProfile::new(Permission::Allow);
         assert_eq!(p.for_tool("anything"), Permission::Allow);
+    }
+
+    fn masked_profile(tools: Option<Vec<&str>>, disallowed: Vec<&str>) -> AgentProfile {
+        AgentProfile {
+            name: "m".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            permission: PermissionProfile::new(Permission::Allow),
+            tools: tools.map(|v| v.into_iter().map(String::from).collect()),
+            disallowed_tools: disallowed.into_iter().map(String::from).collect(),
+        }
+    }
+
+    #[test]
+    fn advertises_tool_inherits_all_when_unmasked() {
+        let p = masked_profile(None, vec![]);
+        assert!(p.advertises_tool("edit"));
+        assert!(p.advertises_tool("anything"));
+    }
+
+    #[test]
+    fn advertises_tool_allowlist_restricts_to_listed() {
+        let p = masked_profile(Some(vec!["read", "glob", "grep"]), vec![]);
+        assert!(p.advertises_tool("read"));
+        assert!(p.advertises_tool("grep"));
+        assert!(!p.advertises_tool("edit"));
+        assert!(!p.advertises_tool("agent_spawn"));
+    }
+
+    #[test]
+    fn advertises_tool_denylist_wins_over_allowlist() {
+        // `edit` is in the allowlist yet also denied — denylist is applied last.
+        let p = masked_profile(Some(vec!["read", "edit"]), vec!["edit"]);
+        assert!(p.advertises_tool("read"));
+        assert!(!p.advertises_tool("edit"));
+    }
+
+    #[test]
+    fn advertises_tool_denylist_alone_subtracts_from_inherit_all() {
+        let p = masked_profile(None, vec!["bash"]);
+        assert!(p.advertises_tool("read"));
+        assert!(!p.advertises_tool("bash"));
     }
 }

@@ -319,10 +319,19 @@ async fn run_turn(
         state: AgentState::Thinking,
     });
 
-    // Tool set advertised to the model = host tools (from config, #61) + the
+    // Tool set advertised to the model = host tools (from config, #61) filtered
+    // by the active profile's allowlist/denylist mask (#116, ADR-0038), plus the
     // two built-ins. Core caches no fixed tool set on the session; the schemas
-    // come from `EngineConfig.tool_specs` at turn time.
-    let mut specs: Vec<ToolSpec> = tool_specs.to_vec();
+    // come from `EngineConfig.tool_specs` at turn time. The mask is a *physical*
+    // restriction — a masked tool's schema never reaches the model — layered
+    // under the runtime's `Allow`/`Ask`/`Deny` dispatch, which grades only the
+    // tools that survive here. The `update_plan`/`update_tasks` built-ins below
+    // are session-state tools, not host tools, so they bypass the mask.
+    let mut specs: Vec<ToolSpec> = tool_specs
+        .iter()
+        .filter(|spec| s.profile.advertises_tool(&spec.name))
+        .cloned()
+        .collect();
     specs.push(ToolSpec::with_schema(
         PLAN_TOOL,
         "Replace the strategy plan (markdown prose).",

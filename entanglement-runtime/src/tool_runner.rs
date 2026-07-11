@@ -29,7 +29,7 @@ use entanglement_core::{
 };
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::permission::{effective_permission, spawn_capability_refusal};
+use crate::permission::{effective_permission, spawn_capability_refusal, tool_masked};
 
 /// Spawn the per-engine tool executor. Subscribes synchronously (so no
 /// `ToolExec` emitted before the task is scheduled is missed) and runs until the
@@ -81,6 +81,23 @@ pub fn spawn_tool_executor(
                     input,
                     ..
                 }) => {
+                    // Physical tool restriction (#116, ADR-0038): a tool outside
+                    // the session's effective advertised set — its profile's
+                    // allowlist/denylist, intersected down the ancestor chain —
+                    // does not exist for this agent. Refuse before any other
+                    // handling (spawn interception, permission), so even a
+                    // hallucinated call to a masked `edit`/`agent_spawn` is a
+                    // hard boundary, not a persona nudge. Core already withholds
+                    // the schema; this closes the gap if the model calls it anyway.
+                    if tool_masked(&active, &spawn_guard, &session, &tool) {
+                        let holly = holly.clone();
+                        tokio::spawn(async move {
+                            let output =
+                                format!("tool `{tool}` is not available to this agent (restricted by profile)");
+                            reply(&holly, session, request_id, output).await;
+                        });
+                        continue;
+                    }
                     // The `agent_spawn`/`agent` family only orchestrates sessions
                     // (touches no host resource), so it bypasses per-tool approval
                     // like core's `update_plan`/`update_tasks` built-ins (#60). It

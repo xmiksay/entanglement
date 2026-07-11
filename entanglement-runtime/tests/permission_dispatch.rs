@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, ProfileRegistry, SessionId, Tool, ToolCall, ToolRegistry,
+    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
+    SessionId, Tool, ToolCall, ToolRegistry,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 
@@ -56,8 +57,8 @@ impl Tool for EchoBash {
 }
 
 /// Build a Holly whose scripted LLM calls `bash` once, plus a registry with the
-/// `EchoBash` tool and the runtime tool executor wired to the built-in profiles.
-fn spawn_with_bash_call(input: &str) -> Holly {
+/// `EchoBash` tool and the runtime tool executor wired to `profiles`.
+fn spawn_with_bash_call_using(input: &str, profiles: ProfileRegistry) -> Holly {
     let scripted = Arc::new(vec![
         LlmResponse {
             text: "".into(),
@@ -76,13 +77,19 @@ fn spawn_with_bash_call(input: &str) -> Holly {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
+        profiles: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
-    let _executor = spawn_tool_executor(&holly, reg, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(&holly, reg, profiles);
     holly
+}
+
+/// Wire the built-in profiles (build/plan/explore).
+fn spawn_with_bash_call(input: &str) -> Holly {
+    spawn_with_bash_call_using(input, ProfileRegistry::new())
 }
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
@@ -134,13 +141,27 @@ async fn allow_runs_without_approval() {
 
 #[tokio::test]
 async fn deny_refuses_without_request() {
-    // explore profile: bash → Deny (default deny).
-    let holly = spawn_with_bash_call("rm -rf");
+    // A profile that *advertises* bash (no tool mask) but denies it via the
+    // permission profile — so this exercises the `Deny` dispatch path, distinct
+    // from the physical tool mask (#116), which would refuse bash before
+    // permission even resolves (see the `tool_mask` integration test).
+    let mut profiles = ProfileRegistry::new();
+    profiles.insert(AgentProfile {
+        name: "denybash".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Deny),
+        tools: None,
+        disallowed_tools: Vec::new(),
+    });
+    let holly = spawn_with_bash_call_using("rm -rf", profiles);
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {
             session: sid.clone(),
-            agent: "explore".into(),
+            agent: "denybash".into(),
         })
         .await
         .unwrap();

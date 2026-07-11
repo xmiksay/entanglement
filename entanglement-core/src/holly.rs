@@ -154,6 +154,8 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             system_prompt: "You are a coding agent. Implement the requested changes using the available tools.".into(),
             model: None,
             permission: PermissionProfile::new(Permission::Allow),
+            tools: None,
+            disallowed_tools: Vec::new(),
         },
         AgentProfile {
             name: "plan".into(),
@@ -162,6 +164,8 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             system_prompt: "You are a planning agent. Analyze the request and produce a plan without making changes. Use the update_plan and update_tasks tools to record your strategy and outline.".into(),
             model: None,
             permission: PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
+            tools: None,
+            disallowed_tools: Vec::new(),
         },
         AgentProfile {
             name: "explore".into(),
@@ -173,6 +177,11 @@ fn built_in_profiles() -> [AgentProfile; 3] {
                 .with("read", Permission::Allow)
                 .with("glob", Permission::Allow)
                 .with("grep", Permission::Allow),
+            // Reference read-only agent (#116): the read trio is *all* it can
+            // reach — no `edit`/`write`, no `bash`, no `agent_spawn`. A physical
+            // boundary, matching the `permission` denies above.
+            tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
+            disallowed_tools: Vec::new(),
         },
     ]
 }

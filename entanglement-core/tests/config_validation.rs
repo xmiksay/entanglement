@@ -20,6 +20,8 @@ fn custom_profile(name: &str) -> AgentProfile {
         system_prompt: "custom".to_string(),
         model: None,
         permission: PermissionProfile::new(Permission::Deny),
+        tools: None,
+        disallowed_tools: Vec::new(),
     }
 }
 

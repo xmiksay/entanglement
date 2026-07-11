@@ -157,12 +157,34 @@ only field a spawning model sees).
   (`<root>/.entanglement/agents/*.md`). Editing a built-in = dropping a same-`name`
   file in a higher layer — one mechanism for all three, same defaults+override
   shape as the provider catalog (#118). A malformed file is a loud error. The
-  frontmatter also declares `tools`/`disallowed_tools` (tool mask) and
-  `can_spawn`/`spawnable_agents` (spawn control), parsed + validated now but with
-  enforcement deferred to their own sub-issues of #111 (they need per-session tool
-  specs, #116/#119). Embedders using core directly still get a hardcoded
+  frontmatter also declares `tools`/`disallowed_tools` (the tool mask, **enforced**
+  ✅ #116, below) and `can_spawn`/`spawnable_agents` (fine-grained spawn control,
+  still parsed-but-deferred — 🚧 #119). Note the current spawn boundary — the
+  `AgentMode` capability gate, ADR-0024 — is **spawner-side only**: it refuses a
+  `subagent`-mode leaf the spawn capability, but nothing yet gates the spawn
+  *target*, so a model can today spawn a `primary` profile (`build`, `plan`).
+  #119 adds the target-side mode gate (spawnable ⇔ `mode ∈ {subagent, all}`) and
+  per-profile roster filtering; `update_plan` ownership (#140) and the
+  plan-accept handoff (#141) complete the agent hierarchy on that seam.
+  Embedders using core directly still get a hardcoded
   `build`/`plan`/`explore` fallback via `ProfileRegistry::new()`; add your own with
   `ProfileRegistry::insert`.
+- **Physical tool restriction (✅ #116, [ADR-0038](adr/0038-physical-per-agent-tool-restriction.md)):**
+  an agent's `tools` allowlist / `disallowed_tools` denylist masks its tool set —
+  `registry ∩ allowlist − denylist` — on *both* sides of the core↔runtime seam,
+  orthogonal to `permission` (which grades `Allow`/`Ask`/`Deny` among the tools
+  that survive the mask). The mask rides the core `AgentProfile`
+  (`tools`/`disallowed_tools` + `advertises_tool`), so it travels per session with
+  no new protocol surface. **(a) Advertisement:** core's `run_turn` filters
+  `EngineConfig.tool_specs` by the active profile's mask before appending the
+  `update_plan`/`update_tasks` built-ins (session-state tools, never masked) — a
+  masked tool's schema never reaches the model. **(b) Enforcement:**
+  `runtime::permission::tool_masked` refuses a masked `ToolExec` **first** — before
+  the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions and permission —
+  so a hallucinated masked call is a hard boundary, and the mask **intersects down
+  the ancestor chain** (a child never gains a tool an ancestor lacked, mirroring
+  ADR-0024's privilege ceiling). `explore` is now the reference read-only agent:
+  `tools: [read, glob, grep]` — no `edit`/`write`, no `bash`, no `agent_spawn`.
 - **System-prompt assembly (✅ #113, [ADR-0035](adr/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five
@@ -181,7 +203,8 @@ only field a spawning model sees).
   `AgentProfile.system_prompt` at load time, so session start / `SetAgent` / spawn
   all read the finished prompt and core stays a verbatim pass-through into
   `LlmRequest.system`. The skill index is populated from the skill registry
-  (✅ #114, below); per-agent tool-mask filtering of that list is deferred (#116).
+  (✅ #114, below); filtering that skill index by a per-agent tool mask is a
+  separate follow-up (the #116 tool mask covers tool *specs*, not the skill index).
 - **Skill discovery + registry (✅ #114, [ADR-0036](adr/0036-skill-discovery-and-registry.md)):**
   tier 1 of progressive disclosure. A **skill** is a directory with a `SKILL.md`
   (YAML frontmatter + markdown body) plus optional supporting files
@@ -195,7 +218,8 @@ only field a spawning model sees).
   directory cycles are deduped by canonical path; a malformed file is a loud
   error. Frontmatter: `name` + `description` (required), `user_only` (only explicit
   user invocation — withheld from the model's disclosure list), and `allowed_tools`
-  (tool mask, enforcement deferred to #116). Each `SkillMeta` resolves its
+  (a *skill-scoped* tool mask, enforcement deferred — it needs skill provenance,
+  distinct from the #116 agent tool mask). Each `SkillMeta` resolves its
   `root_dir` **once** at discovery. **Disclosure is tier-1 only**: `SkillRegistry::disclosures`
   emits one `name: description` line per non-`user_only` skill into the assembled
   system prompt (~100 tokens/skill); bodies are never preloaded. **Selection stays
@@ -209,8 +233,9 @@ only field a spawning model sees).
   (`agent_spawn`/`ask_user`/`agent_poll`), it **reads the filesystem**, so it is a
   *real host tool* in the `ToolRegistry` (`entanglement_runtime::skills::load_skill::LoadSkillTool`,
   holding a shared `Arc<SkillRegistry>`) and flows through the *same* per-call
-  permission gate as `read` — a read-only `explore` profile denies it, no
-  exemption. The handler resolves **deterministically** (never model reasoning):
+  gates as `read` — the permission profile and the #116 tool mask — with no
+  orchestration-tool exemption. A read-only `explore` (mask `[read, glob, grep]`)
+  therefore refuses it as unavailable. The handler resolves **deterministically** (never model reasoning):
   look the `SkillMeta` up by name; reject a `user_only` skill (withheld from
   disclosure, only an explicit user command may trigger it); then **substitute
   every relative payload path to an absolute one** before the text reaches the
@@ -224,8 +249,9 @@ only field a spawning model sees).
   as absolute paths, **not** loaded) — never a spoofed user message, so the
   authorship trail stays honest. Provenance (carrying `skill_id` onto tool calls
   made while a skill is active, to scope its `allowed_tools` mask) is a
-  tool-execution-record field that lands with mask *enforcement* (#116); `skill_id`
-  is surfaced in the result today.
+  tool-execution-record field for a **separate** follow-up — distinct from the
+  #116 *agent* tool mask, which is now live; `skill_id` is surfaced in the result
+  today.
 - **Where dispatch runs (✅ #59):** the `AgentProfile` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
   **runtime** concern ([ADR-0003](adr/0003-agent-and-permission-profiles.md) /
@@ -343,8 +369,13 @@ registered agent (built from the loaded `ProfileRegistry`), and the `agent`
 argument's schema constrains the name to an `enum` of the registered set — so the
 model learns *who it may spawn* at the call site, and `description` is the one
 field of a definition ever exposed to a parent. Per-profile filtering of the
-roster (via `spawnable_agents`, and per-session specs #116/#119) is the deferred
-follow-up; today the full roster is advertised.
+*spawnable* roster (via `spawnable_agents` + a target-side mode gate) is the
+deferred follow-up (🚧 #119); today the full roster is advertised — **including
+the `primary` profiles**, so nothing stops a model from spawning `build` or
+`plan`. A related supervisor wart lands with the same issue: an `InMsg::Spawn`
+naming an unknown profile silently resolves to the `build` default instead of
+being refused. (The #116 tool mask, now live, restricts each agent's *tool*
+set — a different axis than which agents it may spawn.)
 
 **Ask-user prompt** (✅ #90, [ADR-0027](adr/0027-ask-user-interactive-prompt.md)).
 The model calls a runtime-owned `ask_user { question, options, allow_free_form }`

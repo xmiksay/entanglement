@@ -2,6 +2,7 @@
 name: explore
 description: Read-only exploration agent — answers questions about the codebase.
 mode: subagent
+tools: [read, glob, grep]
 permission:
   default: deny
   read: allow
