@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::context::Context;
 use crate::llm::{Llm, LlmEvent, LlmRequest, LlmSession, ToolCall, ToolSpec};
-use crate::protocol::{AgentProfile, AgentState, InMsg, OutEvent, SessionId, TaskItem};
+use crate::protocol::{AgentProfile, AgentState, InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
 use anyhow::Result;
 use std::path::Path;
@@ -34,7 +34,7 @@ pub(crate) enum SessionCmd {
     /// (#59) and never reaches the session loop.
     ToolResult(String, String),
     SetPlan(String),
-    SetTasks(Vec<TaskItem>),
+    SetTasks(String),
     SetAgent(String),
     Stop,
 }
@@ -49,7 +49,7 @@ pub struct Session {
     pub ctx: Context,
     pub llm: LlmSession,
     pub profile: AgentProfile,
-    pub tasks: Vec<TaskItem>,
+    pub tasks: String,
     pub plan: String,
     pub seq: u64,
     pub turn_count: usize,
@@ -63,7 +63,7 @@ impl Session {
             ctx: Context::new(),
             llm: (cfg.llm_factory)(),
             profile,
-            tasks: Vec::new(),
+            tasks: String::new(),
             plan: String::new(),
             seq: 0,
             turn_count: 0,
@@ -153,8 +153,8 @@ impl Session {
                         session.profile = profile.clone();
                     }
                 }
-                OutEvent::TaskList { tasks, .. } => {
-                    session.tasks = tasks.clone();
+                OutEvent::TaskList { content, .. } => {
+                    session.tasks = content.clone();
                 }
                 OutEvent::Plan { content, .. } => {
                     session.plan = content.clone();
@@ -348,27 +348,17 @@ async fn run_turn(
     ));
     specs.push(ToolSpec::with_schema(
         TASKS_TOOL,
-        "Replace the task outline.",
+        "Replace the task list (markdown). Shown to the user as progress info — \
+         it is not fed back to you, so keep it a short checklist.",
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tasks": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string" },
-                            "content": { "type": "string" },
-                            "status": {
-                                "type": "string",
-                                "enum": ["pending", "in_progress", "completed", "cancelled"]
-                            }
-                        },
-                        "required": ["id", "content", "status"]
-                    }
+                "content": {
+                    "type": "string",
+                    "description": "The full task list, in markdown — e.g. `- [ ]` / `- [x]` checkbox lines."
                 }
             },
-            "required": ["tasks"]
+            "required": ["content"]
         }),
     ));
 
@@ -556,15 +546,10 @@ async fn handle_tool_call(
         return false;
     }
     if call.name == TASKS_TOOL {
-        let tasks_input = json_field(&call.input, "tasks").unwrap_or_else(|| call.input.clone());
-        let msg = match serde_json::from_str::<Vec<TaskItem>>(&tasks_input) {
-            Ok(list) => {
-                s.tasks = list;
-                emit_tasks(events, session, &s.tasks, &mut s.seq);
-                format!("tasks updated ({} items)", s.tasks.len())
-            }
-            Err(e) => format!("invalid task list: {e}"),
-        };
+        let tasks = json_field(&call.input, "content").unwrap_or_else(|| call.input.clone());
+        s.tasks = tasks;
+        emit_tasks(events, session, &s.tasks, &mut s.seq);
+        let msg = "tasks updated".to_string();
         emit_tool_output(
             events,
             session,
@@ -717,13 +702,13 @@ fn emit_plan(events: &broadcast::Sender<OutEvent>, session: &SessionId, plan: &s
 fn emit_tasks(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
-    tasks: &[TaskItem],
+    tasks: &str,
     seq: &mut u64,
 ) {
     let _ = events.send(OutEvent::TaskList {
         session: session.clone(),
         seq: next_seq(seq),
-        tasks: tasks.to_vec(),
+        content: tasks.to_string(),
     });
 }
 

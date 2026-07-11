@@ -5,7 +5,7 @@
 //! terminal; the `$EDITOR` launch that opens the result lives in
 //! [`crate::tui::editor`].
 
-use entanglement_core::{SessionId, TaskItem, TaskStatus};
+use entanglement_core::SessionId;
 
 use crate::tui::session_view::TranscriptEntry;
 
@@ -32,7 +32,7 @@ pub fn export_filename(session: &SessionId, unix_secs: u64) -> String {
 pub fn transcript_to_markdown(
     session: &SessionId,
     plan: Option<&str>,
-    tasks: Option<&[TaskItem]>,
+    tasks: Option<&str>,
     transcript: &[TranscriptEntry],
     unix_secs: u64,
 ) -> String {
@@ -46,13 +46,10 @@ pub fn transcript_to_markdown(
         out.push_str("\n\n");
     }
 
-    if let Some(tasks) = tasks.filter(|t| !t.is_empty()) {
+    if let Some(tasks) = tasks.filter(|t| !t.trim().is_empty()) {
         out.push_str("## Tasks\n\n");
-        for t in tasks {
-            out.push_str(&task_line(t));
-            out.push('\n');
-        }
-        out.push('\n');
+        out.push_str(tasks.trim_end());
+        out.push_str("\n\n");
     }
 
     // Coalesce consecutive deltas, flushing the *other* accumulator on a switch
@@ -81,15 +78,6 @@ pub fn transcript_to_markdown(
     flush_reasoning(&mut out, &mut reasoning);
 
     out
-}
-
-fn task_line(t: &TaskItem) -> String {
-    match t.status {
-        TaskStatus::Pending => format!("- [ ] {}", t.content),
-        TaskStatus::InProgress => format!("- [ ] {} _(in progress)_", t.content),
-        TaskStatus::Completed => format!("- [x] {}", t.content),
-        TaskStatus::Cancelled => format!("- [x] ~~{}~~", t.content),
-    }
 }
 
 fn flush_text(out: &mut String, buf: &mut String) {
@@ -258,20 +246,8 @@ mod tests {
 
     #[test]
     fn plan_and_tasks_render_when_present() {
-        use entanglement_core::TaskItem;
-        let tasks = vec![
-            TaskItem {
-                id: "1".into(),
-                content: "done thing".into(),
-                status: TaskStatus::Completed,
-            },
-            TaskItem {
-                id: "2".into(),
-                content: "todo thing".into(),
-                status: TaskStatus::Pending,
-            },
-        ];
-        let md = transcript_to_markdown(&sid(), Some("The plan."), Some(&tasks), &[], 0);
+        let tasks = "- [x] done thing\n- [ ] todo thing";
+        let md = transcript_to_markdown(&sid(), Some("The plan."), Some(tasks), &[], 0);
         assert!(md.contains("## Plan\n\nThe plan."));
         assert!(md.contains("- [x] done thing"));
         assert!(md.contains("- [ ] todo thing"));

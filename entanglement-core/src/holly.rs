@@ -576,7 +576,7 @@ fn msg_to_cmd(msg: InMsg) -> SessionCmd {
         } => SessionCmd::ToolResult(request_id, output),
         InMsg::Stop { .. } => SessionCmd::Stop,
         InMsg::SetPlan { content, .. } => SessionCmd::SetPlan(content),
-        InMsg::SetTasks { tasks, .. } => SessionCmd::SetTasks(tasks),
+        InMsg::SetTasks { content, .. } => SessionCmd::SetTasks(content),
         InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
         // Approve/Reject/AnswerQuestion and the ListSessions/CloseSession
         // lifecycle queries are filtered out before routing (see supervisor);

@@ -1,4 +1,4 @@
-use entanglement_core::{AgentState, OutEvent, QuestionOption, SessionId, TaskItem};
+use entanglement_core::{AgentState, OutEvent, QuestionOption, SessionId};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,7 +72,7 @@ pub struct SessionView {
     state: AgentState,
     transcript: Vec<TranscriptEntry>,
     plan: Option<String>,
-    task_list: Option<Vec<TaskItem>>,
+    task_list: Option<String>,
     last_seen_seq: u64,
     /// Top-anchored vertical offset (line index of the first visible row).
     /// Only meaningful while frozen; when `auto_follow` is set the view is
@@ -157,8 +157,8 @@ impl SessionView {
         self.plan.as_ref()
     }
 
-    pub fn task_list(&self) -> Option<&[TaskItem]> {
-        self.task_list.as_deref()
+    pub fn task_list(&self) -> Option<&String> {
+        self.task_list.as_ref()
     }
 
     pub fn scroll_offset(&self) -> usize {
@@ -483,9 +483,9 @@ impl SessionView {
                     false
                 }
             }
-            OutEvent::TaskList { seq, tasks, .. } => {
+            OutEvent::TaskList { seq, content, .. } => {
                 if seq > self.last_seen_seq {
-                    self.task_list = Some(tasks);
+                    self.task_list = Some(content);
                     self.last_seen_seq = seq;
                     true
                 } else {
