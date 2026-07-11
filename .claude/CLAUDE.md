@@ -139,8 +139,20 @@ required, `user_only` (only explicit user invocation — withheld from disclosur
 `disclosures()` emits one `name: description` line per non-`user_only` skill
 (~100 tokens each); bodies never preloaded. Selection stays LLM reasoning — no
 keyword/embedding gate; description quality is the contract. Bodies + payload are
-tier-2, loaded on demand (`load_skill`, #115). Core still ships `system_prompt`
-verbatim as `LlmRequest.system`. `Plan` and `TaskList` are
+tier-2, loaded on demand by the `load_skill` tool (✅ #115,
+[ADR-0037](../docs/adr/0037-load-skill-tool-deterministic-resolution.md)): one
+generic `load_skill { skill_name }` — a **real host tool** (it reads the
+filesystem), so it goes through the *same* per-call permission gate as `read` (no
+exemption), registered in `build_config` with a shared `Arc<SkillRegistry>`. The
+handler resolves deterministically — look `SkillMeta` up by name; reject
+`user_only`; **substitute every relative payload path to absolute** before the
+text reaches the model (closes the model-guesses-the-base bug class; `SKILL_DIR`
+and project root stay separate coordinate systems, a `${SKILL_DIR}` placeholder is
+the explicit escape hatch, no implicit CWD fallback) — and returns an ordinary
+`tool_result` with `skill_id` + substituted body + `available_refs` (listed, not
+loaded), never a spoofed user message. Provenance (carrying `skill_id` onto
+in-skill tool calls) lands with `allowed_tools` enforcement (#116). Core still
+ships `system_prompt` verbatim as `LlmRequest.system`. `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages.
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
 `input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010 + ADR-0031)
