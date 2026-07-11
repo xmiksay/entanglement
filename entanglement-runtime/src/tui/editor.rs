@@ -40,7 +40,7 @@ pub fn run_effect(terminal: &mut Term, app: &mut App, effect: UiEffect) -> Resul
             let markdown = export::transcript_to_markdown(
                 app.active_session_id(),
                 app.plan().map(String::as_str),
-                app.task_list(),
+                app.task_list().map(String::as_str),
                 app.transcript(),
                 secs,
             );

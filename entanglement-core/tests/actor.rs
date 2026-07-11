@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
-    TaskItem, TaskStatus, ToolCall, ToolRegistry,
+    ToolCall, ToolRegistry,
 };
 
 mod common;
@@ -347,7 +347,7 @@ async fn builtin_update_plan_emits_plan_snapshot() {
 
 #[tokio::test]
 async fn builtin_update_tasks_emits_tasklist_snapshot() {
-    let tasks_json = r#"[{"id":"t1","content":"do","status":"in_progress"}]"#;
+    let tasks_json = r#"{"content":"- [x] do\n- [ ] next"}"#;
     let holly = Holly::spawn(factory(vec![LlmResponse {
         text: "".into(),
         tool_calls: vec![ToolCall {
@@ -367,7 +367,9 @@ async fn builtin_update_tasks_emits_tasklist_snapshot() {
         .unwrap();
     let events = collect(sub, &sid).await;
 
-    assert!(events.iter().any(|e| matches!(e, OutEvent::TaskList { tasks, .. } if tasks.len() == 1 && tasks[0].status == TaskStatus::InProgress)));
+    assert!(events.iter().any(
+        |e| matches!(e, OutEvent::TaskList { content, .. } if content == "- [x] do\n- [ ] next")
+    ));
 }
 
 #[tokio::test]
@@ -381,11 +383,7 @@ async fn harness_set_tasks_and_set_plan_emit_snapshots() {
     holly
         .send(InMsg::SetTasks {
             session: sid.clone(),
-            tasks: vec![TaskItem {
-                id: "t1".into(),
-                content: "x".into(),
-                status: TaskStatus::Pending,
-            }],
+            content: "- [ ] x".into(),
         })
         .await
         .unwrap();

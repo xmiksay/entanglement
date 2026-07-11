@@ -1,5 +1,4 @@
 use crate::tui::wrap;
-use entanglement_core::TaskStatus;
 use ratatui::{
     style::{Color, Style, Stylize},
     text::{Line, Span},
@@ -40,14 +39,9 @@ pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Rende
 
     if let Some(tasks) = app.task_list() {
         lines.push(Line::from("Tasks:").bold());
-        for task in tasks {
-            let symbol = match task.status {
-                TaskStatus::Pending => "○",
-                TaskStatus::InProgress => "▶",
-                TaskStatus::Completed => "✓",
-                TaskStatus::Cancelled => "✗",
-            };
-            lines.push(Line::from(format!("  {} {}", symbol, task.content)));
+        let rendered_tasks = markdown_renderer.render(tasks);
+        for line in rendered_tasks.lines {
+            lines.push(line);
         }
         lines.push(Line::from(""));
     }

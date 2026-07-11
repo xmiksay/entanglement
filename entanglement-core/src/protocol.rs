@@ -50,16 +50,6 @@ pub enum AgentState {
     Error,
 }
 
-/// Lifecycle state of a single task in the session's outline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
-    Pending,
-    InProgress,
-    Completed,
-    Cancelled,
-}
-
 /// Kind of file change. `ApplyDiff` and `Plugin` are reserved for future work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,15 +57,6 @@ pub enum FileChangeKind {
     Edit,
     ApplyDiff,
     Create,
-}
-
-/// One item in the session's task outline. The engine owns the list and emits
-/// a full [`OutEvent::TaskList`] snapshot whenever it changes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskItem {
-    pub id: String,
-    pub content: String,
-    pub status: TaskStatus,
 }
 
 /// A live session's identity + lineage, as reported in an
@@ -291,11 +272,10 @@ pub enum InMsg {
     /// ids are a no-op. Session ids are single-use: mint a fresh one
     /// ([`SessionId::new_uuid`]) rather than reusing a closed id.
     CloseSession { session: SessionId },
-    /// Rewrite the session's task outline from the harness (user-edited plan).
-    SetTasks {
-        session: SessionId,
-        tasks: Vec<TaskItem>,
-    },
+    /// Rewrite the session's task outline from the harness (markdown, e.g. a
+    /// checkbox list). Same shape as [`SetPlan`][InMsg::SetPlan] — the outline
+    /// is a user-facing progress snapshot, not engine-consumed structure.
+    SetTasks { session: SessionId, content: String },
     /// Rewrite the session's strategy plan from the harness (markdown prose).
     SetPlan { session: SessionId, content: String },
     /// Switch the session to a different agent profile by name (e.g. `plan`).
@@ -452,10 +432,13 @@ pub enum OutEvent {
         output: String,
     },
     /// Full snapshot of the session's task outline (sent on every change).
+    /// Markdown, typically a `- [ ]`/`- [x]` checklist — displayed to the user
+    /// as progress info, never parsed by the engine (mirrors
+    /// [`Plan`][OutEvent::Plan]).
     TaskList {
         session: SessionId,
         seq: u64,
-        tasks: Vec<TaskItem>,
+        content: String,
     },
     /// Recoverable error surfaced to the UI; the engine stays alive.
     Error {
@@ -579,11 +562,7 @@ mod tests {
         let ev = OutEvent::TaskList {
             session: SessionId::new("s1"),
             seq: 3,
-            tasks: vec![TaskItem {
-                id: "t1".into(),
-                content: "do thing".into(),
-                status: TaskStatus::InProgress,
-            }],
+            content: "- [x] do thing\n- [ ] next thing".into(),
         };
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();

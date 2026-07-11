@@ -42,10 +42,10 @@ profile, mode }`. Switch with `SetAgent` (Build ↔ Plan ↔ Explore). The permi
 profile (`Allow | Ask | Deny` per tool) drives the approval flow — `Plan` denies
 edits, `Build` allows everything. Built-ins: `build`, `plan`, `explore`.
 
-Structured outputs (`OutEvent::Plan`, `OutEvent::TaskList`) are orthogonal —
-populated by the built-in `update_plan` / `update_tasks` tools or the harness
-`SetPlan` / `SetTasks` messages, so every head can render plan/task panels
-natively.
+Session snapshots (`OutEvent::Plan`, `OutEvent::TaskList` — both markdown
+`content`) are orthogonal — populated by the built-in `update_plan` /
+`update_tasks` tools or the harness `SetPlan` / `SetTasks` messages, so every
+head can render plan/task panels natively.
 
 ## Crates
 

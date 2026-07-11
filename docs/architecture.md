@@ -83,7 +83,7 @@ InMsg    = Prompt{session,text} | Approve{session,request_id}   // approval →
          | ToolResult{session,request_id,output}   // runtime → core: tool ran (#58)
          | AnswerQuestion{session,request_id,answer}  // ask_user answer → runtime (#90)
          | Stop{session}
-         | SetTasks{session,tasks} | SetPlan{session,content} | SetAgent{session,agent}
+         | SetTasks{session,content} | SetPlan{session,content} | SetAgent{session,agent}
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
          | ListSessions{session}   // supervisor-global query; session = correlation id (#21)
          | CloseSession{session}   // explicit destroy → SessionEnded (#21)
@@ -102,7 +102,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | ToolExec{session,seq,request_id,tool,input}      // core → runtime: dispatch it (#58/#59)
          | UserQuestion{session,seq,request_id,question,options,allow_free_form}  // ask_user prompt (#90)
          | ToolOutput{session,seq,request_id,tool,output}
-         | TaskList{session,seq,tasks}        // full outline snapshot
+         | TaskList{session,seq,content}      // full outline snapshot (markdown)
          | Error{session,seq,message}
          | Done{session,seq}
          | FileChange{session,seq,path,before?,after?,change_kind}   // file-change audit record (#41)
@@ -272,13 +272,17 @@ Two artifacts the engine owns and re-emits as **full snapshots** on every change
 render/dedupe):
 
 - **Plan** — markdown strategy prose (`OutEvent::Plan`).
-- **TaskList** — statusful outline of `TaskItem { id, content, status }`
-  (`OutEvent::TaskList`, `TaskStatus = pending|in_progress|completed|cancelled`).
+- **TaskList** — markdown task outline, typically a `- [ ]`/`- [x]` checklist
+  (`OutEvent::TaskList`). Plain `content` like the plan (✅ #142,
+  [ADR-0039](adr/0039-markdown-task-list.md), supersedes ADR-0004's structured
+  `Vec<TaskItem>`): the outline is **user-facing progress info** — the engine
+  never consumed the item structure and the list is not fed back to the model,
+  so the per-item id/status JSON envelope was pure model overhead.
 
 Both are written two ways:
-1. A **built-in engine tool** the model calls — `update_plan` (input = markdown)
-   and `update_tasks` (input = JSON array). These bypass permissions (they only
-   mutate session state) and never need approval.
+1. A **built-in engine tool** the model calls — `update_plan { content }`
+   and `update_tasks { content }` (both markdown). These bypass permissions
+   (they only mutate session state) and never need approval.
 2. A **harness message** — `InMsg::SetPlan` / `InMsg::SetTasks` (user edits).
 
 This is why `entanglement` has *both* the opencode agent-profile axis *and* structured

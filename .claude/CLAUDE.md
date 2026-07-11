@@ -174,7 +174,11 @@ loaded), never a spoofed user message. Provenance (carrying `skill_id` onto
 in-skill tool calls) lands with skill-scoped `allowed_tools` enforcement (a
 separate follow-up, distinct from the #116 agent tool mask). Core still
 ships `system_prompt` verbatim as `LlmRequest.system`. `Plan` and `TaskList` are
-session-owned snapshots, written by built-in tools or harness `Set*` messages.
+session-owned snapshots, written by built-in tools or harness `Set*` messages;
+both are plain markdown `content` now (✅ #142,
+[ADR-0039](../docs/adr/0039-markdown-task-list.md)) — `update_tasks { content }`
+mirrors `update_plan`, the structured `TaskItem`/`TaskStatus` types are gone
+(the outline is user-facing progress info, never engine-consumed).
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
 `input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010 + ADR-0031)
 assembles the root-contained quintet (`read`/`glob`/`grep`/`edit`/`write` —

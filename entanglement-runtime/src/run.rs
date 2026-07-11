@@ -6,7 +6,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Result;
-use entanglement_core::{AgentState, Holly, InMsg, OutEvent, SessionId, TaskStatus};
+use entanglement_core::{AgentState, Holly, InMsg, OutEvent, SessionId};
 
 /// Send one prompt and stream events until `Done` (or timeout).
 pub async fn run_one(
@@ -108,10 +108,10 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // Runtime plumbing (#58): execution round-trip, not user-facing.
         OutEvent::ToolExec { .. } => {}
         OutEvent::ToolOutput { output, .. } => writeln!(out, "= {output}")?,
-        OutEvent::TaskList { tasks, .. } => {
+        OutEvent::TaskList { content, .. } => {
             writeln!(out, "▢ tasks:")?;
-            for t in tasks {
-                writeln!(out, "  [{}] {}", task_symbol(t.status), t.content)?;
+            for line in content.lines() {
+                writeln!(out, "  {line}")?;
             }
         }
         OutEvent::Error { message, .. } => writeln!(out, "! {message}")?,
@@ -121,13 +121,4 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         } => writeln!(out, "✓ {change_kind:?}: {path}")?,
     }
     Ok(())
-}
-
-fn task_symbol(s: TaskStatus) -> &'static str {
-    match s {
-        TaskStatus::Pending => "○",
-        TaskStatus::InProgress => "▶",
-        TaskStatus::Completed => "✓",
-        TaskStatus::Cancelled => "✗",
-    }
 }

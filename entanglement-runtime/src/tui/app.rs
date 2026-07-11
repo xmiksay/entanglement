@@ -1,4 +1,4 @@
-use entanglement_core::{AgentState, OutEvent, SessionId, TaskItem};
+use entanglement_core::{AgentState, OutEvent, SessionId};
 use entanglement_provider::{Catalog, ModelInfo};
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
@@ -249,7 +249,7 @@ impl App {
         self.sessions.active_view().plan()
     }
 
-    pub fn task_list(&self) -> Option<&[TaskItem]> {
+    pub fn task_list(&self) -> Option<&String> {
         self.sessions.active_view().task_list()
     }
 
