@@ -154,13 +154,30 @@ unconditional), and `handle_tool_call` refuses a hallucinated non-owner
 `update_plan` via a refusal `ToolOutput` (no plan mutation, no `OutEvent::Plan`,
 turn continues). `InMsg::SetPlan` stays head/user authority. Built-in `plan.md`
 gains `owns_plan: true` **plus** a physical read-only mask
-(`tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill]`)
+(`tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, propose_plan]`)
 — it authors the plan + delegates research, and via `tool_masked`'s ancestor
 intersection every child it spawns is clamped read-only too; `build`/`explore`
-are default-false (they just stop advertising `update_plan`). Sibling follow-up:
-#141 (`propose_plan` — plan acceptance rides the tool-approval round-trip; approve
-= `SetPlan` + head mints a **fresh root `build` session** with the plan as its
-first user message, reject + typed reason = in-band revision). `AgentMode` gained
+are default-false (they just stop advertising `update_plan`). Plan acceptance is
+now **enforced** (✅ #141,
+[ADR-0042](../docs/adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)):
+the plan agent's *finalize* step is a runtime-owned `propose_plan { plan }` tool
+(`update_plan` stays for working snapshots), advertised only to a profile that
+`owns_plan` (via the #119 `profile_tool_specs` seam + `plan.md`'s `tools:`
+allowlist — same default-closed argument as #140). Acceptance rides the **existing
+tool-approval round-trip** (#59): the executor (`propose_plan.rs`) intercepts it on
+`ToolExec` after the #116 mask check (same family as `ask_user`) and **force-parks
+it on the `Ask` path unconditionally** — a profile can never `Allow` it, since user
+approval *is* the semantics — emitting a standard `OutEvent::ToolRequest`. Approve
+= record the plan (`InMsg::SetPlan`, engine state consistent for every head) +
+`ToolOutput("plan accepted by the user")`, then the **head** performs the handoff
+(pure head policy, zero new protocol surface): mint `SessionId::new_uuid()` →
+`SetAgent{build}` (lazy root session) → `Prompt{wrap(plan)}` (plan verbatim, first
+user message) → switch view. Reject + typed reason = the existing fold-back
+(`tool \`propose_plan\` rejected: <reason>`), model revises in-band. The build
+session is a **fresh root, not a child** (a parent link would clamp it read-only
+via #116/ADR-0024, drain the plan root's ADR-0023 budget, and mis-model accept as
+grouping rather than a transfer of user authority). One-shot `run`/`pipe` can't
+park, so they auto-reject with a "non-interactive head" reason. `AgentMode` gained
 `all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
 raw body (✅ #113, [ADR-0035](../docs/adr/0035-deterministic-system-prompt-assembly.md)):
 `entanglement_runtime::system_prompt::assemble` composes shared preamble + agent
