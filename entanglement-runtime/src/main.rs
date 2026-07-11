@@ -29,7 +29,7 @@ use clap::{Parser, Subcommand};
 use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId, ToolRegistry};
 use entanglement_provider::{Catalog, HttpClient, ModelInfo, ProviderEntry, Wire};
 
-use host::{host_tools, BashTool};
+use host::{host_tools, BashTool, CallTool};
 use pipe::pipe;
 use run::run_one;
 use session_store::{integrity_gap, list_sessions, pair_records, read};
@@ -56,9 +56,9 @@ use tui::tui;
 /// The root-contained host quartet (`read`/`glob`/`grep`/`edit`) is always
 /// registered, rooted at the current working directory, so the
 /// `build`/`plan`/`explore` permission profiles gate something real out of the
-/// box. `bash` is opt-in: set `ENTANGLEMENT_ENABLE_BASH=1` to register
-/// `BashTool` — it runs unsandboxed with the engine's full privileges
-/// (ADR-0009 / ADR-0010).
+/// box. The exec pair is opt-in: set `ENTANGLEMENT_ENABLE_BASH=1` to register
+/// `BashTool` (shell) and `CallTool` (argv, no shell) — they run unsandboxed
+/// with the engine's full privileges (ADR-0009 / ADR-0010 / ADR-0045).
 ///
 /// Core no longer executes tools (#58): it only advertises their schemas
 /// (`cfg.tool_specs`). The returned [`ToolRegistry`] stays in the runtime and
@@ -76,10 +76,14 @@ fn build_config(
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut tools = host_tools(root.clone());
     if std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1") {
+        // The opt-in gate enables the whole exec pair (ADR-0010/ADR-0045):
+        // `bash` (shell) and `call` (argv, no shell). Profiles differentiate
+        // dispatch — e.g. a profile may `Allow` `call` while asking on `bash`.
         tools.register(BashTool::new(root.clone()));
+        tools.register(CallTool::new(root.clone()));
         eprintln!(
-            "skutter: bash enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
-             runs unsandboxed with full privileges"
+            "skutter: bash + call enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
+             run unsandboxed with full privileges"
         );
     }
     // `load_skill` is tier-2 progressive disclosure (#115): a real host tool (it

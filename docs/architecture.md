@@ -751,7 +751,7 @@ blocked on green tests with a coverage report attached. Both cache cargo
 artifacts (`Swatinem/rust-cache`) and inherit the committed `CARGO_BUILD_JOBS=4`
 cap from `.cargo/config.toml`.
 
-## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in)
+## 8. Host tools — [ADR-0008](adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](adr/0010-single-head-crate-and-bash-opt-in.md) (exec opt-in), [ADR-0045](adr/0045-call-host-tool-argv-exec-tailed-output.md) (`call`)
 
 Concrete filesystem + shell tools, dispatched under the active permission
 profile ([ADR-0003](adr/0003-agent-and-permission-profiles.md)). Core defines the
@@ -774,12 +774,15 @@ tools and makes no policy decision:
 | `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists → hints `write`); non-unique match errors unless `replaceAll` |
 | `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
 | `bash` ⚠ | `{command, timeout?}` | `sh -c` rooted at root; `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600, `kill_on_drop` reaps on expiry |
+| `call` ⚠ | `{command, args?, tail?, timeout?}` | **argv, no shell** — `command`+`args` exec verbatim (no `sh -c`, so no pipe/glob/`$VAR`/metachar interpretation); output tailed to the last `tail` lines per stream (default 30, `tail=0` = full, byte-cap still applies), with a `(… N earlier lines omitted, tail=30 — rerun with tail=0 …)` notice; same envelope as `bash` (`[exit N]` + stdout + `[stderr]`, 120 s/600 s, `kill_on_drop`) — ADR-0045 |
 
 - **Working directory:** each tool holds a `root`; model-supplied paths resolve
   against it and are rejected on `..` escape. Lexical containment only (no
-  symlink defense) — ADR-0008. `bash` sets only the **cwd** — it is explicitly
-  *not* sandboxed and runs with the engine's full privileges (ADR-0009);
-  permission profiles gate whether it runs at all.
+  symlink defense) — ADR-0008. `bash`/`call` set only the **cwd** — they are
+  explicitly *not* sandboxed and run with the engine's full privileges
+  (ADR-0009/ADR-0045); permission profiles gate whether they run at all. `call`
+  is the injection-free sibling: a fixed argv can't be shell-injected, so a
+  profile may `Allow` `call` while keeping `bash` at `Ask`/`Deny`.
 - **Bounded output:** 32 KiB byte cap with a truncation notice; `read` defaults
   to 2000 lines; `glob`/`grep` cap at 1000 results. Prevents a huge file/tree
   from blowing the context window.
@@ -796,12 +799,13 @@ tools and makes no policy decision:
   the model sees a real `input_schema` per host tool (not an empty object).
 - **Wiring (ADR-0010):** `host_tools(root)` registers the **root-contained
   quintet** (`read`/`glob`/`grep`/`edit`/`write`; `write` added in ADR-0031).
-  `bash` is opt-in — the `skutter`
-  binary registers `BashTool` only when `ENTANGLEMENT_ENABLE_BASH=1`, because
-  it runs unsandboxed (ADR-0009). `EngineConfig::default()` ships an empty
+  the exec pair is opt-in — the `skutter`
+  binary registers `BashTool` **and** `CallTool` only when
+  `ENTANGLEMENT_ENABLE_BASH=1` (one gate, whole pair), because they run
+  unsandboxed (ADR-0009/ADR-0045). `EngineConfig::default()` ships an empty
   registry (embedders opt in via `host_tools`).
 
-`edit`/`write`/`bash` slot into the existing permission profiles with no profile
+`edit`/`write`/`bash`/`call` slot into the existing permission profiles with no profile
 changes: `build` auto-allows them (default `Allow`), `plan` asks (default
 `Ask`), `explore` denies (default `Deny`). The opt-in gate is
 orthogonal to the permission profile: it controls *registration* (whether the

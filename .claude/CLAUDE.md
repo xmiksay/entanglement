@@ -242,8 +242,17 @@ mirrors `update_plan`, the structured `TaskItem`/`TaskStatus` types are gone
 The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
 `input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010 + ADR-0031)
 assembles the root-contained quintet (`read`/`glob`/`grep`/`edit`/`write` —
-`write` is whole-file create/overwrite, ADR-0031); `BashTool` is opt-in at the
-head (`ENTANGLEMENT_ENABLE_BASH=1`).
+`write` is whole-file create/overwrite, ADR-0031); the **exec pair**
+`BashTool`/`CallTool` is opt-in at the head (one gate,
+`ENTANGLEMENT_ENABLE_BASH=1`, registers both). `call` (✅ #121,
+[ADR-0045](../docs/adr/0045-call-host-tool-argv-exec-tailed-output.md)) is direct
+argv exec — **no shell** (`{command, args, tail, timeout?}` exec verbatim, so no
+pipe/glob/`$VAR`/metachar injection; a fixed argv is auditable, so a profile may
+`Allow` `call` while keeping `bash` at `Ask`/`Deny`) — with **auto-tailed
+output** (last `tail` lines/stream, default 30, `tail=0` = full within the
+ADR-0008 byte cap; drops prepend a self-correcting omission notice). Same
+envelope as `bash` (cwd = root, 120 s/600 s timeout, `kill_on_drop`, `[exit N]` +
+`[stderr]`).
 
 Sub-agent spawn (#60, [ADR-0022](../docs/adr/0022-subagent-spawn.md)): the
 runtime-owned `agent_spawn { agent, prompt }` tool (renamed from `spawn_agent`,

@@ -12,7 +12,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
     LlmStream, OutEvent, ProfileRegistry, SessionId, ToolCall,
 };
-use entanglement_runtime::host::{host_tools, BashTool};
+use entanglement_runtime::host::{host_tools, BashTool, CallTool};
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 
 /// An LLM that replays a scripted list of responses in order, then a plain
@@ -502,4 +502,79 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
         .expect("expected a ToolOutput");
     assert!(output.contains("[exit 0]"), "got: {output}");
     assert!(output.contains("shell-ok"), "got: {output}");
+}
+
+#[tokio::test]
+async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-call-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    // A payload full of shell metacharacters: passed as argv it must reach
+    // `printf` verbatim, never expanded or split by a shell.
+    let payload = "$HOME && rm -rf / | cat *.rs";
+    let call_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "c1".into(),
+            name: "call".into(),
+            input: serde_json::json!({ "command": "printf", "args": ["%s", payload] }).to_string(),
+        }],
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![call_call, finish]);
+    // `call` is opt-in (ADR-0010/ADR-0045); mirror the head registering the exec
+    // pair under ENTANGLEMENT_ENABLE_BASH=1.
+    let mut tools = host_tools(root.clone());
+    tools.register(BashTool::new(root.clone()));
+    tools.register(CallTool::new(root.clone()));
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+        }),
+        tool_specs: tools.specs(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "call it".into(),
+        })
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "call should auto-run under build"
+    );
+    let output = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .expect("expected a ToolOutput");
+    assert!(output.contains("[exit 0]"), "got: {output}");
+    // The metacharacters survived as literal argv — no shell touched them.
+    assert!(
+        output.contains(payload),
+        "argv must be verbatim, got: {output}"
+    );
 }
