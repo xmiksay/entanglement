@@ -318,6 +318,8 @@ async fn every_host_tool_round_trips_through_toolexec() {
 
 #[tokio::test]
 async fn builtin_update_plan_emits_plan_snapshot() {
+    // Plan authority is default-closed (#140): the call must run under a
+    // plan-owning profile — the built-in `plan` — to mutate the session plan.
     let holly = Holly::spawn(factory(vec![LlmResponse {
         text: "".into(),
         tool_calls: vec![ToolCall {
@@ -328,6 +330,13 @@ async fn builtin_update_plan_emits_plan_snapshot() {
     }]));
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "plan".into(),
+        })
+        .await
+        .unwrap();
     holly
         .send(InMsg::Prompt {
             session: sid.clone(),
@@ -343,6 +352,43 @@ async fn builtin_update_plan_emits_plan_snapshot() {
     assert!(events.iter().any(
         |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("plan updated"))
     ));
+}
+
+#[tokio::test]
+async fn non_owner_update_plan_is_refused_and_plan_unchanged() {
+    // The default `build` profile does not own the plan. A hallucinated
+    // `update_plan` call is refused via a `ToolOutput` — no `OutEvent::Plan`,
+    // no plan mutation — and the turn continues (#140, ADR-0041).
+    let holly = Holly::spawn(factory(vec![LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "t1".into(),
+            name: "update_plan".into(),
+            input: "# Sneaky plan".into(),
+        }],
+    }]));
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "try to plan".into(),
+        })
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events.iter().any(|e| matches!(e, OutEvent::Plan { .. })),
+        "non-owner update_plan must not emit a Plan snapshot; got {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { output, .. } if output.contains("refused")
+        )),
+        "non-owner update_plan must surface a refusal ToolOutput; got {events:?}"
+    );
 }
 
 #[tokio::test]
@@ -615,6 +661,7 @@ async fn custom_profile_is_selectable() {
         permission: PermissionProfile::new(Permission::Ask),
         tools: None,
         disallowed_tools: Vec::new(),
+        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     });

@@ -368,9 +368,13 @@ async fn write_tool_denied_under_explore_profile() {
 }
 
 #[tokio::test]
-async fn write_tool_asks_then_runs_under_plan_profile() {
+async fn write_tool_masked_under_plan_profile() {
+    // The built-in `plan` is now physically read-only (#140, ADR-0041): its tool
+    // mask carries only the read trio + delegation/skill tools, so `write` is
+    // masked out and refused as "not available" before permission resolves — the
+    // plan agent authors the plan, it never mutates the tree.
     let id = std::process::id();
-    let root = std::env::temp_dir().join(format!("entanglement-write-ask-{id}"));
+    let root = std::env::temp_dir().join(format!("entanglement-write-plan-mask-{id}"));
     std::fs::create_dir_all(&root).unwrap();
     struct Drop_(std::path::PathBuf);
     impl Drop for Drop_ {
@@ -385,7 +389,7 @@ async fn write_tool_asks_then_runs_under_plan_profile() {
         tool_calls: vec![ToolCall {
             id: "w1".into(),
             name: "write".into(),
-            input: r#"{"path":"asked.txt","content":"yes\n"}"#.into(),
+            input: r#"{"path":"blocked.txt","content":"nope\n"}"#.into(),
         }],
     };
     let finish = LlmResponse {
@@ -412,41 +416,23 @@ async fn write_tool_asks_then_runs_under_plan_profile() {
         .await
         .unwrap();
     let sub = holly.subscribe();
-    let mut watch = holly.subscribe();
     holly
         .send(InMsg::Prompt {
             session: sid.clone(),
-            text: "write it".into(),
-        })
-        .await
-        .unwrap();
-
-    let mut got_request = false;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
-        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "write") {
-            got_request = true;
-            break;
-        }
-    }
-    assert!(got_request, "plan should ask before write");
-
-    holly
-        .send(InMsg::Approve {
-            session: sid.clone(),
-            request_id: "w1".into(),
+            text: "try to write".into(),
         })
         .await
         .unwrap();
 
     let events = collect(sub, &sid).await;
     assert!(
-        events.iter().any(
-            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("created"))
-        ),
-        "approved write should run; got {events:?}"
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { output, .. } if output.contains("not available")
+        )),
+        "plan should refuse write as unavailable; got {events:?}"
     );
-    let on_disk = std::fs::read_to_string(root.join("asked.txt")).unwrap();
-    assert_eq!(on_disk, "yes\n");
+    assert!(!root.join("blocked.txt").exists(), "write must not land");
 }
 
 #[tokio::test]

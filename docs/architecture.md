@@ -163,8 +163,8 @@ only field a spawning model sees).
   target-side: a profile must `may_spawn` and its *target* must be spawnable-mode
   (`subagent`/`all`) and on its `spawnable_agents` allowlist — so `build`/`plan`
   (primaries) are unreachable spawn targets from mode defaults alone. `update_plan`
-  ownership (#140) and the plan-accept handoff (#141) complete the agent hierarchy
-  on the same `profile_tool_specs` seam. Embedders using core directly still get a
+  ownership (`owns_plan`, ✅ #140, below) and the plan-accept handoff (#141)
+  complete the agent hierarchy. Embedders using core directly still get a
   hardcoded
   `build`/`plan`/`explore` fallback via `ProfileRegistry::new()`; add your own with
   `ProfileRegistry::insert`.
@@ -176,8 +176,10 @@ only field a spawning model sees).
   (`tools`/`disallowed_tools` + `advertises_tool`), so it travels per session with
   no new protocol surface. **(a) Advertisement:** core's `run_turn` filters
   `EngineConfig.tool_specs` by the active profile's mask before appending the
-  `update_plan`/`update_tasks` built-ins (session-state tools, never masked) — a
-  masked tool's schema never reaches the model. **(b) Enforcement:**
+  `update_plan`/`update_tasks` built-ins (session-state tools, never routed
+  through the tool mask) — a masked tool's schema never reaches the model.
+  `update_plan` is instead authority-gated (`owns_plan`, ✅ #140, below), while
+  `update_tasks` is always advertised. **(b) Enforcement:**
   `runtime::permission::tool_masked` refuses a masked `ToolExec` **first** — before
   the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions and permission —
   so a hallucinated masked call is a hard boundary, and the mask **intersects down
@@ -205,6 +207,23 @@ only field a spawning model sees).
   hardening: `InMsg::Spawn` with an unknown name now `get()`s + errors instead of
   silently escalating to `build`. The TUI `/agent` picker/Tab-cycle is
   registry-driven, filtered to `mode ∈ {primary, all}`.
+- **`update_plan` ownership (✅ #140, [ADR-0041](adr/0041-update-plan-ownership-default-closed.md)):**
+  authoring the session plan is a per-profile authority, `AgentProfile.owns_plan`
+  (default **false**). Unlike the #116 mask and #119 spawn control (semantics core,
+  enforcement runtime), plan authority is enforced **entirely in core** — the
+  built-ins are session-state tools that never round-trip to the runtime, so
+  `tool_masked` cannot see them. **Advertisement:** `run_turn` appends the
+  `update_plan` spec only when the active profile `owns_plan` (`update_tasks` stays
+  unconditional — per-session bookkeeping, no cross-agent authority).
+  **Enforcement:** `handle_tool_call` refuses a hallucinated non-owner `update_plan`
+  via a refusal `ToolOutput` — no plan mutation, no `OutEvent::Plan`, turn
+  continues. `InMsg::SetPlan` stays head/user authority. Built-in `plan` gains
+  `owns_plan: true` **plus** a physical read-only mask
+  (`tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill]`):
+  it authors the plan and delegates research, and — via the mask's ancestor
+  intersection — every child it spawns is clamped to that read-only set too.
+  `build`/`explore` are unchanged (default-false = they simply stop advertising
+  `update_plan`).
 - **System-prompt assembly (✅ #113, [ADR-0035](adr/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five
@@ -302,7 +321,10 @@ render/dedupe):
 Both are written two ways:
 1. A **built-in engine tool** the model calls — `update_plan { content }`
    and `update_tasks { content }` (both markdown). These bypass permissions
-   (they only mutate session state) and never need approval.
+   (they only mutate session state) and never need approval. `update_plan` is
+   authority-gated: advertised and accepted only under a profile that `owns_plan`
+   (default-closed, ✅ #140, [ADR-0041](adr/0041-update-plan-ownership-default-closed.md));
+   `update_tasks` is unconditional.
 2. A **harness message** — `InMsg::SetPlan` / `InMsg::SetTasks` (user edits).
 
 This is why `entanglement` has *both* the opencode agent-profile axis *and* structured

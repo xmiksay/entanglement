@@ -92,6 +92,27 @@ fn spawn_with_bash_call(input: &str) -> Holly {
     spawn_with_bash_call_using(input, ProfileRegistry::new())
 }
 
+/// Built-ins plus an `askbash` profile that *advertises* bash (no tool mask) but
+/// grades it `Ask` — the built-in `plan` now physically masks bash out (#140), so
+/// the Ask dispatch path needs a profile that still lets bash through the mask.
+fn ask_bash_registry() -> ProfileRegistry {
+    let mut profiles = ProfileRegistry::new();
+    profiles.insert(AgentProfile {
+        name: "askbash".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Ask),
+        tools: None,
+        disallowed_tools: Vec::new(),
+        owns_plan: false,
+        can_spawn: None,
+        spawnable_agents: None,
+    });
+    profiles
+}
+
 /// Collect events for `sid` until `Done`, with a safety timeout.
 async fn collect(
     mut sub: tokio::sync::broadcast::Receiver<OutEvent>,
@@ -155,6 +176,7 @@ async fn deny_refuses_without_request() {
         permission: PermissionProfile::new(Permission::Deny),
         tools: None,
         disallowed_tools: Vec::new(),
+        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     });
@@ -199,13 +221,13 @@ async fn deny_refuses_without_request() {
 
 #[tokio::test]
 async fn ask_emits_request_then_runs_on_approve() {
-    // plan profile: bash → Ask. Approve after the request; the tool then runs.
-    let holly = spawn_with_bash_call("ls");
+    // askbash profile: bash → Ask. Approve after the request; the tool then runs.
+    let holly = spawn_with_bash_call_using("ls", ask_bash_registry());
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {
             session: sid.clone(),
-            agent: "plan".into(),
+            agent: "askbash".into(),
         })
         .await
         .unwrap();
@@ -226,7 +248,7 @@ async fn ask_emits_request_then_runs_on_approve() {
             break;
         }
     }
-    assert!(got_request, "expected a ToolRequest under plan profile");
+    assert!(got_request, "expected a ToolRequest under askbash profile");
 
     holly
         .send(InMsg::Approve {
@@ -245,13 +267,13 @@ async fn ask_emits_request_then_runs_on_approve() {
 
 #[tokio::test]
 async fn ask_rejected_reports_rejection() {
-    // plan profile: bash → Ask. Reject the request; the tool never runs.
-    let holly = spawn_with_bash_call("ls");
+    // askbash profile: bash → Ask. Reject the request; the tool never runs.
+    let holly = spawn_with_bash_call_using("ls", ask_bash_registry());
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {
             session: sid.clone(),
-            agent: "plan".into(),
+            agent: "askbash".into(),
         })
         .await
         .unwrap();

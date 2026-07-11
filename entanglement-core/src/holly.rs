@@ -166,6 +166,9 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             permission: PermissionProfile::new(Permission::Allow),
             tools: None,
             disallowed_tools: Vec::new(),
+            // Default-closed plan authority (#140): `build` consumes the plan, it
+            // does not author it — the accept flow hands it a ready plan.
+            owns_plan: false,
             // `build` spawns everything except primaries (the target-side mode
             // gate, #119) — no `spawnable_agents` list, so user-defined
             // exploration agents stay spawnable without editing this built-in.
@@ -176,11 +179,27 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             name: "plan".into(),
             description: "Planning agent — produces a plan without making changes.".into(),
             mode: AgentMode::Primary,
-            system_prompt: "You are a planning agent. Analyze the request and produce a plan without making changes. Use the update_plan and update_tasks tools to record your strategy and outline.".into(),
+            system_prompt: "You are a planning agent. Analyze the request and produce a plan without making changes. Record the working plan with the update_plan tool, and delegate research to exploration agents.".into(),
             model: None,
             permission: PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-            tools: None,
+            // Physically read-only (#140, ADR-0041): the plan agent authors the
+            // plan and delegates research — no `edit`/`write`/`bash`. Via
+            // `tool_masked`'s ancestor intersection, every child spawned under
+            // plan is clamped to this read-only set too.
+            tools: Some(vec![
+                "read".into(),
+                "glob".into(),
+                "grep".into(),
+                "agent".into(),
+                "agent_spawn".into(),
+                "agent_poll".into(),
+                "ask_user".into(),
+                "load_skill".into(),
+            ]),
             disallowed_tools: Vec::new(),
+            // The plan agent is the plan owner (#140): it advertises `update_plan`
+            // and its calls mutate the session plan.
+            owns_plan: true,
             // `plan` may spawn (a primary), but omits `spawnable_agents` so any
             // user-defined exploration agent stays reachable (#119).
             can_spawn: None,
@@ -201,6 +220,8 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             // boundary, matching the `permission` denies above.
             tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
             disallowed_tools: Vec::new(),
+            // Default-closed plan authority (#140): explore never authors a plan.
+            owns_plan: false,
             // Reference leaf: a `Subagent` mode defaults `can_spawn` closed (#119),
             // so the whole `agent_*` family is withheld — matching the tool mask.
             can_spawn: None,

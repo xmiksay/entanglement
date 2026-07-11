@@ -329,6 +329,13 @@ async fn run_turn(
     // under the runtime's `Allow`/`Ask`/`Deny` dispatch, which grades only the
     // tools that survive here. The `update_plan`/`update_tasks` built-ins below
     // are session-state tools, not host tools, so they bypass the mask.
+    //
+    // Plan authority is separate and default-closed (#140, ADR-0041): the
+    // `update_plan` spec is advertised *only* to a profile that `owns_plan`;
+    // `update_tasks` stays unconditional (per-session bookkeeping, no
+    // cross-agent authority). This lives in core because the built-ins never
+    // round-trip to the runtime, so the runtime's `tool_masked` gate can't see
+    // them.
     let mut specs: Vec<ToolSpec> = tool_specs
         .iter()
         .filter(|spec| s.profile.advertises_tool(&spec.name))
@@ -348,20 +355,22 @@ async fn run_turn(
                 .cloned(),
         );
     }
-    specs.push(ToolSpec::with_schema(
-        PLAN_TOOL,
-        "Replace the strategy plan (markdown prose).",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The full plan document, in markdown."
-                }
-            },
-            "required": ["content"]
-        }),
-    ));
+    if s.profile.owns_plan {
+        specs.push(ToolSpec::with_schema(
+            PLAN_TOOL,
+            "Replace the strategy plan (markdown prose).",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The full plan document, in markdown."
+                    }
+                },
+                "required": ["content"]
+            }),
+        ));
+    }
     specs.push(ToolSpec::with_schema(
         TASKS_TOOL,
         "Replace the task list (markdown). Shown to the user as progress info — \
@@ -545,6 +554,29 @@ async fn handle_tool_call(
 
     // Built-ins: always run, mutate session state, emit a snapshot.
     if call.name == PLAN_TOOL {
+        // Plan authority is default-closed (#140, ADR-0041). A non-owner should
+        // never see the `update_plan` schema (it isn't advertised in `run_turn`),
+        // but the model can still hallucinate the call — refuse it here with no
+        // plan mutation and no `OutEvent::Plan`, and let the turn continue. This
+        // must be caught in core: the built-ins never round-trip to the runtime,
+        // so `tool_masked` cannot see them.
+        if !s.profile.owns_plan {
+            let msg = format!(
+                "update_plan refused: the `{}` agent does not own the session plan; \
+                 only a plan-owning profile may author it",
+                s.profile.name
+            );
+            emit_tool_output(
+                events,
+                session,
+                &call.id,
+                PLAN_TOOL,
+                msg.clone(),
+                &mut s.seq,
+            );
+            s.ctx.push_tool(&call.id, msg);
+            return false;
+        }
         let plan = json_field(&call.input, "content").unwrap_or_else(|| call.input.clone());
         s.plan = plan;
         emit_plan(events, session, &s.plan, &mut s.seq);
