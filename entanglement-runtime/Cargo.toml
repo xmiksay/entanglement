@@ -48,6 +48,10 @@ dirs = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
 async-trait = { workspace = true }
+# `rhai` host tool — embedded sandboxed script engine (ADR-0046). Non-optional:
+# the tool lives in the lean library (runtime::script), pure Rust so lean-build
+# and cross-compile clean.
+rhai = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

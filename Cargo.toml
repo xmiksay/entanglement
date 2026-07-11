@@ -32,6 +32,11 @@ clap = { version = "4", features = ["derive"] }
 # (ADR-0008). `glob` drives glob + grep file enumeration; `regex` drives grep.
 glob = "0.3"
 regex = "1"
+# Embedded, capability-sandboxed script engine for the `rhai` host tool
+# (ADR-0046). Pure Rust, cross-compile + lean-build friendly. `sync` makes the
+# engine/`Dynamic` Send+Sync (needed across the spawn_blocking bridge); `serde`
+# serializes a script's return value.
+rhai = { version = "1", default-features = false, features = ["std", "sync", "serde"] }
 diffy = "0.5"
 # rustls (not native-tls) so builds need no system OpenSSL headers.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "charset"] }

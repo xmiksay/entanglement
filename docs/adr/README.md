@@ -90,3 +90,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0043](0043-skill-preload-vs-access-independent-mechanisms.md) | Skill preload (`skills:` frontmatter) vs access (`load_skill` tool mask) as two independent agent-definition mechanisms | Accepted |
 | [0044](0044-agents-skills-system-prompt-epic-synthesis.md) | Agents, skills & system prompt — epic synthesis: six principles → enforcement map, disclosure tiers, enforcement-locus split, deferred follow-ups | Accepted |
 | [0045](0045-call-host-tool-argv-exec-tailed-output.md) | Host tool `call`: argv exec (no shell) with auto-tailed output (`tail=30`, `tail=0` = full) | Accepted |
+| [0046](0046-rhai-sandboxed-script-tool.md) | `rhai` host tool: embedded capability-sandboxed script engine; quintet bindings permission-checked per call via a sync/async bridge | Accepted |

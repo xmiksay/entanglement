@@ -215,6 +215,31 @@ pub fn spawn_tool_executor(
                         });
                         continue;
                     }
+                    // `rhai` is a runtime-owned sandboxed script tool (#122,
+                    // ADR-0046). Like the others it is intercepted before the
+                    // generic dispatch, because its bindings resolve permission
+                    // live against this loop's profile state — captured here as a
+                    // per-run snapshot and moved into the script task. The tool's
+                    // *own* Allow/Ask/Deny is resolved the same way; the tool mask
+                    // (checked above) already withholds it from a read-only
+                    // profile like `explore`.
+                    if tool == crate::script::RHAI_TOOL {
+                        let self_perm =
+                            effective_permission(&active, &spawn_guard, &session, &tool);
+                        let policy =
+                            crate::script::BindingPolicy::capture(&active, &spawn_guard, &session);
+                        let inbound = holly.subscribe_inbound();
+                        let tools = tools.clone();
+                        let holly = holly.clone();
+                        tokio::spawn(async move {
+                            crate::script::run_rhai(
+                                holly, tools, policy, self_perm, session, seq, request_id, inbound,
+                                input,
+                            )
+                            .await;
+                        });
+                        continue;
+                    }
                     // Resolve permission before spawning so the read of `active`
                     // stays ordered with the lifecycle events above. A child
                     // sub-agent is clamped to its parent chain (#77): its effective

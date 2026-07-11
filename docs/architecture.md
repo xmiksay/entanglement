@@ -538,6 +538,38 @@ fresh build session. One-shot `run`/`pipe` can't park an approval, so they
 auto-reject `propose_plan` with a "non-interactive head" reason (the plan agent
 still learns the outcome in-band and can revise).
 
+**Sandboxed script tool — `rhai`** (✅ #122,
+[ADR-0046](adr/0046-rhai-sandboxed-script-tool.md)). The model calls
+`rhai { script, timeout? }` to run multi-step logic in one call — the sanctioned
+replacement for shelling out to `python3`/`node`. The engine
+(`script.rs`, `rhai::Engine::new_raw()` + the IO-free `StandardPackage`) has **no**
+filesystem/network/process/env access and **no module resolver** (so `import`
+can't escape); `eval` is disabled. It is resource-bounded by construction:
+`max_operations`, `max_call_levels`, string/array/map size caps, and a wall-clock
+timeout (default 5s, max 30s) via the `on_progress` interrupt — a runaway script
+dies deterministically, never OOMs. `print(...)` is captured; the last-expression
+value is serialized (JSON, display-form fallback), the whole output bounded to the
+§8 32 KiB cap.
+
+The only capabilities bound are the root-contained quintet as script functions —
+`read`/`glob`/`grep`/`edit`/`write` (with the tools' overloads) — each
+**delegating to the registered `Tool` impl** (so root containment + bounded output
+come for free) and resolving permission **per call exactly like a `ToolExec`**:
+`Deny` or a #116 mask throws a catchable script exception; `Allow` runs; `Ask`
+parks the script on the standard `ToolRequest` → `Approve`/`Reject` round-trip,
+**resolved once per function per run** (the first `edit` asks; approval covers the
+rest). Because the bindings *are* the always-registered quintet, `rhai` is
+precisely as privileged as those tools — so it is registered by default in the
+shared `tool_specs`, and a profile gates it like any tool (a read-only `explore`
+with `tools: [read, glob, grep]` never sees it). The executor intercepts `rhai`
+before the generic dispatch (it needs the per-session profile state to snapshot
+each binding's mask + clamped permission); its *own* Allow/Ask/Deny is resolved
+the same way as any host tool. Rhai's engine is sync, so the script runs under
+`spawn_blocking` and each binding crosses a small **bridge** — `mpsc` request +
+`oneshot` reply — to the async resolver on the executor task; the timeout is
+enforced inside the engine, not by aborting the blocking task. No exec bindings
+(`bash`/`call`) in v1 — that would escape the sandbox.
+
 ## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 
 The `Llm` **trait** lives in `entanglement-core` (the seam); all LLM I/O lives in

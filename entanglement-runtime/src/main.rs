@@ -17,6 +17,7 @@ mod persistence;
 mod pipe;
 mod propose_plan;
 mod run;
+mod script;
 mod session_store;
 mod skills;
 mod subagent;
@@ -116,6 +117,12 @@ fn build_config(
     // `ask_user` is likewise runtime-owned (#90) but not a spawn tool: every
     // profile may surface a decision prompt, so it stays in the shared specs.
     cfg.tool_specs.push(ask_user::ask_user_spec());
+    // `rhai` is a runtime-owned sandboxed script tool (#122, ADR-0046). Its
+    // bindings are exactly the root-contained quintet, so it is no more
+    // privileged than the always-registered tools and rides the shared specs
+    // (registered by default; a profile masks it like any tool via its
+    // allowlist). The executor intercepts it before permission resolution.
+    cfg.tool_specs.push(script::rhai_spec());
     (cfg, model_info, tools)
 }
 
