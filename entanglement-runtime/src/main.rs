@@ -360,7 +360,10 @@ async fn main() -> Result<()> {
         std::sync::Arc::new(skills::load_registry(&cwd).context("loading skill definitions")?);
     let mut prompt_ctx = system_prompt::PromptContext::load(&cwd);
     prompt_ctx.skills = skill_registry.disclosures();
-    let profiles = agents::load_registry(&cwd, &prompt_ctx).context("loading agent definitions")?;
+    // The skill registry also resolves per-agent `skills:` preload bodies (#117),
+    // orthogonal to the tier-1 disclosures above and to the `load_skill` mask.
+    let profiles = agents::load_registry(&cwd, &prompt_ctx, &skill_registry)
+        .context("loading agent definitions")?;
 
     let http_client = HttpClient::new();
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
