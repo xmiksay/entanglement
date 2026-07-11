@@ -224,6 +224,23 @@ only field a spawning model sees).
   intersection — every child it spawns is clamped to that read-only set too.
   `build`/`explore` are unchanged (default-false = they simply stop advertising
   `update_plan`).
+- **Plan acceptance — `propose_plan` (✅ #141, [ADR-0042](adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)):**
+  the plan agent's *finalize* step (`update_plan` stays for working snapshots). A
+  runtime-owned tool `propose_plan { plan }`, advertised only to a profile that
+  `owns_plan` (via the #119 `profile_tool_specs` seam; `plan.md`'s `tools:`
+  allowlist also lists it) — the same default-closed-authority gate as #140.
+  Acceptance rides the **existing tool-approval round-trip** (#59): the executor
+  (`propose_plan.rs`) intercepts it on `ToolExec` after the #116 mask check (same
+  interception family as `ask_user`) and **force-parks it on the `Ask` path
+  unconditionally** — a permission profile can never `Allow` it, since user
+  approval *is* the tool's semantics. A standard `OutEvent::ToolRequest` reaches
+  the head. **Approve** → record the plan (`InMsg::SetPlan`, engine state
+  consistent for every head) + reply `ToolOutput("plan accepted by the user")` (the
+  plan agent learns the outcome and ends its turn); the head then performs the
+  **handoff** (see §5c). **Reject + reason** → the existing fold-back (`tool
+  \`propose_plan\` rejected: <reason>`); the model revises and re-proposes in the
+  same turn. One-shot heads (`run`/`pipe`) can't park an interactive approval, so
+  they auto-reject with a "non-interactive head" reason.
 - **System-prompt assembly (✅ #113, [ADR-0035](adr/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five
@@ -444,6 +461,34 @@ folds the answer (the picked label or typed text, verbatim) back as the
 logic. A `Stop` while pending unwinds silently (core cancels the turn). The
 non-interactive `run` head auto-answers (first option, else a canned note) so it
 never parks; `pipe` forwards the question and accepts the answer as-is.
+
+**Plan acceptance — `propose_plan` + the handoff recipe** (✅ #141,
+[ADR-0042](adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)). The
+plan agent calls a runtime-owned `propose_plan { plan }` to finalize. The executor
+(`propose_plan.rs`) intercepts it on `ToolExec` — after the #116 mask check, same
+family as `ask_user` — and **force-parks it on the `Ask` path unconditionally** (a
+profile can never `Allow` it; user approval *is* the semantics), emitting a
+standard `OutEvent::ToolRequest`. **Approve** records the plan (`InMsg::SetPlan`)
+and folds `ToolOutput("plan accepted by the user")` back; **reject + reason**
+folds `tool \`propose_plan\` rejected: <reason>` back and records no plan. On
+approve the head *additionally* runs the **handoff** — pure head policy, zero new
+protocol surface, so pipe/WS heads implement it identically:
+
+1. mint a fresh `SessionId::new_uuid()`;
+2. `SetAgent { session: new, agent: "build" }` — lazy session creation starts a
+   **root** `build` session;
+3. `Prompt { session: new, text: wrap(plan) }` — the accepted plan verbatim as the
+   first user message;
+4. switch the head's active view to the new session.
+
+The build session is a **root, not a child** of the plan session: a parent link
+would clamp `build` to `plan`'s read-only tool set (#116) + the ADR-0024 permission
+ceiling (it could never `edit`/`write`), drain the plan root's ADR-0023 spawn
+budget, and mis-model accept — which is a transfer of authority *from the user*, a
+root. The plan session stays alive after accept; a later re-propose mints another
+fresh build session. One-shot `run`/`pipe` can't park an approval, so they
+auto-reject `propose_plan` with a "non-interactive head" reason (the plan agent
+still learns the outcome in-band and can revise).
 
 ## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](adr/0007-streaming-llm-and-provider-crate.md)
 

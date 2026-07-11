@@ -231,6 +231,16 @@ async fn handle_event(
                 match current_mode {
                     ApprovalMode::WaitingForApproval { request_id } => match key.code {
                         KeyCode::Char('y') => {
+                            // Capture a `propose_plan` handoff before Approve
+                            // clears the pending request: accepting a plan mints a
+                            // fresh root `build` session whose first message is the
+                            // plan (#141, ADR-0042). Zero new protocol surface — the
+                            // handoff is head policy.
+                            let handoff =
+                                app.pending_tool_request().and_then(|(_, tool, input)| {
+                                    (tool == crate::propose_plan::PROPOSE_PLAN_TOOL)
+                                        .then(|| crate::propose_plan::parse_plan(input))
+                                });
                             let _ = holly
                                 .send(InMsg::Approve {
                                     session: app.active_session_id().clone(),
@@ -238,6 +248,9 @@ async fn handle_event(
                                 })
                                 .await;
                             app.set_approval_mode(ApprovalMode::Normal);
+                            if let Some(plan) = handoff {
+                                handoff_accepted_plan(app, holly, plan).await;
+                            }
                         }
                         KeyCode::Char('n') => {
                             app.set_approval_mode(ApprovalMode::EnteringRejectReason {
@@ -455,6 +468,36 @@ async fn handle_event(
         }
     }
     Ok(false)
+}
+
+/// Perform the plan-acceptance handoff (#141, ADR-0042): mint a fresh **root**
+/// `build` session whose first user message is the accepted plan, then switch the
+/// view to it. Modelled as head policy — no new protocol surface — so pipe/WS
+/// heads implement the identical recipe. The build session is a root (not a child
+/// of the plan session) so it is never clamped to plan's read-only tool set nor
+/// charged against the plan root's spawn budget; accept is a transfer of authority
+/// *from the user*.
+async fn handoff_accepted_plan(app: &mut App, holly: &Holly, plan: String) {
+    let new_session = SessionId::new_uuid();
+    // Lazy session creation: SetAgent on a fresh id starts a root session under
+    // the requested profile (holly.rs); the Prompt then runs its first turn.
+    let _ = holly
+        .send(InMsg::SetAgent {
+            session: new_session.clone(),
+            agent: crate::propose_plan::HANDOFF_PROFILE.to_string(),
+        })
+        .await;
+    let text = crate::propose_plan::wrap_plan(&plan);
+    let _ = holly
+        .send(InMsg::Prompt {
+            session: new_session.clone(),
+            text: text.clone(),
+        })
+        .await;
+    // Adopt the fresh id head-side and switch to it, then mirror the first user
+    // message locally (the engine never echoes `InMsg::Prompt` as an `OutEvent`).
+    app.adopt_session(new_session);
+    app.record_user_message(text);
 }
 
 /// Runs a `!bash` passthrough command head-side and injects the output into the

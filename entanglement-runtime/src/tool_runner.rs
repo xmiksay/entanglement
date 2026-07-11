@@ -196,6 +196,25 @@ pub fn spawn_tool_executor(
                         });
                         continue;
                     }
+                    // `propose_plan` is the plan agent's finalize step (#141,
+                    // ADR-0042): plan acceptance rides the tool-approval round-trip.
+                    // Like `ask_user` it is intercepted before permission and
+                    // **force-parked on the `Ask` path unconditionally** — a
+                    // profile can never `Allow` it, since user approval *is* the
+                    // tool's semantics. Approve records the plan (`SetPlan`); the
+                    // head handles the fresh-`build`-session handoff (head policy,
+                    // no new protocol surface).
+                    if tool == crate::propose_plan::PROPOSE_PLAN_TOOL {
+                        let inbound = holly.subscribe_inbound();
+                        let holly = holly.clone();
+                        tokio::spawn(async move {
+                            crate::propose_plan::run_propose_plan(
+                                holly, inbound, session, seq, request_id, input,
+                            )
+                            .await;
+                        });
+                        continue;
+                    }
                     // Resolve permission before spawning so the read of `active`
                     // stays ordered with the lifecycle events above. A child
                     // sub-agent is clamped to its parent chain (#77): its effective

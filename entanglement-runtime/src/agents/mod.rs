@@ -260,6 +260,9 @@ mod tests {
         assert!(!plan.advertises_tool("edit"));
         assert!(!plan.advertises_tool("write"));
         assert!(!plan.advertises_tool("bash"));
+        // Plan acceptance (#141, ADR-0042): plan finalizes with `propose_plan`;
+        // its mask must advertise it (the second gate, after `owns_plan`).
+        assert!(plan.advertises_tool("propose_plan"));
 
         let explore = reg.get("explore").expect("explore built-in");
         assert_eq!(explore.mode, AgentMode::Subagent);

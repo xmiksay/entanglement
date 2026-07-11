@@ -72,6 +72,25 @@ pub async fn run_one(
                 })
                 .await?;
         }
+        // `propose_plan` force-parks on approval (#141, ADR-0042); a one-shot head
+        // has no interactive user to accept it, so auto-reject with a clear reason
+        // (the plan agent learns the outcome in-band and can end its turn).
+        if let OutEvent::ToolRequest {
+            request_id, tool, ..
+        } = &ev
+        {
+            if tool == crate::propose_plan::PROPOSE_PLAN_TOOL {
+                holly
+                    .send(InMsg::Reject {
+                        session: session.clone(),
+                        request_id: request_id.clone(),
+                        reason: Some(
+                            "non-interactive head cannot accept a plan; run interactively (tui) to accept".to_string(),
+                        ),
+                    })
+                    .await?;
+            }
+        }
         if matches!(ev, OutEvent::Done { .. }) {
             break;
         }

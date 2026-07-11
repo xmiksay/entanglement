@@ -232,6 +232,13 @@ impl App {
         self.sessions.all()
     }
 
+    /// Adopt an externally-minted session id (create its view if absent + switch)
+    /// — the `propose_plan` handoff mints a fresh root `build` session (#141).
+    pub fn adopt_session(&mut self, id: SessionId) {
+        self.sessions.adopt(id);
+        self.mark_dirty();
+    }
+
     pub fn clear_dirty(&mut self) {
         self.dirty = false;
     }

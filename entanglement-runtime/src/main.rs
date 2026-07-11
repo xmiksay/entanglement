@@ -15,6 +15,7 @@ mod host;
 mod permission;
 mod persistence;
 mod pipe;
+mod propose_plan;
 mod run;
 mod session_store;
 mod skills;
@@ -93,11 +94,17 @@ fn build_config(
     // spawn, and a non-spawning profile gets nothing — so it lives in
     // `profile_tool_specs` (appended by core for the active profile), not the
     // shared `tool_specs`. Empty entries are simply omitted.
+    // Plan acceptance (#141, ADR-0042): `propose_plan` is a runtime-owned tool
+    // finalize step, advertised only to a profile that `owns_plan` (#140) — the
+    // same default-closed-authority gate as `update_plan`, so it never leaks to an
+    // unmasked user profile. It rides the same per-profile seam as the spawn
+    // family; the profile's `tools:` allowlist must also list it (the #116 mask).
     let profile_tool_specs = cfg
         .profiles
         .iter()
         .filter_map(|p| {
-            let specs = subagent::spawn_specs_for(p, &cfg.profiles);
+            let mut specs = subagent::spawn_specs_for(p, &cfg.profiles);
+            specs.extend(propose_plan::specs_for(p));
             (!specs.is_empty()).then(|| (p.name.clone(), specs))
         })
         .collect();

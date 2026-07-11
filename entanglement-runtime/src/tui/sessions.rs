@@ -85,6 +85,14 @@ impl SessionRegistry {
         }
     }
 
+    /// Adopt an externally-minted session id: create its view if absent and
+    /// switch to it. Used by the `propose_plan` handoff (#141), which mints a
+    /// fresh root `build` session head-side rather than through [`create`].
+    pub fn adopt(&mut self, id: SessionId) {
+        self.view_or_insert(&id);
+        self.switch_to(id);
+    }
+
     pub fn all(&self) -> Vec<(&SessionId, &SessionView)> {
         self.order
             .iter()
@@ -263,6 +271,40 @@ mod tests {
             reg.active_view().approval_mode(),
             ApprovalMode::WaitingForApproval { request_id } if request_id == "t1"
         ));
+    }
+
+    #[test]
+    fn propose_plan_request_renders_accept_prompt_and_handoff_switches_session() {
+        let plan_session = SessionId::new("plan-s");
+        let mut reg = SessionRegistry::new(plan_session.clone());
+
+        // A `propose_plan` ToolRequest surfaces the standard approval prompt and
+        // exposes the plan input so the head can hand it off on approve (#141).
+        reg.handle_out_event(OutEvent::ToolRequest {
+            session: plan_session.clone(),
+            seq: 1,
+            request_id: "pp1".to_string(),
+            tool: crate::propose_plan::PROPOSE_PLAN_TOOL.to_string(),
+            input: r##"{"plan":"# Do it"}"##.to_string(),
+        });
+        assert!(matches!(
+            reg.active_view().approval_mode(),
+            ApprovalMode::WaitingForApproval { request_id } if request_id == "pp1"
+        ));
+        let (_, tool, input) = reg
+            .active_view()
+            .pending_tool_request()
+            .expect("pending propose_plan request");
+        assert_eq!(tool, crate::propose_plan::PROPOSE_PLAN_TOOL);
+        assert_eq!(crate::propose_plan::parse_plan(input), "# Do it");
+
+        // The handoff mints a fresh root build session and switches to it.
+        let build_session = SessionId::new("build-fresh");
+        reg.adopt(build_session.clone());
+        assert_eq!(reg.active_id(), &build_session);
+        // The plan session stays alive after accept (a later re-propose mints
+        // another fresh build session).
+        assert!(reg.all().iter().any(|(id, _)| **id == plan_session));
     }
 
     #[test]
