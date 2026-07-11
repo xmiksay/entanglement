@@ -89,6 +89,11 @@ struct AgentDefinition {
     /// Tool denylist, applied after the allowlist (#116, ADR-0038).
     #[serde(default)]
     disallowed_tools: Vec<String>,
+    /// Whether this profile may author the session plan (#140, ADR-0041).
+    /// Default-closed: omitted ⇒ `false`, so only an agent that opts in with
+    /// `owns_plan: true` advertises the built-in `update_plan` tool.
+    #[serde(default)]
+    owns_plan: bool,
     /// Whether this profile may spawn sub-agents (#119, ADR-0040). Omitted ⇒
     /// derive from `mode` (`subagent` closed, otherwise open).
     #[serde(default)]
@@ -177,6 +182,7 @@ fn parse_definition(content: &str, ctx: &PromptContext) -> Result<AgentProfile> 
         permission,
         tools: def.tools,
         disallowed_tools: def.disallowed_tools,
+        owns_plan: def.owns_plan,
         can_spawn: def.can_spawn,
         spawnable_agents: def.spawnable_agents,
     })
@@ -238,20 +244,42 @@ mod tests {
         assert_eq!(build.mode, AgentMode::Primary);
         assert_eq!(build.permission.for_tool("edit"), Permission::Allow);
         assert!(build.system_prompt.starts_with("You are a coding agent"));
+        // Default-closed plan authority (#140): build consumes the plan.
+        assert!(!build.owns_plan);
 
         let plan = reg.get("plan").expect("plan built-in");
         assert_eq!(plan.permission.for_tool("read"), Permission::Allow);
         assert_eq!(plan.permission.for_tool("edit"), Permission::Ask);
+        // Plan owns the plan (#140, ADR-0041) and is physically read-only: its
+        // tool mask carries the read trio + delegation/skill tools, no
+        // `edit`/`write`/`bash`. Children spawned under it inherit this clamp.
+        assert!(plan.owns_plan);
+        assert!(plan.advertises_tool("read"));
+        assert!(plan.advertises_tool("agent_spawn"));
+        assert!(plan.advertises_tool("load_skill"));
+        assert!(!plan.advertises_tool("edit"));
+        assert!(!plan.advertises_tool("write"));
+        assert!(!plan.advertises_tool("bash"));
 
         let explore = reg.get("explore").expect("explore built-in");
         assert_eq!(explore.mode, AgentMode::Subagent);
         assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
         assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);
+        assert!(!explore.owns_plan);
         // Reference read-only agent (#116): its tool mask is the read trio only.
         assert!(explore.advertises_tool("read"));
         assert!(explore.advertises_tool("grep"));
         assert!(!explore.advertises_tool("edit"));
         assert!(!explore.advertises_tool("agent_spawn"));
+    }
+
+    #[test]
+    fn owns_plan_defaults_false_and_parses_true() {
+        // Default-closed: omitting `owns_plan` yields false (#140, ADR-0041).
+        let p = parse("---\nname: x\ndescription: d\n---\nbody").unwrap();
+        assert!(!p.owns_plan);
+        let p = parse("---\nname: x\ndescription: d\nowns_plan: true\n---\nbody").unwrap();
+        assert!(p.owns_plan);
     }
 
     #[test]

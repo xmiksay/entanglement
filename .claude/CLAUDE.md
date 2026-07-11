@@ -118,7 +118,9 @@ enum). Frontmatter `tools`/`disallowed_tools` (the tool mask) are **enforced**
 they ride the core `AgentProfile` (`tools`/`disallowed_tools` + `advertises_tool`,
 `registry ∩ allowlist − denylist`), orthogonal to `permission`. Core's `run_turn`
 filters `tool_specs` by the active profile (advertisement — a masked schema never
-reaches the model; the `update_plan`/`update_tasks` built-ins are never masked),
+reaches the model; the `update_plan`/`update_tasks` built-ins are never routed
+through the tool mask — `update_plan` is instead authority-gated by `owns_plan`,
+#140 below, `update_tasks` always advertised),
 and `runtime::permission::tool_masked` refuses a masked `ToolExec` **first**
 (before the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions +
 permission), clamping down the ancestor chain like ADR-0024's ceiling. `explore`
@@ -142,10 +144,22 @@ scoped to who it may spawn, still `advertises_tool`-filtered), so an out-of-list
 spawn is a schema violation first. Supervisor hardened: an unknown `Spawn` name
 now `get()`s + emits an `Error` instead of escalating to `build`. TUI `/agent`
 picker/Tab-cycle is registry-driven, filtered to `mode ∈ {primary, all}`.
-Follow-ups reuse the seam: #140 (`owns_plan` — default-closed `update_plan`
-authority, built-in `plan` gets it plus a physical read-only mask), #141
-(`propose_plan` — plan acceptance rides the tool-approval round-trip; approve =
-`SetPlan` + head mints a **fresh root `build` session** with the plan as its
+Plan authority is now **enforced** (✅ #140,
+[ADR-0041](../docs/adr/0041-update-plan-ownership-default-closed.md)):
+`AgentProfile.owns_plan: bool` (serde default **false**) gates the built-in
+`update_plan`. Enforced **entirely in core** (the built-ins never round-trip to
+the runtime, so `tool_masked` can't catch them): `run_turn` appends the
+`update_plan` spec only when `s.profile.owns_plan` (`update_tasks` stays
+unconditional), and `handle_tool_call` refuses a hallucinated non-owner
+`update_plan` via a refusal `ToolOutput` (no plan mutation, no `OutEvent::Plan`,
+turn continues). `InMsg::SetPlan` stays head/user authority. Built-in `plan.md`
+gains `owns_plan: true` **plus** a physical read-only mask
+(`tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill]`)
+— it authors the plan + delegates research, and via `tool_masked`'s ancestor
+intersection every child it spawns is clamped read-only too; `build`/`explore`
+are default-false (they just stop advertising `update_plan`). Sibling follow-up:
+#141 (`propose_plan` — plan acceptance rides the tool-approval round-trip; approve
+= `SetPlan` + head mints a **fresh root `build` session** with the plan as its
 first user message, reject + typed reason = in-band revision). `AgentMode` gained
 `all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
 raw body (✅ #113, [ADR-0035](../docs/adr/0035-deterministic-system-prompt-assembly.md)):

@@ -191,6 +191,16 @@ pub struct AgentProfile {
     /// inherit-all `None`) would otherwise include it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
+    /// Whether this profile may author the session plan (#140, ADR-0041).
+    /// **Default-closed**: only a plan-owning profile advertises the built-in
+    /// `update_plan` tool, and core refuses a hallucinated `update_plan` call
+    /// from a non-owner. Orthogonal to the #116 tool mask — the plan built-ins
+    /// are session-state tools, never routed through [`advertises_tool`]
+    /// ([`Self::advertises_tool`]) — so authority cannot depend on every future
+    /// agent remembering to opt *out*. `update_tasks` stays unconditional
+    /// (per-session bookkeeping, no cross-agent authority).
+    #[serde(default)]
+    pub owns_plan: bool,
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
     /// ⇒ derive from [`mode`][Self::mode]: a `Subagent` leaf defaults closed,
     /// every other mode open. When it (or the derived default) is `false`, the
@@ -740,6 +750,7 @@ mod tests {
             permission: PermissionProfile::new(Permission::Allow),
             tools: tools.map(|v| v.into_iter().map(String::from).collect()),
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),
+            owns_plan: false,
             can_spawn: None,
             spawnable_agents: None,
         }
@@ -759,6 +770,7 @@ mod tests {
             permission: PermissionProfile::new(Permission::Allow),
             tools: None,
             disallowed_tools: Vec::new(),
+            owns_plan: false,
             can_spawn,
             spawnable_agents: spawnable_agents.map(|v| v.into_iter().map(String::from).collect()),
         }
