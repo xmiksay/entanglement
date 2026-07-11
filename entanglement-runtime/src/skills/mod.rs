@@ -111,6 +111,24 @@ impl SkillRegistry {
         self.skills.insert(skill.name.clone(), skill);
     }
 
+    /// Resolve a **preload** skill (#117) to its full rendered body, using the
+    /// same substitution pipeline as `load_skill` ([`load_skill::render_skill`]).
+    /// Preload (`skills:` in an agent definition) is agent-author config, distinct
+    /// from the `load_skill` tool mask that controls runtime *access*: it injects
+    /// a skill's body into the agent's assembled system prompt at load time. Two
+    /// deliberate differences from the model-facing `load_skill`:
+    ///
+    /// - a `user_only` skill **is** preloadable — the author opted in explicitly,
+    ///   so the "model cannot self-trigger" guard does not apply;
+    /// - an unknown name is a hard error, surfaced loudly at load time (agent
+    ///   definitions validate loudly, never silently drop a typo'd skill).
+    pub fn preload_body(&self, name: &str) -> Result<String> {
+        let skill = self.get(name).ok_or_else(|| {
+            anyhow::anyhow!("unknown preload skill `{name}`: it is not in the skill index")
+        })?;
+        Ok(load_skill::render_skill(skill))
+    }
+
     /// Tier-1 disclosure lines for the system prompt: `name` + `description`
     /// only, name-sorted. `user_only` skills are excluded — the model must not
     /// see a skill it cannot self-trigger.

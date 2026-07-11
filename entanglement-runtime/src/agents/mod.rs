@@ -46,6 +46,7 @@ use anyhow::{bail, Context, Result};
 use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile, ProfileRegistry};
 use serde::Deserialize;
 
+use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, PromptContext};
 
 /// Embedded built-in definitions, parsed through the same loader as user/project
@@ -102,6 +103,12 @@ struct AgentDefinition {
     /// any registered profile whose `mode` permits sub-agent use.
     #[serde(default)]
     spawnable_agents: Option<Vec<String>>,
+    /// Skills to **preload** into this agent's system prompt (#117): the listed
+    /// skills' full bodies are injected at load (paths substituted, same pipeline
+    /// as `load_skill`). Preload only — *not* an allowlist: runtime skill access
+    /// is the orthogonal `load_skill` tool mask (`tools`/`disallowed_tools`).
+    #[serde(default)]
+    skills: Option<Vec<String>>,
 }
 
 fn default_mode() -> AgentMode {
@@ -116,26 +123,40 @@ fn default_mode() -> AgentMode {
 /// project brief, environment block, skill index): each profile's body is
 /// composed into a final `system_prompt` via [`assemble`] as it is parsed
 /// (#113). Pass [`PromptContext::default`] for the raw, un-composed bodies.
-pub fn load_registry(root: &Path, ctx: &PromptContext) -> Result<ProfileRegistry> {
+pub fn load_registry(
+    root: &Path,
+    ctx: &PromptContext,
+    skills: &SkillRegistry,
+) -> Result<ProfileRegistry> {
     let mut reg = ProfileRegistry::default();
     for (file, contents) in BUILT_INS {
         // Embedded built-ins are guarded by `built_ins_parse`, so a failure here
         // is a build-time bug, not a runtime condition — surface it loudly.
-        let profile = parse_definition(contents, ctx)
+        let profile = parse_definition(contents, ctx, skills)
             .with_context(|| format!("parsing built-in agent `{file}`"))?;
         reg.insert(profile);
     }
     if let Some(dir) = user_agents_dir() {
-        load_dir(&dir, &mut reg, ctx)?;
+        load_dir(&dir, &mut reg, ctx, skills)?;
     }
-    load_dir(&root.join(".entanglement").join("agents"), &mut reg, ctx)?;
+    load_dir(
+        &root.join(".entanglement").join("agents"),
+        &mut reg,
+        ctx,
+        skills,
+    )?;
     Ok(reg)
 }
 
 /// Parse every `*.md` file in `dir` (if it exists) into `reg`, replacing any
 /// same-`name` entry already present. A missing dir is fine (no definitions);
 /// an unreadable dir or a malformed file is an error.
-fn load_dir(dir: &Path, reg: &mut ProfileRegistry, ctx: &PromptContext) -> Result<()> {
+fn load_dir(
+    dir: &Path,
+    reg: &mut ProfileRegistry,
+    ctx: &PromptContext,
+    skills: &SkillRegistry,
+) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -150,7 +171,7 @@ fn load_dir(dir: &Path, reg: &mut ProfileRegistry, ctx: &PromptContext) -> Resul
     for path in files {
         let contents = std::fs::read_to_string(&path)
             .with_context(|| format!("reading agent definition {}", path.display()))?;
-        let profile = parse_definition(&contents, ctx)
+        let profile = parse_definition(&contents, ctx, skills)
             .with_context(|| format!("parsing agent definition {}", path.display()))?;
         reg.insert(profile);
     }
@@ -162,7 +183,11 @@ fn load_dir(dir: &Path, reg: &mut ProfileRegistry, ctx: &PromptContext) -> Resul
 /// `system_prompt` via [`assemble`]: shared preamble + body + brief (if
 /// `include_brief`) + env + skills, with subagents getting the reduced form
 /// (#113).
-fn parse_definition(content: &str, ctx: &PromptContext) -> Result<AgentProfile> {
+fn parse_definition(
+    content: &str,
+    ctx: &PromptContext,
+    skills: &SkillRegistry,
+) -> Result<AgentProfile> {
     let (frontmatter, body) = crate::frontmatter::split(content)?;
     let def: AgentDefinition =
         serde_yaml::from_str(&frontmatter).context("invalid agent frontmatter")?;
@@ -173,11 +198,25 @@ fn parse_definition(content: &str, ctx: &PromptContext) -> Result<AgentProfile> 
         Some(v) => permission_from_value(v)?,
         None => PermissionProfile::new(Permission::Allow),
     };
+    // Resolve `skills:` preload (#117) to rendered bodies via the skill registry.
+    // An unknown skill is a loud error (agent definitions never silently drop a
+    // typo'd field); this is orthogonal to the `load_skill` access mask.
+    let preloaded = def
+        .skills
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|name| {
+            skills
+                .preload_body(name)
+                .with_context(|| format!("preloading skill for agent `{}`", def.name))
+        })
+        .collect::<Result<Vec<String>>>()?;
     Ok(AgentProfile {
         name: def.name,
         description: def.description,
         mode: def.mode,
-        system_prompt: assemble(&body, def.include_brief, def.mode, ctx),
+        system_prompt: assemble(&body, def.include_brief, def.mode, ctx, &preloaded),
         model: def.model.filter(|m| m != "inherit"),
         permission,
         tools: def.tools,
@@ -226,9 +265,34 @@ fn user_agents_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// Parse with an identity context so tests assert the raw body verbatim.
+    /// Parse with an identity context + empty skill registry so tests assert the
+    /// raw body verbatim (no preload injection).
     fn parse(content: &str) -> Result<AgentProfile> {
-        parse_definition(content, &PromptContext::default())
+        parse_definition(
+            content,
+            &PromptContext::default(),
+            &SkillRegistry::default(),
+        )
+    }
+
+    /// Parse against a supplied skill registry, to exercise `skills:` preload.
+    fn parse_with_skills(content: &str, skills: &SkillRegistry) -> Result<AgentProfile> {
+        parse_definition(content, &PromptContext::default(), skills)
+    }
+
+    /// A one-off registry holding a single embedded (built-in shape) skill.
+    fn skill_registry(name: &str, user_only: bool, body: &str) -> SkillRegistry {
+        use crate::skills::SkillMeta;
+        let mut reg = SkillRegistry::default();
+        reg.insert(SkillMeta {
+            name: name.into(),
+            description: "d".into(),
+            user_only,
+            allowed_tools: None,
+            root_dir: None,
+            body: body.into(),
+        });
+        reg
     }
 
     #[test]
@@ -356,6 +420,81 @@ mod tests {
         assert!(p.may_spawn());
         assert!(p.spawn_target_allowed("explore"));
         assert!(!p.spawn_target_allowed("build"));
+    }
+
+    #[test]
+    fn skills_preload_injects_body_into_system_prompt() {
+        // `skills:` preloads the full body; the tool mask is untouched (preload is
+        // not an allowlist), so `load_skill` stays advertised for the rest (#117).
+        let skills = skill_registry("git", false, "Run `git commit` carefully.");
+        let p = parse_with_skills(
+            "---\nname: x\ndescription: d\nskills: [git]\n---\nBody.",
+            &skills,
+        )
+        .unwrap();
+        assert!(
+            p.system_prompt.contains("Preloaded skills"),
+            "{}",
+            p.system_prompt
+        );
+        assert!(
+            p.system_prompt.contains("skill_id: git"),
+            "{}",
+            p.system_prompt
+        );
+        assert!(
+            p.system_prompt.contains("Run `git commit` carefully."),
+            "{}",
+            p.system_prompt
+        );
+        // Preload does not touch the tool mask — `load_skill` still advertised.
+        assert!(p.advertises_tool("load_skill"));
+    }
+
+    #[test]
+    fn preload_and_mask_are_independent_mechanisms() {
+        // The "preload X but block everything else" corner case (#117): preload a
+        // skill body *and* mask `load_skill` out so no other skill is loadable.
+        let skills = skill_registry("git", false, "git body");
+        let p = parse_with_skills(
+            "---\nname: x\ndescription: d\nskills: [git]\n\
+             disallowed_tools: [load_skill]\n---\nBody.",
+            &skills,
+        )
+        .unwrap();
+        // Body is preloaded...
+        assert!(p.system_prompt.contains("git body"), "{}", p.system_prompt);
+        // ...but runtime access to *any* skill is masked off.
+        assert!(!p.advertises_tool("load_skill"));
+    }
+
+    #[test]
+    fn preload_accepts_user_only_skills() {
+        // Preload is author config, so a `user_only` skill (withheld from the
+        // model-facing `load_skill`) is still preloadable (#117).
+        let skills = skill_registry("deploy", true, "deploy steps");
+        let p = parse_with_skills(
+            "---\nname: x\ndescription: d\nskills: [deploy]\n---\nBody.",
+            &skills,
+        )
+        .unwrap();
+        assert!(
+            p.system_prompt.contains("deploy steps"),
+            "{}",
+            p.system_prompt
+        );
+    }
+
+    #[test]
+    fn unknown_preload_skill_is_a_loud_error() {
+        let skills = SkillRegistry::default();
+        let err = parse_with_skills(
+            "---\nname: x\ndescription: d\nskills: [nope]\n---\nBody.",
+            &skills,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("nope"), "got: {msg}");
     }
 
     #[test]

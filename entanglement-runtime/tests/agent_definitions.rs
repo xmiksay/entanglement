@@ -34,9 +34,14 @@ fn load_with_dirs(
         Some(p) => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", p),
         None => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir"),
     }
-    // Identity context: assert the raw file bodies, not composed prompts (the
-    // composition itself is covered by `system_prompt_assembly.rs`).
-    let reg = load_registry(project_root, &PromptContext::default()).expect("load_registry");
+    // Identity context + empty skill registry: assert the raw file bodies, not
+    // composed prompts (composition is covered by `system_prompt_assembly.rs`).
+    let reg = load_registry(
+        project_root,
+        &PromptContext::default(),
+        &entanglement_runtime::skills::SkillRegistry::default(),
+    )
+    .expect("load_registry");
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
     reg
 }
@@ -103,6 +108,59 @@ fn project_overrides_user_overrides_builtin() {
 }
 
 #[test]
+fn skills_preload_composes_body_into_the_agent_prompt() {
+    // End-to-end (#117): a project skill on disk + a project agent that preloads
+    // it. The composed system prompt carries the skill body, and preload leaves
+    // the tool mask alone — `load_skill` is still advertised (not an allowlist).
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    // A project skill with a `references/` payload so path substitution runs.
+    let skill_dir = root.join(".entanglement").join("skills").join("git");
+    std::fs::create_dir_all(skill_dir.join("references")).unwrap();
+    std::fs::write(
+        skill_dir.join("references").join("guide.md"),
+        "detailed guide",
+    )
+    .unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: git\ndescription: git helpers\n---\nSee references/guide.md before committing.",
+    )
+    .unwrap();
+    // A project agent that preloads the skill.
+    write_agent(
+        &root.join(".entanglement").join("agents"),
+        "coder.md",
+        "---\nname: coder\ndescription: a coder\nskills: [git]\n---\nBe careful.",
+    );
+
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
+    std::env::set_var("ENTANGLEMENT_SKILLS_DIR", "/nonexistent-user-skills-dir");
+    let skills = entanglement_runtime::skills::load_registry(root).expect("load skills");
+    let ctx = PromptContext {
+        skills: skills.disclosures(),
+        ..Default::default()
+    };
+    let reg = load_registry(root, &ctx, &skills).expect("load agents");
+    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
+    std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
+
+    let coder = reg.get("coder").expect("coder agent");
+    let prompt = &coder.system_prompt;
+    assert!(prompt.contains("Preloaded skills"), "{prompt}");
+    assert!(prompt.contains("skill_id: git"), "{prompt}");
+    // The relative ref was substituted to an absolute path (load_skill pipeline).
+    let abs_ref = skill_dir.join("references").join("guide.md");
+    assert!(
+        prompt.contains(&abs_ref.display().to_string()),
+        "ref not absolutized:\n{prompt}"
+    );
+    // Preload is not an allowlist: runtime access is untouched.
+    assert!(coder.advertises_tool("load_skill"));
+}
+
+#[test]
 fn malformed_project_file_aborts_load() {
     let project = tempfile::tempdir().unwrap();
     write_agent(
@@ -113,7 +171,11 @@ fn malformed_project_file_aborts_load() {
     // The missing `description` must surface as an error, not a silent skip.
     let _guard = ENV_LOCK.lock().unwrap();
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-    let result = load_registry(project.path(), &PromptContext::default());
+    let result = load_registry(
+        project.path(),
+        &PromptContext::default(),
+        &entanglement_runtime::skills::SkillRegistry::default(),
+    );
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
     let err = result.err().expect("malformed file must error");
     let msg = format!("{err:#}");

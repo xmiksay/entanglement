@@ -106,18 +106,23 @@ fn load(registry: &SkillRegistry, skill_name: &str) -> Result<String> {
              explicit user command, not a model-issued load_skill"
         );
     }
+    Ok(render_skill(skill))
+}
+
+/// Render one skill's full instructions the way `load_skill` returns them:
+/// path-substituted body + `available_refs` listing, under a `skill_id` header.
+/// Shared by the model-facing [`load`] and the agent-definition **preload**
+/// (#117), so a preloaded skill reads identically to one the model loads itself.
+/// Carries no `user_only` gate — that policy belongs to the caller (`load`
+/// enforces it; preload is author config and does not).
+pub(crate) fn render_skill(skill: &super::SkillMeta) -> String {
     // Built-ins have no on-disk home (`root_dir == None`): they are single-file,
     // so there are no relative payload paths to resolve and no refs to list.
     let (content, refs) = match skill.root_dir.as_deref() {
         Some(dir) => (substitute_paths(&skill.body, dir), list_refs(dir)),
         None => (skill.body.clone(), Vec::new()),
     };
-    Ok(render(
-        &skill.name,
-        skill.root_dir.as_deref(),
-        &content,
-        &refs,
-    ))
+    render(&skill.name, skill.root_dir.as_deref(), &content, &refs)
 }
 
 /// Rewrite relative payload paths in `body` to absolute paths under `skill_dir`.

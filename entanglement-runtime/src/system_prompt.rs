@@ -1,7 +1,7 @@
 //! Deterministic system-prompt assembly (#113, epic #111).
 //!
 //! The system prompt a session sends to the model is **composed**, not a single
-//! opaque string on the agent definition. [`assemble`] folds up to five parts in
+//! opaque string on the agent definition. [`assemble`] folds up to six parts in
 //! a fixed order — each optional, none model-guessed:
 //!
 //! 1. **shared preamble** — invariants every agent must honour (safety, output,
@@ -17,11 +17,16 @@
 //!    model never has to guess them.
 //! 5. **skill index** — tier-1 disclosure lines (`name` + `description` only)
 //!    generated from the skill registry, never hand-written into an agent body.
+//! 6. **preloaded skill bodies** — full bodies of the skills an agent names in its
+//!    `skills:` frontmatter (#117), resolved through the same substitution
+//!    pipeline as `load_skill`. Preload only, never an allowlist; runtime skill
+//!    *access* is the orthogonal `load_skill` tool mask.
 //!
-//! A **subagent** (`AgentMode::Subagent`) gets `preamble + body (+ brief)` only —
-//! the env block and skill index are omitted, and it never inherits the parent's
+//! A **subagent** (`AgentMode::Subagent`) gets `preamble + body (+ brief)` plus
+//! any preloaded bodies — the env block and tier-1 skill index are omitted (but
+//! preload is not, being author-requested), and it never inherits the parent's
 //! assembled prompt (each agent is composed independently from its own body and
-//! its own `include_brief` flag).
+//! its own `include_brief`/`skills` frontmatter).
 //!
 //! Composition is a pure function so it is unit-testable with no model in the
 //! loop. The runtime bakes the assembled prompt into each [`AgentProfile`] at
@@ -121,11 +126,26 @@ impl PromptContext {
 
 /// Compose one agent's system prompt deterministically (#113).
 ///
-/// Order: preamble, body, brief (only if `include_brief`), env, skills — each
-/// emitted only when present/non-empty, joined by blank lines. A `Subagent`
-/// agent gets `preamble + body (+ brief)` only; the env block and skill index
-/// are reserved for primary/`all` sessions.
-pub fn assemble(body: &str, include_brief: bool, mode: AgentMode, ctx: &PromptContext) -> String {
+/// Order: preamble, body, brief (only if `include_brief`), env, tier-1 skill
+/// index, preloaded skill bodies — each emitted only when present/non-empty,
+/// joined by blank lines. A `Subagent` agent gets `preamble + body (+ brief)`
+/// only for the env block and tier-1 index, which are reserved for primary/`all`
+/// sessions.
+///
+/// `preloaded` (#117) are full skill bodies resolved from the agent definition's
+/// `skills:` frontmatter (same substitution pipeline as `load_skill`). Preload is
+/// a distinct mechanism from the tier-1 index and from runtime access (the
+/// `load_skill` tool mask): it is **mode-independent** — a spawned subagent that
+/// preloads a skill gets its body even though the tier-1 index is withheld — and
+/// **additive**, never an allowlist, so the index still discloses every other
+/// skill.
+pub fn assemble(
+    body: &str,
+    include_brief: bool,
+    mode: AgentMode,
+    ctx: &PromptContext,
+    preloaded: &[String],
+) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if let Some(preamble) = non_empty(ctx.preamble.as_deref()) {
@@ -149,6 +169,11 @@ pub fn assemble(body: &str, include_brief: bool, mode: AgentMode, ctx: &PromptCo
             parts.push(render_skills(&ctx.skills));
         }
     }
+    // Preload is author-requested (#117), so it is not gated by mode — the
+    // subagent spawn case is precisely what it is for.
+    if !preloaded.is_empty() {
+        parts.push(render_preloaded(preloaded));
+    }
 
     parts.join("\n\n")
 }
@@ -159,6 +184,21 @@ fn render_skills(skills: &[SkillDisclosure]) -> String {
     let mut out = String::from("Available skills (load with the `load_skill` tool before use):");
     for s in skills {
         out.push_str(&format!("\n- {}: {}", s.name, s.description));
+    }
+    out
+}
+
+/// Render the preloaded-skill section (#117): a header explaining these bodies
+/// are already loaded (so the model need not call `load_skill` for them), then
+/// each rendered skill body separated by blank lines.
+fn render_preloaded(bodies: &[String]) -> String {
+    let mut out = String::from(
+        "Preloaded skills — the full instructions below are already loaded; you do \
+         not need to call `load_skill` for them:",
+    );
+    for body in bodies {
+        out.push_str("\n\n");
+        out.push_str(body.trim());
     }
     out
 }
@@ -279,7 +319,7 @@ mod tests {
 
     #[test]
     fn primary_assembly_is_ordered_preamble_body_brief_env_skills() {
-        let out = assemble("BODY", true, AgentMode::Primary, &ctx_full());
+        let out = assemble("BODY", true, AgentMode::Primary, &ctx_full(), &[]);
         let p = out.find("PREAMBLE").unwrap();
         let b = out.find("BODY").unwrap();
         let br = out.find("BRIEF").unwrap();
@@ -300,10 +340,10 @@ mod tests {
             preamble: None,
             ..ctx_full()
         };
-        assert!(!assemble("BODY", true, AgentMode::Primary, &ctx).contains("PREAMBLE"));
+        assert!(!assemble("BODY", true, AgentMode::Primary, &ctx, &[]).contains("PREAMBLE"));
 
         // Brief present but flag off ⇒ omitted.
-        let out = assemble("BODY", false, AgentMode::Primary, &ctx_full());
+        let out = assemble("BODY", false, AgentMode::Primary, &ctx_full(), &[]);
         assert!(
             !out.contains("BRIEF"),
             "brief must be gated by include_brief:\n{out}"
@@ -314,19 +354,19 @@ mod tests {
             env: None,
             ..ctx_full()
         };
-        assert!(!assemble("BODY", true, AgentMode::Primary, &ctx).contains("<env>"));
+        assert!(!assemble("BODY", true, AgentMode::Primary, &ctx, &[]).contains("<env>"));
 
         // No skills.
         let ctx = PromptContext {
             skills: vec![],
             ..ctx_full()
         };
-        assert!(!assemble("BODY", true, AgentMode::Primary, &ctx).contains("Available skills"));
+        assert!(!assemble("BODY", true, AgentMode::Primary, &ctx, &[]).contains("Available skills"));
     }
 
     #[test]
     fn subagent_gets_preamble_body_brief_but_not_env_or_skills() {
-        let out = assemble("BODY", true, AgentMode::Subagent, &ctx_full());
+        let out = assemble("BODY", true, AgentMode::Subagent, &ctx_full(), &[]);
         assert!(out.contains("PREAMBLE"));
         assert!(out.contains("BODY"));
         assert!(out.contains("BRIEF"));
@@ -342,9 +382,48 @@ mod tests {
 
     #[test]
     fn all_mode_is_composed_like_a_primary() {
-        let out = assemble("BODY", false, AgentMode::All, &ctx_full());
+        let out = assemble("BODY", false, AgentMode::All, &ctx_full(), &[]);
         assert!(out.contains("<env>"));
         assert!(out.contains("Available skills"));
+    }
+
+    #[test]
+    fn preloaded_bodies_render_after_the_skill_index_and_survive_subagent_mode() {
+        // Preload (#117) is mode-independent: a subagent (which drops env + the
+        // tier-1 index) still gets the preloaded body — the spawn case it is for.
+        let sub = assemble(
+            "BODY",
+            false,
+            AgentMode::Subagent,
+            &ctx_full(),
+            &["SKILL_BODY".into()],
+        );
+        assert!(!sub.contains("<env>"));
+        assert!(!sub.contains("Available skills"));
+        assert!(sub.contains("Preloaded skills"), "{sub}");
+        assert!(sub.contains("SKILL_BODY"), "{sub}");
+
+        // For a primary the tier-1 index still renders (preload is additive, not
+        // an allowlist) and the preloaded body comes after it.
+        let prim = assemble(
+            "BODY",
+            false,
+            AgentMode::Primary,
+            &ctx_full(),
+            &["SKILL_BODY".into()],
+        );
+        let idx = prim.find("Available skills").unwrap();
+        let pre = prim.find("Preloaded skills").unwrap();
+        assert!(
+            idx < pre,
+            "preloaded body must follow the tier-1 index:\n{prim}"
+        );
+    }
+
+    #[test]
+    fn empty_preload_adds_no_section() {
+        let out = assemble("BODY", false, AgentMode::Primary, &ctx_full(), &[]);
+        assert!(!out.contains("Preloaded skills"), "{out}");
     }
 
     #[test]
@@ -354,6 +433,7 @@ mod tests {
             true,
             AgentMode::Primary,
             &PromptContext::default(),
+            &[],
         );
         assert_eq!(out, "BODY");
     }

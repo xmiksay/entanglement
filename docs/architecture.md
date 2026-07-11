@@ -250,12 +250,13 @@ only field a spawning model sees).
   found wins — no bespoke file — only when the frontmatter sets
   `include_brief: true`) + **generated env block** (cwd/root, platform, date —
   never model-guessed) + **skill index** (tier-1 `name`+`description` disclosure
-  lines from the skill registry). Inputs come from `PromptContext::load(root)`
+  lines from the skill registry) + **preloaded skill bodies** (frontmatter
+  `skills: [name, …]`, ✅ #117, below). Inputs come from `PromptContext::load(root)`
   (preamble overridable via `ENTANGLEMENT_PREAMBLE_FILE`; brief via
-  `ENTANGLEMENT_BRIEF_FILE`). A **subagent** gets
-  `preamble + body (+ brief)` only — no env/skills, and never the parent's
-  assembled prompt (each agent is composed from *its own* body + `include_brief`
-  flag). Composition is a pure, unit-tested harness function baked into
+  `ENTANGLEMENT_BRIEF_FILE`). A **subagent** gets `preamble + body (+ brief)` +
+  any preloaded bodies — no env/skill-index, and never the parent's assembled
+  prompt (each agent is composed from *its own* body + `include_brief` flag).
+  Composition is a pure, unit-tested harness function baked into
   `AgentProfile.system_prompt` at load time, so session start / `SetAgent` / spawn
   all read the finished prompt and core stays a verbatim pass-through into
   `LlmRequest.system`. The skill index is populated from the skill registry
@@ -308,6 +309,24 @@ only field a spawning model sees).
   tool-execution-record field for a **separate** follow-up — distinct from the
   #116 *agent* tool mask, which is now live; `skill_id` is surfaced in the result
   today.
+- **Skill preload vs access — two independent mechanisms (✅ #117, [ADR-0043](adr/0043-skill-preload-vs-access-independent-mechanisms.md)):** an agent
+  definition controls skills along two orthogonal axes, deliberately *not* merged
+  (merging loses expressiveness). **Preload** is `skills: [name, …]` frontmatter:
+  the listed skills' full bodies are injected into that agent's assembled system
+  prompt at load, through the *same* substitution pipeline as `load_skill`
+  (`SkillRegistry::preload_body` → `load_skill::render_skill`) — it is preload
+  *only*, never an allowlist, and is mode-independent (a spawned subagent gets the
+  body even though its tier-1 index is withheld). Two differences from the
+  model-facing `load_skill`: a `user_only` skill *is* preloadable (author config,
+  not model self-trigger), and an unknown name is a loud load-time error.
+  **Access** is the orthogonal #116 tool mask: an agent that must not load skills
+  at runtime simply doesn't advertise `load_skill` (`disallowed_tools: [load_skill]`
+  or an allowlist omitting it), refused both from the advertised specs (core's
+  `run_turn` filter) and at dispatch (`tool_masked`). The two compose to preserve
+  both corners: "preload X but block everything else" (`skills: [x]` + `load_skill`
+  masked out) and "preload nothing, request on demand" (no `skills:`, `load_skill`
+  available). Default stays permissive — a subagent may discover + load any skill
+  via the same LLM gate as a primary unless masked.
 - **Where dispatch runs (✅ #59):** the `AgentProfile` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
   **runtime** concern ([ADR-0003](adr/0003-agent-and-permission-profiles.md) /

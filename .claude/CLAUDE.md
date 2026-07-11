@@ -203,7 +203,8 @@ required, `user_only` (only explicit user invocation — withheld from disclosur
 `allowed_tools` (a *skill-scoped* mask, enforcement deferred — needs skill
 provenance, distinct from the #116 agent tool mask). **Tier-1 disclosure only**:
 `disclosures()` emits one `name: description` line per non-`user_only` skill
-(~100 tokens each); bodies never preloaded. Selection stays LLM reasoning — no
+(~100 tokens each); bodies not preloaded unless an agent opts in via `skills:`
+(#117 below). Selection stays LLM reasoning — no
 keyword/embedding gate; description quality is the contract. Bodies + payload are
 tier-2, loaded on demand by the `load_skill` tool (✅ #115,
 [ADR-0037](../docs/adr/0037-load-skill-tool-deterministic-resolution.md)): one
@@ -218,8 +219,21 @@ the explicit escape hatch, no implicit CWD fallback) — and returns an ordinary
 `tool_result` with `skill_id` + substituted body + `available_refs` (listed, not
 loaded), never a spoofed user message. Provenance (carrying `skill_id` onto
 in-skill tool calls) lands with skill-scoped `allowed_tools` enforcement (a
-separate follow-up, distinct from the #116 agent tool mask). Core still
-ships `system_prompt` verbatim as `LlmRequest.system`. `Plan` and `TaskList` are
+separate follow-up, distinct from the #116 agent tool mask). Skill **preload**
+and **access** are two independent agent-definition mechanisms (✅ #117,
+[ADR-0043](../docs/adr/0043-skill-preload-vs-access-independent-mechanisms.md)),
+never merged: `skills: [name, …]` frontmatter is **preload only** — the listed skills'
+full bodies are injected into that agent's assembled `system_prompt` at load via
+the *same* substitution pipeline as `load_skill`
+(`SkillRegistry::preload_body` → `load_skill::render_skill`), mode-independent (a
+spawned subagent gets the body even though its tier-1 index is withheld) and *not*
+an allowlist (a `user_only` skill is preloadable — author config, not model
+self-trigger; an unknown name is a loud load-time error). **Access** is the
+orthogonal #116 tool mask: an agent that must not load skills at runtime just
+omits `load_skill` (`disallowed_tools: [load_skill]`), refused from the advertised
+specs and at dispatch. The two compose to preserve both corners — "preload X,
+block the rest" and "preload nothing, request on demand" — default permissive.
+Core still ships `system_prompt` verbatim as `LlmRequest.system`. `Plan` and `TaskList` are
 session-owned snapshots, written by built-in tools or harness `Set*` messages;
 both are plain markdown `content` now (✅ #142,
 [ADR-0040](../docs/adr/0039-markdown-task-list.md)) — `update_tasks { content }`

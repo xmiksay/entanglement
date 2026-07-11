@@ -84,7 +84,12 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
 
     // Isolate from any host user-agents dir; project agents come from the temp dir.
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-    let profiles = load_registry(project.path(), &ctx).expect("load_registry");
+    let profiles = load_registry(
+        project.path(),
+        &ctx,
+        &entanglement_runtime::skills::SkillRegistry::default(),
+    )
+    .expect("load_registry");
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
 
     // Sanity: the registry itself carries the composed prompts.

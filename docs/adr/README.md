@@ -87,3 +87,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0040](0040-per-profile-spawn-control.md) | Per-profile spawn control: `can_spawn` + spawnable-agents allowlist + target-mode gate | Accepted |
 | [0041](0041-update-plan-ownership-default-closed.md) | `update_plan` ownership: `owns_plan` default-closed plan authority + physical read-only `plan` | Accepted |
 | [0042](0042-plan-acceptance-via-propose-plan-approval-roundtrip.md) | Plan acceptance via `propose_plan` approval round-trip: accept → fresh root `build` session (head-policy handoff) | Accepted |
+| [0043](0043-skill-preload-vs-access-independent-mechanisms.md) | Skill preload (`skills:` frontmatter) vs access (`load_skill` tool mask) as two independent agent-definition mechanisms | Accepted |
