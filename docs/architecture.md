@@ -139,6 +139,35 @@ A session runs under exactly one [`AgentProfile`][profile]:
 `primary | subagent | all`; `description` drives delegation matching (§8, the
 only field a spawning model sees).
 
+**At a glance (epic [#111](https://github.com/xmiksay/entanglement/issues/111), synthesized in [ADR-0044](adr/0044-agents-skills-system-prompt-epic-synthesis.md)).**
+Agents and skills are **data, not code** — discovered from files, disclosed
+progressively, and assembled into system prompts deterministically. The pieces
+below realize one model:
+
+- **Data, not code** — agents (`*.md` frontmatter+body), skills (`SKILL.md` dirs),
+  and the provider catalog share one loader: embedded default < user
+  (`${config_dir}/entanglement/…`) < project (`<root>/.entanglement/…`), later
+  wins on `name`; a malformed override is a loud error. Editing a built-in is
+  dropping a same-`name` file in a higher layer.
+- **Progressive disclosure, recursively** — the model sees only *descriptions*
+  until it acts: spawn-target `name: description` in the `agent`/`agent_spawn`
+  schema (agents) → tier-1 `name: description` index in the prompt (skills) →
+  full body on `load_skill` **or** preload (skills tier-2) → the definition body
+  *becomes* a child's own assembled prompt at spawn.
+- **Model decides *whether*, harness decides *how*** — selection is LLM reasoning
+  over `description` text (no keyword/embedding router); path resolution, prompt
+  assembly, authorization, and tool-list enforcement are deterministic runtime
+  code. Injected content is always a `tool_result` / prompt section, never a
+  spoofed `user` message.
+- **Physical over prompted** — a read-only agent has no write tool *advertised or
+  executable* (the #116 mask), not a persona told not to write.
+- **Enforcement-locus split** — a gate lives where it can see the call: the tool
+  mask, spawn control, and permission clamp are **runtime** (host tools /
+  spawns round-trip there); `owns_plan` is **core** (the `update_plan` built-in
+  never round-trips). See ADR-0044 for the full principle→enforcement map and the
+  deferred follow-ups (skill provenance, skill-index masking, child-root
+  isolation).
+
 - Switch with `InMsg::SetAgent { agent }`; engine emits `AgentChanged`.
 - [`PermissionProfile`][perm] resolves `Allow | Ask | Deny` per tool
   (last-matching-rule-wins, `*` wildcard), **in the runtime tool executor** (✅ #59):
