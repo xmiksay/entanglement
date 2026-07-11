@@ -103,3 +103,95 @@ impl Tool for ReadTool {
         Ok(truncate_output(out))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn tmp() -> tempfile::TempDir {
+        tempfile::tempdir().expect("temp dir")
+    }
+
+    #[tokio::test]
+    async fn returns_lines_with_1_based_numbers() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        let tool = ReadTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"path":"a.txt"}"#).await.unwrap();
+        assert_eq!(out, "1: alpha\n2: beta\n3: gamma\n");
+    }
+
+    #[tokio::test]
+    async fn offset_and_limit_bound_the_window() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("a.txt"), "l1\nl2\nl3\nl4\nl5\n").unwrap();
+        let tool = ReadTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"path":"a.txt","offset":2,"limit":2}"#)
+            .await
+            .unwrap();
+        assert_eq!(out, "2: l2\n3: l3\n");
+    }
+
+    #[tokio::test]
+    async fn offset_zero_is_clamped_to_one() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("a.txt"), "only\n").unwrap();
+        let tool = ReadTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"path":"a.txt","offset":0}"#).await.unwrap();
+        assert_eq!(out, "1: only\n");
+    }
+
+    #[tokio::test]
+    async fn missing_file_errors() {
+        let dir = tmp();
+        let tool = ReadTool::new(dir.path().to_path_buf());
+        let err = tool.run(r#"{"path":"nope.txt"}"#).await.unwrap_err();
+        assert!(format!("{err}").contains("reading nope.txt"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn non_utf8_file_errors() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("bin"), [0xff, 0xfe, 0x00]).unwrap();
+        let tool = ReadTool::new(dir.path().to_path_buf());
+        let err = tool.run(r#"{"path":"bin"}"#).await.unwrap_err();
+        assert!(format!("{err}").contains("not valid UTF-8"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn path_escaping_root_is_rejected() {
+        let dir = tmp();
+        let tool = ReadTool::new(dir.path().to_path_buf());
+        let err = tool.run(r#"{"path":"../secret"}"#).await.unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_read_callback_fires_with_raw_bytes() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+        type ReadRecord = (String, Vec<u8>);
+        let seen: Arc<Mutex<Vec<ReadRecord>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let tool = ReadTool::new(dir.path().to_path_buf())
+            .with_on_read(move |p, b| sink.lock().unwrap().push((p, b)));
+        tool.run(r#"{"path":"a.txt"}"#).await.unwrap();
+        let recorded = seen.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "a.txt");
+        assert_eq!(recorded[0].1, b"hi\n");
+    }
+
+    #[tokio::test]
+    async fn invalid_json_input_errors() {
+        let dir = tmp();
+        let tool = ReadTool::new(dir.path().to_path_buf());
+        let err = tool.run("not json").await.unwrap_err();
+        assert!(format!("{err}").contains("invalid input to read"), "{err}");
+    }
+}

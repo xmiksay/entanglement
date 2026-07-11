@@ -93,3 +93,72 @@ impl Tool for GrepTool {
         Ok(truncate_output(out))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp() -> tempfile::TempDir {
+        tempfile::tempdir().expect("temp dir")
+    }
+
+    #[tokio::test]
+    async fn matches_report_path_lineno_line() {
+        let dir = tmp();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/m.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"pattern":"fn two"}"#).await.unwrap();
+        assert!(out.contains("src/m.rs:2:fn two() {}"), "got: {out}");
+        assert!(!out.contains("one"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn path_glob_filters_which_files_are_searched() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("keep.rs"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("skip.md"), "needle\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"pattern":"needle","path":"**/*.rs"}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("keep.rs"), "got: {out}");
+        assert!(!out.contains("skip.md"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn regex_syntax_is_honored() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("f.txt"), "foo123\nbarbaz\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"pattern":"foo\\d+"}"#).await.unwrap();
+        assert!(out.contains("foo123"), "got: {out}");
+        assert!(!out.contains("barbaz"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn invalid_regex_errors() {
+        let dir = tmp();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let err = tool.run(r#"{"pattern":"("}"#).await.unwrap_err();
+        assert!(format!("{err}").contains("invalid regex"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn no_match_yields_empty_output() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("f.txt"), "hello\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"pattern":"zzz"}"#).await.unwrap();
+        assert!(out.is_empty(), "got: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn invalid_json_input_errors() {
+        let dir = tmp();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let err = tool.run("{}").await.unwrap_err();
+        assert!(format!("{err}").contains("invalid input to grep"), "{err}");
+    }
+}

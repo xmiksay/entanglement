@@ -114,10 +114,9 @@ fn enter(terminal: &mut Term) -> Result<()> {
 /// falls back to `vi`.
 fn launch_editor(path: &Path) -> Result<()> {
     let editor = resolve_editor();
-    let mut parts = editor.split_whitespace();
-    let program = parts.next().unwrap_or("vi");
+    let (program, args) = split_editor_command(&editor);
     let status = Command::new(program)
-        .args(parts)
+        .args(args)
         .arg(path)
         .status()
         .with_context(|| format!("launching editor `{editor}`"))?;
@@ -127,11 +126,25 @@ fn launch_editor(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Word-split an editor command into `(program, args)` so `EDITOR="code --wait"`
+/// runs `code` with `--wait`. An empty/whitespace value falls back to `vi` (the
+/// same last-resort as [`pick_editor`], defensive should it ever reach here).
+fn split_editor_command(editor: &str) -> (String, Vec<String>) {
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().unwrap_or("vi").to_string();
+    (program, parts.map(str::to_string).collect())
+}
+
 /// `$VISUAL`, then `$EDITOR`, then `vi`. Configurable-via-`tui.json` is backlog.
 fn resolve_editor() -> String {
-    std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .ok()
+    pick_editor(std::env::var("VISUAL").ok(), std::env::var("EDITOR").ok())
+}
+
+/// Pure editor selection: prefer `visual`, then `editor`, skipping blank values,
+/// else `vi`. Split out from env access so the precedence is unit-testable.
+fn pick_editor(visual: Option<String>, editor: Option<String>) -> String {
+    visual
+        .or(editor)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "vi".to_string())
 }
@@ -147,4 +160,52 @@ fn unix_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pick_editor, split_editor_command};
+
+    #[test]
+    fn pick_editor_prefers_visual() {
+        assert_eq!(
+            pick_editor(Some("emacs".into()), Some("nano".into())),
+            "emacs"
+        );
+    }
+
+    #[test]
+    fn pick_editor_falls_back_to_editor_then_vi() {
+        assert_eq!(pick_editor(None, Some("nano".into())), "nano");
+        assert_eq!(pick_editor(None, None), "vi");
+    }
+
+    #[test]
+    fn pick_editor_skips_blank_values() {
+        // A set-but-empty VISUAL is treated as unset (matches the original
+        // env-based precedence).
+        assert_eq!(pick_editor(Some("   ".into()), None), "vi");
+        assert_eq!(pick_editor(Some("".into()), Some("nano".into())), "vi");
+    }
+
+    #[test]
+    fn split_editor_command_separates_program_and_args() {
+        let (prog, args) = split_editor_command("code --wait --new-window");
+        assert_eq!(prog, "code");
+        assert_eq!(args, vec!["--wait", "--new-window"]);
+    }
+
+    #[test]
+    fn split_editor_command_bare_program_has_no_args() {
+        let (prog, args) = split_editor_command("vim");
+        assert_eq!(prog, "vim");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn split_editor_command_empty_falls_back_to_vi() {
+        let (prog, args) = split_editor_command("   ");
+        assert_eq!(prog, "vi");
+        assert!(args.is_empty());
+    }
 }
