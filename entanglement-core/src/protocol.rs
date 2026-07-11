@@ -163,10 +163,12 @@ impl PermissionProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
-    /// User-facing entry agent; may spawn sub-agents.
+    /// User-facing entry agent; may spawn sub-agents. Intended to never be a
+    /// spawn *target* itself — the target-side gate lands with #119; today the
+    /// roster does not filter primaries out.
     Primary,
-    /// Only reachable via spawn; a read-only leaf that cannot spawn further
-    /// (gated in the runtime, ADR-0024).
+    /// Intended to be reachable only via spawn; a read-only leaf that cannot
+    /// spawn further (spawner-side gate enforced in the runtime, ADR-0024).
     Subagent,
     /// Usable as both a primary entry agent *and* a spawnable sub-agent; spawns
     /// like a `Primary`. Lets one file-defined agent serve both roles

@@ -122,8 +122,17 @@ and `runtime::permission::tool_masked` refuses a masked `ToolExec` **first**
 permission), clamping down the ancestor chain like ADR-0024's ceiling. `explore`
 is now the reference read-only agent (`tools: [read, glob, grep]` — no `edit`/
 `write`/`bash`/`agent_spawn`). `can_spawn`/`spawnable_agents` parse now,
-enforcement deferred (the `AgentMode` gate is the current spawn boundary).
-`AgentMode` gained `all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
+enforcement deferred (🚧 #119) — the `AgentMode` gate (ADR-0024) is the current
+spawn boundary and it is **spawner-side only**: spawn *targets* are unfiltered,
+so a model can today spawn a `primary` (`build`/`plan`), and an unknown `Spawn`
+name silently resolves to `build`. The **agent hierarchy** track closes this:
+#119 (target-side mode gate — spawnable ⇔ `mode ∈ {subagent, all}` — +
+per-profile spawn roster via an `EngineConfig.profile_tool_specs` seam), #140
+(`owns_plan` — default-closed `update_plan` authority, built-in `plan` gets it
+plus a physical read-only mask), #141 (`propose_plan` — plan acceptance rides
+the tool-approval round-trip; approve = `SetPlan` + head mints a **fresh root
+`build` session** with the plan as its first user message, reject + typed
+reason = in-band revision). `AgentMode` gained `all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
 raw body (✅ #113, [ADR-0035](../docs/adr/0035-deterministic-system-prompt-assembly.md)):
 `entanglement_runtime::system_prompt::assemble` composes shared preamble + agent
 body + project brief (frontmatter `include_brief: true`, from the standard

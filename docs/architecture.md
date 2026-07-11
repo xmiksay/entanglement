@@ -159,8 +159,14 @@ only field a spawning model sees).
   shape as the provider catalog (#118). A malformed file is a loud error. The
   frontmatter also declares `tools`/`disallowed_tools` (the tool mask, **enforced**
   ✅ #116, below) and `can_spawn`/`spawnable_agents` (fine-grained spawn control,
-  still parsed-but-deferred — the `AgentMode` capability gate, ADR-0024, is the
-  current spawn boundary). Embedders using core directly still get a hardcoded
+  still parsed-but-deferred — 🚧 #119). Note the current spawn boundary — the
+  `AgentMode` capability gate, ADR-0024 — is **spawner-side only**: it refuses a
+  `subagent`-mode leaf the spawn capability, but nothing yet gates the spawn
+  *target*, so a model can today spawn a `primary` profile (`build`, `plan`).
+  #119 adds the target-side mode gate (spawnable ⇔ `mode ∈ {subagent, all}`) and
+  per-profile roster filtering; `update_plan` ownership (#140) and the
+  plan-accept handoff (#141) complete the agent hierarchy on that seam.
+  Embedders using core directly still get a hardcoded
   `build`/`plan`/`explore` fallback via `ProfileRegistry::new()`; add your own with
   `ProfileRegistry::insert`.
 - **Physical tool restriction (✅ #116, [ADR-0038](adr/0038-physical-per-agent-tool-restriction.md)):**
@@ -363,9 +369,13 @@ registered agent (built from the loaded `ProfileRegistry`), and the `agent`
 argument's schema constrains the name to an `enum` of the registered set — so the
 model learns *who it may spawn* at the call site, and `description` is the one
 field of a definition ever exposed to a parent. Per-profile filtering of the
-*spawnable* roster (via `spawnable_agents`) is the deferred follow-up; today the
-full roster is advertised. (The #116 tool mask, now live, restricts each agent's
-*tool* set — a different axis than which agents it may spawn.)
+*spawnable* roster (via `spawnable_agents` + a target-side mode gate) is the
+deferred follow-up (🚧 #119); today the full roster is advertised — **including
+the `primary` profiles**, so nothing stops a model from spawning `build` or
+`plan`. A related supervisor wart lands with the same issue: an `InMsg::Spawn`
+naming an unknown profile silently resolves to the `build` default instead of
+being refused. (The #116 tool mask, now live, restricts each agent's *tool*
+set — a different axis than which agents it may spawn.)
 
 **Ask-user prompt** (✅ #90, [ADR-0027](adr/0027-ask-user-interactive-prompt.md)).
 The model calls a runtime-owned `ask_user { question, options, allow_free_form }`
