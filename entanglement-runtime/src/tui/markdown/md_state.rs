@@ -374,3 +374,236 @@ fn pad_cell(cell: &str, align: Alignment, w: usize) -> String {
         Alignment::None | Alignment::Left => format!("{}{}", cell, " ".repeat(pad)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::markdown::MarkdownRenderer;
+
+    fn renderer() -> MarkdownRenderer {
+        MarkdownRenderer::new()
+    }
+
+    /// Content of the in-flight `cur` span buffer, joined.
+    fn cur_text(state: &RenderState) -> String {
+        state.cur.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// All committed lines of a finished render, each joined into a String.
+    fn line_strings(text: Text<'static>) -> Vec<String> {
+        text.lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    // ── emphasis counters ──────────────────────────────────────────────
+
+    #[test]
+    fn emphasis_counters_nest_and_unwind() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        s.handle(Event::Start(Tag::Strong));
+        s.handle(Event::Start(Tag::Emphasis));
+        s.handle(Event::Start(Tag::Strikethrough));
+        assert_eq!((s.bold, s.italic, s.strike), (1, 1, 1));
+        let style = s.current_style();
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert!(style.add_modifier.contains(Modifier::ITALIC));
+        assert!(style.add_modifier.contains(Modifier::CROSSED_OUT));
+
+        s.handle(Event::End(TagEnd::Strong));
+        s.handle(Event::End(TagEnd::Emphasis));
+        s.handle(Event::End(TagEnd::Strikethrough));
+        assert_eq!((s.bold, s.italic, s.strike), (0, 0, 0));
+    }
+
+    #[test]
+    fn stray_emphasis_end_does_not_underflow() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        // No matching Start — the saturating_sub must keep the counter at 0.
+        s.handle(Event::End(TagEnd::Emphasis));
+        s.handle(Event::End(TagEnd::Strong));
+        s.handle(Event::End(TagEnd::Strikethrough));
+        assert_eq!((s.bold, s.italic, s.strike), (0, 0, 0));
+    }
+
+    #[test]
+    fn heading_prefixes_hashes_and_bolds_then_unwinds() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        s.handle(Event::Start(Tag::Heading {
+            level: pulldown_cmark::HeadingLevel::H3,
+            id: None,
+            classes: Vec::new(),
+            attrs: Vec::new(),
+        }));
+        assert_eq!(s.bold, 1);
+        assert!(cur_text(&s).starts_with("### "));
+        s.handle(Event::Text("Title".into()));
+        s.handle(Event::End(TagEnd::Heading(
+            pulldown_cmark::HeadingLevel::H3,
+        )));
+        assert_eq!(s.bold, 0);
+    }
+
+    // ── list nesting + markers ─────────────────────────────────────────
+
+    #[test]
+    fn unordered_nested_items_indent_by_depth() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        s.handle(Event::Start(Tag::List(None)));
+        s.handle(Event::Start(Tag::Item));
+        assert_eq!(cur_text(&s), "• "); // depth 1 → no indent
+        s.cur.clear();
+
+        s.handle(Event::Start(Tag::List(None)));
+        s.handle(Event::Start(Tag::Item));
+        assert_eq!(cur_text(&s), "  • "); // depth 2 → one indent level
+        assert_eq!(s.list_stack.len(), 2);
+    }
+
+    #[test]
+    fn ordered_list_counter_advances_per_item() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        s.handle(Event::Start(Tag::List(Some(3))));
+        s.handle(Event::Start(Tag::Item));
+        assert_eq!(cur_text(&s), "3. ");
+        s.cur.clear();
+        s.handle(Event::Start(Tag::Item));
+        assert_eq!(cur_text(&s), "4. ");
+    }
+
+    #[test]
+    fn ending_lists_pops_the_stack() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        s.handle(Event::Start(Tag::List(None)));
+        s.handle(Event::Start(Tag::List(None)));
+        assert_eq!(s.list_stack.len(), 2);
+        s.handle(Event::End(TagEnd::List(false)));
+        assert_eq!(s.list_stack.len(), 1);
+        s.handle(Event::End(TagEnd::List(false)));
+        assert!(s.list_stack.is_empty());
+    }
+
+    // ── blockquote depth ───────────────────────────────────────────────
+
+    #[test]
+    fn blockquote_depth_tracks_nesting() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        assert_eq!(s.quote_prefix(), "");
+        s.handle(Event::Start(Tag::BlockQuote(None)));
+        assert_eq!(s.quote_depth, 1);
+        assert_eq!(s.quote_prefix(), "▌ ");
+        s.handle(Event::Start(Tag::BlockQuote(None)));
+        assert_eq!(s.quote_depth, 2);
+        assert_eq!(s.quote_prefix(), "  ▌ ");
+        s.handle(Event::End(TagEnd::BlockQuote(None)));
+        s.handle(Event::End(TagEnd::BlockQuote(None)));
+        assert_eq!(s.quote_depth, 0);
+    }
+
+    #[test]
+    fn flushed_quote_line_carries_the_bar_prefix() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        s.handle(Event::Start(Tag::BlockQuote(None)));
+        s.handle(Event::Text("quoted".into()));
+        let out = line_strings(s.finish());
+        assert!(out.iter().any(|l| l.contains("▌ quoted")), "{out:?}");
+    }
+
+    // ── table buffering ────────────────────────────────────────────────
+
+    #[test]
+    fn table_events_buffer_into_a_grid_with_separator() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        s.handle(Event::Start(Tag::Table(vec![
+            Alignment::None,
+            Alignment::None,
+        ])));
+        s.handle(Event::Start(Tag::TableHead));
+        for h in ["name", "role"] {
+            s.handle(Event::Start(Tag::TableCell));
+            s.handle(Event::Text(h.into()));
+            s.handle(Event::End(TagEnd::TableCell));
+        }
+        s.handle(Event::End(TagEnd::TableHead));
+        s.handle(Event::Start(Tag::TableRow));
+        for c in ["holly", "engine"] {
+            s.handle(Event::Start(Tag::TableCell));
+            s.handle(Event::Text(c.into()));
+            s.handle(Event::End(TagEnd::TableCell));
+        }
+        s.handle(Event::End(TagEnd::TableRow));
+        s.handle(Event::End(TagEnd::Table));
+
+        let out = line_strings(s.finish());
+        assert!(
+            out.iter().any(|l| l.contains("name") && l.contains("role")),
+            "{out:?}"
+        );
+        assert!(
+            out.iter().any(|l| l.contains("---")),
+            "expected separator: {out:?}"
+        );
+        assert!(
+            out.iter()
+                .any(|l| l.contains("holly") && l.contains("engine")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn cell_text_buffers_rather_than_emitting_spans() {
+        let r = renderer();
+        let mut s = RenderState::new(&r);
+        s.handle(Event::Start(Tag::Table(vec![Alignment::None])));
+        s.handle(Event::Start(Tag::TableCell));
+        assert!(s.in_cell);
+        s.handle(Event::Text("buffered".into()));
+        // Text inside a cell must not leak into the visible span buffer.
+        assert!(s.cur.is_empty());
+        assert_eq!(s.table_cell, "buffered");
+        s.handle(Event::End(TagEnd::TableCell));
+        assert!(!s.in_cell);
+        assert_eq!(s.table_row, vec!["buffered".to_string()]);
+    }
+
+    // ── pure grid helpers ──────────────────────────────────────────────
+
+    #[test]
+    fn pad_cell_aligns_left_right_and_center() {
+        assert_eq!(pad_cell("ab", Alignment::Left, 5), "ab   ");
+        assert_eq!(pad_cell("ab", Alignment::Right, 5), "   ab");
+        assert_eq!(pad_cell("ab", Alignment::Center, 5), " ab  ");
+        // Already at/over width → unchanged.
+        assert_eq!(pad_cell("abcd", Alignment::Left, 2), "abcd");
+    }
+
+    #[test]
+    fn render_table_grid_empty_rows_is_empty() {
+        assert!(render_table_grid(&[], &[Alignment::None], false).is_empty());
+    }
+
+    #[test]
+    fn render_table_grid_widths_track_widest_cell() {
+        let rows = vec![
+            vec!["a".to_string(), "bb".to_string()],
+            vec!["cccc".to_string(), "d".to_string()],
+        ];
+        let aligns = vec![Alignment::None, Alignment::None];
+        let grid = render_table_grid(&rows, &aligns, true);
+        // header row + separator + one body row
+        assert_eq!(grid.len(), 3);
+        let first: String = grid[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        // "a" padded to width 4 (widest in col 0 is "cccc").
+        assert!(first.contains("a    |"), "{first}");
+    }
+}

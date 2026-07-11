@@ -93,3 +93,75 @@ fn format_bash_output(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String
     }
     truncate_output(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_includes_exit_and_stdout() {
+        let out = format_bash_output(Some(0), b"hello\n", b"");
+        assert_eq!(out, "[exit 0]\nhello\n");
+    }
+
+    #[test]
+    fn format_appends_stderr_section() {
+        let out = format_bash_output(Some(2), b"out\n", b"boom\n");
+        assert_eq!(out, "[exit 2]\nout\n[stderr]\nboom\n");
+    }
+
+    #[test]
+    fn format_missing_code_reports_minus_one() {
+        let out = format_bash_output(None, b"", b"");
+        assert_eq!(out, "[exit -1]\n");
+    }
+
+    #[tokio::test]
+    async fn run_echoes_stdout_with_zero_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"command":"echo hi"}"#).await.unwrap();
+        assert!(out.starts_with("[exit 0]\n"), "{out}");
+        assert!(out.contains("hi"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn run_reports_nonzero_exit_and_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"command":"echo oops 1>&2; exit 3"}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("[exit 3]"), "{out}");
+        assert!(out.contains("[stderr]") && out.contains("oops"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn run_is_rooted_at_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("marker.txt"), "x").unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"command":"ls"}"#).await.unwrap();
+        assert!(out.contains("marker.txt"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn run_times_out_and_reports_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"command":"sleep 5","timeout":1}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("killed") && out.contains("timed out"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn invalid_json_input_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf());
+        let err = tool.run("{}").await.unwrap_err();
+        assert!(format!("{err}").contains("invalid input to bash"), "{err}");
+    }
+}
