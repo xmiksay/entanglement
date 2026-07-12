@@ -73,14 +73,14 @@ cache_write). Precedence: **env > user YAML > embedded defaults**. See
 
 z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
 format). No key → `EchoLlm`. Detail in
-[`../docs/architecture.md`](../docs/architecture.md) §5b. Connection pool,
+[`../docs/architecture.md`](../docs/architecture/provider.md). Connection pool,
 retry/backoff, rate-limit (429/`Retry-After`/RPM), reasoning/thinking stream
 events, the YAML provider/model catalog, and the provider-owned session handle
 all live in this crate now (✅ #52–#55, #118, [ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).
 
 ## The contract (read before touching the engine)
 
-`entanglement-core/src/protocol.rs` defines the single set of types every head uses:
+`entanglement-core/src/protocol.rs` is the single set of types every head uses:
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
@@ -91,274 +91,37 @@ OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged
           | UserQuestion | ToolOutput | TaskList | Error | Done | FileChange
 ```
 
-Tool execution is a protocol round-trip (#58): core emits `ToolExec` for *every*
-host tool and awaits the runtime's `ToolResult`. Permission dispatch and approval
-moved out too (#59): core no longer reads `PermissionProfile` — the runtime
-`tool_runner` resolves `Allow`/`Ask`/`Deny` per call, emits the `ToolRequest`
-prompt on `Ask`, and consumes `Approve`/`Reject` off the engine's inbound
-fan-out (`Holly::subscribe_inbound()`). Core holds no executable tools and makes
-no policy decision — only tool schemas (shared `EngineConfig.tool_specs` +
-per-profile `EngineConfig.profile_tool_specs`, the latter appended by `run_turn`
-for the active profile only, #119).
+Load-bearing invariants (details in the split architecture docs — do **not**
+re-document them here):
 
-Session-multiplexed (every frame carries `SessionId`); content frames carry
-monotonic `seq`. Agent profiles (`build`/`plan`/`explore` + custom) drive
-permission dispatch (`Allow`/`Ask`/`Deny`), resolved in the runtime. Profiles are
-**file-defined** (✅ #112, [ADR-0034](../docs/adr/0034-file-based-agent-definitions.md)):
-markdown + YAML frontmatter (`name`/`description`/`mode`/`model`/`permission`,
-body = system prompt), discovered by `entanglement_runtime::agents::load_registry`
-into a `ProfileRegistry` — embedded built-ins < user
-(`${config_dir}/entanglement/agents/*.md`) < project
-(`<root>/.entanglement/agents/*.md`), later wins on `name` collision, same
-defaults+override shape as the provider catalog (#118). Editing a built-in = a
-same-`name` file in a higher layer. `description` is the one field disclosed to a
-spawning model (roster in the `agent`/`agent_spawn` tool descriptions + name
-enum). Frontmatter `tools`/`disallowed_tools` (the tool mask) are **enforced**
-(✅ #116, [ADR-0038](../docs/adr/0038-physical-per-agent-tool-restriction.md)):
-they ride the core `AgentProfile` (`tools`/`disallowed_tools` + `advertises_tool`,
-`registry ∩ allowlist − denylist`), orthogonal to `permission`. Core's `run_turn`
-filters `tool_specs` by the active profile (advertisement — a masked schema never
-reaches the model; the `update_plan`/`update_tasks` built-ins are never routed
-through the tool mask — `update_plan` is instead authority-gated by `owns_plan`,
-#140 below, `update_tasks` always advertised),
-and `runtime::permission::tool_masked` refuses a masked `ToolExec` **first**
-(before the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions +
-permission), clamping down the ancestor chain like ADR-0024's ceiling. `explore`
-is now the reference read-only agent (`tools: [read, glob, grep]` — no `edit`/
-`write`/`bash`/`agent_spawn`). Fine-grained spawn control is now **enforced**
-(✅ #119, [ADR-0040](../docs/adr/0040-per-profile-spawn-control.md)):
-`can_spawn`/`spawnable_agents` ride the core `AgentProfile` with helpers
-(`may_spawn` = `can_spawn.unwrap_or(mode != subagent)`; `spawn_target_allowed`;
-`spawnable_as_subagent` = `mode ∈ {subagent, all}`). The spawn boundary is now
-both spawner- **and** target-side: `runtime::permission::spawn_refusal(spawner,
-target, registry)` layers four checks before the ADR-0023 budget + ADR-0024
-clamp — `!may_spawn` (absorbs the old capability gate) → unknown target → target
-not spawnable-mode (a `primary` is never a valid target, so `build`/`plan` are
-unreachable) → target off `spawnable_agents` — each a clear `ToolOutput`, no
-child minted. Checked per spawning session against *its own* profile (not
-transitive). The `agent_spawn`/`agent`/`agent_poll` triple moves out of shared
-`tool_specs` into `EngineConfig.profile_tool_specs`
-(`HashMap<profile, Vec<ToolSpec>>`, filled by `subagent::spawn_specs_for`, empty
-when `!may_spawn`); `run_turn` appends the active profile's entry (roster + enum
-scoped to who it may spawn, still `advertises_tool`-filtered), so an out-of-list
-spawn is a schema violation first. Supervisor hardened: an unknown `Spawn` name
-now `get()`s + emits an `Error` instead of escalating to `build`. TUI `/agent`
-picker/Tab-cycle is registry-driven, filtered to `mode ∈ {primary, all}`.
-Plan authority is now **enforced** (✅ #140,
-[ADR-0041](../docs/adr/0041-update-plan-ownership-default-closed.md)):
-`AgentProfile.owns_plan: bool` (serde default **false**) gates the built-in
-`update_plan`. Enforced **entirely in core** (the built-ins never round-trip to
-the runtime, so `tool_masked` can't catch them): `run_turn` appends the
-`update_plan` spec only when `s.profile.owns_plan` (`update_tasks` stays
-unconditional), and `handle_tool_call` refuses a hallucinated non-owner
-`update_plan` via a refusal `ToolOutput` (no plan mutation, no `OutEvent::Plan`,
-turn continues). `InMsg::SetPlan` stays head/user authority. Built-in `plan.md`
-gains `owns_plan: true` **plus** a physical read-only mask
-(`tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, propose_plan]`)
-— it authors the plan + delegates research, and via `tool_masked`'s ancestor
-intersection every child it spawns is clamped read-only too; `build`/`explore`
-are default-false (they just stop advertising `update_plan`). Plan acceptance is
-now **enforced** (✅ #141,
-[ADR-0042](../docs/adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)):
-the plan agent's *finalize* step is a runtime-owned `propose_plan { plan }` tool
-(`update_plan` stays for working snapshots), advertised only to a profile that
-`owns_plan` (via the #119 `profile_tool_specs` seam + `plan.md`'s `tools:`
-allowlist — same default-closed argument as #140). Acceptance rides the **existing
-tool-approval round-trip** (#59): the executor (`propose_plan.rs`) intercepts it on
-`ToolExec` after the #116 mask check (same family as `ask_user`) and **force-parks
-it on the `Ask` path unconditionally** — a profile can never `Allow` it, since user
-approval *is* the semantics — emitting a standard `OutEvent::ToolRequest`. Approve
-= record the plan (`InMsg::SetPlan`, engine state consistent for every head) +
-`ToolOutput("plan accepted by the user")`, then the **head** performs the handoff
-(pure head policy, zero new protocol surface): mint `SessionId::new_uuid()` →
-`SetAgent{build}` (lazy root session) → `Prompt{wrap(plan)}` (plan verbatim, first
-user message) → switch view. Reject + typed reason = the existing fold-back
-(`tool \`propose_plan\` rejected: <reason>`), model revises in-band. The build
-session is a **fresh root, not a child** (a parent link would clamp it read-only
-via #116/ADR-0024, drain the plan root's ADR-0023 budget, and mis-model accept as
-grouping rather than a transfer of user authority). One-shot `run`/`pipe` can't
-park, so they auto-reject with a "non-interactive head" reason. `AgentMode` gained
-`all` (primary + spawnable). The stored `system_prompt` is **assembled**, not the
-raw body (✅ #113, [ADR-0035](../docs/adr/0035-deterministic-system-prompt-assembly.md)):
-`entanglement_runtime::system_prompt::assemble` composes shared preamble + agent
-body + project brief (frontmatter `include_brief: true`, from the standard
-`AGENTS.md`/`.agents/AGENTS.md`/`.claude/CLAUDE.md`/`CLAUDE.md`, first found wins)
-+ generated env block (cwd/platform/date) +
-skill index — each optional, in that fixed order — at load time. A subagent gets
-`preamble + body (+ brief)` only (no env/skills, never the parent's prompt);
-inputs come from `PromptContext::load` (overridable via
-`ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE`). The assembled prompt is
-now **observable** (✅ #184): `skutter inspect prompt --agent <name> [--parts]`
-re-runs that load-time discovery with **no engine** and prints the resolved
-prompt (`--parts` = each slice + its source, via `system_prompt::assemble_parts`
-+ `agents::prompt_report`); `build_profile` also emits one load-time `debug!`
-(`agent=… prompt_len=… brief=<path|none> skills=…`). The agent registry is
-likewise **observable** (✅ #185): `skutter inspect agents [name]` surfaces the
-layer-collision winner the silent later-wins `insert` swallows — no `name` prints
-a table (name/mode/model/layer/source/mask) of every resolved agent, a `name`
-prints the full resolved profile (permission rules + tool mask + spawn control +
-plan authority + assembled-prompt length) **plus** the lower-layer definitions it
-overrode — via a `(layer, source)` provenance sidecar
-(`agents::resolve_registry`, engine-free like `inspect prompt`); `load_registry`
-also emits a `replaces=<prior layer>` `debug!` at each overriding insert. The
-**skill** registry is observable the same way (✅ #186):
-`skutter inspect skills [name] [--disclosures]` — no `name` prints a table
-(name/user_only/layer/root_dir/description), `--disclosures` prints the *exact*
-tier-1 block the model gets (`system_prompt::render_skills`, `user_only`
-withheld), and a `name` **dry-runs the `load_skill` path substitution**
-(`${SKILL_DIR}` + relative-ref resolution) + layer provenance, so a bad payload
-path surfaces without a model. Engine-free via `skills::resolve_registry` (a
-`(layer, source, shadowed)` sidecar mirroring agents); `load_registry` emits the
-same `replaces=` `debug!`, and a broken symlink under a skills dir is now a
-`warn!` (was a silent skip, `skills/mod.rs`). Logs
-moved to **stderr** so stdout stays clean for the prompt / NDJSON. The skill index is
-populated from the skill registry (✅ #114,
-[ADR-0036](../docs/adr/0036-skill-discovery-and-registry.md)): a **skill** is a
-directory with a `SKILL.md` (YAML frontmatter + markdown body) + optional
-`references/*.md`/`scripts/*`, discovered by
-`entanglement_runtime::skills::load_registry` into a `SkillRegistry` — embedded
-stock skills (single-file) < user (`${config_dir}/entanglement/skills/**/SKILL.md`,
-override `ENTANGLEMENT_SKILLS_DIR`) < project
-(`<root>/.entanglement/skills/**/SKILL.md`), later wins on `name` collision, same
-defaults+override shape as agents/catalog. Recursive walk for `SKILL.md` markers;
-symlinked dups + dir cycles deduped by canonical path; malformed file = loud
-error; `root_dir` resolved once at discovery. Frontmatter: `name`/`description`
-required, `user_only` (only explicit user invocation — withheld from disclosure),
-`allowed_tools` (a *skill-scoped* mask, enforcement deferred — needs skill
-provenance, distinct from the #116 agent tool mask). **Tier-1 disclosure only**:
-`disclosures()` emits one `name: description` line per non-`user_only` skill
-(~100 tokens each); bodies not preloaded unless an agent opts in via `skills:`
-(#117 below). Selection stays LLM reasoning — no
-keyword/embedding gate; description quality is the contract. Bodies + payload are
-tier-2, loaded on demand by the `load_skill` tool (✅ #115,
-[ADR-0037](../docs/adr/0037-load-skill-tool-deterministic-resolution.md)): one
-generic `load_skill { skill_name }` — a **real host tool** (it reads the
-filesystem), so it goes through the *same* per-call permission gate as `read` (no
-exemption), registered in `build_config` with a shared `Arc<SkillRegistry>`. The
-handler resolves deterministically — look `SkillMeta` up by name; reject
-`user_only`; **substitute every relative payload path to absolute** before the
-text reaches the model (closes the model-guesses-the-base bug class; `SKILL_DIR`
-and project root stay separate coordinate systems, a `${SKILL_DIR}` placeholder is
-the explicit escape hatch, no implicit CWD fallback) — and returns an ordinary
-`tool_result` with `skill_id` + substituted body + `available_refs` (listed, not
-loaded), never a spoofed user message. Provenance (carrying `skill_id` onto
-in-skill tool calls) lands with skill-scoped `allowed_tools` enforcement (a
-separate follow-up, distinct from the #116 agent tool mask). Skill **preload**
-and **access** are two independent agent-definition mechanisms (✅ #117,
-[ADR-0043](../docs/adr/0043-skill-preload-vs-access-independent-mechanisms.md)),
-never merged: `skills: [name, …]` frontmatter is **preload only** — the listed skills'
-full bodies are injected into that agent's assembled `system_prompt` at load via
-the *same* substitution pipeline as `load_skill`
-(`SkillRegistry::preload_body` → `load_skill::render_skill`), mode-independent (a
-spawned subagent gets the body even though its tier-1 index is withheld) and *not*
-an allowlist (a `user_only` skill is preloadable — author config, not model
-self-trigger; an unknown name is a loud load-time error). **Access** is the
-orthogonal #116 tool mask: an agent that must not load skills at runtime just
-omits `load_skill` (`disallowed_tools: [load_skill]`), refused from the advertised
-specs and at dispatch. The two compose to preserve both corners — "preload X,
-block the rest" and "preload nothing, request on demand" — default permissive.
-Core still ships `system_prompt` verbatim as `LlmRequest.system`. `Plan` and `TaskList` are
-session-owned snapshots, written by built-in tools or harness `Set*` messages;
-both are plain markdown `content` now (✅ #142,
-[ADR-0040](../docs/adr/0039-markdown-task-list.md)) — `update_tasks { content }`
-mirrors `update_plan`, the structured `TaskItem`/`TaskStatus` types are gone
-(the outline is user-facing progress info, never engine-consumed).
-The `Tool` trait carries `schema()` (feeds `ToolSpec.schema` → the model's
-`input_schema`); `host_tools(root)` (see ADR-0008 + ADR-0009 + ADR-0010 + ADR-0031)
-assembles the root-contained quintet (`read`/`glob`/`grep`/`edit`/`write` —
-`write` is whole-file create/overwrite, ADR-0031); the **exec pair**
-`BashTool`/`CallTool` is opt-in at the head (one gate,
-`ENTANGLEMENT_ENABLE_BASH=1`, registers both). `call` (✅ #121,
-[ADR-0045](../docs/adr/0045-call-host-tool-argv-exec-tailed-output.md)) is direct
-argv exec — **no shell** (`{command, args, tail, timeout?}` exec verbatim, so no
-pipe/glob/`$VAR`/metachar injection; a fixed argv is auditable, so a profile may
-`Allow` `call` while keeping `bash` at `Ask`/`Deny`) — with **auto-tailed
-output** (last `tail` lines/stream, default 30, `tail=0` = full within the
-ADR-0008 byte cap; drops prepend a self-correcting omission notice). Same
-envelope as `bash` (cwd = root, 120 s/600 s timeout, `kill_on_drop`, `[exit N]` +
-`[stderr]`).
+- **Tool execution is a protocol round-trip** (#58): core emits `ToolExec` for
+  every host tool and awaits the runtime's `ToolResult`. Core holds no executable
+  tools and makes no policy call — only schemas (`EngineConfig.tool_specs` +
+  per-profile `profile_tool_specs`, #119).
+- **Permission lives entirely in the runtime** (#59): `tool_runner` resolves
+  `Allow`/`Ask`/`Deny` per call, emits `ToolRequest` on `Ask`, consumes
+  `Approve`/`Reject` off `Holly::subscribe_inbound()`. Core never reads
+  `PermissionProfile`.
+- **Session-multiplexed**: every frame carries `SessionId`; content frames carry
+  monotonic `seq`. Supervisor-global vs session-scoped routing is explicit.
+- **Definitions are data, layered** embedded < user < project, later wins; the
+  project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
 
-Sandboxed script tool `rhai` (✅ #122,
-[ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md), `runtime::script`):
-a runtime-owned, capability-sandboxed [Rhai](https://rhai.rs) engine — the
-sanctioned way to run multi-step logic in one call, replacing the "shell out to
-`python3`/`node`" pattern. `Engine::new_raw()` + the IO-free `StandardPackage`:
-no filesystem/network/process/env access, no module resolver (`import` can't
-escape), `eval` disabled; resource-bounded by `max_operations` + wall-clock
-timeout (default 5s, max 30s, via `on_progress`) + `max_call_levels` +
-string/array/map size caps. The only bindings are the root-contained quintet as
-script functions, each **delegating to the registered `Tool`** and resolving
-permission **per call exactly like a `ToolExec`** — `Deny`/mask throws a
-catchable script error, `Allow` runs, `Ask` parks on the standard `ToolRequest`
-round-trip (resolved **once per function per run**). Because its bindings *are*
-the always-registered quintet, `rhai` is exactly as privileged as those tools —
-registered by default in the shared `tool_specs`, gated by the #116 mask like
-any tool (`explore` never sees it). The executor intercepts it before dispatch
-(it needs per-session profile state to snapshot each binding's mask + clamped
-permission); the sync engine runs under `spawn_blocking` with each binding
-crossing an `mpsc`/`oneshot` **bridge** to the async resolver. No exec bindings
-in v1.
+| Topic | Module |
+| --- | --- |
+| `InMsg`/`OutEvent`, Plan/TaskList events | [protocol](../docs/architecture/protocol.md) |
+| profiles, tool mask, spawn gating, plan authority, skills, prompt assembly | [agents & permissions](../docs/architecture/agents-and-permissions.md) |
+| turn loop, tool round-trip, steering, cancellation | [engine](../docs/architecture/engine.md) |
+| streaming client, catalog, pool/retry/rate-limit | [provider](../docs/architecture/provider.md) |
+| stdio/TUI/`serve` heads, event-sourced persistence | [heads & persistence](../docs/architecture/heads-and-persistence.md) |
+| dependency gates, the quintet + exec tools (`bash`/`call`/`rhai`) | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
 
-Sub-agent spawn (#60, [ADR-0022](../docs/adr/0022-subagent-spawn.md)): the
-runtime-owned `agent_spawn { agent, prompt }` tool (renamed from `spawn_agent`,
-✅ #120, [ADR-0033](../docs/adr/0033-agent-tool-family-and-blocking-agent.md))
-issues `InMsg::Spawn`; the
-supervisor records `parent_links[child]=parent` and starts the child under the
-requested profile. Bypasses per-tool approval like the built-ins. Non-blocking
-spawn (✅ #89, [ADR-0026](../docs/adr/0026-async-subagent-spawn-and-poll.md),
-`runtime::agent_poll`): `agent_spawn` returns the child handle (`agent_id`)
-*immediately* instead of parking the parent turn on the child's `Done`, so one
-turn can launch several sub-agents that run concurrently. The launch task records
-the child's answer + duration into a shared `AgentRegistry` keyed by the handle;
-the parent collects it with a second runtime-owned tool
-`agent_poll { agent_id, timeout_secs }` (also intercepted before permission),
-which blocks up to `timeout_secs` and returns the answer + elapsed or a
-still-running status (unknown handle → error). A third tool `agent { agent,
-prompt }` (✅ #120) is the **blocking** single-delegation path: it runs the exact
-`agent_spawn` launch (same guard/clamp/`Spawn`), then waits for the child's
-answer and returns it directly — one call, no poll. Refusals are identical across
-`agent`/`agent_spawn` (one shared guard path); a parent `Stop` while `agent` is
-parked leaves the child collectable via `agent_poll`. Supersedes ADR-0022's
-synchronous answer-relay; the TUI sessions list shows each sub-agent's live
-spawn duration.
-Spawn limits (✅ #76,
-[ADR-0023](../docs/adr/0023-subagent-spawn-limits.md)): the runtime executor's
-`SpawnGuard` folds parent links from `SessionStarted` and refuses a spawn past a
-depth cap (`MAX_SPAWN_DEPTH`) or a cumulative per-root budget
-(`MAX_SPAWNS_PER_ROOT`), replying with a clear refusal `ToolOutput`. Spawn
-permission gating (✅ #77, [ADR-0024](../docs/adr/0024-subagent-permission-gating.md),
-`runtime::permission`): each child's per-tool permission is clamped to the
-least-privileged rule across its ancestor chain (`Deny < Ask < Allow`) — a child
-is never more privileged than its parent. Layered in front of that (and the
-ADR-0023 budget) is per-profile spawn control (✅ #119, ADR-0040,
-`spawn_refusal`): a profile must `may_spawn` (a `Subagent` leaf like `explore`
-defaults closed — absorbs ADR-0024's capability gate) and its *target* must be
-spawnable-mode + on its `spawnable_agents` allowlist. Filesystem isolation (a
-separate child root) for sub-sessions still deferred.
-
-Ask-user prompt (✅ #90, [ADR-0027](../docs/adr/0027-ask-user-interactive-prompt.md)):
-the runtime-owned `ask_user { question, options, allow_free_form }` tool is
-intercepted on `ToolExec` before permission resolution (like `agent_spawn`,
-`runtime::ask_user`). It emits a dedicated `OutEvent::UserQuestion`, parks for
-the head's `InMsg::AnswerQuestion` (consumed off the inbound fan-out like
-`Approve`/`Reject`), and folds the picked label or free-form text back as the
-tool's `ToolOutput`. The TUI adds a `PendingQuestion` interaction state (labelled
-choices + an "Other" free-text escape) alongside `ApprovalMode`; the one-shot
-`run` head auto-answers so it never parks.
-
-Session lifecycle (✅ #21, [ADR-0028](../docs/adr/0028-session-lifecycle-enumeration-and-backpressure.md)):
-two supervisor-global messages the supervisor answers/acts on directly (never
-routed to a session). `ListSessions { session }` returns one
-`OutEvent::SessionList { session, sessions: Vec<SessionInfo> }` snapshot of the
-live sessions (`SessionInfo { session, parent, profile, root }`) — a
-reconnecting head enumerates in one round-trip; `session` is a correlation id the
-reply echoes. `CloseSession { session }` drops the session's command channel so
-its task exits and emits `SessionEnded` — the explicit destroy `Stop`
-(cancel-semantics, ADR-0017) does not perform. Session ids are single-use: mint a
-fresh `SessionId::new_uuid()` after close rather than reuse (which restarts
-`seq`). The supervisor routes with a non-blocking `try_send` + bounded retry,
-shedding to a saturated session (an `Error` + `warn`) rather than blocking its
-loop and stalling every other session.
+Debugging: `skutter inspect prompt|agents|skills` re-runs the load-time discovery
+with **no engine** and prints the resolved prompt / registries, including the
+layer that won an override (✅ #184/#185/#186). Trust & scope decisions:
+[ADR-0047](../docs/adr/0047-local-trust-boundary.md) (repo trusted; config
+precedence system < user < repo) and
+[ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md) (local-only `serve`).
 
 ## Conventions (project-specific)
 
@@ -375,45 +138,27 @@ loop and stalling every other session.
   alternative, security/permission model) gets an ADR in
   [`../docs/adr/`](../docs/adr/) (numbered, immutable; see its `README.md`) — the
   *why* and rejected alternatives live there. Then update
-  [`../docs/architecture.md`](../docs/architecture.md) to reflect the new *what
+  the relevant [`../docs/architecture/`](../docs/architecture/) module to reflect the new *what
   is*, and add an inline ADR link at the relevant section. Never edit an accepted
   ADR in place — supersede it. Drift check: `/arch check`.
-- **Keep this brief + `docs/architecture.md` in sync.** When a message variant,
+- **Keep this brief + the `docs/architecture/` modules in sync.** When a message variant,
   profile, crate, or command changes, update both in the same change.
 
 ## Open work (current phase)
 
-**Three-layer re-architecture** — the big active effort, tracked by epic
-[#50](https://github.com/xmiksay/entanglement/issues/50) ([ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)).
-Permission dispatch now lives in the runtime (✅ #59); sub-agent spawn landed
-(✅ #60); core's `Session` is slimmed to loop + turn state (✅ #61 — no cached
-tool set, schemas sourced from `EngineConfig.tool_specs` at turn time). The
-three-layer split is complete; no core-slimming backlog remains.
+The three-layer re-architecture (epic #50) and the agents/skills/system-prompt
+epic (#111) are **complete**. Current phase is the July 2026 audit backlog —
+thematic epics tracked on GitHub with P0/P1/P2 labels and blocked-by links:
+#171 (user config & permissions), #183 (inspection — largely landed),
+#190 (provider seam + per-endpoint pool), #176 (engine robustness),
+#166 (exec-tool maturity), #200 (architecture cleanup), #209 (docs), with
+WebSocket `serve` (#153) deliberately last.
 
-Landed: **provider track** — crate renamed from `entanglement-llm` (#51),
-connection pool + retry + rate-limit (#52), models-per-provider (#53),
-reasoning/thinking stream events (#54), provider-owned session handle (#55).
-**Runtime track** — crate renamed from `entanglement-cli` (#56), host-tool impls
-moved out of core (#57), tool execution relocated to `runtime::tool_runner` via
-the `ToolExec`/`ToolResult` round-trip (#58), permission dispatch + approval
-relocated to `runtime::tool_runner` via a per-session profile map + the engine's
-inbound `InMsg` fan-out (#59), sub-agent spawn via `InMsg::Spawn` + the
-`spawn_agent` tool relaying the child's answer back to the parent (#60,
-[ADR-0022](../docs/adr/0022-subagent-spawn.md)), spawn tree bounded by depth +
-per-root fan-out (#76, [ADR-0023](../docs/adr/0023-subagent-spawn-limits.md)),
-spawn permission-gated — `Subagent`-mode leaves can't spawn + child permissions
-clamped to the ancestor chain (#77,
-[ADR-0024](../docs/adr/0024-subagent-permission-gating.md)), non-blocking spawn —
-`spawn_agent` returns a handle immediately + `agent_poll` awaits it, for true
-fan-out (#89, [ADR-0026](../docs/adr/0026-async-subagent-spawn-and-poll.md)).
-**Cleanup** — orphaned `apply_diff.rs` + `audit.rs`
-removed (#63); docs drift guard (#62) closed out the epic by flipping every
-🚧 marker in `docs/architecture.md`/`README.md` to ✅ as each child landed.
-
-Already shipped: `skutter run`/`pipe` (stdio) and `tui`; LLM providers wired
-([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)) — `Llm` is a
-streaming trait returning `BoxStream<LlmEvent>`; one generic OpenAI-compat client
-serves z.ai (primary)/OpenAI/Ollama, plus a separate Anthropic client;
-`ENTANGLEMENT_PROVIDER` or key auto-detect, else `DummyLlm`. `skutter serve`
-(axum WS) is the next head. `bash` stays opt-in (`ENTANGLEMENT_ENABLE_BASH=1`),
-unsandboxed — a real sandbox is a future security-focused ADR.
+Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
+— z.ai (primary)/OpenAI/Ollama via one OpenAI-compat client + a separate
+Anthropic client; `ENTANGLEMENT_PROVIDER` or key auto-detect, else `EchoLlm`.
+Heads: stdio `run`/`pipe`, `tui`, and the `sessions`/`inspect` subcommands. Tools:
+the root-contained quintet, the opt-in exec pair `bash`/`call`
+(`ENTANGLEMENT_ENABLE_BASH=1`), and the sandboxed `rhai` tool. `skutter serve`
+(axum WS, local-only, [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md))
+is the next head.

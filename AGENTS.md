@@ -5,7 +5,7 @@ something you'd plausibly get wrong without being told. For the *why* and depth,
 read the authoritative sources it defers to:
 
 - **`.claude/CLAUDE.md`** — the full project brief (stack, crates, contract, conventions, open work). Read this first.
-- **`docs/architecture.md`** — deep architecture reference (actor model, wire protocol, heads, host tools).
+- **`docs/architecture.md`** — architecture reference, now a per-module index under `docs/architecture/` (actor model, wire protocol, heads, host tools), each module under the 400-line cap.
 - **`docs/adr/`** — immutable decision log; the *why* behind every hard-to-reverse choice. Supersede, never edit in place.
 
 ## Commands — drive through `make`, NOT raw `cargo`
@@ -13,10 +13,10 @@ read the authoritative sources it defers to:
 This is a hard project rule, not a style preference. The Makefile wraps every
 command and `make help` lists them. Key targets:
 
-- **`make verify`** — the pre-"done" gate. Equals `check-fmt + tree + lint + test`. Run it before declaring a task complete or pushing.
+- **`make verify`** — the pre-"done" gate. Equals `check-fmt + tree + check-lean + lint + test`. Run it before declaring a task complete or pushing.
 - **`make tree`** — the **non-obvious** one. It's the dependency-hygiene gate (ADR-0006): `entanglement-core` must pull in **zero** UI/transport crates. Adding `clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` to `entanglement-core` will make `make verify` fail here even though `cargo build` is green.
 - `make test-unit` / `make test-integration` — split suites (`--lib --bins` vs `--test '*'`).
-- `make run` / `make run-json` / `make run-tui` — build + run the `skutter` binary one turn (text / NDJSON / TUI).
+- `make run` / `make run-json` / `make run-tui` — build + run the `skutter` binary one turn (text / NDJSON / TUI). `make inspect ARGS=…` prints the resolved prompt/agents/skills with no engine; `make sessions` lists past sessions.
 
 For a **single test** the Makefile has no target — raw cargo is fine here:
 `cargo test -p entanglement-core --lib session::tests::<name>`.
@@ -30,7 +30,7 @@ is **core ↔ everything else**:
 
 - **`entanglement-core`** — the actor engine. **Zero UI/transport deps** (enforced by `make tree`). This is where `reqwest`/`clap`/`axum`/`crossterm` are *forbidden*. The `Llm` *trait* lives here; concrete backends do not.
 - **`entanglement-provider`** — concrete LLM backends over `reqwest` (may depend on transport). Implements `entanglement_core::Llm`.
-- **`entanglement-runtime`** — the only head crate, binary **`skutter`**. All transports (stdio today; `serve`/`tui` next) live here (ADR-0010). Note the binary name differs from the crate name.
+- **`entanglement-runtime`** — the only head crate, binary **`skutter`**. All transports (stdio + `tui` today; `serve` next) live here (ADR-0010). Note the binary name differs from the crate name.
 
 Heads depend on core, **never the reverse.**
 
@@ -51,9 +51,9 @@ Heads depend on core, **never the reverse.**
 
 ## Runtime env (for `make run`/`skutter`)
 
-With no provider configured, the engine runs on a `DummyLlm` (no network) — this
+With no provider configured, the engine runs on an `EchoLlm` (no network) — this
 is the default and is fine for most dev loops. To hit a real backend:
 
 - `ENTANGLEMENT_PROVIDER` = `zai` (primary) | `openai` | `ollama` | `anthropic`; or auto-detected by key presence (z.ai first).
 - `<PROV>_API_KEY` / `<PROV>_MODEL` / `<PROV>_BASE` (Ollama is keyless).
-- `ENTANGLEMENT_ENABLE_BASH=1` — **opt-in**: the `bash` host tool is registered only when this is set, because it runs **unsandboxed** with the engine's full privileges (ADR-0009). Off by default.
+- `ENTANGLEMENT_ENABLE_BASH=1` — **opt-in**: registers the exec pair `bash` + `call` (both **unsandboxed**, the engine's full privileges — ADR-0009/0010). Off by default. The sandboxed `rhai` script tool needs no opt-in.
