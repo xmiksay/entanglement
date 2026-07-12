@@ -683,8 +683,20 @@ persistence machinery with none of the CLI/TUI/transport weight
   lower-layer definitions it overrode — the exact fields #116/#119/#140
   enforcement hinges on. Same engine-free discovery as `inspect prompt`, via a
   `(layer, source)` provenance sidecar (`agents::resolve_registry`); `load_registry`
-  also emits a `replaces=<prior layer>` `debug!` at each overriding insert. All
-  logs go to **stderr**, keeping stdout clean for the prompt / NDJSON frames.
+  also emits a `replaces=<prior layer>` `debug!` at each overriding insert.
+  `skutter inspect skills [name] [--disclosures]` (#186) does the same for the
+  **skill** registry — the authoring loop was "start a session and ask the model":
+  no `name` prints a table (name, user_only, winning layer, `root_dir`,
+  description); `--disclosures` prints the **exact** tier-1 block the model
+  receives (the same `system_prompt::render_skills` output the assembled prompt
+  embeds, `user_only` skills withheld); a `name` **dry-runs the `load_skill` path
+  substitution** (`${SKILL_DIR}` + relative-ref resolution) plus layer provenance,
+  so a wrong payload path surfaces without a model. Engine-free via
+  `skills::resolve_registry` (the `(layer, source, shadowed)` sidecar mirroring
+  agents); `load_registry` emits a `replaces=<prior layer>` `debug!` at each
+  overriding insert, and a broken symlink under a skills dir is now a `warn!`
+  (was a silent skip). All logs go to **stderr**, keeping stdout clean for the
+  prompt / disclosures / NDJSON frames.
 - **WebSocket** (`skutter serve`, _next_): axum `GET /ws`, in-band auth first
   frame, stateless handler, one `subscribe()` per socket, inbound frame →
   `InMsg` → `send()`, 30s ping, `continue` on `broadcast::Lagged`. (Recipe

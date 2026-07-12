@@ -365,6 +365,17 @@ enum InspectCmd {
         /// Agent to detail (build | plan | explore | custom). Omit for the table.
         name: Option<String>,
     },
+    /// List resolved skills with their winning layer + `root_dir` (no `name`),
+    /// print the exact tier-1 disclosure block the model gets (`--disclosures`),
+    /// or dry-run the `load_skill` path substitution for one skill (a `name`).
+    Skills {
+        /// Skill to dry-run through the `load_skill` path substitution. Omit for
+        /// the table.
+        name: Option<String>,
+        /// Print the exact tier-1 `disclosures()` block the model receives.
+        #[arg(long)]
+        disclosures: bool,
+    },
 }
 
 #[tokio::main]
@@ -393,6 +404,9 @@ async fn main() -> Result<()> {
         return match what {
             InspectCmd::Prompt { agent, parts } => inspect::inspect_prompt(&cwd, agent, *parts),
             InspectCmd::Agents { name } => inspect::inspect_agents(&cwd, name.as_deref()),
+            InspectCmd::Skills { name, disclosures } => {
+                inspect::inspect_skills(&cwd, name.as_deref(), *disclosures)
+            }
         };
     }
 

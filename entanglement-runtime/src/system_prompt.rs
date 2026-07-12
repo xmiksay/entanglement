@@ -272,7 +272,7 @@ pub fn assemble_parts(
 
 /// Render the tier-1 skill index: a header plus one `name: description` line per
 /// skill. Only the two disclosed fields appear — no bodies, no tool lists.
-fn render_skills(skills: &[SkillDisclosure]) -> String {
+pub(crate) fn render_skills(skills: &[SkillDisclosure]) -> String {
     let mut out = String::from("Available skills (load with the `load_skill` tool before use):");
     for s in skills {
         out.push_str(&format!("\n- {}: {}", s.name, s.description));
