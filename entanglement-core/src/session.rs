@@ -121,6 +121,7 @@ pub(crate) async fn session_loop(
     let _ = events.send(OutEvent::AgentChanged {
         session: session.clone(),
         agent: s.profile.name.clone(),
+        profile_detail: Some(s.profile.detail()),
     });
 
     loop {
@@ -161,6 +162,7 @@ pub(crate) async fn session_loop(
                     let _ = events.send(OutEvent::AgentChanged {
                         session: session.clone(),
                         agent: p.name.clone(),
+                        profile_detail: Some(p.detail()),
                     });
                 }
                 None => {

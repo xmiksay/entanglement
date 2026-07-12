@@ -72,6 +72,12 @@ pub struct SessionInfo {
     pub parent: Option<SessionId>,
     pub profile: String,
     pub root: bool,
+    /// Resolved posture of the session's active profile (#189): mode, tool mask,
+    /// and permission rules, so a reconnecting head can render the permission
+    /// posture without re-reading the agent `.md` layers. `None` on the resume
+    /// path, where only the profile *name* survives in the replay log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_detail: Option<ProfileDetail>,
 }
 
 /// One labelled choice in a model-driven [`OutEvent::UserQuestion`] prompt
@@ -264,6 +270,37 @@ impl AgentProfile {
     pub fn spawnable_as_subagent(&self) -> bool {
         matches!(self.mode, AgentMode::Subagent | AgentMode::All)
     }
+
+    /// The wire-facing posture of this profile (#189): mode, the #116 tool mask
+    /// (`tools`/`disallowed_tools`), and the permission rules. Carried on
+    /// [`OutEvent::AgentChanged`] and [`SessionInfo`] so a reconnecting head — or
+    /// a sub-agent debugger — can render *why* a tool is allowed/asked/denied
+    /// without folding the broadcast or re-reading the agent `.md` layers.
+    pub fn detail(&self) -> ProfileDetail {
+        ProfileDetail {
+            mode: self.mode,
+            tools: self.tools.clone(),
+            disallowed_tools: self.disallowed_tools.clone(),
+            permission: self.permission.clone(),
+        }
+    }
+}
+
+/// Resolved permission posture of an [`AgentProfile`], carried on the wire so a
+/// head need not re-read the agent `.md` layers to render it (#189). A projection
+/// of [`AgentProfile`] — its policy-bearing fields minus the system prompt and
+/// spawn/plan flags that heads don't render for a posture panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileDetail {
+    pub mode: AgentMode,
+    /// Tool allowlist (#116); `None` ⇒ inherit every advertised tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// Tool denylist (#116), applied after the allowlist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
+    /// Per-tool `Allow | Ask | Deny` rules + fallback.
+    pub permission: PermissionProfile,
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -412,8 +449,16 @@ pub enum OutEvent {
         session: SessionId,
         state: AgentState,
     },
-    /// The session switched agent profiles (point-in-time, no `seq`).
-    AgentChanged { session: SessionId, agent: String },
+    /// The session switched agent profiles (point-in-time, no `seq`). Carries the
+    /// resolved [`ProfileDetail`] (#189) so a head can render the new permission
+    /// posture without re-reading the agent `.md` layers; `None` only if the
+    /// emitter has no profile handle.
+    AgentChanged {
+        session: SessionId,
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile_detail: Option<ProfileDetail>,
+    },
     /// The agent's strategy plan (markdown prose), full snapshot on every change.
     Plan {
         session: SessionId,
@@ -709,12 +754,20 @@ mod tests {
                     parent: None,
                     profile: "build".into(),
                     root: true,
+                    profile_detail: None,
                 },
                 SessionInfo {
                     session: SessionId::new("child"),
                     parent: Some(SessionId::new("root")),
                     profile: "explore".into(),
                     root: false,
+                    profile_detail: Some(ProfileDetail {
+                        mode: AgentMode::Subagent,
+                        tools: Some(vec!["read".into(), "glob".into()]),
+                        disallowed_tools: vec!["edit".into()],
+                        permission: PermissionProfile::new(Permission::Deny)
+                            .with("read", Permission::Allow),
+                    }),
                 },
             ],
         };
@@ -722,6 +775,57 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn agent_profile_detail_projects_the_wire_posture() {
+        let profile = AgentProfile {
+            name: "explore".into(),
+            description: String::new(),
+            mode: AgentMode::Subagent,
+            system_prompt: "secret prompt body".into(),
+            model: Some("glm-5.2".into()),
+            permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
+            tools: Some(vec!["read".into(), "grep".into()]),
+            disallowed_tools: vec!["edit".into()],
+            owns_plan: false,
+            can_spawn: None,
+            spawnable_agents: None,
+        };
+        let detail = profile.detail();
+        assert_eq!(detail.mode, AgentMode::Subagent);
+        assert_eq!(detail.tools, Some(vec!["read".into(), "grep".into()]));
+        assert_eq!(detail.disallowed_tools, vec!["edit".to_string()]);
+        assert_eq!(detail.permission.for_tool("read"), Permission::Allow);
+        assert_eq!(detail.permission.for_tool("edit"), Permission::Deny);
+    }
+
+    #[test]
+    fn agent_changed_carries_profile_detail_and_stays_backward_compatible() {
+        let ev = OutEvent::AgentChanged {
+            session: SessionId::new("s"),
+            agent: "plan".into(),
+            profile_detail: Some(ProfileDetail {
+                mode: AgentMode::Primary,
+                tools: None,
+                disallowed_tools: Vec::new(),
+                permission: PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
+            }),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+
+        // An older head's frame (no `profile_detail`) still deserializes — the
+        // field defaults to `None`, so the enrichment is additive on the wire.
+        let legacy = r#"{"kind":"agent_changed","session":"s","agent":"plan"}"#;
+        assert_eq!(
+            serde_json::from_str::<OutEvent>(legacy).unwrap(),
+            OutEvent::AgentChanged {
+                session: SessionId::new("s"),
+                agent: "plan".into(),
+                profile_detail: None,
+            }
+        );
     }
 
     #[test]

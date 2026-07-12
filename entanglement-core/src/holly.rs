@@ -235,7 +235,12 @@ async fn supervisor(
                     continue;
                 }
             };
-            session_meta.insert(session_id.clone(), resume_meta(&session_id, records));
+            // Enrich the replay-derived meta with the resolved posture (#189): the
+            // log preserves only the profile name, but the replayed session holds
+            // the full profile, so a reconnecting head sees the live posture.
+            let mut meta = resume_meta(&session_id, records);
+            meta.profile_detail = Some(initial_session.profile.detail());
+            session_meta.insert(session_id.clone(), meta);
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
             let ev = events.clone();
             let cfg2 = cfg.clone();
@@ -296,6 +301,7 @@ async fn supervisor(
                     parent: Some(parent.clone()),
                     profile: profile.name.clone(),
                     root: false,
+                    profile_detail: Some(profile.detail()),
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -335,6 +341,7 @@ async fn supervisor(
                     parent: parent.clone(),
                     profile: profile.name.clone(),
                     root: parent.is_none(),
+                    profile_detail: Some(profile.detail()),
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
