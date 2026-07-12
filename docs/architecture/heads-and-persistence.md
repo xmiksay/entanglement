@@ -50,8 +50,15 @@ persistence machinery with none of the CLI/TUI/transport weight
   `skills::resolve_registry` (the `(layer, source, shadowed)` sidecar mirroring
   agents); `load_registry` emits a `replaces=<prior layer>` `debug!` at each
   overriding insert, and a broken symlink under a skills dir is now a `warn!`
-  (was a silent skip). All logs go to **stderr**, keeping stdout clean for the
-  prompt / disclosures / NDJSON frames.
+  (was a silent skip). Logs go to **stderr**, keeping stdout clean for the
+  prompt / disclosures / NDJSON frames — **except under the TUI**, whose raw mode
+  owns the screen, so there logs are appended to
+  `<data_dir>/entanglement/logs/skutter.log` (path echoed to stderr at startup).
+  The filter honors `RUST_LOG` first (`EnvFilter::try_from_default_env`, so
+  per-target directives and `trace` are reachable — e.g.
+  `RUST_LOG=entanglement_core::host=trace`); absent it, `--verbose` (a **global**
+  flag, so it may follow the subcommand) selects `debug`, otherwise `warn`
+  (issue #187, `runtime::logging`).
 - **WebSocket** (`skutter serve`, _next_): axum HTTP server for a local Vue SPA
   plus `GET /ws`, one `subscribe()` per socket, inbound frame → `InMsg` →
   `send()`, 30s ping, `continue` on `broadcast::Lagged`. Scoped **local,

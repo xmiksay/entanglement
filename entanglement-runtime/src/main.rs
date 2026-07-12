@@ -13,6 +13,7 @@ mod ask_user;
 mod frontmatter;
 mod host;
 mod inspect;
+mod logging;
 mod permission;
 mod persistence;
 mod pipe;
@@ -301,7 +302,9 @@ struct Cli {
     /// Default subcommand equivalent to `run` with a prompt.
     #[arg(default_value = "Hello, Holly!")]
     prompt: Vec<String>,
-    #[arg(long)]
+    /// Log at `debug` (unless `RUST_LOG` is set, which always wins). Global, so
+    /// it may follow the subcommand: `skutter run … --verbose`.
+    #[arg(long, global = true)]
     verbose: bool,
 }
 
@@ -381,14 +384,11 @@ enum InspectCmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let filter = if cli.verbose { "debug" } else { "warn" };
-    // Logs go to stderr: stdout is reserved for command output — the assembled
-    // prompt (`inspect prompt`), NDJSON frames (`run --format json` / `pipe`) —
-    // so a `--verbose` log line can never corrupt it.
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
+    // stdout is reserved for command output — the assembled prompt
+    // (`inspect prompt`), NDJSON frames (`run --format json` / `pipe`) — so logs
+    // go to stderr, except under the TUI (raw mode) where they'd corrupt the
+    // screen and get a file sink instead. `RUST_LOG` overrides `--verbose`.
+    logging::init(cli.verbose, matches!(cli.cmd, Some(Cmd::Tui { .. })))?;
 
     // `sessions` only reads the log store — handle it before spinning up a
     // provider/engine so it stays cheap and prints nothing about providers.
