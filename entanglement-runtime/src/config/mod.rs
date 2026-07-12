@@ -1,0 +1,254 @@
+//! User configuration — the layered settings file (#172, ADR-0047).
+//!
+//! A general user-config file, same defaults+override shape as the provider
+//! catalog (#118) and the agent/skill registries (#112/#114): an embedded
+//! default is deep-merged with an optional user file and an optional repository
+//! file, later layers winning.
+//!
+//! # Layers & precedence
+//!
+//! Three layers, later wins:
+//!
+//! 1. **default** — the embedded [`include_str!`] of `defaults.yml`.
+//! 2. **user** — `${config_dir}/entanglement/config.yml`
+//!    (override the path via `ENTANGLEMENT_CONFIG_FILE`).
+//! 3. **project** — `<root>/.entanglement/config.yml`.
+//!
+//! The merge is at the [`serde_yaml::Value`] level *before* deserializing, so a
+//! layer can override a single field and leave its siblings untouched, and
+//! `deny_unknown_fields` still validates the merged result (typos are loud). The
+//! project layer is **trusted** (ADR-0047): a repository may override the user's
+//! configuration for work in that repository, mirroring git's
+//! `system < global < local`.
+//!
+//! # Sections
+//!
+//! - `permissions` — the first section: tool name → `allow | ask | deny`, a
+//!   global ceiling combined least-privilege with each agent profile (see
+//!   [`crate::permission::clamp_to_base`]). Argument/path patterns (#173) and
+//!   persisted grants (#174) build on it.
+//! - general settings — `agent` / `provider` / `model` / `verbose`. Each is a
+//!   *fallback*: an explicit CLI flag or environment variable wins over the file
+//!   (env > config > embedded default).
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use entanglement_core::{Permission, PermissionProfile};
+use serde::Deserialize;
+use serde_yaml::Value;
+
+use crate::agents::permission_from_value;
+
+#[cfg(test)]
+mod tests;
+
+const DEFAULTS_YML: &str = include_str!("defaults.yml");
+
+/// Env var overriding the user config file path (tests + non-XDG setups).
+const CONFIG_FILE_ENV: &str = "ENTANGLEMENT_CONFIG_FILE";
+
+/// The raw file shape. `deny_unknown_fields` makes a typo'd key a loud error
+/// rather than a silently-ignored setting, exactly like the agent/provider files.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    verbose: bool,
+    /// Parsed into a [`PermissionProfile`] via the same reader agent frontmatter
+    /// uses ([`permission_from_value`]).
+    #[serde(default)]
+    permissions: Option<Value>,
+}
+
+/// Resolved user configuration — the merged, validated values every head reads.
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Default agent profile when the CLI passes none.
+    pub agent: Option<String>,
+    /// Provider name (like `ENTANGLEMENT_PROVIDER`); `None` ⇒ auto-detect.
+    pub provider: Option<String>,
+    /// Model id override; `None` ⇒ the provider's catalog default.
+    pub model: Option<String>,
+    /// Log at `debug` by default (like `--verbose`).
+    pub verbose: bool,
+    /// The global permission ceiling. Allow-all by default (a no-op).
+    pub permissions: PermissionProfile,
+}
+
+/// Which of the three precedence layers a value came from. Ordered low → high so
+/// `Default < User < Project` matches discovery order and the later-wins rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConfigLayer {
+    Default,
+    User,
+    Project,
+}
+
+impl ConfigLayer {
+    /// Short label for `skutter inspect config`.
+    pub fn label(self) -> &'static str {
+        match self {
+            ConfigLayer::Default => "default",
+            ConfigLayer::User => "user",
+            ConfigLayer::Project => "project",
+        }
+    }
+}
+
+/// One discovered config layer *before* merging: its precedence, a display label
+/// for its origin (`built-in (defaults.yml)` or a file path), and the parsed doc.
+struct RawLayer {
+    layer: ConfigLayer,
+    source: String,
+    doc: Value,
+}
+
+/// The resolved config plus the provenance `skutter inspect config` reports:
+/// which layer last set each field, and every layer that was present.
+pub struct Resolved {
+    pub config: Config,
+    /// `(layer, source)` for every discovered layer, in precedence order.
+    pub layers: Vec<(ConfigLayer, String)>,
+    /// The winning layer for each top-level key that any layer defined.
+    pub provenance: Vec<(String, ConfigLayer)>,
+}
+
+impl Config {
+    /// Resolve the user config for `root`: embedded defaults, deep-merged with the
+    /// user file (if present) and the repository file (if present). A malformed or
+    /// unreadable file in any layer is a loud error, never a silent fallback.
+    pub fn load(root: &Path) -> Result<Config> {
+        Ok(Self::resolve(root)?.config)
+    }
+
+    /// Like [`load`](Self::load) but also returns the per-field provenance and the
+    /// discovered layers, for `skutter inspect config`.
+    pub fn resolve(root: &Path) -> Result<Resolved> {
+        parse(&discover(root)?)
+    }
+}
+
+/// Enumerate the present config layers in precedence order — embedded defaults,
+/// then the user file, then the project file. Missing files are skipped; an
+/// unreadable or malformed file is an error.
+fn discover(root: &Path) -> Result<Vec<RawLayer>> {
+    let mut layers = vec![default_layer()];
+    if let Some(path) = user_config_path() {
+        read_layer(ConfigLayer::User, &path, &mut layers)?;
+    }
+    read_layer(
+        ConfigLayer::Project,
+        &root.join(".entanglement").join("config.yml"),
+        &mut layers,
+    )?;
+    Ok(layers)
+}
+
+/// The always-present embedded default layer.
+fn default_layer() -> RawLayer {
+    RawLayer {
+        layer: ConfigLayer::Default,
+        source: "built-in (defaults.yml)".to_string(),
+        doc: serde_yaml::from_str(DEFAULTS_YML)
+            .expect("embedded defaults.yml is valid — guarded by test"),
+    }
+}
+
+/// Read + parse the file at `path` (if it exists) as one layer. A missing file is
+/// fine; an unreadable file or invalid YAML is a loud error.
+fn read_layer(layer: ConfigLayer, path: &Path, layers: &mut Vec<RawLayer>) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading user config {}", path.display()))?;
+    let doc: Value = serde_yaml::from_str(&text)
+        .with_context(|| format!("parsing user config {}", path.display()))?;
+    layers.push(RawLayer {
+        layer,
+        source: path.display().to_string(),
+        doc,
+    });
+    Ok(())
+}
+
+/// Merge the layers' docs (later wins) and deserialize into a [`Config`], keeping
+/// per-field provenance. The merge and the `deny_unknown_fields` validation both
+/// run on the combined [`Value`], so a field override keeps its siblings and a
+/// typo in any layer is rejected.
+fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
+    let mut merged = Value::Null;
+    for rl in raw_layers {
+        merged = merge_value(merged, rl.doc.clone());
+    }
+    let raw: RawConfig = serde_yaml::from_value(merged).context("validating merged user config")?;
+    let permissions = match &raw.permissions {
+        Some(v) => permission_from_value(v).context("in user config `permissions`")?,
+        None => PermissionProfile::new(Permission::Allow),
+    };
+    let config = Config {
+        agent: raw.agent,
+        provider: raw.provider,
+        model: raw.model,
+        verbose: raw.verbose,
+        permissions,
+    };
+    Ok(Resolved {
+        config,
+        layers: raw_layers
+            .iter()
+            .map(|r| (r.layer, r.source.clone()))
+            .collect(),
+        provenance: provenance(raw_layers),
+    })
+}
+
+/// The winning layer for each top-level key any layer set, in a stable key order.
+fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
+    const KEYS: &[&str] = &["agent", "provider", "model", "verbose", "permissions"];
+    KEYS.iter()
+        .filter_map(|key| {
+            // Highest layer that carries this key wins (layers are low→high).
+            raw_layers
+                .iter()
+                .rev()
+                .find(|rl| rl.doc.get(*key).is_some())
+                .map(|rl| (key.to_string(), rl.layer))
+        })
+        .collect()
+}
+
+/// Deep-merge `over` onto `base`: mappings merge key-wise recursively; scalars
+/// and sequences are replaced by `over`. (The config file has no identity-keyed
+/// sequences, so the catalog's by-`name`/`id` sequence merge isn't needed.)
+fn merge_value(base: Value, over: Value) -> Value {
+    match (base, over) {
+        (Value::Mapping(mut base_map), Value::Mapping(over_map)) => {
+            for (key, over_val) in over_map {
+                let merged = match base_map.remove(&key) {
+                    Some(base_val) => merge_value(base_val, over_val),
+                    None => over_val,
+                };
+                base_map.insert(key, merged);
+            }
+            Value::Mapping(base_map)
+        }
+        (_, over) => over,
+    }
+}
+
+/// The user config path: `${config_dir}/entanglement/config.yml`, overridable via
+/// `ENTANGLEMENT_CONFIG_FILE` (which tests point at a temp file).
+fn user_config_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os(CONFIG_FILE_ENV) {
+        return Some(PathBuf::from(p));
+    }
+    dirs::config_dir().map(|d| d.join("entanglement").join("config.yml"))
+}

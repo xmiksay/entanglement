@@ -111,7 +111,12 @@ async fn read_tool_runs_through_engine_under_build_profile() {
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
-    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -179,7 +184,12 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
-    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -254,7 +264,12 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -335,7 +350,12 @@ async fn write_tool_denied_under_explore_profile() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {
@@ -406,7 +426,12 @@ async fn write_tool_masked_under_plan_profile() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {
@@ -475,7 +500,12 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
-    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -546,7 +576,12 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly

@@ -122,7 +122,12 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
     let holly = Holly::spawn(cfg);
     // Empty registry: `agent_spawn`/`agent_poll` are orchestration, handled
     // before execution.
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
 
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
@@ -259,7 +264,12 @@ async fn two_sub_agents_fan_out_and_both_answers_are_polled() {
     };
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
 
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
@@ -324,7 +334,12 @@ async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
     };
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
 
     let root = SessionId::new("root");
     let mut sub = holly.subscribe();
@@ -456,7 +471,12 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
     };
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
 
     let root = SessionId::new("root");
     let mut sub = holly.subscribe();
@@ -552,7 +572,12 @@ async fn agent_blocks_and_returns_child_answer_in_one_call() {
     };
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
 
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
@@ -661,7 +686,12 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
     };
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
 
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
@@ -811,7 +841,12 @@ async fn spawn_of_a_primary_target_is_refused() {
     });
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     assert_root_spawn_refused(&holly, "primary entry agent").await;
 }
 
@@ -836,7 +871,12 @@ async fn spawn_outside_the_allowlist_is_refused() {
     };
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     assert_root_spawn_refused(&holly, "not allowed to spawn").await;
 }
 
@@ -860,7 +900,12 @@ async fn primary_with_can_spawn_false_cannot_spawn() {
     };
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     assert_root_spawn_refused(&holly, "cannot spawn").await;
 }
 

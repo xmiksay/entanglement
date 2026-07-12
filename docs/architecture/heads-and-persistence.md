@@ -107,7 +107,8 @@ persistence machinery with none of the CLI/TUI/transport weight
   overlay** (✅ #214, `tui::modals::inspect` + `tui::app::inspect`): `<leader>i` /
   `/inspect` opens a read-only three-tab overlay (Prompt / Agents / Skills) over
   the **active session's** resolved state — the same views the CLI's `skutter
-  inspect prompt|agents|skills` print, so you can debug a misbehaving session
+  inspect prompt|agents|skills` print (the CLI also has `inspect config` for the
+  resolved user config, #172), so you can debug a misbehaving session
   without leaving the TUI. It reuses the identical engine-free renderers
   (`inspect::tui_reports` → the shared `render_*` helpers): the Prompt tab is the
   active agent's `--parts` breakdown; the Agents tab is the registry table plus

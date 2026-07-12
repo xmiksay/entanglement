@@ -101,11 +101,16 @@ re-document them here):
 - **Permission lives entirely in the runtime** (#59): `tool_runner` resolves
   `Allow`/`Ask`/`Deny` per call, emits `ToolRequest` on `Ask`, consumes
   `Approve`/`Reject` off `Holly::subscribe_inbound()`. Core never reads
-  `PermissionProfile`.
+  `PermissionProfile`. A user config file (#172) adds a global permission
+  **ceiling** clamped least-privilege over every grade (`clamp_to_base`); see
+  `entanglement-runtime/src/config`.
 - **Session-multiplexed**: every frame carries `SessionId`; content frames carry
   monotonic `seq`. Supervisor-global vs session-scoped routing is explicit.
 - **Definitions are data, layered** embedded < user < project, later wins; the
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
+  Agents, skills, the provider catalog, and the **user config file** (#172,
+  `${config_dir}/entanglement/config.yml` < `.entanglement/config.yml`) all share
+  this loader.
 
 | Topic | Module |
 | --- | --- |
@@ -116,9 +121,9 @@ re-document them here):
 | stdio/TUI/`serve` heads, event-sourced persistence | [heads & persistence](../docs/architecture/heads-and-persistence.md) |
 | dependency gates, the quintet + exec tools (`bash`/`call`/`rhai`) | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
 
-Debugging: `skutter inspect prompt|agents|skills` re-runs the load-time discovery
-with **no engine** and prints the resolved prompt / registries, including the
-layer that won an override (✅ #184/#185/#186). The TUI exposes the same three
+Debugging: `skutter inspect prompt|agents|skills|config` re-runs the load-time
+discovery with **no engine** and prints the resolved prompt / registries / user
+config, including the layer that won an override (✅ #184/#185/#186, #172). The TUI exposes the same three
 views in-session via `/inspect` (or `<leader>i`) as a read-only overlay over the
 active session's resolved state (✅ #214). Trust & scope decisions:
 [ADR-0047](../docs/adr/0047-local-trust-boundary.md) (repo trusted; config

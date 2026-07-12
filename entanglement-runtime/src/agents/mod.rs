@@ -440,11 +440,12 @@ fn resolve_preload(names: &[String], agent: &str, skills: &SkillRegistry) -> Res
         .collect()
 }
 
-/// Convert a frontmatter `permission` mapping into a core [`PermissionProfile`].
-/// Keys are tool patterns (`"*"` or a tool name); the reserved `default` key sets
-/// the fallback permission. Rules preserve file order (last match wins,
-/// ADR-0003). An omitted `default` ⇒ allow.
-fn permission_from_value(value: &serde_yaml::Value) -> Result<PermissionProfile> {
+/// Convert a `permission` mapping into a core [`PermissionProfile`]. Keys are
+/// tool patterns (`"*"` or a tool name); the reserved `default` key sets the
+/// fallback permission. Rules preserve file order (last match wins, ADR-0003).
+/// An omitted `default` ⇒ allow. Shared with the user config's `permissions`
+/// section (#172), which uses the identical shape.
+pub(crate) fn permission_from_value(value: &serde_yaml::Value) -> Result<PermissionProfile> {
     let map = value
         .as_mapping()
         .context("`permission` must be a mapping of tool → allow|ask|deny")?;

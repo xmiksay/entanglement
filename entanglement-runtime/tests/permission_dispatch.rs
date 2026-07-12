@@ -83,7 +83,12 @@ fn spawn_with_bash_call_using(input: &str, profiles: ProfileRegistry) -> Holly {
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
-    let _executor = spawn_tool_executor(&holly, reg, profiles);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     holly
 }
 

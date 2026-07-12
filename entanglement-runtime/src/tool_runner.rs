@@ -24,22 +24,24 @@
 use std::collections::HashMap;
 
 use entanglement_core::{
-    AgentProfile, AgentState, Holly, InMsg, OutEvent, Permission, ProfileRegistry, SessionId,
-    ToolCall, ToolRegistry,
+    AgentProfile, AgentState, Holly, InMsg, OutEvent, Permission, PermissionProfile,
+    ProfileRegistry, SessionId, ToolCall, ToolRegistry,
 };
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::permission::{effective_permission, spawn_refusal, tool_masked};
+use crate::permission::{clamp_to_base, effective_permission, spawn_refusal, tool_masked};
 
 /// Spawn the per-engine tool executor. Subscribes synchronously (so no
 /// `ToolExec` emitted before the task is scheduled is missed) and runs until the
 /// engine's outbox closes. `profiles` is the runtime's copy of the engine's
 /// [`ProfileRegistry`] — the permission *shape* stays a core type; the runtime
-/// only reads it (ADR-0003).
+/// only reads it (ADR-0003). `base` is the user config's global permission
+/// ceiling (#172): every resolved grade is clamped least-privilege against it.
 pub fn spawn_tool_executor(
     holly: &Holly,
     tools: ToolRegistry,
     profiles: ProfileRegistry,
+    base: PermissionProfile,
 ) -> tokio::task::JoinHandle<()> {
     let mut sub = holly.subscribe();
     let holly = holly.clone();
@@ -223,10 +225,17 @@ pub fn spawn_tool_executor(
                     // (checked above) already withholds it from a read-only
                     // profile like `explore`.
                     if tool == crate::script::RHAI_TOOL {
-                        let self_perm =
-                            effective_permission(&active, &spawn_guard, &session, &tool);
-                        let policy =
-                            crate::script::BindingPolicy::capture(&active, &spawn_guard, &session);
+                        let self_perm = clamp_to_base(
+                            effective_permission(&active, &spawn_guard, &session, &tool),
+                            &base,
+                            &tool,
+                        );
+                        let policy = crate::script::BindingPolicy::capture(
+                            &active,
+                            &spawn_guard,
+                            &session,
+                            &base,
+                        );
                         let inbound = holly.subscribe_inbound();
                         let tools = tools.clone();
                         let holly = holly.clone();
@@ -246,7 +255,11 @@ pub fn spawn_tool_executor(
                     // touch the shared tree in ways the parent couldn't. A root
                     // session (no ancestors) resolves to its own profile unchanged;
                     // a session we never saw start defaults to `Allow`.
-                    let perm = effective_permission(&active, &spawn_guard, &session, &tool);
+                    let perm = clamp_to_base(
+                        effective_permission(&active, &spawn_guard, &session, &tool),
+                        &base,
+                        &tool,
+                    );
                     let tools = tools.clone();
                     let holly = holly.clone();
                     tokio::spawn(async move {

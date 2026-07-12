@@ -72,7 +72,12 @@ fn spawn_with_ask_user_call(input: &str) -> Holly {
     };
     let holly = Holly::spawn(cfg);
     // `ask_user` is intercepted before the registry, so an empty registry is fine.
-    let _executor = spawn_tool_executor(&holly, ToolRegistry::new(), ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     holly
 }
 

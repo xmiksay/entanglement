@@ -28,7 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use entanglement_core::{AgentProfile, Permission, ProfileRegistry, SessionId};
+use entanglement_core::{AgentProfile, Permission, PermissionProfile, ProfileRegistry, SessionId};
 
 use crate::subagent::SpawnGuard;
 
@@ -172,6 +172,17 @@ pub fn tool_masked(
         }
     }
     false
+}
+
+/// Clamp an already-resolved permission by the global config base (#172,
+/// ADR-0047). The effective grade is the least-privileged of the agent-chain
+/// result and the config's rule for the tool — so the user/repo config
+/// `permissions` section is a *ceiling*: it can tighten what an agent allows
+/// (`bash: ask` forces every agent to ask), never loosen it. The embedded
+/// default is allow-all, so an untouched config is a no-op. Argument/path
+/// patterns (#173) and persisted grants (#174) extend this base.
+pub fn clamp_to_base(perm: Permission, base: &PermissionProfile, tool: &str) -> Permission {
+    min_permission(perm, base.for_tool(tool))
 }
 
 /// A session's own permission for `tool`; an unseen session defaults to `Allow`
@@ -427,6 +438,36 @@ mod tests {
         assert!(tool_masked(&active, &guard, &c, "edit"));
         // The parent (a root) keeps its own mask unchanged.
         assert!(tool_masked(&active, &guard, &p, "edit"));
+    }
+
+    #[test]
+    fn clamp_to_base_is_a_least_privilege_ceiling() {
+        // Allow-all base (the embedded default) never changes the agent's grade.
+        let open = PermissionProfile::new(Permission::Allow);
+        assert_eq!(
+            clamp_to_base(Permission::Allow, &open, "bash"),
+            Permission::Allow
+        );
+        assert_eq!(
+            clamp_to_base(Permission::Ask, &open, "bash"),
+            Permission::Ask
+        );
+        // A base `bash: ask` tightens an agent's Allow to Ask, but leaves a
+        // stricter agent Deny untouched (least-privilege wins either way).
+        let base = PermissionProfile::new(Permission::Allow).with("bash", Permission::Ask);
+        assert_eq!(
+            clamp_to_base(Permission::Allow, &base, "bash"),
+            Permission::Ask
+        );
+        assert_eq!(
+            clamp_to_base(Permission::Deny, &base, "bash"),
+            Permission::Deny
+        );
+        // The base never loosens: base Allow over an agent Ask stays Ask.
+        assert_eq!(
+            clamp_to_base(Permission::Ask, &base, "read"),
+            Permission::Ask
+        );
     }
 
     #[test]

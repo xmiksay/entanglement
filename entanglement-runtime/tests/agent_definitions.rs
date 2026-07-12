@@ -258,7 +258,12 @@ async fn spawn_under_a_file_defined_profile() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
 
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
