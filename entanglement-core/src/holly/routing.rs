@@ -81,6 +81,9 @@ pub(super) fn resume_meta(
                 parent: parent.clone(),
                 profile: profile.clone(),
                 root: *root,
+                // The replay log carries only the profile *name*; the caller fills
+                // the resolved detail from the replayed session's profile (#189).
+                profile_detail: None,
             };
         }
     }
@@ -89,6 +92,7 @@ pub(super) fn resume_meta(
         parent: None,
         profile: DEFAULT_PROFILE.to_string(),
         root: true,
+        profile_detail: None,
     }
 }
 

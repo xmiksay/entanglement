@@ -23,7 +23,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | SessionEnded{session,ts}           // lifecycle, no seq
          | SessionList{session,sessions:[SessionInfo]}   // reply to ListSessions, no seq (#21)
          | Status{session,state}              // point-in-time, no seq
-         | AgentChanged{session,agent}        // point-in-time, no seq
+         | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
          | Plan{session,seq,content}          // markdown prose snapshot
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
@@ -46,9 +46,17 @@ inbound fan-out (core never routes it) and the `ask_user` executor consumes it
 `ListSessions` and `CloseSession` are **supervisor-global**: the supervisor
 answers/acts on them directly rather than routing to a session task.
 `ListSessions` returns one `SessionList` snapshot of the live
-`SessionInfo{session,parent?,profile,root}` set — a reconnecting head enumerates
-in one round-trip instead of folding the whole broadcast; its `session` field is
-a correlation id the reply echoes. `CloseSession` drops the session's command
+`SessionInfo{session,parent?,profile,root,profile_detail?}` set — a reconnecting
+head enumerates in one round-trip instead of folding the whole broadcast; its
+`session` field is a correlation id the reply echoes. `profile_detail`
+(**#189**, optional) carries the active profile's resolved posture — `mode`, the
+#116 tool mask (`tools`/`disallowed_tools`), and the `PermissionProfile` rules —
+so a head renders the permission posture without re-reading the agent `.md`
+layers. It rides `AgentChanged` on every switch and each live `SessionInfo`;
+`None` only on the resume path's fallback, where the replay log preserves the
+profile *name* alone. Pair it with the runtime's per-resolution `debug!`
+(`tool=… rule=Allow|Ask|Deny source=own|ancestor <id>`) when tracing *why* a
+sub-agent's tool was clamped. `CloseSession` drops the session's command
 channel so its task exits and emits `SessionEnded` — the explicit destroy `Stop`
 (cancel-semantics, ADR-0017) does not perform. Session ids are single-use: after
 `SessionEnded`, mint a fresh `SessionId::new_uuid()` rather than reuse a closed

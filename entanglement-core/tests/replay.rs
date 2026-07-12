@@ -339,6 +339,7 @@ async fn profile_changes_during_replay() {
             OutEvent::AgentChanged {
                 session: sid.clone(),
                 agent: "plan".to_string(),
+                profile_detail: None,
             },
         ),
         (

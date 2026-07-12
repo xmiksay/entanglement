@@ -93,20 +93,53 @@ pub fn effective_permission(
     session: &SessionId,
     tool: &str,
 ) -> Permission {
+    let (perm, source) = resolve_with_source(active, guard, session, tool);
+    // Per-resolution trace (#189) so sub-agent debugging ("why was this child's
+    // edit denied?") reads off logs instead of three `.md` layers by hand.
+    tracing::debug!(
+        %session,
+        tool,
+        rule = ?perm,
+        source = match &source {
+            Some(id) => format!("ancestor {id}"),
+            None => "own".to_string(),
+        },
+        "permission resolved",
+    );
+    perm
+}
+
+/// The clamped permission plus *which* link decided it (#189): `None` ⇒ the
+/// session's own profile stands; `Some(id)` ⇒ that ancestor clamped it down.
+/// Split from [`effective_permission`] so the deciding source is unit-testable
+/// without capturing the trace it feeds.
+fn resolve_with_source(
+    active: &HashMap<SessionId, AgentProfile>,
+    guard: &SpawnGuard,
+    session: &SessionId,
+    tool: &str,
+) -> (Permission, Option<SessionId>) {
     let mut perm = permission_for(active, session, tool);
+    let mut source: Option<SessionId> = None;
     let mut current = session.clone();
     // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
     let mut visited = HashSet::new();
     while visited.insert(current.clone()) {
         match guard.parent_of(&current) {
             Some(parent) => {
-                perm = min_permission(perm, permission_for(active, &parent, tool));
+                let clamped = min_permission(perm, permission_for(active, &parent, tool));
+                // Only a *strictly* lower ancestor changes the outcome (ties keep
+                // the nearer link), so record it as the deciding source.
+                if clamped != perm {
+                    source = Some(parent.clone());
+                }
+                perm = clamped;
                 current = parent;
             }
             None => break,
         }
     }
-    perm
+    (perm, source)
 }
 
 /// Whether `tool` is masked out for `session` — refused because it is not in the
@@ -286,6 +319,53 @@ mod tests {
         assert_eq!(
             effective_permission(&active, &guard, &parent, "edit"),
             Permission::Ask
+        );
+    }
+
+    #[test]
+    fn resolution_source_names_own_vs_the_clamping_ancestor() {
+        // grandparent `plan`: edit Ask. parent `build`: edit Allow. child `build`:
+        // edit Allow. The chain's least-privileged edit rule comes from the
+        // grandparent, two hops up.
+        let plan = profile(
+            "plan",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
+        );
+        let allow_all = |name: &str| {
+            profile(
+                name,
+                AgentMode::Primary,
+                PermissionProfile::new(Permission::Allow),
+            )
+        };
+        let gp = SessionId::new("gp");
+        let parent = SessionId::new("parent");
+        let child = SessionId::new("child");
+        let mut active = HashMap::new();
+        active.insert(gp.clone(), plan);
+        active.insert(parent.clone(), allow_all("build"));
+        active.insert(child.clone(), allow_all("build"));
+
+        let mut guard = SpawnGuard::new();
+        guard.record_start(gp.clone(), None);
+        guard.record_start(parent.clone(), Some(gp.clone()));
+        guard.record_start(child.clone(), Some(parent.clone()));
+
+        // `edit`: own+parent Allow, grandparent Ask → clamped to Ask, sourced to gp.
+        assert_eq!(
+            resolve_with_source(&active, &guard, &child, "edit"),
+            (Permission::Ask, Some(gp.clone()))
+        );
+        // `read`: Allow the whole way → own profile stands, no ancestor source.
+        assert_eq!(
+            resolve_with_source(&active, &guard, &child, "read"),
+            (Permission::Allow, None)
+        );
+        // A root resolves to its own profile — never an ancestor.
+        assert_eq!(
+            resolve_with_source(&active, &guard, &gp, "edit"),
+            (Permission::Ask, None)
         );
     }
 

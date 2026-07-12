@@ -68,7 +68,7 @@ pub fn spawn_tool_executor(
                         active.insert(session, p.clone());
                     }
                 }
-                Ok(OutEvent::AgentChanged { session, agent }) => {
+                Ok(OutEvent::AgentChanged { session, agent, .. }) => {
                     if let Some(p) = profiles.get(&agent) {
                         active.insert(session, p.clone());
                     }
