@@ -143,30 +143,148 @@ impl SkillRegistry {
     }
 }
 
+/// Which precedence layer a skill definition came from (#186), mirroring
+/// [`crate::agents::AgentLayer`]. Ordered low → high so `built-in < user <
+/// project` matches discovery order and the later-wins collision rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SkillLayer {
+    BuiltIn,
+    User,
+    Project,
+}
+
+impl SkillLayer {
+    /// Short label for the `skutter inspect skills` table and `replaces=` logs.
+    pub fn label(self) -> &'static str {
+        match self {
+            SkillLayer::BuiltIn => "built-in",
+            SkillLayer::User => "user",
+            SkillLayer::Project => "project",
+        }
+    }
+}
+
+/// A discovered `SKILL.md` *before* parsing: which layer it came from (#186), a
+/// display label for its origin (`built-in (commit.md)` or the file path), the
+/// pre-resolved `root_dir`, and the raw file content.
+struct RawSkill {
+    layer: SkillLayer,
+    source: String,
+    root_dir: Option<PathBuf>,
+    content: String,
+}
+
 /// Load the skill registry for `root`: embedded stock skills, then the user dir,
 /// then the project dir — later layers replace earlier ones on a `name`
 /// collision (project > user > built-in). A malformed file in any layer aborts.
 pub fn load_registry(root: &Path) -> Result<SkillRegistry> {
     let mut reg = SkillRegistry::default();
-    for (file, contents) in BUILT_INS {
-        // Embedded built-ins are guarded by `built_ins_parse`, so a failure here
-        // is a build-time bug, not a runtime condition — surface it loudly.
-        let skill = parse_skill(contents, None)
-            .with_context(|| format!("parsing built-in skill `{file}`"))?;
+    // Track the winning layer per name so a later-wins collision is no longer
+    // silent (#186): emit a `replaces=<prior layer>` debug at the overwrite,
+    // matching the provenance `inspect skills` surfaces.
+    let mut winning: HashMap<String, SkillLayer> = HashMap::new();
+    for raw in discover(root)? {
+        let skill = parse_skill(&raw.content, raw.root_dir)
+            .with_context(|| format!("parsing skill {}", raw.source))?;
+        if let Some(prior) = winning.insert(skill.name.clone(), raw.layer) {
+            tracing::debug!(
+                skill = %skill.name,
+                layer = raw.layer.label(),
+                replaces = prior.label(),
+                source = %raw.source,
+                "skill definition overrides a lower layer",
+            );
+        }
         reg.insert(skill);
     }
-    if let Some(dir) = user_skills_dir() {
-        load_dir(&dir, &mut reg)?;
-    }
-    load_dir(&root.join(".entanglement").join("skills"), &mut reg)?;
     Ok(reg)
 }
 
-/// Discover every `SKILL.md` under `dir` (recursively) and fold it into `reg`,
-/// replacing any same-`name` entry. A missing dir is fine; an unreadable dir or
-/// a malformed `SKILL.md` is an error. Symlinked duplicates (a link to an
-/// already-seen file, or a directory cycle) are deduped by canonical path.
-fn load_dir(dir: &Path, reg: &mut SkillRegistry) -> Result<()> {
+/// One resolved skill for `skutter inspect skills` (#186): the winning definition
+/// plus the provenance the silent `insert` used to swallow — which layer/source
+/// won, and every lower-layer `SKILL.md` of the same name it overrode.
+pub struct SkillResolution {
+    /// The winning skill metadata (name/description/user_only/root_dir).
+    pub meta: SkillMeta,
+    /// Which precedence layer the winner came from.
+    pub layer: SkillLayer,
+    /// The winner's origin (`built-in (commit.md)` or a file path).
+    pub source: String,
+    /// Lower-layer definitions of the same name the winner overrode, in
+    /// precedence order — `(layer, source)` each. Empty when nothing was shadowed.
+    pub shadowed: Vec<(SkillLayer, String)>,
+}
+
+/// Resolve every skill for `root` with full provenance (#186), applying the same
+/// layer precedence as [`load_registry`] but keeping *which* layer won and what
+/// it shadowed. Sorted by name for a stable table. A malformed file in any layer
+/// is a loud error, exactly as at load — mirrors [`crate::agents::resolve_registry`].
+pub fn resolve_registry(root: &Path) -> Result<Vec<SkillResolution>> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_name: HashMap<String, Vec<(SkillLayer, String, SkillMeta)>> = HashMap::new();
+    for raw in discover(root)? {
+        let meta = parse_skill(&raw.content, raw.root_dir)
+            .with_context(|| format!("parsing skill {}", raw.source))?;
+        let name = meta.name.clone();
+        let entry = by_name.entry(name.clone()).or_default();
+        if entry.is_empty() {
+            order.push(name);
+        }
+        entry.push((raw.layer, raw.source, meta));
+    }
+
+    let mut resolved: Vec<SkillResolution> = order
+        .into_iter()
+        .map(|name| {
+            let mut defs = by_name
+                .remove(&name)
+                .expect("name recorded on first insert");
+            let (layer, source, meta) = defs.pop().expect("at least one definition per name");
+            let shadowed = defs.into_iter().map(|(l, s, _)| (l, s)).collect();
+            SkillResolution {
+                meta,
+                layer,
+                source,
+                shadowed,
+            }
+        })
+        .collect();
+    resolved.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
+    Ok(resolved)
+}
+
+/// Enumerate every `SKILL.md` in precedence order — embedded built-ins, then the
+/// user dir, then the project dir — without parsing. Later entries win on a
+/// `name` collision, so consumers keep the last match. A missing dir is fine; an
+/// unreadable dir or file is an error.
+fn discover(root: &Path) -> Result<Vec<RawSkill>> {
+    let mut raws: Vec<RawSkill> = BUILT_INS
+        .iter()
+        .map(|(file, contents)| RawSkill {
+            // Embedded built-ins are guarded by `built_ins_parse`, so a parse
+            // failure downstream is a build-time bug, not a runtime condition.
+            layer: SkillLayer::BuiltIn,
+            source: format!("built-in ({file})"),
+            root_dir: None,
+            content: (*contents).to_string(),
+        })
+        .collect();
+    if let Some(dir) = user_skills_dir() {
+        discover_dir(SkillLayer::User, &dir, &mut raws)?;
+    }
+    discover_dir(
+        SkillLayer::Project,
+        &root.join(".entanglement").join("skills"),
+        &mut raws,
+    )?;
+    Ok(raws)
+}
+
+/// Append every `SKILL.md` under `dir` (recursively), tagged with `layer`, to
+/// `raws`. A missing dir is fine; an unreadable dir or file is an error.
+/// Symlinked duplicates (a link to an already-seen file, or a directory cycle)
+/// are deduped by canonical path.
+fn discover_dir(layer: SkillLayer, dir: &Path, raws: &mut Vec<RawSkill>) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -176,13 +294,16 @@ fn load_dir(dir: &Path, reg: &mut SkillRegistry) -> Result<()> {
     // Sort for deterministic collision resolution within a single layer.
     found.sort();
     for skill_md in found {
-        let contents = std::fs::read_to_string(&skill_md)
+        let content = std::fs::read_to_string(&skill_md)
             .with_context(|| format!("reading skill file {}", skill_md.display()))?;
         // `root_dir` is the SKILL.md's directory — resolved once, here.
         let root_dir = skill_md.parent().map(Path::to_path_buf);
-        let skill = parse_skill(&contents, root_dir)
-            .with_context(|| format!("parsing skill {}", skill_md.display()))?;
-        reg.insert(skill);
+        raws.push(RawSkill {
+            layer,
+            source: skill_md.display().to_string(),
+            root_dir,
+            content,
+        });
     }
     Ok(())
 }
@@ -201,8 +322,17 @@ fn walk(dir: &Path, found: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) -> Re
             .path();
         let meta = match std::fs::metadata(&path) {
             Ok(m) => m,
-            // A broken symlink (or a racing removal) is skipped, not fatal.
-            Err(_) => continue,
+            // A broken symlink (or a racing removal) is skipped, not fatal — but
+            // no longer silent (#186): a dangling link to a skill dir would drop
+            // the skill with zero signal, so log it at `warn!`.
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "skipping unreadable skills entry (broken symlink or racing removal)",
+                );
+                continue;
+            }
         };
         if meta.is_dir() {
             subdirs.push(path);
@@ -392,6 +522,53 @@ mod tests {
         std::env::remove_var(SKILLS_DIR_ENV);
 
         assert_eq!(reg.get("commit").unwrap().description, "my override");
+    }
+
+    #[test]
+    fn resolve_registry_surfaces_layer_winner_and_shadowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // A user override of the built-in `commit` skill: project wins nothing
+        // here, so `user` is the winner and the built-in is shadowed.
+        let user = root.join("user-skills");
+        write_skill(
+            &user,
+            "commit",
+            "---\nname: commit\ndescription: user commit\n---\nx",
+        );
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(SKILLS_DIR_ENV, &user);
+        let resolved = resolve_registry(root).unwrap();
+        std::env::remove_var(SKILLS_DIR_ENV);
+
+        let commit = resolved
+            .iter()
+            .find(|r| r.meta.name == "commit")
+            .expect("commit resolved");
+        assert_eq!(commit.layer, SkillLayer::User);
+        assert_eq!(commit.meta.description, "user commit");
+        // The built-in it overrode is recorded, not swallowed.
+        assert_eq!(commit.shadowed.len(), 1, "built-in should be shadowed");
+        assert_eq!(commit.shadowed[0].0, SkillLayer::BuiltIn);
+    }
+
+    #[test]
+    fn resolve_registry_is_name_sorted_and_records_no_shadow_when_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let project = root.join(".entanglement").join("skills");
+        write_skill(&project, "zzz", "---\nname: zzz\ndescription: last\n---\nb");
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
+        let resolved = resolve_registry(root).unwrap();
+        std::env::remove_var(SKILLS_DIR_ENV);
+
+        // Name-sorted: the built-in `commit` sorts before the project `zzz`.
+        let names: Vec<&str> = resolved.iter().map(|r| r.meta.name.as_str()).collect();
+        assert_eq!(names, vec!["commit", "zzz"]);
+        let zzz = resolved.iter().find(|r| r.meta.name == "zzz").unwrap();
+        assert_eq!(zzz.layer, SkillLayer::Project);
+        assert!(zzz.shadowed.is_empty(), "unique skill shadows nothing");
     }
 
     #[test]

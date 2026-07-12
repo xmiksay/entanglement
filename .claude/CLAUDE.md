@@ -200,7 +200,17 @@ prints the full resolved profile (permission rules + tool mask + spawn control +
 plan authority + assembled-prompt length) **plus** the lower-layer definitions it
 overrode — via a `(layer, source)` provenance sidecar
 (`agents::resolve_registry`, engine-free like `inspect prompt`); `load_registry`
-also emits a `replaces=<prior layer>` `debug!` at each overriding insert. Logs
+also emits a `replaces=<prior layer>` `debug!` at each overriding insert. The
+**skill** registry is observable the same way (✅ #186):
+`skutter inspect skills [name] [--disclosures]` — no `name` prints a table
+(name/user_only/layer/root_dir/description), `--disclosures` prints the *exact*
+tier-1 block the model gets (`system_prompt::render_skills`, `user_only`
+withheld), and a `name` **dry-runs the `load_skill` path substitution**
+(`${SKILL_DIR}` + relative-ref resolution) + layer provenance, so a bad payload
+path surfaces without a model. Engine-free via `skills::resolve_registry` (a
+`(layer, source, shadowed)` sidecar mirroring agents); `load_registry` emits the
+same `replaces=` `debug!`, and a broken symlink under a skills dir is now a
+`warn!` (was a silent skip, `skills/mod.rs`). Logs
 moved to **stderr** so stdout stays clean for the prompt / NDJSON. The skill index is
 populated from the skill registry (✅ #114,
 [ADR-0036](../docs/adr/0036-skill-discovery-and-registry.md)): a **skill** is a

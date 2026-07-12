@@ -1,5 +1,14 @@
-//! `skutter inspect prompt` / `skutter inspect agents` — surface resolved runtime
-//! state without spawning the engine (#184, #185).
+//! `skutter inspect prompt` / `skutter inspect agents` / `skutter inspect skills`
+//! — surface resolved runtime state without spawning the engine (#184–#186).
+//!
+//! `inspect skills` (#186) closes the skill-authoring blind spot: skill selection
+//! is "description quality is the contract," yet the author could not see the
+//! exact tier-1 `disclosures()` block the model gets, whether `user_only` withheld
+//! a skill, which layer won a collision, or whether a `${SKILL_DIR}` payload path
+//! resolves. No `name` prints a table (name, user_only, layer, root_dir,
+//! description); `--disclosures` prints the exact block the model receives; a
+//! `name` dry-runs the `load_skill` path substitution so those bugs surface
+//! without starting a session and asking the model.
 //!
 //! `inspect agents` closes the layer-collision blind spot (#185): three layers
 //! (built-in < user < project) merge by `name` with a silent later-wins
@@ -25,8 +34,8 @@ use anyhow::{Context, Result};
 use entanglement_core::AgentProfile;
 
 use crate::agents::{self, AgentLayer, AgentResolution};
-use crate::skills;
-use crate::system_prompt::PromptContext;
+use crate::skills::{self, SkillResolution};
+use crate::system_prompt::{self, PromptContext};
 
 /// Load registries for `cwd` (no engine), resolve `agent`, and print its
 /// assembled system prompt — or, with `parts`, the per-slice breakdown.
@@ -116,10 +125,10 @@ fn print_agent_table(resolved: &[AgentResolution]) {
         return;
     }
 
-    let rows: Vec<[String; 6]> = resolved
+    let rows: Vec<Vec<String>> = resolved
         .iter()
         .map(|r| {
-            [
+            vec![
                 r.profile.name.clone(),
                 format!("{:?}", r.profile.mode).to_lowercase(),
                 r.profile.model.clone().unwrap_or_else(|| "inherit".into()),
@@ -130,22 +139,27 @@ fn print_agent_table(resolved: &[AgentResolution]) {
         })
         .collect();
 
-    let headers = ["NAME", "MODE", "MODEL", "LAYER", "SOURCE", "MASK"];
-    let mut widths = headers.map(str::len);
-    for row in &rows {
+    print_table(&["NAME", "MODE", "MODEL", "LAYER", "SOURCE", "MASK"], &rows);
+}
+
+/// Render a width-fit column table: pad every column to the widest cell (header
+/// included) except the last, which is left un-padded (no trailing spaces).
+fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+    for row in rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.chars().count());
         }
     }
-
-    print_row(&headers.map(String::from), &widths);
-    for row in &rows {
+    let header_row: Vec<String> = headers.iter().map(|h| h.to_string()).collect();
+    print_row(&header_row, &widths);
+    for row in rows {
         print_row(row, &widths);
     }
 }
 
 /// Print one padded row; the last column is left un-padded (no trailing spaces).
-fn print_row(cells: &[String; 6], widths: &[usize; 6]) {
+fn print_row(cells: &[String], widths: &[usize]) {
     let last = cells.len() - 1;
     let line: Vec<String> = cells
         .iter()
@@ -230,4 +244,115 @@ fn print_agent_detail(entry: &AgentResolution) {
 
     println!("\nowns_plan (#140): {}", p.owns_plan);
     println!("\nassembled system prompt: {} chars", p.system_prompt.len());
+}
+
+/// `skutter inspect skills [name] [--disclosures]` (#186). Three views over the
+/// engine-free skill registry:
+/// - `--disclosures`: the exact tier-1 block the model receives (takes priority);
+/// - a `name`: a dry-run of the `load_skill` path substitution for that skill;
+/// - neither: a table of every resolved skill with its winning layer + provenance.
+pub fn inspect_skills(cwd: &Path, name: Option<&str>, disclosures: bool) -> Result<()> {
+    if disclosures {
+        let registry = skills::load_registry(cwd).context("loading skill definitions")?;
+        print_disclosures(&registry.disclosures());
+        return Ok(());
+    }
+
+    let resolved = skills::resolve_registry(cwd).context("resolving skill registry")?;
+    match name {
+        Some(name) => {
+            // Resolve with provenance so the dry-run shows the layer winner (the
+            // same `SkillMeta` `load_skill` would pick) plus what it overrode.
+            let entry = resolved
+                .iter()
+                .find(|r| r.meta.name == name)
+                .with_context(|| {
+                    format!("unknown skill `{name}` (no matching SKILL.md found in any layer)")
+                })?;
+            print_skill_dry_run(entry);
+        }
+        None => print_skill_table(&resolved),
+    }
+    Ok(())
+}
+
+/// Print the exact tier-1 disclosure block the model is handed — the same
+/// [`system_prompt::render_skills`] output the assembled prompt embeds, so what
+/// the author sees here is byte-for-byte what drives selection.
+fn print_disclosures(disclosures: &[crate::system_prompt::SkillDisclosure]) {
+    if disclosures.is_empty() {
+        println!("(no skills disclosed to the model — none discovered, or all are user_only)");
+        return;
+    }
+    println!("{}", system_prompt::render_skills(disclosures));
+}
+
+/// One-line-per-skill table: name, whether it is `user_only` (withheld from the
+/// model), winning layer, its `root_dir`, and the description that drives
+/// selection. Includes `user_only` skills — the author must see what was withheld.
+fn print_skill_table(resolved: &[SkillResolution]) {
+    if resolved.is_empty() {
+        println!("no skill definitions found");
+        return;
+    }
+
+    let rows: Vec<Vec<String>> = resolved
+        .iter()
+        .map(|r| {
+            vec![
+                r.meta.name.clone(),
+                if r.meta.user_only { "yes" } else { "no" }.to_string(),
+                r.layer.label().to_string(),
+                r.meta
+                    .root_dir
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(built-in)".into()),
+                r.meta.description.clone(),
+            ]
+        })
+        .collect();
+
+    print_table(
+        &["NAME", "USER_ONLY", "LAYER", "ROOT_DIR", "DESCRIPTION"],
+        &rows,
+    );
+}
+
+/// Dry-run the `load_skill` resolution for one skill without a model: identity +
+/// layer provenance (winner + what it overrode), then the exact `load_skill`
+/// output (path-substituted body + `available_refs`). A `${SKILL_DIR}` or
+/// relative-path bug surfaces right here.
+fn print_skill_dry_run(entry: &SkillResolution) {
+    let skill = &entry.meta;
+    println!("name:        {}", skill.name);
+    println!("description: {}", skill.description);
+    println!("user_only:   {}", skill.user_only);
+    println!("layer:       {}", entry.layer.label());
+    println!("source:      {}", entry.source);
+    match &skill.root_dir {
+        Some(dir) => println!("root_dir:    {}", dir.display()),
+        None => println!("root_dir:    (built-in, single-file — no payload paths)"),
+    }
+
+    if entry.shadowed.is_empty() {
+        println!("overrides:   (none — no lower-layer definition)");
+    } else {
+        println!("overrides:");
+        for (layer, source) in &entry.shadowed {
+            println!("  - {} ({source})", layer.label());
+        }
+    }
+
+    if skill.user_only {
+        // `load_skill` refuses a `user_only` skill to a model; this authoring
+        // dry-run renders it anyway — call out that the model never sees it.
+        println!(
+            "\nnote: user_only — the model can never load this via `load_skill`; \
+             shown here for authoring only."
+        );
+    }
+
+    println!("\n─── load_skill output (path substitution applied) ───\n");
+    println!("{}", skills::load_skill::render_skill(skill));
 }
