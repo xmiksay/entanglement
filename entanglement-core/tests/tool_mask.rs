@@ -109,58 +109,15 @@ async fn explore_profile_hides_edit_via_set_agent() {
         !names.iter().any(|n| n == "edit"),
         "explore's masked `edit` must not be advertised; got {names:?}"
     );
-    // `update_tasks` is a session-state built-in, never masked and always
-    // advertised. `update_plan` is authority-gated (#140): `explore` does not
-    // own the plan, so it is withheld — not by the #116 mask, but by `owns_plan`.
-    assert!(names.iter().any(|n| n == "update_tasks"), "got {names:?}");
+    // `update_plan`/`update_tasks` are runtime state tools now (#231, ADR-0049):
+    // core advertises no plan/task built-ins at all, and the runtime withholds
+    // them from `explore` via the mask + permission. Neither ever reaches the
+    // model here (this config carries no such specs).
     assert!(
-        !names.iter().any(|n| n == "update_plan"),
-        "non-owner explore must not advertise update_plan; got {names:?}"
-    );
-}
-
-#[tokio::test]
-async fn owns_plan_gates_update_plan_advertisement() {
-    // `build` (default) does not own the plan → no `update_plan`, but always
-    // `update_tasks`. The plan-owning `plan` profile advertises `update_plan`.
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let holly = Holly::spawn(recording_config(seen.clone()));
-    let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
-    let names = first_recorded(&seen).await;
-    assert!(names.iter().any(|n| n == "update_tasks"), "got {names:?}");
-    assert!(
-        !names.iter().any(|n| n == "update_plan"),
-        "non-owner build must not advertise update_plan; got {names:?}"
-    );
-
-    let seen2 = Arc::new(Mutex::new(Vec::new()));
-    let holly2 = Holly::spawn(recording_config(seen2.clone()));
-    let sid2 = SessionId::new("s2");
-    holly2
-        .send(InMsg::SetAgent {
-            session: sid2.clone(),
-            agent: "plan".into(),
-        })
-        .await
-        .unwrap();
-    holly2
-        .send(InMsg::Prompt {
-            session: sid2.clone(),
-            text: "plan it".into(),
-        })
-        .await
-        .unwrap();
-    let names2 = first_recorded(&seen2).await;
-    assert!(
-        names2.iter().any(|n| n == "update_plan"),
-        "plan owner must advertise update_plan; got {names2:?}"
+        !names
+            .iter()
+            .any(|n| n == "update_tasks" || n == "update_plan"),
+        "core must not advertise plan/task built-ins; got {names:?}"
     );
 }
 

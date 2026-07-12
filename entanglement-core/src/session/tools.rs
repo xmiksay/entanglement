@@ -1,13 +1,15 @@
-//! Tool-call dispatch within a turn: the built-in `update_plan`/`update_tasks`
-//! handlers and the host-tool round-trip to the runtime (#58) — emit
-//! `ToolExec`, park on `InMsg::ToolResult`, fold the output into context.
+//! Tool-call dispatch within a turn: the host-tool round-trip to the runtime
+//! (#58) — emit `ToolExec`, park on `InMsg::ToolResult`, fold the output into
+//! context. Every tool takes this path, including the runtime's
+//! `update_plan`/`update_tasks` state tools (#231, ADR-0049); core no longer has
+//! built-ins.
 
 use std::collections::VecDeque;
 
 use tokio::sync::{broadcast, mpsc};
 
-use super::emit::{emit_plan, emit_tasks, emit_tool_call, emit_tool_output, next_seq};
-use super::{Session, SessionCmd, PLAN_TOOL, TASKS_TOOL};
+use super::emit::{emit_tool_call, emit_tool_output, next_seq};
+use super::{Session, SessionCmd};
 use crate::llm::ToolCall;
 use crate::protocol::{OutEvent, SessionId};
 
@@ -29,65 +31,7 @@ pub(crate) async fn handle_tool_call(
         &mut s.seq,
     );
 
-    // Built-ins: always run, mutate session state, emit a snapshot.
-    if call.name == PLAN_TOOL {
-        // Plan authority is default-closed (#140, ADR-0041). A non-owner should
-        // never see the `update_plan` schema (it isn't advertised in `run_turn`),
-        // but the model can still hallucinate the call — refuse it here with no
-        // plan mutation and no `OutEvent::Plan`, and let the turn continue. This
-        // must be caught in core: the built-ins never round-trip to the runtime,
-        // so `tool_masked` cannot see them.
-        if !s.profile.owns_plan {
-            let msg = format!(
-                "update_plan refused: the `{}` agent does not own the session plan; \
-                 only a plan-owning profile may author it",
-                s.profile.name
-            );
-            emit_tool_output(
-                events,
-                session,
-                &call.id,
-                PLAN_TOOL,
-                msg.clone(),
-                &mut s.seq,
-            );
-            s.ctx.push_tool(&call.id, msg);
-            return false;
-        }
-        let plan = json_field(&call.input, "content").unwrap_or_else(|| call.input.clone());
-        s.plan = plan;
-        emit_plan(events, session, &s.plan, &mut s.seq);
-        let msg = "plan updated".to_string();
-        emit_tool_output(
-            events,
-            session,
-            &call.id,
-            PLAN_TOOL,
-            msg.clone(),
-            &mut s.seq,
-        );
-        s.ctx.push_tool(&call.id, msg.clone());
-        tracing::debug!(tool_id = %call.id, result = %msg, "tool result pushed to context");
-        return false;
-    }
-    if call.name == TASKS_TOOL {
-        let tasks = json_field(&call.input, "content").unwrap_or_else(|| call.input.clone());
-        s.tasks = tasks;
-        emit_tasks(events, session, &s.tasks, &mut s.seq);
-        let msg = "tasks updated".to_string();
-        emit_tool_output(
-            events,
-            session,
-            &call.id,
-            TASKS_TOOL,
-            msg.clone(),
-            &mut s.seq,
-        );
-        s.ctx.push_tool(&call.id, msg);
-        return false;
-    }
-
-    // Host tool: hand it to the runtime. Core no longer decides permission or
+    // Every tool is a runtime round-trip: core no longer decides permission or
     // waits for approval (#59) — that policy moved to the runtime tool executor
     // (ADR-0003/0010), which resolves Allow/Ask/Deny, drives the approval UX,
     // and answers every call with `InMsg::ToolResult`. Core just emits the
@@ -153,18 +97,5 @@ async fn wait_tool_result(
             Some(SessionCmd::Stop) | None => return ToolResultOutcome::Cancelled,
             Some(other) => stash.push_back(other),
         }
-    }
-}
-
-/// Extract a field from a JSON-object tool input. Returns `None` when `input`
-/// isn't a JSON object or lacks the field, so callers fall back to the raw
-/// input — keeping scripted/test backends (raw strings) working alongside
-/// structured providers (Anthropic sends a JSON object).
-fn json_field(input: &str, field: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(input).ok()?;
-    match v.get(field) {
-        Some(serde_json::Value::String(s)) => Some(s.clone()),
-        Some(other) if !other.is_null() => Some(other.to_string()),
-        _ => None,
     }
 }

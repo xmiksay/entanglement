@@ -100,10 +100,9 @@ pub fn spawn_tool_executor(
                     }
                     // The `agent_spawn`/`agent` family only orchestrates sessions
                     // (touches no host resource), so it bypasses per-tool approval
-                    // like core's `update_plan`/`update_tasks` built-ins (#60). It
-                    // is instead gated by the per-profile spawn control (#119): the
-                    // spawner must `may_spawn` and the *target* must be spawnable
-                    // and on its allowlist — refused before a child is minted, in
+                    // (#60). It is instead gated by the per-profile spawn control
+                    // (#119): the spawner must `may_spawn` and the *target* must be
+                    // spawnable and on its allowlist — refused before a child is minted, in
                     // front of the ADR-0023 budget and the ADR-0024 clamp. Both
                     // variants share this guard path — refusals are identical
                     // (#120); they differ only in whether the launch blocks.
@@ -201,9 +200,9 @@ pub fn spawn_tool_executor(
                     // Like `ask_user` it is intercepted before permission and
                     // **force-parked on the `Ask` path unconditionally** — a
                     // profile can never `Allow` it, since user approval *is* the
-                    // tool's semantics. Approve records the plan (`SetPlan`); the
-                    // head handles the fresh-`build`-session handoff (head policy,
-                    // no new protocol surface).
+                    // tool's semantics. Approve just acks the model (no engine
+                    // plan state, #231); the head handles the fresh-`build`-session
+                    // handoff (head policy, no new protocol surface).
                     if tool == crate::propose_plan::PROPOSE_PLAN_TOOL {
                         let inbound = holly.subscribe_inbound();
                         let holly = holly.clone();
@@ -280,7 +279,7 @@ async fn dispatch(
 ) {
     match perm {
         Permission::Allow => {
-            run_and_reply(holly, tools, session, request_id, tool, input).await;
+            run_and_reply(holly, tools, session, seq, request_id, tool, input).await;
         }
         Permission::Deny => {
             let output = format!("tool `{tool}` denied by permission profile");
@@ -303,7 +302,17 @@ async fn dispatch(
                 session: session.clone(),
                 state: AgentState::WaitingApproval,
             });
-            await_decision(holly, tools, &mut inbound, session, request_id, tool, input).await;
+            await_decision(
+                holly,
+                tools,
+                &mut inbound,
+                session,
+                seq,
+                request_id,
+                tool,
+                input,
+            )
+            .await;
         }
     }
 }
@@ -317,6 +326,7 @@ async fn await_decision(
     tools: &ToolRegistry,
     inbound: &mut tokio::sync::broadcast::Receiver<InMsg>,
     session: SessionId,
+    seq: u64,
     request_id: String,
     tool: String,
     input: String,
@@ -328,7 +338,7 @@ async fn await_decision(
                 request_id: rid,
             }) if s == session && rid == request_id => {
                 set_thinking(holly, &session);
-                run_and_reply(holly, tools, session, request_id, tool, input).await;
+                run_and_reply(holly, tools, session, seq, request_id, tool, input).await;
                 return;
             }
             Ok(InMsg::Reject {
@@ -352,21 +362,34 @@ async fn await_decision(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_and_reply(
     holly: &Holly,
     tools: &ToolRegistry,
     session: SessionId,
+    seq: u64,
     request_id: String,
     tool: String,
     input: String,
 ) {
-    let output = tools
-        .execute(&ToolCall {
-            id: request_id.clone(),
-            name: tool,
-            input,
-        })
-        .await;
+    // `update_plan`/`update_tasks` carry no host resource (#231, ADR-0049): they
+    // are not in the registry. The runtime emits their `Plan`/`TaskList` snapshot
+    // — reusing the `ToolExec` seq — and acks, instead of dispatching. Every
+    // other tool executes against the host registry.
+    let output = if crate::plan_tasks::is_state_tool(&tool) {
+        if let Some(ev) = crate::plan_tasks::state_event(&session, seq, &tool, &input) {
+            let _ = holly.events().send(ev);
+        }
+        crate::plan_tasks::ack(&tool)
+    } else {
+        tools
+            .execute(&ToolCall {
+                id: request_id.clone(),
+                name: tool,
+                input,
+            })
+            .await
+    };
     reply(holly, session, request_id, output).await;
 }
 

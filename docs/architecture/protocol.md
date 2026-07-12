@@ -13,7 +13,7 @@ InMsg    = Prompt{session,text} | Approve{session,request_id}   // approval →
          | ToolResult{session,request_id,output}   // runtime → core: tool ran (#58)
          | AnswerQuestion{session,request_id,answer}  // ask_user answer → runtime (#90)
          | Stop{session}
-         | SetTasks{session,content} | SetPlan{session,content} | SetAgent{session,agent}
+         | SetAgent{session,agent}   // switch profile (plan/task state is a runtime tool now, #231)
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
          | ListSessions{session}   // supervisor-global query; session = correlation id (#21)
          | CloseSession{session}   // explicit destroy → SessionEnded (#21)
@@ -24,7 +24,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | SessionList{session,sessions:[SessionInfo]}   // reply to ListSessions, no seq (#21)
          | Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
-         | Plan{session,seq,content}          // markdown prose snapshot
+         | Plan{session,seq,content}          // markdown prose snapshot, runtime-emitted (#231)
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
          | ToolCall{session,seq,request_id,tool,input}      // display-only, every call (before exec)
@@ -84,14 +84,17 @@ render/dedupe):
   never consumed the item structure and the list is not fed back to the model,
   so the per-item id/status JSON envelope was pure model overhead.
 
-Both are written two ways:
-1. A **built-in engine tool** the model calls — `update_plan { content }`
-   and `update_tasks { content }` (both markdown). These bypass permissions
-   (they only mutate session state) and never need approval. `update_plan` is
-   authority-gated: advertised and accepted only under a profile that `owns_plan`
-   (default-closed, ✅ #140, [ADR-0041](../adr/0041-update-plan-ownership-default-closed.md));
-   `update_tasks` is unconditional.
-2. A **harness message** — `InMsg::SetPlan` / `InMsg::SetTasks` (user edits).
+Both are written by **runtime state tools** the model calls — `update_plan
+{ content }` and `update_tasks { content }` (both markdown, ✅ #231,
+[ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)). They are
+**not** engine built-ins: they round-trip via `ToolExec`/`ToolResult` like any
+host tool, resolve through the ordinary `Allow`/`Ask`/`Deny` path + #116 mask, and
+the runtime executor emits the `OutEvent::Plan`/`OutEvent::TaskList` snapshot after
+handling the result (the engine holds no plan/task state). Plan authorship is
+default-closed via explicit tool-mask allowlist membership: `update_plan` is
+advertised only to a profile that names it (an inherit-all profile never gets it);
+`update_tasks` rides the shared specs. A read-only agent can mutate neither (mask
++ permission), which is the #175 fix.
 
 This is why `entanglement` has *both* the opencode agent-profile axis *and* structured
 events: profiles control **what the agent is instructed/permitted to do**;

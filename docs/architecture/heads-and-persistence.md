@@ -111,7 +111,7 @@ persistence machinery with none of the CLI/TUI/transport weight
   without leaving the TUI. It reuses the identical engine-free renderers
   (`inspect::tui_reports` → the shared `render_*` helpers): the Prompt tab is the
   active agent's `--parts` breakdown; the Agents tab is the registry table plus
-  the active agent's full detail (permission / mask / spawn / `owns_plan`); the
+  the active agent's full detail (permission / mask / spawn / plan authorship); the
   Skills tab is the exact `disclosures()` block the model sees plus the full table
   (including `user_only`). Views resolve on open from the cwd + live agent, so
   they stay fresh across mid-session definition edits. `Tab`/`←`/`→` switch tabs,

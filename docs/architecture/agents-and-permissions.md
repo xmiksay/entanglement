@@ -36,11 +36,10 @@ below realize one model:
 - **Physical over prompted** — a read-only agent has no write tool *advertised or
   executable* (the #116 mask), not a persona told not to write.
 - **Enforcement-locus split** — a gate lives where it can see the call: the tool
-  mask, spawn control, and permission clamp are **runtime** (host tools /
-  spawns round-trip there); `owns_plan` is **core** (the `update_plan` built-in
-  never round-trips). See ADR-0044 for the full principle→enforcement map and the
-  deferred follow-ups (skill provenance, skill-index masking, child-root
-  isolation).
+  mask, spawn control, permission clamp, and (since #231) plan authorship are all
+  **runtime** — every tool, including `update_plan`/`update_tasks`, round-trips
+  there. See ADR-0044 for the full principle→enforcement map and the deferred
+  follow-ups (skill provenance, skill-index masking, child-root isolation).
 
 - Switch with `InMsg::SetAgent { agent }`; engine emits `AgentChanged`.
 - [`PermissionProfile`][perm] resolves `Allow | Ask | Deny` per tool
@@ -65,8 +64,8 @@ below realize one model:
   **enforced** ✅ #119, below). The spawn boundary is now both spawner- and
   target-side: a profile must `may_spawn` and its *target* must be spawnable-mode
   (`subagent`/`all`) and on its `spawnable_agents` allowlist — so `build`/`plan`
-  (primaries) are unreachable spawn targets from mode defaults alone. `update_plan`
-  ownership (`owns_plan`, ✅ #140, below) and the plan-accept handoff (#141)
+  (primaries) are unreachable spawn targets from mode defaults alone. Plan
+  authorship (`update_plan`, ✅ #231, below) and the plan-accept handoff (#141)
   complete the agent hierarchy. Embedders using core directly still get a
   hardcoded
   `build`/`plan`/`explore` fallback via `ProfileRegistry::new()`; add your own with
@@ -77,12 +76,12 @@ below realize one model:
   orthogonal to `permission` (which grades `Allow`/`Ask`/`Deny` among the tools
   that survive the mask). The mask rides the core `AgentProfile`
   (`tools`/`disallowed_tools` + `advertises_tool`), so it travels per session with
-  no new protocol surface. **(a) Advertisement:** core's `run_turn` filters
-  `EngineConfig.tool_specs` by the active profile's mask before appending the
-  `update_plan`/`update_tasks` built-ins (session-state tools, never routed
-  through the tool mask) — a masked tool's schema never reaches the model.
-  `update_plan` is instead authority-gated (`owns_plan`, ✅ #140, below), while
-  `update_tasks` is always advertised. **(b) Enforcement:**
+  no new protocol surface. **(a) Advertisement:** core's `run_turn` filters both
+  `EngineConfig.tool_specs` and the active profile's `profile_tool_specs` entry by
+  the mask — a masked tool's schema never reaches the model. `update_plan`/
+  `update_tasks` are ordinary runtime state tools now (✅ #231, below): they ride
+  those specs and this mask like any host tool, no plan-authority special casing in
+  core. **(b) Enforcement:**
   `runtime::permission::tool_masked` refuses a masked `ToolExec` **first** — before
   the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions and permission —
   so a hallucinated masked call is a hard boundary, and the mask **intersects down
@@ -110,40 +109,42 @@ below realize one model:
   hardening: `InMsg::Spawn` with an unknown name now `get()`s + errors instead of
   silently escalating to `build`. The TUI `/agent` picker/Tab-cycle is
   registry-driven, filtered to `mode ∈ {primary, all}`.
-- **`update_plan` ownership (✅ #140, [ADR-0041](../adr/0041-update-plan-ownership-default-closed.md)):**
-  authoring the session plan is a per-profile authority, `AgentProfile.owns_plan`
-  (default **false**). Unlike the #116 mask and #119 spawn control (semantics core,
-  enforcement runtime), plan authority is enforced **entirely in core** — the
-  built-ins are session-state tools that never round-trip to the runtime, so
-  `tool_masked` cannot see them. **Advertisement:** `run_turn` appends the
-  `update_plan` spec only when the active profile `owns_plan` (`update_tasks` stays
-  unconditional — per-session bookkeeping, no cross-agent authority).
-  **Enforcement:** `handle_tool_call` refuses a hallucinated non-owner `update_plan`
-  via a refusal `ToolOutput` — no plan mutation, no `OutEvent::Plan`, turn
-  continues. `InMsg::SetPlan` stays head/user authority. Built-in `plan` gains
-  `owns_plan: true` **plus** a physical read-only mask
-  (`tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill]`):
-  it authors the plan and delegates research, and — via the mask's ancestor
-  intersection — every child it spawns is clamped to that read-only set too.
-  `build`/`explore` are unchanged (default-false = they simply stop advertising
-  `update_plan`).
+- **Plan/task state tools (✅ #231, [ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)):**
+  `update_plan` and `update_tasks` are **runtime** state tools, not core built-ins.
+  Each replaces the session's *display* plan/task outline; the runtime executor
+  emits the `OutEvent::Plan`/`OutEvent::TaskList` snapshot (reusing the `ToolExec`
+  seq) and acks the model — the engine holds no plan/task state. They round-trip
+  via `ToolExec`/`ToolResult` and resolve through the **ordinary** `Allow`/`Ask`/
+  `Deny` path + #116 mask, with **no** plan-authority special casing (they fall
+  through `tool_runner`'s generic `dispatch`; `run_and_reply` emits the snapshot
+  instead of hitting the host `ToolRegistry`, since they touch no host resource).
+  This closes **#175**: a read-only `explore` has `update_tasks` outside its
+  allowlist (mask refusal) *and* permission-denied, so it can't mutate task state.
+  **Plan authorship is default-closed via the tool mask** — `update_plan`/
+  `propose_plan` are advertised (in `profile_tool_specs`) only to a profile that
+  *explicitly* allowlists them; an inherit-all (`tools: None`) profile never gains
+  them by accident (the replacement for the old `owns_plan` flag). `update_tasks`
+  rides the shared `tool_specs` (general bookkeeping, no cross-agent authority).
+  Built-in `plan` names `update_plan`/`propose_plan` in its allowlist + carries
+  `update_plan: allow` (authoring isn't an approval prompt) and stays physically
+  read-only (`tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user,
+  load_skill, update_plan, propose_plan]`), a clamp its spawned children inherit.
 - **Plan acceptance — `propose_plan` (✅ #141, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)):**
   the plan agent's *finalize* step (`update_plan` stays for working snapshots). A
   runtime-owned tool `propose_plan { plan }`, advertised only to a profile that
-  `owns_plan` (via the #119 `profile_tool_specs` seam; `plan.md`'s `tools:`
-  allowlist also lists it) — the same default-closed-authority gate as #140.
-  Acceptance rides the **existing tool-approval round-trip** (#59): the executor
-  (`propose_plan.rs`) intercepts it on `ToolExec` after the #116 mask check (same
-  interception family as `ask_user`) and **force-parks it on the `Ask` path
-  unconditionally** — a permission profile can never `Allow` it, since user
-  approval *is* the tool's semantics. A standard `OutEvent::ToolRequest` reaches
-  the head. **Approve** → record the plan (`InMsg::SetPlan`, engine state
-  consistent for every head) + reply `ToolOutput("plan accepted by the user")` (the
-  plan agent learns the outcome and ends its turn); the head then performs the
-  **handoff** (see §5c). **Reject + reason** → the existing fold-back (`tool
-  \`propose_plan\` rejected: <reason>`); the model revises and re-proposes in the
-  same turn. One-shot heads (`run`/`pipe`) can't park an interactive approval, so
-  they auto-reject with a "non-interactive head" reason.
+  explicitly allowlists it (via the `profile_tool_specs` seam) — the same
+  default-closed plan-authorship gate as the state tools (#231). Acceptance rides
+  the **existing tool-approval round-trip** (#59): the executor (`propose_plan.rs`)
+  intercepts it on `ToolExec` after the #116 mask check (same interception family
+  as `ask_user`) and **force-parks it on the `Ask` path unconditionally** — a
+  permission profile can never `Allow` it, since user approval *is* the tool's
+  semantics. A standard `OutEvent::ToolRequest` reaches the head. **Approve** →
+  reply `ToolOutput("plan accepted by the user")` (the engine holds no plan state
+  to record; the working plan was already surfaced via `update_plan`), and the head
+  performs the **handoff** from the tool input (see §5c). **Reject + reason** → the
+  existing fold-back (`tool \`propose_plan\` rejected: <reason>`); the model revises
+  and re-proposes in the same turn. One-shot heads (`run`/`pipe`) can't park an
+  interactive approval, so they auto-reject with a "non-interactive head" reason.
 - **System-prompt assembly (✅ #113, [ADR-0035](../adr/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five

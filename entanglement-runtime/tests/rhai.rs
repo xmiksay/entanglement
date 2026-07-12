@@ -112,7 +112,6 @@ fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
         permission,
         tools: None,
         disallowed_tools: Vec::new(),
-        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     });

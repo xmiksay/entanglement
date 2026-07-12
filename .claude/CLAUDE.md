@@ -84,7 +84,7 @@ all live in this crate now (✅ #52–#55, #118, [ADR-0007](../docs/adr/0007-str
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetTasks | SetPlan | SetAgent | Spawn | ListSessions | CloseSession
+          | SetAgent | Spawn | ListSessions | CloseSession
           | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged
           | Plan | TextDelta | ReasoningDelta | ToolCall | ToolRequest | ToolExec

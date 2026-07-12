@@ -317,93 +317,22 @@ async fn every_host_tool_round_trips_through_toolexec() {
 }
 
 #[tokio::test]
-async fn builtin_update_plan_emits_plan_snapshot() {
-    // Plan authority is default-closed (#140): the call must run under a
-    // plan-owning profile — the built-in `plan` — to mutate the session plan.
-    let holly = Holly::spawn(factory(vec![LlmResponse {
-        text: "".into(),
-        tool_calls: vec![ToolCall {
-            id: "t1".into(),
-            name: "update_plan".into(),
-            input: "# Plan\nstep 1".into(),
-        }],
-    }]));
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "plan".into(),
-        })
-        .await
-        .unwrap();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "plan it".into(),
-        })
-        .await
-        .unwrap();
-    let events = collect(sub, &sid).await;
-
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, OutEvent::Plan { content, .. } if content == "# Plan\nstep 1")));
-    assert!(events.iter().any(
-        |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("plan updated"))
-    ));
-}
-
-#[tokio::test]
-async fn non_owner_update_plan_is_refused_and_plan_unchanged() {
-    // The default `build` profile does not own the plan. A hallucinated
-    // `update_plan` call is refused via a `ToolOutput` — no `OutEvent::Plan`,
-    // no plan mutation — and the turn continues (#140, ADR-0041).
-    let holly = Holly::spawn(factory(vec![LlmResponse {
-        text: "".into(),
-        tool_calls: vec![ToolCall {
-            id: "t1".into(),
-            name: "update_plan".into(),
-            input: "# Sneaky plan".into(),
-        }],
-    }]));
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "try to plan".into(),
-        })
-        .await
-        .unwrap();
-    let events = collect(sub, &sid).await;
-
-    assert!(
-        !events.iter().any(|e| matches!(e, OutEvent::Plan { .. })),
-        "non-owner update_plan must not emit a Plan snapshot; got {events:?}"
-    );
-    assert!(
-        events.iter().any(|e| matches!(
-            e,
-            OutEvent::ToolOutput { output, .. } if output.contains("refused")
-        )),
-        "non-owner update_plan must surface a refusal ToolOutput; got {events:?}"
-    );
-}
-
-#[tokio::test]
-async fn builtin_update_tasks_emits_tasklist_snapshot() {
-    let tasks_json = r#"{"content":"- [x] do\n- [ ] next"}"#;
+async fn update_plan_and_update_tasks_round_trip_as_tool_exec() {
+    // `update_plan`/`update_tasks` are runtime state tools now (#231, ADR-0049):
+    // core no longer has built-ins for them. A call takes the ordinary #58
+    // round-trip — core emits `ToolExec` and parks — so with no runtime executor
+    // wired in, the engine emits the request and produces no `Plan`/`TaskList`
+    // of its own (those are the runtime's to emit).
     let holly = Holly::spawn(factory(vec![LlmResponse {
         text: "".into(),
         tool_calls: vec![ToolCall {
             id: "t1".into(),
             name: "update_tasks".into(),
-            input: tasks_json.into(),
+            input: r#"{"content":"- [ ] x"}"#.into(),
         }],
     }]));
     let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
+    let mut sub = holly.subscribe();
     holly
         .send(InMsg::Prompt {
             session: sid.clone(),
@@ -411,50 +340,32 @@ async fn builtin_update_tasks_emits_tasklist_snapshot() {
         })
         .await
         .unwrap();
-    let events = collect(sub, &sid).await;
 
-    assert!(events.iter().any(
-        |e| matches!(e, OutEvent::TaskList { content, .. } if content == "- [x] do\n- [ ] next")
-    ));
-}
-
-#[tokio::test]
-async fn harness_set_tasks_and_set_plan_emit_snapshots() {
-    let holly = Holly::spawn(factory(vec![LlmResponse {
-        text: "ok".into(),
-        tool_calls: vec![],
-    }]));
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    holly
-        .send(InMsg::SetTasks {
-            session: sid.clone(),
-            content: "- [ ] x".into(),
-        })
-        .await
-        .unwrap();
-    holly
-        .send(InMsg::SetPlan {
-            session: sid.clone(),
-            content: "strategy".into(),
-        })
-        .await
-        .unwrap();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
-    let events = collect(sub, &sid).await;
-
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, OutEvent::TaskList { .. })));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, OutEvent::Plan { content, .. } if content == "strategy")));
+    // Await the ToolExec round-trip rather than a Done: the turn parks on the
+    // tool result, which never arrives without a runtime executor.
+    let mut saw_tool_exec = false;
+    while let Ok(Ok(ev)) =
+        tokio::time::timeout(std::time::Duration::from_millis(500), sub.recv()).await
+    {
+        if ev.session() != &sid {
+            continue;
+        }
+        match ev {
+            OutEvent::ToolExec { tool, .. } if tool == "update_tasks" => {
+                saw_tool_exec = true;
+                break;
+            }
+            // Core must not emit plan/task snapshots itself anymore.
+            OutEvent::Plan { .. } | OutEvent::TaskList { .. } => {
+                panic!("core must not emit Plan/TaskList; got {ev:?}")
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        saw_tool_exec,
+        "update_tasks must round-trip to the runtime via ToolExec"
+    );
 }
 
 #[tokio::test]
@@ -661,7 +572,6 @@ async fn custom_profile_is_selectable() {
         permission: PermissionProfile::new(Permission::Ask),
         tools: None,
         disallowed_tools: Vec::new(),
-        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     });

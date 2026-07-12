@@ -122,9 +122,10 @@ plan agent calls a runtime-owned `propose_plan { plan }` to finalize. The execut
 (`propose_plan.rs`) intercepts it on `ToolExec` — after the #116 mask check, same
 family as `ask_user` — and **force-parks it on the `Ask` path unconditionally** (a
 profile can never `Allow` it; user approval *is* the semantics), emitting a
-standard `OutEvent::ToolRequest`. **Approve** records the plan (`InMsg::SetPlan`)
-and folds `ToolOutput("plan accepted by the user")` back; **reject + reason**
-folds `tool \`propose_plan\` rejected: <reason>` back and records no plan. On
+standard `OutEvent::ToolRequest`. **Approve** folds `ToolOutput("plan accepted by
+the user")` back (the engine holds no plan state to record now, #231 — the working
+plan was already surfaced via `update_plan`); **reject + reason** folds `tool
+\`propose_plan\` rejected: <reason>` back. On
 approve the head *additionally* runs the **handoff** — pure head policy, zero new
 protocol surface, so pipe/WS heads implement it identically:
 

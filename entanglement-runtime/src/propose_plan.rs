@@ -7,13 +7,14 @@
 //! the `Ask` path unconditionally**. A permission profile can never `Allow` it,
 //! because user approval *is* the tool's semantics.
 //!
-//! - **Approve** → [`run_propose_plan`] records the plan with [`InMsg::SetPlan`]
-//!   (engine state stays consistent for every head) and replies
-//!   `ToolOutput("plan accepted by the user")`, so the plan agent learns the
-//!   outcome and can end its turn. The head then performs the *handoff*: mint a
-//!   fresh root `build` session whose first user message is the plan (see
-//!   [`wrap_plan`]). The handoff is **head policy** — zero new protocol surface —
-//!   so pipe/WS heads implement the same recipe (ADR-0042).
+//! - **Approve** → [`run_propose_plan`] replies `ToolOutput("plan accepted by
+//!   the user")`, so the plan agent learns the outcome and can end its turn. The
+//!   working plan was already surfaced by the agent's `update_plan` snapshots
+//!   (#231, ADR-0049) — the engine holds no plan state to record. The head then
+//!   performs the *handoff*: mint a fresh root `build` session whose first user
+//!   message is the plan (see [`wrap_plan`]). The handoff is **head policy** —
+//!   zero new protocol surface — so pipe/WS heads implement the same recipe
+//!   (ADR-0042).
 //! - **Reject + reason** → the existing rejection fold-back (`tool
 //!   \`propose_plan\` rejected: <reason>`); the model revises and re-proposes in
 //!   the same turn, no new code.
@@ -33,10 +34,11 @@ pub const PROPOSE_PLAN_TOOL: &str = "propose_plan";
 /// a `build` session (ADR-0042).
 pub const HANDOFF_PROFILE: &str = "build";
 
-/// The `propose_plan` tool schema. Advertised only to `owns_plan` profiles via
-/// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig] (#140,
-/// ADR-0041) — the same default-closed-authority gate as `update_plan`, so the
-/// tool never leaks to an unmasked user profile.
+/// The `propose_plan` tool schema. Advertised only to a profile that explicitly
+/// allowlists `propose_plan` via
+/// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig] (#231,
+/// ADR-0049) — the same default-closed plan-authorship gate as `update_plan`, so
+/// the tool never leaks to an inherit-all profile.
 pub fn propose_plan_spec() -> ToolSpec {
     ToolSpec::with_schema(
         PROPOSE_PLAN_TOOL,
@@ -58,15 +60,16 @@ pub fn propose_plan_spec() -> ToolSpec {
     )
 }
 
-/// The per-profile `propose_plan` specs (#141, ADR-0042): the tool advertised to
-/// a session running under `profile`, gated by [`owns_plan`][AgentProfile] — the
-/// same default-closed authority as `update_plan` (#140), so it never leaks to an
-/// unmasked user profile. Empty for a profile that does not own the plan. Appended
-/// to [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig]
-/// alongside the spawn family; core's `run_turn` still filters it through the #116
-/// tool mask, so the profile's `tools:` allowlist must also list `propose_plan`.
+/// The per-profile `propose_plan` specs (#141, ADR-0042; #231, ADR-0049): the
+/// tool advertised to a session running under `profile`, gated by explicit
+/// allowlist membership — the same default-closed plan-authorship gate as
+/// `update_plan`, so it never leaks to an inherit-all profile. Empty for a
+/// profile that does not opt in. Appended to
+/// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig]
+/// alongside the spawn family; core's `run_turn` filters it through the #116 tool
+/// mask, which the same allowlist entry satisfies.
 pub fn specs_for(profile: &AgentProfile) -> Vec<ToolSpec> {
-    if profile.owns_plan {
+    if crate::plan_tasks::explicitly_allowlists(profile, PROPOSE_PLAN_TOOL) {
         vec![propose_plan_spec()]
     } else {
         Vec::new()
@@ -112,8 +115,6 @@ pub async fn run_propose_plan(
     request_id: String,
     input: String,
 ) {
-    let plan = parse_plan(&input);
-
     // A standard `ToolRequest` — the head renders the usual approve/reject prompt.
     let _ = holly.events().send(OutEvent::ToolRequest {
         session: session.clone(),
@@ -134,15 +135,10 @@ pub async fn run_propose_plan(
                 request_id: rid,
             }) if s == session && rid == request_id => {
                 set_thinking(&holly, &session);
-                // Record the plan into engine state so every head sees it, then
-                // tell the model the plan was accepted. The head performs the
-                // fresh-session handoff (ADR-0042) — no new protocol surface.
-                let _ = holly
-                    .send(InMsg::SetPlan {
-                        session: session.clone(),
-                        content: plan,
-                    })
-                    .await;
+                // Tell the model the plan was accepted so it can end its turn; the
+                // engine holds no plan state to record (#231, ADR-0049). The head
+                // performs the fresh-session handoff (ADR-0042) from the tool
+                // input — no new protocol surface.
                 reply(
                     &holly,
                     session,
@@ -219,12 +215,16 @@ mod tests {
     }
 
     #[test]
-    fn specs_advertised_only_to_owns_plan_profiles() {
+    fn specs_advertised_only_to_explicit_allowlisters() {
+        // Plan authorship is default-closed (#231, ADR-0049): only a profile that
+        // explicitly allowlists `propose_plan` gets the spec. The built-in `plan`
+        // profile does (its allowlist lists it); `build` (inherit-all) and
+        // `explore` (read trio) do not.
         use entanglement_core::ProfileRegistry;
-        let reg = ProfileRegistry::new(); // build/explore: !owns_plan, plan: owns_plan
+        let reg = ProfileRegistry::new();
         assert!(
             specs_for(reg.get("build").unwrap()).is_empty(),
-            "a non-owning profile gets no propose_plan spec"
+            "an inherit-all profile gets no propose_plan spec"
         );
         assert!(specs_for(reg.get("explore").unwrap()).is_empty());
         let plan_specs = specs_for(reg.get("plan").unwrap());

@@ -1,7 +1,13 @@
 # 0041. update_plan ownership — default-closed plan authority
 
-- Status: Accepted
+- Status: Superseded by [ADR-0049](0049-plan-task-tools-as-runtime-state-tools.md)
 - Date: 2026-07-11
+
+> **Superseded (2026-07-12, #231).** `update_plan`/`update_tasks` moved out of
+> core into the runtime as ordinary state tools; the `owns_plan` flag is gone.
+> Plan authorship is now default-closed via *explicit tool-mask allowlist
+> membership* (a profile that names `update_plan` in `tools:`), not a dedicated
+> `AgentProfile` field. See [ADR-0049](0049-plan-task-tools-as-runtime-state-tools.md).
 
 ## Context
 
