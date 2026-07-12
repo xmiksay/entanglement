@@ -98,12 +98,34 @@ impl EnvBlock {
 /// Shared inputs for [`assemble`], loaded once at startup. Each part is optional;
 /// the [`Default`] value is an identity composition (`assemble` returns just the
 /// trimmed body) which the parsing tests rely on.
+///
+/// `preamble_source`/`brief_path` carry *where* the corresponding content came
+/// from, for `skutter inspect prompt --parts` and the load-time `debug!` — never
+/// consumed by composition itself. Each is `Some` only when the matching content
+/// is present (an empty override file yields no content and no source).
 #[derive(Debug, Clone, Default)]
 pub struct PromptContext {
     pub preamble: Option<String>,
     pub brief: Option<String>,
     pub env: Option<EnvBlock>,
     pub skills: Vec<SkillDisclosure>,
+    /// File the shared preamble was read from; `None` ⇒ the built-in default.
+    pub preamble_source: Option<PathBuf>,
+    /// File the project brief was read from; `None` ⇒ no brief was found.
+    pub brief_path: Option<PathBuf>,
+}
+
+/// One composed slice of the system prompt, with the source it came from — the
+/// structured view behind `skutter inspect prompt --parts`. [`assemble`] joins
+/// these `content`s; [`assemble_parts`] hands the same slices back for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptPart {
+    /// Human label for the slice (`preamble`, `agent body`, …).
+    pub label: &'static str,
+    /// Where it came from (a file path, `built-in default`, `generated`, …).
+    pub source: String,
+    /// The rendered text of this slice.
+    pub content: String,
 }
 
 impl PromptContext {
@@ -115,11 +137,21 @@ impl PromptContext {
     /// context to the agent loader. Per-agent tool-mask filtering of that list is
     /// deferred (#116).
     pub fn load(root: &Path) -> Self {
+        let preamble = load_preamble();
+        let brief = load_brief(root);
+        // Tie each source to actual presence: an override file that read empty
+        // yields no content, so it should not claim to be the source either.
+        let preamble_source = preamble
+            .as_ref()
+            .and_then(|_| std::env::var_os(PREAMBLE_FILE_ENV).map(PathBuf::from));
+        let brief_path = brief.as_ref().and_then(|_| brief_file(root));
         Self {
-            preamble: load_preamble(),
-            brief: load_brief(root),
+            preamble,
+            brief,
             env: Some(EnvBlock::detect(root)),
             skills: Vec::new(),
+            preamble_source,
+            brief_path,
         }
     }
 }
@@ -146,36 +178,96 @@ pub fn assemble(
     ctx: &PromptContext,
     preloaded: &[String],
 ) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    assemble_parts(body, include_brief, mode, ctx, preloaded)
+        .into_iter()
+        .map(|p| p.content)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The same composition as [`assemble`], but returning each included slice with
+/// its source instead of one joined string — the structured view behind
+/// `skutter inspect prompt --parts`. Only the parts that make it into the final
+/// prompt are returned, in prompt order, so `assemble` is exactly the join of
+/// these `content`s and the two can never drift.
+///
+/// The `agent body` part is labelled with a generic source here; a caller that
+/// knows the winning definition file (`inspect`) overwrites it with that path.
+pub fn assemble_parts(
+    body: &str,
+    include_brief: bool,
+    mode: AgentMode,
+    ctx: &PromptContext,
+    preloaded: &[String],
+) -> Vec<PromptPart> {
+    let mut parts: Vec<PromptPart> = Vec::new();
 
     if let Some(preamble) = non_empty(ctx.preamble.as_deref()) {
-        parts.push(preamble.to_string());
+        let source = ctx
+            .preamble_source
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "built-in default".to_string());
+        parts.push(PromptPart {
+            label: "preamble",
+            source,
+            content: preamble.to_string(),
+        });
     }
     if let Some(body) = non_empty(Some(body)) {
-        parts.push(body.to_string());
+        parts.push(PromptPart {
+            label: "agent body",
+            source: "agent definition".to_string(),
+            content: body.to_string(),
+        });
     }
     if include_brief {
         if let Some(brief) = non_empty(ctx.brief.as_deref()) {
-            parts.push(brief.to_string());
+            let source = ctx
+                .brief_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "discovered project brief".to_string());
+            parts.push(PromptPart {
+                label: "project brief",
+                source,
+                content: brief.to_string(),
+            });
         }
     }
     // Subagents are composed from their own body only (#113): no env, no skill
     // index, and never the parent's assembled prompt.
     if mode != AgentMode::Subagent {
         if let Some(env) = &ctx.env {
-            parts.push(env.render());
+            parts.push(PromptPart {
+                label: "environment",
+                source: "generated".to_string(),
+                content: env.render(),
+            });
         }
         if !ctx.skills.is_empty() {
-            parts.push(render_skills(&ctx.skills));
+            parts.push(PromptPart {
+                label: "skill index",
+                source: format!(
+                    "skill registry ({} skill{})",
+                    ctx.skills.len(),
+                    if ctx.skills.len() == 1 { "" } else { "s" }
+                ),
+                content: render_skills(&ctx.skills),
+            });
         }
     }
     // Preload is author-requested (#117), so it is not gated by mode — the
     // subagent spawn case is precisely what it is for.
     if !preloaded.is_empty() {
-        parts.push(render_preloaded(preloaded));
+        parts.push(PromptPart {
+            label: "preloaded skills",
+            source: "skills: frontmatter".to_string(),
+            content: render_preloaded(preloaded),
+        });
     }
 
-    parts.join("\n\n")
+    parts
 }
 
 /// Render the tier-1 skill index: a header plus one `name: description` line per
@@ -248,6 +340,19 @@ fn load_brief(root: &Path) -> Option<String> {
     None
 }
 
+/// The brief file [`load_brief`] would pick for `root` (env override, else the
+/// first existing [`BRIEF_FILES`] entry), for source reporting — mirrors the
+/// selection precedence without reading the file.
+fn brief_file(root: &Path) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(BRIEF_FILE_ENV) {
+        return Some(PathBuf::from(path));
+    }
+    BRIEF_FILES
+        .iter()
+        .map(|rel| root.join(rel))
+        .find(|c| c.exists())
+}
+
 /// Read a file, returning `Some(trimmed)` if it is readable and non-empty. An
 /// unreadable path is a warning, not a hard failure — composition degrades to
 /// dropping that part rather than aborting startup.
@@ -314,6 +419,8 @@ mod tests {
                     description: "review a diff".into(),
                 },
             ],
+            preamble_source: None,
+            brief_path: None,
         }
     }
 
@@ -454,6 +561,47 @@ mod tests {
         // No standard file ⇒ no brief (the include_brief flag is then a no-op).
         let empty = tempfile::tempdir().unwrap();
         assert_eq!(load_brief(empty.path()), None);
+    }
+
+    #[test]
+    fn assemble_parts_is_the_join_behind_assemble_with_sources() {
+        let ctx = PromptContext {
+            brief_path: Some(PathBuf::from("/work/CLAUDE.md")),
+            ..ctx_full()
+        };
+        let parts = assemble_parts("BODY", true, AgentMode::Primary, &ctx, &["PRE".into()]);
+        // Joining the parts reproduces `assemble` exactly (no drift).
+        let joined = parts
+            .iter()
+            .map(|p| p.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        assert_eq!(
+            joined,
+            assemble("BODY", true, AgentMode::Primary, &ctx, &["PRE".into()])
+        );
+        // Sources are annotated: built-in preamble, brief path, generated env.
+        let src = |label| {
+            parts
+                .iter()
+                .find(|p| p.label == label)
+                .map(|p| p.source.as_str())
+        };
+        assert_eq!(src("preamble"), Some("built-in default"));
+        assert_eq!(src("project brief"), Some("/work/CLAUDE.md"));
+        assert_eq!(src("environment"), Some("generated"));
+        assert_eq!(src("preloaded skills"), Some("skills: frontmatter"));
+    }
+
+    #[test]
+    fn assemble_parts_labels_preamble_override_file() {
+        let ctx = PromptContext {
+            preamble_source: Some(PathBuf::from("/etc/preamble.md")),
+            ..ctx_full()
+        };
+        let parts = assemble_parts("BODY", false, AgentMode::Primary, &ctx, &[]);
+        let preamble = parts.iter().find(|p| p.label == "preamble").unwrap();
+        assert_eq!(preamble.source, "/etc/preamble.md");
     }
 
     #[test]

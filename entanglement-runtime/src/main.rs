@@ -12,6 +12,7 @@ mod agents;
 mod ask_user;
 mod frontmatter;
 mod host;
+mod inspect;
 mod permission;
 mod persistence;
 mod pipe;
@@ -338,19 +339,53 @@ enum Cmd {
     },
     /// List past root sessions for the current directory.
     Sessions,
+    /// Inspect resolved runtime state without spawning the engine.
+    Inspect {
+        #[command(subcommand)]
+        what: InspectCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum InspectCmd {
+    /// Print an agent's assembled system prompt (preamble + body + brief + env
+    /// + skill index + preloaded skills), exactly as it ships to the model.
+    Prompt {
+        /// Agent profile to resolve (build | plan | explore | custom).
+        #[arg(long)]
+        agent: String,
+        /// Break the prompt into its component parts, each with its source path.
+        #[arg(long)]
+        parts: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let filter = if cli.verbose { "debug" } else { "warn" };
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Logs go to stderr: stdout is reserved for command output — the assembled
+    // prompt (`inspect prompt`), NDJSON frames (`run --format json` / `pipe`) —
+    // so a `--verbose` log line can never corrupt it.
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 
     // `sessions` only reads the log store — handle it before spinning up a
     // provider/engine so it stays cheap and prints nothing about providers.
     if matches!(cli.cmd, Some(Cmd::Sessions)) {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         return print_sessions(&cwd);
+    }
+
+    // `inspect` re-runs prompt/registry discovery only — no provider or engine —
+    // so it too is handled before startup (and stays silent about providers).
+    if let Some(Cmd::Inspect { what }) = &cli.cmd {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        return match what {
+            InspectCmd::Prompt { agent, parts } => inspect::inspect_prompt(&cwd, agent, *parts),
+        };
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -472,6 +507,7 @@ async fn main() -> Result<()> {
             .await
         }
         Some(Cmd::Sessions) => unreachable!("sessions is handled before engine setup"),
+        Some(Cmd::Inspect { .. }) => unreachable!("inspect is handled before engine setup"),
         None => {
             let prompt = cli.prompt.join(" ");
             run_one(&holly, &SessionId::new_uuid(), None, &prompt, "text").await
