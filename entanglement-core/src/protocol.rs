@@ -110,8 +110,9 @@ pub enum Permission {
 
 /// Per-tool permission rules. Evaluated against a tool name; later matching
 /// rules win (so put `"*"` first, specifics after — same semantics as opencode).
-/// Built-in engine tools (`update_plan`, `update_tasks`) bypass this and always
-/// run, since they only mutate session state.
+/// Every tool — including the runtime's `update_plan`/`update_tasks` state tools
+/// (#231, ADR-0049) — resolves through this: there are no engine built-ins that
+/// bypass it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionProfile {
     /// `(pattern, permission)` pairs. `pattern` is either a tool name or `"*"`.
@@ -197,16 +198,6 @@ pub struct AgentProfile {
     /// inherit-all `None`) would otherwise include it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
-    /// Whether this profile may author the session plan (#140, ADR-0041).
-    /// **Default-closed**: only a plan-owning profile advertises the built-in
-    /// `update_plan` tool, and core refuses a hallucinated `update_plan` call
-    /// from a non-owner. Orthogonal to the #116 tool mask — the plan built-ins
-    /// are session-state tools, never routed through [`advertises_tool`]
-    /// ([`Self::advertises_tool`]) — so authority cannot depend on every future
-    /// agent remembering to opt *out*. `update_tasks` stays unconditional
-    /// (per-session bookkeeping, no cross-agent authority).
-    #[serde(default)]
-    pub owns_plan: bool,
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
     /// ⇒ derive from [`mode`][Self::mode]: a `Subagent` leaf defaults closed,
     /// every other mode open. When it (or the derived default) is `false`, the
@@ -229,9 +220,10 @@ impl AgentProfile {
     /// denylist removes it, or an allowlist is set and omits it. This is the
     /// *physical* restriction of #116 — orthogonal to
     /// [`PermissionProfile::for_tool`], which grades `Allow`/`Ask`/`Deny` among
-    /// the tools that survive this mask. The engine built-ins (`update_plan`/
-    /// `update_tasks`) are session-state tools, not host tools, and are never
-    /// passed through this mask.
+    /// the tools that survive this mask. Plan authorship rides this mask now
+    /// (#231, ADR-0049): the runtime advertises `update_plan`/`propose_plan` only
+    /// to a profile that *explicitly* allowlists them, so plan authority is
+    /// default-closed without a dedicated flag.
     pub fn advertises_tool(&self, tool: &str) -> bool {
         if self.disallowed_tools.iter().any(|t| t == tool) {
             return false;
@@ -364,12 +356,6 @@ pub enum InMsg {
     /// ids are a no-op. Session ids are single-use: mint a fresh one
     /// ([`SessionId::new_uuid`]) rather than reusing a closed id.
     CloseSession { session: SessionId },
-    /// Rewrite the session's task outline from the harness (markdown, e.g. a
-    /// checkbox list). Same shape as [`SetPlan`][InMsg::SetPlan] — the outline
-    /// is a user-facing progress snapshot, not engine-consumed structure.
-    SetTasks { session: SessionId, content: String },
-    /// Rewrite the session's strategy plan from the harness (markdown prose).
-    SetPlan { session: SessionId, content: String },
     /// Switch the session to a different agent profile by name (e.g. `plan`).
     SetAgent { session: SessionId, agent: String },
     /// Spawn a child session (sub-agent) under `parent`, running `prompt` beneath
@@ -405,8 +391,6 @@ impl InMsg {
             | InMsg::Stop { session }
             | InMsg::ListSessions { session }
             | InMsg::CloseSession { session }
-            | InMsg::SetTasks { session, .. }
-            | InMsg::SetPlan { session, .. }
             | InMsg::SetAgent { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => session,
@@ -460,6 +444,8 @@ pub enum OutEvent {
         profile_detail: Option<ProfileDetail>,
     },
     /// The agent's strategy plan (markdown prose), full snapshot on every change.
+    /// Emitted by the runtime when it handles an `update_plan` state tool call
+    /// (#231, ADR-0049); the engine never stores or consumes the plan.
     Plan {
         session: SessionId,
         seq: u64,
@@ -534,7 +520,8 @@ pub enum OutEvent {
     /// Full snapshot of the session's task outline (sent on every change).
     /// Markdown, typically a `- [ ]`/`- [x]` checklist — displayed to the user
     /// as progress info, never parsed by the engine (mirrors
-    /// [`Plan`][OutEvent::Plan]).
+    /// [`Plan`][OutEvent::Plan]). Emitted by the runtime on an `update_tasks`
+    /// state tool call (#231, ADR-0049).
     TaskList {
         session: SessionId,
         seq: u64,
@@ -788,7 +775,6 @@ mod tests {
             permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
             tools: Some(vec!["read".into(), "grep".into()]),
             disallowed_tools: vec!["edit".into()],
-            owns_plan: false,
             can_spawn: None,
             spawnable_agents: None,
         };
@@ -854,7 +840,6 @@ mod tests {
             permission: PermissionProfile::new(Permission::Allow),
             tools: tools.map(|v| v.into_iter().map(String::from).collect()),
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),
-            owns_plan: false,
             can_spawn: None,
             spawnable_agents: None,
         }
@@ -874,7 +859,6 @@ mod tests {
             permission: PermissionProfile::new(Permission::Allow),
             tools: None,
             disallowed_tools: Vec::new(),
-            owns_plan: false,
             can_spawn,
             spawnable_agents: spawnable_agents.map(|v| v.into_iter().map(String::from).collect()),
         }

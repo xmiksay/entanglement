@@ -85,7 +85,7 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0038](0038-physical-per-agent-tool-restriction.md) | Physical per-agent tool restriction: allowlist/denylist masks specs + dispatch | Accepted |
 | [0039](0039-markdown-task-list.md) | Markdown task list: structured `Vec<TaskItem>` → plain snapshot | Accepted |
 | [0040](0040-per-profile-spawn-control.md) | Per-profile spawn control: `can_spawn` + spawnable-agents allowlist + target-mode gate | Accepted |
-| [0041](0041-update-plan-ownership-default-closed.md) | `update_plan` ownership: `owns_plan` default-closed plan authority + physical read-only `plan` | Accepted |
+| [0041](0041-update-plan-ownership-default-closed.md) | `update_plan` ownership: `owns_plan` default-closed plan authority + physical read-only `plan` | Superseded by [0049](0049-plan-task-tools-as-runtime-state-tools.md) |
 | [0042](0042-plan-acceptance-via-propose-plan-approval-roundtrip.md) | Plan acceptance via `propose_plan` approval round-trip: accept → fresh root `build` session (head-policy handoff) | Accepted |
 | [0043](0043-skill-preload-vs-access-independent-mechanisms.md) | Skill preload (`skills:` frontmatter) vs access (`load_skill` tool mask) as two independent agent-definition mechanisms | Accepted |
 | [0044](0044-agents-skills-system-prompt-epic-synthesis.md) | Agents, skills & system prompt — epic synthesis: six principles → enforcement map, disclosure tiers, enforcement-locus split, deferred follow-ups | Accepted |
@@ -93,3 +93,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0046](0046-rhai-sandboxed-script-tool.md) | `rhai` host tool: embedded capability-sandboxed script engine; quintet bindings permission-checked per call via a sync/async bridge | Accepted |
 | [0047](0047-local-trust-boundary.md) | Local trust boundary: repo is trusted, config precedence system < user < repo, inspection over enforcement | Accepted |
 | [0048](0048-serve-head-local-trust-model.md) | `serve` head: local-only WebSocket protocol interface (Vue SPA primary/non-exclusive; browser surface out of scope; loopback + opt-in handshake) | Accepted |
+| [0049](0049-plan-task-tools-as-runtime-state-tools.md) | `update_plan`/`update_tasks` as runtime state tools: out of core, gated by the ordinary permission path; plan authorship default-closed via explicit allowlist membership (supersedes 0041) | Accepted |

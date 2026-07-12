@@ -50,32 +50,6 @@ pub(crate) fn emit_tool_call(
     });
 }
 
-pub(crate) fn emit_plan(
-    events: &broadcast::Sender<OutEvent>,
-    session: &SessionId,
-    plan: &str,
-    seq: &mut u64,
-) {
-    let _ = events.send(OutEvent::Plan {
-        session: session.clone(),
-        seq: next_seq(seq),
-        content: plan.to_string(),
-    });
-}
-
-pub(crate) fn emit_tasks(
-    events: &broadcast::Sender<OutEvent>,
-    session: &SessionId,
-    tasks: &str,
-    seq: &mut u64,
-) {
-    let _ = events.send(OutEvent::TaskList {
-        session: session.clone(),
-        seq: next_seq(seq),
-        content: tasks.to_string(),
-    });
-}
-
 pub(crate) fn emit_tool_output(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,

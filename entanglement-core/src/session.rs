@@ -1,10 +1,12 @@
-//! Per-session engine: the conversation loop, the tool-request round-trip to
-//! the runtime, and the built-in `update_plan` / `update_tasks` tools.
+//! Per-session engine: the conversation loop and the tool-request round-trip to
+//! the runtime.
 //!
 //! Permission dispatch (`Allow`/`Ask`/`Deny`) and the approval wait no longer
-//! live here (#59): core emits `OutEvent::ToolExec` for every host tool and
-//! parks on `InMsg::ToolResult`; the runtime tool executor owns the policy
-//! decision and the approval UX (ADR-0003/0010).
+//! live here (#59): core emits `OutEvent::ToolExec` for every tool and parks on
+//! `InMsg::ToolResult`; the runtime tool executor owns the policy decision and
+//! the approval UX (ADR-0003/0010). `update_plan`/`update_tasks` are ordinary
+//! runtime state tools too now (#231, ADR-0049) — the engine holds no plan/task
+//! state and makes no plan-authority call.
 //!
 //! Split along the natural seam (#109): the replay/fold that reconstructs a
 //! session from a persisted log lives in [`replay`]; the live reasoning turn in
@@ -26,13 +28,8 @@ use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use emit::{emit_plan, emit_tasks, next_seq};
+use emit::next_seq;
 use turn::run_turn;
-
-/// Built-in engine tools. They mutate session state only, so they bypass the
-/// permission profile and always run (no approval).
-pub(crate) const PLAN_TOOL: &str = "update_plan";
-pub(crate) const TASKS_TOOL: &str = "update_tasks";
 
 /// Commands routed to a single session by the supervisor (InMsg minus session id).
 #[derive(Debug, Clone)]
@@ -43,24 +40,21 @@ pub(crate) enum SessionCmd {
     /// `Reject`) is no longer a core command: the runtime tool executor owns it
     /// (#59) and never reaches the session loop.
     ToolResult(String, String),
-    SetPlan(String),
-    SetTasks(String),
     SetAgent(String),
     Stop,
 }
 
 /// Mutable per-session loop + turn state (#61). Holds the conversation
 /// [`Context`], the provider session handle (`llm`, #55), the active profile,
-/// the plan/tasks snapshots, and the loop counters — nothing pointing at the
-/// filesystem or a fixed tool set. The tool schemas advertised to the model are
-/// config, not session state: they come from [`EngineConfig::tool_specs`] at
-/// turn time (see [`turn::run_turn`]).
+/// and the loop counters — nothing pointing at the filesystem or a fixed tool
+/// set. Plan/task snapshots are the runtime's display state, not engine state
+/// (#231, ADR-0049), so the session carries neither. The tool schemas advertised
+/// to the model are config, not session state: they come from
+/// [`EngineConfig::tool_specs`] at turn time (see [`turn::run_turn`]).
 pub struct Session {
     pub ctx: Context,
     pub llm: LlmSession,
     pub profile: AgentProfile,
-    pub tasks: String,
-    pub plan: String,
     pub seq: u64,
     pub turn_count: usize,
     pub parent: Option<SessionId>,
@@ -73,8 +67,6 @@ impl Session {
             ctx: Context::new(),
             llm: (cfg.llm_factory)(),
             profile,
-            tasks: String::new(),
-            plan: String::new(),
             seq: 0,
             turn_count: 0,
             parent: None,
@@ -147,14 +139,6 @@ pub(crate) async fn session_loop(
                     &cfg.profile_tool_specs,
                 )
                 .await;
-            }
-            Some(SessionCmd::SetPlan(content)) => {
-                s.plan = content;
-                emit_plan(&events, &session, &s.plan, &mut s.seq);
-            }
-            Some(SessionCmd::SetTasks(tasks)) => {
-                s.tasks = tasks;
-                emit_tasks(&events, &session, &s.tasks, &mut s.seq);
             }
             Some(SessionCmd::SetAgent(name)) => match cfg.profiles.get(&name) {
                 Some(p) => {

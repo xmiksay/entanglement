@@ -3,9 +3,9 @@
 //! The model calls `propose_plan`; the executor intercepts it on `ToolExec`
 //! (before permission resolution, like `ask_user`) and **force-parks it on the
 //! `Ask` path unconditionally** — a `ToolRequest` is emitted even under an
-//! all-`Allow` profile. Approve records the plan (`SetPlan` → `OutEvent::Plan`)
-//! and folds an accepted message back; reject folds the typed reason back and
-//! records no plan.
+//! all-`Allow` profile. Approve folds an accepted message back (the engine holds
+//! no plan state to record now, #231, ADR-0049); reject folds the typed reason
+//! back. Neither emits `OutEvent::Plan`.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -100,7 +100,7 @@ async fn await_request(holly: &Holly, sid: &SessionId) -> String {
 }
 
 #[tokio::test]
-async fn approve_records_plan_and_folds_accepted_output() {
+async fn approve_folds_accepted_output_and_records_no_plan() {
     let holly = spawn_with_propose_plan_call(r##"{"plan":"# Ship it\n1. do the thing"}"##);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -114,31 +114,29 @@ async fn approve_records_plan_and_folds_accepted_output() {
         .await
         .unwrap();
 
-    // `SetPlan` is stashed while the tool call is parked and replayed *after* the
-    // turn ends, so `OutEvent::Plan` follows `Done` — collect until both land.
-    let mut got_plan = false;
+    // Approve acks the model via a ToolOutput; the engine holds no plan state, so
+    // no `OutEvent::Plan` is emitted (#231, ADR-0049). Collect until Done.
+    let mut saw_plan = false;
     let mut got_output = false;
-    while !(got_plan && got_output) {
-        let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await else {
-            break;
-        };
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
         if ev.session() != &sid {
             continue;
         }
         match &ev {
-            OutEvent::Plan { content, .. } => {
-                assert_eq!(content, "# Ship it\n1. do the thing");
-                got_plan = true;
-            }
+            OutEvent::Plan { .. } => saw_plan = true,
             OutEvent::ToolOutput { tool, output, .. } if tool == PROPOSE_PLAN_TOOL => {
                 assert_eq!(output, "plan accepted by the user");
                 got_output = true;
             }
+            OutEvent::Done { .. } => break,
             _ => {}
         }
     }
     assert!(got_output, "approve must fold an accepted ToolOutput back");
-    assert!(got_plan, "approve must record the plan via SetPlan");
+    assert!(
+        !saw_plan,
+        "approve must not emit a Plan snapshot (no engine state)"
+    );
 }
 
 #[tokio::test]

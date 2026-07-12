@@ -9,7 +9,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{emit_turn_error, next_seq};
 use super::tools::handle_tool_call;
-use super::{Session, SessionCmd, PLAN_TOOL, TASKS_TOOL};
+use super::{Session, SessionCmd};
 use crate::llm::{Llm, LlmEvent, LlmRequest, ToolCall, ToolSpec};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 
@@ -43,20 +43,15 @@ pub(crate) async fn run_turn(
     });
 
     // Tool set advertised to the model = host tools (from config, #61) filtered
-    // by the active profile's allowlist/denylist mask (#116, ADR-0038), plus the
-    // two built-ins. Core caches no fixed tool set on the session; the schemas
-    // come from `EngineConfig.tool_specs` at turn time. The mask is a *physical*
+    // by the active profile's allowlist/denylist mask (#116, ADR-0038). Core
+    // caches no fixed tool set on the session; the schemas come from
+    // `EngineConfig.tool_specs` at turn time. The mask is a *physical*
     // restriction — a masked tool's schema never reaches the model — layered
     // under the runtime's `Allow`/`Ask`/`Deny` dispatch, which grades only the
-    // tools that survive here. The `update_plan`/`update_tasks` built-ins below
-    // are session-state tools, not host tools, so they bypass the mask.
-    //
-    // Plan authority is separate and default-closed (#140, ADR-0041): the
-    // `update_plan` spec is advertised *only* to a profile that `owns_plan`;
-    // `update_tasks` stays unconditional (per-session bookkeeping, no
-    // cross-agent authority). This lives in core because the built-ins never
-    // round-trip to the runtime, so the runtime's `tool_masked` gate can't see
-    // them.
+    // tools that survive here. `update_plan`/`update_tasks` are runtime state
+    // tools now (#231, ADR-0049): they ride `tool_specs`/`profile_tool_specs`
+    // and this mask like any other host tool, with zero plan-authority special
+    // casing in core.
     let mut specs: Vec<ToolSpec> = tool_specs
         .iter()
         .filter(|spec| s.profile.advertises_tool(&spec.name))
@@ -64,10 +59,11 @@ pub(crate) async fn run_turn(
         .collect();
     // Per-profile specs (#119, ADR-0040): the active profile's spawnable roster
     // (the `agent_*` family with a target enum scoped to who *this* profile may
-    // spawn) lives outside the shared `tool_specs` so a masked schema never
-    // reaches the model. The runtime leaves the entry empty for a profile that
-    // may not spawn. Still filtered through the #116 mask, so a `disallowed_tools`
-    // list can subtract even a per-profile tool.
+    // spawn) plus the plan-authorship tools (#231) live outside the shared
+    // `tool_specs` so a masked schema never reaches the model. The runtime leaves
+    // the entry empty for a profile that may not spawn / does not author plans.
+    // Still filtered through the #116 mask, so a `disallowed_tools` list can
+    // subtract even a per-profile tool.
     if let Some(profile_specs) = profile_tool_specs.get(&s.profile.name) {
         specs.extend(
             profile_specs
@@ -76,37 +72,6 @@ pub(crate) async fn run_turn(
                 .cloned(),
         );
     }
-    if s.profile.owns_plan {
-        specs.push(ToolSpec::with_schema(
-            PLAN_TOOL,
-            "Replace the strategy plan (markdown prose).",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "The full plan document, in markdown."
-                    }
-                },
-                "required": ["content"]
-            }),
-        ));
-    }
-    specs.push(ToolSpec::with_schema(
-        TASKS_TOOL,
-        "Replace the task list (markdown). Shown to the user as progress info — \
-         it is not fed back to you, so keep it a short checklist.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The full task list, in markdown — e.g. `- [ ]` / `- [x]` checkbox lines."
-                }
-            },
-            "required": ["content"]
-        }),
-    ));
 
     loop {
         if !s.ctx.within_limit() {

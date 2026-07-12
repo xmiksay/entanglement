@@ -17,6 +17,7 @@ mod logging;
 mod permission;
 mod persistence;
 mod pipe;
+mod plan_tasks;
 mod propose_plan;
 mod run;
 mod script;
@@ -104,21 +105,27 @@ fn build_config(
     // spawn, and a non-spawning profile gets nothing — so it lives in
     // `profile_tool_specs` (appended by core for the active profile), not the
     // shared `tool_specs`. Empty entries are simply omitted.
-    // Plan acceptance (#141, ADR-0042): `propose_plan` is a runtime-owned tool
-    // finalize step, advertised only to a profile that `owns_plan` (#140) — the
-    // same default-closed-authority gate as `update_plan`, so it never leaks to an
-    // unmasked user profile. It rides the same per-profile seam as the spawn
-    // family; the profile's `tools:` allowlist must also list it (the #116 mask).
+    // Plan authorship (#231, ADR-0049): `update_plan` and the `propose_plan`
+    // finalize step are advertised only to a profile that *explicitly* allowlists
+    // them — the default-closed gate that replaces the old `owns_plan` flag, so
+    // they never leak to an inherit-all profile. They ride the same per-profile
+    // seam as the spawn family; core's #116 mask filters them again at turn time.
     let profile_tool_specs = cfg
         .profiles
         .iter()
         .filter_map(|p| {
             let mut specs = subagent::spawn_specs_for(p, &cfg.profiles);
             specs.extend(propose_plan::specs_for(p));
+            specs.extend(plan_tasks::plan_specs_for(p));
             (!specs.is_empty()).then(|| (p.name.clone(), specs))
         })
         .collect();
     cfg.profile_tool_specs = profile_tool_specs;
+    // `update_tasks` is a runtime state tool (#231): general progress bookkeeping,
+    // no cross-agent authority, so it rides the shared specs (a read-only profile
+    // masks it out via its allowlist + permission). The runtime executor
+    // intercepts it — and `update_plan` — to emit the `Plan`/`TaskList` snapshot.
+    cfg.tool_specs.push(plan_tasks::update_tasks_spec());
     // `ask_user` is likewise runtime-owned (#90) but not a spawn tool: every
     // profile may surface a decision prompt, so it stays in the shared specs.
     cfg.tool_specs.push(ask_user::ask_user_spec());

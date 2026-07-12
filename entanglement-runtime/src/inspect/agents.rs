@@ -143,7 +143,10 @@ pub(super) fn render_agent_detail(entry: &AgentResolution) -> String {
         }
     }
 
-    let _ = writeln!(out, "\nowns_plan (#140): {}", p.owns_plan);
+    // Plan authorship is default-closed via explicit allowlist membership now
+    // (#231, ADR-0049) — surfaced by the tool mask above, not a dedicated flag.
+    let authors_plan = crate::plan_tasks::explicitly_allowlists(p, "update_plan");
+    let _ = writeln!(out, "\nauthors plan (#231): {authors_plan}");
     let _ = writeln!(
         out,
         "\nassembled system prompt: {} chars",

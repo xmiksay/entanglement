@@ -18,7 +18,7 @@ and the crate table below.
 ## The contract (one set of types, every head)
 
 ```
-InMsg    : Prompt | Approve | Reject | Stop | SetTasks | SetPlan | SetAgent     (harness → engine)
+InMsg    : Prompt | Approve | Reject | Stop | SetAgent                          (harness → engine)
 OutEvent : Status | AgentChanged | Plan | TextDelta | ToolRequest | ToolOutput
            | TaskList | Error | Done                                            (engine → harness)
 ```
@@ -43,9 +43,9 @@ profile (`Allow | Ask | Deny` per tool) drives the approval flow — `Plan` deni
 edits, `Build` allows everything. Built-ins: `build`, `plan`, `explore`.
 
 Session snapshots (`OutEvent::Plan`, `OutEvent::TaskList` — both markdown
-`content`) are orthogonal — populated by the built-in `update_plan` /
-`update_tasks` tools or the harness `SetPlan` / `SetTasks` messages, so every
-head can render plan/task panels natively.
+`content`) are orthogonal — emitted by the runtime's `update_plan` /
+`update_tasks` state tools (ordinary host tools, gated by the permission path;
+ADR-0049), so every head can render plan/task panels natively.
 
 ## Crates
 

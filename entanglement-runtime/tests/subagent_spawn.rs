@@ -373,7 +373,6 @@ fn all_mode_worker() -> AgentProfile {
         permission: PermissionProfile::new(Permission::Allow),
         tools: None,
         disallowed_tools: Vec::new(),
-        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     }
@@ -445,7 +444,6 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
             "agent".into(),
         ]),
         disallowed_tools: Vec::new(),
-        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     });
@@ -759,7 +757,6 @@ fn subagent_helper() -> AgentProfile {
         permission: PermissionProfile::new(Permission::Allow),
         tools: None,
         disallowed_tools: Vec::new(),
-        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     }

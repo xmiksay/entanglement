@@ -94,12 +94,10 @@ impl Session {
                         session.profile = profile.clone();
                     }
                 }
-                OutEvent::TaskList { content, .. } => {
-                    session.tasks = content.clone();
-                }
-                OutEvent::Plan { content, .. } => {
-                    session.plan = content.clone();
-                }
+                // `Plan`/`TaskList` are the runtime's display state now (#231,
+                // ADR-0049): they carry nothing the engine's `Context` needs, so
+                // replay ignores them. A resuming head folds them from the log
+                // itself to restore its plan/task panels.
                 OutEvent::Done { .. } => {
                     if !pending_text.is_empty() || !pending_tools.is_empty() {
                         session

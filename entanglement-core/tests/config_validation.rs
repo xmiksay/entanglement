@@ -22,7 +22,6 @@ fn custom_profile(name: &str) -> AgentProfile {
         permission: PermissionProfile::new(Permission::Deny),
         tools: None,
         disallowed_tools: Vec::new(),
-        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     }

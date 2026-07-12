@@ -106,7 +106,6 @@ fn ask_bash_registry() -> ProfileRegistry {
         permission: PermissionProfile::new(Permission::Ask),
         tools: None,
         disallowed_tools: Vec::new(),
-        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     });
@@ -176,7 +175,6 @@ async fn deny_refuses_without_request() {
         permission: PermissionProfile::new(Permission::Deny),
         tools: None,
         disallowed_tools: Vec::new(),
-        owns_plan: false,
         can_spawn: None,
         spawnable_agents: None,
     });
