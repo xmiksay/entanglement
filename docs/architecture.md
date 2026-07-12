@@ -148,7 +148,11 @@ below realize one model:
   and the provider catalog share one loader: embedded default < user
   (`${config_dir}/entanglement/…`) < project (`<root>/.entanglement/…`), later
   wins on `name`; a malformed override is a loud error. Editing a built-in is
-  dropping a same-`name` file in a higher layer.
+  dropping a same-`name` file in a higher layer. This precedence is uniform (the
+  user config/settings file follows it too) and the project layer is **trusted** —
+  running inside a repo means the repo is trusted, with inspection (`skutter
+  inspect`) as the mitigation rather than an enforced boundary
+  ([ADR-0047](adr/0047-local-trust-boundary.md)).
 - **Progressive disclosure, recursively** — the model sees only *descriptions*
   until it acts: spawn-target `name: description` in the `agent`/`agent_spawn`
   schema (agents) → tier-1 `name: description` index in the prompt (skills) →
@@ -697,10 +701,15 @@ persistence machinery with none of the CLI/TUI/transport weight
   overriding insert, and a broken symlink under a skills dir is now a `warn!`
   (was a silent skip). All logs go to **stderr**, keeping stdout clean for the
   prompt / disclosures / NDJSON frames.
-- **WebSocket** (`skutter serve`, _next_): axum `GET /ws`, in-band auth first
-  frame, stateless handler, one `subscribe()` per socket, inbound frame →
-  `InMsg` → `send()`, 30s ping, `continue` on `broadcast::Lagged`. (Recipe
-  lifted from `agent`.)
+- **WebSocket** (`skutter serve`, _next_): axum HTTP server for a local Vue SPA
+  plus `GET /ws`, one `subscribe()` per socket, inbound frame → `InMsg` →
+  `send()`, 30s ping, `continue` on `broadcast::Lagged`. Scoped **local,
+  single-user, loopback-bound**; the WS is a general protocol interface (the SPA
+  is the primary but not exclusive client — raw local clients are supported), so
+  any `Origin`-check / launch-token is **opt-in, never mandatory** and the
+  browser-page surface is out of scope. Freeze the wire hygiene (`seq`
+  uniqueness, protocol warts) before a client pins the JSON
+  ([ADR-0048](adr/0048-serve-head-local-trust-model.md)).
 - **TUI** (`skutter tui`): opencode-style terminal UI over `subscribe()`. Uses
   ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
   (ADR-0013), inline tool approval cards (ADR-0014), and rich markdown
