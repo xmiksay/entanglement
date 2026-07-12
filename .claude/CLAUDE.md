@@ -192,8 +192,16 @@ now **observable** (✅ #184): `skutter inspect prompt --agent <name> [--parts]`
 re-runs that load-time discovery with **no engine** and prints the resolved
 prompt (`--parts` = each slice + its source, via `system_prompt::assemble_parts`
 + `agents::prompt_report`); `build_profile` also emits one load-time `debug!`
-(`agent=… prompt_len=… brief=<path|none> skills=…`). Logs moved to **stderr** so
-stdout stays clean for the prompt / NDJSON. The skill index is
+(`agent=… prompt_len=… brief=<path|none> skills=…`). The agent registry is
+likewise **observable** (✅ #185): `skutter inspect agents [name]` surfaces the
+layer-collision winner the silent later-wins `insert` swallows — no `name` prints
+a table (name/mode/model/layer/source/mask) of every resolved agent, a `name`
+prints the full resolved profile (permission rules + tool mask + spawn control +
+plan authority + assembled-prompt length) **plus** the lower-layer definitions it
+overrode — via a `(layer, source)` provenance sidecar
+(`agents::resolve_registry`, engine-free like `inspect prompt`); `load_registry`
+also emits a `replaces=<prior layer>` `debug!` at each overriding insert. Logs
+moved to **stderr** so stdout stays clean for the prompt / NDJSON. The skill index is
 populated from the skill registry (✅ #114,
 [ADR-0036](../docs/adr/0036-skill-discovery-and-registry.md)): a **skill** is a
 directory with a `SKILL.md` (YAML frontmatter + markdown body) + optional

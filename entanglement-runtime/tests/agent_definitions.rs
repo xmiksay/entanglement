@@ -397,3 +397,85 @@ fn prompt_report_subagent_omits_env_and_skill_index() {
     assert!(!report.parts.iter().any(|p| p.label == "environment"));
     assert!(!report.parts.iter().any(|p| p.label == "skill index"));
 }
+
+// ---------------------------------------------------------------------------
+// `inspect agents` support: resolve_registry provenance (#185)
+// ---------------------------------------------------------------------------
+
+use entanglement_runtime::agents::{resolve_registry, AgentLayer};
+
+/// Resolve the full registry with provenance under temp user + project dirs,
+/// isolating from the host user-agents dir. Serialized on `ENV_LOCK`.
+fn resolve_with_dirs(
+    user: Option<&std::path::Path>,
+    project_root: &std::path::Path,
+) -> Vec<entanglement_runtime::agents::AgentResolution> {
+    let _guard = ENV_LOCK.lock().unwrap();
+    match user {
+        Some(p) => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", p),
+        None => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir"),
+    }
+    let resolved = resolve_registry(
+        project_root,
+        &PromptContext::default(),
+        &entanglement_runtime::skills::SkillRegistry::default(),
+    )
+    .expect("resolve_registry");
+    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
+    resolved
+}
+
+#[test]
+fn resolve_registry_reports_builtin_layer_and_no_shadow() {
+    let empty = tempfile::tempdir().unwrap();
+    let resolved = resolve_with_dirs(None, empty.path());
+    let build = resolved
+        .iter()
+        .find(|r| r.profile.name == "build")
+        .expect("build present");
+    assert_eq!(build.layer, AgentLayer::BuiltIn);
+    assert_eq!(build.source, "built-in (build.md)");
+    assert!(build.shadowed.is_empty());
+    // Sorted by name for a stable table.
+    let names: Vec<&str> = resolved.iter().map(|r| r.profile.name.as_str()).collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted);
+}
+
+#[test]
+fn resolve_registry_tracks_project_over_user_over_builtin() {
+    let user = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    write_agent(
+        user.path(),
+        "build.md",
+        "---\nname: build\ndescription: user build\n---\nuser body",
+    );
+    write_agent(
+        &project.path().join(".entanglement").join("agents"),
+        "build.md",
+        "---\nname: build\ndescription: project build\ntools: [read, edit]\n---\nproject body",
+    );
+
+    let resolved = resolve_with_dirs(Some(user.path()), project.path());
+    let build = resolved
+        .iter()
+        .find(|r| r.profile.name == "build")
+        .expect("build present");
+
+    // Project wins; the resolved mask/source reflect the winner.
+    assert_eq!(build.layer, AgentLayer::Project);
+    assert!(build.source.ends_with("build.md"));
+    assert!(build.source.contains(".entanglement"));
+    assert_eq!(
+        build.profile.tools.as_deref(),
+        Some(&["read".to_string(), "edit".to_string()][..])
+    );
+
+    // Both shadowed layers are recorded in precedence order: built-in, then user.
+    let layers: Vec<AgentLayer> = build.shadowed.iter().map(|(l, _)| *l).collect();
+    assert_eq!(layers, vec![AgentLayer::BuiltIn, AgentLayer::User]);
+    assert_eq!(build.shadowed[0].1, "built-in (build.md)");
+    assert!(build.shadowed[1].1.ends_with("build.md"));
+}

@@ -674,8 +674,17 @@ persistence machinery with none of the CLI/TUI/transport weight
   visible before model behaviour degrades; `--parts` breaks the prompt into its
   component slices, each tagged with the source it came from (built-in default,
   brief path, generated env, …). A load-time `debug!` (`agent=… prompt_len=…
-  brief=<path|none> skills=…`) surfaces the same facts during any run. All logs
-  go to **stderr**, keeping stdout clean for the prompt / NDJSON frames.
+  brief=<path|none> skills=…`) surfaces the same facts during any run.
+  `skutter inspect agents [name]` (#185) surfaces the **layer-collision winner**
+  the silent later-wins `insert` used to swallow: with no `name`, a table (name,
+  mode, model, winning layer, source path, tool-mask summary) of every resolved
+  agent; with a `name`, the full resolved profile (permission rules, tool mask,
+  spawn control, plan authority, assembled-prompt length) **plus** which
+  lower-layer definitions it overrode — the exact fields #116/#119/#140
+  enforcement hinges on. Same engine-free discovery as `inspect prompt`, via a
+  `(layer, source)` provenance sidecar (`agents::resolve_registry`); `load_registry`
+  also emits a `replaces=<prior layer>` `debug!` at each overriding insert. All
+  logs go to **stderr**, keeping stdout clean for the prompt / NDJSON frames.
 - **WebSocket** (`skutter serve`, _next_): axum `GET /ws`, in-band auth first
   frame, stateless handler, one `subscribe()` per socket, inbound frame →
   `InMsg` → `send()`, 30s ping, `continue` on `broadcast::Lagged`. (Recipe
