@@ -168,6 +168,21 @@ impl Catalog {
             .flat_map(|p| &p.models)
             .find(|m| m.id == id)
     }
+
+    /// The set of env vars every provider reads its API key from (deduped,
+    /// keyless providers skipped). A head scrubs these from unsandboxed exec
+    /// tools so a model-authored command can't read the credentials (#164).
+    pub fn key_envs(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+        for entry in &self.providers {
+            if let Some(key) = &entry.key_env {
+                if !seen.contains(key) {
+                    seen.push(key.clone());
+                }
+            }
+        }
+        seen
+    }
 }
 
 /// The user override file path: `${config_dir}/entanglement/providers.yml`,
@@ -255,6 +270,19 @@ mod tests {
                 p.default_model
             );
         }
+    }
+
+    #[test]
+    fn key_envs_collects_keyed_providers_deduped() {
+        let c = Catalog::builtin();
+        let keys = c.key_envs();
+        assert!(keys.contains(&"ZAI_API_KEY".to_string()), "{keys:?}");
+        assert!(keys.contains(&"OPENAI_API_KEY".to_string()), "{keys:?}");
+        assert!(keys.contains(&"ANTHROPIC_API_KEY".to_string()), "{keys:?}");
+        // Keyless Ollama contributes nothing, and there are no duplicates.
+        let mut deduped = keys.clone();
+        deduped.dedup();
+        assert_eq!(deduped.len(), keys.len(), "no duplicate key_env: {keys:?}");
     }
 
     #[test]

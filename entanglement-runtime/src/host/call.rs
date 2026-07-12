@@ -17,11 +17,26 @@ const DEFAULT_TAIL: u32 = 30;
 
 pub struct CallTool {
     root: std::path::PathBuf,
+    /// Env vars scrubbed from the child before spawn — the provider API keys
+    /// (`ZAI_API_KEY`, …) so a model-authored binary can't read the engine's
+    /// credentials (#164). The no-shell design doesn't help here: a plain
+    /// `env`/`printenv` still inherits them. Empty by default; wired from the
+    /// catalog.
+    secret_env: Vec<String>,
 }
 
 impl CallTool {
     pub fn new(root: std::path::PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            secret_env: Vec::new(),
+        }
+    }
+
+    /// Scrub `vars` from the spawned command's environment (provider API keys).
+    pub fn with_secret_env(mut self, vars: Vec<String>) -> Self {
+        self.secret_env = vars;
+        self
     }
 }
 
@@ -90,12 +105,16 @@ impl Tool for CallTool {
             .context("invalid input to call: expected {\"command\": string, ...}")?;
         let secs = parsed.timeout.unwrap_or(120);
         let dur = std::time::Duration::from_secs(secs.min(MAX_CALL_TIMEOUT_SECONDS));
-        let child = tokio::process::Command::new(&parsed.command)
-            .args(&parsed.args)
+        let mut cmd = tokio::process::Command::new(&parsed.command);
+        cmd.args(&parsed.args)
             .current_dir(&self.root)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        for var in &self.secret_env {
+            cmd.env_remove(var);
+        }
+        let child = cmd
             .spawn()
             // A missing binary (or non-exec target) surfaces here — return it as
             // tool output, never panic (ADR-0016 clean-error contract).
@@ -268,6 +287,28 @@ mod tests {
             serde_json::json!({ "command": "sleep", "args": ["30"], "timeout": 1 }).to_string();
         let out = tool.run(&input).await.unwrap();
         assert!(out.contains("timed out after 1s"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn secret_env_is_scrubbed_from_child() {
+        // The no-shell design doesn't protect the env: a plain `env` inherits it.
+        // A scrubbed var must be gone while an unrelated var survives (#164).
+        std::env::set_var("ENTANGLEMENT_TEST_SECRET_CALL", "leak-me");
+        std::env::set_var("ENTANGLEMENT_TEST_PUBLIC_CALL", "public");
+        let tool = CallTool::new(std::env::temp_dir())
+            .with_secret_env(vec!["ENTANGLEMENT_TEST_SECRET_CALL".to_string()]);
+        let input = serde_json::json!({ "command": "env", "tail": 0 }).to_string();
+        let out = tool.run(&input).await.unwrap();
+        std::env::remove_var("ENTANGLEMENT_TEST_SECRET_CALL");
+        std::env::remove_var("ENTANGLEMENT_TEST_PUBLIC_CALL");
+        assert!(
+            !out.contains("ENTANGLEMENT_TEST_SECRET_CALL"),
+            "secret must be scrubbed: {out}"
+        );
+        assert!(
+            out.contains("ENTANGLEMENT_TEST_PUBLIC_CALL=public"),
+            "unrelated env kept: {out}"
+        );
     }
 
     #[tokio::test]

@@ -82,8 +82,11 @@ fn build_config(
         // The opt-in gate enables the whole exec pair (ADR-0010/ADR-0045):
         // `bash` (shell) and `call` (argv, no shell). Profiles differentiate
         // dispatch — e.g. a profile may `Allow` `call` while asking on `bash`.
-        tools.register(BashTool::new(root.clone()));
-        tools.register(CallTool::new(root.clone()));
+        // Both scrub the catalog's provider API-key env vars before spawn so a
+        // model-authored command can't exfiltrate the credentials (#164).
+        let secret_env = catalog.key_envs();
+        tools.register(BashTool::new(root.clone()).with_secret_env(secret_env.clone()));
+        tools.register(CallTool::new(root.clone()).with_secret_env(secret_env));
         eprintln!(
             "skutter: bash + call enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
              run unsandboxed with full privileges"

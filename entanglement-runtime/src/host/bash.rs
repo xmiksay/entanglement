@@ -11,11 +11,24 @@ const MAX_BASH_TIMEOUT_SECONDS: u64 = 600;
 
 pub struct BashTool {
     root: std::path::PathBuf,
+    /// Env vars scrubbed from the child before spawn — the provider API keys
+    /// (`ZAI_API_KEY`, …) so a model-authored `env`/`printenv` can't read the
+    /// engine's credentials (#164). Empty by default; wired from the catalog.
+    secret_env: Vec<String>,
 }
 
 impl BashTool {
     pub fn new(root: std::path::PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            secret_env: Vec::new(),
+        }
+    }
+
+    /// Scrub `vars` from the spawned command's environment (provider API keys).
+    pub fn with_secret_env(mut self, vars: Vec<String>) -> Self {
+        self.secret_env = vars;
+        self
     }
 }
 
@@ -58,14 +71,16 @@ impl Tool for BashTool {
             .context("invalid input to bash: expected {\"command\": string, ...}")?;
         let secs = parsed.timeout.unwrap_or(120);
         let dur = std::time::Duration::from_secs(secs.min(MAX_BASH_TIMEOUT_SECONDS));
-        let child = tokio::process::Command::new("sh")
-            .args(["-c", &parsed.command])
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &parsed.command])
             .current_dir(&self.root)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| "spawning bash command")?;
+            .kill_on_drop(true);
+        for var in &self.secret_env {
+            cmd.env_remove(var);
+        }
+        let child = cmd.spawn().with_context(|| "spawning bash command")?;
 
         match tokio::time::timeout(dur, child.wait_with_output()).await {
             Ok(Ok(output)) => Ok(format_bash_output(
@@ -155,6 +170,25 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("killed") && out.contains("timed out"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn secret_env_is_scrubbed_from_command() {
+        // A scrubbed var must be invisible to the model-authored command (#164),
+        // while an unrelated var still passes through.
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ENTANGLEMENT_TEST_SECRET_BASH", "leak-me");
+        std::env::set_var("ENTANGLEMENT_TEST_PUBLIC_BASH", "public");
+        let tool = BashTool::new(dir.path().to_path_buf())
+            .with_secret_env(vec!["ENTANGLEMENT_TEST_SECRET_BASH".to_string()]);
+        let out = tool
+            .run(r#"{"command":"echo secret=[$ENTANGLEMENT_TEST_SECRET_BASH] public=[$ENTANGLEMENT_TEST_PUBLIC_BASH]"}"#)
+            .await
+            .unwrap();
+        std::env::remove_var("ENTANGLEMENT_TEST_SECRET_BASH");
+        std::env::remove_var("ENTANGLEMENT_TEST_PUBLIC_BASH");
+        assert!(out.contains("secret=[]"), "secret must be scrubbed: {out}");
+        assert!(out.contains("public=[public]"), "unrelated env kept: {out}");
     }
 
     #[tokio::test]
