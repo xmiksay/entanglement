@@ -129,14 +129,90 @@ pub fn load_registry(
     skills: &SkillRegistry,
 ) -> Result<ProfileRegistry> {
     let mut reg = ProfileRegistry::default();
+    // Track the winning layer per name so a later-wins collision is no longer
+    // silent (#185): emit a `replaces=<prior layer>` debug at the overwrite,
+    // matching the provenance `inspect agents` surfaces.
+    let mut winning: std::collections::HashMap<String, AgentLayer> =
+        std::collections::HashMap::new();
     for raw in discover(root)? {
         // Later layers replace earlier ones on a `name` collision because
         // `discover` yields them in precedence order and `insert` overwrites.
         let profile = parse_definition(&raw.content, ctx, skills)
             .with_context(|| format!("parsing agent `{}`", raw.source))?;
+        if let Some(prior) = winning.insert(profile.name.clone(), raw.layer) {
+            tracing::debug!(
+                agent = %profile.name,
+                layer = raw.layer.label(),
+                replaces = prior.label(),
+                source = %raw.source,
+                "agent definition overrides a lower layer",
+            );
+        }
         reg.insert(profile);
     }
     Ok(reg)
+}
+
+/// One resolved agent for `skutter inspect agents` (#185): the winning
+/// definition plus the provenance the silent `insert` used to swallow — which
+/// layer/source won, and every lower-layer definition of the same name it
+/// overrode.
+pub struct AgentResolution {
+    /// The fully assembled winning profile (mode/model/permission/mask + prompt).
+    pub profile: AgentProfile,
+    /// Which precedence layer the winner came from.
+    pub layer: AgentLayer,
+    /// The winner's origin (`built-in (build.md)` or a file path).
+    pub source: String,
+    /// Lower-layer definitions of the same name the winner overrode, in
+    /// precedence order — `(layer, source)` each. Empty when nothing was shadowed.
+    pub shadowed: Vec<(AgentLayer, String)>,
+}
+
+/// Resolve every agent for `root` with full provenance (#185), applying the same
+/// layer precedence as [`load_registry`] but keeping *which* layer won and what
+/// it shadowed. Sorted by name for a stable table. A malformed file in any layer
+/// is a loud error, exactly as at load.
+pub fn resolve_registry(
+    root: &Path,
+    ctx: &PromptContext,
+    skills: &SkillRegistry,
+) -> Result<Vec<AgentResolution>> {
+    // Preserve first-seen order of names, then sort at the end; group each name's
+    // definitions in precedence order so the last is the winner and the rest are
+    // what it shadowed.
+    let mut order: Vec<String> = Vec::new();
+    let mut by_name: std::collections::HashMap<String, Vec<(AgentLayer, String, AgentProfile)>> =
+        std::collections::HashMap::new();
+    for raw in discover(root)? {
+        let profile = parse_definition(&raw.content, ctx, skills)
+            .with_context(|| format!("parsing agent `{}`", raw.source))?;
+        let name = profile.name.clone();
+        let entry = by_name.entry(name.clone()).or_default();
+        if entry.is_empty() {
+            order.push(name);
+        }
+        entry.push((raw.layer, raw.source, profile));
+    }
+
+    let mut resolved: Vec<AgentResolution> = order
+        .into_iter()
+        .map(|name| {
+            let mut defs = by_name
+                .remove(&name)
+                .expect("name recorded on first insert");
+            let (layer, source, profile) = defs.pop().expect("at least one definition per name");
+            let shadowed = defs.into_iter().map(|(l, s, _)| (l, s)).collect();
+            AgentResolution {
+                profile,
+                layer,
+                source,
+                shadowed,
+            }
+        })
+        .collect();
+    resolved.sort_by(|a, b| a.profile.name.cmp(&b.profile.name));
+    Ok(resolved)
 }
 
 /// Everything `skutter inspect prompt` needs for one agent (#184): the winning
@@ -200,9 +276,32 @@ pub fn prompt_report(
     }))
 }
 
-/// A discovered agent definition file *before* parsing: a display label for its
-/// origin (`built-in (build.md)` or the file path) and the raw file content.
+/// Which of the three precedence layers a definition came from (#185). Ordered
+/// low → high, so `built-in < user < project` matches discovery order and the
+/// later-wins collision rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AgentLayer {
+    BuiltIn,
+    User,
+    Project,
+}
+
+impl AgentLayer {
+    /// Short label for the `skutter inspect agents` table and `replaces=` logs.
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentLayer::BuiltIn => "built-in",
+            AgentLayer::User => "user",
+            AgentLayer::Project => "project",
+        }
+    }
+}
+
+/// A discovered agent definition file *before* parsing: which layer it came from
+/// (#185), a display label for its origin (`built-in (build.md)` or the file
+/// path), and the raw file content.
 struct RawAgent {
+    layer: AgentLayer,
     source: String,
     content: String,
 }
@@ -215,20 +314,26 @@ fn discover(root: &Path) -> Result<Vec<RawAgent>> {
     let mut raws: Vec<RawAgent> = BUILT_INS
         .iter()
         .map(|(file, contents)| RawAgent {
+            layer: AgentLayer::BuiltIn,
             source: format!("built-in ({file})"),
             content: (*contents).to_string(),
         })
         .collect();
     if let Some(dir) = user_agents_dir() {
-        read_dir_raws(&dir, &mut raws)?;
+        read_dir_raws(AgentLayer::User, &dir, &mut raws)?;
     }
-    read_dir_raws(&root.join(".entanglement").join("agents"), &mut raws)?;
+    read_dir_raws(
+        AgentLayer::Project,
+        &root.join(".entanglement").join("agents"),
+        &mut raws,
+    )?;
     Ok(raws)
 }
 
-/// Append every `*.md` file in `dir` (if it exists) to `raws`, sorted for
-/// deterministic collision resolution within the directory.
-fn read_dir_raws(dir: &Path, raws: &mut Vec<RawAgent>) -> Result<()> {
+/// Append every `*.md` file in `dir` (if it exists) to `raws`, tagged with
+/// `layer` and sorted for deterministic collision resolution within the
+/// directory.
+fn read_dir_raws(layer: AgentLayer, dir: &Path, raws: &mut Vec<RawAgent>) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -243,6 +348,7 @@ fn read_dir_raws(dir: &Path, raws: &mut Vec<RawAgent>) -> Result<()> {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("reading agent definition {}", path.display()))?;
         raws.push(RawAgent {
+            layer,
             source: path.display().to_string(),
             content,
         });

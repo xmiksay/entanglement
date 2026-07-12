@@ -358,6 +358,13 @@ enum InspectCmd {
         #[arg(long)]
         parts: bool,
     },
+    /// List resolved agents with their winning layer + provenance (no `name`), or
+    /// print one agent's full resolved profile (permission/mask/spawn/plan +
+    /// prompt length) and what lower layers it overrode.
+    Agents {
+        /// Agent to detail (build | plan | explore | custom). Omit for the table.
+        name: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -385,6 +392,7 @@ async fn main() -> Result<()> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         return match what {
             InspectCmd::Prompt { agent, parts } => inspect::inspect_prompt(&cwd, agent, *parts),
+            InspectCmd::Agents { name } => inspect::inspect_agents(&cwd, name.as_deref()),
         };
     }
 
