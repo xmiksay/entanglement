@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build run run-json run-tui test test-unit test-integration lint fmt check-fmt verify clean check tree check-lean coverage
+.PHONY: help build run run-json run-tui pipe sessions inspect test test-unit test-integration lint fmt check-fmt verify clean check tree check-lean coverage
 
 # Minimum line-coverage % the release gate enforces. First measured baseline
 # (issue #107) was 65% workspace lines; floor set just under it to absorb CI
@@ -24,6 +24,15 @@ run-json: build ## stream one turn as NDJSON events (like opencode run --format 
 
 run-tui: build ## launch the terminal UI
 	$(CARGO) run -p entanglement-runtime -- tui
+
+pipe: build ## stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
+	$(CARGO) run -p entanglement-runtime -- pipe
+
+sessions: build ## list past (resumable) sessions
+	$(CARGO) run -p entanglement-runtime -- sessions
+
+inspect: build ## inspect resolved prompt/agents/skills, no engine (ARGS='prompt --agent build' | agents | 'skills --disclosures')
+	$(CARGO) run -p entanglement-runtime -- inspect $(ARGS)
 
 check: ## cargo check --workspace (fast typecheck)
 	$(CARGO) check --workspace
