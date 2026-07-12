@@ -189,7 +189,10 @@ impl Default for EchoLlm {
 #[async_trait]
 impl Llm for EchoLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        let reply = echo_reply(&req, std::env::var("ENTANGLEMENT_ECHO_FULL").as_deref() == Ok("1"));
+        let reply = echo_reply(
+            &req,
+            std::env::var("ENTANGLEMENT_ECHO_FULL").as_deref() == Ok("1"),
+        );
         let events = vec![
             Ok(LlmEvent::Text(reply)),
             Ok(LlmEvent::Finish {
@@ -273,7 +276,9 @@ mod tests {
     fn sha8_is_eight_lowercase_hex() {
         let h = sha8("hello");
         assert_eq!(h.len(), 8);
-        assert!(h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(h
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         // SHA-256("hello") starts with 2cf24dba…
         assert_eq!(h, "2cf24dba");
     }
@@ -281,7 +286,10 @@ mod tests {
     #[test]
     fn echo_reply_reports_system_and_tools() {
         let messages = [Message::user("hi"), Message::assistant("prev", vec![])];
-        let tools = [ToolSpec::new("read", "read a file"), ToolSpec::new("bash", "run")];
+        let tools = [
+            ToolSpec::new("read", "read a file"),
+            ToolSpec::new("bash", "run"),
+        ];
         let out = echo_reply(&req("you are a bot", &messages, &tools), false);
 
         assert!(out.contains("messages=2"), "{out}");
