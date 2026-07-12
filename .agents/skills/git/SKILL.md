@@ -15,7 +15,7 @@ The loop is the point — phase 6 returns to phase 4 (push) until the review is 
 - **Never work on a stale repo.** `git fetch origin` first — before branching, before pushing, before reading review state, and before rebasing. Branch/rebase off **`origin/master`**, not your local `master` (which may lag). Stale locals are how you build onto outdated code and manufacture avoidable conflicts; a fetch is cheap, a bad rebase isn't.
 - **After a rebase, push `--force-with-lease` — NEVER plain `--force`.** `--force-with-lease` aborts if the remote moved since your last fetch (someone else pushed); `--force` would clobber their work.
 - **Conventional Commits only** with a real scope (`feat(engine): …`, `fix(cli): …`, `docs: …`, …). No `Co-Authored-By` trailer.
-- **Tests ship with the change.** Run `make verify` (check-fmt + tree + clippy + test) before every push and before opening the PR.
+- **Tests ship with the change.** Run `make verify` (check-fmt + tree + check-lean + lint + test) before every push and before opening the PR.
 - **Keep history linear:** rebase onto `origin/master`; don't `git merge` it into your branch.
 - **Never auto-merge the PR.** Merge is the maintainer's (or the user's explicit) call. Stop when approved + no outstanding threads.
 
@@ -42,10 +42,11 @@ git switch -c <type>/<issue#>-<short-slug>         # e.g. feat/123-token-retry
 
 ## Phase 3 — Implement
 
-Frame only — this is the actual coding work, governed by `.claude/CLAUDE.md` + `docs/architecture.md`. Non-negotiables for this repo:
+Frame only — this is the actual coding work, governed by `.claude/CLAUDE.md` + the `docs/architecture/` module docs. Non-negotiables for this repo:
 
 - **No panicking operators on I/O/user/network/config paths** in `entanglement-core` — propagate with `?` + `.context()`. `.unwrap()`/`.expect()` only in tests or provably-unreachable spots.
 - **Comments: WHY, not WHAT.**
+- **Files stay under 400 lines of code** — split into modules when a file exceeds the cap (a hard project rule; applies to docs too).
 - **Tests ship with the change** — pure logic in-module `#[cfg(test)]`; actor/protocol behavior in `entanglement-core/tests/`.
 - **Hard-to-reverse choices get an ADR** in `docs/adr/` (numbered, immutable; supersede, never edit in place) + an arch-doc update in the same change.
 - Commit in **coherent steps** as pieces land (each ideally passing `make verify`), not one dump at the end.
@@ -59,7 +60,7 @@ Stay linear before sending anything up:
 ```bash
 git fetch origin
 git rebase origin/master               # resolve conflicts, re-run verify if so
-make verify                            # check-fmt + tree + clippy + test
+make verify                            # check-fmt + tree + check-lean + lint + test
 ```
 
 Then:
@@ -85,7 +86,7 @@ gh pr create --base master --head <branch> \
 - <bullet summary of each meaningful change>
 
 ## Verification
-- `make verify` (check-fmt + tree + clippy + unit + integration) passes
+- `make verify` (check-fmt + tree + check-lean + lint + test) passes
 - <how a reviewer can confirm it works>
 
 ## Follow-ups
