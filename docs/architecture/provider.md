@@ -74,6 +74,13 @@ built-in stub), erroring loudly if its key env is missing; if unset, auto-detect
 by iterating catalog order and picking the first provider whose `key_env` is set
 and non-empty (keyless Ollama is skipped) — preserving z.ai → OpenAI → Anthropic;
 else `EchoLlm`. Precedence overall is **env > user YAML > embedded defaults**.
+
+The `EchoLlm` stub echoes a one-line summary of the request it received —
+message count, user-text snippets, the assembled system prompt (`system_len` +
+an 8-hex `system_sha` SHA-256 fingerprint) and the advertised `tools=[names]` —
+so `ENTANGLEMENT_PROVIDER=echo skutter run` doubles as a prompt-assembly smoke
+test (which prompt/tool set actually reached the backend). Set
+`ENTANGLEMENT_ECHO_FULL=1` to append the full system text.
 Per-provider env still wins: `<PROV>_API_KEY` (name from the entry's `key_env`),
 `<PROV>_MODEL`, `<PROV>_BASE`/`<PROV>_API_BASE`. Default models come from each
 provider's `default_model` (`glm-5.2` / `gpt-4o` / `llama3.1` /
