@@ -25,6 +25,10 @@ impl App {
             }
             Command::Plan => false,
             Command::Tasks => false,
+            Command::Inspect => {
+                self.toggle_inspect();
+                false
+            }
             Command::Editor => {
                 self.request_effect(UiEffect::OpenEditor);
                 false
@@ -94,6 +98,10 @@ impl App {
             }
             Action::ToggleReasoning => {
                 self.toggle_last_reasoning_block();
+                false
+            }
+            Action::Inspect => {
+                self.toggle_inspect();
                 false
             }
         }

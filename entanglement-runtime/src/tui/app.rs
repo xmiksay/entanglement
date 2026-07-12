@@ -22,10 +22,13 @@ use crate::tui::theme::Theme;
 mod construct;
 mod dispatch;
 mod input;
+mod inspect;
 mod mention;
 mod pickers;
 mod state;
 mod view;
+
+pub use inspect::InspectTab;
 
 #[cfg(test)]
 mod tests;
@@ -111,6 +114,9 @@ pub struct App {
 
     // Deferred terminal-owning effect (editor / export) for the event loop to run.
     pending_effect: Option<UiEffect>,
+
+    // In-session inspection overlay (#214): resolved prompt / agents / skills.
+    inspect: inspect::InspectState,
 
     // `@file` mention completion + `!bash` passthrough (ADR-0030). `root` is the
     // working directory both the file index and `!bash` execution are rooted at.

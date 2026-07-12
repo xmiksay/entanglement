@@ -119,6 +119,7 @@ pub enum Action {
     ShowHelp,
     CommandPalette,
     ToggleReasoning,
+    Inspect,
 }
 
 impl Action {
@@ -139,6 +140,7 @@ impl Action {
             Action::ShowHelp => "Show help",
             Action::CommandPalette => "Open command palette",
             Action::ToggleReasoning => "Toggle the most recent thinking block",
+            Action::Inspect => "Inspect prompt, agents & skills",
         }
     }
 
@@ -159,6 +161,7 @@ impl Action {
             Action::ShowHelp => "Help",
             Action::CommandPalette => "General",
             Action::ToggleReasoning => "Navigation",
+            Action::Inspect => "Agent",
         }
     }
 }
@@ -226,6 +229,9 @@ impl KeyMap {
             leader.clone().extend_with(Key::Char('t')),
             Action::ToggleReasoning,
         );
+
+        // Inspection overlay (#214)
+        bindings.insert(leader.clone().extend_with(Key::Char('i')), Action::Inspect);
 
         // Help
         bindings.insert(leader.clone().extend_with(Key::Char('?')), Action::ShowHelp);

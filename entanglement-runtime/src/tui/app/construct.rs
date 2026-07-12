@@ -122,6 +122,7 @@ impl App {
             chat_scroll_offset: 0,
             chat_line_blocks: Vec::new(),
             pending_effect: None,
+            inspect: Default::default(),
             root: PathBuf::from("."),
             bash_enabled: false,
             mention: MentionPopup::new(FileIndex::default()),

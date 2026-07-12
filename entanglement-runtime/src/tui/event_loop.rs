@@ -7,7 +7,7 @@ use super::app::App;
 use super::attention::Attention;
 use super::event::Event;
 use super::modal_events::{
-    handle_command_palette_event, handle_model_picker_event, handle_mouse,
+    handle_command_palette_event, handle_inspect_event, handle_model_picker_event, handle_mouse,
     handle_profile_picker_event, handle_question_event, handle_resume_modal_event,
     handle_sessions_modal_event,
 };
@@ -43,6 +43,9 @@ pub(super) async fn handle_event(
                 }
                 if app.showing_resume_modal() {
                     return handle_resume_modal_event(app, holly, key).await;
+                }
+                if app.showing_inspect() {
+                    return handle_inspect_event(app, key).await;
                 }
                 // A model-driven `ask_user` question takes over input until
                 // answered (ADR-0027), just like an approval prompt.
