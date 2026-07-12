@@ -667,7 +667,15 @@ persistence machinery with none of the CLI/TUI/transport weight
 - **stdio** (`skutter run` / `skutter pipe`): one-shot `run [--format text|json]
   [--agent <name>] [--session <id> | --resume <id>]`; bidirectional `pipe` NDJSON
   (`InMsg` in, `OutEvent` out). `skutter sessions` lists past root sessions for
-  the cwd (see §6b).
+  the cwd (see §6b). `skutter inspect prompt --agent <name> [--parts]` prints an
+  agent's **assembled** system prompt (#184) — it re-runs the load-time discovery
+  (`PromptContext::load` + skill/agent registries) with no engine, so a wrong
+  brief pick, an empty preamble override, or a subagent losing the skill index is
+  visible before model behaviour degrades; `--parts` breaks the prompt into its
+  component slices, each tagged with the source it came from (built-in default,
+  brief path, generated env, …). A load-time `debug!` (`agent=… prompt_len=…
+  brief=<path|none> skills=…`) surfaces the same facts during any run. All logs
+  go to **stderr**, keeping stdout clean for the prompt / NDJSON frames.
 - **WebSocket** (`skutter serve`, _next_): axum `GET /ws`, in-band auth first
   frame, stateless handler, one `subscribe()` per socket, inbound frame →
   `InMsg` → `send()`, 30s ping, `continue` on `broadcast::Lagged`. (Recipe

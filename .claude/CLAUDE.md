@@ -187,7 +187,13 @@ body + project brief (frontmatter `include_brief: true`, from the standard
 skill index — each optional, in that fixed order — at load time. A subagent gets
 `preamble + body (+ brief)` only (no env/skills, never the parent's prompt);
 inputs come from `PromptContext::load` (overridable via
-`ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE`). The skill index is
+`ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE`). The assembled prompt is
+now **observable** (✅ #184): `skutter inspect prompt --agent <name> [--parts]`
+re-runs that load-time discovery with **no engine** and prints the resolved
+prompt (`--parts` = each slice + its source, via `system_prompt::assemble_parts`
++ `agents::prompt_report`); `build_profile` also emits one load-time `debug!`
+(`agent=… prompt_len=… brief=<path|none> skills=…`). Logs moved to **stderr** so
+stdout stays clean for the prompt / NDJSON. The skill index is
 populated from the skill registry (✅ #114,
 [ADR-0036](../docs/adr/0036-skill-discovery-and-registry.md)): a **skill** is a
 directory with a `SKILL.md` (YAML frontmatter + markdown body) + optional

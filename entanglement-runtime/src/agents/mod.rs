@@ -47,7 +47,7 @@ use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile, 
 use serde::Deserialize;
 
 use crate::skills::SkillRegistry;
-use crate::system_prompt::{assemble, PromptContext};
+use crate::system_prompt::{assemble, assemble_parts, PromptContext, PromptPart};
 
 /// Embedded built-in definitions, parsed through the same loader as user/project
 /// files. `(filename, contents)` — the filename only feeds parse-error messages;
@@ -129,51 +129,123 @@ pub fn load_registry(
     skills: &SkillRegistry,
 ) -> Result<ProfileRegistry> {
     let mut reg = ProfileRegistry::default();
-    for (file, contents) in BUILT_INS {
-        // Embedded built-ins are guarded by `built_ins_parse`, so a failure here
-        // is a build-time bug, not a runtime condition — surface it loudly.
-        let profile = parse_definition(contents, ctx, skills)
-            .with_context(|| format!("parsing built-in agent `{file}`"))?;
+    for raw in discover(root)? {
+        // Later layers replace earlier ones on a `name` collision because
+        // `discover` yields them in precedence order and `insert` overwrites.
+        let profile = parse_definition(&raw.content, ctx, skills)
+            .with_context(|| format!("parsing agent `{}`", raw.source))?;
         reg.insert(profile);
     }
-    if let Some(dir) = user_agents_dir() {
-        load_dir(&dir, &mut reg, ctx, skills)?;
-    }
-    load_dir(
-        &root.join(".entanglement").join("agents"),
-        &mut reg,
-        ctx,
-        skills,
-    )?;
     Ok(reg)
 }
 
-/// Parse every `*.md` file in `dir` (if it exists) into `reg`, replacing any
-/// same-`name` entry already present. A missing dir is fine (no definitions);
-/// an unreadable dir or a malformed file is an error.
-fn load_dir(
-    dir: &Path,
-    reg: &mut ProfileRegistry,
+/// Everything `skutter inspect prompt` needs for one agent (#184): the winning
+/// definition's source, the assembled profile, and the per-part breakdown.
+pub struct AgentPromptReport {
+    /// Where the winning definition came from (`built-in (build.md)` or a path).
+    pub source: String,
+    /// The fully assembled profile (its `system_prompt` is the resolved prompt).
+    pub profile: AgentProfile,
+    /// The included prompt slices with their sources, in prompt order.
+    pub parts: Vec<PromptPart>,
+    /// Whether the definition opted into the project brief (`include_brief`).
+    pub include_brief: bool,
+    /// Whether a brief slice actually made it into the prompt (set *and* found).
+    pub brief_included: bool,
+}
+
+/// Resolve the winning definition for `agent` (same precedence as
+/// [`load_registry`]) and report its assembled prompt plus per-part breakdown,
+/// without spawning the engine (#184). `Ok(None)` if no such agent exists; a
+/// malformed definition in any layer is a loud error, exactly as at load.
+pub fn prompt_report(
+    root: &Path,
+    agent: &str,
     ctx: &PromptContext,
     skills: &SkillRegistry,
-) -> Result<()> {
+) -> Result<Option<AgentPromptReport>> {
+    // Scan in precedence order, keeping the *last* definition whose name matches
+    // — the same "later layer wins" rule `load_registry` gets from `insert`.
+    let mut winner: Option<(String, AgentDefinition, String)> = None;
+    for raw in discover(root)? {
+        let (frontmatter, body) = crate::frontmatter::split(&raw.content)
+            .with_context(|| format!("parsing agent `{}`", raw.source))?;
+        let def: AgentDefinition = serde_yaml::from_str(&frontmatter)
+            .with_context(|| format!("invalid frontmatter in agent `{}`", raw.source))?;
+        if def.name == agent {
+            winner = Some((raw.source, def, body));
+        }
+    }
+    let Some((source, def, body)) = winner else {
+        return Ok(None);
+    };
+
+    let include_brief = def.include_brief;
+    let mode = def.mode;
+    let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
+    let mut parts = assemble_parts(&body, include_brief, mode, ctx, &preloaded);
+    // `assemble_parts` labels the body with a generic source; here we know the
+    // actual winning file, so point the body part at it.
+    for p in parts.iter_mut().filter(|p| p.label == "agent body") {
+        p.source = source.clone();
+    }
+    let brief_included = parts.iter().any(|p| p.label == "project brief");
+    let profile = build_profile(def, &body, ctx, skills)?;
+    Ok(Some(AgentPromptReport {
+        source,
+        profile,
+        parts,
+        include_brief,
+        brief_included,
+    }))
+}
+
+/// A discovered agent definition file *before* parsing: a display label for its
+/// origin (`built-in (build.md)` or the file path) and the raw file content.
+struct RawAgent {
+    source: String,
+    content: String,
+}
+
+/// Enumerate every agent definition in precedence order — embedded built-ins,
+/// then the user dir, then the project dir — without parsing them. Later entries
+/// win on a `name` collision, so consumers keep the last match. A missing dir is
+/// fine; an unreadable dir or file is an error.
+fn discover(root: &Path) -> Result<Vec<RawAgent>> {
+    let mut raws: Vec<RawAgent> = BUILT_INS
+        .iter()
+        .map(|(file, contents)| RawAgent {
+            source: format!("built-in ({file})"),
+            content: (*contents).to_string(),
+        })
+        .collect();
+    if let Some(dir) = user_agents_dir() {
+        read_dir_raws(&dir, &mut raws)?;
+    }
+    read_dir_raws(&root.join(".entanglement").join("agents"), &mut raws)?;
+    Ok(raws)
+}
+
+/// Append every `*.md` file in `dir` (if it exists) to `raws`, sorted for
+/// deterministic collision resolution within the directory.
+fn read_dir_raws(dir: &Path, raws: &mut Vec<RawAgent>) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
     let entries =
         std::fs::read_dir(dir).with_context(|| format!("reading agents dir {}", dir.display()))?;
-    // Sort for deterministic collision resolution within a single directory.
     let mut files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
         .collect();
     files.sort();
     for path in files {
-        let contents = std::fs::read_to_string(&path)
+        let content = std::fs::read_to_string(&path)
             .with_context(|| format!("reading agent definition {}", path.display()))?;
-        let profile = parse_definition(&contents, ctx, skills)
-            .with_context(|| format!("parsing agent definition {}", path.display()))?;
-        reg.insert(profile);
+        raws.push(RawAgent {
+            source: path.display().to_string(),
+            content,
+        });
     }
     Ok(())
 }
@@ -191,6 +263,19 @@ fn parse_definition(
     let (frontmatter, body) = crate::frontmatter::split(content)?;
     let def: AgentDefinition =
         serde_yaml::from_str(&frontmatter).context("invalid agent frontmatter")?;
+    build_profile(def, &body, ctx, skills)
+}
+
+/// Build a core [`AgentProfile`] from an already-parsed definition + body,
+/// composing the final `system_prompt` via [`assemble`]. Split out from
+/// [`parse_definition`] so `inspect` can reuse it after it has the definition in
+/// hand (to also render the per-part breakdown from the same inputs).
+fn build_profile(
+    def: AgentDefinition,
+    body: &str,
+    ctx: &PromptContext,
+    skills: &SkillRegistry,
+) -> Result<AgentProfile> {
     if def.name.trim().is_empty() {
         bail!("agent frontmatter `name` must not be empty");
     }
@@ -198,25 +283,14 @@ fn parse_definition(
         Some(v) => permission_from_value(v)?,
         None => PermissionProfile::new(Permission::Allow),
     };
-    // Resolve `skills:` preload (#117) to rendered bodies via the skill registry.
-    // An unknown skill is a loud error (agent definitions never silently drop a
-    // typo'd field); this is orthogonal to the `load_skill` access mask.
-    let preloaded = def
-        .skills
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .map(|name| {
-            skills
-                .preload_body(name)
-                .with_context(|| format!("preloading skill for agent `{}`", def.name))
-        })
-        .collect::<Result<Vec<String>>>()?;
-    Ok(AgentProfile {
+    let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
+    let include_brief = def.include_brief;
+    let mode = def.mode;
+    let profile = AgentProfile {
         name: def.name,
         description: def.description,
-        mode: def.mode,
-        system_prompt: assemble(&body, def.include_brief, def.mode, ctx, &preloaded),
+        mode,
+        system_prompt: assemble(body, include_brief, mode, ctx, &preloaded),
         model: def.model.filter(|m| m != "inherit"),
         permission,
         tools: def.tools,
@@ -224,7 +298,46 @@ fn parse_definition(
         owns_plan: def.owns_plan,
         can_spawn: def.can_spawn,
         spawnable_agents: def.spawnable_agents,
-    })
+    };
+    // The one observability point at load (#184): the assembled prompt is
+    // otherwise invisible. `brief`/`skills` report what actually reached this
+    // prompt — `brief` is `none` unless the agent opts in *and* a brief exists;
+    // `skills` is 0 for a subagent (the tier-1 index is withheld for it).
+    let brief = if include_brief {
+        ctx.brief_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "none".to_string())
+    } else {
+        "none".to_string()
+    };
+    let skills_in_prompt = if mode != AgentMode::Subagent {
+        ctx.skills.len()
+    } else {
+        0
+    };
+    tracing::debug!(
+        agent = %profile.name,
+        prompt_len = profile.system_prompt.len(),
+        brief = %brief,
+        skills = skills_in_prompt,
+        "assembled agent system prompt",
+    );
+    Ok(profile)
+}
+
+/// Resolve a definition's `skills:` preload (#117) to rendered bodies via the
+/// skill registry. An unknown skill is a loud error (agent definitions never
+/// silently drop a typo'd field); orthogonal to the `load_skill` access mask.
+fn resolve_preload(names: &[String], agent: &str, skills: &SkillRegistry) -> Result<Vec<String>> {
+    names
+        .iter()
+        .map(|name| {
+            skills
+                .preload_body(name)
+                .with_context(|| format!("preloading skill for agent `{agent}`"))
+        })
+        .collect()
 }
 
 /// Convert a frontmatter `permission` mapping into a core [`PermissionProfile`].

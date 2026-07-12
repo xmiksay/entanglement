@@ -307,3 +307,93 @@ async fn spawn_under_a_file_defined_profile() {
     );
     assert!(parent_finished, "the parent finishes after delegating");
 }
+
+// ---------------------------------------------------------------------------
+// `inspect prompt` support: prompt_report (#184)
+// ---------------------------------------------------------------------------
+
+use entanglement_runtime::agents::prompt_report;
+
+/// Resolve `agent` via `prompt_report` under a temp project root, isolating from
+/// any host user-agents dir. Serialized on `ENV_LOCK` like `load_with_dirs`.
+fn report_for(
+    project_root: &std::path::Path,
+    agent: &str,
+    ctx: &PromptContext,
+) -> Option<entanglement_runtime::agents::AgentPromptReport> {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
+    let report = prompt_report(
+        project_root,
+        agent,
+        ctx,
+        &entanglement_runtime::skills::SkillRegistry::default(),
+    )
+    .expect("prompt_report");
+    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
+    report
+}
+
+#[test]
+fn prompt_report_reports_builtin_source_and_prompt() {
+    let empty = tempfile::tempdir().unwrap();
+    let ctx = PromptContext::load(empty.path());
+    let report = report_for(empty.path(), "build", &ctx).expect("build resolves");
+    assert_eq!(report.source, "built-in (build.md)");
+    // The report's prompt matches the registry-assembled one for the same inputs.
+    let reg = load_registry(
+        empty.path(),
+        &ctx,
+        &entanglement_runtime::skills::SkillRegistry::default(),
+    )
+    .expect("load_registry");
+    assert_eq!(
+        report.profile.system_prompt,
+        reg.get("build").unwrap().system_prompt
+    );
+    // A primary agent gets the env block; the body part points at the winning file.
+    assert!(report.parts.iter().any(|p| p.label == "environment"));
+    let body = report
+        .parts
+        .iter()
+        .find(|p| p.label == "agent body")
+        .expect("body part");
+    assert_eq!(body.source, "built-in (build.md)");
+}
+
+#[test]
+fn prompt_report_unknown_agent_is_none() {
+    let empty = tempfile::tempdir().unwrap();
+    let ctx = PromptContext::load(empty.path());
+    assert!(report_for(empty.path(), "does-not-exist", &ctx).is_none());
+}
+
+#[test]
+fn prompt_report_prefers_project_definition() {
+    let project = tempfile::tempdir().unwrap();
+    write_agent(
+        &project.path().join(".entanglement").join("agents"),
+        "build.md",
+        "---\nname: build\ndescription: project override\n---\nProject build body.",
+    );
+    let ctx = PromptContext::load(project.path());
+    let report = report_for(project.path(), "build", &ctx).expect("build resolves");
+    // The project file wins over the embedded built-in (later layer).
+    assert!(report.source.ends_with("build.md"));
+    assert!(report.source.contains(".entanglement"));
+    assert!(report.profile.system_prompt.contains("Project build body."));
+}
+
+#[test]
+fn prompt_report_subagent_omits_env_and_skill_index() {
+    let empty = tempfile::tempdir().unwrap();
+    let mut ctx = PromptContext::load(empty.path());
+    ctx.skills = vec![entanglement_runtime::system_prompt::SkillDisclosure {
+        name: "git".into(),
+        description: "commit helpers".into(),
+    }];
+    // `explore` is the reference subagent: no env block, no tier-1 skill index.
+    let report = report_for(empty.path(), "explore", &ctx).expect("explore resolves");
+    assert!(!report.parts.iter().any(|p| p.label == "environment"));
+    assert!(!report.parts.iter().any(|p| p.label == "skill index"));
+}
