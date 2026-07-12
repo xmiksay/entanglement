@@ -66,6 +66,14 @@ tools and makes no policy decision:
   (ADR-0009/ADR-0045); permission profiles gate whether they run at all. `call`
   is the injection-free sibling: a fixed argv can't be shell-injected, so a
   profile may `Allow` `call` while keeping `bash` at `Ask`/`Deny`.
+- **Secret scrubbing (#164):** both exec tools `env_remove` the catalog's
+  provider API-key env vars (`Catalog::key_envs()` — `ZAI_API_KEY`,
+  `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) from the child before spawn, so a
+  model-authored `env`/`printenv` can't read the engine's credentials. `call`'s
+  no-shell design doesn't help — a plain `env` still inherits them — so the scrub
+  covers both. `rhai` is exempt (no env binding). The head wires the set via
+  `BashTool::new(root).with_secret_env(catalog.key_envs())` (same for `CallTool`);
+  a broader env-allowlist policy can ride the future sandbox ADR.
 - **Bounded output:** 32 KiB byte cap with a truncation notice; `read` defaults
   to 2000 lines; `glob`/`grep` cap at 1000 results. Prevents a huge file/tree
   from blowing the context window.
