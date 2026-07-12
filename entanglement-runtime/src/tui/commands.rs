@@ -9,6 +9,7 @@ pub enum Command {
     Model,
     Plan,
     Tasks,
+    Inspect,
     Editor,
     Export,
     Resume,
@@ -25,6 +26,7 @@ impl Command {
             Command::Model => "model",
             Command::Plan => "plan",
             Command::Tasks => "tasks",
+            Command::Inspect => "inspect",
             Command::Editor => "editor",
             Command::Export => "export",
         }
@@ -39,6 +41,7 @@ impl Command {
             Command::Model => "Pick model",
             Command::Plan => "Jump to plan panel",
             Command::Tasks => "Jump to task panel",
+            Command::Inspect => "Inspect prompt, agents & skills",
             Command::Editor => "Open editor",
             Command::Export => "Export conversation",
             Command::Resume => "Continue a past session",
@@ -60,6 +63,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Model,
         Command::Plan,
         Command::Tasks,
+        Command::Inspect,
         Command::Editor,
         Command::Export,
     ]
@@ -207,6 +211,7 @@ mod tests {
         assert_eq!(parse_command("/model"), Some(Command::Model));
         assert_eq!(parse_command("/plan"), Some(Command::Plan));
         assert_eq!(parse_command("/tasks"), Some(Command::Tasks));
+        assert_eq!(parse_command("/inspect"), Some(Command::Inspect));
         assert_eq!(parse_command("/editor"), Some(Command::Editor));
         assert_eq!(parse_command("/export"), Some(Command::Export));
     }

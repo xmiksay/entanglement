@@ -1,8 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+mod inspect;
 mod popups;
 mod sessions;
 
+pub use inspect::draw_inspect_overlay;
 pub use popups::{
     draw_command_palette, draw_help_dialog, draw_mention_popup, draw_slash_autocomplete,
     draw_which_key_popup,

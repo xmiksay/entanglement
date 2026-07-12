@@ -37,6 +37,7 @@ fn any_modal_open(app: &App) -> bool {
         || app.showing_command_palette()
         || app.showing_resume_modal()
         || app.showing_help()
+        || app.showing_inspect()
 }
 
 /// Moves the open modal's selection forward for a wheel-down; returns whether a
@@ -52,6 +53,8 @@ fn wheel_modal_next(app: &mut App) -> bool {
         app.command_palette().select_next();
     } else if app.showing_resume_modal() {
         app.resume_next();
+    } else if app.showing_inspect() {
+        app.inspect_scroll_down(3);
     } else if app.showing_help() {
         // Consume without acting — the help dialog has no selection.
     } else {
@@ -71,6 +74,8 @@ fn wheel_modal_prev(app: &mut App) -> bool {
         app.command_palette().select_prev();
     } else if app.showing_resume_modal() {
         app.resume_prev();
+    } else if app.showing_inspect() {
+        app.inspect_scroll_up(3);
     } else if app.showing_help() {
     } else {
         return false;
@@ -189,6 +194,40 @@ pub(super) async fn handle_command_palette_event(app: &mut App, key: KeyEvent) -
             let mut query = app.command_palette().query().to_string();
             query.pop();
             app.command_palette().set_query(query);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+/// Drives the read-only inspection overlay (#214): `Tab`/`←`/`→` switch tabs,
+/// arrows/`j`/`k`/`PgUp`/`PgDn` scroll the current pane, `Esc` closes. No engine
+/// traffic — it's a pure view over already-resolved state.
+pub(super) async fn handle_inspect_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_inspect();
+        }
+        KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+            app.inspect_next_tab();
+        }
+        KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+            app.inspect_prev_tab();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.inspect_scroll_down(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.inspect_scroll_up(1);
+        }
+        KeyCode::PageDown => {
+            app.inspect_scroll_down(10);
+        }
+        KeyCode::PageUp => {
+            app.inspect_scroll_up(10);
+        }
+        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
         }
         _ => {}
     }

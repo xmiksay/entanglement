@@ -103,7 +103,19 @@ persistence machinery with none of the CLI/TUI/transport weight
   head-side shell escape: the command runs through the existing `BashTool` and its
   output is injected into the transcript as a `!bash` tool call/output pair, local
   only (never sent to the engine). Gated on `ENTANGLEMENT_ENABLE_BASH=1`, the same
-  opt-in as the model-facing `bash` tool (ADR-0010).
+  opt-in as the model-facing `bash` tool (ADR-0010). **In-session inspection
+  overlay** (✅ #214, `tui::modals::inspect` + `tui::app::inspect`): `<leader>i` /
+  `/inspect` opens a read-only three-tab overlay (Prompt / Agents / Skills) over
+  the **active session's** resolved state — the same views the CLI's `skutter
+  inspect prompt|agents|skills` print, so you can debug a misbehaving session
+  without leaving the TUI. It reuses the identical engine-free renderers
+  (`inspect::tui_reports` → the shared `render_*` helpers): the Prompt tab is the
+  active agent's `--parts` breakdown; the Agents tab is the registry table plus
+  the active agent's full detail (permission / mask / spawn / `owns_plan`); the
+  Skills tab is the exact `disclosures()` block the model sees plus the full table
+  (including `user_only`). Views resolve on open from the cwd + live agent, so
+  they stay fresh across mid-session definition edits. `Tab`/`←`/`→` switch tabs,
+  arrows/`j`/`k`/`PgUp`/`PgDn` (or the wheel) scroll, `Esc` closes.
 
 ## 6b. Session persistence & resume (`persistence` + `session_store`)
 
