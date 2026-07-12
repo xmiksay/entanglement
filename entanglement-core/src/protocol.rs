@@ -110,8 +110,9 @@ pub enum Permission {
 
 /// Per-tool permission rules. Evaluated against a tool name; later matching
 /// rules win (so put `"*"` first, specifics after — same semantics as opencode).
-/// Built-in engine tools (`update_plan`, `update_tasks`) bypass this and always
-/// run, since they only mutate session state.
+/// Built-in engine tools (`update_plan`, `update_tasks`) bypass this — they only
+/// mutate session state and are gated instead by their default-closed authority
+/// flags (`owns_plan`/`owns_tasks`), not by `Allow`/`Ask`/`Deny`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionProfile {
     /// `(pattern, permission)` pairs. `pattern` is either a tool name or `"*"`.
@@ -203,10 +204,18 @@ pub struct AgentProfile {
     /// from a non-owner. Orthogonal to the #116 tool mask — the plan built-ins
     /// are session-state tools, never routed through [`advertises_tool`]
     /// ([`Self::advertises_tool`]) — so authority cannot depend on every future
-    /// agent remembering to opt *out*. `update_tasks` stays unconditional
-    /// (per-session bookkeeping, no cross-agent authority).
+    /// agent remembering to opt *out*.
     #[serde(default)]
     pub owns_plan: bool,
+    /// Whether this profile may author the session task list (#175, ADR-0049).
+    /// **Default-closed**, mirroring [`owns_plan`][Self::owns_plan]: only a
+    /// task-owning profile advertises the built-in `update_tasks` tool, and core
+    /// refuses a hallucinated `update_tasks` call from a non-owner. Closes the
+    /// gap where a read-only `explore` subagent could still mutate session task
+    /// state — the built-ins never round-trip to the runtime, so the #116 mask
+    /// cannot reach them (revises the "stays unconditional" note in ADR-0041).
+    #[serde(default)]
+    pub owns_tasks: bool,
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
     /// ⇒ derive from [`mode`][Self::mode]: a `Subagent` leaf defaults closed,
     /// every other mode open. When it (or the derived default) is `false`, the
@@ -231,7 +240,8 @@ impl AgentProfile {
     /// [`PermissionProfile::for_tool`], which grades `Allow`/`Ask`/`Deny` among
     /// the tools that survive this mask. The engine built-ins (`update_plan`/
     /// `update_tasks`) are session-state tools, not host tools, and are never
-    /// passed through this mask.
+    /// passed through this mask — they are gated by their own default-closed
+    /// authority flags ([`owns_plan`][Self::owns_plan]/[`owns_tasks`][Self::owns_tasks]).
     pub fn advertises_tool(&self, tool: &str) -> bool {
         if self.disallowed_tools.iter().any(|t| t == tool) {
             return false;
@@ -789,6 +799,7 @@ mod tests {
             tools: Some(vec!["read".into(), "grep".into()]),
             disallowed_tools: vec!["edit".into()],
             owns_plan: false,
+            owns_tasks: false,
             can_spawn: None,
             spawnable_agents: None,
         };
@@ -855,6 +866,7 @@ mod tests {
             tools: tools.map(|v| v.into_iter().map(String::from).collect()),
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),
             owns_plan: false,
+            owns_tasks: false,
             can_spawn: None,
             spawnable_agents: None,
         }
@@ -875,6 +887,7 @@ mod tests {
             tools: None,
             disallowed_tools: Vec::new(),
             owns_plan: false,
+            owns_tasks: false,
             can_spawn,
             spawnable_agents: spawnable_agents.map(|v| v.into_iter().map(String::from).collect()),
         }

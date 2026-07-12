@@ -149,6 +149,9 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             // Default-closed plan authority (#140): `build` consumes the plan, it
             // does not author it — the accept flow hands it a ready plan.
             owns_plan: false,
+            // `build` is the execution agent: it tracks progress with the
+            // user-facing task checklist, so it owns tasks (#175, ADR-0049).
+            owns_tasks: true,
             // `build` spawns everything except primaries (the target-side mode
             // gate, #119) — no `spawnable_agents` list, so user-defined
             // exploration agents stay spawnable without editing this built-in.
@@ -180,6 +183,9 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             // The plan agent is the plan owner (#140): it advertises `update_plan`
             // and its calls mutate the session plan.
             owns_plan: true,
+            // Default-closed task authority (#175): `plan` authors a plan and
+            // delegates — the execution checklist is `build`'s, so no tasks.
+            owns_tasks: false,
             // `plan` may spawn (a primary), but omits `spawnable_agents` so any
             // user-defined exploration agent stays reachable (#119).
             can_spawn: None,
@@ -202,6 +208,9 @@ fn built_in_profiles() -> [AgentProfile; 3] {
             disallowed_tools: Vec::new(),
             // Default-closed plan authority (#140): explore never authors a plan.
             owns_plan: false,
+            // Default-closed task authority (#175, ADR-0049): a read-only
+            // exploration agent must not mutate the session task list either.
+            owns_tasks: false,
             // Reference leaf: a `Subagent` mode defaults `can_spawn` closed (#119),
             // so the whole `agent_*` family is withheld — matching the tool mask.
             can_spawn: None,

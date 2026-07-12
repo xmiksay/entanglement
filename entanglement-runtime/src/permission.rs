@@ -230,6 +230,7 @@ mod tests {
             tools: tools.map(|v| v.into_iter().map(String::from).collect()),
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),
             owns_plan: false,
+            owns_tasks: false,
             can_spawn: None,
             spawnable_agents: None,
         }

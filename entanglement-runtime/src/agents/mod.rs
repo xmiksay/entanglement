@@ -95,6 +95,11 @@ struct AgentDefinition {
     /// `owns_plan: true` advertises the built-in `update_plan` tool.
     #[serde(default)]
     owns_plan: bool,
+    /// Whether this profile may author the session task list (#175, ADR-0049).
+    /// Default-closed: omitted ⇒ `false`, so only an agent that opts in with
+    /// `owns_tasks: true` advertises the built-in `update_tasks` tool.
+    #[serde(default)]
+    owns_tasks: bool,
     /// Whether this profile may spawn sub-agents (#119, ADR-0040). Omitted ⇒
     /// derive from `mode` (`subagent` closed, otherwise open).
     #[serde(default)]
@@ -402,6 +407,7 @@ fn build_profile(
         tools: def.tools,
         disallowed_tools: def.disallowed_tools,
         owns_plan: def.owns_plan,
+        owns_tasks: def.owns_tasks,
         can_spawn: def.can_spawn,
         spawnable_agents: def.spawnable_agents,
     };
@@ -529,6 +535,8 @@ mod tests {
         assert!(build.system_prompt.starts_with("You are a coding agent"));
         // Default-closed plan authority (#140): build consumes the plan.
         assert!(!build.owns_plan);
+        // Build is the execution agent and owns the task checklist (#175).
+        assert!(build.owns_tasks);
 
         let plan = reg.get("plan").expect("plan built-in");
         assert_eq!(plan.permission.for_tool("read"), Permission::Allow);
@@ -537,6 +545,8 @@ mod tests {
         // tool mask carries the read trio + delegation/skill tools, no
         // `edit`/`write`/`bash`. Children spawned under it inherit this clamp.
         assert!(plan.owns_plan);
+        // Plan authors a plan, not a task checklist (#175, ADR-0049).
+        assert!(!plan.owns_tasks);
         assert!(plan.advertises_tool("read"));
         assert!(plan.advertises_tool("agent_spawn"));
         assert!(plan.advertises_tool("load_skill"));
@@ -552,6 +562,8 @@ mod tests {
         assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
         assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);
         assert!(!explore.owns_plan);
+        // Read-only agent owns no task list either (#175, ADR-0049).
+        assert!(!explore.owns_tasks);
         // Reference read-only agent (#116): its tool mask is the read trio only.
         assert!(explore.advertises_tool("read"));
         assert!(explore.advertises_tool("grep"));
@@ -566,6 +578,15 @@ mod tests {
         assert!(!p.owns_plan);
         let p = parse("---\nname: x\ndescription: d\nowns_plan: true\n---\nbody").unwrap();
         assert!(p.owns_plan);
+    }
+
+    #[test]
+    fn owns_tasks_defaults_false_and_parses_true() {
+        // Default-closed: omitting `owns_tasks` yields false (#175, ADR-0049).
+        let p = parse("---\nname: x\ndescription: d\n---\nbody").unwrap();
+        assert!(!p.owns_tasks);
+        let p = parse("---\nname: x\ndescription: d\nowns_tasks: true\n---\nbody").unwrap();
+        assert!(p.owns_tasks);
     }
 
     #[test]

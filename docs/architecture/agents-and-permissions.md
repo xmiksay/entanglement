@@ -37,8 +37,9 @@ below realize one model:
   executable* (the #116 mask), not a persona told not to write.
 - **Enforcement-locus split** — a gate lives where it can see the call: the tool
   mask, spawn control, and permission clamp are **runtime** (host tools /
-  spawns round-trip there); `owns_plan` is **core** (the `update_plan` built-in
-  never round-trips). See ADR-0044 for the full principle→enforcement map and the
+  spawns round-trip there); `owns_plan`/`owns_tasks` are **core** (the
+  `update_plan`/`update_tasks` built-ins never round-trip). See ADR-0044 for the
+  full principle→enforcement map and the
   deferred follow-ups (skill provenance, skill-index masking, child-root
   isolation).
 
@@ -81,8 +82,8 @@ below realize one model:
   `EngineConfig.tool_specs` by the active profile's mask before appending the
   `update_plan`/`update_tasks` built-ins (session-state tools, never routed
   through the tool mask) — a masked tool's schema never reaches the model.
-  `update_plan` is instead authority-gated (`owns_plan`, ✅ #140, below), while
-  `update_tasks` is always advertised. **(b) Enforcement:**
+  both `update_plan` and `update_tasks` are instead authority-gated
+  (`owns_plan`/`owns_tasks`, ✅ #140/#175, below). **(b) Enforcement:**
   `runtime::permission::tool_masked` refuses a masked `ToolExec` **first** — before
   the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions and permission —
   so a hallucinated masked call is a hard boundary, and the mask **intersects down
@@ -116,8 +117,7 @@ below realize one model:
   enforcement runtime), plan authority is enforced **entirely in core** — the
   built-ins are session-state tools that never round-trip to the runtime, so
   `tool_masked` cannot see them. **Advertisement:** `run_turn` appends the
-  `update_plan` spec only when the active profile `owns_plan` (`update_tasks` stays
-  unconditional — per-session bookkeeping, no cross-agent authority).
+  `update_plan` spec only when the active profile `owns_plan`.
   **Enforcement:** `handle_tool_call` refuses a hallucinated non-owner `update_plan`
   via a refusal `ToolOutput` — no plan mutation, no `OutEvent::Plan`, turn
   continues. `InMsg::SetPlan` stays head/user authority. Built-in `plan` gains
@@ -127,6 +127,18 @@ below realize one model:
   intersection — every child it spawns is clamped to that read-only set too.
   `build`/`explore` are unchanged (default-false = they simply stop advertising
   `update_plan`).
+- **`update_tasks` ownership (✅ #175, [ADR-0049](../adr/0049-update-tasks-ownership-default-closed.md)):**
+  authoring the session task list is the sibling per-profile authority,
+  `AgentProfile.owns_tasks` (default **false**), gated **exactly** like `owns_plan`
+  and enforced entirely in core (the built-in never round-trips to the runtime).
+  **Advertisement:** `run_turn` appends the `update_tasks` spec only when the active
+  profile `owns_tasks`. **Enforcement:** `handle_tool_call` refuses a hallucinated
+  non-owner `update_tasks` via a refusal `ToolOutput` — no task mutation, no
+  `OutEvent::TaskList`, turn continues. `InMsg::SetTasks` stays head/user authority.
+  Built-in `build` gains `owns_tasks: true` (the execution agent tracks the
+  checklist); `plan`/`explore` stay default-false, so a read-only `explore` subagent
+  can no longer mutate session task state. This revises the "`update_tasks` stays
+  unconditional" note from ADR-0041.
 - **Plan acceptance — `propose_plan` (✅ #141, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)):**
   the plan agent's *finalize* step (`update_plan` stays for working snapshots). A
   runtime-owned tool `propose_plan { plan }`, advertised only to a profile that

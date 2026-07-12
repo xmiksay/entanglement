@@ -419,6 +419,52 @@ async fn builtin_update_tasks_emits_tasklist_snapshot() {
 }
 
 #[tokio::test]
+async fn non_owner_update_tasks_is_refused_and_tasks_unchanged() {
+    // The `plan` profile does not own the task list (#175, ADR-0049). A
+    // hallucinated `update_tasks` call is refused via a `ToolOutput` — no
+    // `OutEvent::TaskList`, no task mutation — and the turn continues.
+    let holly = Holly::spawn(factory(vec![LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "t1".into(),
+            name: "update_tasks".into(),
+            input: r#"{"content":"- [ ] sneaky"}"#.into(),
+        }],
+    }]));
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "plan".into(),
+        })
+        .await
+        .unwrap();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "try to track".into(),
+        })
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::TaskList { .. })),
+        "non-owner update_tasks must not emit a TaskList snapshot; got {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { output, .. } if output.contains("refused")
+        )),
+        "non-owner update_tasks must surface a refusal ToolOutput; got {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn harness_set_tasks_and_set_plan_emit_snapshots() {
     let holly = Holly::spawn(factory(vec![LlmResponse {
         text: "ok".into(),
@@ -662,6 +708,7 @@ async fn custom_profile_is_selectable() {
         tools: None,
         disallowed_tools: Vec::new(),
         owns_plan: false,
+        owns_tasks: false,
         can_spawn: None,
         spawnable_agents: None,
     });

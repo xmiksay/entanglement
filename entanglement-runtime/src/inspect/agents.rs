@@ -144,6 +144,7 @@ pub(super) fn render_agent_detail(entry: &AgentResolution) -> String {
     }
 
     let _ = writeln!(out, "\nowns_plan (#140): {}", p.owns_plan);
+    let _ = writeln!(out, "owns_tasks (#175): {}", p.owns_tasks);
     let _ = writeln!(
         out,
         "\nassembled system prompt: {} chars",

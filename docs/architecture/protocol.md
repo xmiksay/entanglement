@@ -87,10 +87,11 @@ render/dedupe):
 Both are written two ways:
 1. A **built-in engine tool** the model calls — `update_plan { content }`
    and `update_tasks { content }` (both markdown). These bypass permissions
-   (they only mutate session state) and never need approval. `update_plan` is
+   (they only mutate session state) and never need approval. Both are
    authority-gated: advertised and accepted only under a profile that `owns_plan`
-   (default-closed, ✅ #140, [ADR-0041](../adr/0041-update-plan-ownership-default-closed.md));
-   `update_tasks` is unconditional.
+   (default-closed, ✅ #140, [ADR-0041](../adr/0041-update-plan-ownership-default-closed.md))
+   / `owns_tasks` (default-closed, ✅ #175, [ADR-0049](../adr/0049-update-tasks-ownership-default-closed.md)),
+   respectively — a non-owner's call is refused in core.
 2. A **harness message** — `InMsg::SetPlan` / `InMsg::SetTasks` (user edits).
 
 This is why `entanglement` has *both* the opencode agent-profile axis *and* structured

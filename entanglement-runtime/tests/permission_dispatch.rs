@@ -107,6 +107,7 @@ fn ask_bash_registry() -> ProfileRegistry {
         tools: None,
         disallowed_tools: Vec::new(),
         owns_plan: false,
+        owns_tasks: false,
         can_spawn: None,
         spawnable_agents: None,
     });
@@ -177,6 +178,7 @@ async fn deny_refuses_without_request() {
         tools: None,
         disallowed_tools: Vec::new(),
         owns_plan: false,
+        owns_tasks: false,
         can_spawn: None,
         spawnable_agents: None,
     });

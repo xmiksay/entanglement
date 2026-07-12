@@ -109,20 +109,24 @@ async fn explore_profile_hides_edit_via_set_agent() {
         !names.iter().any(|n| n == "edit"),
         "explore's masked `edit` must not be advertised; got {names:?}"
     );
-    // `update_tasks` is a session-state built-in, never masked and always
-    // advertised. `update_plan` is authority-gated (#140): `explore` does not
-    // own the plan, so it is withheld — not by the #116 mask, but by `owns_plan`.
-    assert!(names.iter().any(|n| n == "update_tasks"), "got {names:?}");
+    // Both session-state built-ins are authority-gated (#140/#175): `explore`
+    // owns neither the plan nor the task list, so `update_plan`/`update_tasks`
+    // are withheld — not by the #116 mask, but by `owns_plan`/`owns_tasks`.
     assert!(
         !names.iter().any(|n| n == "update_plan"),
         "non-owner explore must not advertise update_plan; got {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "update_tasks"),
+        "non-owner explore must not advertise update_tasks; got {names:?}"
     );
 }
 
 #[tokio::test]
 async fn owns_plan_gates_update_plan_advertisement() {
-    // `build` (default) does not own the plan → no `update_plan`, but always
-    // `update_tasks`. The plan-owning `plan` profile advertises `update_plan`.
+    // `build` (default) does not own the plan → no `update_plan`, but it owns
+    // tasks so `update_tasks` is advertised. The plan-owning `plan` profile
+    // advertises `update_plan` but not `update_tasks` (it owns no task list).
     let seen = Arc::new(Mutex::new(Vec::new()));
     let holly = Holly::spawn(recording_config(seen.clone()));
     let sid = SessionId::new("s1");
@@ -161,6 +165,10 @@ async fn owns_plan_gates_update_plan_advertisement() {
     assert!(
         names2.iter().any(|n| n == "update_plan"),
         "plan owner must advertise update_plan; got {names2:?}"
+    );
+    assert!(
+        !names2.iter().any(|n| n == "update_tasks"),
+        "non-task-owner plan must not advertise update_tasks; got {names2:?}"
     );
 }
 

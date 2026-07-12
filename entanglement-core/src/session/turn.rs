@@ -51,12 +51,11 @@ pub(crate) async fn run_turn(
     // tools that survive here. The `update_plan`/`update_tasks` built-ins below
     // are session-state tools, not host tools, so they bypass the mask.
     //
-    // Plan authority is separate and default-closed (#140, ADR-0041): the
-    // `update_plan` spec is advertised *only* to a profile that `owns_plan`;
-    // `update_tasks` stays unconditional (per-session bookkeeping, no
-    // cross-agent authority). This lives in core because the built-ins never
-    // round-trip to the runtime, so the runtime's `tool_masked` gate can't see
-    // them.
+    // Plan/task authority is separate and default-closed (#140/#175,
+    // ADR-0041/0049): the `update_plan` spec is advertised *only* to a profile
+    // that `owns_plan`, and `update_tasks` *only* to one that `owns_tasks`. This
+    // lives in core because the built-ins never round-trip to the runtime, so the
+    // runtime's `tool_masked` gate can't see them.
     let mut specs: Vec<ToolSpec> = tool_specs
         .iter()
         .filter(|spec| s.profile.advertises_tool(&spec.name))
@@ -92,21 +91,23 @@ pub(crate) async fn run_turn(
             }),
         ));
     }
-    specs.push(ToolSpec::with_schema(
-        TASKS_TOOL,
-        "Replace the task list (markdown). Shown to the user as progress info — \
-         it is not fed back to you, so keep it a short checklist.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The full task list, in markdown — e.g. `- [ ]` / `- [x]` checkbox lines."
-                }
-            },
-            "required": ["content"]
-        }),
-    ));
+    if s.profile.owns_tasks {
+        specs.push(ToolSpec::with_schema(
+            TASKS_TOOL,
+            "Replace the task list (markdown). Shown to the user as progress info — \
+             it is not fed back to you, so keep it a short checklist.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The full task list, in markdown — e.g. `- [ ]` / `- [x]` checkbox lines."
+                    }
+                },
+                "required": ["content"]
+            }),
+        ));
+    }
 
     loop {
         if !s.ctx.within_limit() {

@@ -93,3 +93,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0046](0046-rhai-sandboxed-script-tool.md) | `rhai` host tool: embedded capability-sandboxed script engine; quintet bindings permission-checked per call via a sync/async bridge | Accepted |
 | [0047](0047-local-trust-boundary.md) | Local trust boundary: repo is trusted, config precedence system < user < repo, inspection over enforcement | Accepted |
 | [0048](0048-serve-head-local-trust-model.md) | `serve` head: local-only WebSocket protocol interface (Vue SPA primary/non-exclusive; browser surface out of scope; loopback + opt-in handshake) | Accepted |
+| [0049](0049-update-tasks-ownership-default-closed.md) | `update_tasks` ownership: `owns_tasks` default-closed task authority (mirrors #140; `build` owns tasks, read-only `explore` can no longer mutate them) | Accepted |

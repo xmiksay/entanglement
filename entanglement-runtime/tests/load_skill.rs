@@ -232,6 +232,7 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
         tools: None,
         disallowed_tools: Vec::new(),
         owns_plan: false,
+        owns_tasks: false,
         can_spawn: None,
         spawnable_agents: None,
     });

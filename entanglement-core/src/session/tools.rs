@@ -29,7 +29,8 @@ pub(crate) async fn handle_tool_call(
         &mut s.seq,
     );
 
-    // Built-ins: always run, mutate session state, emit a snapshot.
+    // Built-ins: gated by default-closed authority (owns_plan/owns_tasks); an
+    // owner mutates session state and emits a snapshot, a non-owner is refused.
     if call.name == PLAN_TOOL {
         // Plan authority is default-closed (#140, ADR-0041). A non-owner should
         // never see the `update_plan` schema (it isn't advertised in `run_turn`),
@@ -71,6 +72,28 @@ pub(crate) async fn handle_tool_call(
         return false;
     }
     if call.name == TASKS_TOOL {
+        // Task authority is default-closed (#175, ADR-0049), mirroring the plan
+        // gate above: a non-owner (e.g. a read-only `explore` subagent) never
+        // sees the `update_tasks` schema, but a hallucinated call is refused here
+        // with no task mutation and no `OutEvent::TaskList`. Must be caught in
+        // core: the built-ins never round-trip to the runtime.
+        if !s.profile.owns_tasks {
+            let msg = format!(
+                "update_tasks refused: the `{}` agent does not own the session task list; \
+                 only a task-owning profile may author it",
+                s.profile.name
+            );
+            emit_tool_output(
+                events,
+                session,
+                &call.id,
+                TASKS_TOOL,
+                msg.clone(),
+                &mut s.seq,
+            );
+            s.ctx.push_tool(&call.id, msg);
+            return false;
+        }
         let tasks = json_field(&call.input, "content").unwrap_or_else(|| call.input.clone());
         s.tasks = tasks;
         emit_tasks(events, session, &s.tasks, &mut s.seq);
