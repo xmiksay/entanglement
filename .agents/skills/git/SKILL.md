@@ -13,11 +13,32 @@ The loop is the point — phase 6 returns to phase 4 (push) until the review is 
 
 - **Never commit to / push to `master`.** Always work on a feature branch. (Project brief: fast-forward only, never commit to `master`.)
 - **Never work on a stale repo.** `git fetch origin` first — before branching, before pushing, before reading review state, and before rebasing. Branch/rebase off **`origin/master`**, not your local `master` (which may lag). Stale locals are how you build onto outdated code and manufacture avoidable conflicts; a fetch is cheap, a bad rebase isn't.
+- **Don't assume you start on `master`.** Orient first (Phase 0), then create the feature branch off `origin/master` from *whatever* branch you're on (`git switch -c <branch> origin/master`). Never `git switch master` as a step — it fails the moment you're mid-work elsewhere or the tree is dirty. Never switch branches over uncommitted work.
 - **After a rebase, push `--force-with-lease` — NEVER plain `--force`.** `--force-with-lease` aborts if the remote moved since your last fetch (someone else pushed); `--force` would clobber their work.
 - **Conventional Commits only** with a real scope (`feat(engine): …`, `fix(cli): …`, `docs: …`, …). No `Co-Authored-By` trailer.
 - **Tests ship with the change.** Run `make verify` (check-fmt + tree + check-lean + lint + test) before every push and before opening the PR.
 - **Keep history linear:** rebase onto `origin/master`; don't `git merge` it into your branch.
 - **Never auto-merge the PR.** Merge is the maintainer's (or the user's explicit) call. Stop when approved + no outstanding threads.
+
+## Phase 0 — Orient (always run first)
+
+You may be invoked from **any** branch — `master`, a half-done feature branch, or an unrelated one. Figure out where things stand *before* touching anything, so you resume instead of restarting or failing:
+
+```bash
+git fetch origin
+git branch --show-current                                    # master? a feature branch? something else?
+git status --porcelain                                       # uncommitted work to preserve?
+gh pr list --head "$(git branch --show-current)" --json number,url,state   # is there already a PR?
+```
+
+Route from what you find:
+
+| State | Go to |
+|---|---|
+| On `master` (or elsewhere), no feature branch yet | **Phase 2** — branch |
+| On the feature branch, no PR | **Phase 3/4** — implement / push, then Phase 5 |
+| On the feature branch, PR already open | **Phase 6** — review loop (do **not** re-create the PR) |
+| Dirty working tree | resolve first (commit or `git stash`) — never switch branches over uncommitted work |
 
 ## Phase 1 — Read the issue
 
@@ -30,15 +51,22 @@ Extract: a **one-line summary**, the **acceptance criteria / definition of done*
 
 ## Phase 2 — Branch
 
+Branch **directly off the freshly-fetched `origin/master`**, from whatever branch Phase 0 found you on — don't route through local `master`. Confirm the tree is clean first.
+
 ```bash
-git fetch origin
-git switch master && git pull --ff-only            # start from fresh master
-git switch -c <type>/<issue#>-<short-slug>         # e.g. feat/123-token-retry
+git fetch origin                                           # never branch off a stale ref
+git status --porcelain                                     # MUST be empty — commit/stash first if not
+
+# Starting fresh — create the branch off origin/master; works from ANY current branch:
+git switch -c <type>/<issue#>-<short-slug> origin/master   # e.g. feat/123-token-retry
+
+# Resuming an existing branch instead — check it out and rebase onto fresh master:
+git switch <branch> && git rebase origin/master
 ```
 
 - `<type>` from Conventional Commits (`feat`/`fix`/`docs`/`refactor`/`chore`/`test`/`perf`).
 - `<short-slug>` = 2–4 kebab-case words summarizing the issue.
-- If the branch already exists from a prior attempt, **check it out and rebase** rather than recreating: `git switch <branch> && git rebase origin/master`.
+- `git switch -c <branch> origin/master` gets a fresh base **without** switching to (or disturbing) local `master`, so it works no matter which branch you started on — this is the fix for "only works from master".
 
 ## Phase 3 — Implement
 
@@ -74,6 +102,14 @@ Then:
 `--force-with-lease` compares the remote to what you last fetched; if someone pushed in between it **refuses** and tells you to fetch first. That's the safety property — never trade it for `--force`.
 
 ## Phase 5 — Open the PR
+
+**First check whether a PR already exists for this branch** — re-running `/git` to push follow-up work must not try to open a second PR (`gh pr create` errors if one exists):
+
+```bash
+gh pr list --head <branch> --json number,url,state    # non-empty ⇒ PR exists: skip create, go to Phase 6
+```
+
+If a PR already exists, you're resuming — push (Phase 4) and drop into the review loop (Phase 6). Otherwise create it:
 
 ```bash
 gh pr create --base master --head <branch> \
