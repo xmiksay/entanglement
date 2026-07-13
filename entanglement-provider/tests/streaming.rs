@@ -7,7 +7,7 @@
 //! SSE frame parse → [`LlmEvent`] assembly, over the real `reqwest` transport.
 
 use entanglement_core::{Llm, LlmEvent, LlmRequest, Message};
-use entanglement_provider::{HttpClient, OpenAiLlm};
+use entanglement_provider::{HttpClient, OpenAiLlm, RetryConfig};
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -182,42 +182,47 @@ async fn tool_call_stream_assembles_and_emits_tool_call() {
     );
 }
 
-// ── rate-limit / error surfacing path ───────────────────────────────────────
+// ── rate-limit / retry path (per endpoint, #217) ────────────────────────────
 //
-// NOTE on why the transient-retry path is NOT driven here:
-//
-// `HttpClient::execute_with_retry` retries only genuine `reqwest::Error`s that
-// `is_transient_error` accepts — `is_timeout()`, `is_connect()`, a status-bearing
-// 5xx/429, or an error string containing `"incomplete"`. But the client calls
-// plain `.send()` (no `error_for_status`), so reqwest returns `Ok` for *any* HTTP
-// status: a 5xx or 429 *response* is never a `reqwest::Error` and so is never
-// retried — it's handled after the fact by the `!status().is_success()` branch in
-// `openai.rs`. The only remaining retry triggers are real transport faults, and
-// those can't be produced deterministically from a local mock: an empirical probe
-// (accept the first connection, drop it without responding) showed reqwest yields
-// a plain "error sending request" that `is_transient_error` classifies as
-// **permanent** — the client makes exactly one connection and does not retry.
-// Driving a true retry would require injecting a real connect/timeout fault at the
-// socket layer, out of scope for an HTTP mock. So instead we assert the reachable
-// end-to-end behavior: the client surfaces a 429 as a clear error.
+// Since #217 the retry loop classifies the *response* status, not just
+// `reqwest::Error` — a 429/5xx response now drives a real retry per endpoint,
+// honoring `Retry-After`. The 429-surfacing tests below therefore use a
+// `no_retry` client so a single mock response is enough to assert the surfaced
+// error; `retryable_500_then_success_retries` drives the retry path with a
+// two-response mock (500 then a good SSE stream).
 
 /// Bind an ephemeral port and serve exactly one raw HTTP response, then close.
 async fn serve_raw_once(response: Vec<u8>) -> String {
+    serve_raw_seq(vec![response]).await
+}
+
+/// Bind an ephemeral port and serve `responses` in order, one per accepted
+/// connection (reqwest opens a fresh connection per attempt with `Connection:
+/// close`), then stop. Lets a test drive the retry loop deterministically.
+async fn serve_raw_seq(responses: Vec<Vec<u8>>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("accept");
-        let _ = read_http_request(&mut stream).await;
-        stream.write_all(&response).await.expect("write response");
-        stream.flush().await.expect("flush");
+        for response in responses {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let _ = read_http_request(&mut stream).await;
+            let _ = stream.write_all(&response).await;
+            let _ = stream.flush().await;
+        }
     });
     format!("http://{addr}")
 }
 
 /// Start a turn and return the setup error string (the test expects `stream()`
-/// itself to fail, before any stream item).
+/// itself to fail, before any stream item). Uses a no-retry client so a single
+/// failing response is surfaced immediately.
 async fn stream_err(base_url: &str) -> String {
-    let mut llm = OpenAiLlm::new(base_url, Some("k".into()), "glm-5.2", HttpClient::new());
+    let mut llm = OpenAiLlm::new(
+        base_url,
+        Some("k".into()),
+        "glm-5.2",
+        HttpClient::with_config(RetryConfig::no_retry()),
+    );
     let messages = vec![Message::user("hi")];
     let req = LlmRequest {
         system: "s",
@@ -262,5 +267,32 @@ async fn rate_limit_429_with_retry_after_reports_backoff() {
     assert!(
         err.contains('7'),
         "error should carry the Retry-After duration: {err}"
+    );
+}
+
+#[tokio::test]
+async fn retryable_500_then_success_retries_and_streams() {
+    // #193/#217: a 500 *response* (not a reqwest::Error) is now classified inside
+    // the retry loop and retried per endpoint. The first connection gets a 500,
+    // the retry gets a clean SSE stream.
+    let err500 = b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"boom\"}".to_vec();
+    let ok = sse_response(&sse_body(&[
+        r#"{"choices":[{"delta":{"content":"recovered"}}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+    ]));
+    let base_url = serve_raw_seq(vec![err500, ok]).await;
+
+    // Default retry config (5 attempts, 200ms initial backoff) retries the 500.
+    let events = collect_events(&base_url).await;
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            LlmEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text, "recovered",
+        "the retry should surface the good stream"
     );
 }

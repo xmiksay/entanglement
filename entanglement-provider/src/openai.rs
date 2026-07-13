@@ -110,7 +110,7 @@ impl Llm for OpenAiLlm {
 
         let response = self
             .http
-            .execute_with_retry(|| {
+            .execute_with_retry(&self.base_url, || {
                 let mut request = self.http.client().post(&url);
                 if let Some(key) = &self.api_key {
                     request = request.bearer_auth(key);

@@ -43,11 +43,22 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 - `ToolSpec.schema` surfaces as `input_schema` (Anthropic) / `parameters`
   (OpenAI-compat); `Message.tool_call_id` → `tool_use_id` / `tool_call_id`.
 
-**Resilience the provider layer owns:** a shared, tuned connection **pool**
-(reused across sessions, not a client-per-turn); **retry** with exponential
-backoff + jitter on transient failures and dropped streams; **rate-limit**
-handling (HTTP 429 + `Retry-After`, plus a client-side RPM throttle, surfaced as
-status not silent stalls).
+**Resilience the provider layer owns — per endpoint** (#217,
+[ADR-0050](../adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)): one
+tuned `reqwest::Client` is shared (it already pools TCP connections per host),
+but the **rate-limit budget and retry/backoff state are keyed by endpoint** (the
+provider's base URL) in `HttpClient`'s `EndpointPool`. Each endpoint owns a
+token-bucket RPM throttle (default 50 RPM, `RetryConfig::rpm`) and its own
+`Retry-After` cool-down window, so a throttled endpoint never starves another —
+before #217 a single global 50-RPM `Semaphore` was shared across *all* providers.
+**Retry** classifies the *response* status inside the loop — a 429/5xx response
+(not just a `reqwest::Error`) is retried with exponential backoff + jitter,
+honoring `Retry-After` per endpoint; before #217 those responses came back as
+`reqwest::Ok` and were never retried (#193). `RetryConfig` (`max_attempts`,
+`initial_backoff`, `max_backoff`, `rpm`) tunes it; `HttpClient::with_config` +
+`RetryConfig::no_retry()` build variants (tests use the latter). The
+provider-owned `LlmSession` handle (#195) references this per-endpoint state
+through its boxed backend.
 
 **Provider/model catalog (`entanglement-provider::catalog`, #118,
 [ADR-0032](../adr/0032-yaml-provider-model-catalog.md)):** the
