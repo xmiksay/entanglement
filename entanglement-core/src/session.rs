@@ -46,8 +46,10 @@ pub(crate) enum SessionCmd {
 
 /// Mutable per-session loop + turn state (#61). Holds the conversation
 /// [`Context`], the provider session handle (`llm`, #55), the active profile,
-/// and the loop counters — nothing pointing at the filesystem or a fixed tool
-/// set. Plan/task snapshots are the runtime's display state, not engine state
+/// and the emit sequence — nothing pointing at the filesystem or a fixed tool
+/// set. The inner LLM→tool loop bound (`MAX_TURNS`, #177) is local to
+/// [`turn::run_turn`] and reset per prompt, so it is not session state.
+/// Plan/task snapshots are the runtime's display state, not engine state
 /// (#231, ADR-0049), so the session carries neither. The tool schemas advertised
 /// to the model are config, not session state: they come from
 /// [`EngineConfig::tool_specs`] at turn time (see [`turn::run_turn`]).
@@ -56,7 +58,6 @@ pub struct Session {
     pub llm: LlmSession,
     pub profile: AgentProfile,
     pub seq: u64,
-    pub turn_count: usize,
     pub parent: Option<SessionId>,
 }
 
@@ -68,7 +69,6 @@ impl Session {
             llm: (cfg.llm_factory)(),
             profile,
             seq: 0,
-            turn_count: 0,
             parent: None,
         }
     }

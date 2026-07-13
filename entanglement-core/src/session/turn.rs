@@ -26,17 +26,6 @@ pub(crate) async fn run_turn(
     tool_specs: &[ToolSpec],
     profile_tool_specs: &HashMap<String, Vec<ToolSpec>>,
 ) -> Result<(), ()> {
-    s.turn_count += 1;
-    const MAX_TURNS: usize = 50;
-    if s.turn_count > MAX_TURNS {
-        let _ = events.send(OutEvent::Error {
-            session: session.clone(),
-            seq: next_seq(&mut s.seq),
-            message: format!("exceeded maximum turn limit ({MAX_TURNS}) - possible infinite loop"),
-        });
-        return Ok(());
-    }
-
     let _ = events.send(OutEvent::Status {
         session: session.clone(),
         state: AgentState::Thinking,
@@ -73,7 +62,25 @@ pub(crate) async fn run_turn(
         );
     }
 
+    // Bound the inner LLM→tool loop, reset per prompt (#177). Each iteration is
+    // one LLM round-trip that may fan out into tool calls; a model wedged in a
+    // tool loop would otherwise run forever. Local to this call — a legitimate
+    // long session (many prompts) is never capped, only a single runaway turn.
+    const MAX_TURNS: usize = 50;
+    let mut iterations: usize = 0;
     loop {
+        iterations += 1;
+        if iterations > MAX_TURNS {
+            let _ = events.send(OutEvent::Error {
+                session: session.clone(),
+                seq: next_seq(&mut s.seq),
+                message: format!(
+                    "exceeded maximum turn limit ({MAX_TURNS}) - possible infinite loop"
+                ),
+            });
+            return Ok(());
+        }
+
         if !s.ctx.within_limit() {
             let _ = events.send(OutEvent::Error {
                 session: session.clone(),
