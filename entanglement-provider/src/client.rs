@@ -22,6 +22,7 @@
 //! window elapses, leaving other endpoints untouched.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -185,29 +186,32 @@ impl HttpClient {
         &self.client
     }
 
-    /// Resolve (creating on first use) the resilience state for `endpoint`.
-    fn endpoint(&self, endpoint: &str) -> Arc<EndpointState> {
+    /// Resolve (creating on first use) the resilience state for pool key `key`.
+    fn endpoint(&self, key: &str) -> Arc<EndpointState> {
         let mut map = self.pool.endpoints.lock().expect("endpoint pool poisoned");
-        map.entry(endpoint.to_string())
+        map.entry(key.to_string())
             .or_insert_with(|| Arc::new(EndpointState::new(self.pool.config.rpm)))
             .clone()
     }
 
-    /// Execute a request against `endpoint` with per-endpoint rate-limiting and
-    /// retry/backoff. `endpoint` keys the RPM budget + `Retry-After` window (use
-    /// the provider's base URL). Retries transient transport faults and retryable
-    /// HTTP responses (429 / 5xx); a permanent 4xx or an exhausted retryable
-    /// response is returned as `Ok` for the caller to surface.
+    /// Execute a request with per-endpoint rate-limiting and retry/backoff. The
+    /// RPM budget + `Retry-After` window are keyed by `(endpoint, api_key)`: the
+    /// provider's base URL **plus** the API key (if any), so multiple keys on the
+    /// same endpoint each get their own budget — different keys have different
+    /// limits (#217). Retries transient transport faults and retryable HTTP
+    /// responses (429 / 5xx); a permanent 4xx or an exhausted retryable response
+    /// is returned as `Ok` for the caller to surface.
     pub async fn execute_with_retry<F, Fut>(
         &self,
         endpoint: &str,
+        api_key: Option<&str>,
         request_fn: F,
     ) -> Result<reqwest::Response, RetryError>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     {
-        let endpoint = self.endpoint(endpoint);
+        let endpoint = self.endpoint(&pool_key(endpoint, api_key));
         let config = self.pool.config;
         let mut attempt = 0;
         let mut backoff = config.initial_backoff;
@@ -269,6 +273,22 @@ impl HttpClient {
 impl Default for HttpClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The pool identity for a request: the endpoint URL, plus a **hash** of the API
+/// key when one is present, so two keys on the same endpoint get independent
+/// rate-limit budgets (#217). The key is hashed, never stored raw — the map key
+/// must not carry the secret. The hash is process-local (bucket partitioning
+/// only), so cross-run stability is irrelevant.
+fn pool_key(endpoint: &str, api_key: Option<&str>) -> String {
+    match api_key {
+        Some(key) => {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut hasher);
+            format!("{endpoint}#{:016x}", hasher.finish())
+        }
+        None => endpoint.to_string(),
     }
 }
 
@@ -350,6 +370,23 @@ mod tests {
         // Same key → same state; different keys → isolated state.
         assert!(Arc::ptr_eq(&a1, &a2));
         assert!(!Arc::ptr_eq(&a1, &b));
+    }
+
+    #[test]
+    fn pool_key_partitions_by_endpoint_and_api_key() {
+        let base = "https://api.z.ai/v4";
+        // Same endpoint, different keys → different buckets (each key its own
+        // limit). Same endpoint + same key → same bucket. Keyless is stable.
+        assert_ne!(pool_key(base, Some("k1")), pool_key(base, Some("k2")));
+        assert_eq!(pool_key(base, Some("k1")), pool_key(base, Some("k1")));
+        assert_eq!(pool_key(base, None), base);
+        // A key never appears verbatim in the pool identity (hashed, not raw).
+        assert!(!pool_key(base, Some("supersecret")).contains("supersecret"));
+        // Same key on different endpoints stays isolated.
+        assert_ne!(
+            pool_key(base, Some("k1")),
+            pool_key("https://api.openai.com/v1", Some("k1"))
+        );
     }
 
     #[test]

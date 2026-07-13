@@ -46,11 +46,14 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 **Resilience the provider layer owns — per endpoint** (#217,
 [ADR-0050](../adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)): one
 tuned `reqwest::Client` is shared (it already pools TCP connections per host),
-but the **rate-limit budget and retry/backoff state are keyed by endpoint** (the
-provider's base URL) in `HttpClient`'s `EndpointPool`. Each endpoint owns a
-token-bucket RPM throttle (default 50 RPM, `RetryConfig::rpm`) and its own
-`Retry-After` cool-down window, so a throttled endpoint never starves another —
-before #217 a single global 50-RPM `Semaphore` was shared across *all* providers.
+but the **rate-limit budget and retry/backoff state are keyed by `(endpoint,
+api-key)`** — the provider's base URL plus a *hash* of the API key (if any) — in
+`HttpClient`'s `EndpointPool`. Each such bucket owns a token-bucket RPM throttle
+(default 50 RPM, `RetryConfig::rpm`) and its own `Retry-After` cool-down window,
+so a throttled endpoint never starves another — and **multiple keys on the same
+endpoint each get their own budget** (different keys have different limits). The
+key is hashed, never stored raw in the map. Before #217 a single global 50-RPM
+`Semaphore` was shared across *all* providers.
 **Retry** classifies the *response* status inside the loop — a 429/5xx response
 (not just a `reqwest::Error`) is retried with exponential backoff + jitter,
 honoring `Retry-After` per endpoint; before #217 those responses came back as

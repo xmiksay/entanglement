@@ -24,7 +24,7 @@ tool exec/approval over the protocol). Layering: [ADR-0006](../docs/adr/0006-cor
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
-| `entanglement-provider` | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider, provider-owned session handle; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
+| `entanglement-provider` | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL + API-key hash, so multiple keys each get their own limit, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider, provider-owned session handle; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
 | `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe` + `tui` today, `serve` (WS) next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli`/`tui` (`default = ["tui"]`) build the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). | `--no-default-features` must stay CLI/TUI/transport-free; `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). |
 
 Heads depend on core, **never** the reverse.
@@ -75,7 +75,7 @@ z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has i
 format). No key → `EchoLlm`. Detail in
 [`../docs/architecture.md`](../docs/architecture/provider.md). **Per-endpoint**
 connection pool, retry/backoff, rate-limit (429/`Retry-After`/RPM keyed by base
-URL, ✅ #217, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)),
+URL + API-key hash, ✅ #217, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)),
 reasoning/thinking stream events, the YAML provider/model catalog, and the
 provider-owned session handle all live in this crate now (✅ #52–#55, #118, #217,
 [ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).

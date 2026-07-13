@@ -31,8 +31,8 @@ Two latent defects compounded this:
 
 ## Decision
 
-Make the provider layer's resilience state a **per-endpoint pool** keyed by the
-provider's base URL.
+Make the provider layer's resilience state a **per-endpoint pool** keyed by
+`(endpoint, api-key)`.
 
 ### `HttpClient` owns an `EndpointPool`
 
@@ -40,7 +40,12 @@ One tuned `reqwest::Client` is still shared — it already maintains a separate 
 connection pool per host, so connection pooling needs no per-endpoint split. What
 *is* split is the resilience state: an `EndpointPool` holds a
 `Mutex<HashMap<String, Arc<EndpointState>>>`, lazily creating an `EndpointState`
-on first use of each endpoint key. `EndpointState` carries:
+on first use of each pool key. The pool key is the provider's base URL **plus a
+hash of the API key** (`pool_key(endpoint, api_key)`): multiple keys on the same
+endpoint each get their own budget, since different keys carry different limits.
+The key is *hashed*, never stored raw — the map key must not carry the secret;
+the hash is process-local (bucket partitioning only), so cross-run stability is
+irrelevant. `EndpointState` carries:
 
 - a **token-bucket `RateLimiter`** (capacity `rpm`, one token refilled every
   `60s / rpm`), and
@@ -87,9 +92,13 @@ is resolved without leaking transport types into core.
 
 ### Negative / neutral
 
-- The endpoint key is the base URL string as passed, so two spellings of the same
-  endpoint (trailing slash, host casing) would get separate budgets. Acceptable:
-  a backend uses one stable base per provider.
+- The pool key is the base URL string as passed (plus the key hash), so two
+  spellings of the same endpoint (trailing slash, host casing) would get separate
+  budgets. Acceptable: a backend uses one stable base per provider.
+- The API-key hash uses `DefaultHasher` (non-cryptographic). A collision would
+  merge two keys' budgets — astronomically unlikely and low-impact (both keys
+  still throttle, just against a shared bucket); it never *leaks* one key's budget
+  to an unrelated one in any realistic case.
 - `EndpointState` is created lazily and never evicted. The set of endpoints is
   bounded by the catalog, so the map stays tiny; no eviction policy is warranted.
 
