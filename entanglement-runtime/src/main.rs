@@ -433,6 +433,16 @@ async fn main() -> Result<()> {
         matches!(cli.cmd, Some(Cmd::Tui { .. })),
     )?;
 
+    // First run: drop a commented starter config so `${config_dir}/entanglement/`
+    // is a discoverable starting point rather than an empty dir (#219). The
+    // template is fully commented — it changes nothing until edited — so this is
+    // best-effort: a write failure (read-only home, race) is logged, never fatal.
+    match config::scaffold_if_missing() {
+        Ok(Some(path)) => tracing::info!("wrote starter config to {}", path.display()),
+        Ok(None) => {}
+        Err(e) => tracing::debug!("could not scaffold default user config: {e:#}"),
+    }
+
     // `sessions` only reads the log store — handle it before spinning up a
     // provider/engine so it stays cheap and prints nothing about providers.
     if matches!(cli.cmd, Some(Cmd::Sessions)) {

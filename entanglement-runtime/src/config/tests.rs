@@ -144,6 +144,67 @@ fn missing_files_fall_back_to_embedded() {
 }
 
 #[test]
+fn comment_only_user_file_is_a_no_op() {
+    // The scaffolded template (#219) is fully commented → parses to `Null`. It
+    // must not wipe the embedded defaults in the merge, and it must not surface as
+    // a discovered layer (it sets nothing).
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let user_file = root.join("scaffold.yml");
+    std::fs::write(&user_file, TEMPLATE_YML).unwrap();
+
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    std::env::set_var(CONFIG_FILE_ENV, &user_file);
+    let resolved = Config::resolve(root).unwrap();
+    std::env::remove_var(CONFIG_FILE_ENV);
+
+    let c = &resolved.config;
+    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.provider, None);
+    assert_eq!(c.permissions.default, Permission::Allow);
+    // Only the embedded default layer — the comment-only file is skipped.
+    assert_eq!(resolved.layers.len(), 1);
+    assert_eq!(resolved.layers[0].0, ConfigLayer::Default);
+}
+
+#[test]
+fn scaffold_writes_template_when_missing_then_leaves_it_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("nested").join("config.yml");
+
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    std::env::set_var(CONFIG_FILE_ENV, &target);
+
+    // First run creates the file (and its parent dir) with the template.
+    let written = scaffold_if_missing().unwrap();
+    assert_eq!(written.as_deref(), Some(target.as_path()));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), TEMPLATE_YML);
+
+    // A subsequent run must not overwrite a user's edits.
+    std::fs::write(&target, "provider: openai\n").unwrap();
+    let again = scaffold_if_missing().unwrap();
+    std::env::remove_var(CONFIG_FILE_ENV);
+    assert_eq!(again, None);
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "provider: openai\n"
+    );
+}
+
+#[test]
+fn scaffolded_template_is_fully_commented() {
+    // Guard the shipped template's "pure no-op" property: every setting is
+    // commented out, so it parses to `Null` and the null-skip in `read_layer`
+    // keeps it from touching the merge until a user uncomments a key. It must
+    // still be valid YAML (a stray syntax error would be a loud loader error).
+    let doc: Value = serde_yaml::from_str(TEMPLATE_YML).unwrap();
+    assert!(
+        doc.is_null(),
+        "template must be fully commented, got: {doc:?}"
+    );
+}
+
+#[test]
 fn malformed_user_file_is_a_loud_error() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

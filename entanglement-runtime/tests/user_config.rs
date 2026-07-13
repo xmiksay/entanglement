@@ -62,6 +62,29 @@ fn repo_layer_overrides_user_layer() {
 }
 
 #[test]
+fn first_run_scaffolds_a_commented_template() {
+    // #219: on first run the binary writes a starter config where the file is
+    // missing, then resolves to the embedded defaults (the template is fully
+    // commented, so it changes nothing). Guards the `main.rs` scaffold wiring.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("entanglement").join("config.yml");
+    assert!(!cfg.exists());
+
+    let out = inspect_config(dir.path(), &cfg);
+    assert_eq!(out.status.code(), Some(0));
+
+    // The file now exists, is fully commented, and left the defaults in force.
+    let written = std::fs::read_to_string(&cfg).unwrap();
+    assert!(written.contains("#agent: build"), "got: {written}");
+    assert!(
+        written.contains("scaffolded on first run"),
+        "got: {written}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("agent:    build"), "got: {stdout}");
+}
+
+#[test]
 fn malformed_config_exits_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let bad = dir.path().join("bad.yml");
