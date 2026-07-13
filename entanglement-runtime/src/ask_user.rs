@@ -20,7 +20,7 @@ use tokio::sync::broadcast::{error::RecvError, Receiver};
 pub const ASK_USER_TOOL: &str = "ask_user";
 
 /// The `ask_user` tool schema advertised to the model. Appended to the engine's
-/// `tool_specs` alongside the host quartet and `agent_spawn`.
+/// `tool_specs` alongside the host quintet and `agent_spawn`.
 pub fn ask_user_spec() -> ToolSpec {
     ToolSpec::with_schema(
         ASK_USER_TOOL,

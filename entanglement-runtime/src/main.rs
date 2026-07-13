@@ -59,10 +59,10 @@ use tui::tui;
 /// OpenAI-compatible client ([`entanglement_provider::openai_factory`]); Anthropic
 /// has its own client.
 ///
-/// The root-contained host quartet (`read`/`glob`/`grep`/`edit`) is always
-/// registered, rooted at the current working directory, so the
-/// `build`/`plan`/`explore` permission profiles gate something real out of the
-/// box. The exec pair is opt-in: set `ENTANGLEMENT_ENABLE_BASH=1` to register
+/// The root-contained host quintet (`read`/`glob`/`grep`/`edit`/`write`) plus
+/// `load_skill` are always registered, rooted at the current working directory,
+/// so the `build`/`plan`/`explore` permission profiles gate something real out
+/// of the box. The exec pair is opt-in: set `ENTANGLEMENT_ENABLE_BASH=1` to register
 /// `BashTool` (shell) and `CallTool` (argv, no shell) — they run unsandboxed
 /// with the engine's full privileges (ADR-0009 / ADR-0010 / ADR-0045).
 ///
