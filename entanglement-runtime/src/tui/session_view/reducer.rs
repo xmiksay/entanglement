@@ -198,11 +198,7 @@ impl SessionView {
                     false
                 }
             }
-            OutEvent::FileChange {
-                path: _,
-                change_kind: _,
-                ..
-            } => true,
+            OutEvent::FileChange { .. } => true,
         }
     }
 }

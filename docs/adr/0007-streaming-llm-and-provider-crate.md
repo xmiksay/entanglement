@@ -1,7 +1,14 @@
 # 0007. `entanglement-provider`: streaming `Llm` trait, pooling, retry, rate-limit, reasoning
 
-- Status: Accepted
+- Status: Accepted — `Llm` trait placement / dependency direction superseded by [0053](0053-invert-core-provider-seam.md)
 - Date: 2026-07-07
+
+> **Amended by [ADR-0053](0053-invert-core-provider-seam.md) (2026-07-13).** The
+> `Llm` trait + its DTOs (and `Message`/`MessageRole`) moved OUT of
+> `entanglement-core` INTO `entanglement-provider`, which is now a leaf crate;
+> core depends on provider. The streaming contract, pooling, retry, and
+> rate-limit design below are unchanged — only the crate the trait lives in and
+> the dependency direction changed.
 
 ## Context
 

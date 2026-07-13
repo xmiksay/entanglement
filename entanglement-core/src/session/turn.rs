@@ -10,8 +10,8 @@ use tokio::sync::{broadcast, mpsc};
 use super::emit::{emit_turn_error, next_seq};
 use super::tools::handle_tool_call;
 use super::{Session, SessionCmd};
-use crate::llm::{Llm, LlmEvent, LlmRequest, ToolCall, ToolSpec};
 use crate::protocol::{AgentState, OutEvent, SessionId};
+use entanglement_provider::{Llm, LlmEvent, LlmRequest, ToolCall, ToolSpec};
 
 /// Runs one reasoning turn to completion. Returns `Err(())` only when a
 /// `SessionCmd::Stop` arrives during tool-request approval (cancel-via-Esc);

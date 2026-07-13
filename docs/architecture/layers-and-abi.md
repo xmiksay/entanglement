@@ -2,36 +2,55 @@
 
 > Part of the [architecture overview](../architecture.md). The *why* behind each choice is in the [decision log](../adr/README.md).
 
-## 0. Layers: core / provider / runtime — [ADR-0006](../adr/0006-core-dependency-hygiene-gate.md)
+## 0. Layers: core / provider / runtime — [ADR-0006](../adr/0006-core-dependency-hygiene-gate.md), [ADR-0053](../adr/0053-invert-core-provider-seam.md)
 
-Three crates, two seams. Heads depend on core; core never depends on a head.
+Three crates, two seams. Dependency direction is `provider (leaf) ← core ←
+runtime`: **provider** is a leaf crate (no `entanglement-*` deps), **core**
+depends on provider, and the head depends on both. Heads depend on core; core
+never depends on a head. The core↔provider seam was inverted in
+[ADR-0053](../adr/0053-invert-core-provider-seam.md) (superseding the
+dependency-direction decisions of [ADR-0006](../adr/0006-core-dependency-hygiene-gate.md)
+and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
+**owns** the LLM ABI and core consumes it.
 
 ```
 ┌──────────── entanglement-runtime (head, binary `skutter`) ─────────────┐
 │ user sessions · host tools · tool execution · permission dispatch ·    │
 │ approval UX · persistence · transports (stdio ✅, TUI ✅, WS 🚧)        │
+│ selects the concrete provider client · glues core + provider           │
 └─────────▲──────────────────────────────────────────────▲───────────────┘
           │ send()/subscribe() (ABI)      tool exec + approval (protocol)
 ┌─────────┴──────────────── entanglement-core (engine) ───┴───────────────┐
 │ Holly actor · InMsg/OutEvent · agent turn loop · Tool *trait* · Context │
-└─────────▲────────────────────────────────────────────────────────────────┘
-          │ Llm trait: stream() + session handle
- ┌─────────┴──────────── entanglement-provider (LLM I/O) ────────────────────┐
-│ OpenAI-compat + Anthropic clients · pool · retry · rate-limit ·           │
-│ reasoning stream · models-per-provider                                    │
+│ drives `dyn Llm` from the turn loop · re-exports the provider ABI       │
+└─────────┬────────────────────────────────────────────────────────────────┘
+          │ depends on provider; consumes the `Llm` trait + DTOs
+ ┌─────────▼──────────── entanglement-provider (leaf, LLM ABI + I/O) ────────┐
+│ OWNS the `Llm` trait, LlmRequest/Response/Event/Stream, LlmSession,       │
+│ LlmFactory, ToolCall/ToolSpec, Message/MessageRole · OpenAI-compat +      │
+│ Anthropic clients · pool · retry · rate-limit · reasoning stream          │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **core** — the reasoning engine: actor, protocol, turn loop, the `Tool` *trait*
-  (not implementations), `Context`. Pure, reusable, zero UI/transport deps (§7).
-- **provider** — all LLM I/O behind the `Llm` trait (§5b).
+  (not implementations), `Context` (the rolling conversation history, built on
+  provider's `Message`), `EngineConfig`. Depends on provider and drives `dyn Llm`
+  from the turn loop; re-exports the provider ABI (`pub use
+  entanglement_provider::{Llm, Message, ToolSpec, …}`) for its heads. No UI/web
+  deps, but **no longer transport-free** — `reqwest`/`hyper`/`tower` ride in
+  transitively via provider (§7).
+- **provider** — a **leaf crate** (no `entanglement-*` deps) that owns the LLM
+  ABI *and* all LLM I/O behind the `Llm` trait (§5b). Usable standalone for raw
+  LLM queries with no engine.
 - **runtime** — the head: host tools + their execution, permission dispatch +
   approval, user sessions, every transport (§6, §8). Feature-gated
   ([ADR-0025](../adr/0025-runtime-cargo-feature-gates.md)): `default = ["tui"]` is
   the full `skutter` binary, while `--no-default-features` is a **lean library**
   — `host` + `tool_runner` + `permission` + `subagent` + `persistence` +
-  `session_store` over core + tokio + glob/regex, with no CLI/TUI/transport deps
-  (`make check-lean` enforces, §7). The `cli` feature (clap + providers) sits
+  `session_store` over core + tokio + glob/regex, with no CLI/TUI deps
+  (`make check-lean` enforces, §7). Since [ADR-0053](../adr/0053-invert-core-provider-seam.md)
+  the lean library is CLI/TUI-free rather than transport-free — `reqwest` rides
+  in transitively via core → provider. The `cli` feature (clap + providers) sits
   between the two, leaving room for a `ws = ["cli", …]` sibling.
 
 **Responsibility relocation is mostly landed:** the host-tool *implementations*

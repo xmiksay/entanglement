@@ -10,8 +10,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{emit_tool_call, emit_tool_output, next_seq};
 use super::{Session, SessionCmd};
-use crate::llm::ToolCall;
 use crate::protocol::{OutEvent, SessionId};
+use entanglement_provider::ToolCall;
 
 /// Dispatch one tool call. Returns `true` if the turn was cancelled.
 pub(crate) async fn handle_tool_call(

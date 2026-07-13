@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::llm::{EchoLlm, LlmFactory, LlmSession, ToolSpec};
 use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile};
+use entanglement_provider::{EchoLlm, LlmFactory, LlmSession, ToolSpec};
 
 use super::DEFAULT_PROFILE;
 

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::llm::{ToolCall, ToolSpec};
+use entanglement_provider::{ToolCall, ToolSpec};
 
 /// A single capability the engine can execute on the host.
 #[async_trait]

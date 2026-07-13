@@ -10,16 +10,17 @@
 
 pub mod context;
 pub mod holly;
-pub mod llm;
 pub mod protocol;
 pub mod session;
 pub mod tools;
 
-pub use context::{Message, MessageRole};
+pub use context::Context;
 pub use holly::{ConfigError, EngineConfig, Holly, ProfileRegistry};
-pub use llm::{
+// The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
+// the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
+pub use entanglement_provider::{
     stream_from_response, DummyLlm, EchoLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse,
-    LlmSession, LlmStream, ToolCall, ToolSpec,
+    LlmSession, LlmStream, Message, MessageRole, ToolCall, ToolSpec,
 };
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, OutEvent,

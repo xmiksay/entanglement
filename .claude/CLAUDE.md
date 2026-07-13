@@ -19,15 +19,19 @@ Architecture & the four interfaces:
 ## Workspace
 
 Three crates, two seams (core↔provider via the `Llm` trait, core↔runtime for
-tool exec/approval over the protocol). Layering: [ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md).
+tool exec/approval over the protocol). Dependency direction is
+`provider (leaf) ← core ← runtime`: the `Llm` trait + DTOs live in **provider**,
+core depends on provider ([ADR-0053](../docs/adr/0053-invert-core-provider-seam.md),
+inverting [ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)/[ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
-| `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context`, the `Llm` **trait** | **Zero UI/transport deps** (`clap`/`axum`/`reqwest`/`crossterm` forbidden). `make tree` enforces. |
-| `entanglement-provider` | all LLM I/O: generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL + API-key hash, so multiple keys each get their own limit, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider, provider-owned session handle; implements `entanglement_core::Llm` | may depend on transport crates (`reqwest`); never depended on by `entanglement-core` |
-| `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe` + `tui` today, `serve` (WS) next. Selects provider via `ENTANGLEMENT_PROVIDER` or key auto-detect. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli`/`tui` (`default = ["tui"]`) build the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). | `--no-default-features` must stay CLI/TUI/transport-free; `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). |
+| `entanglement-provider` | **leaf** crate, owns the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmSession`, `LlmFactory`, `ToolCall`, `ToolSpec`, `Message`/`MessageRole`, `Dummy`/`EchoLlm`); all LLM I/O — generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL + API-key hash, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider, provider-owned session handle. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
+| `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context` (built on provider's `Message`). Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest`/`hyper`/`tower` are transitive via provider ([ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). `make tree` enforces. |
+| `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe` + `tui` today, `serve` (WS) next. Selects the concrete provider via `ENTANGLEMENT_PROVIDER` or key auto-detect and glues it to core. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli`/`tui` (`default = ["tui"]`) build the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). | `--no-default-features` must stay CLI/TUI-free (`reqwest` rides in via core); `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). |
 
-Heads depend on core, **never** the reverse.
+`entanglement-runtime` depends on core; core depends on provider; provider
+depends on neither.
 
 ## Commands — drive through `make`
 

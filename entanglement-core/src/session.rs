@@ -23,9 +23,9 @@ use std::collections::VecDeque;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::context::Context;
-use crate::llm::LlmSession;
 use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
+use entanglement_provider::LlmSession;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use emit::next_seq;

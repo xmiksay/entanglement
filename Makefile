@@ -55,22 +55,30 @@ fmt: ## cargo fmt (write)
 check-fmt: ## cargo fmt --check (CI)
 	$(CARGO) fmt --all -- --check
 
-# Hygiene gate (ADR-0006): entanglement-core must pull in zero UI/transport crates.
-# Grep for forbidden names followed by a version tag as `cargo tree` prints them.
-tree: ## fail if entanglement-core pulls a forbidden UI/transport crate
+# Hygiene gate (ADR-0006, amended by ADR-0053): entanglement-core must pull in
+# zero UI/TUI/web-server crates. Since ADR-0053 inverted the seam, core depends
+# on entanglement-provider and so legitimately carries `reqwest`/`hyper` (the LLM
+# transport) transitively — those are no longer forbidden. UI/web-server crates
+# still are. Grep for forbidden names followed by a version tag as `cargo tree`
+# prints them.
+tree: ## fail if entanglement-core pulls a forbidden UI/web-server crate
 	@out=$$($(CARGO) tree -p entanglement-core 2>/dev/null); \
-	if echo "$$out" | grep -Ei '(clap|axum|tower|tonic|crossterm|ratatui|reqwest|hyper) v[0-9]'; then \
-		echo "FAIL: forbidden crate leaked into entanglement-core (see ADR-0006)"; exit 1; \
+	if echo "$$out" | grep -Ei '(clap|axum|tonic|crossterm|ratatui) v[0-9]'; then \
+		echo "FAIL: forbidden UI/web-server crate leaked into entanglement-core (see ADR-0053)"; exit 1; \
 	else \
-		echo "entanglement-core deps clean: no UI/transport crates"; \
+		echo "entanglement-core deps clean: no UI/web-server crates"; \
 	fi
 
-# Lean gate (ADR-0025): entanglement-runtime with --no-default-features must
-# stay free of CLI/TUI/transport crates so library consumers get a light build.
-check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI/transport crates
+# Lean gate (ADR-0025, amended by ADR-0053): entanglement-runtime with
+# --no-default-features must stay free of CLI/TUI crates so library consumers get
+# a light build. Since ADR-0053 made entanglement-core depend on
+# entanglement-provider, the lean runtime now carries `reqwest`/`hyper` (the LLM
+# transport) transitively through core — those are no longer forbidden here; the
+# CLI/TUI crates still are.
+check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
 	@out=$$($(CARGO) tree -p entanglement-runtime --no-default-features -e normal 2>/dev/null); \
-	if echo "$$out" | grep -Ei '(clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|reqwest|hyper|tracing-subscriber) v[0-9]'; then \
-		echo "FAIL: heavy crate leaked into lean entanglement-runtime (see ADR-0025)"; exit 1; \
+	if echo "$$out" | grep -Ei '(clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|tracing-subscriber) v[0-9]'; then \
+		echo "FAIL: heavy CLI/TUI crate leaked into lean entanglement-runtime (see ADR-0053)"; exit 1; \
 	else \
 		echo "lean entanglement-runtime deps clean"; \
 	fi
