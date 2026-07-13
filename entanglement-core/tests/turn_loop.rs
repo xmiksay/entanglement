@@ -135,6 +135,86 @@ async fn prompt_arriving_during_streaming_is_stashed_and_replayed() {
     );
 }
 
+/// Regression (#182): a `Prompt` arriving mid-turn — while the inner LLM→tool
+/// loop is still running — must fold into the *live* turn's context before the
+/// next model request, not replay as a separate turn after `Done`. The first
+/// response is a tool call, so the inner loop iterates and reaches the fold
+/// site; the steering prompt sent during that first stream is drained into
+/// `ctx` and the turn continues as one, producing exactly one `Done`.
+#[tokio::test]
+async fn prompt_arriving_mid_turn_folds_into_the_live_turn() {
+    let delay = Duration::from_millis(100);
+    let scripted = Arc::new(vec![
+        // First round: a tool call, so the inner loop iterates and hits the
+        // fold site on the next iteration.
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: "unknown-tool".into(),
+                input: "{}".into(),
+            }],
+        },
+        // Second round (post-fold): plain text, so the turn ends here.
+        LlmResponse {
+            text: "folded-reply".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)))
+        }),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(&holly, ToolRegistry::new());
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "first".into(),
+        })
+        .await
+        .unwrap();
+
+    // Inject the steering prompt while the first response is still streaming,
+    // so it lands in the inbox and is stashed mid-turn.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "steer".into(),
+        })
+        .await
+        .unwrap();
+
+    // Count `Done`s and collect text over a window covering both rounds. A fold
+    // keeps this a single turn (one `Done`); the old replay behavior produced a
+    // second turn (two `Done`s) that ran the steering prompt on its own.
+    let mut dones = 0;
+    let mut texts = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
+        match ev {
+            OutEvent::Done { session, .. } if session == sid => dones += 1,
+            OutEvent::TextDelta { text, session, .. } if session == sid => texts.push(text),
+            _ => {}
+        }
+    }
+    assert!(
+        texts.iter().any(|t| t == "folded-reply"),
+        "the folded turn should produce its reply; got {texts:?}"
+    );
+    assert_eq!(
+        dones, 1,
+        "a mid-turn prompt must fold into the live turn (one Done), not replay as a \
+         separate turn (two Dones); saw {dones}"
+    );
+}
+
 /// `Llm` that always emits a tool call, driving the inner LLM→tool loop
 /// forever. Counts how many times it was streamed so a test can assert the
 /// loop was actually bounded (not merely slow). #177.

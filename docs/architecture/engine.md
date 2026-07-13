@@ -49,7 +49,17 @@ half-assembled tool calls are dropped (no `Finish` ⇒ possibly incomplete). The
 same stash discipline applies inside the streaming loop and between tool calls
 (ADR-0018): a mid-turn `Stop` interrupts, every other queued command (`Prompt`,
 `SetAgent`, …) is pushed onto the replay stash, so a follow-up sent while the
-engine is busy is never silently dropped. **The streaming loop *races* the
+engine is busy is never silently dropped. A stashed **`Prompt` is additionally
+*folded into the live turn*** (#182,
+[ADR-0058](../adr/0058-mid-turn-prompt-folds-into-live-turn.md)): at the top of each inner-loop iteration —
+before the next model request — core drains every stashed `Prompt` into `ctx`
+via `push_user`, so mid-turn guidance steers the running turn on the very next
+round-trip (the same way a queued user message folds into the next request)
+instead of only replaying as a fresh turn after `Done`. The fold site is reached
+only when the previous round emitted tool calls (a reply with none ends the turn
+first), so a prompt sent *after* the model's final answer still correctly starts
+a new turn via the stash; non-`Prompt` commands stay stashed for the session
+loop. **The streaming loop *races* the
 inbox against the stream** with a `biased` `tokio::select!` (#179) — not a
 `try_recv` polled only after each event yields — so a `Stop` preempts a
 connected-but-silent provider immediately (dropping the stream aborts the

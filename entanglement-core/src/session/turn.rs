@@ -86,6 +86,28 @@ pub(crate) async fn run_turn(
             return Ok(());
         }
 
+        // Fold any user prompts that arrived mid-turn into the live context
+        // before the next model request (#182). This is steering: guidance sent
+        // while the turn is running reaches the model on the very next
+        // inner-loop round-trip — the same way a queued user message folds into
+        // the next request — instead of replaying as a separate turn after
+        // `Done`. Only reachable when the previous round emitted tool calls (a
+        // reply with none ends the turn below), so a prompt sent after the
+        // model's final answer still correctly starts a fresh turn via the
+        // stash. Non-`Prompt` commands (`SetAgent`, a stale `ToolResult`) stay
+        // stashed for the session loop to handle once this turn ends.
+        let mut i = 0;
+        while i < stash.len() {
+            if matches!(stash[i], SessionCmd::Prompt(_)) {
+                if let Some(SessionCmd::Prompt(text)) = stash.remove(i) {
+                    tracing::debug!("folding mid-turn prompt into live context");
+                    s.ctx.push_user(text);
+                }
+            } else {
+                i += 1;
+            }
+        }
+
         // Keep the request inside the model's real context window (#178). Over
         // budget, first compact (prune the oldest tool outputs); if that still
         // doesn't fit, refuse the turn — sending an over-window request just
