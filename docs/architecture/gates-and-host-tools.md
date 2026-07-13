@@ -63,9 +63,16 @@ tools and makes no policy decision:
 | `bash` ⚠ | `{command, timeout?}` | `sh -c` rooted at root; `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600, `kill_on_drop` reaps on expiry |
 | `call` ⚠ | `{command, args?, tail?, timeout?}` | **argv, no shell** — `command`+`args` exec verbatim (no `sh -c`, so no pipe/glob/`$VAR`/metachar interpretation); output tailed to the last `tail` lines per stream (default 30, `tail=0` = full, byte-cap still applies), with a `(… N earlier lines omitted, tail=30 — rerun with tail=0 …)` notice; same envelope as `bash` (`[exit N]` + stdout + `[stderr]`, 120 s/600 s, `kill_on_drop`) — ADR-0045 |
 
-- **Working directory:** each tool holds a `root`; model-supplied paths resolve
-  against it and are rejected on `..` escape. Lexical containment only (no
-  symlink defense) — ADR-0008. `bash`/`call` set only the **cwd** — they are
+- **Working directory:** each tool holds a `root` (the cwd, **canonicalized once
+  at startup**); model-supplied paths resolve against it and are rejected on `..`
+  escape **and on symlink escape** — `resolve_under_root` canonicalizes the
+  resolved target's deepest existing ancestor and requires it under the canonical
+  root, so a `root/link -> /etc` symlink can't be followed out of tree by
+  `read`/`edit`/`write` (the create path still works: only the existing ancestor
+  is canonicalized), and `glob`/`grep` (`list_files`) drop any match whose
+  canonical path escapes — ADR-0008 upgraded by [ADR-0054](../adr/0054-canonicalizing-symlink-safe-root-containment.md)
+  (#163). Not TOCTOU-tight (an OS sandbox via `openat2(RESOLVE_BENEATH)` is
+  deferred). `bash`/`call` set only the **cwd** — they are
   explicitly *not* sandboxed and run with the engine's full privileges
   (ADR-0009/ADR-0045); permission profiles gate whether they run at all. `call`
   is the injection-free sibling: a fixed argv can't be shell-injected, so a

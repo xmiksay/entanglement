@@ -80,7 +80,12 @@ fn build_config(
     let (mut cfg, model_info) = select_provider(catalog, http_client, user_config);
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
     cfg.profiles = profiles;
-    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    // Canonicalize the working root once at startup (#163, ADR-0054): host-tool
+    // containment checks against this, so a symlinked cwd must resolve to its
+    // real path here or every resolved target would look like an escape.
+    let root = std::env::current_dir()
+        .and_then(|p| p.canonicalize())
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut tools = host_tools(root.clone());
     if std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1") {
         // The opt-in gate enables the whole exec pair (ADR-0010/ADR-0045):
