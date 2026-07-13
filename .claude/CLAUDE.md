@@ -172,12 +172,16 @@ precedence system < user < repo) and
 ## Open work (current phase)
 
 The three-layer re-architecture (epic #50), the agents/skills/system-prompt
-epic (#111), and the inspection & debuggability epic (#183 — `inspect`
+epic (#111), the inspection & debuggability epic (#183 — `inspect`
 prompt/agents/skills, `RUST_LOG`/file-sink tracing, `EchoLlm` prompt echo,
-per-resolution permission tracing, in-session TUI overlay) are **complete**.
+per-resolution permission tracing, in-session TUI overlay), and the permission
+model & user-configuration epic (#171 — layered user config file + permission
+ceiling #172, argument-scoped rule keys #173, approval scope + persisted "always
+allow" grants #174, `update_plan`/`update_tasks` demoted to permission-gated
+runtime state tools #175/#231, first-run config scaffold #219, managed
+provider-key env file #220) are **complete**.
 Current phase is the July 2026 audit backlog — thematic epics tracked on GitHub
 with P0/P1/P2 labels and blocked-by links:
-#171 (user config & permissions),
 #190 (provider seam + per-endpoint pool), #176 (engine robustness),
 #166 (exec-tool maturity), #200 (architecture cleanup), #209 (docs), with
 WebSocket `serve` (#153) deliberately last.
