@@ -33,7 +33,7 @@ pub mod openai;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm};
 pub use catalog::{Catalog, ModelEntry, ModelPricing, ProviderEntry, Wire};
-pub use client::HttpClient;
+pub use client::{HttpClient, RetryConfig};
 pub use openai::{
     openai_factory, OpenAiLlm, OLLAMA_BASE, OPENAI_BASE, ZAI_CODING_PLAN_BASE, ZAI_GENERAL_BASE,
 };

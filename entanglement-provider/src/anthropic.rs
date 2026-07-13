@@ -83,7 +83,7 @@ impl Llm for AnthropicLlm {
 
         let response = self
             .http
-            .execute_with_retry(|| {
+            .execute_with_retry(ANTHROPIC_API_URL, Some(&self.api_key), || {
                 self.http
                     .client()
                     .post(ANTHROPIC_API_URL)

@@ -106,10 +106,12 @@ pub trait Llm: Send {
 pub type LlmFactory = std::sync::Arc<dyn Fn() -> LlmSession + Send + Sync>;
 
 /// Provider-owned "live session/connection handle" — the object a session holds
-/// for its LLM backend. Carries the shared pool/retry/rate-limit context from
-/// the provider layer, distinct from `Context` (the conversation history), which
-/// stays in core. Today this is a newtype around `Box<dyn Llm>`; in the future it
-/// may carry per-session connection state (retry accounting, rate-limit budget).
+/// for its LLM backend, distinct from `Context` (the conversation history), which
+/// stays in core. It is a newtype around `Box<dyn Llm>`; the boxed backend
+/// carries the provider layer's pool/retry/rate-limit context, which since #217
+/// is **keyed per endpoint** (RPM budget + `Retry-After` window) rather than a
+/// single global throttle — so the connection state this handle references is
+/// isolated per API endpoint.
 pub struct LlmSession {
     inner: Box<dyn Llm>,
 }
