@@ -86,12 +86,36 @@ pub(crate) async fn run_turn(
             return Ok(());
         }
 
+        // Keep the request inside the model's real context window (#178). Over
+        // budget, first compact (prune the oldest tool outputs); if that still
+        // doesn't fit, refuse the turn — sending an over-window request just
+        // burns a paid round-trip and errors at the provider. Refusing ends the
+        // turn cleanly (Error + Done + Status) so a one-shot head unblocks.
         if !s.ctx.within_limit() {
-            let _ = events.send(OutEvent::Error {
-                session: session.clone(),
-                seq: next_seq(&mut s.seq),
-                message: format!("context over limit ({} tokens)", s.ctx.estimated_tokens()),
-            });
+            let before = s.ctx.estimated_tokens();
+            let fits = s.ctx.compact();
+            let after = s.ctx.estimated_tokens();
+            if fits {
+                tracing::info!(
+                    before,
+                    after,
+                    limit = s.ctx.limit(),
+                    "compacted context to fit the model's window"
+                );
+            } else {
+                emit_turn_error(
+                    session,
+                    &mut s.seq,
+                    events,
+                    format!(
+                        "context window exceeded: {after} tokens estimated after \
+                         compaction, over the {}-token budget — start a new session \
+                         or shorten the request",
+                        s.ctx.limit()
+                    ),
+                );
+                return Ok(());
+            }
         }
 
         let req = LlmRequest {

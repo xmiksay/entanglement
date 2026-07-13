@@ -81,6 +81,10 @@ fn build_config(
     let (mut cfg, model_info) = select_provider(catalog, http_client, user_config);
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
     cfg.profiles = profiles;
+    // Thread the resolved model's context window into the engine (#178) so each
+    // session budgets its history against the real window (128k for GLM-5.2, not
+    // a fixed 180k). `None` (unknown model / echo) keeps core's flat fallback.
+    cfg.context_window = model_info.context_window.map(|w| w as usize);
     // Canonicalize the working root once at startup (#163, ADR-0054): host-tool
     // containment checks against this, so a symlinked cwd must resolve to its
     // real path here or every resolved target would look like an escape.
