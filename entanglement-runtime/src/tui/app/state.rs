@@ -149,14 +149,21 @@ impl App {
         self.output_tokens
     }
 
-    #[allow(dead_code)]
     pub fn add_input_tokens(&mut self, tokens: u64) {
         self.input_tokens += tokens;
     }
 
-    #[allow(dead_code)]
     pub fn add_output_tokens(&mut self, tokens: u64) {
         self.output_tokens += tokens;
+    }
+
+    /// Accumulated session cost in USD (#192), summed from `OutEvent::Usage`.
+    pub fn cost_usd(&self) -> f64 {
+        self.cost_usd
+    }
+
+    pub fn add_cost(&mut self, cost: f64) {
+        self.cost_usd += cost;
     }
 
     #[allow(dead_code)]

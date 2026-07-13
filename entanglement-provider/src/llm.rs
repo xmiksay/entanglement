@@ -57,6 +57,67 @@ impl ToolSpec {
     }
 }
 
+/// Why a model stopped generating, normalized across providers (#192). Both the
+/// OpenAI-compat `finish_reason` and Anthropic's `stop_reason` map onto this so a
+/// consumer never has to know a provider's wire vocabulary. [`MaxTokens`] is the
+/// load-bearing case — a reply truncated by the output cap that would otherwise
+/// commit silently as a clean turn.
+///
+/// [`MaxTokens`]: StopReason::MaxTokens
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// Natural completion (OpenAI `stop`, Anthropic `end_turn`).
+    EndTurn,
+    /// The model wants to run tools (OpenAI `tool_calls`, Anthropic `tool_use`).
+    ToolUse,
+    /// Output was cut off at the max-token limit (OpenAI `length`, Anthropic
+    /// `max_tokens`) — the reply is truncated.
+    MaxTokens,
+    /// A configured stop sequence matched (Anthropic `stop_sequence`).
+    StopSequence,
+    /// Anything else the provider reports (e.g. `content_filter`) or an
+    /// unrecognized token.
+    Other,
+}
+
+impl StopReason {
+    /// Map an OpenAI-compat `finish_reason` string onto the normalized reason.
+    pub fn from_openai(reason: &str) -> Self {
+        match reason {
+            "stop" => StopReason::EndTurn,
+            "tool_calls" | "function_call" => StopReason::ToolUse,
+            "length" => StopReason::MaxTokens,
+            _ => StopReason::Other,
+        }
+    }
+
+    /// Map an Anthropic `stop_reason` string onto the normalized reason.
+    pub fn from_anthropic(reason: &str) -> Self {
+        match reason {
+            "end_turn" => StopReason::EndTurn,
+            "tool_use" => StopReason::ToolUse,
+            "max_tokens" => StopReason::MaxTokens,
+            "stop_sequence" => StopReason::StopSequence,
+            _ => StopReason::Other,
+        }
+    }
+}
+
+/// Normalized token usage for one model round-trip (#192). Every field is
+/// optional — a provider may not report a given dimension. Counts are normalized
+/// so each maps to exactly one catalog pricing dimension without double-counting:
+/// `input_tokens` is the *uncached* input (OpenAI's `prompt_tokens` minus its
+/// cached reads; Anthropic already reports these separately), `cached_input_tokens`
+/// is the cache-read portion, and `cache_write_tokens` is the cache-creation
+/// portion (Anthropic only; OpenAI does not bill cache writes).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+}
+
 /// One event in a streamed model response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LlmEvent {
@@ -66,10 +127,11 @@ pub enum LlmEvent {
     Reasoning(String),
     /// A tool the model wants to run, fully assembled (id + name + JSON input).
     ToolCall(ToolCall),
-    /// Stream ended cleanly. Carries usage when the provider reports it.
+    /// Stream ended cleanly. Carries the normalized [`StopReason`] and [`Usage`]
+    /// when the provider reports them (#192).
     Finish {
-        input_tokens: Option<u64>,
-        output_tokens: Option<u64>,
+        stop_reason: Option<StopReason>,
+        usage: Usage,
     },
 }
 
@@ -163,8 +225,8 @@ impl Llm for DummyLlm {
         let events = vec![
             Ok(LlmEvent::Text(self.reply.clone())),
             Ok(LlmEvent::Finish {
-                input_tokens: None,
-                output_tokens: None,
+                stop_reason: None,
+                usage: Usage::default(),
             }),
         ];
         Ok(stream::iter(events).boxed())
@@ -202,8 +264,8 @@ impl Llm for EchoLlm {
         let events = vec![
             Ok(LlmEvent::Text(reply)),
             Ok(LlmEvent::Finish {
-                input_tokens: None,
-                output_tokens: None,
+                stop_reason: None,
+                usage: Usage::default(),
             }),
         ];
         Ok(stream::iter(events).boxed())
@@ -258,8 +320,8 @@ pub fn stream_from_response(resp: LlmResponse) -> LlmStream {
         events.push(Ok(LlmEvent::ToolCall(call)));
     }
     events.push(Ok(LlmEvent::Finish {
-        input_tokens: None,
-        output_tokens: None,
+        stop_reason: None,
+        usage: Usage::default(),
     }));
     stream::iter(events).boxed()
 }

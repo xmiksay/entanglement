@@ -143,14 +143,20 @@ async fn happy_path_streams_text_deltas_and_finish_with_usage() {
     let finish = events
         .iter()
         .find_map(|e| match e {
-            LlmEvent::Finish {
-                input_tokens,
-                output_tokens,
-            } => Some((*input_tokens, *output_tokens)),
+            LlmEvent::Finish { stop_reason, usage } => {
+                Some((usage.input_tokens, usage.output_tokens, *stop_reason))
+            }
             _ => None,
         })
         .expect("a Finish event");
-    assert_eq!(finish, (Some(11), Some(3)));
+    assert_eq!(
+        finish,
+        (
+            Some(11),
+            Some(3),
+            Some(entanglement_provider::StopReason::EndTurn)
+        )
+    );
 }
 
 #[tokio::test]

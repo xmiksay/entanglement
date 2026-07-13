@@ -180,6 +180,9 @@ impl SessionView {
                     false
                 }
             }
+            // Token totals are head-level state accumulated on `App` (see
+            // `App::handle_out_event`), not per-view transcript content (#192).
+            OutEvent::Usage { .. } => false,
             OutEvent::Error { seq, message, .. } => {
                 if seq > self.last_seen_seq {
                     self.transcript.push(TranscriptEntry::Error { message });

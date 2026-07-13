@@ -113,6 +113,7 @@ impl App {
             thinking_since: None,
             input_tokens: 0,
             output_tokens: 0,
+            cost_usd: 0.0,
             input_multiline: false,
             help_text: "Enter: send | Shift+Enter: newline | Ctrl+A: agent picker | Ctrl+L: sessions | Ctrl+P: command palette | ?: help".to_string(),
             showing_resume_modal: false,

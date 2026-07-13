@@ -133,6 +133,18 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
                 writeln!(out, "  {line}")?;
             }
         }
+        OutEvent::Usage {
+            input_tokens,
+            output_tokens,
+            cost_usd,
+            ..
+        } => match cost_usd {
+            Some(cost) => writeln!(
+                out,
+                "$ usage: {input_tokens} in / {output_tokens} out (${cost:.4})"
+            )?,
+            None => writeln!(out, "$ usage: {input_tokens} in / {output_tokens} out")?,
+        },
         OutEvent::Error { message, .. } => writeln!(out, "! {message}")?,
         OutEvent::Done { .. } => writeln!(out, "✓ done")?,
         OutEvent::FileChange {

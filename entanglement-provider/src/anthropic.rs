@@ -19,7 +19,10 @@
 //! inverted the original trait-in-core seam of ADR-0006 / ADR-0007).
 
 use crate::client::HttpClient;
-use crate::{Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, Message, MessageRole, ToolSpec};
+use crate::{
+    Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, Message, MessageRole, StopReason, ToolSpec,
+    Usage,
+};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -133,8 +136,8 @@ impl Llm for AnthropicLlm {
         let stream = try_stream! {
             let mut buf = String::new();
             let mut current_tool: Option<PendingTool> = None;
-            let mut input_tokens: Option<u64> = None;
-            let mut output_tokens: Option<u64> = None;
+            let mut usage = Usage::default();
+            let mut stop_reason: Option<StopReason> = None;
             let mut rx = rx;
 
             while let Some(item) = rx.recv().await {
@@ -147,17 +150,14 @@ impl Llm for AnthropicLlm {
                         &event,
                         data,
                         &mut current_tool,
-                        &mut input_tokens,
-                        &mut output_tokens,
+                        &mut usage,
+                        &mut stop_reason,
                     )? {
                         yield ev;
                     }
                 }
             }
-            yield LlmEvent::Finish {
-                input_tokens,
-                output_tokens,
-            };
+            yield LlmEvent::Finish { stop_reason, usage };
         };
 
         tracing::debug!(model = model, "anthropic stream started");
@@ -289,18 +289,32 @@ fn handle_frame(
     event: &str,
     data: Option<Value>,
     current_tool: &mut Option<PendingTool>,
-    input_tokens: &mut Option<u64>,
-    output_tokens: &mut Option<u64>,
+    usage: &mut Usage,
+    stop_reason: &mut Option<StopReason>,
 ) -> Result<Vec<LlmEvent>, anyhow::Error> {
     let mut out = Vec::new();
     let data = data.unwrap_or(Value::Null);
     match event {
         "message_start" => {
+            // Anthropic reports the regular input, cache reads, and cache
+            // creation as separate counts, so no split is needed (unlike OpenAI).
             if let Some(t) = data
                 .pointer("/message/usage/input_tokens")
                 .and_then(|v| v.as_u64())
             {
-                *input_tokens = Some(t);
+                usage.input_tokens = Some(t);
+            }
+            if let Some(t) = data
+                .pointer("/message/usage/cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+            {
+                usage.cached_input_tokens = Some(t);
+            }
+            if let Some(t) = data
+                .pointer("/message/usage/cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+            {
+                usage.cache_write_tokens = Some(t);
             }
         }
         "message_delta" => {
@@ -308,7 +322,10 @@ fn handle_frame(
                 .pointer("/usage/output_tokens")
                 .and_then(|v| v.as_u64())
             {
-                *output_tokens = Some(t);
+                usage.output_tokens = Some(t);
+            }
+            if let Some(r) = data.pointer("/delta/stop_reason").and_then(|v| v.as_str()) {
+                *stop_reason = Some(StopReason::from_anthropic(r));
             }
         }
         "content_block_start" => {
@@ -465,7 +482,7 @@ mod tests {
             "content_block_delta",
             Some(data),
             &mut tool,
-            &mut None,
+            &mut Usage::default(),
             &mut None,
         )
         .unwrap();
@@ -485,7 +502,7 @@ mod tests {
             "content_block_start",
             Some(start),
             &mut tool,
-            &mut None,
+            &mut Usage::default(),
             &mut None,
         )
         .unwrap();
@@ -493,7 +510,7 @@ mod tests {
             "content_block_delta",
             Some(d1),
             &mut tool,
-            &mut None,
+            &mut Usage::default(),
             &mut None,
         )
         .unwrap();
@@ -501,12 +518,18 @@ mod tests {
             "content_block_delta",
             Some(d2),
             &mut tool,
-            &mut None,
+            &mut Usage::default(),
             &mut None,
         )
         .unwrap();
-        let evs =
-            handle_frame("content_block_stop", None, &mut tool, &mut None, &mut None).unwrap();
+        let evs = handle_frame(
+            "content_block_stop",
+            None,
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
         assert_eq!(
             evs,
             vec![LlmEvent::ToolCall(crate::ToolCall {
@@ -519,26 +542,33 @@ mod tests {
 
     #[test]
     fn usage_is_captured_from_frames() {
-        let mut input = None;
-        let mut output = None;
+        let mut usage = Usage::default();
+        let mut stop = None;
         let _ = handle_frame(
             "message_start",
-            Some(json!({ "message": { "usage": { "input_tokens": 42 } } })),
+            Some(json!({ "message": { "usage": {
+                "input_tokens": 42,
+                "cache_read_input_tokens": 10,
+                "cache_creation_input_tokens": 5
+            } } })),
             &mut None,
-            &mut input,
-            &mut output,
+            &mut usage,
+            &mut stop,
         )
         .unwrap();
         let _ = handle_frame(
             "message_delta",
-            Some(json!({ "usage": { "output_tokens": 7 } })),
+            Some(json!({ "delta": { "stop_reason": "max_tokens" }, "usage": { "output_tokens": 7 } })),
             &mut None,
-            &mut input,
-            &mut output,
+            &mut usage,
+            &mut stop,
         )
         .unwrap();
-        assert_eq!(input, Some(42));
-        assert_eq!(output, Some(7));
+        assert_eq!(usage.input_tokens, Some(42));
+        assert_eq!(usage.output_tokens, Some(7));
+        assert_eq!(usage.cached_input_tokens, Some(10));
+        assert_eq!(usage.cache_write_tokens, Some(5));
+        assert_eq!(stop, Some(StopReason::MaxTokens));
     }
 
     #[test]

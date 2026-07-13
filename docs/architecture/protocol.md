@@ -34,6 +34,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | UserQuestion{session,seq,request_id,question,options,allow_free_form}  // ask_user prompt (#90)
          | ToolOutput{session,seq,request_id,tool,output}
          | TaskList{session,seq,content}      // full outline snapshot (markdown)
+         | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?}  // per-round-trip usage + cost (#192)
          | Error{session,seq,message}
          | Done{session,seq}
          | FileChange{session,seq,path,before?,after?,change_kind}   // file-change audit record (#41)
@@ -100,3 +101,20 @@ advertised only to a profile that names it (an inherit-all profile never gets it
 This is why `entanglement` has *both* the opencode agent-profile axis *and* structured
 events: profiles control **what the agent is instructed/permitted to do**;
 structured events give every head a native plan/task panel to render.
+
+**Usage & cost** (✅ #192, [ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)).
+The provider normalizes each round-trip's terminal `LlmEvent::Finish` to
+`{ stop_reason: StopReason, usage: Usage }` — `StopReason` collapses both wire
+vocabularies (`EndTurn | ToolUse | MaxTokens | StopSequence | Other`), and `Usage`
+splits the token counts so each maps to one catalog pricing dimension without
+double-counting (`input_tokens` is the *uncached* input; the OpenAI client
+subtracts its cache reads out of `prompt_tokens`, Anthropic already separates
+them). The engine prices the round-trip via `ModelPricing::cost_usd` (effective
+model = `profile.model` else `EngineConfig.default_model`, looked up in
+`EngineConfig.pricing`), folds it into the session's `SessionUsage` running total,
+and emits `OutEvent::Usage` — the **per-round-trip delta**, so a head sums deltas
+for its own total. `cost_usd` is `None` when no catalog pricing covers the model.
+A `MaxTokens` finish additionally emits a recoverable `OutEvent::Error`
+(truncation warning) — the reply still commits, but no longer silently. Because
+`cost_usd` is a float, `OutEvent` (and `InMsg`, via `Resume`) are `PartialEq` but
+not `Eq`.

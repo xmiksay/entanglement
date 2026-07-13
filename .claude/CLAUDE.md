@@ -96,7 +96,7 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
           | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged
           | Plan | TextDelta | ReasoningDelta | ToolCall | ToolRequest | ToolExec
-          | UserQuestion | ToolOutput | TaskList | Error | Done | FileChange
+          | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | FileChange
 ```
 
 Load-bearing invariants (details in the split architecture docs — do **not**

@@ -33,7 +33,8 @@ use std::collections::BTreeMap;
 
 use crate::client::HttpClient;
 use crate::{
-    Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, Message, MessageRole, ToolCall, ToolSpec,
+    Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, Message, MessageRole, StopReason, ToolCall,
+    ToolSpec, Usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -160,8 +161,7 @@ impl Llm for OpenAiLlm {
         let stream = try_stream! {
             let mut buf = String::new();
             let mut tools: BTreeMap<u32, PendingTool> = BTreeMap::new();
-            let mut input_tokens: Option<u64> = None;
-            let mut output_tokens: Option<u64> = None;
+            let mut usage = Usage::default();
             let mut seen_finish_reason: Option<String> = None;
             let mut rx = rx;
 
@@ -190,7 +190,7 @@ impl Llm for OpenAiLlm {
                         seen_finish_reason = Some(fr.to_string());
                     }
 
-                    for ev in handle_chunk(&data, &mut tools, &mut input_tokens, &mut output_tokens)? {
+                    for ev in handle_chunk(&data, &mut tools, &mut usage)? {
                         yield ev;
                     }
                 }
@@ -221,10 +221,14 @@ impl Llm for OpenAiLlm {
                     }
                 }
             }
-            yield LlmEvent::Finish {
-                input_tokens,
-                output_tokens,
+            // A tool-flush without an explicit finish_reason still means the model
+            // wants to run tools; fall back to ToolUse so the reason is never lost.
+            let stop_reason = match seen_finish_reason.as_deref() {
+                Some(r) => Some(StopReason::from_openai(r)),
+                None if has_pending_tools => Some(StopReason::ToolUse),
+                None => None,
             };
+            yield LlmEvent::Finish { stop_reason, usage };
         };
 
         tracing::debug!(model = %model, base = %self.base_url, "openai-compat stream started");
@@ -343,18 +347,26 @@ fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
 fn handle_chunk(
     data: &Value,
     tools: &mut BTreeMap<u32, PendingTool>,
-    input_tokens: &mut Option<u64>,
-    output_tokens: &mut Option<u64>,
+    usage: &mut Usage,
 ) -> Result<Vec<LlmEvent>, anyhow::Error> {
     let mut out = Vec::new();
 
     // Usage arrives in the final chunk (empty choices when include_usage is set).
     if let Some(u) = data.get("usage") {
+        // OpenAI's `prompt_tokens` *includes* cache-read tokens; split them so
+        // each maps to one pricing dimension (#192): the cached portion bills at
+        // the cached rate, the remainder at the full input rate.
+        let cached = u
+            .pointer("/prompt_tokens_details/cached_tokens")
+            .and_then(|v| v.as_u64());
+        if let Some(c) = cached {
+            usage.cached_input_tokens = Some(c);
+        }
         if let Some(p) = u.get("prompt_tokens").and_then(|v| v.as_u64()) {
-            *input_tokens = Some(p);
+            usage.input_tokens = Some(p.saturating_sub(cached.unwrap_or(0)));
         }
         if let Some(c) = u.get("completion_tokens").and_then(|v| v.as_u64()) {
-            *output_tokens = Some(c);
+            usage.output_tokens = Some(c);
         }
     }
 
@@ -504,14 +516,14 @@ mod tests {
     #[test]
     fn text_delta_yields_text() {
         let data = json!({ "choices": [{ "delta": { "content": "hel" } }] });
-        let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut None, &mut None).unwrap();
+        let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
         assert_eq!(evs, vec![LlmEvent::Text("hel".into())]);
     }
 
     #[test]
     fn empty_content_delta_emits_nothing() {
         let data = json!({ "choices": [{ "delta": { "content": "" } }] });
-        let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut None, &mut None).unwrap();
+        let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
         assert!(evs.is_empty());
     }
 
@@ -527,10 +539,10 @@ mod tests {
         ] } }] });
         let d3 = json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] });
 
-        let _ = handle_chunk(&d1, &mut tools, &mut None, &mut None).unwrap();
+        let _ = handle_chunk(&d1, &mut tools, &mut Usage::default()).unwrap();
         assert!(tools.contains_key(&0)); // assembled but not yet flushed
-        let _ = handle_chunk(&d2, &mut tools, &mut None, &mut None).unwrap();
-        let evs = handle_chunk(&d3, &mut tools, &mut None, &mut None).unwrap();
+        let _ = handle_chunk(&d2, &mut tools, &mut Usage::default()).unwrap();
+        let evs = handle_chunk(&d3, &mut tools, &mut Usage::default()).unwrap();
         assert_eq!(
             evs,
             vec![LlmEvent::ToolCall(ToolCall {
@@ -552,8 +564,8 @@ mod tests {
               "function": { "name": "a", "arguments": "{}" } }
         ] } }] });
         let d2 = json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] });
-        let _ = handle_chunk(&d1, &mut tools, &mut None, &mut None).unwrap();
-        let evs = handle_chunk(&d2, &mut tools, &mut None, &mut None).unwrap();
+        let _ = handle_chunk(&d1, &mut tools, &mut Usage::default()).unwrap();
+        let evs = handle_chunk(&d2, &mut tools, &mut Usage::default()).unwrap();
         assert_eq!(evs.len(), 2);
         assert_eq!(
             evs[0],
@@ -575,22 +587,37 @@ mod tests {
 
     #[test]
     fn usage_is_captured_from_chunk() {
-        let mut input = None;
-        let mut output = None;
+        let mut usage = Usage::default();
         let data = json!({ "choices": [], "usage": {
             "prompt_tokens": 42, "completion_tokens": 7, "total_tokens": 49
         } });
-        let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut input, &mut output).unwrap();
+        let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut usage).unwrap();
         assert!(evs.is_empty()); // no content/tool event from a usage-only chunk
-        assert_eq!(input, Some(42));
-        assert_eq!(output, Some(7));
+        assert_eq!(usage.input_tokens, Some(42));
+        assert_eq!(usage.output_tokens, Some(7));
+        assert_eq!(usage.cached_input_tokens, None);
+    }
+
+    #[test]
+    fn cached_prompt_tokens_split_out_of_input() {
+        // OpenAI reports cached reads inside `prompt_tokens`; the input count is
+        // the remainder so each dimension prices once (#192).
+        let mut usage = Usage::default();
+        let data = json!({ "choices": [], "usage": {
+            "prompt_tokens": 100, "completion_tokens": 8, "total_tokens": 108,
+            "prompt_tokens_details": { "cached_tokens": 30 }
+        } });
+        let _ = handle_chunk(&data, &mut BTreeMap::new(), &mut usage).unwrap();
+        assert_eq!(usage.input_tokens, Some(70));
+        assert_eq!(usage.cached_input_tokens, Some(30));
+        assert_eq!(usage.output_tokens, Some(8));
     }
 
     #[test]
     fn stop_finish_reason_does_not_flush_or_error() {
         let mut tools = BTreeMap::new();
         let data = json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] });
-        let evs = handle_chunk(&data, &mut tools, &mut None, &mut None).unwrap();
+        let evs = handle_chunk(&data, &mut tools, &mut Usage::default()).unwrap();
         assert!(evs.is_empty());
         assert!(tools.is_empty());
     }
@@ -602,7 +629,7 @@ mod tests {
             { "index": 0, "id": "c1", "type": "function",
               "function": { "name": "greet", "arguments": "{\"nm\":\"sam\"}" } }
         ] } }] });
-        let _ = handle_chunk(&d1, &mut tools, &mut None, &mut None).unwrap();
+        let _ = handle_chunk(&d1, &mut tools, &mut Usage::default()).unwrap();
         assert!(tools.contains_key(&0), "tool should be assembled");
 
         // Simulate stream ending without explicit finish_reason - this would be
