@@ -374,7 +374,7 @@ async fn run_bash_passthrough(app: &mut App, command: &str) {
         );
         return;
     }
-    use entanglement_core::tools::Tool;
+    use entanglement_runtime::Tool;
     let tool = crate::host::bash::BashTool::new(app.root().to_path_buf());
     let input = serde_json::json!({ "command": command }).to_string();
     let output = match tool.run(&input).await {

@@ -14,11 +14,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, SessionId, ToolCall, ToolRegistry,
+    LlmStream, OutEvent, SessionId, ToolCall,
 };
 
 mod common;
-use common::spawn_tool_executor;
+use common::{spawn_tool_executor, unknown_tool};
 
 /// Collect `TextDelta` texts for `sid` until the deadline, across as many
 /// turns as happen. (Unlike `actor.rs::collect`, this does *not* break on
@@ -168,7 +168,7 @@ async fn prompt_arriving_mid_turn_folds_into_the_live_turn() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new());
+    spawn_tool_executor(&holly, unknown_tool);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
 
@@ -255,7 +255,7 @@ async fn runaway_tool_loop_is_bounded_within_a_single_prompt() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(&holly, ToolRegistry::new());
+    spawn_tool_executor(&holly, unknown_tool);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
 
@@ -330,7 +330,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
     let holly = Holly::spawn(cfg);
     // The tool call is an unknown tool; execution is now a runtime round-trip
     // (#58) so the turn only completes once the executor answers.
-    spawn_tool_executor(&holly, ToolRegistry::new());
+    spawn_tool_executor(&holly, unknown_tool);
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
 

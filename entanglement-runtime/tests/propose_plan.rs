@@ -13,10 +13,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, ProfileRegistry, SessionId, ToolCall, ToolRegistry,
+    LlmStream, OutEvent, ProfileRegistry, SessionId, ToolCall,
 };
 use entanglement_runtime::propose_plan::PROPOSE_PLAN_TOOL;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::ToolRegistry;
 
 /// Replays scripted responses in order, then plain text so the turn terminates.
 struct ScriptedLlm {

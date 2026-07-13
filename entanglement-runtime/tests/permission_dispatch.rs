@@ -10,9 +10,10 @@ use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
-    SessionId, Tool, ToolCall, ToolRegistry,
+    SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::{Tool, ToolRegistry};
 
 /// An LLM that replays scripted responses in order, then plain text (so a turn
 /// loop that re-prompts after a tool call terminates).

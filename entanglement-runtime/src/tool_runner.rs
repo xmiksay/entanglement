@@ -26,8 +26,10 @@ use std::sync::{Arc, Mutex};
 
 use entanglement_core::{
     AgentProfile, AgentState, ApprovalScope, Holly, InMsg, OutEvent, Permission, PermissionProfile,
-    ProfileRegistry, SessionId, ToolCall, ToolRegistry,
+    ProfileRegistry, SessionId, ToolCall,
 };
+
+use crate::tools::ToolRegistry;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::grants::GrantStore;

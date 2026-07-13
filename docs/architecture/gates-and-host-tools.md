@@ -60,8 +60,11 @@ cap from `.cargo/config.toml`.
 ## 8. Host tools — [ADR-0008](../adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](../adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md) (exec opt-in), [ADR-0045](../adr/0045-call-host-tool-argv-exec-tailed-output.md) (`call`)
 
 Concrete filesystem + shell tools, dispatched under the active permission
-profile ([ADR-0003](../adr/0003-agent-and-permission-profiles.md)). Core defines the
-`Tool` **trait**; the implementations live in **`entanglement-runtime::host`**
+profile ([ADR-0003](../adr/0003-agent-and-permission-profiles.md)). The
+`Tool` **trait** and `ToolRegistry` live in **`entanglement-runtime`**
+(`entanglement-runtime::tools`, ✅ #206, [ADR-0059](../adr/0059-tool-trait-and-registry-live-in-the-runtime.md)) —
+core holds no executable tools, only advertises schemas (§tool round-trip);
+the implementations live in **`entanglement-runtime::host`**
 (✅ #57) and are assembled by `host_tools(root: PathBuf) -> ToolRegistry`.
 Execution *and* permission dispatch now run in the runtime (✅ #58, #59):
 `entanglement-runtime::tool_runner` subscribes to the engine, resolves each

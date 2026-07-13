@@ -11,9 +11,10 @@ use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmSession, LlmStream, MessageRole, OutEvent, Permission, PermissionProfile,
-    ProfileRegistry, SessionId, ToolCall, ToolRegistry,
+    ProfileRegistry, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::ToolRegistry;
 use tokio::sync::Notify;
 
 /// Pull an `agent_id` out of an `agent_spawn` result string (format:

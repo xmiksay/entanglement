@@ -18,7 +18,7 @@
 //!    there is no implicit CWD fallback.
 //!
 //! Unlike `agent_spawn`/`ask_user`, `load_skill` is a **real host tool** in the
-//! [`ToolRegistry`](entanglement_core::tools::ToolRegistry): it reads the
+//! [`ToolRegistry`](crate::tools::ToolRegistry): it reads the
 //! filesystem, so it goes through the *same* per-call permission gate as `read`
 //! (no special exemption). Permission (`Allow`/`Ask`/`Deny`) is the executor's
 //! job; this handler owns only resolution + substitution and returns the body as
@@ -33,9 +33,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use crate::tools::Tool;
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
-use entanglement_core::tools::Tool;
 use regex::Regex;
 use serde::Deserialize;
 

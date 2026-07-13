@@ -8,8 +8,6 @@
 //! (stdio, WS, TUI) is a thin adapter over these two methods.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
@@ -37,7 +35,6 @@ const DEFAULT_PROFILE: &str = "build";
 /// Handle to the running engine. Cheap to clone; the actor task lives until all
 /// clones drop (the inbox closes) or every session stops.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct Holly {
     inbox: mpsc::Sender<InMsg>,
     events: broadcast::Sender<OutEvent>,
@@ -46,8 +43,6 @@ pub struct Holly {
     /// e.g. the tool executor watching `Approve`/`Reject`/`Stop` while it owns
     /// permission dispatch + approval (ADR-0010, #59).
     inbound: broadcast::Sender<InMsg>,
-    cfg: Arc<EngineConfig>,
-    root: Arc<PathBuf>,
 }
 
 impl Holly {
@@ -58,25 +53,13 @@ impl Holly {
         let (inbound, _) = broadcast::channel::<InMsg>(INBOX_CAPACITY);
         let supervisor_events = events.clone();
         let supervisor_inbound = inbound.clone();
-        let root = Arc::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let cfg_arc = Arc::new(cfg.clone());
-        let root_for_supervisor = root.clone();
-        tokio::spawn(async move {
-            supervisor(
-                rx,
-                supervisor_events,
-                supervisor_inbound,
-                cfg,
-                root_for_supervisor,
-            )
-            .await
-        });
+        tokio::spawn(
+            async move { supervisor(rx, supervisor_events, supervisor_inbound, cfg).await },
+        );
         Self {
             inbox,
             events,
             inbound,
-            cfg: cfg_arc,
-            root,
         }
     }
 
@@ -138,7 +121,6 @@ async fn supervisor(
     events: broadcast::Sender<OutEvent>,
     inbound: broadcast::Sender<InMsg>,
     cfg: EngineConfig,
-    root: Arc<PathBuf>,
 ) {
     let mut sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>> = HashMap::new();
     // Live-session directory, kept in lockstep with `sessions`, so `ListSessions`
@@ -232,7 +214,7 @@ async fn supervisor(
             // dead id that showed in `ListSessions` and silently swallowed every
             // routed `Prompt` (issue #105). Register only on success; on failure
             // surface an `Error` and leave the id unclaimed.
-            let initial_session = match Session::replay(records, &cfg, root.as_path()) {
+            let initial_session = match Session::replay(records, &cfg) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!("Failed to replay session {}: {}", session_id, e);

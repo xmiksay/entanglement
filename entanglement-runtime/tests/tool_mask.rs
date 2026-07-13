@@ -12,9 +12,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, ProfileRegistry, SessionId, Tool, ToolCall, ToolRegistry,
+    LlmStream, OutEvent, ProfileRegistry, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::{Tool, ToolRegistry};
 
 struct ScriptedLlm {
     responses: Mutex<Vec<LlmResponse>>,

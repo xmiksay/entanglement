@@ -19,12 +19,12 @@ mod tui;
 
 use entanglement_runtime::{
     agents, ask_user, config, host, inspect, logging, persistence, plan_tasks, propose_plan,
-    script, session_store, skills, subagent, system_prompt, tool_runner,
+    script, session_store, skills, subagent, system_prompt, tool_runner, ToolRegistry,
 };
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId, ToolRegistry};
+use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId};
 use entanglement_provider::{Catalog, HttpClient, ModelInfo, ModelPricing, ProviderEntry, Wire};
 use std::collections::HashMap;
 

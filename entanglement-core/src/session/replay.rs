@@ -2,8 +2,6 @@
 //! log of `(Option<InMsg>, OutEvent)` records. Separable from the live turn
 //! loop — this is pure state reconstruction, no LLM or tool round-trip.
 
-use std::path::Path;
-
 use anyhow::Result;
 
 use super::Session;
@@ -20,17 +18,12 @@ impl Session {
     /// # Parameters
     ///
     /// - `records`: A slice of `(Option<InMsg>, OutEvent)` tuples representing the log
-    /// - `cfg`: Engine configuration for constructing tools and LLM
-    /// - `root`: Root directory for tool operations (unused in core but required for consistency)
+    /// - `cfg`: Engine configuration for constructing the per-session LLM
     ///
     /// # Returns
     ///
     /// A reconstructed `Session` with all state folded from the log.
-    pub fn replay(
-        records: &[(Option<InMsg>, OutEvent)],
-        cfg: &EngineConfig,
-        _root: &Path,
-    ) -> Result<Self> {
+    pub fn replay(records: &[(Option<InMsg>, OutEvent)], cfg: &EngineConfig) -> Result<Self> {
         let default_profile = cfg
             .profiles
             .get("build")

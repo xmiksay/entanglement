@@ -5,10 +5,10 @@
 //! See ADR-0031 (supersedes-by-addition of ADR-0008/0009).
 
 use super::resolve_under_root;
+use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
-use entanglement_core::tools::Tool;
 use serde::Deserialize;
 
 type CanWriteCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
