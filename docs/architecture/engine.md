@@ -34,9 +34,19 @@ folded into the session's `SessionUsage`, and emitted as `OutEvent::Usage`; a
 [ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)). Permission dispatch and approval no longer run
 here — the runtime tool executor owns them (§3, §8, ✅ #59). The tool-result
 wait parks the task on its inbox; any non-matching message (e.g. a new prompt) is
-stashed and processed after the turn. Setup/mid-stream backend errors surface as
-`Error` + `Done` without committing a partial assistant message. The same
-stash discipline applies inside the streaming loop and between tool calls
+stashed and processed after the turn. Setup errors (the initial `stream()` call)
+surface as `Error` + `Done` with no partial to commit. A **mid-stream** failure
+is handled to keep the committed context aligned with what the user saw (#181,
+[ADR-0057](../adr/0057-mid-stream-error-partial-commit-and-retry.md)):
+if the stream drops *before any* `TextDelta`/`ReasoningDelta` is shown, core
+transparently **re-requests once** (`STREAM_RETRIES = 1`) — a clean re-stream the
+provider's own connect-level retry (ADR-0050) can't cover; if a delta was already
+shown, core instead **commits the partial** assistant message with an appended
+`\n\n[interrupted]` marker (streamed as a final `TextDelta` so display and
+context stay identical) before the `Error` + `Done`, so the next turn's context
+matches the display instead of continuing as if the model said nothing. Any
+half-assembled tool calls are dropped (no `Finish` ⇒ possibly incomplete). The
+same stash discipline applies inside the streaming loop and between tool calls
 (ADR-0018): a mid-turn `Stop` interrupts, every other queued command (`Prompt`,
 `SetAgent`, …) is pushed onto the replay stash, so a follow-up sent while the
 engine is busy is never silently dropped. **The streaming loop *races* the
