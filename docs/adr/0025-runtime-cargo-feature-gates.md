@@ -1,6 +1,6 @@
 # 0025. `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding
 
-- Status: Accepted — lean-transport claim amended by [0053](0053-invert-core-provider-seam.md)
+- Status: Accepted — lean-transport claim amended by [0053](0053-invert-core-provider-seam.md); `cli`/`provider` split + module-import cleanup amended by #208
 - Date: 2026-07-09
 
 > **Amended by [ADR-0053](0053-invert-core-provider-seam.md) (2026-07-13).** Since
@@ -9,6 +9,19 @@
 > The feature-gate mechanism below stands; only the "lean runtime is
 > transport-free" property changed — `make check-lean` now asserts CLI/TUI-free,
 > not transport-free.
+
+> **Amended by issue #208 (2026-07-13).** Two refinements to the `cli` feature
+> below: (1) the LLM providers (`dep:entanglement-provider`) split out of `cli`
+> into their own **`provider`** feature, so `cli` is now clap + tracing-subscriber
+> only and a future `ws`/`serve` head can depend on `provider` without dragging
+> clap into a WebSocket server; `tui` gains `provider` and the bin's
+> `required-features` becomes `["cli", "provider", "tui"]`. (2) `main.rs` stopped
+> re-declaring the library modules as `mod` (which compiled the library source a
+> second time and let a bin-only `mod` slip past `check-lean`) — it now imports
+> them from the lib crate, keeping only `pipe`/`run`/`tui` as bin modules. This
+> moved `config`/`inspect`/`logging` into `lib.rs`; `logging` (tracing-subscriber)
+> is `#[cfg(feature = "cli")]`, the one deliberate exception to the "zero
+> `#[cfg(feature)]` in code" property stated below.
 
 ## Context
 

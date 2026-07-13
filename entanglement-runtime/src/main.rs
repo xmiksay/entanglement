@@ -7,28 +7,20 @@
 //! - `pipe` is a bidirectional NDJSON relay: `InMsg` lines on stdin,
 //!   `OutEvent` lines on stdout. For scripting / editor integration.
 
-mod agent_poll;
-mod agents;
-mod ask_user;
-mod config;
-mod frontmatter;
-mod grants;
-mod host;
-mod inspect;
-mod logging;
-mod permission;
-mod persistence;
+// Only the bin-specific heads stay `mod` here. The reusable library modules
+// live in `lib.rs`; importing them (rather than re-declaring `mod`) stops the
+// library source being compiled a second time and removes the hand-sync that
+// let a bin-only `mod` slip past `check-lean` (issue #208). The crate-root
+// `use` below makes each library module reachable as `crate::<name>` from the
+// bin submodules too, matching the existing `use entanglement_provider::…`.
 mod pipe;
-mod plan_tasks;
-mod propose_plan;
 mod run;
-mod script;
-mod session_store;
-mod skills;
-mod subagent;
-mod system_prompt;
-mod tool_runner;
 mod tui;
+
+use entanglement_runtime::{
+    agents, ask_user, config, host, inspect, logging, persistence, plan_tasks, propose_plan,
+    script, session_store, skills, subagent, system_prompt, tool_runner,
+};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};

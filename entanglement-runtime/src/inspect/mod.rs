@@ -29,7 +29,7 @@ pub use agents::inspect_agents;
 pub use config::inspect_config;
 pub use prompt::inspect_prompt;
 pub use skills::inspect_skills;
-pub(crate) use tui::tui_reports;
+pub use tui::tui_reports;
 
 use std::fmt::Write as _;
 

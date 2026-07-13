@@ -11,9 +11,11 @@
 //! - `default = ["tui"]` — the full `skutter` binary (stdio `run`/`pipe` + the
 //!   terminal UI), pulling clap, the LLM providers (reqwest), and the render
 //!   stack (ratatui, syntect, …).
-//! - `cli` — head plumbing (clap arg parsing, log init, LLM providers) without
-//!   the render stack; room for a future lean stdio-only build.
-//! - `tui` — the terminal UI head; implies `cli`.
+//! - `cli` — head plumbing: clap arg parsing + log init (tracing-subscriber).
+//! - `provider` — the LLM providers (reqwest via `entanglement-provider`), split
+//!   from `cli` (#208) so a future `serve`/`ws` head can pull providers without
+//!   dragging in clap.
+//! - `tui` — the terminal UI head; implies `cli` + `provider`.
 //!
 //! With `--no-default-features` the crate is a **lean library**: the modules
 //! below import only `entanglement-core` + tokio + serde/serde_yaml/anyhow/
@@ -26,9 +28,11 @@
 pub mod agent_poll;
 pub mod agents;
 pub mod ask_user;
+pub mod config;
 pub mod frontmatter;
 pub mod grants;
 pub mod host;
+pub mod inspect;
 pub mod permission;
 pub mod persistence;
 pub mod plan_tasks;
@@ -39,3 +43,10 @@ pub mod skills;
 pub mod subagent;
 pub mod system_prompt;
 pub mod tool_runner;
+
+// Tracing-subscriber setup is head plumbing, so it rides the `cli` feature and
+// stays out of the lean library (tracing-subscriber is on the `check-lean`
+// blocklist). The bin only ever builds with `cli`, so `logging` is always
+// available to it.
+#[cfg(feature = "cli")]
+pub mod logging;
