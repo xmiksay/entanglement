@@ -20,7 +20,7 @@ use super::skills::{render_disclosures, render_skill_table};
 /// The three rendered inspection views for the TUI overlay (#214): the assembled
 /// prompt breakdown, the agent registry, and the skill registry — each a
 /// self-contained `String` ready to drop into a scrollable pane.
-pub(crate) struct InspectReports {
+pub struct InspectReports {
     pub prompt: String,
     pub agents: String,
     pub skills: String,
@@ -32,7 +32,7 @@ pub(crate) struct InspectReports {
 /// state rather than taking `--agent`. Resolution errors are rendered inline (as
 /// `error: …`) so the overlay always has something to show rather than failing to
 /// open.
-pub(crate) fn tui_reports(cwd: &Path, agent: &str) -> InspectReports {
+pub fn tui_reports(cwd: &Path, agent: &str) -> InspectReports {
     InspectReports {
         prompt: tui_prompt(cwd, agent),
         agents: tui_agents(cwd, agent),

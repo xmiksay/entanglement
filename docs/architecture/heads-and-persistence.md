@@ -12,7 +12,9 @@ ADR-0010).
 
 The heads (and the `skutter` binary that carries them) need the crate's
 **default features** — `default = ["tui"]` pulls clap + the providers + the
-render stack, and `[[bin]] skutter` declares `required-features = ["cli","tui"]`.
+render stack, and `[[bin]] skutter` declares
+`required-features = ["cli","provider","tui"]` (the `provider` feature was split
+out of `cli` in #208 so a future `ws` head can pull providers without clap).
 Building the crate with `default-features = false` yields an **embeddable
 library** — the tool-execution loop, permission dispatch, sub-agent spawn, and
 persistence machinery with none of the CLI/TUI/transport weight

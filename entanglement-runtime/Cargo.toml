@@ -14,16 +14,19 @@ path = "src/lib.rs"
 [[bin]]
 name = "skutter"
 path = "src/main.rs"
-required-features = ["cli", "tui"]
+required-features = ["cli", "provider", "tui"]
 
 [features]
 default = ["tui"]
-# Head plumbing for `skutter`: arg parsing (clap), log init, LLM providers (reqwest).
-cli = ["dep:clap", "dep:tracing-subscriber", "dep:entanglement-provider"]
-# Terminal UI head (`skutter tui`). Implies `cli`: the TUI is only reachable
-# through the clap CLI, and tui/ itself imports entanglement-provider
+# Head plumbing for `skutter`: arg parsing (clap) + log init (tracing-subscriber).
+cli = ["dep:clap", "dep:tracing-subscriber"]
+# LLM providers (reqwest via entanglement-provider). Split from `cli` (#208) so a
+# future `serve`/`ws` head can pull providers without dragging in clap.
+provider = ["dep:entanglement-provider"]
+# Terminal UI head (`skutter tui`). Implies `cli` + `provider`: the TUI is only
+# reachable through the clap CLI, and tui/ itself imports entanglement-provider
 # (ModelInfo, models_for, HttpClient in tui/app.rs + tui/mod.rs).
-tui = ["cli", "dep:ratatui", "dep:crossterm", "dep:pulldown-cmark", "dep:syntect", "dep:diffy", "dep:unicode-width"]
+tui = ["cli", "provider", "dep:ratatui", "dep:crossterm", "dep:pulldown-cmark", "dep:syntect", "dep:diffy", "dep:unicode-width"]
 
 [dependencies]
 entanglement-core = { workspace = true }

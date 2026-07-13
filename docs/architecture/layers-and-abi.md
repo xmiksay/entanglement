@@ -47,11 +47,16 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
   ([ADR-0025](../adr/0025-runtime-cargo-feature-gates.md)): `default = ["tui"]` is
   the full `skutter` binary, while `--no-default-features` is a **lean library**
   — `host` + `tool_runner` + `permission` + `subagent` + `persistence` +
-  `session_store` over core + tokio + glob/regex, with no CLI/TUI deps
-  (`make check-lean` enforces, §7). Since [ADR-0053](../adr/0053-invert-core-provider-seam.md)
+  `session_store` (+ `config` + `inspect`, #208) over core + tokio + glob/regex,
+  with no CLI/TUI deps (`make check-lean` enforces, §7). Since
+  [ADR-0053](../adr/0053-invert-core-provider-seam.md)
   the lean library is CLI/TUI-free rather than transport-free — `reqwest` rides
-  in transitively via core → provider. The `cli` feature (clap + providers) sits
-  between the two, leaving room for a `ws = ["cli", …]` sibling.
+  in transitively via core → provider. The `cli` feature (clap + log init) and
+  the `provider` feature (the LLM providers, split out of `cli` in #208) sit
+  between the two, leaving room for a `ws = ["provider", …]` sibling that pulls
+  providers without clap. `main.rs` now imports the library modules from the lib
+  crate instead of re-declaring `mod`, so only the bin heads (`pipe`/`run`/`tui`)
+  live in the binary (#208).
 
 **Responsibility relocation is mostly landed:** the host-tool *implementations*
 now live in `entanglement-runtime` (✅ #57, §8), and tool *execution* moved there
