@@ -1,6 +1,6 @@
 # 0008. Host tools: working-directory root + bounded output
 
-- Status: Accepted
+- Status: Accepted (lexical-only containment of point 3 superseded-by-addition by [0054](0054-canonicalizing-symlink-safe-root-containment.md))
 - Date: 2026-07-07
 
 ## Context

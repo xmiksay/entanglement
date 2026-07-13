@@ -8,8 +8,12 @@
 //! `ENTANGLEMENT_ENABLE_BASH`) — see ADR-0010.
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
-//! paths resolve against it and are **rejected on `..` escape** (lexical only
-//! for now — no symlink defense yet). Output is byte-capped so a runaway
+//! paths resolve against it and are **rejected on `..` escape** *and* on
+//! **symlink escape** — the resolved target's deepest existing ancestor is
+//! canonicalized and must stay under the canonical root (ADR-0054, #163), so a
+//! `root/link -> /etc` symlink can't be followed out of tree by `read`/`edit`/
+//! `write`, and `glob`/`grep` drop any match whose canonical path escapes.
+//! Output is byte-capped so a runaway
 //! listing or huge file can't silently consume the context window. `bash` runs
 //! the command rooted at `root` but otherwise inherits the engine process's
 //! full privileges — unsandboxed by design (ADR-0009); the opt-in gate plus
@@ -53,9 +57,19 @@ const MAX_RESULTS: usize = 1000;
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Resolve `rel` against `root`, rejecting paths that escape the root via `..`
-/// (and absolute paths that don't live under it). Lexical only — symlinks can
-/// still point outside, which is accepted for now (ADR-0008).
+/// (and absolute paths that don't live under it) **or via a symlink**. The root
+/// is canonicalized, then the resolved path is normalized lexically and its
+/// deepest existing ancestor is canonicalized (following symlinks) and required
+/// to stay under the canonical root; the not-yet-existing tail (for `edit`/
+/// `write` creating a file) is `..`-free plain names, so re-appending it can't
+/// escape. This upgrades ADR-0008's lexical-only containment to a real
+/// write/read boundary without breaking the create path (ADR-0054, #163).
 pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
+    // Canonicalize the root defensively so containment holds even when the head
+    // (or a test) passes a non-canonical root; startup also canonicalizes cwd.
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing working directory {}", root.display()))?;
     let joined = if Path::new(rel).is_absolute() {
         PathBuf::from(rel)
     } else {
@@ -73,10 +87,39 @@ pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
             other => norm.push(other.as_os_str()),
         }
     }
-    if !norm.starts_with(root) {
+    if !norm.starts_with(&root) {
         return Err(anyhow::anyhow!("path escapes working directory: {rel}"));
     }
-    Ok(norm)
+    // Symlink defense (#163): canonicalize the deepest existing ancestor so a
+    // symlink under root can't redirect the real target outside it. If the whole
+    // path exists (incl. a final-component symlink) it canonicalizes directly;
+    // otherwise we peel not-yet-existing tail components off until an ancestor
+    // resolves, check *that* against root, then re-append the plain tail.
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut ancestor = norm.clone();
+    let canon = loop {
+        match ancestor.canonicalize() {
+            Ok(c) => break c,
+            Err(_) => {
+                let name = ancestor
+                    .file_name()
+                    .ok_or_else(|| anyhow::anyhow!("path escapes working directory: {rel}"))?
+                    .to_os_string();
+                if !ancestor.pop() {
+                    return Err(anyhow::anyhow!("path escapes working directory: {rel}"));
+                }
+                tail.push(name);
+            }
+        }
+    };
+    if !canon.starts_with(&root) {
+        return Err(anyhow::anyhow!("path escapes working directory: {rel}"));
+    }
+    let mut resolved = canon;
+    for name in tail.into_iter().rev() {
+        resolved.push(name);
+    }
+    Ok(resolved)
 }
 
 /// Cap `s` at [`MAX_OUTPUT_BYTES`] on a UTF-8 boundary, appending a notice of
@@ -125,6 +168,11 @@ impl FileList {
 pub fn list_files(root: &Path, pattern: &str) -> Result<FileList> {
     let abs = root.join(pattern).to_string_lossy().into_owned();
     let entries = ::glob::glob(&abs).with_context(|| format!("invalid glob: {pattern}"))?;
+    // Containment (#163): a `..` or absolute `pattern` makes the glob walk
+    // outside root, and a symlink under root resolves elsewhere — route glob/
+    // grep through the same boundary as read/write by dropping any entry whose
+    // canonical path escapes the canonical root (ADR-0054).
+    let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut list = FileList::default();
     for entry in entries {
         let p = match entry {
@@ -135,6 +183,13 @@ pub fn list_files(root: &Path, pattern: &str) -> Result<FileList> {
                 continue;
             }
         };
+        let contained = p
+            .canonicalize()
+            .map(|c| c.starts_with(&canon_root))
+            .unwrap_or(false);
+        if !contained {
+            continue;
+        }
         match std::fs::metadata(&p) {
             Ok(m) if m.is_file() => {
                 list.files.push(p);
@@ -342,6 +397,101 @@ mod tests {
         assert!(out.contains("1 matches replaced"), "got: {out}");
         let on_disk = std::fs::read_to_string(dir.join("a.txt")).unwrap();
         assert_eq!(on_disk, "alpha\nBETA\n");
+    }
+
+    /// #163: a symlink whose *final component* points outside root must not be
+    /// followed by the resolver — canonicalizing the whole path lands outside.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_rejects_write_through_final_symlink() {
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("target.txt"), "secret\n").unwrap();
+        std::os::unix::fs::symlink(outside.join("target.txt"), dir.join("link")).unwrap();
+        let err = resolve_under_root(&dir.path, "link").unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+        // The write actually stays contained: edit through the link is refused.
+        let tool = EditTool::new(dir.path.clone());
+        let err = tool
+            .run(r#"{"path":"link","oldString":"secret","newString":"pwned"}"#)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.join("target.txt")).unwrap(),
+            "secret\n",
+            "edit must not have followed the symlink out of tree"
+        );
+    }
+
+    /// #163: a symlinked *directory* under root can't be used as a parent to
+    /// create a new file outside the tree.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_rejects_create_under_symlinked_dir() {
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::os::unix::fs::symlink(&outside.path, dir.join("escape")).unwrap();
+        let err = resolve_under_root(&dir.path, "escape/new.txt").unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+    }
+
+    /// #163: a symlink pointing *inside* root stays contained and resolves to
+    /// its canonical in-tree target.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_allows_symlink_inside_root() {
+        let dir = TempDir::new();
+        std::fs::write(dir.join("real.txt"), "x\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("alias")).unwrap();
+        let resolved = resolve_under_root(&dir.path, "alias").unwrap();
+        assert!(resolved.starts_with(dir.path.canonicalize().unwrap()));
+        assert!(resolved.ends_with("real.txt"));
+    }
+
+    /// #163: creating a genuinely-new file (no symlink) still works — the tail
+    /// past the deepest existing ancestor is re-appended verbatim.
+    #[test]
+    fn resolve_allows_new_nested_file() {
+        let dir = TempDir::new();
+        let resolved = resolve_under_root(&dir.path, "a/b/c.txt").unwrap();
+        assert!(resolved.ends_with("a/b/c.txt"));
+        assert!(resolved.starts_with(dir.path.canonicalize().unwrap()));
+    }
+
+    /// #163: `glob` must not surface files reached through a symlink that leaves
+    /// the tree, nor via an absolute/`..` pattern.
+    #[cfg(unix)]
+    #[test]
+    fn list_files_drops_symlinked_escape() {
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("leak.txt"), "x\n").unwrap();
+        std::os::unix::fs::symlink(&outside.path, dir.join("escape")).unwrap();
+        std::fs::write(dir.join("inside.txt"), "x\n").unwrap();
+        let list = list_files(&dir.path, "**/*").unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("inside.txt")),
+            "in-tree file should be listed: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("leak.txt")),
+            "symlinked out-of-tree file leaked: {names:?}"
+        );
     }
 
     #[test]
