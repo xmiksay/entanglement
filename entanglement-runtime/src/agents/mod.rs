@@ -441,8 +441,9 @@ fn resolve_preload(names: &[String], agent: &str, skills: &SkillRegistry) -> Res
 }
 
 /// Convert a `permission` mapping into a core [`PermissionProfile`]. Keys are
-/// tool patterns (`"*"` or a tool name); the reserved `default` key sets the
-/// fallback permission. Rules preserve file order (last match wins, ADR-0003).
+/// tool patterns — `"*"`, a tool name, or an argument-scoped `tool(pattern)`
+/// glob (e.g. `bash(git *)`, `edit(src/*)`, #173); the reserved `default` key
+/// sets the fallback permission. Rules preserve file order (last match wins, ADR-0003).
 /// An omitted `default` ⇒ allow. Shared with the user config's `permissions`
 /// section (#172), which uses the identical shape.
 pub(crate) fn permission_from_value(value: &serde_yaml::Value) -> Result<PermissionProfile> {

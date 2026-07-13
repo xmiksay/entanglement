@@ -29,7 +29,9 @@ use entanglement_core::{
 };
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::permission::{clamp_to_base, effective_permission, spawn_refusal, tool_masked};
+use crate::permission::{
+    clamp_to_base, effective_permission, permission_arg, spawn_refusal, tool_masked,
+};
 
 /// Spawn the per-engine tool executor. Subscribes synchronously (so no
 /// `ToolExec` emitted before the task is scheduled is missed) and runs until the
@@ -225,10 +227,18 @@ pub fn spawn_tool_executor(
                     // (checked above) already withholds it from a read-only
                     // profile like `explore`.
                     if tool == crate::script::RHAI_TOOL {
+                        let arg = permission_arg(&tool, &input);
                         let self_perm = clamp_to_base(
-                            effective_permission(&active, &spawn_guard, &session, &tool),
+                            effective_permission(
+                                &active,
+                                &spawn_guard,
+                                &session,
+                                &tool,
+                                arg.as_deref(),
+                            ),
                             &base,
                             &tool,
+                            arg.as_deref(),
                         );
                         let policy = crate::script::BindingPolicy::capture(
                             &active,
@@ -254,11 +264,21 @@ pub fn spawn_tool_executor(
                     // permission can never exceed any ancestor's, so a child cannot
                     // touch the shared tree in ways the parent couldn't. A root
                     // session (no ancestors) resolves to its own profile unchanged;
-                    // a session we never saw start defaults to `Allow`.
+                    // a session we never saw start defaults to `Allow`. The
+                    // tool-specific argument (command/path, #173) lets an
+                    // argument-scoped rule resolve against the actual call.
+                    let arg = permission_arg(&tool, &input);
                     let perm = clamp_to_base(
-                        effective_permission(&active, &spawn_guard, &session, &tool),
+                        effective_permission(
+                            &active,
+                            &spawn_guard,
+                            &session,
+                            &tool,
+                            arg.as_deref(),
+                        ),
                         &base,
                         &tool,
+                        arg.as_deref(),
                     );
                     let tools = tools.clone();
                     let holly = holly.clone();
