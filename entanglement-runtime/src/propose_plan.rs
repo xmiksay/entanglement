@@ -133,6 +133,7 @@ pub async fn run_propose_plan(
             Ok(InMsg::Approve {
                 session: s,
                 request_id: rid,
+                ..
             }) if s == session && rid == request_id => {
                 set_thinking(&holly, &session);
                 // Tell the model the plan was accepted so it can end its turn; the

@@ -22,16 +22,36 @@
 //! still holds.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use entanglement_core::{
-    AgentProfile, AgentState, Holly, InMsg, OutEvent, Permission, PermissionProfile,
+    AgentProfile, AgentState, ApprovalScope, Holly, InMsg, OutEvent, Permission, PermissionProfile,
     ProfileRegistry, SessionId, ToolCall, ToolRegistry,
 };
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::grants::GrantStore;
 use crate::permission::{
     clamp_to_base, effective_permission, permission_arg, spawn_refusal, tool_masked,
 };
+
+/// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
+/// granted (#174): a session-scoped or persisted "always allow" grant lets an
+/// *identical* later call skip the prompt. Only `Ask` is widened — a `Deny` (a
+/// hard policy floor) and an outright `Allow` pass through untouched.
+fn apply_grant(
+    grants: &Mutex<GrantStore>,
+    session: &SessionId,
+    tool: &str,
+    arg: Option<&str>,
+    perm: Permission,
+) -> Permission {
+    if perm == Permission::Ask && grants.lock().unwrap().is_granted(session, tool, arg) {
+        Permission::Allow
+    } else {
+        perm
+    }
+}
 
 /// Spawn the per-engine tool executor. Subscribes synchronously (so no
 /// `ToolExec` emitted before the task is scheduled is missed) and runs until the
@@ -59,6 +79,12 @@ pub fn spawn_tool_executor(
         // Answer + timing per launched sub-agent, keyed by its handle (#89).
         // Shared with the detached launch watchers and `agent_poll` tasks.
         let registry = crate::agent_poll::AgentRegistry::default();
+        // "Always allow" grants (#174): the persisted set loaded from the managed
+        // file, plus per-session grants recorded live. Shared with the per-request
+        // dispatch tasks, which record the wider scopes off an `Approve`; the loop
+        // reads it to skip the prompt for an already-granted call. `Mutex` (never
+        // held across an `.await`) keeps the loop's reads ordered with those writes.
+        let grants = Arc::new(Mutex::new(GrantStore::load()));
         loop {
             match sub.recv().await {
                 Ok(OutEvent::SessionStarted {
@@ -76,6 +102,11 @@ pub fn spawn_tool_executor(
                     if let Some(p) = profiles.get(&agent) {
                         active.insert(session, p.clone());
                     }
+                }
+                Ok(OutEvent::SessionEnded { session, .. }) => {
+                    // Drop the closed session's in-memory grants (#174); persisted
+                    // "always" grants survive.
+                    grants.lock().unwrap().forget_session(&session);
                 }
                 Ok(OutEvent::ToolExec {
                     session,
@@ -228,17 +259,23 @@ pub fn spawn_tool_executor(
                     // profile like `explore`.
                     if tool == crate::script::RHAI_TOOL {
                         let arg = permission_arg(&tool, &input);
-                        let self_perm = clamp_to_base(
-                            effective_permission(
-                                &active,
-                                &spawn_guard,
-                                &session,
+                        let self_perm = apply_grant(
+                            &grants,
+                            &session,
+                            &tool,
+                            arg.as_deref(),
+                            clamp_to_base(
+                                effective_permission(
+                                    &active,
+                                    &spawn_guard,
+                                    &session,
+                                    &tool,
+                                    arg.as_deref(),
+                                ),
+                                &base,
                                 &tool,
                                 arg.as_deref(),
                             ),
-                            &base,
-                            &tool,
-                            arg.as_deref(),
                         );
                         let policy = crate::script::BindingPolicy::capture(
                             &active,
@@ -268,22 +305,32 @@ pub fn spawn_tool_executor(
                     // tool-specific argument (command/path, #173) lets an
                     // argument-scoped rule resolve against the actual call.
                     let arg = permission_arg(&tool, &input);
-                    let perm = clamp_to_base(
-                        effective_permission(
-                            &active,
-                            &spawn_guard,
-                            &session,
+                    let perm = apply_grant(
+                        &grants,
+                        &session,
+                        &tool,
+                        arg.as_deref(),
+                        clamp_to_base(
+                            effective_permission(
+                                &active,
+                                &spawn_guard,
+                                &session,
+                                &tool,
+                                arg.as_deref(),
+                            ),
+                            &base,
                             &tool,
                             arg.as_deref(),
                         ),
-                        &base,
-                        &tool,
-                        arg.as_deref(),
                     );
                     let tools = tools.clone();
                     let holly = holly.clone();
+                    let grants = grants.clone();
                     tokio::spawn(async move {
-                        dispatch(&holly, &tools, session, seq, request_id, tool, input, perm).await;
+                        dispatch(
+                            &holly, &tools, &grants, session, seq, request_id, tool, input, perm,
+                        )
+                        .await;
                     });
                 }
                 Ok(_) => {}
@@ -303,6 +350,7 @@ pub fn spawn_tool_executor(
 async fn dispatch(
     holly: &Holly,
     tools: &ToolRegistry,
+    grants: &Mutex<GrantStore>,
     session: SessionId,
     seq: u64,
     request_id: String,
@@ -338,6 +386,7 @@ async fn dispatch(
             await_decision(
                 holly,
                 tools,
+                grants,
                 &mut inbound,
                 session,
                 seq,
@@ -357,6 +406,7 @@ async fn dispatch(
 async fn await_decision(
     holly: &Holly,
     tools: &ToolRegistry,
+    grants: &Mutex<GrantStore>,
     inbound: &mut tokio::sync::broadcast::Receiver<InMsg>,
     session: SessionId,
     seq: u64,
@@ -369,8 +419,19 @@ async fn await_decision(
             Ok(InMsg::Approve {
                 session: s,
                 request_id: rid,
+                scope,
             }) if s == session && rid == request_id => {
                 set_thinking(holly, &session);
+                // Record the wider scopes (#174) so an identical later call skips
+                // this prompt. `Once` records nothing. Done before the (awaiting)
+                // run so the guard is dropped before the `.await`.
+                if scope != ApprovalScope::Once {
+                    let arg = permission_arg(&tool, &input);
+                    grants
+                        .lock()
+                        .unwrap()
+                        .record(&session, &tool, arg.as_deref(), scope);
+                }
                 run_and_reply(holly, tools, session, seq, request_id, tool, input).await;
                 return;
             }

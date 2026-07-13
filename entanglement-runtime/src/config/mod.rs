@@ -25,8 +25,9 @@
 //!
 //! - `permissions` — the first section: tool name → `allow | ask | deny`, a
 //!   global ceiling combined least-privilege with each agent profile (see
-//!   [`crate::permission::clamp_to_base`]). Argument/path patterns (#173) and
-//!   persisted grants (#174) build on it.
+//!   [`crate::permission::clamp_to_base`]). Argument/path patterns (#173) build on
+//!   it. It is a pure *ceiling*; the orthogonal "always allow" grants (#174) that
+//!   *raise* an `Ask` live in a separate managed file ([`crate::grants`]), not here.
 //! - general settings — `agent` / `provider` / `model` / `verbose`. Each is a
 //!   *fallback*: an explicit CLI flag or environment variable wins over the file
 //!   (env > config > embedded default).

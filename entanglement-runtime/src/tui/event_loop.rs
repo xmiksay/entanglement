@@ -1,5 +1,5 @@
 use anyhow::Result;
-use entanglement_core::{Holly, InMsg, SessionId};
+use entanglement_core::{ApprovalScope, Holly, InMsg, SessionId};
 use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use tracing::debug;
 
@@ -74,27 +74,20 @@ pub(super) async fn handle_event(
 
                 match current_mode {
                     ApprovalMode::WaitingForApproval { request_id } => match key.code {
+                        // Approve scopes (#174): `y` this once, `s` for the rest of
+                        // the session, `a` always (persisted). All three share the
+                        // plan-handoff path — scope is inert for `propose_plan`.
                         KeyCode::Char('y') => {
-                            // Capture a `propose_plan` handoff before Approve
-                            // clears the pending request: accepting a plan mints a
-                            // fresh root `build` session whose first message is the
-                            // plan (#141, ADR-0042). Zero new protocol surface — the
-                            // handoff is head policy.
-                            let handoff =
-                                app.pending_tool_request().and_then(|(_, tool, input)| {
-                                    (tool == crate::propose_plan::PROPOSE_PLAN_TOOL)
-                                        .then(|| crate::propose_plan::parse_plan(input))
-                                });
-                            let _ = holly
-                                .send(InMsg::Approve {
-                                    session: app.active_session_id().clone(),
-                                    request_id: request_id.clone(),
-                                })
+                            send_approval(app, holly, request_id.clone(), ApprovalScope::Once)
                                 .await;
-                            app.set_approval_mode(ApprovalMode::Normal);
-                            if let Some(plan) = handoff {
-                                handoff_accepted_plan(app, holly, plan).await;
-                            }
+                        }
+                        KeyCode::Char('s') => {
+                            send_approval(app, holly, request_id.clone(), ApprovalScope::Session)
+                                .await;
+                        }
+                        KeyCode::Char('a') => {
+                            send_approval(app, holly, request_id.clone(), ApprovalScope::Always)
+                                .await;
                         }
                         KeyCode::Char('n') => {
                             app.set_approval_mode(ApprovalMode::EnteringRejectReason {
@@ -312,6 +305,30 @@ pub(super) async fn handle_event(
         }
     }
     Ok(false)
+}
+
+/// Send an [`InMsg::Approve`] with the chosen [`ApprovalScope`] (#174) and clear
+/// the prompt. Captures a `propose_plan` handoff *before* approving clears the
+/// pending request — accepting a plan mints a fresh root `build` session whose
+/// first message is the plan (#141, ADR-0042; zero new protocol surface, the
+/// handoff is head policy). Scope is inert for `propose_plan` (the runtime
+/// records grants only on the generic tool path), so all three keys route here.
+async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: ApprovalScope) {
+    let handoff = app.pending_tool_request().and_then(|(_, tool, input)| {
+        (tool == crate::propose_plan::PROPOSE_PLAN_TOOL)
+            .then(|| crate::propose_plan::parse_plan(input))
+    });
+    let _ = holly
+        .send(InMsg::Approve {
+            session: app.active_session_id().clone(),
+            request_id,
+            scope,
+        })
+        .await;
+    app.set_approval_mode(ApprovalMode::Normal);
+    if let Some(plan) = handoff {
+        handoff_accepted_plan(app, holly, plan).await;
+    }
 }
 
 /// Perform the plan-acceptance handoff (#141, ADR-0042): mint a fresh **root**

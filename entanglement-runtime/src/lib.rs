@@ -27,6 +27,7 @@ pub mod agent_poll;
 pub mod agents;
 pub mod ask_user;
 pub mod frontmatter;
+pub mod grants;
 pub mod host;
 pub mod permission;
 pub mod persistence;

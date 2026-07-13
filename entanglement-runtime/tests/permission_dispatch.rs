@@ -257,6 +257,7 @@ async fn ask_emits_request_then_runs_on_approve() {
         .send(InMsg::Approve {
             session: sid.clone(),
             request_id: "t1".into(),
+            scope: Default::default(),
         })
         .await
         .unwrap();
@@ -452,5 +453,114 @@ async fn ask_rejected_reports_rejection() {
             |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
         ),
         "reject must not run the tool"
+    );
+}
+
+/// Spawn a Holly whose scripted LLM calls `bash` once per turn (ids `t1`, `t2`)
+/// with the given `command`, so two prompts drive two identical calls. Wired to
+/// the `askbash` profile (bash → Ask) so both calls would prompt absent a grant.
+fn spawn_two_ask_bash_calls(command: &str) -> Holly {
+    let call = |id: &str| LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            input: serde_json::json!({ "command": command }).to_string(),
+        }],
+    };
+    let ok = || LlmResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![call("t1"), ok(), call("t2"), ok()]);
+    let profiles = ask_bash_registry();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        PermissionProfile::new(Permission::Allow),
+    );
+    holly
+}
+
+/// An `Approve { scope: Session }` (#174) records an in-memory grant, so the next
+/// *identical* call in the same session runs without a second `ToolRequest`.
+#[tokio::test]
+async fn session_grant_skips_the_second_prompt() {
+    let holly = spawn_two_ask_bash_calls("ls");
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "askbash".into(),
+        })
+        .await
+        .unwrap();
+
+    // Turn 1: the Ask prompts; approve it for the session.
+    let sub1 = holly.subscribe();
+    let mut watch = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "run".into(),
+        })
+        .await
+        .unwrap();
+    let mut asked = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            asked = true;
+            break;
+        }
+    }
+    assert!(asked, "turn 1 should prompt for approval");
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "t1".into(),
+            scope: entanglement_core::ApprovalScope::Session,
+        })
+        .await
+        .unwrap();
+    let turn1 = collect(sub1, &sid).await;
+    assert!(
+        turn1
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("ls"))),
+        "turn 1 should run the approved command; got {turn1:?}"
+    );
+
+    // Turn 2: the identical call must NOT prompt again — the session grant runs it.
+    let sub2 = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "run again".into(),
+        })
+        .await
+        .unwrap();
+    let turn2 = collect(sub2, &sid).await;
+    assert!(
+        !turn2
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a session-granted call must not ask again; got {turn2:?}"
+    );
+    assert!(
+        turn2
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("ls"))),
+        "turn 2 should still run the command; got {turn2:?}"
     );
 }
