@@ -243,6 +243,16 @@ fn resolve_model(entry: &ProviderEntry, user_config: &config::Config) -> String 
         .unwrap_or_else(|| entry.default_model.clone())
 }
 
+/// Per-minute request budget from `{NAME}_RPM` env, else the catalog entry's
+/// `rpm` (env > catalog; `None` → the client's built-in default). Mirrors the
+/// rest of the catalog's precedence for this per-endpoint bucket size (#241).
+fn resolve_rpm(entry: &ProviderEntry) -> Option<u32> {
+    let name = entry.name.to_uppercase();
+    env_nonempty(&format!("{name}_RPM"))
+        .and_then(|v| v.parse::<u32>().ok())
+        .or(entry.rpm)
+}
+
 /// Summarize the chosen model against the catalog (context window, display name).
 fn model_info_for(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> ModelInfo {
     ModelInfo::from_catalog(catalog.model(&entry.name, model), model)
@@ -274,6 +284,7 @@ fn openai_wire_config(
                 base,
                 key,
                 model.clone(),
+                resolve_rpm(entry),
                 http_client.clone(),
             ),
             ..EngineConfig::default()
@@ -297,6 +308,7 @@ fn anthropic_wire_config(
             llm_factory: entanglement_provider::anthropic_factory(
                 key,
                 model.clone(),
+                resolve_rpm(entry),
                 http_client.clone(),
             ),
             ..EngineConfig::default()

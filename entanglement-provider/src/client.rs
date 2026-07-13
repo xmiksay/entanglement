@@ -26,6 +26,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
+use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 
@@ -35,6 +37,18 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const POOL_MAX_IDLE_PER_HOST: usize = 10;
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const RPM_LIMIT: u32 = 50;
+
+/// Cap on establishing the TCP+TLS connection only — *not* the whole request.
+/// A long healthy LLM stream must be allowed to run past any fixed ceiling, so
+/// the old whole-request `.timeout(300s)` (which killed streams mid-turn and
+/// blocked cancel for up to 5 min, #179/#241) is gone; liveness on the body is
+/// enforced per-chunk by [`STREAM_IDLE_TIMEOUT`] instead.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Idle-gap timeout for a streaming response body: abort only when **no bytes**
+/// arrive for this long. A slow-but-alive stream (long generation, reasoning)
+/// runs to completion; a hung one still dies fast (#241).
+pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Retry/rate-limit tuning applied per endpoint. Defaults match the historical
 /// shared client (5 attempts, 200ms→30s backoff, 50 RPM) — now *per endpoint*
@@ -169,7 +183,7 @@ impl HttpClient {
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
             .pool_idle_timeout(POOL_IDLE_TIMEOUT)
-            .timeout(Duration::from_secs(300))
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .expect("failed to build reqwest client");
         Self {
@@ -187,10 +201,13 @@ impl HttpClient {
     }
 
     /// Resolve (creating on first use) the resilience state for pool key `key`.
-    fn endpoint(&self, key: &str) -> Arc<EndpointState> {
+    /// `rpm` is the endpoint's catalog-provided budget; `None` falls back to the
+    /// pool's default (`RetryConfig::rpm`). Only the *first* caller for a key sets
+    /// the bucket size — an endpoint is one provider, so the value is consistent.
+    fn endpoint(&self, key: &str, rpm: Option<u32>) -> Arc<EndpointState> {
         let mut map = self.pool.endpoints.lock().expect("endpoint pool poisoned");
         map.entry(key.to_string())
-            .or_insert_with(|| Arc::new(EndpointState::new(self.pool.config.rpm)))
+            .or_insert_with(|| Arc::new(EndpointState::new(rpm.unwrap_or(self.pool.config.rpm))))
             .clone()
     }
 
@@ -198,20 +215,22 @@ impl HttpClient {
     /// RPM budget + `Retry-After` window are keyed by `(endpoint, api_key)`: the
     /// provider's base URL **plus** the API key (if any), so multiple keys on the
     /// same endpoint each get their own budget — different keys have different
-    /// limits (#217). Retries transient transport faults and retryable HTTP
-    /// responses (429 / 5xx); a permanent 4xx or an exhausted retryable response
-    /// is returned as `Ok` for the caller to surface.
+    /// limits (#217). `rpm` is the endpoint's catalog-provided per-minute budget
+    /// (`None` → the pool default). Retries transient transport faults and
+    /// retryable HTTP responses (429 / 5xx); a permanent 4xx or an exhausted
+    /// retryable response is returned as `Ok` for the caller to surface.
     pub async fn execute_with_retry<F, Fut>(
         &self,
         endpoint: &str,
         api_key: Option<&str>,
+        rpm: Option<u32>,
         request_fn: F,
     ) -> Result<reqwest::Response, RetryError>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     {
-        let endpoint = self.endpoint(&pool_key(endpoint, api_key));
+        let endpoint = self.endpoint(&pool_key(endpoint, api_key), rpm);
         let config = self.pool.config;
         let mut attempt = 0;
         let mut backoff = config.initial_backoff;
@@ -274,6 +293,46 @@ impl Default for HttpClient {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Forward a streaming response body over an mpsc channel, chunk by chunk, with
+/// an **idle-gap** watchdog: if no bytes arrive within [`STREAM_IDLE_TIMEOUT`]
+/// the stream is aborted with an error frame. This replaces the old
+/// whole-request timeout — a long healthy SSE stream now runs to completion
+/// while a hung one still dies fast (#241). `label` names the source (e.g.
+/// `"openai-compat"`) for the error messages. The `reqwest::Client` is built
+/// with `connect_timeout` only, so this per-chunk gap is what bounds a stalled
+/// body.
+pub fn spawn_byte_stream(
+    response: reqwest::Response,
+    label: &'static str,
+) -> mpsc::Receiver<Result<Vec<u8>, anyhow::Error>> {
+    let (tx, rx) = mpsc::channel::<Result<Vec<u8>, anyhow::Error>>(8);
+    tokio::spawn(async move {
+        let mut bytes = response.bytes_stream();
+        loop {
+            match tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()).await {
+                Ok(Some(item)) => {
+                    let chunk = item
+                        .map(|c| c.to_vec())
+                        .map_err(|e| anyhow::anyhow!("{label} stream read: {e}"));
+                    if tx.send(chunk).await.is_err() {
+                        break; // consumer dropped
+                    }
+                }
+                Ok(None) => break, // stream ended cleanly
+                Err(_) => {
+                    let _ = tx
+                        .send(Err(anyhow::anyhow!(
+                            "{label} stream stalled: no data for {STREAM_IDLE_TIMEOUT:?}"
+                        )))
+                        .await;
+                    break;
+                }
+            }
+        }
+    });
+    rx
 }
 
 /// The pool identity for a request: the endpoint URL, plus a **hash** of the API
@@ -364,12 +423,26 @@ mod tests {
     #[test]
     fn endpoints_are_isolated_and_stable_by_key() {
         let http = HttpClient::new();
-        let a1 = http.endpoint("https://api.a/v1");
-        let a2 = http.endpoint("https://api.a/v1");
-        let b = http.endpoint("https://api.b/v1");
+        let a1 = http.endpoint("https://api.a/v1", None);
+        let a2 = http.endpoint("https://api.a/v1", None);
+        let b = http.endpoint("https://api.b/v1", None);
         // Same key → same state; different keys → isolated state.
         assert!(Arc::ptr_eq(&a1, &a2));
         assert!(!Arc::ptr_eq(&a1, &b));
+    }
+
+    #[test]
+    fn endpoint_uses_provided_rpm_budget() {
+        let http = HttpClient::new();
+        // A per-provider rpm sets the token-bucket capacity for that endpoint;
+        // `None` falls back to the pool default (RetryConfig::rpm).
+        let custom = http.endpoint("https://api.custom/v1", Some(7));
+        assert_eq!(custom.limiter.semaphore.available_permits(), 7);
+        let default = http.endpoint("https://api.default/v1", None);
+        assert_eq!(
+            default.limiter.semaphore.available_permits(),
+            RPM_LIMIT as usize
+        );
     }
 
     #[test]

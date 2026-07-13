@@ -57,6 +57,11 @@ pub struct ProviderEntry {
     /// Env var holding the API key; `None` = keyless (e.g. local Ollama).
     #[serde(default)]
     pub key_env: Option<String>,
+    /// Requests-per-minute budget for this provider's endpoint bucket; `None`
+    /// falls back to the client's default (`RetryConfig::rpm`). Plumbed into the
+    /// per-endpoint rate limiter so each provider gets its real budget (#241).
+    #[serde(default)]
+    pub rpm: Option<u32>,
     pub default_model: String,
     #[serde(default)]
     pub models: Vec<ModelEntry>,
@@ -373,5 +378,15 @@ mod tests {
     fn scalar_override_replaces() {
         let c = merge_str("providers:\n  - name: zai\n    default_model: glm-4.7\n");
         assert_eq!(c.provider("zai").unwrap().default_model, "glm-4.7");
+    }
+
+    #[test]
+    fn rpm_is_optional_and_user_overridable() {
+        // Unset in the embedded defaults → None (falls back to the client default).
+        assert_eq!(Catalog::builtin().provider("zai").unwrap().rpm, None);
+        // A user file can set a per-provider rpm without touching sibling fields.
+        let c = merge_str("providers:\n  - name: zai\n    rpm: 120\n");
+        assert_eq!(c.provider("zai").unwrap().rpm, Some(120));
+        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
     }
 }

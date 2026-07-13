@@ -98,6 +98,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         base_url,
         Some("test-key".into()),
         "glm-5.2",
+        None,
         HttpClient::new(),
     );
     let messages = vec![Message::user("hello")];
@@ -221,6 +222,7 @@ async fn stream_err(base_url: &str) -> String {
         base_url,
         Some("k".into()),
         "glm-5.2",
+        None,
         HttpClient::with_config(RetryConfig::no_retry()),
     );
     let messages = vec![Message::user("hi")];

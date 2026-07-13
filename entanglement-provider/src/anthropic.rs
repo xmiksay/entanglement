@@ -36,6 +36,9 @@ pub struct AnthropicLlm {
     api_key: String,
     default_model: String,
     max_tokens: u32,
+    /// Catalog-provided per-minute budget for this endpoint (`None` = client
+    /// default). Threaded into the per-endpoint rate limiter (#241).
+    rpm: Option<u32>,
     http: HttpClient,
 }
 
@@ -43,34 +46,38 @@ impl AnthropicLlm {
     pub fn new(
         api_key: impl Into<String>,
         default_model: impl Into<String>,
+        rpm: Option<u32>,
         http: HttpClient,
     ) -> Self {
-        Self::with_max_tokens(api_key, default_model, DEFAULT_MAX_TOKENS, http)
+        Self::with_max_tokens(api_key, default_model, DEFAULT_MAX_TOKENS, rpm, http)
     }
 
     pub fn with_max_tokens(
         api_key: impl Into<String>,
         default_model: impl Into<String>,
         max_tokens: u32,
+        rpm: Option<u32>,
         http: HttpClient,
     ) -> Self {
         Self {
             api_key: api_key.into(),
             default_model: default_model.into(),
             max_tokens,
+            rpm,
             http,
         }
     }
 }
 
 /// Build an [`LlmFactory`] wired to Anthropic. Each session gets its own cloned
-/// [`AnthropicLlm`].
+/// [`AnthropicLlm`]. `rpm = None` uses the client's default rate-limit budget.
 pub fn anthropic_factory(
     api_key: impl Into<String>,
     default_model: impl Into<String>,
+    rpm: Option<u32>,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = AnthropicLlm::new(api_key, default_model, http);
+    let llm = AnthropicLlm::new(api_key, default_model, rpm, http);
     std::sync::Arc::new(move || LlmSession::new(Box::new(llm.clone())))
 }
 
@@ -82,7 +89,7 @@ impl Llm for AnthropicLlm {
 
         let response = self
             .http
-            .execute_with_retry(ANTHROPIC_API_URL, Some(&self.api_key), || {
+            .execute_with_retry(ANTHROPIC_API_URL, Some(&self.api_key), self.rpm, || {
                 self.http
                     .client()
                     .post(ANTHROPIC_API_URL)
@@ -119,16 +126,9 @@ impl Llm for AnthropicLlm {
             anyhow::bail!("anthropic HTTP {status}: {text}");
         }
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, anyhow::Error>>(8);
-        tokio::spawn(async move {
-            let mut bytes = response.bytes_stream();
-            while let Some(item) = bytes.next().await {
-                let chunk = item.map_err(|e| anyhow::anyhow!("anthropic stream read: {e}"));
-                if tx.send(chunk.map(|c| c.to_vec())).await.is_err() {
-                    break;
-                }
-            }
-        });
+        // Forward the SSE body with a per-chunk idle-gap watchdog (#241): a long
+        // healthy stream runs to completion, a hung one dies within the gap.
+        let rx = crate::client::spawn_byte_stream(response, "anthropic");
 
         let stream = try_stream! {
             let mut buf = String::new();
