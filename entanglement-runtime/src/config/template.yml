@@ -1,0 +1,38 @@
+# entanglement — user configuration.
+#
+# This starter file was scaffolded on first run (#219). Every setting is a
+# fallback and every line below is commented out, so this file changes nothing
+# until you edit it: uncomment a key and give it a value to override the built-in
+# default. An explicit CLI flag or environment variable always wins over this
+# file (env > config > embedded default).
+#
+# Layered like every other definition in the codebase (ADR-0047):
+#   embedded default  <  this file  <  <root>/.entanglement/config.yml
+# Later layers win; mappings merge key-wise, scalars are replaced. A malformed
+# file is a loud error, never a silent fallback.
+
+# Default agent profile when none is passed on the CLI (`--agent`).
+# One of: build | plan | explore (or any custom agent you define).
+#agent: build
+
+# Provider selection, mirroring ENTANGLEMENT_PROVIDER
+# (zai | openai | ollama | anthropic | echo | any catalog name).
+# Leave commented to auto-detect by which API key is present.
+#provider: zai
+
+# Model id override. Leave commented for the selected provider's catalog default
+# (or its {NAME}_MODEL env var, which still wins).
+#model: glm-5.2
+
+# Log at `debug` by default, as `--verbose` does (RUST_LOG always wins).
+#verbose: false
+
+# Permissions — a global ceiling combined least-privilege with each agent
+# profile: a rule here can only *tighten* what an agent allows, never loosen it.
+# Tool name → allow | ask | deny; the reserved `default` key sets the fallback
+# for any unlisted tool. Argument/path-scoped keys work too, e.g. `bash(rm *)`.
+# The built-in default is allow-all, so an untouched block changes nothing.
+#permissions:
+#  default: allow
+#  bash: ask
+#  bash(rm *): deny

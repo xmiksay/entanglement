@@ -30,6 +30,14 @@
 //! - general settings — `agent` / `provider` / `model` / `verbose`. Each is a
 //!   *fallback*: an explicit CLI flag or environment variable wins over the file
 //!   (env > config > embedded default).
+//!
+//! # First-run scaffold (#219)
+//!
+//! [`scaffold_if_missing`] drops a fully-commented starter template
+//! (`template.yml`) at the user path when none exists, so the config dir is a
+//! discoverable starting point rather than empty. Because every setting is
+//! commented out the file parses to `Null` and is skipped in the merge
+//! ([`read_layer`]) — a no-op until a user uncomments a key.
 
 use std::path::{Path, PathBuf};
 
@@ -44,6 +52,12 @@ use crate::agents::permission_from_value;
 mod tests;
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
+
+/// The commented starter file written on first run (#219). Distinct from
+/// [`DEFAULTS_YML`]: every setting here is commented *out*, so an untouched
+/// scaffold is a pure no-op that never pins a default — it only exists to be a
+/// discoverable, editable starting point.
+const TEMPLATE_YML: &str = include_str!("template.yml");
 
 /// Env var overriding the user config file path (tests + non-XDG setups).
 const CONFIG_FILE_ENV: &str = "ENTANGLEMENT_CONFIG_FILE";
@@ -171,6 +185,12 @@ fn read_layer(layer: ConfigLayer, path: &Path, layers: &mut Vec<RawLayer>) -> Re
         .with_context(|| format!("reading user config {}", path.display()))?;
     let doc: Value = serde_yaml::from_str(&text)
         .with_context(|| format!("parsing user config {}", path.display()))?;
+    // A comment-only or empty file parses to `Null`; it sets nothing, so skip it
+    // rather than let it wipe the lower layers in the merge (the scaffolded
+    // template, #219, is exactly this until a user uncomments a key).
+    if doc.is_null() {
+        return Ok(());
+    }
     layers.push(RawLayer {
         layer,
         source: path.display().to_string(),
@@ -251,4 +271,29 @@ fn user_config_path() -> Option<PathBuf> {
         return Some(PathBuf::from(p));
     }
     dirs::config_dir().map(|d| d.join("entanglement").join("config.yml"))
+}
+
+/// First-run scaffold (#219): if the user config file does not exist yet, write a
+/// commented starter template ([`TEMPLATE_YML`]) so `${config_dir}/entanglement/`
+/// is a discoverable, editable starting point instead of an empty directory.
+///
+/// Best-effort and non-authoritative: the template is fully commented, so it
+/// changes nothing until a user edits it — the embedded defaults still drive
+/// behavior either way. Returns the written path on success, `None` if a file was
+/// already present (or the config dir is unknown). Callers treat a write error as
+/// non-fatal; startup must not fail because the home directory is read-only.
+pub fn scaffold_if_missing() -> Result<Option<PathBuf>> {
+    let Some(path) = user_config_path() else {
+        return Ok(None);
+    };
+    if path.exists() {
+        return Ok(None);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating config dir {}", parent.display()))?;
+    }
+    std::fs::write(&path, TEMPLATE_YML)
+        .with_context(|| format!("writing default config {}", path.display()))?;
+    Ok(Some(path))
 }

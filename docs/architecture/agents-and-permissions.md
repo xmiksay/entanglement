@@ -75,8 +75,13 @@ below realize one model:
   allow-all, so an untouched config is a no-op. The ceiling honors argument-scoped
   rule keys too (✅ #173) — `bash(rm *): deny` in the config clamps that command for
   every agent — and persisted "always allow" grants (#174) build on this section. Loaded in the
-  runtime only (core has neither `dirs` nor `serde_yaml`); scaffolding a default
-  file on first run (#219) and a sibling API-key env file (#220) are separate.
+  runtime only (core has neither `dirs` nor `serde_yaml`). On first run, if the
+  user file is missing, the runtime scaffolds a **fully-commented** starter
+  template next to it (✅ #219, `config::scaffold_if_missing` writing
+  `config/template.yml`) — every setting commented out, so it parses to `Null`,
+  is skipped in the merge (`read_layer`), and changes nothing until edited; it
+  only exists as a discoverable starting point. Best-effort: a write failure is
+  logged, never fatal. A sibling API-key env file scaffold (#220) is separate.
 - **File-defined (✅ #112, [ADR-0034](../adr/0034-file-based-agent-definitions.md)):**
   profiles are markdown files with YAML frontmatter (the config bundle) + a body
   (the system prompt), discovered at startup by the **runtime**
