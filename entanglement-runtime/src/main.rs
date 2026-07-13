@@ -33,7 +33,8 @@ mod tui;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId, ToolRegistry};
-use entanglement_provider::{Catalog, HttpClient, ModelInfo, ProviderEntry, Wire};
+use entanglement_provider::{Catalog, HttpClient, ModelInfo, ModelPricing, ProviderEntry, Wire};
+use std::collections::HashMap;
 
 use host::{host_tools, BashTool, CallTool};
 use pipe::pipe;
@@ -263,6 +264,23 @@ fn model_info_for(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> Mode
     ModelInfo::from_catalog(catalog.model(&entry.name, model), model)
 }
 
+/// Per-model USD pricing keyed by model id, flattened across every provider in
+/// the catalog (#192). The engine looks a turn's effective model up here to price
+/// its reported usage; a model with no `pricing` block is simply absent (unknown
+/// cost). Later providers win on a duplicate id, matching the catalog's own
+/// `model_by_id` precedence.
+fn pricing_map(catalog: &Catalog) -> HashMap<String, ModelPricing> {
+    let mut map = HashMap::new();
+    for provider in &catalog.providers {
+        for model in &provider.models {
+            if let Some(pricing) = model.pricing {
+                map.insert(model.id.clone(), pricing);
+            }
+        }
+    }
+    map
+}
+
 /// OpenAI-compatible provider (z.ai/OpenAI/Ollama/any proxy). Key from
 /// `entry.key_env` (absent → `None` = skip a keyed provider); base from
 /// `{NAME}_API_BASE` else `{NAME}_BASE` env else `entry.base_url`.
@@ -292,6 +310,8 @@ fn openai_wire_config(
                 resolve_rpm(entry),
                 http_client.clone(),
             ),
+            default_model: Some(model.clone()),
+            pricing: pricing_map(catalog),
             ..EngineConfig::default()
         },
         model_info_for(entry, &model, catalog),
@@ -316,6 +336,8 @@ fn anthropic_wire_config(
                 resolve_rpm(entry),
                 http_client.clone(),
             ),
+            default_model: Some(model.clone()),
+            pricing: pricing_map(catalog),
             ..EngineConfig::default()
         },
         model_info_for(entry, &model, catalog),

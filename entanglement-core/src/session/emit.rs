@@ -3,11 +3,45 @@
 
 use tokio::sync::broadcast;
 
+use super::Session;
 use crate::protocol::{AgentState, OutEvent, SessionId};
+use entanglement_provider::Usage;
 
 pub(crate) fn next_seq(s: &mut u64) -> u64 {
     *s += 1;
     *s
+}
+
+/// Fold one round-trip's normalized [`Usage`] into the session total and emit
+/// the per-round-trip delta as [`OutEvent::Usage`] (#192). Missing dimensions
+/// count as zero; `cost` is `None` when no catalog pricing covers the model.
+pub(crate) fn emit_usage(
+    session: &SessionId,
+    s: &mut Session,
+    events: &broadcast::Sender<OutEvent>,
+    usage: &Usage,
+    cost: Option<f64>,
+) {
+    let input = usage.input_tokens.unwrap_or(0);
+    let output = usage.output_tokens.unwrap_or(0);
+    let cached_input = usage.cached_input_tokens.unwrap_or(0);
+    let cache_write = usage.cache_write_tokens.unwrap_or(0);
+
+    s.usage.input_tokens += input;
+    s.usage.output_tokens += output;
+    s.usage.cached_input_tokens += cached_input;
+    s.usage.cache_write_tokens += cache_write;
+    s.usage.cost_usd += cost.unwrap_or(0.0);
+
+    let _ = events.send(OutEvent::Usage {
+        session: session.clone(),
+        seq: next_seq(&mut s.seq),
+        input_tokens: input,
+        output_tokens: output,
+        cached_input_tokens: cached_input,
+        cache_write_tokens: cache_write,
+        cost_usd: cost,
+    });
 }
 
 /// Surface a failed turn: an `Error`, a `Done` (so one-shot heads exit), then

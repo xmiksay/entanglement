@@ -413,7 +413,11 @@ pub struct ProfileDetail {
 
 /// Inbound: harness → engine. One connection multiplexes sessions via
 /// [`SessionId`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: [`Resume`][InMsg::Resume] carries [`OutEvent`] records, which are
+/// `PartialEq`-only because of the floating-point cost in
+/// [`OutEvent::Usage`] (#192).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InMsg {
     /// Feed a new user prompt into the conversation.
@@ -521,9 +525,13 @@ impl InMsg {
 /// Content variants ([`Plan`][OutEvent::Plan],
 /// [`TextDelta`][OutEvent::TextDelta],
 /// [`ToolRequest`][OutEvent::ToolRequest], [`ToolOutput`][OutEvent::ToolOutput],
-/// [`TaskList`][OutEvent::TaskList], [`Error`][OutEvent::Error],
-/// [`Done`][OutEvent::Done]) carry a monotonic per-session `seq`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// [`TaskList`][OutEvent::TaskList], [`Usage`][OutEvent::Usage],
+/// [`Error`][OutEvent::Error], [`Done`][OutEvent::Done]) carry a monotonic
+/// per-session `seq`.
+///
+/// Not `Eq`: [`Usage::cost_usd`][OutEvent::Usage] is a floating-point dollar
+/// amount, so the enum is `PartialEq` only (#192).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OutEvent {
     /// Session started (lifecycle event, no `seq`). Emits when a session is spawned.
@@ -644,6 +652,19 @@ pub enum OutEvent {
         seq: u64,
         content: String,
     },
+    /// Token usage + cost for one model round-trip, folded from the provider's
+    /// `LlmEvent::Finish` (#192, ADR-0054). Counts are the normalized per-round-trip
+    /// deltas (not cumulative); a head accumulates them for a session total.
+    /// `cost_usd` is `None` when no catalog pricing covers the active model.
+    Usage {
+        session: SessionId,
+        seq: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cached_input_tokens: u64,
+        cache_write_tokens: u64,
+        cost_usd: Option<f64>,
+    },
     /// Recoverable error surfaced to the UI; the engine stays alive.
     Error {
         session: SessionId,
@@ -682,6 +703,7 @@ impl OutEvent {
             | OutEvent::UserQuestion { session, .. }
             | OutEvent::ToolOutput { session, .. }
             | OutEvent::TaskList { session, .. }
+            | OutEvent::Usage { session, .. }
             | OutEvent::Error { session, .. }
             | OutEvent::Done { session, .. }
             | OutEvent::FileChange { session, .. } => session,
@@ -707,6 +729,7 @@ impl OutEvent {
             | OutEvent::UserQuestion { seq, .. }
             | OutEvent::ToolOutput { seq, .. }
             | OutEvent::TaskList { seq, .. }
+            | OutEvent::Usage { seq, .. }
             | OutEvent::Error { seq, .. }
             | OutEvent::Done { seq, .. }
             | OutEvent::FileChange { seq, .. } => *seq,
@@ -800,6 +823,25 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn usage_roundtrips_with_and_without_cost() {
+        for cost in [Some(0.0123), None] {
+            let ev = OutEvent::Usage {
+                session: SessionId::new("s1"),
+                seq: 5,
+                input_tokens: 100,
+                output_tokens: 40,
+                cached_input_tokens: 30,
+                cache_write_tokens: 0,
+                cost_usd: cost,
+            };
+            let json = serde_json::to_string(&ev).unwrap();
+            let back: OutEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(ev, back);
+            assert_eq!(back.seq(), 5);
+        }
     }
 
     #[test]

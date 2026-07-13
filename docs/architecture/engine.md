@@ -15,9 +15,13 @@ session handle that wraps the streaming backend.
 
 Turn loop: send `LlmRequest { system, model, messages, tools }` → consume the
 streamed `LlmEvent`s (emit `TextDelta` per `Text` chunk, gather `ToolCall`s,
-note `Finish`) → for each tool call, run built-ins inline or hand host tools to
+fold `Finish`) → for each tool call, run built-ins inline or hand host tools to
 the runtime (emit `ToolExec`, park on `ToolResult`) → loop until the model
-returns no tool calls → `Done`. Permission dispatch and approval no longer run
+returns no tool calls → `Done`. Each round-trip's `Finish` is priced against
+`EngineConfig.pricing` (effective model = `profile.model` else `default_model`),
+folded into the session's `SessionUsage`, and emitted as `OutEvent::Usage`; a
+`StopReason::MaxTokens` also emits a truncation-warning `Error` (✅ #192,
+[ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)). Permission dispatch and approval no longer run
 here — the runtime tool executor owns them (§3, §8, ✅ #59). The tool-result
 wait parks the task on its inbox; any non-matching message (e.g. a new prompt) is
 stashed and processed after the turn. Setup/mid-stream backend errors surface as

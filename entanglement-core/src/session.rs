@@ -59,6 +59,23 @@ pub struct Session {
     pub profile: AgentProfile,
     pub seq: u64,
     pub parent: Option<SessionId>,
+    /// Cumulative token usage + cost across every model round-trip this session
+    /// has run (#192). Each `LlmEvent::Finish` folds its normalized `Usage` in
+    /// here and emits the per-round-trip delta as [`OutEvent::Usage`].
+    pub usage: SessionUsage,
+}
+
+/// Running per-session usage tally (#192): the sum of every round-trip's
+/// normalized token counts plus the accrued dollar cost. Kept in the engine so a
+/// session total survives across turns; heads reconstruct the same total by
+/// accumulating the per-round-trip [`OutEvent::Usage`] deltas.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cost_usd: f64,
 }
 
 impl Session {
@@ -70,6 +87,7 @@ impl Session {
             profile,
             seq: 0,
             parent: None,
+            usage: SessionUsage::default(),
         }
     }
 }
@@ -137,6 +155,8 @@ pub(crate) async fn session_loop(
                     &mut stash,
                     &cfg.tool_specs,
                     &cfg.profile_tool_specs,
+                    cfg.default_model.as_deref(),
+                    &cfg.pricing,
                 )
                 .await;
             }

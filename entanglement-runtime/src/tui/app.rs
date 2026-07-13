@@ -91,9 +91,10 @@ pub struct App {
     profile_colors: HashMap<String, ratatui::style::Color>,
     thinking_since: Option<Instant>,
 
-    // Token usage tracking
+    // Token usage tracking (#192): accumulated from `OutEvent::Usage` deltas.
     input_tokens: u64,
     output_tokens: u64,
+    cost_usd: f64,
 
     // Input state
     input_multiline: bool,
@@ -203,6 +204,22 @@ impl App {
 
     pub fn handle_out_event(&mut self, event: OutEvent) {
         tracing::debug!("App handling OutEvent: {:?}", event);
+        // Token totals + cost are head-level (#192): accumulate the per-round-trip
+        // delta before routing the event into its session view.
+        if let OutEvent::Usage {
+            input_tokens,
+            output_tokens,
+            cost_usd,
+            ..
+        } = &event
+        {
+            self.add_input_tokens(*input_tokens);
+            self.add_output_tokens(*output_tokens);
+            if let Some(cost) = cost_usd {
+                self.add_cost(*cost);
+            }
+            self.mark_dirty();
+        }
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();
         }

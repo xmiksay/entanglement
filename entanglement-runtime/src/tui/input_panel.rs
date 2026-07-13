@@ -132,7 +132,16 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     } else {
         model_info.display_name.clone()
     };
-    let tokens_display = format!("{} in / {} out", app.input_tokens(), app.output_tokens());
+    let tokens_display = if app.cost_usd() > 0.0 {
+        format!(
+            "{} in / {} out (${:.4})",
+            app.input_tokens(),
+            app.output_tokens(),
+            app.cost_usd()
+        )
+    } else {
+        format!("{} in / {} out", app.input_tokens(), app.output_tokens())
+    };
     let help_text = app.help_text();
 
     let info_line = Line::from(vec![

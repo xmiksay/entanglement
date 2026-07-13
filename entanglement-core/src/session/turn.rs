@@ -7,16 +7,19 @@ use std::collections::{HashMap, VecDeque};
 use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
-use super::emit::{emit_turn_error, next_seq};
+use super::emit::{emit_turn_error, emit_usage, next_seq};
 use super::tools::handle_tool_call;
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
-use entanglement_provider::{Llm, LlmEvent, LlmRequest, ToolCall, ToolSpec};
+use entanglement_provider::{
+    Llm, LlmEvent, LlmRequest, ModelPricing, StopReason, ToolCall, ToolSpec,
+};
 
 /// Runs one reasoning turn to completion. Returns `Err(())` only when a
 /// `SessionCmd::Stop` arrives during tool-request approval (cancel-via-Esc);
 /// the caller keeps the session task alive and just awaits the next command
 /// (ADR-0017). Context is preserved in either case.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_turn(
     session: &SessionId,
     rx: &mut mpsc::Receiver<SessionCmd>,
@@ -25,6 +28,8 @@ pub(crate) async fn run_turn(
     stash: &mut VecDeque<SessionCmd>,
     tool_specs: &[ToolSpec],
     profile_tool_specs: &HashMap<String, Vec<ToolSpec>>,
+    default_model: Option<&str>,
+    pricing: &HashMap<String, ModelPricing>,
 ) -> Result<(), ()> {
     let _ = events.send(OutEvent::Status {
         session: session.clone(),
@@ -112,6 +117,7 @@ pub(crate) async fn run_turn(
         let mut text_buf = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut stream_err: Option<String> = None;
+        let mut finish: Option<(Option<StopReason>, entanglement_provider::Usage)> = None;
         while let Some(ev) = stream.next().await {
             // Drain any commands queued mid-stream: Stop interrupts the turn,
             // everything else is stashed for replay after this turn ends
@@ -157,7 +163,7 @@ pub(crate) async fn run_turn(
                     }
                 }
                 Ok(LlmEvent::ToolCall(call)) => tool_calls.push(call),
-                Ok(LlmEvent::Finish { .. }) => {}
+                Ok(LlmEvent::Finish { stop_reason, usage }) => finish = Some((stop_reason, usage)),
                 Err(e) => {
                     stream_err = Some(e.to_string());
                     break;
@@ -170,6 +176,26 @@ pub(crate) async fn run_turn(
             // Partial text was already streamed; do not commit the failed turn.
             emit_turn_error(session, &mut s.seq, events, msg);
             return Ok(());
+        }
+
+        // Fold this round-trip's usage into the session total and emit the delta
+        // (#192). A `max_tokens`-truncated reply is surfaced as a recoverable
+        // warning so it no longer commits silently as a clean turn.
+        if let Some((stop_reason, usage)) = finish {
+            let model = s.profile.model.as_deref().or(default_model);
+            let cost = model
+                .and_then(|m| pricing.get(m))
+                .map(|p| p.cost_usd(&usage));
+            emit_usage(session, s, events, &usage, cost);
+            if stop_reason == Some(StopReason::MaxTokens) {
+                let _ = events.send(OutEvent::Error {
+                    session: session.clone(),
+                    seq: next_seq(&mut s.seq),
+                    message: "model response truncated: hit the max output token limit \
+                              (stop reason: max_tokens)"
+                        .to_string(),
+                });
+            }
         }
 
         s.ctx.push_assistant(text_buf.clone(), tool_calls.clone());

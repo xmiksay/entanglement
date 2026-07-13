@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile};
-use entanglement_provider::{EchoLlm, LlmFactory, LlmSession, ToolSpec};
+use entanglement_provider::{EchoLlm, LlmFactory, LlmSession, ModelPricing, ToolSpec};
 
 use super::DEFAULT_PROFILE;
 
@@ -32,6 +32,17 @@ pub struct EngineConfig {
     /// scoped to that profile). A generic table — later per-profile features
     /// reuse it. Empty for a profile that may not spawn or has no valid targets.
     pub profile_tool_specs: HashMap<String, Vec<ToolSpec>>,
+    /// The backend's resolved default model id — what a profile with
+    /// `model: None` actually runs under (#192). Lets the engine price a turn
+    /// (via [`pricing`][Self::pricing]) even when the profile doesn't pin a
+    /// model. `None` for the `EchoLlm` stub, which has no billable model.
+    pub default_model: Option<String>,
+    /// Per-model USD pricing keyed by catalog model id (#192), supplied by the
+    /// runtime from the provider catalog. The engine multiplies a turn's reported
+    /// [`Usage`][entanglement_provider::Usage] by the entry for the effective
+    /// model to fill [`OutEvent::Usage`][crate::protocol::OutEvent::Usage]'s
+    /// `cost_usd`; a model absent from the map yields `None` (unknown cost).
+    pub pricing: HashMap<String, ModelPricing>,
 }
 
 impl EngineConfig {
@@ -50,6 +61,8 @@ impl Default for EngineConfig {
             tool_specs: Vec::new(),
             profiles: ProfileRegistry::new(),
             profile_tool_specs: HashMap::new(),
+            default_model: None,
+            pricing: HashMap::new(),
         }
     }
 }

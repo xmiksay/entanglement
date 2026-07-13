@@ -17,11 +17,13 @@ transport crates (`reqwest`) and is usable **standalone** for raw LLM queries
 with no engine.
 
 ```rust
+enum StopReason { EndTurn, ToolUse, MaxTokens, StopSequence, Other }
+struct Usage { input_tokens?, output_tokens?, cached_input_tokens?, cache_write_tokens? }
 enum LlmEvent {
     Text(String),
     Reasoning(String),   // thinking/reasoning tokens, streamed distinctly
     ToolCall(ToolCall),
-    Finish { input_tokens?, output_tokens? },
+    Finish { stop_reason: StopReason?, usage: Usage },   // normalized (#192)
 }
 trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEvent>>> }
 ```
@@ -32,6 +34,15 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   `thinking`/`redacted_thinking` blocks, OpenAI `reasoning_content`) instead of
   dropping it; core re-emits it as a reasoning `OutEvent` heads render distinctly
   from answer text.
+- **`LlmEvent::Finish`** is normalized (#192,
+  [ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)): `StopReason`
+  collapses `finish_reason`/`stop_reason` across both wires, and `Usage` splits the
+  token counts so each maps to one pricing dimension — `input_tokens` is the
+  *uncached* input (the OpenAI client subtracts `prompt_tokens_details.cached_tokens`
+  out of `prompt_tokens`; Anthropic already reports `cache_read_input_tokens` /
+  `cache_creation_input_tokens` separately). `ModelPricing::cost_usd(&Usage)`
+  prices a round-trip; the engine emits it as `OutEvent::Usage` and warns on
+  `MaxTokens`.
 
 **Provider topology** — split by *wire format*, not by vendor:
 
