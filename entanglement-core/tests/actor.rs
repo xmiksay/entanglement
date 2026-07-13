@@ -191,6 +191,104 @@ async fn close_unknown_session_is_a_noop() {
     );
 }
 
+#[tokio::test]
+async fn close_session_cascades_to_descendants() {
+    // Closing a session retires its whole spawn sub-tree (#180): without a
+    // cascade, spawned descendants keep running with no consumer for their
+    // answers, burning provider tokens. Build parent → child → grandchild, close
+    // the root, and assert every level ends and drops from the list.
+    let holly = Holly::spawn(factory(vec![]));
+    let parent = SessionId::new("parent");
+    let child = SessionId::new("child");
+    let grandchild = SessionId::new("grandchild");
+    let mut sub = holly.subscribe();
+
+    // Materialize the parent as a live root session.
+    holly
+        .send(InMsg::Prompt {
+            session: parent.clone(),
+            text: "hi".into(),
+        })
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == parent),
+    )
+    .await;
+
+    // Spawn a child under the parent, then a grandchild under the child.
+    holly
+        .send(InMsg::Spawn {
+            session: child.clone(),
+            parent: parent.clone(),
+            agent: "build".into(),
+            prompt: "subtask".into(),
+        })
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == child),
+    )
+    .await;
+    holly
+        .send(InMsg::Spawn {
+            session: grandchild.clone(),
+            parent: child.clone(),
+            agent: "build".into(),
+            prompt: "sub-subtask".into(),
+        })
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == grandchild),
+    )
+    .await;
+
+    // Closing the root must cascade to the entire sub-tree.
+    holly
+        .send(InMsg::CloseSession {
+            session: parent.clone(),
+        })
+        .await
+        .unwrap();
+
+    let mut ended = std::collections::HashSet::new();
+    while ended.len() < 3 {
+        let ev = recv_until(&mut sub, |e| matches!(e, OutEvent::SessionEnded { .. })).await;
+        if let OutEvent::SessionEnded { session, .. } = ev {
+            ended.insert(session);
+        }
+    }
+    assert!(
+        ended.contains(&parent) && ended.contains(&child) && ended.contains(&grandchild),
+        "cascade must end parent, child and grandchild; got {ended:?}"
+    );
+
+    // None of the sub-tree may survive in a subsequent list snapshot.
+    let corr = SessionId::new("query");
+    holly
+        .send(InMsg::ListSessions {
+            session: corr.clone(),
+        })
+        .await
+        .unwrap();
+    let ev = recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::SessionList { session, .. } if *session == corr),
+    )
+    .await;
+    let OutEvent::SessionList { sessions, .. } = ev else {
+        unreachable!()
+    };
+    assert!(
+        sessions.is_empty(),
+        "cascade must drop every descendant from the list; got {sessions:?}"
+    );
+}
+
 /// An LLM that replays a scripted list of responses, in order.
 struct ScriptedLlm {
     responses: Mutex<Vec<LlmResponse>>,

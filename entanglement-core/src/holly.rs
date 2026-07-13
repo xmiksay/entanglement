@@ -186,15 +186,24 @@ async fn supervisor(
             continue;
         }
         if let InMsg::CloseSession { session } = &msg {
-            // Dropping the command channel makes the task's `rx.recv()` return
-            // `None`; it emits `SessionEnded` and exits. Unknown id → no-op.
-            if sessions.remove(session).is_some() {
-                session_meta.remove(session);
-                parent_links.remove(session);
+            // Cascade (#180): closing a session retires its whole sub-tree, not
+            // just the target. `parent_links` is child→parent, so a spawned
+            // descendant left running has no consumer for its answers and keeps
+            // burning provider tokens. Walk the tree and close every descendant
+            // alongside the target.
+            for victim in collect_subtree(session, &parent_links) {
+                // Dropping the command channel makes the task's `rx.recv()`
+                // return `None`; it emits `SessionEnded` and exits. Unknown
+                // id → no-op.
+                if sessions.remove(&victim).is_some() {
+                    session_meta.remove(&victim);
+                }
+                parent_links.remove(&victim);
+                // Tombstone the id regardless of liveness: it is spent
+                // (ADR-0028), so a `Prompt` queued behind this `CloseSession`
+                // can't respawn it blank.
+                closed.insert(victim);
             }
-            // Tombstone the id regardless of liveness: it is spent (ADR-0028), so
-            // a `Prompt` queued behind this `CloseSession` can't respawn it blank.
-            closed.insert(session.clone());
             continue;
         }
 
@@ -362,4 +371,26 @@ async fn supervisor(
     for (_, tx) in sessions.drain() {
         let _ = tx.send(SessionCmd::Stop).await;
     }
+}
+
+/// Collect `root` plus every transitive descendant from the child→parent
+/// `parent_links` map (breadth-first). Backs the `CloseSession` cascade (#180):
+/// closing a session must retire its whole sub-tree so no spawned sub-agent is
+/// left orphaned. Small session counts make the O(n²) scan a non-issue.
+fn collect_subtree(
+    root: &SessionId,
+    parent_links: &HashMap<SessionId, Option<SessionId>>,
+) -> Vec<SessionId> {
+    let mut subtree = vec![root.clone()];
+    let mut cursor = 0;
+    while cursor < subtree.len() {
+        let current = subtree[cursor].clone();
+        for (child, parent) in parent_links {
+            if parent.as_ref() == Some(&current) && !subtree.contains(child) {
+                subtree.push(child.clone());
+            }
+        }
+        cursor += 1;
+    }
+    subtree
 }

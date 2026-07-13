@@ -60,7 +60,12 @@ profile *name* alone. Pair it with the runtime's per-resolution `debug!`
 (`tool=… rule=Allow|Ask|Deny source=own|ancestor <id>`) when tracing *why* a
 sub-agent's tool was clamped. `CloseSession` drops the session's command
 channel so its task exits and emits `SessionEnded` — the explicit destroy `Stop`
-(cancel-semantics, ADR-0017) does not perform. Session ids are single-use: after
+(cancel-semantics, ADR-0017) does not perform. It **cascades** over the spawn
+sub-tree (**#180**): the supervisor walks the child→parent links and closes every
+transitive descendant alongside the target, so a spawned sub-agent is never left
+orphaned — running with no consumer for its answers and burning provider tokens.
+(This is the explicit-destroy path only; a parent `Stop` still does *not* cascade
+to un-polled `agent`/`agent_poll` children, ADR-0026.) Session ids are single-use: after
 `SessionEnded`, mint a fresh `SessionId::new_uuid()` rather than reuse a closed
 id (which would restart `seq` at 0). The supervisor routes to sessions with a
 non-blocking `try_send` + bounded retry, shedding to a saturated session rather
