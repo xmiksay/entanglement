@@ -58,36 +58,42 @@ pub struct OpenAiLlm {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
+    /// Catalog-provided per-minute budget for this endpoint (`None` = client
+    /// default). Threaded into the per-endpoint rate limiter (#241).
+    rpm: Option<u32>,
     http: HttpClient,
 }
 
 impl OpenAiLlm {
     /// `api_key = None` sends no `Authorization` header (Ollama). A `Some` key is
-    /// sent as `Bearer`.
+    /// sent as `Bearer`. `rpm = None` uses the client's default rate-limit budget.
     pub fn new(
         base_url: impl Into<String>,
         api_key: Option<String>,
         default_model: impl Into<String>,
+        rpm: Option<u32>,
         http: HttpClient,
     ) -> Self {
         Self {
             base_url: base_url.into(),
             api_key,
             default_model: default_model.into(),
+            rpm,
             http,
         }
     }
 }
 
 /// Factory for one per-session [`OpenAiLlm`]. Pass the provider's base URL, an
-/// optional key, and the default model id.
+/// optional key, the default model id, and the endpoint's rpm budget.
 pub fn openai_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
     default_model: impl Into<String>,
+    rpm: Option<u32>,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = OpenAiLlm::new(base_url, api_key, default_model, http);
+    let llm = OpenAiLlm::new(base_url, api_key, default_model, rpm, http);
     std::sync::Arc::new(move || LlmSession::new(Box::new(llm.clone())))
 }
 
@@ -110,7 +116,7 @@ impl Llm for OpenAiLlm {
 
         let response = self
             .http
-            .execute_with_retry(&self.base_url, self.api_key.as_deref(), || {
+            .execute_with_retry(&self.base_url, self.api_key.as_deref(), self.rpm, || {
                 let mut request = self.http.client().post(&url);
                 if let Some(key) = &self.api_key {
                     request = request.bearer_auth(key);
@@ -147,16 +153,9 @@ impl Llm for OpenAiLlm {
             anyhow::bail!("openai-compat HTTP {status}: {text}");
         }
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, anyhow::Error>>(8);
-        tokio::spawn(async move {
-            let mut bytes = response.bytes_stream();
-            while let Some(item) = bytes.next().await {
-                let chunk = item.map_err(|e| anyhow::anyhow!("openai-compat stream read: {e}"));
-                if tx.send(chunk.map(|c| c.to_vec())).await.is_err() {
-                    break;
-                }
-            }
-        });
+        // Forward the SSE body with a per-chunk idle-gap watchdog (#241): a long
+        // healthy stream runs to completion, a hung one dies within the gap.
+        let rx = crate::client::spawn_byte_stream(response, "openai-compat");
 
         let stream = try_stream! {
             let mut buf = String::new();

@@ -9,6 +9,11 @@
 # filled in; unknown rates are left unset rather than invented. Ollama is local,
 # so it carries no pricing.
 #
+# `rpm` (optional, per provider) is the requests-per-minute budget for that
+# provider's endpoint bucket. It is left unset here — like unknown pricing — so
+# each endpoint falls back to the client default (RetryConfig::rpm, 50);
+# override per provider in your user `providers.yml` or via `{NAME}_RPM`.
+#
 # Provider order is also the key auto-detect priority (z.ai first).
 
 providers:

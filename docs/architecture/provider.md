@@ -44,10 +44,10 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
   exist, but the *default* base per provider now comes from the catalog (below);
-  `openai_factory(base, key, model)` builds an `LlmFactory`.
+  `openai_factory(base, key, model, rpm)` builds an `LlmFactory`.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
-  fragments). `anthropic_factory(key, model)`.
+  fragments). `anthropic_factory(key, model, rpm)`.
 - `ToolSpec.schema` surfaces as `input_schema` (Anthropic) / `parameters`
   (OpenAI-compat); `Message.tool_call_id` → `tool_use_id` / `tool_call_id`.
 
@@ -57,11 +57,25 @@ tuned `reqwest::Client` is shared (it already pools TCP connections per host),
 but the **rate-limit budget and retry/backoff state are keyed by `(endpoint,
 api-key)`** — the provider's base URL plus a *hash* of the API key (if any) — in
 `HttpClient`'s `EndpointPool`. Each such bucket owns a token-bucket RPM throttle
-(default 50 RPM, `RetryConfig::rpm`) and its own `Retry-After` cool-down window,
-so a throttled endpoint never starves another — and **multiple keys on the same
-endpoint each get their own budget** (different keys have different limits). The
-key is hashed, never stored raw in the map. Before #217 a single global 50-RPM
-`Semaphore` was shared across *all* providers.
+and its own `Retry-After` cool-down window, so a throttled endpoint never starves
+another — and **multiple keys on the same endpoint each get their own budget**
+(different keys have different limits). The key is hashed, never stored raw in
+the map. Before #217 a single global 50-RPM `Semaphore` was shared across *all*
+providers. The bucket's RPM is **catalog data** (#241): the provider entry's
+optional `rpm` (env `{NAME}_RPM` > user `providers.yml` > embedded default),
+threaded through `openai_factory`/`anthropic_factory` → `execute_with_retry` →
+`EndpointState::new`; when unset it falls back to the client default
+(`RetryConfig::rpm`, 50).
+
+**Timeouts — connect + idle-gap, not whole-request** (#241): the shared
+`reqwest::Client` is built with `connect_timeout` only (30s to establish TCP+TLS).
+A fixed whole-request `.timeout()` would abort a long *healthy* LLM stream
+mid-turn (and its partials, already consumed, aren't retryable) — and its 300s
+ceiling was also what capped `Stop` cancel latency (#179). Instead liveness on
+the streamed body is enforced per chunk: `client::spawn_byte_stream` forwards the
+SSE bytes over an mpsc channel under a `tokio::time::timeout(STREAM_IDLE_TIMEOUT,
+…)` watchdog (120s idle gap), so a slow-but-alive stream runs to completion while
+a hung one dies fast. Both `OpenAiLlm` and `AnthropicLlm` use this one helper.
 **Retry** classifies the *response* status inside the loop — a 429/5xx response
 (not just a `reqwest::Error`) is retried with exponential backoff + jitter,
 honoring `Retry-After` per endpoint; before #217 those responses came back as
