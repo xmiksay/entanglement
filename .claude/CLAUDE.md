@@ -28,7 +28,7 @@ inverting [ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)/[ADR-0007
 | --- | --- | --- |
 | `entanglement-provider` | **leaf** crate, owns the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmSession`, `LlmFactory`, `ToolCall`, `ToolSpec`, `Message`/`MessageRole`, `Dummy`/`EchoLlm`); all LLM I/O — generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL + API-key hash, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider, provider-owned session handle. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, the `Tool` **trait** (not impls), `Context` (built on provider's `Message`). Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest`/`hyper`/`tower` are transitive via provider ([ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). `make tree` enforces. |
-| `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe` + `tui` today, `serve` (WS) next. Selects the concrete provider via `ENTANGLEMENT_PROVIDER` or key auto-detect and glues it to core. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli`/`tui` (`default = ["tui"]`) build the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). | `--no-default-features` must stay CLI/TUI-free (`reqwest` rides in via core); `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). |
+| `entanglement-runtime` | the head crate (binary `skutter`): **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe`, `tui`, and the `sessions`/`inspect` subcommands today, `serve` (WS) next. Selects the concrete provider via `ENTANGLEMENT_PROVIDER` or key auto-detect and glues it to core. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli`/`tui` (`default = ["tui"]`) build the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). | `--no-default-features` must stay CLI/TUI-free (`reqwest` rides in via core); `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). |
 
 `entanglement-runtime` depends on core; core depends on provider; provider
 depends on neither.
@@ -38,8 +38,10 @@ depends on neither.
 ```bash
 make run           # stdio head, one turn (text)
 make run-json      # one turn, NDJSON events (opencode run --format json)
+make run-tui       # launch the terminal UI
 make test          # unit + integration
 make test-unit | make test-integration
+make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
 make lint          # clippy --all-targets -D warnings
 make fmt | check-fmt
 make verify        # check-fmt + tree + check-lean + lint + test  (CI-equivalent gate)
@@ -123,9 +125,10 @@ re-document them here):
   monotonic `seq`. Supervisor-global vs session-scoped routing is explicit.
 - **Definitions are data, layered** embedded < user < project, later wins; the
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
-  Agents, skills, the provider catalog, and the **user config file** (#172,
-  `${config_dir}/entanglement/config.yml` < `.entanglement/config.yml`) all share
-  this loader. Provider API **keys** live in a sibling managed env file (#220,
+  Agents (`ENTANGLEMENT_AGENTS_DIR`), skills (`ENTANGLEMENT_SKILLS_DIR`), the
+  provider catalog (`ENTANGLEMENT_PROVIDERS_FILE`), and the **user config file**
+  (#172, `${config_dir}/entanglement/config.yml` < `.entanglement/config.yml`) all
+  share this loader. Provider API **keys** live in a sibling managed env file (#220,
   `${config_dir}/entanglement/.env`, override `ENTANGLEMENT_ENV_FILE`): scaffolded
   commented on first run, loaded at startup into the process env for vars the real
   env left unset (env > file), kept out of any repo.
