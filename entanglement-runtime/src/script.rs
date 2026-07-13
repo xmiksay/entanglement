@@ -433,6 +433,7 @@ async fn await_approval(
             Ok(InMsg::Approve {
                 session: s,
                 request_id: rid,
+                ..
             }) if &s == session && rid == request_id => return Approval::Approved,
             Ok(InMsg::Reject {
                 session: s,

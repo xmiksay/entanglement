@@ -58,6 +58,27 @@ below realize one model:
     on approve, run the tool and reply `ToolResult`; on reject, reply
     `ToolResult("…rejected…")`.
   - `Deny` → reply `ToolResult("…denied…")` without running the tool.
+- **Approval scope + persisted grants (✅ #174, [ADR-0052](../adr/0052-approval-scope-and-persisted-grants.md)):**
+  `InMsg::Approve` carries a `scope: Once | Session | Always` (core enum, default
+  `Once`, `skip_serializing_if` so a bare approve is wire-identical to the pre-#174
+  shape — older heads omit it). Approval semantics stay runtime-only: a
+  `runtime::grants::GrantStore` (shared `Arc<Mutex>` between the executor loop and
+  its per-request dispatch tasks) records the wider scopes keyed by an exact
+  `(tool, argument)` — the same argument #173 resolves against. **After** the full
+  resolution (ancestor clamp → config ceiling), a call that lands on `Ask` is
+  upgraded to `Allow` when the store already grants it, so the *identical* later
+  call skips the prompt. A grant **only raises `Ask` → `Allow`** — it never
+  overrides a `Deny` (the ceiling still clamps first), is matched by exact equality
+  (no pattern widening), is dropped on `SessionEnded` for `Session` scope, and is
+  never inherited by a sub-agent. `Session` lives in memory; `Always` persists to a
+  **managed** file `${config_dir}/entanglement/grants.yml` (override
+  `ENTANGLEMENT_GRANTS_FILE`) — a top-level `grants:` list of `tool(arg)` rule keys,
+  loaded at startup and re-written on each new grant. Like the provider-key env file
+  (#220) it sits *beside* `config.yml`, not inside it: the runtime rewrites it
+  freely, so it never clobbers the hand-edited, commented config. A missing/malformed
+  store loads empty and a write failure is logged — both fail *closed* (ask again),
+  the safe direction. The TUI modal offers `y` once / `s` session / `a` always /
+  `n` reject / `e` edit-reason / `Esc` interrupt.
 - **User config file + permission ceiling (✅ #172, [ADR-0047](../adr/0047-local-trust-boundary.md)):**
   a general user settings file, same layered loader as everything else — embedded
   default (`entanglement-runtime/src/config/defaults.yml`) < user
@@ -74,7 +95,9 @@ below realize one model:
   agent to ask but never *loosens* what an agent restricts. The embedded default is
   allow-all, so an untouched config is a no-op. The ceiling honors argument-scoped
   rule keys too (✅ #173) — `bash(rm *): deny` in the config clamps that command for
-  every agent — and persisted "always allow" grants (#174) build on this section. Loaded in the
+  every agent. The `permissions` section stays a pure ceiling (it only *tightens*);
+  the orthogonal "always allow" grants (✅ #174) that *raise* an `Ask` live in a
+  separate managed file, not here (see the approval-scope bullet above). Loaded in the
   runtime only (core has neither `dirs` nor `serde_yaml`). On first run, if the
   user file is missing, the runtime scaffolds a **fully-commented** starter
   template next to it (✅ #219, `config::scaffold_if_missing` writing

@@ -303,6 +303,7 @@ async fn ask_binding_parks_then_runs_on_approve() {
         .send(InMsg::Approve {
             session: sid.clone(),
             request_id,
+            scope: Default::default(),
         })
         .await
         .unwrap();
@@ -349,6 +350,7 @@ async fn ask_is_resolved_once_per_function_per_run() {
         .send(InMsg::Approve {
             session: sid.clone(),
             request_id,
+            scope: Default::default(),
         })
         .await
         .unwrap();

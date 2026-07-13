@@ -8,8 +8,9 @@ One set of serde-tagged types crosses every transport:
 
 ```
 #[serde(tag = "kind", rename_all = "snake_case")]
-InMsg    = Prompt{session,text} | Approve{session,request_id}   // approval →
-         | Reject{session,request_id,reason?}                   // runtime, not core (#59)
+InMsg    = Prompt{session,text} | Approve{session,request_id,scope?}  // approval →
+         | Reject{session,request_id,reason?}                         // runtime, not core (#59)
+         //   scope: once (default) | session | always  — persisted grants (#174, ADR-0052)
          | ToolResult{session,request_id,output}   // runtime → core: tool ran (#58)
          | AnswerQuestion{session,request_id,answer}  // ask_user answer → runtime (#90)
          | Stop{session}

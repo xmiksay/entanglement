@@ -12,6 +12,7 @@ mod agents;
 mod ask_user;
 mod config;
 mod frontmatter;
+mod grants;
 mod host;
 mod inspect;
 mod logging;

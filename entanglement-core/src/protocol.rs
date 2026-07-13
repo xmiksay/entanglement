@@ -229,6 +229,36 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     pi == p.len()
 }
 
+/// How long an [`InMsg::Approve`] grant lasts (#174). A bare `Approve` is
+/// [`Once`][ApprovalScope::Once] — the historical one-shot behavior — so the
+/// field defaults to it and older heads that omit it are unaffected. The runtime
+/// records the wider scopes in a grant set so an *identical* later call (same
+/// tool + argument, [`crate::PermissionProfile::resolve`]'s `arg`) skips the
+/// prompt: [`Session`][ApprovalScope::Session] for the life of the session (in
+/// memory), [`Always`][ApprovalScope::Always] persisted to the user's managed
+/// grants file. A grant only ever upgrades an `Ask` to `Allow`; it never
+/// overrides a `Deny` (policy stays a hard floor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalScope {
+    /// Approve just this one call — the next identical call asks again.
+    #[default]
+    Once,
+    /// Approve every identical call for the rest of this session (in-memory).
+    Session,
+    /// Approve every identical call, now and in future sessions — persisted to
+    /// the runtime's managed grants file.
+    Always,
+}
+
+impl ApprovalScope {
+    /// Whether this is the default one-shot scope. Drives `skip_serializing_if`
+    /// so a bare `Approve` stays wire-identical to the pre-#174 shape.
+    pub fn is_once(&self) -> bool {
+        matches!(self, ApprovalScope::Once)
+    }
+}
+
 /// Whether an agent is directly user-facing, invoked by other agents, or both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -389,9 +419,14 @@ pub enum InMsg {
     /// Feed a new user prompt into the conversation.
     Prompt { session: SessionId, text: String },
     /// Approve a pending tool request (`request_id` from [`OutEvent::ToolRequest`]).
+    /// `scope` (#174) controls how long the approval lasts — [`ApprovalScope::Once`]
+    /// by default, so a head that omits it keeps the historical one-shot behavior
+    /// (and the default scope is omitted on the wire, additive for older heads).
     Approve {
         session: SessionId,
         request_id: String,
+        #[serde(default, skip_serializing_if = "ApprovalScope::is_once")]
+        scope: ApprovalScope,
     },
     /// Reject a pending tool request.
     Reject {
@@ -724,6 +759,35 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("reason"));
+    }
+
+    #[test]
+    fn approve_scope_defaults_to_once_and_omits_when_default() {
+        // A bare approve serializes without a `scope` (default Once), and an older
+        // head's frame (no `scope`) still deserializes to Once — additive on the wire.
+        let msg = InMsg::Approve {
+            session: SessionId::new("s1"),
+            request_id: "r1".into(),
+            scope: ApprovalScope::Once,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("scope"), "default scope must be omitted");
+        let legacy = r#"{"kind":"approve","session":"s1","request_id":"r1"}"#;
+        assert_eq!(serde_json::from_str::<InMsg>(legacy).unwrap(), msg);
+    }
+
+    #[test]
+    fn approve_scope_roundtrips_when_set() {
+        for scope in [ApprovalScope::Session, ApprovalScope::Always] {
+            let msg = InMsg::Approve {
+                session: SessionId::new("s1"),
+                request_id: "r1".into(),
+                scope,
+            };
+            let json = serde_json::to_string(&msg).unwrap();
+            assert!(json.contains("scope"));
+            assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+        }
     }
 
     #[test]

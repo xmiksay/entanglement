@@ -94,7 +94,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
             "Type a message... | Shift+Enter: newline | Ctrl+J: newline | Enter: send"
         }
         ApprovalMode::WaitingForApproval { .. } => {
-            "Waiting for approval... Use [y] approve, [n] reject, [e] edit reason, [Esc] interrupt"
+            "Approve? [y] once, [s] session, [a] always, [n] reject, [e] edit reason, [Esc] interrupt"
         }
         ApprovalMode::EnteringRejectReason { .. } => {
             "Enter rejection reason... (Enter to send, Esc to cancel)"

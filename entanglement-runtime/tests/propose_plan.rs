@@ -115,6 +115,7 @@ async fn approve_folds_accepted_output_and_records_no_plan() {
         .send(InMsg::Approve {
             session: sid.clone(),
             request_id,
+            scope: Default::default(),
         })
         .await
         .unwrap();

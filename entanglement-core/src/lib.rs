@@ -22,7 +22,7 @@ pub use llm::{
     LlmSession, LlmStream, ToolCall, ToolSpec,
 };
 pub use protocol::{
-    AgentMode, AgentProfile, AgentState, FileChangeKind, InMsg, OutEvent, Permission,
-    PermissionProfile, ProfileDetail, QuestionOption, SessionId, SessionInfo,
+    AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, OutEvent,
+    Permission, PermissionProfile, ProfileDetail, QuestionOption, SessionId, SessionInfo,
 };
 pub use tools::{Tool, ToolRegistry};

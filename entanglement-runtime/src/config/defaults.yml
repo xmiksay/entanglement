@@ -31,6 +31,8 @@ verbose: false
 # global ceiling combined least-privilege with each agent profile: a rule here
 # can only *tighten* what an agent allows, never loosen it. The embedded default
 # is allow-all, so an untouched config changes nothing. Argument/path patterns
-# (#173) and persisted "always allow" grants (#174) build on this section.
+# (#173) build on this section. This block is a pure ceiling (it only tightens);
+# interactive "always allow" grants (#174) that raise an Ask are stored separately
+# in the managed grants.yml, not here.
 permissions:
   default: allow

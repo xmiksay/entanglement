@@ -109,7 +109,12 @@ re-document them here):
   (`permission::permission_arg`) — the `PermissionProfile::resolve(name, arg)`
   glob is the only core surface. A user config file (#172) adds a global
   permission **ceiling** clamped least-privilege over every grade
-  (`clamp_to_base`); see `entanglement-runtime/src/config`.
+  (`clamp_to_base`); see `entanglement-runtime/src/config`. `Approve` carries a
+  `scope` (#174, [ADR-0052](../docs/adr/0052-approval-scope-and-persisted-grants.md)):
+  `Session`/`Always` record an exact `(tool, arg)` grant in `runtime::grants`
+  that upgrades a later resolved `Ask` → `Allow` (never a `Deny`, applied *after*
+  the ceiling); `Always` persists to a managed `${config_dir}/entanglement/grants.yml`
+  (sibling of `config.yml`, not its ceiling section).
 - **Session-multiplexed**: every frame carries `SessionId`; content frames carry
   monotonic `seq`. Supervisor-global vs session-scoped routing is explicit.
 - **Definitions are data, layered** embedded < user < project, later wins; the
