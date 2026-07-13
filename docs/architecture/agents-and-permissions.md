@@ -81,7 +81,19 @@ below realize one model:
   `config/template.yml`) — every setting commented out, so it parses to `Null`,
   is skipped in the merge (`read_layer`), and changes nothing until edited; it
   only exists as a discoverable starting point. Best-effort: a write failure is
-  logged, never fatal. A sibling API-key env file scaffold (#220) is separate.
+  logged, never fatal.
+- **Managed provider-key env file (✅ #220):** a sibling
+  `${config_dir}/entanglement/.env` (path override `ENTANGLEMENT_ENV_FILE`) holds
+  the provider API keys outside any repo (`entanglement-runtime/src/config/env_file.rs`).
+  Startup scaffolds a **commented** template listing the catalog's known key vars
+  (`catalog.key_envs()` — `ZAI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, …)
+  when the file is missing, then loads its `KEY=VALUE` lines into the process
+  environment **only for vars the real environment left unset** — the process env
+  always wins (env > file), matching standard dotenv no-override. Both steps are
+  best-effort (a read-only home or a malformed line is logged, never fatal) and run
+  right after the catalog loads, before `select_provider` reads any key. The file is
+  distinct from `config.yml`: it carries only secrets, so it stays out of the YAML
+  config and out of version control.
 - **File-defined (✅ #112, [ADR-0034](../adr/0034-file-based-agent-definitions.md)):**
   profiles are markdown files with YAML frontmatter (the config bundle) + a body
   (the system prompt), discovered at startup by the **runtime**

@@ -466,6 +466,24 @@ async fn main() -> Result<()> {
     // A malformed user file is a loud error, never a silent fallback.
     let catalog = Catalog::load().context("loading provider catalog")?;
 
+    // Managed provider-key env file (#220): scaffold a commented template listing
+    // the catalog's known key vars on first run, then load `KEY=VALUE` pairs into
+    // the process env *without overriding* anything the real env already set (env
+    // > file). Both are best-effort — a read-only home or malformed line is logged,
+    // never fatal — and run before `select_provider` reads any API key below.
+    match config::env_file::scaffold_if_missing(&catalog.key_envs()) {
+        Ok(Some(path)) => tracing::info!("wrote provider env file to {}", path.display()),
+        Ok(None) => {}
+        Err(e) => tracing::debug!("could not scaffold provider env file: {e:#}"),
+    }
+    match config::env_file::load() {
+        Ok(Some((path, set))) if set > 0 => {
+            tracing::info!("loaded {set} provider key(s) from {}", path.display())
+        }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("could not load provider env file: {e:#}"),
+    }
+
     // Discover file-based agent definitions (#112): embedded built-ins, then the
     // user dir, then the project dir. A malformed file is a loud error. Each
     // agent body is composed with the shared preamble, project brief, env block,

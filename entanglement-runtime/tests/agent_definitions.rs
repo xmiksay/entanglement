@@ -346,12 +346,21 @@ fn prompt_report_reports_builtin_source_and_prompt() {
     let report = report_for(empty.path(), "build", &ctx).expect("build resolves");
     assert_eq!(report.source, "built-in (build.md)");
     // The report's prompt matches the registry-assembled one for the same inputs.
-    let reg = load_registry(
-        empty.path(),
-        &ctx,
-        &entanglement_runtime::skills::SkillRegistry::default(),
-    )
-    .expect("load_registry");
+    // `load_registry` reads the process-global `ENTANGLEMENT_AGENTS_DIR`, so it
+    // must run under `ENV_LOCK` with the user dir isolated — exactly as
+    // `report_for` does — or a parallel test's temp user-agents dir can leak in.
+    let reg = {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
+        let reg = load_registry(
+            empty.path(),
+            &ctx,
+            &entanglement_runtime::skills::SkillRegistry::default(),
+        )
+        .expect("load_registry");
+        std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
+        reg
+    };
     assert_eq!(
         report.profile.system_prompt,
         reg.get("build").unwrap().system_prompt

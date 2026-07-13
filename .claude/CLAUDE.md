@@ -116,7 +116,10 @@ re-document them here):
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
   Agents, skills, the provider catalog, and the **user config file** (#172,
   `${config_dir}/entanglement/config.yml` < `.entanglement/config.yml`) all share
-  this loader.
+  this loader. Provider API **keys** live in a sibling managed env file (#220,
+  `${config_dir}/entanglement/.env`, override `ENTANGLEMENT_ENV_FILE`): scaffolded
+  commented on first run, loaded at startup into the process env for vars the real
+  env left unset (env > file), kept out of any repo.
 
 | Topic | Module |
 | --- | --- |
