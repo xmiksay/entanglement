@@ -145,7 +145,12 @@ async fn load_skill_then_read_a_substituted_ref() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(&holly, tools, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -243,7 +248,12 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(&holly, tools, profiles);
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {

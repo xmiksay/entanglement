@@ -10,6 +10,7 @@
 mod agent_poll;
 mod agents;
 mod ask_user;
+mod config;
 mod frontmatter;
 mod host;
 mod inspect;
@@ -73,8 +74,9 @@ fn build_config(
     http_client: &HttpClient,
     profiles: ProfileRegistry,
     skills: std::sync::Arc<skills::SkillRegistry>,
+    user_config: &config::Config,
 ) -> (EngineConfig, ModelInfo, ToolRegistry) {
-    let (mut cfg, model_info) = select_provider(catalog, http_client);
+    let (mut cfg, model_info) = select_provider(catalog, http_client, user_config);
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
     cfg.profiles = profiles;
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -140,25 +142,34 @@ fn build_config(
 
 /// Resolve the active provider from the catalog:
 ///
-/// - `ENTANGLEMENT_PROVIDER=<name>` looks `<name>` up **in the catalog** (so
-///   user-defined providers work); `echo` stays a built-in stub. A missing key
-///   for the named provider exits cleanly.
-/// - unset → auto-detect by iterating catalog order and picking the first
+/// - `ENTANGLEMENT_PROVIDER=<name>`, else the user config's `provider`, looks
+///   `<name>` up **in the catalog** (so user-defined providers work); `echo`
+///   stays a built-in stub. A missing key for the named provider exits cleanly.
+/// - neither set → auto-detect by iterating catalog order and picking the first
 ///   provider whose `key_env` is set and non-empty (keyless Ollama is skipped),
 ///   else fall back to `EchoLlm`.
-fn select_provider(catalog: &Catalog, http_client: &HttpClient) -> (EngineConfig, ModelInfo) {
-    match std::env::var("ENTANGLEMENT_PROVIDER").ok().as_deref() {
+///
+/// Precedence is env > config > auto-detect, mirroring every other setting.
+fn select_provider(
+    catalog: &Catalog,
+    http_client: &HttpClient,
+    user_config: &config::Config,
+) -> (EngineConfig, ModelInfo) {
+    let selected = std::env::var("ENTANGLEMENT_PROVIDER")
+        .ok()
+        .or_else(|| user_config.provider.clone());
+    match selected.as_deref() {
         Some("echo") => echo_config(),
         Some(name) => {
             let Some(entry) = catalog.provider(name) else {
                 eprintln!(
-                    "skutter: unknown ENTANGLEMENT_PROVIDER='{name}' \
+                    "skutter: unknown provider='{name}' \
                      (not in catalog: {}, or echo)",
                     catalog_names(catalog)
                 );
                 std::process::exit(2);
             };
-            wire_config(entry, http_client, catalog).unwrap_or_else(|| {
+            wire_config(entry, http_client, catalog, user_config).unwrap_or_else(|| {
                 exit_missing_key(
                     &entry.name,
                     entry.key_env.as_deref().unwrap_or("its API key"),
@@ -170,7 +181,7 @@ fn select_provider(catalog: &Catalog, http_client: &HttpClient) -> (EngineConfig
                 // Auto-detect only over keyed providers (keyless Ollama can't be
                 // sniffed and stays opt-in), first one with a key present wins.
                 if entry.key_env.as_deref().and_then(env_nonempty).is_some() {
-                    if let Some(cfg) = wire_config(entry, http_client, catalog) {
+                    if let Some(cfg) = wire_config(entry, http_client, catalog, user_config) {
                         return cfg;
                     }
                 }
@@ -214,17 +225,21 @@ fn wire_config(
     entry: &ProviderEntry,
     http_client: &HttpClient,
     catalog: &Catalog,
+    user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
     match entry.wire {
-        Wire::Openai => openai_wire_config(entry, http_client, catalog),
-        Wire::Anthropic => anthropic_wire_config(entry, http_client, catalog),
+        Wire::Openai => openai_wire_config(entry, http_client, catalog, user_config),
+        Wire::Anthropic => anthropic_wire_config(entry, http_client, catalog, user_config),
     }
 }
 
-/// Model id from `{NAME}_MODEL` env, else the entry's `default_model`.
-fn resolve_model(entry: &ProviderEntry) -> String {
+/// Model id from `{NAME}_MODEL` env, else the user config's `model`, else the
+/// entry's `default_model` (env > config > catalog default).
+fn resolve_model(entry: &ProviderEntry, user_config: &config::Config) -> String {
     let name = entry.name.to_uppercase();
-    env_nonempty(&format!("{name}_MODEL")).unwrap_or_else(|| entry.default_model.clone())
+    env_nonempty(&format!("{name}_MODEL"))
+        .or_else(|| user_config.model.clone())
+        .unwrap_or_else(|| entry.default_model.clone())
 }
 
 /// Summarize the chosen model against the catalog (context window, display name).
@@ -239,13 +254,14 @@ fn openai_wire_config(
     entry: &ProviderEntry,
     http_client: &HttpClient,
     catalog: &Catalog,
+    user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
     let key = match &entry.key_env {
         Some(k) => Some(env_nonempty(k)?), // keyed provider missing its key: skip
         None => None,                      // keyless (Ollama)
     };
     let name = entry.name.to_uppercase();
-    let model = resolve_model(entry);
+    let model = resolve_model(entry, user_config);
     let base = env_nonempty(&format!("{name}_API_BASE"))
         .or_else(|| env_nonempty(&format!("{name}_BASE")))
         .or_else(|| entry.base_url.clone())
@@ -270,9 +286,10 @@ fn anthropic_wire_config(
     entry: &ProviderEntry,
     http_client: &HttpClient,
     catalog: &Catalog,
+    user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
     let key = env_nonempty(entry.key_env.as_deref()?)?;
-    let model = resolve_model(entry);
+    let model = resolve_model(entry, user_config);
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -389,38 +406,51 @@ enum InspectCmd {
         #[arg(long)]
         disclosures: bool,
     },
+    /// Print the resolved user config (#172): merged settings with their winning
+    /// layer (default < user < project) and the permission ceiling.
+    Config,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Load the layered user config (#172, ADR-0047) up front: embedded defaults <
+    // user (`${config_dir}/entanglement/config.yml`) < project
+    // (`.entanglement/config.yml`). A malformed file is a loud error. Loaded
+    // before logging so its `verbose` can raise the level for every mode,
+    // including the pre-engine `inspect`/`sessions` fast paths.
+    let user_config = config::Config::load(&cwd).context("loading user config")?;
+
     // stdout is reserved for command output — the assembled prompt
     // (`inspect prompt`), NDJSON frames (`run --format json` / `pipe`) — so logs
     // go to stderr, except under the TUI (raw mode) where they'd corrupt the
-    // screen and get a file sink instead. `RUST_LOG` overrides `--verbose`.
-    logging::init(cli.verbose, matches!(cli.cmd, Some(Cmd::Tui { .. })))?;
+    // screen and get a file sink instead. `RUST_LOG` overrides `--verbose`;
+    // `--verbose` overrides the config's `verbose`.
+    logging::init(
+        cli.verbose || user_config.verbose,
+        matches!(cli.cmd, Some(Cmd::Tui { .. })),
+    )?;
 
     // `sessions` only reads the log store — handle it before spinning up a
     // provider/engine so it stays cheap and prints nothing about providers.
     if matches!(cli.cmd, Some(Cmd::Sessions)) {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         return print_sessions(&cwd);
     }
 
     // `inspect` re-runs prompt/registry discovery only — no provider or engine —
     // so it too is handled before startup (and stays silent about providers).
     if let Some(Cmd::Inspect { what }) = &cli.cmd {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         return match what {
             InspectCmd::Prompt { agent, parts } => inspect::inspect_prompt(&cwd, agent, *parts),
             InspectCmd::Agents { name } => inspect::inspect_agents(&cwd, name.as_deref()),
             InspectCmd::Skills { name, disclosures } => {
                 inspect::inspect_skills(&cwd, name.as_deref(), *disclosures)
             }
+            InspectCmd::Config => inspect::inspect_config(&cwd),
         };
     }
-
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     // Load the provider/model catalog once (embedded defaults + user override).
     // A malformed user file is a loud error, never a silent fallback.
@@ -446,24 +476,36 @@ async fn main() -> Result<()> {
     let http_client = HttpClient::new();
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
-    let (config, model_info, tools) =
-        build_config(&catalog, &http_client, profiles, skill_registry);
+    let (engine_config, model_info, tools) = build_config(
+        &catalog,
+        &http_client,
+        profiles,
+        skill_registry,
+        &user_config,
+    );
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.
-    if let Err(e) = config.validate() {
+    if let Err(e) = engine_config.validate() {
         eprintln!("skutter: invalid engine configuration: {e}");
         std::process::exit(2);
     }
     // The runtime keeps its own copy of the profile registry to resolve
-    // permissions (#59); the engine gets the same shape via `config`.
-    let profiles = config.profiles.clone();
-    let holly = Holly::spawn(config);
+    // permissions (#59); the engine gets the same shape via `engine_config`.
+    let profiles = engine_config.profiles.clone();
+    let holly = Holly::spawn(engine_config);
 
     // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
     // answer the engine's ToolExec round-trip, gating each call on `profiles`.
-    // The TUI also needs the registry (its entry-agent picker is registry-driven,
-    // #119), so hand the executor a clone and keep `profiles` for the head below.
-    let tool_executor = tool_runner::spawn_tool_executor(&holly, tools, profiles.clone());
+    // The user config's `permissions` section is the global ceiling clamped over
+    // every resolved grade (#172). The TUI also needs the registry (its
+    // entry-agent picker is registry-driven, #119), so hand the executor a clone
+    // and keep `profiles` for the head below.
+    let tool_executor = tool_runner::spawn_tool_executor(
+        &holly,
+        tools,
+        profiles.clone(),
+        user_config.permissions.clone(),
+    );
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
@@ -501,6 +543,8 @@ async fn main() -> Result<()> {
                     .await?;
             }
 
+            // CLI `--agent` wins; else the user config's default agent (#172).
+            let agent = agent.or_else(|| user_config.agent.clone());
             if let Some(ref a) = agent {
                 holly
                     .send(InMsg::SetAgent {
@@ -518,6 +562,8 @@ async fn main() -> Result<()> {
         }
         Some(Cmd::Tui { session, agent }) => {
             let session_id = SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0));
+            // CLI `--agent` wins; else the user config's default agent (#172).
+            let agent = agent.or_else(|| user_config.agent.clone());
             if let Some(a) = agent {
                 holly
                     .send(InMsg::SetAgent {
@@ -541,8 +587,18 @@ async fn main() -> Result<()> {
         Some(Cmd::Sessions) => unreachable!("sessions is handled before engine setup"),
         Some(Cmd::Inspect { .. }) => unreachable!("inspect is handled before engine setup"),
         None => {
+            let session_id = SessionId::new_uuid();
+            let agent = user_config.agent.clone();
+            if let Some(ref a) = agent {
+                holly
+                    .send(InMsg::SetAgent {
+                        session: session_id.clone(),
+                        agent: a.to_string(),
+                    })
+                    .await?;
+            }
             let prompt = cli.prompt.join(" ");
-            run_one(&holly, &SessionId::new_uuid(), None, &prompt, "text").await
+            run_one(&holly, &session_id, agent.as_deref(), &prompt, "text").await
         }
     };
 

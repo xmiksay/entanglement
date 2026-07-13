@@ -1,0 +1,75 @@
+//! `skutter inspect config` (#172): the layered user config resolved end-to-end
+//! through the binary — embedded default < user < repository, later wins. Guards
+//! the `main.rs` wiring the in-crate unit tests don't reach.
+
+use std::process::Command;
+
+/// Run `skutter inspect config` in `cwd` with the user config path env pointed at
+/// `user_config` (may be a non-existent path to exercise the embedded fallback).
+fn inspect_config(cwd: &std::path::Path, user_config: &std::path::Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_skutter"))
+        .args(["inspect", "config"])
+        .current_dir(cwd)
+        .env("ENTANGLEMENT_CONFIG_FILE", user_config)
+        .output()
+        .expect("failed to spawn skutter")
+}
+
+#[test]
+fn embedded_defaults_when_no_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = inspect_config(dir.path(), &dir.path().join("nope.yml"));
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("agent:    build"), "got: {stdout}");
+    assert!(stdout.contains("provider: (auto-detect)"), "got: {stdout}");
+    assert!(stdout.contains("default: Allow"), "got: {stdout}");
+}
+
+#[test]
+fn repo_layer_overrides_user_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    let user_file = root.join("user.yml");
+    std::fs::write(&user_file, "provider: anthropic\nverbose: true\n").unwrap();
+    let repo = root.join(".entanglement");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(
+        repo.join("config.yml"),
+        "provider: openai\npermissions:\n  bash: deny\n",
+    )
+    .unwrap();
+
+    let out = inspect_config(root, &user_file);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Repo wins the overlapping `provider`; the user's `verbose` survives; the
+    // embedded `agent` survives; the repo's permission rule reaches the ceiling.
+    assert!(
+        stdout.contains("provider: openai       ← project"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("verbose:  true         ← user"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("agent:    build        ← default"),
+        "got: {stdout}"
+    );
+    assert!(stdout.contains("bash: Deny"), "got: {stdout}");
+}
+
+#[test]
+fn malformed_config_exits_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.yml");
+    std::fs::write(&bad, "provider: [unterminated\n").unwrap();
+    let out = inspect_config(dir.path(), &bad);
+    // A loud error, never a panic or a silent fallback.
+    assert_ne!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("parsing user config"), "got: {stderr}");
+    assert!(!stderr.contains("panicked"), "got: {stderr}");
+}

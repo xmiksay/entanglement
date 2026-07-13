@@ -1,0 +1,36 @@
+# entanglement — user configuration (embedded defaults).
+#
+# Layered like every other definition in the codebase (ADR-0047):
+#   embedded default  <  user profile  <  repository
+# Concretely:
+#   this file  <  ${config_dir}/entanglement/config.yml  <  <root>/.entanglement/config.yml
+# (user path overridable via ENTANGLEMENT_CONFIG_FILE). Later layers win;
+# mappings merge key-wise, scalars are replaced. A malformed user/repo file is a
+# loud error, never a silent fallback.
+#
+# Every value here is a fallback: an explicit CLI flag or environment variable
+# always wins over the config file (env > config > embedded).
+
+# Default agent profile when none is passed on the CLI (`--agent`).
+agent: build
+
+# Provider selection, mirroring ENTANGLEMENT_PROVIDER
+# (zai | openai | ollama | anthropic | echo | any catalog name).
+# `null` ⇒ auto-detect by which API key is present.
+provider: null
+
+# Model id override. `null` ⇒ the selected provider's catalog default
+# (or its {NAME}_MODEL env var, which still wins).
+model: null
+
+# Log at `debug` by default, as `--verbose` does (RUST_LOG always wins).
+verbose: false
+
+# Permissions — the first section (#172). Tool name → allow | ask | deny; the
+# reserved `default` key sets the fallback for any unlisted tool. This is a
+# global ceiling combined least-privilege with each agent profile: a rule here
+# can only *tighten* what an agent allows, never loosen it. The embedded default
+# is allow-all, so an untouched config changes nothing. Argument/path patterns
+# (#173) and persisted "always allow" grants (#174) build on this section.
+permissions:
+  default: allow

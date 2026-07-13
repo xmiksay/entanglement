@@ -12,17 +12,21 @@
 //! - [`agents`] (#185): the silent layer-collision winner + full resolved profile.
 //! - [`skills`] (#186): the exact model-facing disclosures, plus a `load_skill`
 //!   path-substitution dry-run.
+//! - [`config`] (#172): the resolved user config with per-field provenance (which
+//!   of default < user < project set each setting) and the permission ceiling.
 //!
 //! Every `render_*` helper returns a `String` rather than printing directly, so
 //! the TUI in-session inspection overlay ([`tui`], #214) renders the exact same
 //! views the CLI does.
 
 mod agents;
+mod config;
 mod prompt;
 mod skills;
 mod tui;
 
 pub use agents::inspect_agents;
+pub use config::inspect_config;
 pub use prompt::inspect_prompt;
 pub use skills::inspect_skills;
 pub(crate) use tui::tui_reports;

@@ -66,7 +66,12 @@ fn spawn_calling(tool: &str, input: &str, profiles: ProfileRegistry) -> Holly {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(&holly, ToolRegistry::new(), profiles);
+    let _executor = spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     holly
 }
 

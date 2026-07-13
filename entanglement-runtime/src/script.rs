@@ -28,8 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use entanglement_core::{
-    AgentProfile, AgentState, Holly, InMsg, OutEvent, Permission, SessionId, ToolCall,
-    ToolRegistry, ToolSpec,
+    AgentProfile, AgentState, Holly, InMsg, OutEvent, Permission, PermissionProfile, SessionId,
+    ToolCall, ToolRegistry, ToolSpec,
 };
 use rhai::packages::{Package, StandardPackage};
 use rhai::{Dynamic, Engine, EvalAltResult, Position};
@@ -39,7 +39,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
 
 use crate::host::truncate_output;
-use crate::permission::{effective_permission, tool_masked};
+use crate::permission::{clamp_to_base, effective_permission, tool_masked};
 use crate::subagent::SpawnGuard;
 
 /// Tool name the model calls to run a sandboxed script.
@@ -123,18 +123,25 @@ pub struct BindingPolicy {
 }
 
 impl BindingPolicy {
-    /// Snapshot each binding's mask + effective permission for `session`.
+    /// Snapshot each binding's mask + effective permission for `session`,
+    /// clamped by the user config's global ceiling (#172) so the quintet
+    /// bindings honor the same `permissions` floor as a direct tool call.
     pub fn capture(
         active: &HashMap<SessionId, AgentProfile>,
         guard: &SpawnGuard,
         session: &SessionId,
+        base: &PermissionProfile,
     ) -> Self {
         let mut map = HashMap::new();
         for tool in BINDING_TOOLS {
             let decision = if tool_masked(active, guard, session, tool) {
                 Decision::Masked
             } else {
-                Decision::Perm(effective_permission(active, guard, session, tool))
+                Decision::Perm(clamp_to_base(
+                    effective_permission(active, guard, session, tool),
+                    base,
+                    tool,
+                ))
             };
             map.insert(tool, decision);
         }
@@ -763,7 +770,9 @@ mod tests {
         let mut active = HashMap::new();
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
-        let policy = BindingPolicy::capture(&active, &guard, &session);
+        // Allow-all base = the embedded config default: a no-op ceiling.
+        let base = PermissionProfile::new(Permission::Allow);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
 
         // `edit` is not in the allowlist → masked.
         assert!(matches!(policy.get("edit"), Decision::Masked));
@@ -776,6 +785,42 @@ mod tests {
         assert!(matches!(
             policy.get("glob"),
             Decision::Perm(Permission::Ask)
+        ));
+    }
+
+    #[test]
+    fn binding_policy_honors_config_base_ceiling() {
+        use entanglement_core::{AgentMode, PermissionProfile};
+
+        // An allow-all agent, but a config base that forces `read: ask`.
+        let profile = AgentProfile {
+            name: "build".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            permission: PermissionProfile::new(Permission::Allow),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+        };
+        let session = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(session.clone(), profile);
+        let guard = SpawnGuard::new();
+        let base = PermissionProfile::new(Permission::Allow).with("read", Permission::Ask);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+
+        // The base ceiling clamps the `read` binding to Ask despite the agent's
+        // allow-all; `write` (base-silent) stays Allow.
+        assert!(matches!(
+            policy.get("read"),
+            Decision::Perm(Permission::Ask)
+        ));
+        assert!(matches!(
+            policy.get("write"),
+            Decision::Perm(Permission::Allow)
         ));
     }
 }

@@ -81,7 +81,12 @@ fn spawn_with_edit_call() -> Holly {
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoEdit);
-    let _executor = spawn_tool_executor(&holly, reg, ProfileRegistry::new());
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        ProfileRegistry::new(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     holly
 }
 

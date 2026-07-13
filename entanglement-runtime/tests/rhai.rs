@@ -95,7 +95,12 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(&holly, host_tools(root.to_path_buf()), profiles);
+    let _executor = spawn_tool_executor(
+        &holly,
+        host_tools(root.to_path_buf()),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
     holly
 }
 

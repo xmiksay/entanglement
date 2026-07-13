@@ -56,10 +56,7 @@ fn unknown_provider_exits_cleanly() {
         .expect("failed to spawn skutter");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("unknown ENTANGLEMENT_PROVIDER"),
-        "got: {stderr}"
-    );
+    assert!(stderr.contains("unknown provider='nope'"), "got: {stderr}");
 }
 
 /// A provider defined only in the user override YAML is selectable by name — the

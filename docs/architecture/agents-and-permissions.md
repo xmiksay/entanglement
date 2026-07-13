@@ -49,6 +49,24 @@ below realize one model:
     on approve, run the tool and reply `ToolResult`; on reject, reply
     `ToolResult("…rejected…")`.
   - `Deny` → reply `ToolResult("…denied…")` without running the tool.
+- **User config file + permission ceiling (✅ #172, [ADR-0047](../adr/0047-local-trust-boundary.md)):**
+  a general user settings file, same layered loader as everything else — embedded
+  default (`entanglement-runtime/src/config/defaults.yml`) < user
+  (`${config_dir}/entanglement/config.yml`, path override `ENTANGLEMENT_CONFIG_FILE`)
+  < project (`<root>/.entanglement/config.yml`), deep-merged at the
+  `serde_yaml::Value` level (a field override keeps its siblings) with
+  `deny_unknown_fields` on the result. It carries the general settings `agent` /
+  `provider` / `model` / `verbose` (each a *fallback*: an explicit CLI flag or env
+  var still wins — env > config > embedded) and, as its first section,
+  `permissions` (tool → `allow | ask | deny`, same shape as agent frontmatter). The
+  `permissions` section is a **global ceiling**: the runtime executor clamps every
+  resolved grade least-privilege against it
+  (`runtime::permission::clamp_to_base`), so a user/repo `bash: ask` forces every
+  agent to ask but never *loosens* what an agent restricts. The embedded default is
+  allow-all, so an untouched config is a no-op. Argument/path rule keys (#173) and
+  persisted "always allow" grants (#174) build on this section. Loaded in the
+  runtime only (core has neither `dirs` nor `serde_yaml`); scaffolding a default
+  file on first run (#219) and a sibling API-key env file (#220) are separate.
 - **File-defined (✅ #112, [ADR-0034](../adr/0034-file-based-agent-definitions.md)):**
   profiles are markdown files with YAML frontmatter (the config bundle) + a body
   (the system prompt), discovered at startup by the **runtime**
