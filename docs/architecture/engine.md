@@ -2,7 +2,12 @@
 
 > Part of the [architecture overview](../architecture.md). The *why* behind each choice is in the [decision log](../adr/README.md).
 
-## 5. Per-session engine (`session.rs`)
+## 5. Per-session engine (`session/`)
+
+The turn loop lives in the `session/` split — `session/turn.rs` (the live
+reasoning turn), `session/tools.rs` (the tool-call round-trip), and
+`session/emit.rs` (outbound-event helpers), with `session/replay.rs` holding the
+pure state reconstruction.
 
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
 token estimate), an `LlmSession` handle (from `EngineConfig::llm_factory`), the
@@ -15,9 +20,14 @@ session handle that wraps the streaming backend.
 
 Turn loop: send `LlmRequest { system, model, messages, tools }` → consume the
 streamed `LlmEvent`s (emit `TextDelta` per `Text` chunk, gather `ToolCall`s,
-fold `Finish`) → for each tool call, run built-ins inline or hand host tools to
-the runtime (emit `ToolExec`, park on `ToolResult`) → loop until the model
-returns no tool calls → `Done`. Each round-trip's `Finish` is priced against
+fold `Finish`) → for each tool call, hand it to the runtime (emit `ToolExec`,
+park on `ToolResult`) → loop until the model returns no tool calls → `Done`.
+**Every** tool call takes the runtime round-trip; core holds no executable tools
+and runs nothing inline — the built-ins were removed in #231
+([ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)), and the
+former plan-authority tools (`update_plan`/`update_tasks`) are now ordinary
+permission-gated runtime state tools carried on `tool_specs`/`profile_tool_specs`
+(`session/tools.rs`). Each round-trip's `Finish` is priced against
 `EngineConfig.pricing` (effective model = `profile.model` else `default_model`),
 folded into the session's `SessionUsage`, and emitted as `OutEvent::Usage`; a
 `StopReason::MaxTokens` also emits a truncation-warning `Error` (✅ #192,
@@ -30,6 +40,23 @@ stash discipline applies inside the streaming loop and between tool calls
 (ADR-0018): mid-turn `try_recv` polls route `Stop` to interrupt and push every
 other queued command (`Prompt`, `SetAgent`, …) onto the replay stash, so a
 follow-up sent while the engine is busy is never silently dropped.
+
+**Loop bounds — `MAX_TURNS` and context-over-limit** (`session/turn.rs`). The
+inner LLM→tool loop is capped at `MAX_TURNS = 50` iterations (one iteration =
+one LLM round-trip that may fan out into tool calls), reset per prompt (#177), so
+a model wedged in a tool loop can't run forever while a legitimate long session
+(many prompts) is never capped. **Beware:** the trip path emits **only** an
+`OutEvent::Error` and returns — *not* the `Error` + `Done` + `Status` triple that
+`emit_turn_error` (`session/emit.rs`) fires on a backend error — so a one-shot
+head awaiting `Done` hangs when the turn limit trips. That missing-`Done` is a
+known robustness gap (see #177). Separately, before each iteration core checks
+`Context::within_limit()`: an over-limit context emits an `OutEvent::Error`
+(`"context over limit (<n> tokens)"`) but **proceeds with the turn anyway** —
+warn-and-continue, no truncation or eviction yet (known-wrong, see #178). The
+turn-limit trip is the only path that *ends* a turn on an `Error` with no
+`Done`; the over-limit warning and the #192 `max_tokens` truncation `Error` are
+both recoverable warnings — they emit an `Error` and then the turn runs on to its
+normal `Done`.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop and tool dispatch poll `try_recv` for
@@ -44,8 +71,8 @@ removed on global inbox close (engine shutdown).
 runtime-owned `agent_spawn { agent, prompt }` tool (renamed from `spawn_agent`,
 ✅ #120, [ADR-0033](../adr/0033-agent-tool-family-and-blocking-agent.md)). The
 runtime executor
-intercepts it (bypassing per-tool approval, like core's built-ins), mints a
-child `SessionId`, and sends `InMsg::Spawn { session: child, parent, agent,
+intercepts it before per-tool permission resolution (it starts a session rather
+than touching a host resource), mints a child `SessionId`, and sends `InMsg::Spawn { session: child, parent, agent,
 prompt }`. The **supervisor** records `parent_links[child] = parent` and starts
 the child `session_loop` under the requested profile with the prompt queued — so
 the child's `SessionStarted` carries the parent link and the tree-walk helpers
