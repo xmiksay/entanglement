@@ -1,6 +1,8 @@
 # 0004. Structured Plan & TaskList events (profiles + events, both)
 
-- Status: Accepted
+- Status: Accepted (the `TaskList` half is superseded by
+  [ADR-0039](0039-markdown-task-list.md); the `Plan` event and the
+  two-write-paths design below are unchanged)
 - Date: 2026-07-04
 
 ## Context
@@ -28,6 +30,12 @@ render/dedupe):
 - `OutEvent::Plan { session, seq, content }` — markdown strategy prose.
 - `OutEvent::TaskList { session, seq, tasks }` — statusful outline of
   `TaskItem { id, content, status }`, `status = pending | in_progress | completed | cancelled`.
+
+  > **Superseded (#142, [ADR-0039](0039-markdown-task-list.md)).** The
+  > *structured* `TaskList` described here — `Vec<TaskItem>` with `id`/`status`,
+  > written by `update_tasks` (JSON array) / `InMsg::SetTasks` — was replaced by
+  > a plain markdown snapshot (`content: String`), mirroring `Plan`. The `Plan`
+  > event and the two-write-paths design are unchanged.
 
 Each is written **two ways** (by design):
 

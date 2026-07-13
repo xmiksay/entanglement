@@ -50,7 +50,7 @@ pub enum AgentState {
     Error,
 }
 
-/// Kind of file change. `ApplyDiff` and `Plugin` are reserved for future work.
+/// Kind of file change. `ApplyDiff` is reserved for future work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileChangeKind {

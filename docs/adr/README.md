@@ -48,7 +48,7 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0001](0001-actor-model-abi.md) | Actor model is the integration ABI | Accepted |
 | [0002](0002-session-multiplexed-protocol.md) | Session-multiplexed wire protocol | Accepted |
 | [0003](0003-agent-and-permission-profiles.md) | Agent + permission profiles (opencode-style) | Accepted |
-| [0004](0004-structured-plan-and-task-events.md) | Structured Plan & TaskList events (profiles + events, both) | Accepted |
+| [0004](0004-structured-plan-and-task-events.md) | Structured Plan & TaskList events (profiles + events, both) | Accepted (`TaskList` half superseded by [0039](0039-markdown-task-list.md)) |
 | [0005](0005-ndjson-stdio-head.md) | NDJSON stdio head (`run` + `pipe`) | Accepted |
 | [0006](0006-core-dependency-hygiene-gate.md) | Layering: core / provider / runtime + core hygiene gate | Accepted (direction superseded by [0053](0053-invert-core-provider-seam.md)) |
 | [0007](0007-streaming-llm-and-provider-crate.md) | `entanglement-provider`: streaming `Llm` trait, pooling, retry, rate-limit, reasoning | Accepted (trait placement superseded by [0053](0053-invert-core-provider-seam.md)) |
@@ -70,8 +70,8 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | Accepted |
 | [0024](0024-subagent-permission-gating.md) | Sub-agent spawn permission gating and privilege ceiling | Accepted |
 | [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | Accepted (lean-transport claim amended by [0053](0053-invert-core-provider-seam.md)) |
-| [0026](0026-async-subagent-spawn-and-poll.md) | Non-blocking sub-agent spawn with handle + `agent_poll` | Proposed |
-| [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | Proposed |
+| [0026](0026-async-subagent-spawn-and-poll.md) | Non-blocking sub-agent spawn with handle + `agent_poll` | Accepted |
+| [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | Accepted |
 | [0028](0028-session-lifecycle-enumeration-and-backpressure.md) | Session lifecycle: enumeration, explicit close, non-blocking routing | Accepted |
 | [0029](0029-external-editor-and-markdown-export.md) | External `$EDITOR` compose + Markdown transcript export | Accepted |
 | [0030](0030-tui-file-mentions-and-bash-passthrough.md) | TUI `@file` mention completion + `!bash` passthrough | Accepted |

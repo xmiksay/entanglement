@@ -80,7 +80,7 @@ render/dedupe):
 - **Plan** — markdown strategy prose (`OutEvent::Plan`).
 - **TaskList** — markdown task outline, typically a `- [ ]`/`- [x]` checklist
   (`OutEvent::TaskList`). Plain `content` like the plan (✅ #142,
-  [ADR-0040](../adr/0039-markdown-task-list.md), supersedes ADR-0004's structured
+  [ADR-0039](../adr/0039-markdown-task-list.md), supersedes ADR-0004's structured
   `Vec<TaskItem>`): the outline is **user-facing progress info** — the engine
   never consumed the item structure and the list is not fed back to the model,
   so the per-item id/status JSON envelope was pure model overhead.
