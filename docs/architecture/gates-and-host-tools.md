@@ -5,11 +5,14 @@
 ## 7. Hygiene gates — [ADR-0006](../adr/0006-core-dependency-hygiene-gate.md) + [ADR-0053](../adr/0053-invert-core-provider-seam.md) (`tree`), [ADR-0025](../adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../adr/0053-invert-core-provider-seam.md) (`check-lean`)
 
 `entanglement-core` must stay free of UI/web-server deps. Enforced by
-`make tree`, which runs `cargo tree -p entanglement-core` and **fails** if any of
-`clap`/`axum`/`tonic`/`crossterm`/`ratatui` appear. Since [ADR-0053](../adr/0053-invert-core-provider-seam.md)
-inverted the seam, core depends on `entanglement-provider`, so `reqwest`/`hyper`/
-`tower` (the LLM transport) are now **legitimately** in core's transitive tree and
-are no longer forbidden. It is part of `make verify`. Current core direct deps:
+`make tree`, which runs `cargo tree -e normal -p entanglement-core` and **fails**
+if a forbidden crate appears — ADR-0053's named set
+(`clap`/`axum`/`tonic`/`crossterm`/`ratatui`) plus the web/websocket stacks a
+name blocklist must also cover (`warp`/`actix`/`rocket`/`tungstenite`/`ureq`,
+issue #207). Since [ADR-0053](../adr/0053-invert-core-provider-seam.md) inverted
+the seam, core depends on `entanglement-provider`, so `reqwest`/`hyper`/`tower`
+(the LLM transport) are now **legitimately** in core's transitive tree and are
+not forbidden. It is part of `make verify`. Current core direct deps:
 `entanglement-provider`, `tokio`, `serde`, `serde_json`, `async-trait`, `anyhow`,
 `thiserror`, `tracing`, `futures`, `uuid`. `glob`/`regex` (which back the host
 tools, §8) and `diffy` moved out with the host-tool implementations to
@@ -17,13 +20,29 @@ tools, §8) and `diffy` moved out with the host-tool implementations to
 backends live in `entanglement-provider`, the leaf crate — see ADR-0053.
 
 A second gate, **`make check-lean`** (ADR-0025, amended by ADR-0053), protects the
-runtime's lean library surface: it runs `cargo tree -p entanglement-runtime
---no-default-features -e normal` and **fails** if `clap`/`ratatui`/`crossterm`/
-`syntect`/`pulldown-cmark`/`diffy`/`tracing-subscriber` leak into the
+runtime's lean library surface: it runs `cargo tree -e normal -p
+entanglement-runtime --no-default-features` and **fails** if `clap`/`ratatui`/
+`crossterm`/`syntect`/`pulldown-cmark`/`diffy`/`tracing-subscriber` leak into the
 no-default-features build (`reqwest`/`hyper` now ride in via core → provider and
 are no longer flagged — ADR-0053), then runs lean `clippy --all-targets` (which
 type-checks the lib + the integration tests with the bin auto-skipped via
 `required-features` — the load-bearing check). It joins `tree` in `make verify`.
+
+Both gates share one mechanism, [`scripts/dep-gate.sh`](../../scripts/dep-gate.sh)
+(issue #207): the Makefile supplies the forbidden set (`CORE_FORBIDDEN` /
+`LEAN_FORBIDDEN`) and the `cargo tree` selectors; the script unifies edge policy
+(normal edges only — build/dev/proc-macro deps are excluded so they neither trip
+nor mask the gate) and **hard-fails on a `cargo tree` error or empty output**.
+That last point fixes the gates' original defect: they piped `cargo tree` through
+`2>/dev/null` and never checked its exit status, so a *failed* `cargo tree`
+grepped clean and passed **vacuously**. `make test-gates` runs
+[`scripts/dep-gate.test.sh`](../../scripts/dep-gate.test.sh), a stubbed-`cargo`
+self-test that pins the vacuous-pass fix. `cargo-deny` bans (ADR-0006's stated
+future) were considered but **not** adopted: they evaluate the whole workspace
+graph and can't scope a rule to one crate's subtree, so they cannot express
+"forbidden in core but fine in runtime" (`clap`/`crossterm`/`ratatui` live
+legitimately in the full runtime graph, and `axum` is reserved for the future
+`serve` head) — the per-crate `cargo tree -p` subgraph is exactly what they lack.
 
 **CI (issue #107).** Both gates now run in GitHub Actions
 ([`.github/workflows/`](../../.github/workflows/)), driven through the same `make`

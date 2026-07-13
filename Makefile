@@ -3,7 +3,22 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build run run-json run-tui pipe sessions inspect test test-unit test-integration lint fmt check-fmt verify clean check tree check-lean coverage
+.PHONY: help build run run-json run-tui pipe sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean coverage
+
+# Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
+# amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
+# the shared *mechanism* (unified edge policy + a hard fail on cargo error/empty
+# output, closing the vacuous-pass defect #207).
+#
+# CORE_FORBIDDEN — UI/web-server crates that must never reach entanglement-core.
+# reqwest/hyper/tower are NOT here: they now ride in legitimately via provider
+# (ADR-0053). Beyond ADR-0053's named set (clap/axum/tonic/crossterm/ratatui)
+# this also bans the web/websocket stacks the old grep let sail through
+# (warp/actix/rocket/tungstenite/ureq — the #207 blocklist-completeness gap).
+CORE_FORBIDDEN ?= clap|axum|warp|actix-web|actix|rocket|tonic|tungstenite|crossterm|ratatui|ureq
+# LEAN_FORBIDDEN — CLI/TUI crates that must stay out of the no-default-features
+# runtime library (ADR-0025's set, amended by ADR-0053).
+LEAN_FORBIDDEN ?= clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|tracing-subscriber
 
 # Minimum line-coverage % the release gate enforces. First measured baseline
 # (issue #107) was 65% workspace lines; floor set just under it to absorb CI
@@ -55,34 +70,28 @@ fmt: ## cargo fmt (write)
 check-fmt: ## cargo fmt --check (CI)
 	$(CARGO) fmt --all -- --check
 
-# Hygiene gate (ADR-0006, amended by ADR-0053): entanglement-core must pull in
-# zero UI/TUI/web-server crates. Since ADR-0053 inverted the seam, core depends
-# on entanglement-provider and so legitimately carries `reqwest`/`hyper` (the LLM
-# transport) transitively — those are no longer forbidden. UI/web-server crates
-# still are. Grep for forbidden names followed by a version tag as `cargo tree`
-# prints them.
+# Core hygiene gate (ADR-0006, amended by ADR-0053): entanglement-core must pull
+# in zero UI/web-server crates. Since ADR-0053 inverted the seam, core depends on
+# entanglement-provider and so legitimately carries `reqwest`/`hyper` (the LLM
+# transport) transitively — those are no longer forbidden. The shared
+# scripts/dep-gate.sh runs `cargo tree` and hard-fails on a cargo error or empty
+# output (no more vacuous pass, #207).
 tree: ## fail if entanglement-core pulls a forbidden UI/web-server crate
-	@out=$$($(CARGO) tree -p entanglement-core 2>/dev/null); \
-	if echo "$$out" | grep -Ei '(clap|axum|tonic|crossterm|ratatui) v[0-9]'; then \
-		echo "FAIL: forbidden UI/web-server crate leaked into entanglement-core (see ADR-0053)"; exit 1; \
-	else \
-		echo "entanglement-core deps clean: no UI/web-server crates"; \
-	fi
+	@CARGO='$(CARGO)' sh scripts/dep-gate.sh entanglement-core '$(CORE_FORBIDDEN)' -p entanglement-core
 
 # Lean gate (ADR-0025, amended by ADR-0053): entanglement-runtime with
 # --no-default-features must stay free of CLI/TUI crates so library consumers get
-# a light build. Since ADR-0053 made entanglement-core depend on
-# entanglement-provider, the lean runtime now carries `reqwest`/`hyper` (the LLM
-# transport) transitively through core — those are no longer forbidden here; the
-# CLI/TUI crates still are.
+# a light build. `reqwest`/`hyper` ride in via core → provider and are not
+# forbidden here; the CLI/TUI crates still are. Same shared mechanism as `tree`.
 check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
-	@out=$$($(CARGO) tree -p entanglement-runtime --no-default-features -e normal 2>/dev/null); \
-	if echo "$$out" | grep -Ei '(clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|tracing-subscriber) v[0-9]'; then \
-		echo "FAIL: heavy CLI/TUI crate leaked into lean entanglement-runtime (see ADR-0053)"; exit 1; \
-	else \
-		echo "lean entanglement-runtime deps clean"; \
-	fi
+	@CARGO='$(CARGO)' sh scripts/dep-gate.sh lean-runtime '$(LEAN_FORBIDDEN)' -p entanglement-runtime --no-default-features
 	$(CARGO) clippy -p entanglement-runtime --no-default-features --all-targets -- -D warnings
+
+# Self-test for the shared dep-gate mechanism (stubbed cargo; proves the #207
+# vacuous-pass fix). Fast, no build — kept out of `verify` (the real gates cover
+# CI) but available on demand.
+test-gates: ## run scripts/dep-gate.test.sh (dep-gate self-test)
+	@sh scripts/dep-gate.test.sh
 
 verify: check-fmt tree check-lean lint test ## full CI-equivalent gate locally
 
