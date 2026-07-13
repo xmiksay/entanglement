@@ -48,6 +48,8 @@ use serde_yaml::Value;
 
 use crate::agents::permission_from_value;
 
+pub mod env_file;
+
 #[cfg(test)]
 mod tests;
 
