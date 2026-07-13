@@ -103,9 +103,13 @@ re-document them here):
 - **Permission lives entirely in the runtime** (#59): `tool_runner` resolves
   `Allow`/`Ask`/`Deny` per call, emits `ToolRequest` on `Ask`, consumes
   `Approve`/`Reject` off `Holly::subscribe_inbound()`. Core never reads
-  `PermissionProfile`. A user config file (#172) adds a global permission
-  **ceiling** clamped least-privilege over every grade (`clamp_to_base`); see
-  `entanglement-runtime/src/config`.
+  `PermissionProfile`. Rule keys are name-or-`*` **or** argument-scoped
+  `tool(pattern)` (#173: command for `bash`/`call`, path for `edit`/`write`/
+  `read`), matched against the call input the runtime extracts
+  (`permission::permission_arg`) — the `PermissionProfile::resolve(name, arg)`
+  glob is the only core surface. A user config file (#172) adds a global
+  permission **ceiling** clamped least-privilege over every grade
+  (`clamp_to_base`); see `entanglement-runtime/src/config`.
 - **Session-multiplexed**: every frame carries `SessionId`; content frames carry
   monotonic `seq`. Supervisor-global vs session-scoped routing is explicit.
 - **Definitions are data, layered** embedded < user < project, later wins; the

@@ -108,14 +108,17 @@ pub enum Permission {
     Deny,
 }
 
-/// Per-tool permission rules. Evaluated against a tool name; later matching
-/// rules win (so put `"*"` first, specifics after — same semantics as opencode).
-/// Every tool — including the runtime's `update_plan`/`update_tasks` state tools
-/// (#231, ADR-0049) — resolves through this: there are no engine built-ins that
-/// bypass it.
+/// Per-tool permission rules. Evaluated against a tool name **and** an optional
+/// tool-specific argument (the command for `bash`/`call`, the target path for
+/// `edit`/`write`/`read`, #173); later matching rules win (so put `"*"` first,
+/// specifics after — same semantics as opencode). Every tool — including the
+/// runtime's `update_plan`/`update_tasks` state tools (#231, ADR-0049) —
+/// resolves through this: there are no engine built-ins that bypass it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionProfile {
-    /// `(pattern, permission)` pairs. `pattern` is either a tool name or `"*"`.
+    /// `(pattern, permission)` pairs. `pattern` is a tool name, `"*"`, or a
+    /// tool-with-argument glob `tool(pattern)` — e.g. `bash(git *)`,
+    /// `edit(src/*)` (#173). See [`PermissionProfile::resolve`].
     pub rules: Vec<(String, Permission)>,
     /// Used when no rule matches.
     pub default: Permission,
@@ -135,16 +138,95 @@ impl PermissionProfile {
         self
     }
 
-    /// Resolve the permission for a tool. Last matching rule wins.
-    pub fn for_tool(&self, name: &str) -> Permission {
+    /// Resolve the permission for a tool call, matching each rule key against
+    /// the tool `name` **and** an optional tool-specific `arg` (#173). A rule
+    /// key is one of:
+    ///
+    /// - `*` or a bare tool name — matches any call to that tool, ignoring the
+    ///   argument (the pre-#173 behaviour);
+    /// - `tool(pattern)` — matches only when `arg` is `Some` and the `*`/`?`
+    ///   glob `pattern` matches it, e.g. `bash(git *)`, `edit(src/*)`.
+    ///
+    /// Last matching rule wins, so an argument-scoped rule placed after a
+    /// coarse one refines it (`bash: ask` then `bash(git status): allow`).
+    pub fn resolve(&self, name: &str, arg: Option<&str>) -> Permission {
         let mut result = self.default;
-        for (pat, p) in &self.rules {
-            if pat == name || pat == "*" {
+        for (key, p) in &self.rules {
+            if rule_matches(key, name, arg) {
                 result = *p;
             }
         }
         result
     }
+
+    /// Name-only resolution: matches `*` and bare-name rules, treating every
+    /// argument-scoped `tool(pattern)` rule as a non-match. Equivalent to
+    /// [`resolve`][Self::resolve] with `arg = None`. Kept for callers that
+    /// render a profile's coarse per-tool posture without a concrete call in
+    /// hand (inspect views, the TUI panel).
+    pub fn for_tool(&self, name: &str) -> Permission {
+        self.resolve(name, None)
+    }
+}
+
+/// Whether a rule `key` matches a tool `name` + optional `arg` (#173). `key` is
+/// `*`, a bare tool name, or `tool(pattern)`; an argument-scoped rule matches
+/// only when `arg` is present and its `*`/`?` glob matches.
+fn rule_matches(key: &str, name: &str, arg: Option<&str>) -> bool {
+    let (tool_pat, arg_pat) = split_rule_key(key);
+    if tool_pat != "*" && tool_pat != name {
+        return false;
+    }
+    match arg_pat {
+        None => true,
+        Some(pat) => arg.is_some_and(|a| glob_match(pat, a)),
+    }
+}
+
+/// Split a rule key into its tool part and optional argument glob: `bash(git *)`
+/// ⇒ `("bash", Some("git *"))`, `bash` ⇒ `("bash", None)`. A key without a
+/// trailing `)` is treated as a plain tool name (no argument pattern).
+fn split_rule_key(key: &str) -> (&str, Option<&str>) {
+    if let Some(open) = key.find('(') {
+        if key.ends_with(')') {
+            return (&key[..open], Some(&key[open + 1..key.len() - 1]));
+        }
+    }
+    (key, None)
+}
+
+/// Minimal `*`/`?` wildcard match for argument-scoped permission rules (#173):
+/// `*` matches any run of characters (including `/` and the empty string), `?`
+/// matches exactly one, everything else is literal. Deliberately
+/// separator-agnostic and free of `**`/character-classes — so `bash(git *)` and
+/// `edit(src/*)` both read naturally and core stays dependency-free (ADR-0006).
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    // Backtrack point: the last `*` seen and the text index it was matched from.
+    let (mut star, mut resume) = (None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            resume = ti;
+            pi += 1;
+        } else if let Some(s) = star {
+            // Mismatch under a prior `*`: let it swallow one more char and retry.
+            pi = s + 1;
+            resume += 1;
+            ti = resume;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 /// Whether an agent is directly user-facing, invoked by other agents, or both.
@@ -828,6 +910,63 @@ mod tests {
     fn permission_defaults_when_no_rule() {
         let p = PermissionProfile::new(Permission::Allow);
         assert_eq!(p.for_tool("anything"), Permission::Allow);
+    }
+
+    #[test]
+    fn argument_scoped_rule_refines_the_coarse_grade() {
+        // Every bash asks, but `git *` is pre-approved and `rm *` hard-denied.
+        let p = PermissionProfile::new(Permission::Allow)
+            .with("bash", Permission::Ask)
+            .with("bash(git *)", Permission::Allow)
+            .with("bash(rm *)", Permission::Deny);
+        assert_eq!(p.resolve("bash", Some("git status")), Permission::Allow);
+        assert_eq!(p.resolve("bash", Some("rm -rf /")), Permission::Deny);
+        // A command matching neither refined rule falls back to the coarse `bash`.
+        assert_eq!(p.resolve("bash", Some("ls -la")), Permission::Ask);
+    }
+
+    #[test]
+    fn argument_scoped_rule_ignored_without_an_argument() {
+        // Name-only resolution (`for_tool`, and any tool with no arg) never sees
+        // an argument-scoped rule — it falls through to the coarse grade.
+        let p = PermissionProfile::new(Permission::Ask).with("bash(git *)", Permission::Allow);
+        assert_eq!(p.for_tool("bash"), Permission::Ask);
+        assert_eq!(p.resolve("bash", None), Permission::Ask);
+        assert_eq!(p.resolve("bash", Some("git status")), Permission::Allow);
+    }
+
+    #[test]
+    fn path_scoped_rule_matches_the_edit_target() {
+        // Edits under `src/` are allowed; everything else asks.
+        let p = PermissionProfile::new(Permission::Ask).with("edit(src/*)", Permission::Allow);
+        assert_eq!(p.resolve("edit", Some("src/main.rs")), Permission::Allow);
+        assert_eq!(p.resolve("edit", Some("src/a/b.rs")), Permission::Allow);
+        assert_eq!(p.resolve("edit", Some("Cargo.toml")), Permission::Ask);
+    }
+
+    #[test]
+    fn wildcard_star_matches_across_separators_and_question_matches_one() {
+        assert!(glob_match("git *", "git status"));
+        // The space before `*` is literal, so a bare `git` (no subcommand) misses.
+        assert!(!glob_match("git *", "git"));
+        assert!(glob_match("git*", "git")); // trailing `*` may match empty
+        assert!(glob_match("src/*", "src/a/b/c.rs"));
+        assert!(glob_match("a?c", "abc"));
+        assert!(!glob_match("a?c", "ac"));
+        assert!(!glob_match("git *", "cargo build"));
+        assert!(glob_match("*", "anything at all"));
+        assert!(glob_match("exact", "exact"));
+        assert!(!glob_match("exact", "exacts"));
+    }
+
+    #[test]
+    fn split_rule_key_parses_tool_and_pattern() {
+        assert_eq!(split_rule_key("bash"), ("bash", None));
+        assert_eq!(split_rule_key("*"), ("*", None));
+        assert_eq!(split_rule_key("bash(git *)"), ("bash", Some("git *")));
+        assert_eq!(split_rule_key("edit(src/*)"), ("edit", Some("src/*")));
+        // A malformed key with no closing paren stays a plain name.
+        assert_eq!(split_rule_key("bash(oops"), ("bash(oops", None));
     }
 
     fn masked_profile(tools: Option<Vec<&str>>, disallowed: Vec<&str>) -> AgentProfile {

@@ -268,6 +268,142 @@ async fn ask_emits_request_then_runs_on_approve() {
     assert!(events.iter().any(|e| matches!(e, OutEvent::Done { .. })));
 }
 
+/// A profile that grades `bash` by its command (#173): `git *` runs outright,
+/// `rm *` is denied, anything else asks.
+fn scoped_bash_registry() -> ProfileRegistry {
+    let mut profiles = ProfileRegistry::new();
+    profiles.insert(AgentProfile {
+        name: "scopedbash".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Ask)
+            .with("bash(git *)", Permission::Allow)
+            .with("bash(rm *)", Permission::Deny),
+        tools: None,
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+    });
+    profiles
+}
+
+#[tokio::test]
+async fn argument_scoped_allow_runs_matching_command_without_approval() {
+    // `git status` matches `bash(git *): allow` → runs directly, no ToolRequest.
+    let holly = spawn_with_bash_call_using(
+        &serde_json::json!({ "command": "git status" }).to_string(),
+        scoped_bash_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedbash".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "go".into(),
+        })
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "an argument-scoped Allow must not ask for approval; got {events:?}"
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("git status"))
+        ),
+        "the matching command should run; got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn argument_scoped_deny_blocks_matching_command() {
+    // `rm -rf /` matches `bash(rm *): deny` → refused, never runs.
+    let holly = spawn_with_bash_call_using(
+        &serde_json::json!({ "command": "rm -rf /" }).to_string(),
+        scoped_bash_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedbash".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "rm".into(),
+        })
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("denied"))),
+        "the matching command should be denied; got {events:?}"
+    );
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
+        ),
+        "a denied command must not run"
+    );
+}
+
+#[tokio::test]
+async fn argument_scoped_falls_through_to_coarse_ask() {
+    // `ls` matches neither refined rule → the coarse `bash: ask` grade applies.
+    let holly = spawn_with_bash_call_using(
+        &serde_json::json!({ "command": "ls -la" }).to_string(),
+        scoped_bash_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedbash".into(),
+        })
+        .await
+        .unwrap();
+    let mut watch = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "list".into(),
+        })
+        .await
+        .unwrap();
+
+    let mut got_request = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            got_request = true;
+            break;
+        }
+    }
+    assert!(
+        got_request,
+        "a command matching no refined rule should fall through to the coarse Ask"
+    );
+}
+
 #[tokio::test]
 async fn ask_rejected_reports_rejection() {
     // askbash profile: bash → Ask. Reject the request; the tool never runs.

@@ -42,8 +42,17 @@ below realize one model:
   follow-ups (skill provenance, skill-index masking, child-root isolation).
 
 - Switch with `InMsg::SetAgent { agent }`; engine emits `AgentChanged`.
-- [`PermissionProfile`][perm] resolves `Allow | Ask | Deny` per tool
-  (last-matching-rule-wins, `*` wildcard), **in the runtime tool executor** (✅ #59):
+- [`PermissionProfile`][perm] resolves `Allow | Ask | Deny` per tool call
+  (last-matching-rule-wins, `*` wildcard), **in the runtime tool executor** (✅ #59).
+  A rule key is a bare tool name, `*`, or an **argument-scoped** `tool(pattern)`
+  (✅ #173, [ADR-0051](../adr/0051-argument-scoped-permission-rules.md)): the
+  `*`/`?` glob `pattern` matches a tool-specific argument — the
+  command for `bash`/`call`, the target path for `edit`/`write`/`read` — so
+  `bash(git *): allow`, `bash(rm *): deny`, `edit(src/*): allow` all refine a
+  coarse `bash: ask`. The runtime extracts the argument from the call input
+  (`runtime::permission::permission_arg`) where the JSON is already in hand;
+  argument-less rules and name-only callers (inspect/TUI posture panels) resolve
+  exactly as before. The graded decision drives:
   - `Allow` → run the tool, reply `ToolResult` → core emits `ToolOutput`.
   - `Ask` → emit `ToolRequest`, park at `WaitingApproval` until `Approve`/`Reject`;
     on approve, run the tool and reply `ToolResult`; on reject, reply
@@ -63,8 +72,9 @@ below realize one model:
   resolved grade least-privilege against it
   (`runtime::permission::clamp_to_base`), so a user/repo `bash: ask` forces every
   agent to ask but never *loosens* what an agent restricts. The embedded default is
-  allow-all, so an untouched config is a no-op. Argument/path rule keys (#173) and
-  persisted "always allow" grants (#174) build on this section. Loaded in the
+  allow-all, so an untouched config is a no-op. The ceiling honors argument-scoped
+  rule keys too (✅ #173) — `bash(rm *): deny` in the config clamps that command for
+  every agent — and persisted "always allow" grants (#174) build on this section. Loaded in the
   runtime only (core has neither `dirs` nor `serde_yaml`); scaffolding a default
   file on first run (#219) and a sibling API-key env file (#220) are separate.
 - **File-defined (✅ #112, [ADR-0034](../adr/0034-file-based-agent-definitions.md)):**

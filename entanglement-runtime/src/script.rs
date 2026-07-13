@@ -39,7 +39,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
 
 use crate::host::truncate_output;
-use crate::permission::{clamp_to_base, effective_permission, tool_masked};
+use crate::permission::{min_permission, permission_arg, permission_chain, tool_masked};
 use crate::subagent::SpawnGuard;
 
 /// Tool name the model calls to run a sandboxed script.
@@ -114,42 +114,50 @@ enum Decision {
     Perm(Permission),
 }
 
-/// The per-run binding policy: for each host function, whether it is masked and,
-/// if not, its effective permission clamped down the ancestor chain (#77). Built
-/// once in the executor loop where the profile state lives, then moved into the
-/// script task so the read stays ordered with lifecycle events.
+/// The per-run binding policy: which host functions are masked out (#116), plus
+/// the least-privilege permission chain — the session's own profile, each
+/// ancestor (#77), then the config ceiling (#172) — resolved *per call* so an
+/// argument-scoped rule (#173) sees the binding's actual input. Built once in the
+/// executor loop where the profile state lives, then moved into the script task
+/// so the read stays ordered with lifecycle events. The mask is argument-
+/// independent so it stays a precomputed set; only the grade is resolved live.
 pub struct BindingPolicy {
-    map: HashMap<&'static str, Decision>,
+    masked: HashSet<&'static str>,
+    /// Profiles folded least-privilege for each call: `[own, ancestors…, base]`.
+    chain: Vec<PermissionProfile>,
 }
 
 impl BindingPolicy {
-    /// Snapshot each binding's mask + effective permission for `session`,
-    /// clamped by the user config's global ceiling (#172) so the quintet
-    /// bindings honor the same `permissions` floor as a direct tool call.
+    /// Snapshot each binding's mask and the effective permission chain for
+    /// `session`, appending the user config's global ceiling (#172) so the
+    /// quintet bindings honor the same `permissions` floor — including its
+    /// argument-scoped rules (#173) — as a direct tool call.
     pub fn capture(
         active: &HashMap<SessionId, AgentProfile>,
         guard: &SpawnGuard,
         session: &SessionId,
         base: &PermissionProfile,
     ) -> Self {
-        let mut map = HashMap::new();
-        for tool in BINDING_TOOLS {
-            let decision = if tool_masked(active, guard, session, tool) {
-                Decision::Masked
-            } else {
-                Decision::Perm(clamp_to_base(
-                    effective_permission(active, guard, session, tool),
-                    base,
-                    tool,
-                ))
-            };
-            map.insert(tool, decision);
-        }
-        BindingPolicy { map }
+        let masked = BINDING_TOOLS
+            .into_iter()
+            .filter(|tool| tool_masked(active, guard, session, tool))
+            .collect();
+        let mut chain = permission_chain(active, guard, session);
+        chain.push(base.clone());
+        BindingPolicy { masked, chain }
     }
 
-    fn get(&self, tool: &str) -> Decision {
-        self.map.get(tool).copied().unwrap_or(Decision::Masked)
+    /// Resolve one binding call: masked tools do not exist; otherwise the grade
+    /// is the least-privileged across the whole chain for this tool + argument.
+    fn decide(&self, tool: &'static str, input: &str) -> Decision {
+        if self.masked.contains(tool) {
+            return Decision::Masked;
+        }
+        let arg = permission_arg(tool, input);
+        let perm = self.chain.iter().fold(Permission::Allow, |acc, p| {
+            min_permission(acc, p.resolve(tool, arg.as_deref()))
+        });
+        Decision::Perm(perm)
     }
 }
 
@@ -330,7 +338,7 @@ async fn service_binding(
     approved: &mut HashSet<&'static str>,
     call: &BindingCall,
 ) -> (Result<String, String>, bool) {
-    match policy.get(call.tool) {
+    match policy.decide(call.tool, &call.input) {
         Decision::Masked => (
             Err(format!(
                 "tool `{}` is not available to this agent (restricted by profile)",
@@ -775,15 +783,15 @@ mod tests {
         let policy = BindingPolicy::capture(&active, &guard, &session, &base);
 
         // `edit` is not in the allowlist → masked.
-        assert!(matches!(policy.get("edit"), Decision::Masked));
+        assert!(matches!(policy.decide("edit", "{}"), Decision::Masked));
         // `read` survives the mask and is Allow.
         assert!(matches!(
-            policy.get("read"),
+            policy.decide("read", "{}"),
             Decision::Perm(Permission::Allow)
         ));
         // `glob` survives the mask but only its default Ask grade.
         assert!(matches!(
-            policy.get("glob"),
+            policy.decide("glob", "{}"),
             Decision::Perm(Permission::Ask)
         ));
     }
@@ -815,12 +823,48 @@ mod tests {
         // The base ceiling clamps the `read` binding to Ask despite the agent's
         // allow-all; `write` (base-silent) stays Allow.
         assert!(matches!(
-            policy.get("read"),
+            policy.decide("read", "{}"),
             Decision::Perm(Permission::Ask)
         ));
         assert!(matches!(
-            policy.get("write"),
+            policy.decide("write", "{}"),
             Decision::Perm(Permission::Allow)
+        ));
+    }
+
+    #[test]
+    fn binding_policy_resolves_argument_scoped_rules_per_call() {
+        use entanglement_core::{AgentMode, PermissionProfile};
+
+        // Edits ask by default, but edits under `src/` are pre-approved (#173).
+        let profile = AgentProfile {
+            name: "build".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            permission: PermissionProfile::new(Permission::Ask)
+                .with("edit(src/*)", Permission::Allow),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+        };
+        let session = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(session.clone(), profile);
+        let guard = SpawnGuard::new();
+        let base = PermissionProfile::new(Permission::Allow);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+
+        // Same tool, two inputs, two grades — resolved live against the path.
+        assert!(matches!(
+            policy.decide("edit", r#"{"path":"src/main.rs"}"#),
+            Decision::Perm(Permission::Allow)
+        ));
+        assert!(matches!(
+            policy.decide("edit", r#"{"path":"Cargo.toml"}"#),
+            Decision::Perm(Permission::Ask)
         ));
     }
 }
