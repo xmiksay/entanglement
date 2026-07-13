@@ -1,12 +1,16 @@
-//! LLM backend abstraction. The engine talks to an [`Llm`] through a
-//! streaming [`LlmRequest`] → [`LlmEvent`] contract: the backend emits
-//! incremental text chunks, assembled tool calls, and a terminal `Finish`.
+//! LLM backend abstraction — the seam every consumer talks to. A backend
+//! streams a conversation turn through an [`LlmRequest`] → [`LlmEvent`]
+//! contract: incremental text chunks, assembled tool calls, and a terminal
+//! `Finish`.
 //!
-//! Streaming mirrors opencode (which drives the Vercel AI SDK's `doStream`),
-//! keeping live token-by-token UI feedback as a first-class concern. Concrete
-//! backends live out-of-tree so [`DummyLlm`] is the only in-core implementation;
-//! the real Anthropic SSE client lives in the `entanglement-provider` crate (it pulls in
-//! `reqwest`, which core must never depend on — see ADR-0006 / ADR-0007).
+//! This trait + its DTOs live in `entanglement-provider` (the leaf crate) so a
+//! consumer can issue raw LLM queries against the concrete backends
+//! ([`crate::AnthropicLlm`], [`crate::OpenAiLlm`]) without depending on the
+//! `entanglement-core` engine. `entanglement-core` depends on this crate and
+//! drives `dyn Llm` from its turn loop (see ADR-0053, superseding the original
+//! trait-in-core split of ADR-0006 / ADR-0007). Streaming mirrors opencode
+//! (which drives the Vercel AI SDK's `doStream`), keeping live token-by-token
+//! UI feedback a first-class concern.
 
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
@@ -107,9 +111,9 @@ pub type LlmFactory = std::sync::Arc<dyn Fn() -> LlmSession + Send + Sync>;
 
 /// Provider-owned "live session/connection handle" — the object a session holds
 /// for its LLM backend, distinct from `Context` (the conversation history), which
-/// stays in core. It is a newtype around `Box<dyn Llm>`; the boxed backend
-/// carries the provider layer's pool/retry/rate-limit context, which since #217
-/// is **keyed per endpoint** (RPM budget + `Retry-After` window) rather than a
+/// lives in `entanglement-core`. It is a newtype around `Box<dyn Llm>`; the boxed
+/// backend carries the provider layer's pool/retry/rate-limit context, which since
+/// #217 is **keyed per endpoint** (RPM budget + `Retry-After` window) rather than a
 /// single global throttle — so the connection state this handle references is
 /// isolated per API endpoint.
 pub struct LlmSession {

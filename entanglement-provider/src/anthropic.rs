@@ -1,5 +1,5 @@
 //! Anthropic Messages API streaming client — hand-rolled over `reqwest`, no
-//! Anthropic SDK crate. Implements [`entanglement_core::Llm`] by POSTing to
+//! Anthropic SDK crate. Implements [`crate::Llm`] by POSTing to
 //! `/v1/messages` with `stream: true` and parsing the Server-Sent-Events stream
 //! into [`LlmEvent`]s (incremental text, assembled tool calls, terminal usage).
 //!
@@ -14,15 +14,14 @@
 //! - `message_stop`             → `Finish`
 //! - `error`                    → mid-stream failure
 //!
-//! See ADR-0007 for why this lives outside `entanglement-core` (reqwest is a transport
-//! dep; core stays pure).
+//! The `Llm` trait + its DTOs live in this crate (the leaf); `entanglement-core`
+//! depends on it and drives `dyn Llm` from the engine loop (ADR-0053, which
+//! inverted the original trait-in-core seam of ADR-0006 / ADR-0007).
 
 use crate::client::HttpClient;
+use crate::{Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, Message, MessageRole, ToolSpec};
 use async_stream::try_stream;
 use async_trait::async_trait;
-use entanglement_core::{
-    Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, Message, MessageRole, ToolSpec,
-};
 use futures::StreamExt;
 use serde_json::{json, Value};
 
@@ -70,7 +69,7 @@ pub fn anthropic_factory(
     api_key: impl Into<String>,
     default_model: impl Into<String>,
     http: HttpClient,
-) -> entanglement_core::LlmFactory {
+) -> crate::LlmFactory {
     let llm = AnthropicLlm::new(api_key, default_model, http);
     std::sync::Arc::new(move || LlmSession::new(Box::new(llm.clone())))
 }
@@ -366,7 +365,7 @@ fn handle_frame(
                 } else {
                     tool.input_buf
                 };
-                out.push(LlmEvent::ToolCall(entanglement_core::ToolCall {
+                out.push(LlmEvent::ToolCall(crate::ToolCall {
                     id: tool.id,
                     name: tool.name,
                     input,
@@ -510,7 +509,7 @@ mod tests {
             handle_frame("content_block_stop", None, &mut tool, &mut None, &mut None).unwrap();
         assert_eq!(
             evs,
-            vec![LlmEvent::ToolCall(entanglement_core::ToolCall {
+            vec![LlmEvent::ToolCall(crate::ToolCall {
                 id: "t1".into(),
                 name: "greet".into(),
                 input: r#"{"nm":"sam"}"#.into(),

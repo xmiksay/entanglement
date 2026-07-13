@@ -2,22 +2,26 @@
 
 > Part of the [architecture overview](../architecture.md). The *why* behind each choice is in the [decision log](../adr/README.md).
 
-## 7. Hygiene gates — [ADR-0006](../adr/0006-core-dependency-hygiene-gate.md) (`tree`), [ADR-0025](../adr/0025-runtime-cargo-feature-gates.md) (`check-lean`)
+## 7. Hygiene gates — [ADR-0006](../adr/0006-core-dependency-hygiene-gate.md) + [ADR-0053](../adr/0053-invert-core-provider-seam.md) (`tree`), [ADR-0025](../adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../adr/0053-invert-core-provider-seam.md) (`check-lean`)
 
-`entanglement-core` must stay free of UI/transport deps. Enforced by
+`entanglement-core` must stay free of UI/web-server deps. Enforced by
 `make tree`, which runs `cargo tree -p entanglement-core` and **fails** if any of
-`clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` appear. It
-is part of `make verify`. Current core deps: `tokio`, `serde`, `serde_json`,
-`async-trait`, `anyhow`, `thiserror`, `tracing`, `futures`, `uuid`. `glob`/`regex`
-(which back the host tools, §8) and `diffy` moved out with the host-tool
-implementations to `entanglement-runtime` (✅ #57); the `reqwest` both LLM
-backends use lives in `entanglement-provider`, not core — see ADR-0007.
+`clap`/`axum`/`tonic`/`crossterm`/`ratatui` appear. Since [ADR-0053](../adr/0053-invert-core-provider-seam.md)
+inverted the seam, core depends on `entanglement-provider`, so `reqwest`/`hyper`/
+`tower` (the LLM transport) are now **legitimately** in core's transitive tree and
+are no longer forbidden. It is part of `make verify`. Current core direct deps:
+`entanglement-provider`, `tokio`, `serde`, `serde_json`, `async-trait`, `anyhow`,
+`thiserror`, `tracing`, `futures`, `uuid`. `glob`/`regex` (which back the host
+tools, §8) and `diffy` moved out with the host-tool implementations to
+`entanglement-runtime` (✅ #57); the `Llm` trait + DTOs + the `reqwest` LLM
+backends live in `entanglement-provider`, the leaf crate — see ADR-0053.
 
-A second gate, **`make check-lean`** (ADR-0025), protects the runtime's lean
-library surface: it runs `cargo tree -p entanglement-runtime
+A second gate, **`make check-lean`** (ADR-0025, amended by ADR-0053), protects the
+runtime's lean library surface: it runs `cargo tree -p entanglement-runtime
 --no-default-features -e normal` and **fails** if `clap`/`ratatui`/`crossterm`/
-`syntect`/`pulldown-cmark`/`diffy`/`reqwest`/`hyper`/`tracing-subscriber` leak
-into the no-default-features build, then runs lean `clippy --all-targets` (which
+`syntect`/`pulldown-cmark`/`diffy`/`tracing-subscriber` leak into the
+no-default-features build (`reqwest`/`hyper` now ride in via core → provider and
+are no longer flagged — ADR-0053), then runs lean `clippy --all-targets` (which
 type-checks the lib + the integration tests with the bin auto-skipped via
 `required-features` — the load-bearing check). It joins `tree` in `make verify`.
 

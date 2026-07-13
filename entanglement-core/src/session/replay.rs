@@ -7,9 +7,9 @@ use std::path::Path;
 use anyhow::Result;
 
 use super::Session;
-use crate::llm::ToolCall;
 use crate::protocol::{InMsg, OutEvent};
 use crate::EngineConfig;
+use entanglement_provider::ToolCall;
 
 impl Session {
     /// Resume a session from replayed log records.

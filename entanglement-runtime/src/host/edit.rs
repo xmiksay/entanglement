@@ -152,7 +152,7 @@ impl Tool for EditTool {
             format!(
                 "{}{}{}",
                 &content[..idx],
-                &parsed.new_string,
+                parsed.new_string,
                 &content[idx + parsed.old_string.len()..]
             )
         };

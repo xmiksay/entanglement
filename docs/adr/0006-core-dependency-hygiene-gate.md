@@ -1,7 +1,14 @@
 # 0006. Layering: core / provider / runtime, and the core hygiene gate
 
-- Status: Accepted
+- Status: Accepted — dependency direction superseded by [0053](0053-invert-core-provider-seam.md)
 - Date: 2026-07-07
+
+> **Amended by [ADR-0053](0053-invert-core-provider-seam.md) (2026-07-13).** The
+> seam was inverted to `provider ← core ← runtime`: `entanglement-core` now
+> depends on `entanglement-provider`, so `reqwest`/`hyper`/`tower` are
+> legitimately in core's transitive tree and the `make tree` gate now forbids
+> only UI/web-server crates. The layering rationale below still holds; only the
+> dependency direction and the transport-free-core rule changed.
 
 ## Context
 

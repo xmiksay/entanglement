@@ -6,8 +6,8 @@
 //! Covers the full path the unit tests in `src/openai.rs` can't: HTTP POST →
 //! SSE frame parse → [`LlmEvent`] assembly, over the real `reqwest` transport.
 
-use entanglement_core::{Llm, LlmEvent, LlmRequest, Message};
 use entanglement_provider::{HttpClient, OpenAiLlm, RetryConfig};
+use entanglement_provider::{Llm, LlmEvent, LlmRequest, Message};
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

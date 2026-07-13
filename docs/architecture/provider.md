@@ -2,11 +2,19 @@
 
 > Part of the [architecture overview](../architecture.md). The *why* behind each choice is in the [decision log](../adr/README.md).
 
-## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)
+## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md), [ADR-0053](../adr/0053-invert-core-provider-seam.md)
 
-The `Llm` **trait** lives in `entanglement-core` (the seam); all LLM I/O lives in
-**`entanglement-provider`**, a separate crate that *may* depend on transport
-crates (`reqwest`) — `entanglement-core` may not.
+The `Llm` **trait** — together with its DTOs (`LlmRequest`/`LlmResponse`/
+`LlmEvent`/`LlmStream`, `LlmSession`, `LlmFactory`, `ToolCall`, `ToolSpec`,
+`stream_from_response`), the stub backends (`DummyLlm`/`EchoLlm`, in
+`src/llm.rs`), and the wire message types (`Message`/`MessageRole`, in
+`src/message.rs`) — lives **in `entanglement-provider`**. Since
+[ADR-0053](../adr/0053-invert-core-provider-seam.md) inverted the seam, the
+provider is a **leaf crate** (no `entanglement-*` deps) that owns this LLM ABI;
+`entanglement-core` *depends on* provider, consumes the `Llm` trait from its turn
+loop, and re-exports these types for its heads. The provider *may* depend on
+transport crates (`reqwest`) and is usable **standalone** for raw LLM queries
+with no engine.
 
 ```rust
 enum LlmEvent {

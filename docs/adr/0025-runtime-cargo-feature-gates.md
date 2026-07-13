@@ -1,7 +1,14 @@
 # 0025. `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding
 
-- Status: Accepted
+- Status: Accepted — lean-transport claim amended by [0053](0053-invert-core-provider-seam.md)
 - Date: 2026-07-09
+
+> **Amended by [ADR-0053](0053-invert-core-provider-seam.md) (2026-07-13).** Since
+> `entanglement-core` now depends on `entanglement-provider`, the lean
+> (`--no-default-features`) runtime carries `reqwest` transitively through core.
+> The feature-gate mechanism below stands; only the "lean runtime is
+> transport-free" property changed — `make check-lean` now asserts CLI/TUI-free,
+> not transport-free.
 
 ## Context
 

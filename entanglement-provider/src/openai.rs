@@ -5,7 +5,7 @@
 //! between them are config: base URL, whether a key is required, and the model
 //! name — all injected by the host.
 //!
-//! Implements [`entanglement_core::Llm`] by POSTing to `/chat/completions` with
+//! Implements [`crate::Llm`] by POSTing to `/chat/completions` with
 //! `stream: true` and parsing the Server-Sent-Events stream into [`LlmEvent`]s
 //! (incremental text, assembled tool calls, usage).
 //!
@@ -32,11 +32,11 @@
 use std::collections::BTreeMap;
 
 use crate::client::HttpClient;
-use async_stream::try_stream;
-use async_trait::async_trait;
-use entanglement_core::{
+use crate::{
     Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, Message, MessageRole, ToolCall, ToolSpec,
 };
+use async_stream::try_stream;
+use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
@@ -86,7 +86,7 @@ pub fn openai_factory(
     api_key: Option<String>,
     default_model: impl Into<String>,
     http: HttpClient,
-) -> entanglement_core::LlmFactory {
+) -> crate::LlmFactory {
     let llm = OpenAiLlm::new(base_url, api_key, default_model, http);
     std::sync::Arc::new(move || LlmSession::new(Box::new(llm.clone())))
 }

@@ -50,8 +50,8 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0003](0003-agent-and-permission-profiles.md) | Agent + permission profiles (opencode-style) | Accepted |
 | [0004](0004-structured-plan-and-task-events.md) | Structured Plan & TaskList events (profiles + events, both) | Accepted |
 | [0005](0005-ndjson-stdio-head.md) | NDJSON stdio head (`run` + `pipe`) | Accepted |
-| [0006](0006-core-dependency-hygiene-gate.md) | Layering: core / provider / runtime + core hygiene gate | Accepted |
-| [0007](0007-streaming-llm-and-provider-crate.md) | `entanglement-provider`: streaming `Llm` trait, pooling, retry, rate-limit, reasoning | Accepted |
+| [0006](0006-core-dependency-hygiene-gate.md) | Layering: core / provider / runtime + core hygiene gate | Accepted (direction superseded by [0053](0053-invert-core-provider-seam.md)) |
+| [0007](0007-streaming-llm-and-provider-crate.md) | `entanglement-provider`: streaming `Llm` trait, pooling, retry, rate-limit, reasoning | Accepted (trait placement superseded by [0053](0053-invert-core-provider-seam.md)) |
 | [0008](0008-host-tools-workdir-and-bounded-output.md) | Host tools: working-directory root + bounded output | Accepted |
 | [0009](0009-edit-and-bash-host-tools.md) | Host tools: `edit` (search/replace) and `bash` (subprocess + timeout) | Accepted |
 | [0010](0010-single-head-crate-and-bash-opt-in.md) | `entanglement-runtime`: the head crate — tools, execution, permissions, sessions | Accepted |
@@ -69,7 +69,7 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0022](0022-subagent-spawn.md) | Sub-agent spawn and parent→child answer relay | Accepted |
 | [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | Accepted |
 | [0024](0024-subagent-permission-gating.md) | Sub-agent spawn permission gating and privilege ceiling | Accepted |
-| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | Accepted |
+| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | Accepted (lean-transport claim amended by [0053](0053-invert-core-provider-seam.md)) |
 | [0026](0026-async-subagent-spawn-and-poll.md) | Non-blocking sub-agent spawn with handle + `agent_poll` | Proposed |
 | [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | Proposed |
 | [0028](0028-session-lifecycle-enumeration-and-backpressure.md) | Session lifecycle: enumeration, explicit close, non-blocking routing | Accepted |
@@ -97,3 +97,4 @@ an accepted ADR in place — supersede it with a new one that links back.
 | [0050](0050-per-endpoint-connection-pool-retry-rate-limit.md) | Provider resilience keyed **per `(endpoint, api-key)`**: RPM budget + `Retry-After` window per base URL + key hash (isolates throttling; multiple keys each get their own limit); retry classifies the response status inside the loop (fixes dead-code #193); `LlmSession` references per-endpoint state (#195) | Accepted |
 | [0051](0051-argument-scoped-permission-rules.md) | Argument-scoped permission rule keys `tool(pattern)`: `PermissionProfile::resolve(name, arg)` + dependency-free `*`/`?` glob in core; runtime extracts the argument (command for `bash`/`call`, path for `edit`/`write`/`read`) and threads it through the ancestor clamp, config ceiling, and rhai bindings (#173) | Accepted |
 | [0052](0052-approval-scope-and-persisted-grants.md) | Approval scope `Once \| Session \| Always` on `InMsg::Approve` (default `Once`, wire-additive) + a runtime `GrantStore` that upgrades a resolved `Ask` → `Allow` for an exact `(tool, arg)` already granted (never overrides `Deny`, not sub-agent-inherited); `Always` persists to a managed `grants.yml` sibling of `config.yml`, not its ceiling `permissions` section (#174) | Accepted |
+| [0053](0053-invert-core-provider-seam.md) | Invert the core↔provider seam: `entanglement-provider` becomes a leaf owning the `Llm` trait + DTOs + `Message` (usable standalone for raw LLM); `entanglement-core` depends on provider and is no longer transport-free; `make tree`/`make check-lean` gates narrowed to UI/web-server + CLI/TUI (supersedes direction of 0006/0007, amends 0025) | Accepted |

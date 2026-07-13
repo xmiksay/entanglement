@@ -29,11 +29,18 @@ impl ModelInfo {
 pub mod anthropic;
 pub mod catalog;
 pub mod client;
+pub mod llm;
+pub mod message;
 pub mod openai;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm};
 pub use catalog::{Catalog, ModelEntry, ModelPricing, ProviderEntry, Wire};
 pub use client::{HttpClient, RetryConfig};
+pub use llm::{
+    stream_from_response, DummyLlm, EchoLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse,
+    LlmSession, LlmStream, ToolCall, ToolSpec,
+};
+pub use message::{Message, MessageRole};
 pub use openai::{
     openai_factory, OpenAiLlm, OLLAMA_BASE, OPENAI_BASE, ZAI_CODING_PLAN_BASE, ZAI_GENERAL_BASE,
 };

@@ -12,6 +12,7 @@ name = "entanglement_core"
 path = "src/lib.rs"
 
 [dependencies]
+entanglement-provider = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -21,7 +22,6 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
-sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
