@@ -7,13 +7,14 @@
 //! while the engine was mid-turn vanished without trace, and the user's
 //! follow-up question was lost.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, SessionId, ToolRegistry,
+    LlmStream, OutEvent, SessionId, ToolCall, ToolRegistry,
 };
 
 mod common;
@@ -131,6 +132,86 @@ async fn prompt_arriving_during_streaming_is_stashed_and_replayed() {
     assert!(
         texts.iter().any(|t| t == "second-reply"),
         "stashed Prompt must be replayed after the first turn ends; got {texts:?}"
+    );
+}
+
+/// `Llm` that always emits a tool call, driving the inner LLM→tool loop
+/// forever. Counts how many times it was streamed so a test can assert the
+/// loop was actually bounded (not merely slow). #177.
+struct LoopingLlm {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Llm for LoopingLlm {
+    async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(stream_from_response(LlmResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "loop".into(),
+                name: "unknown-tool".into(),
+                input: "{}".into(),
+            }],
+        }))
+    }
+}
+
+/// Regression (#177): a model wedged in a tool loop — every reply is another
+/// tool call — must be bounded by `MAX_TURNS` within a single prompt. Before
+/// the fix the counter bounded *prompts*, not the inner loop, so this ran
+/// forever. We assert the engine emits the "maximum turn limit" Error and that
+/// the LLM was streamed a bounded number of times.
+#[tokio::test]
+async fn runaway_tool_loop_is_bounded_within_a_single_prompt() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_factory = calls.clone();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(LoopingLlm {
+                calls: calls_for_factory.clone(),
+            }))
+        }),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(&holly, ToolRegistry::new());
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "spin".into(),
+        })
+        .await
+        .unwrap();
+
+    // The loop must terminate on its own with the turn-limit Error.
+    let mut saw_limit = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
+        if let OutEvent::Error {
+            session, message, ..
+        } = ev
+        {
+            if session == sid && message.contains("maximum turn limit") {
+                saw_limit = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        saw_limit,
+        "a runaway tool loop must hit the turn-limit Error instead of spinning forever"
+    );
+    // 50 iterations run; the 51st trips the cap before streaming. The exact
+    // bound isn't the contract, only that it *is* bounded well under any real
+    // conversation length.
+    assert!(
+        calls.load(Ordering::SeqCst) <= 51,
+        "inner loop should stop near MAX_TURNS, streamed {} times",
+        calls.load(Ordering::SeqCst)
     );
 }
 
