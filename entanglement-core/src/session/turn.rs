@@ -142,30 +142,49 @@ pub(crate) async fn run_turn(
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut stream_err: Option<String> = None;
         let mut finish: Option<(Option<StopReason>, entanglement_provider::Usage)> = None;
-        while let Some(ev) = stream.next().await {
-            // Drain any commands queued mid-stream: Stop interrupts the turn,
-            // everything else is stashed for replay after this turn ends
-            // (ADR-0018 — previously non-Stop commands were silently dropped).
-            while let Ok(cmd) = rx.try_recv() {
-                match cmd {
-                    SessionCmd::Stop => {
-                        tracing::debug!("turn interrupted during streaming");
-                        drop(stream);
-                        let _ = events.send(OutEvent::Status {
-                            session: session.clone(),
-                            state: AgentState::Idle,
-                        });
-                        return Ok(());
-                    }
-                    other => {
-                        tracing::debug!(
-                            cmd = ?other,
-                            "command arrived mid-stream; stashed for replay after turn"
-                        );
-                        stash.push_back(other);
+        loop {
+            // Race the stream against the inbox so a mid-stream command preempts
+            // immediately (#179): a stalled-but-connected provider would
+            // otherwise block cancellation until the HTTP client's read timeout
+            // fires. `biased` polls the inbox first so a queued `Stop` wins even
+            // when the stream also has an event ready; dropping the stream aborts
+            // the underlying reqwest request. Non-Stop commands are stashed for
+            // replay after this turn ends (ADR-0018 — previously silently
+            // dropped).
+            let ev = tokio::select! {
+                biased;
+                cmd = rx.recv() => {
+                    match cmd {
+                        Some(SessionCmd::Stop) => {
+                            tracing::debug!("turn interrupted during streaming");
+                            drop(stream);
+                            let _ = events.send(OutEvent::Status {
+                                session: session.clone(),
+                                state: AgentState::Idle,
+                            });
+                            return Ok(());
+                        }
+                        // Inbox closed (supervisor gone): abort the stream and
+                        // end the turn; the session loop ends on its next recv.
+                        None => {
+                            drop(stream);
+                            return Ok(());
+                        }
+                        Some(other) => {
+                            tracing::debug!(
+                                cmd = ?other,
+                                "command arrived mid-stream; stashed for replay after turn"
+                            );
+                            stash.push_back(other);
+                            continue;
+                        }
                     }
                 }
-            }
+                next = stream.next() => match next {
+                    Some(ev) => ev,
+                    None => break,
+                },
+            };
             match ev {
                 Ok(LlmEvent::Text(delta)) => {
                     if !delta.is_empty() {

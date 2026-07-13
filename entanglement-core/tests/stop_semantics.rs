@@ -15,6 +15,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
     LlmStream, Message, MessageRole, OutEvent, SessionId, ToolCall,
 };
+use futures::StreamExt;
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
 async fn collect(
@@ -85,6 +86,117 @@ fn capturing_factory(
         }),
         ..EngineConfig::default()
     }
+}
+
+/// An `Llm` whose stream connects but stays silent forever — it yields no
+/// events and never completes, modelling a provider that stalls mid-response
+/// (#179). Records requests into `seen` so a follow-up turn can be asserted.
+struct StallingLlm {
+    seen: Arc<Mutex<Vec<Vec<Message>>>>,
+    stalled_once: Mutex<bool>,
+    reply: String,
+}
+
+#[async_trait]
+impl Llm for StallingLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        self.seen.lock().unwrap().push(req.messages.to_vec());
+        // The first turn stalls (silent, never-ready stream); a later turn
+        // returns a real reply so the re-prompt can complete.
+        let first = {
+            let mut done = self.stalled_once.lock().unwrap();
+            let first = !*done;
+            *done = true;
+            first
+        };
+        if first {
+            Ok(futures::stream::pending().boxed())
+        } else {
+            Ok(stream_from_response(LlmResponse {
+                text: self.reply.clone(),
+                tool_calls: vec![],
+            }))
+        }
+    }
+}
+
+/// A silent-but-connected stream must not wedge cancellation: `Stop` has to
+/// preempt `stream.next()` immediately (#179). Before the fix, `Stop` was only
+/// drained *after* the next stream event, so a stalled stream blocked cancel
+/// until the HTTP client's read timeout. This test would hang (fail on the
+/// collect timeout) under the old poll-after-yield loop.
+#[tokio::test]
+async fn stop_preempts_a_stalled_stream() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let holly = Holly::spawn(EngineConfig {
+        llm_factory: Arc::new(move || {
+            LlmSession::new(Box::new(StallingLlm {
+                seen: seen2.clone(),
+                stalled_once: Mutex::new(false),
+                reply: "recovered".into(),
+            }))
+        }),
+        ..EngineConfig::default()
+    });
+    let sid = SessionId::new("s1");
+
+    // Turn 1: the model stalls. Watch for Thinking so we know the stream is live.
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "first-prompt".into(),
+        })
+        .await
+        .unwrap();
+    let mut thinking = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+        if matches!(&ev, OutEvent::Status { state, .. } if *state == entanglement_core::AgentState::Thinking)
+        {
+            thinking = true;
+            break;
+        }
+    }
+    assert!(thinking, "turn should enter Thinking on the stalled stream");
+
+    // Stop must interrupt the silent stream promptly (well under any HTTP
+    // timeout). Expect the Idle status the interrupt path emits.
+    holly
+        .send(InMsg::Stop {
+            session: sid.clone(),
+        })
+        .await
+        .unwrap();
+    let mut went_idle = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+        if matches!(&ev, OutEvent::Status { state, .. } if *state == entanglement_core::AgentState::Idle)
+        {
+            went_idle = true;
+            break;
+        }
+    }
+    assert!(
+        went_idle,
+        "Stop must preempt the stalled stream and return the session to Idle"
+    );
+
+    // The session task survives the interrupt and answers a fresh prompt.
+    let sub2 = holly.subscribe();
+    holly
+        .send(InMsg::Prompt {
+            session: sid.clone(),
+            text: "second-prompt".into(),
+        })
+        .await
+        .unwrap();
+    let events = collect(sub2, &sid).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::TextDelta { text, .. } if text == "recovered")),
+        "session should recover and reply after the stalled turn was cancelled; got {events:?}"
+    );
 }
 
 #[tokio::test]

@@ -37,9 +37,15 @@ wait parks the task on its inbox; any non-matching message (e.g. a new prompt) i
 stashed and processed after the turn. Setup/mid-stream backend errors surface as
 `Error` + `Done` without committing a partial assistant message. The same
 stash discipline applies inside the streaming loop and between tool calls
-(ADR-0018): mid-turn `try_recv` polls route `Stop` to interrupt and push every
-other queued command (`Prompt`, `SetAgent`, …) onto the replay stash, so a
-follow-up sent while the engine is busy is never silently dropped.
+(ADR-0018): a mid-turn `Stop` interrupts, every other queued command (`Prompt`,
+`SetAgent`, …) is pushed onto the replay stash, so a follow-up sent while the
+engine is busy is never silently dropped. **The streaming loop *races* the
+inbox against the stream** with a `biased` `tokio::select!` (#179) — not a
+`try_recv` polled only after each event yields — so a `Stop` preempts a
+connected-but-silent provider immediately (dropping the stream aborts the
+`reqwest` request) instead of blocking until the HTTP client's read timeout.
+Between tool calls, where no network wait intervenes, a `try_recv` drain still
+suffices.
 
 **Loop bounds — `MAX_TURNS` and context-over-limit** (`session/turn.rs`). The
 inner LLM→tool loop is capped at `MAX_TURNS = 50` iterations (one iteration =
@@ -67,8 +73,9 @@ truncation `Error` remains a recoverable warning that runs on to its normal
 `Done`.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
-the in-flight turn (the streaming loop and tool dispatch poll `try_recv` for
-it; the tool-result wait returns cancelled) but does *not* evict the
+the in-flight turn (the streaming loop *races* it via `tokio::select!` so a
+stalled stream can't delay cancel (#179); between-tool dispatch polls `try_recv`;
+the tool-result wait returns cancelled) but does *not* evict the
 session from the supervisor map or end its task. The session's `Context` is
 preserved across a Stop+Prompt round-trip — Esc-in-approval or a stray Stop
 between turns no longer causes amnesia. The supervisor map entry is only
