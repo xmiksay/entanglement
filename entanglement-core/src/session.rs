@@ -82,7 +82,9 @@ impl Session {
     /// Creates a new empty session with the given configuration and profile.
     pub fn new_empty(cfg: &EngineConfig, profile: AgentProfile) -> Self {
         Self {
-            ctx: Context::new(),
+            // Budget the history against the active model's real context window
+            // (#178), not a fixed Anthropic-shaped ceiling.
+            ctx: Context::with_window(cfg.context_window),
             llm: (cfg.llm_factory)(),
             profile,
             seq: 0,

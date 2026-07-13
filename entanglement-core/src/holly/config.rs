@@ -37,6 +37,13 @@ pub struct EngineConfig {
     /// (via [`pricing`][Self::pricing]) even when the profile doesn't pin a
     /// model. `None` for the `EchoLlm` stub, which has no billable model.
     pub default_model: Option<String>,
+    /// The active model's context window in tokens (#178), from the provider
+    /// catalog. Each session derives its history token budget from this (see
+    /// [`Context::with_window`][crate::context::Context::with_window]) so the
+    /// engine compacts/refuses against the *real* window instead of a fixed
+    /// Anthropic-shaped ceiling. `None` (unknown model / `EchoLlm`) falls back to
+    /// [`CONTEXT_LIMIT_TOKENS`][crate::context::CONTEXT_LIMIT_TOKENS].
+    pub context_window: Option<usize>,
     /// Per-model USD pricing keyed by catalog model id (#192), supplied by the
     /// runtime from the provider catalog. The engine multiplies a turn's reported
     /// [`Usage`][entanglement_provider::Usage] by the entry for the effective
@@ -62,6 +69,7 @@ impl Default for EngineConfig {
             profiles: ProfileRegistry::new(),
             profile_tool_specs: HashMap::new(),
             default_model: None,
+            context_window: None,
             pricing: HashMap::new(),
         }
     }

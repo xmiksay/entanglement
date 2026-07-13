@@ -50,13 +50,21 @@ a model wedged in a tool loop can't run forever while a legitimate long session
 `emit_turn_error` (`session/emit.rs`) fires on a backend error — so a one-shot
 head awaiting `Done` hangs when the turn limit trips. That missing-`Done` is a
 known robustness gap (see #177). Separately, before each iteration core checks
-`Context::within_limit()`: an over-limit context emits an `OutEvent::Error`
-(`"context over limit (<n> tokens)"`) but **proceeds with the turn anyway** —
-warn-and-continue, no truncation or eviction yet (known-wrong, see #178). The
-turn-limit trip is the only path that *ends* a turn on an `Error` with no
-`Done`; the over-limit warning and the #192 `max_tokens` truncation `Error` are
-both recoverable warnings — they emit an `Error` and then the turn runs on to its
-normal `Done`.
+`Context::within_limit()` against the **model's real context window** (#178). The
+budget is `INPUT_BUDGET_FRACTION` (0.85) of the active model's catalog
+`context_window` — threaded runtime → `EngineConfig.context_window` →
+`Context::with_window` — reserving the rest for the reply and estimator slack;
+an unknown model (`EchoLlm`, or an env-override id absent from the catalog) falls
+back to the flat `CONTEXT_LIMIT_TOKENS` (180k). Over budget, core **compacts**
+(`Context::compact` prunes the oldest tool outputs to a placeholder,
+newest-first-preserved) and, if that still doesn't fit, **refuses** the turn via
+`emit_turn_error` (a `"context window exceeded"` `Error` + `Done` + `Status`) —
+it no longer warns-and-sends an over-window request. LLM summarization of the
+surviving history is a later phase. So both the turn-limit trip and the
+context-refusal *end* a turn — the former on an `Error` with no `Done` (the #177
+gap), the latter on the full `emit_turn_error` triple; the #192 `max_tokens`
+truncation `Error` remains a recoverable warning that runs on to its normal
+`Done`.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop and tool dispatch poll `try_recv` for
