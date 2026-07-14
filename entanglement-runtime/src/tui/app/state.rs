@@ -17,8 +17,18 @@ impl App {
         self.sessions.active_view().pending_tool_request()
     }
 
+    pub fn queued_approvals(&self) -> usize {
+        self.sessions.active_view().queued_approvals()
+    }
+
     pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
         self.sessions.active_view_mut().set_approval_mode(mode);
+        self.mark_dirty();
+    }
+
+    /// Resolve the prompted approval and surface the next queued one (#273).
+    pub fn advance_approval(&mut self) {
+        self.sessions.active_view_mut().advance_approval();
         self.mark_dirty();
     }
 
@@ -47,6 +57,12 @@ impl App {
 
     pub fn question_cancel_free_form(&mut self) {
         self.sessions.active_view_mut().question_cancel_free_form();
+        self.mark_dirty();
+    }
+
+    /// Resolve the prompted question and surface the next queued one (#273).
+    pub fn advance_question(&mut self) {
+        self.sessions.active_view_mut().advance_question();
         self.mark_dirty();
     }
 

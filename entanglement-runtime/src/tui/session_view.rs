@@ -1,5 +1,5 @@
 use entanglement_core::{AgentState, OutEvent, QuestionOption, SessionId};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 mod reducer;
 mod scroll;
@@ -91,8 +91,13 @@ pub struct SessionView {
     last_content_height: usize,
     last_viewport_height: usize,
     approval_mode: ApprovalMode,
-    pending_tool_request: Option<(String, String, String)>,
-    pending_question: Option<PendingQuestion>,
+    /// FIFO of parked `(request_id, tool, input)` approvals. Core batch-emits a
+    /// turn's tool calls (#270, ADR-0061), so several `ToolRequest`s can be
+    /// outstanding at once; only the front is prompted, and resolving it
+    /// promotes the next (#273). `approval_mode` always refers to the front.
+    pending_tool_requests: VecDeque<(String, String, String)>,
+    /// FIFO of parked `ask_user` questions — same batch rationale as approvals.
+    pending_questions: VecDeque<PendingQuestion>,
     parent: Option<SessionId>,
     /// Wall-clock (ms since epoch) the session started / ended, from
     /// `SessionStarted` / `SessionEnded`. Drives the live spawn-duration shown
@@ -120,8 +125,8 @@ impl SessionView {
             last_content_height: 0,
             last_viewport_height: 0,
             approval_mode: ApprovalMode::Normal,
-            pending_tool_request: None,
-            pending_question: None,
+            pending_tool_requests: VecDeque::new(),
+            pending_questions: VecDeque::new(),
             parent: None,
             started_ms: None,
             ended_ms: None,
@@ -182,17 +187,37 @@ impl SessionView {
         &self.approval_mode
     }
 
+    /// The front of the approval queue — the request currently prompted.
     pub fn pending_tool_request(&self) -> Option<&(String, String, String)> {
-        self.pending_tool_request.as_ref()
+        self.pending_tool_requests.front()
+    }
+
+    /// Approvals parked behind the prompted one (#273).
+    pub fn queued_approvals(&self) -> usize {
+        self.pending_tool_requests.len().saturating_sub(1)
     }
 
     pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
         self.approval_mode = mode;
     }
 
+    /// Pops the front approval (just answered) and promotes the next queued
+    /// request, if any, so its prompt surfaces immediately (#273).
+    pub fn advance_approval(&mut self) {
+        self.pending_tool_requests.pop_front();
+        self.approval_mode = match self.pending_tool_requests.front() {
+            Some((request_id, ..)) => ApprovalMode::WaitingForApproval {
+                request_id: request_id.clone(),
+            },
+            None => ApprovalMode::Normal,
+        };
+    }
+
+    /// Drops the whole approval queue — a turn interrupt or terminal status
+    /// invalidates every parked request, not just the prompted one.
     pub fn clear_approval(&mut self) {
         self.approval_mode = ApprovalMode::Normal;
-        self.pending_tool_request = None;
+        self.pending_tool_requests.clear();
     }
 
     pub fn is_waiting_approval(&self) -> bool {
@@ -202,19 +227,20 @@ impl SessionView {
         )
     }
 
+    /// The front of the question queue — the question currently prompted.
     pub fn pending_question(&self) -> Option<&PendingQuestion> {
-        self.pending_question.as_ref()
+        self.pending_questions.front()
     }
 
     /// Whether an `ask_user` question is awaiting an answer.
     pub fn is_asking(&self) -> bool {
-        self.pending_question.is_some()
+        !self.pending_questions.is_empty()
     }
 
     /// Move the highlighted choice by `delta`, wrapping around all choices
     /// (options plus the "Other" entry when allowed).
     pub fn question_move(&mut self, delta: isize) {
-        if let Some(q) = &mut self.pending_question {
+        if let Some(q) = self.pending_questions.front_mut() {
             let count = q.choice_count() as isize;
             if count > 0 {
                 q.selected = (q.selected as isize + delta).rem_euclid(count) as usize;
@@ -224,7 +250,7 @@ impl SessionView {
 
     /// Enter free-text mode for the "Other" entry (no-op without free-form).
     pub fn question_begin_free_form(&mut self) {
-        if let Some(q) = &mut self.pending_question {
+        if let Some(q) = self.pending_questions.front_mut() {
             if q.allow_free_form {
                 q.selected = q.options.len();
                 q.entering_free_form = true;
@@ -234,13 +260,20 @@ impl SessionView {
 
     /// Leave free-text mode, returning to choice selection.
     pub fn question_cancel_free_form(&mut self) {
-        if let Some(q) = &mut self.pending_question {
+        if let Some(q) = self.pending_questions.front_mut() {
             q.entering_free_form = false;
         }
     }
 
+    /// Pops the front question (just answered) so the next queued one, if any,
+    /// surfaces with its own fresh selection state (#273).
+    pub fn advance_question(&mut self) {
+        self.pending_questions.pop_front();
+    }
+
+    /// Drops the whole question queue (turn interrupt / terminal status).
     pub fn clear_question(&mut self) {
-        self.pending_question = None;
+        self.pending_questions.clear();
     }
 
     pub fn parent(&self) -> Option<&SessionId> {

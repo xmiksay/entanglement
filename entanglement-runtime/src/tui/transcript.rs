@@ -66,11 +66,21 @@ pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Rende
         if let Some((_, tool, input)) = app.pending_tool_request() {
             lines.push(Line::from(""));
             lines.push(Line::from("─".repeat(60)).fg(Color::Yellow));
-            lines.push(Line::from(vec![
+            let mut header = vec![
                 Span::styled("?", Style::default().fg(Color::Yellow).bold()),
                 Span::raw(" "),
                 Span::styled(tool, Style::default().fg(Color::Cyan).bold()),
-            ]));
+            ];
+            // Core batch-emits tool calls (#270), so more approvals may be
+            // parked behind this one (#273) — show how many are waiting.
+            let queued = app.queued_approvals();
+            if queued > 0 {
+                header.push(Span::styled(
+                    format!("  (+{queued} more queued)"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            lines.push(Line::from(header));
 
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(input) {
                 if let Ok(pretty) = serde_json::to_string_pretty(&json) {

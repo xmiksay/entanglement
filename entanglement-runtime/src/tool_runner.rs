@@ -16,10 +16,13 @@
 //!      the head's `Approve`/`Reject`/`Stop` on the engine's inbound fan-out
 //!      ([`Holly::subscribe_inbound`]), then runs-or-refuses accordingly.
 //!
-//! Each request runs on its own task so a slow tool (or a pending approval) in
-//! one session can't stall another; core keeps only one `ToolExec` in flight per
-//! session (it awaits the result before continuing), so per-session ordering
-//! still holds.
+//! Each request runs on its own detached task so a slow tool (or a pending
+//! approval) can't stall anything else. Core dispatches a model turn's tool
+//! calls as a **batch** (#270, ADR-0061): every `ToolExec` of the batch is
+//! emitted up front and the turn parks until all results have returned, so
+//! multiple executor tasks — and multiple pending approvals — per session are
+//! normal. `seam::await_decision` filters by `(session, request_id)`, which
+//! keeps concurrently parked approvals from stealing each other's answers.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

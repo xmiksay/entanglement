@@ -128,7 +128,9 @@ pub(super) async fn handle_event(
                                     reason: if text.is_empty() { None } else { Some(text) },
                                 })
                                 .await;
-                            app.clear_approval();
+                            // Rejecting answers only this request — parked ones
+                            // still need their own decision (#273).
+                            app.advance_approval();
                         }
                         KeyCode::Char(c) => {
                             app.input().insert_char(c);
@@ -325,7 +327,8 @@ async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: 
             scope,
         })
         .await;
-    app.set_approval_mode(ApprovalMode::Normal);
+    // Pop the answered request and surface the next parked one, if any (#273).
+    app.advance_approval();
     if let Some(plan) = handoff {
         handoff_accepted_plan(app, holly, plan).await;
     }

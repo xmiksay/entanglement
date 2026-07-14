@@ -326,7 +326,7 @@ pub(super) async fn handle_question_event(
                 let text = app.take_input_text();
                 if !text.is_empty() {
                     let _ = holly.send(answer(text)).await;
-                    app.clear_question();
+                    app.advance_question();
                 }
             }
             KeyCode::Char(c) => app.input().insert_char(c),
@@ -357,7 +357,7 @@ pub(super) async fn handle_question_event(
                     .and_then(|q| q.options.get(idx).map(|o| o.label.clone()))
                 {
                     let _ = holly.send(answer(label)).await;
-                    app.clear_question();
+                    app.advance_question();
                 }
             } else if allow_free_form && idx == opt_count {
                 app.question_begin_free_form();
@@ -368,7 +368,9 @@ pub(super) async fn handle_question_event(
                 app.question_begin_free_form();
             } else if let Some(label) = selected_label {
                 let _ = holly.send(answer(label)).await;
-                app.clear_question();
+                // Answering pops only this question — the next queued one
+                // (core batch-emits, #273) surfaces immediately.
+                app.advance_question();
             }
         }
         KeyCode::Esc => {
