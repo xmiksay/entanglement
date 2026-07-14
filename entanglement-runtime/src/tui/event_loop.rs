@@ -315,7 +315,7 @@ pub(super) async fn handle_event(
 /// records grants only on the generic tool path), so all three keys route here.
 async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: ApprovalScope) {
     let handoff = app.pending_tool_request().and_then(|(_, tool, input)| {
-        (tool == crate::propose_plan::PROPOSE_PLAN_TOOL)
+        (tool == crate::tool_names::PROPOSE_PLAN_TOOL)
             .then(|| crate::propose_plan::parse_plan(input))
     });
     let _ = holly

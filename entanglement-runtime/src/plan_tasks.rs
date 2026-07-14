@@ -25,10 +25,7 @@
 
 use entanglement_core::{AgentProfile, OutEvent, SessionId, ToolSpec};
 
-/// Records the working strategy plan (plan authorship, advertised per-profile).
-pub const UPDATE_PLAN_TOOL: &str = "update_plan";
-/// Records the user-facing task checklist (shared, general bookkeeping).
-pub const UPDATE_TASKS_TOOL: &str = "update_tasks";
+use crate::tool_names::{UPDATE_PLAN_TOOL, UPDATE_TASKS_TOOL};
 
 /// Whether `tool` is one of the state tools handled here — the runtime executor
 /// emits an event + acks instead of dispatching to the host [`ToolRegistry`].

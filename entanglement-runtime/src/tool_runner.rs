@@ -36,6 +36,10 @@ use crate::grants::GrantStore;
 use crate::permission::{
     clamp_to_base, effective_permission, permission_arg, spawn_refusal, tool_masked,
 };
+use crate::seam;
+use crate::tool_names::{
+    AGENT_POLL_TOOL, AGENT_SPAWN_TOOL, AGENT_TOOL, ASK_USER_TOOL, PROPOSE_PLAN_TOOL, RHAI_TOOL,
+};
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
 /// granted (#174): a session-scoped or persisted "always allow" grant lets an
@@ -131,7 +135,7 @@ pub fn spawn_tool_executor(
                         tokio::spawn(async move {
                             let output =
                                 format!("tool `{tool}` is not available to this agent (restricted by profile)");
-                            reply(&holly, session, request_id, output).await;
+                            seam::reply(&holly, session, request_id, output).await;
                         });
                         continue;
                     }
@@ -145,15 +149,15 @@ pub fn spawn_tool_executor(
                     // (#120); they differ only in whether the launch blocks.
                     // Subscribe *before* handing off so the child's `Done` can't
                     // race ahead of the watcher.
-                    let blocking = tool == crate::subagent::AGENT_TOOL;
-                    if tool == crate::subagent::AGENT_SPAWN_TOOL || blocking {
+                    let blocking = tool == AGENT_TOOL;
+                    if tool == AGENT_SPAWN_TOOL || blocking {
                         let target = crate::subagent::target_agent(&input);
                         if let Some(refusal) =
                             spawn_refusal(active.get(&session), &target, &profiles)
                         {
                             let holly = holly.clone();
                             tokio::spawn(async move {
-                                reply(&holly, session, request_id, refusal).await;
+                                seam::reply(&holly, session, request_id, refusal).await;
                             });
                             continue;
                         }
@@ -195,7 +199,7 @@ pub fn spawn_tool_executor(
                             Err(refusal) => {
                                 let holly = holly.clone();
                                 tokio::spawn(async move {
-                                    reply(&holly, session, request_id, refusal).await;
+                                    seam::reply(&holly, session, request_id, refusal).await;
                                 });
                             }
                         }
@@ -205,7 +209,7 @@ pub fn spawn_tool_executor(
                     // ADR-0026): it starts no session and touches no host
                     // resource — it only reads accumulated spawn state — so like
                     // `agent_spawn` it bypasses permission and the spawn budget.
-                    if tool == crate::agent_poll::AGENT_POLL_TOOL {
+                    if tool == AGENT_POLL_TOOL {
                         let registry = registry.clone();
                         let holly = holly.clone();
                         tokio::spawn(async move {
@@ -221,7 +225,7 @@ pub fn spawn_tool_executor(
                     // bypasses permission and instead surfaces a question to the
                     // head. Subscribe *before* handing off so a fast answer can't
                     // race ahead of the parked executor task.
-                    if tool == crate::ask_user::ASK_USER_TOOL {
+                    if tool == ASK_USER_TOOL {
                         let inbound = holly.subscribe_inbound();
                         let holly = holly.clone();
                         tokio::spawn(async move {
@@ -240,7 +244,7 @@ pub fn spawn_tool_executor(
                     // tool's semantics. Approve just acks the model (no engine
                     // plan state, #231); the head handles the fresh-`build`-session
                     // handoff (head policy, no new protocol surface).
-                    if tool == crate::propose_plan::PROPOSE_PLAN_TOOL {
+                    if tool == PROPOSE_PLAN_TOOL {
                         let inbound = holly.subscribe_inbound();
                         let holly = holly.clone();
                         tokio::spawn(async move {
@@ -259,7 +263,7 @@ pub fn spawn_tool_executor(
                     // *own* Allow/Ask/Deny is resolved the same way; the tool mask
                     // (checked above) already withholds it from a read-only
                     // profile like `explore`.
-                    if tool == crate::script::RHAI_TOOL {
+                    if tool == RHAI_TOOL {
                         let arg = permission_arg(&tool, &input);
                         let self_perm = apply_grant(
                             &grants,
@@ -366,7 +370,7 @@ async fn dispatch(
         }
         Permission::Deny => {
             let output = format!("tool `{tool}` denied by permission profile");
-            reply(holly, session, request_id, output).await;
+            seam::reply(holly, session, request_id, output).await;
         }
         Permission::Ask => {
             // Subscribe *before* prompting so a fast approval can't race ahead of
@@ -403,7 +407,8 @@ async fn dispatch(
 
 /// Park until the head answers the pending approval, then run-or-refuse. A
 /// `Stop` (Esc-in-approval) unwinds silently: core's `wait_tool_result` sees the
-/// same `Stop` on its inbox and cancels the turn, so no `ToolResult` is owed.
+/// same `Stop` on its inbox and cancels the turn, so no `ToolResult` is owed
+/// (the shared park/filter is [`crate::seam::await_decision`]).
 #[allow(clippy::too_many_arguments)]
 async fn await_decision(
     holly: &Holly,
@@ -416,45 +421,32 @@ async fn await_decision(
     tool: String,
     input: String,
 ) {
-    loop {
-        match inbound.recv().await {
-            Ok(InMsg::Approve {
-                session: s,
-                request_id: rid,
-                scope,
-            }) if s == session && rid == request_id => {
-                set_thinking(holly, &session);
-                // Record the wider scopes (#174) so an identical later call skips
-                // this prompt. `Once` records nothing. Done before the (awaiting)
-                // run so the guard is dropped before the `.await`.
-                if scope != ApprovalScope::Once {
-                    let arg = permission_arg(&tool, &input);
-                    grants
-                        .lock()
-                        .unwrap()
-                        .record(&session, &tool, arg.as_deref(), scope);
-                }
-                run_and_reply(holly, tools, session, seq, request_id, tool, input).await;
-                return;
+    match seam::await_decision(inbound, &session, &request_id).await {
+        seam::Decision::Approve { scope } => {
+            set_thinking(holly, &session);
+            // Record the wider scopes (#174) so an identical later call skips
+            // this prompt. `Once` records nothing. Done before the (awaiting)
+            // run so the guard is dropped before the `.await`.
+            if scope != ApprovalScope::Once {
+                let arg = permission_arg(&tool, &input);
+                grants
+                    .lock()
+                    .unwrap()
+                    .record(&session, &tool, arg.as_deref(), scope);
             }
-            Ok(InMsg::Reject {
-                session: s,
-                request_id: rid,
-                reason,
-            }) if s == session && rid == request_id => {
-                set_thinking(holly, &session);
-                let output = format!(
-                    "tool `{tool}` rejected: {}",
-                    reason.as_deref().unwrap_or("user")
-                );
-                reply(holly, session, request_id, output).await;
-                return;
-            }
-            Ok(InMsg::Stop { session: s }) if s == session => return,
-            Ok(_) => {}
-            Err(RecvError::Lagged(_)) => {}
-            Err(RecvError::Closed) => return,
+            run_and_reply(holly, tools, session, seq, request_id, tool, input).await;
         }
+        seam::Decision::Reject { reason } => {
+            set_thinking(holly, &session);
+            let output = format!(
+                "tool `{tool}` rejected: {}",
+                reason.as_deref().unwrap_or("user")
+            );
+            seam::reply(holly, session, request_id, output).await;
+        }
+        // `Stop` (and a closed inbox) unwind silently; `Answer` never targets a
+        // tool-approval request id.
+        seam::Decision::Stop | seam::Decision::Answer { .. } => {}
     }
 }
 
@@ -486,17 +478,7 @@ async fn run_and_reply(
             })
             .await
     };
-    reply(holly, session, request_id, output).await;
-}
-
-async fn reply(holly: &Holly, session: SessionId, request_id: String, output: String) {
-    let _ = holly
-        .send(InMsg::ToolResult {
-            session,
-            request_id,
-            output,
-        })
-        .await;
+    seam::reply(holly, session, request_id, output).await;
 }
 
 fn set_thinking(holly: &Holly, session: &SessionId) {

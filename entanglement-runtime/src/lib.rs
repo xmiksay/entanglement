@@ -38,10 +38,12 @@ pub mod persistence;
 pub mod plan_tasks;
 pub mod propose_plan;
 pub mod script;
+pub mod seam;
 pub mod session_store;
 pub mod skills;
 pub mod subagent;
 pub mod system_prompt;
+pub mod tool_names;
 pub mod tool_runner;
 // The host-tool vocabulary (`Tool` trait + `ToolRegistry`) lives here, not in
 // core: core holds no executable tools, only advertises schemas and round-trips

@@ -15,7 +15,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
     LlmStream, OutEvent, ProfileRegistry, SessionId, ToolCall,
 };
-use entanglement_runtime::propose_plan::PROPOSE_PLAN_TOOL;
+use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::ToolRegistry;
 

@@ -14,10 +14,10 @@
 //! turn cancels on the same `Stop`, so no `ToolResult` is owed (mirrors approval).
 
 use entanglement_core::{AgentState, Holly, InMsg, OutEvent, QuestionOption, SessionId, ToolSpec};
-use tokio::sync::broadcast::{error::RecvError, Receiver};
+use tokio::sync::broadcast::Receiver;
 
-/// Tool name the model calls to ask the user a decision question.
-pub const ASK_USER_TOOL: &str = "ask_user";
+use crate::seam;
+use crate::tool_names::ASK_USER_TOOL;
 
 /// The `ask_user` tool schema advertised to the model. Appended to the engine's
 /// `tool_specs` alongside the host quintet and `agent_spawn`.
@@ -149,36 +149,19 @@ pub async fn run_ask_user(
         state: AgentState::WaitingApproval,
     });
 
-    loop {
-        match inbound.recv().await {
-            Ok(InMsg::AnswerQuestion {
-                session: s,
-                request_id: rid,
-                answer,
-            }) if s == session && rid == request_id => {
-                let _ = holly.events().send(OutEvent::Status {
-                    session: session.clone(),
-                    state: AgentState::Thinking,
-                });
-                reply(&holly, session, request_id, answer).await;
-                return;
-            }
-            Ok(InMsg::Stop { session: s }) if s == session => return,
-            Ok(_) => {}
-            Err(RecvError::Lagged(_)) => {}
-            Err(RecvError::Closed) => return,
-        }
+    // Only an `AnswerQuestion` for this request folds an answer back; `Stop`
+    // (and a closed inbox) unwind silently — core cancels the turn on the same
+    // `Stop`, so no `ToolResult` is owed. Approve/Reject never target an
+    // `ask_user` request id.
+    if let seam::Decision::Answer { answer } =
+        seam::await_decision(&mut inbound, &session, &request_id).await
+    {
+        let _ = holly.events().send(OutEvent::Status {
+            session: session.clone(),
+            state: AgentState::Thinking,
+        });
+        seam::reply(&holly, session, request_id, answer).await;
     }
-}
-
-async fn reply(holly: &Holly, session: SessionId, request_id: String, output: String) {
-    let _ = holly
-        .send(InMsg::ToolResult {
-            session,
-            request_id,
-            output,
-        })
-        .await;
 }
 
 #[cfg(test)]

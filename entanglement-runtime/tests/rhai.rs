@@ -16,7 +16,7 @@ use entanglement_core::{
     SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
-use entanglement_runtime::script::RHAI_TOOL;
+use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 
 /// Replays scripted responses in order, then plain text so the turn terminates.

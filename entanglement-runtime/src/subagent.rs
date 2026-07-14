@@ -31,13 +31,8 @@ use entanglement_core::{
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 use crate::agent_poll::{AgentRegistry, AgentStatus};
-
-/// Tool name the model calls to spawn a sub-agent (non-blocking; renamed from
-/// `spawn_agent` in #120).
-pub const AGENT_SPAWN_TOOL: &str = "agent_spawn";
-
-/// Tool name the model calls to spawn a sub-agent and block for its answer (#120).
-pub const AGENT_TOOL: &str = "agent";
+use crate::seam::reply;
+use crate::tool_names::{AGENT_SPAWN_TOOL, AGENT_TOOL};
 
 /// Maximum spawn nesting: the root (user-initiated) session is depth 0, so this
 /// lets the root spawn a child (depth 1), that child spawn (depth 2), and so on
@@ -438,16 +433,6 @@ fn parse_input(input: &str) -> (String, String) {
         }
         Err(_) => (DEFAULT_SUBAGENT.to_string(), input.to_string()),
     }
-}
-
-async fn reply(holly: &Holly, session: SessionId, request_id: String, output: String) {
-    let _ = holly
-        .send(InMsg::ToolResult {
-            session,
-            request_id,
-            output,
-        })
-        .await;
 }
 
 #[cfg(test)]

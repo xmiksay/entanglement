@@ -25,10 +25,10 @@
 //! *from the user* — correctly modeled as a root (ADR-0042).
 
 use entanglement_core::{AgentProfile, AgentState, Holly, InMsg, OutEvent, SessionId, ToolSpec};
-use tokio::sync::broadcast::{error::RecvError, Receiver};
+use tokio::sync::broadcast::Receiver;
 
-/// Tool name the plan agent calls to finalize and submit its plan for approval.
-pub const PROPOSE_PLAN_TOOL: &str = "propose_plan";
+use crate::seam;
+use crate::tool_names::PROPOSE_PLAN_TOOL;
 
 /// The profile a handoff mints its fresh session under: the plan is accepted into
 /// a `build` session (ADR-0042).
@@ -128,56 +128,33 @@ pub async fn run_propose_plan(
         state: AgentState::WaitingApproval,
     });
 
-    loop {
-        match inbound.recv().await {
-            Ok(InMsg::Approve {
-                session: s,
-                request_id: rid,
-                ..
-            }) if s == session && rid == request_id => {
-                set_thinking(&holly, &session);
-                // Tell the model the plan was accepted so it can end its turn; the
-                // engine holds no plan state to record (#231, ADR-0049). The head
-                // performs the fresh-session handoff (ADR-0042) from the tool
-                // input — no new protocol surface.
-                reply(
-                    &holly,
-                    session,
-                    request_id,
-                    "plan accepted by the user".to_string(),
-                )
-                .await;
-                return;
-            }
-            Ok(InMsg::Reject {
-                session: s,
-                request_id: rid,
-                reason,
-            }) if s == session && rid == request_id => {
-                set_thinking(&holly, &session);
-                let output = format!(
-                    "tool `{PROPOSE_PLAN_TOOL}` rejected: {}",
-                    reason.as_deref().unwrap_or("user")
-                );
-                reply(&holly, session, request_id, output).await;
-                return;
-            }
-            Ok(InMsg::Stop { session: s }) if s == session => return,
-            Ok(_) => {}
-            Err(RecvError::Lagged(_)) => {}
-            Err(RecvError::Closed) => return,
+    match seam::await_decision(&mut inbound, &session, &request_id).await {
+        seam::Decision::Approve { .. } => {
+            set_thinking(&holly, &session);
+            // Tell the model the plan was accepted so it can end its turn; the
+            // engine holds no plan state to record (#231, ADR-0049). The head
+            // performs the fresh-session handoff (ADR-0042) from the tool
+            // input — no new protocol surface.
+            seam::reply(
+                &holly,
+                session,
+                request_id,
+                "plan accepted by the user".to_string(),
+            )
+            .await;
         }
+        seam::Decision::Reject { reason } => {
+            set_thinking(&holly, &session);
+            let output = format!(
+                "tool `{PROPOSE_PLAN_TOOL}` rejected: {}",
+                reason.as_deref().unwrap_or("user")
+            );
+            seam::reply(&holly, session, request_id, output).await;
+        }
+        // `Stop` (and a closed inbox) unwind silently; `Answer` never targets a
+        // `propose_plan` request id.
+        seam::Decision::Stop | seam::Decision::Answer { .. } => {}
     }
-}
-
-async fn reply(holly: &Holly, session: SessionId, request_id: String, output: String) {
-    let _ = holly
-        .send(InMsg::ToolResult {
-            session,
-            request_id,
-            output,
-        })
-        .await;
 }
 
 fn set_thinking(holly: &Holly, session: &SessionId) {
