@@ -113,7 +113,7 @@ impl Llm for OpenAiLlm {
             has_tool_role_messages = req.messages.iter().any(|m| m.role == MessageRole::Tool),
             "openai-compat request"
         );
-        tracing::trace!(body = %body, "request body");
+        crate::client::log_request_body("openai", &body);
 
         let response = self
             .http

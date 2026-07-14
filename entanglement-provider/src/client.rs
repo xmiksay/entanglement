@@ -397,6 +397,50 @@ pub fn extract_retry_after_from_response(response: &reqwest::Response) -> Option
     parse_retry_after(response.headers())
 }
 
+/// Env flag that opts into logging full LLM request bodies. A request body
+/// carries the system prompt, the **entire conversation**, and the tool schemas
+/// — repo/user data (never API keys: those ride in headers). It is therefore off
+/// by default and only ever emitted when a human explicitly asks for it; `RUST_LOG`
+/// verbosity alone is deliberately not enough (#165).
+const LOG_BODIES_ENV: &str = "ENTANGLEMENT_LOG_BODIES";
+
+/// Cap on how many bytes of a request body ever reach the log, even opted in —
+/// a full conversation can be megabytes; this keeps the sink bounded.
+const MAX_LOGGED_BODY_BYTES: usize = 8 * 1024;
+
+/// Log an LLM request body at `debug!`, but **only** when
+/// `ENTANGLEMENT_LOG_BODIES=1`. Shared by every provider client so body logging
+/// is symmetric and greppable (`provider` tags the backend); the payload holds
+/// conversation + repo data, so it stays behind the explicit opt-in and is
+/// truncated to [`MAX_LOGGED_BODY_BYTES`] (#165).
+pub fn log_request_body(provider: &str, body: &serde_json::Value) {
+    if std::env::var(LOG_BODIES_ENV).as_deref() != Ok("1") {
+        return;
+    }
+    let rendered = body.to_string();
+    let (shown, truncated) = truncate_on_boundary(&rendered, MAX_LOGGED_BODY_BYTES);
+    tracing::debug!(
+        provider,
+        bytes = rendered.len(),
+        truncated,
+        body = shown,
+        "LLM request body (conversation + repo data; gated by ENTANGLEMENT_LOG_BODIES=1)"
+    );
+}
+
+/// Truncate `s` to at most `max` bytes without splitting a UTF-8 char, returning
+/// the slice and whether anything was dropped.
+fn truncate_on_boundary(s: &str, max: usize) -> (&str, bool) {
+    if s.len() <= max {
+        return (s, false);
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&s[..end], true)
+}
+
 /// Retry error types.
 #[derive(Debug, thiserror::Error)]
 pub enum RetryError {
@@ -491,6 +535,28 @@ mod tests {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("Retry-After", "12".parse().unwrap());
         assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(12)));
+    }
+
+    #[test]
+    fn truncate_on_boundary_keeps_short_bodies_whole() {
+        let (shown, truncated) = truncate_on_boundary("hello", 8 * 1024);
+        assert_eq!(shown, "hello");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncate_on_boundary_never_splits_a_utf8_char() {
+        // "é" is two bytes; capping at 3 must drop it rather than slice mid-char.
+        let (shown, truncated) = truncate_on_boundary("aéé", 3);
+        assert!(truncated);
+        assert_eq!(shown, "aé");
+    }
+
+    #[test]
+    fn log_request_body_is_silent_without_optin() {
+        // No panic and nothing emitted when the flag is unset (the default).
+        std::env::remove_var(LOG_BODIES_ENV);
+        log_request_body("openai", &serde_json::json!({"messages": []}));
     }
 
     #[test]
