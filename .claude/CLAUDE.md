@@ -194,13 +194,23 @@ trusted-by-design #162/[ADR-0047](../docs/adr/0047-local-trust-boundary.md)
 containment for `read`/`edit`/`write` + `glob`/`grep`
 #163/[ADR-0054](../docs/adr/0054-canonicalizing-symlink-safe-root-containment.md),
 provider API keys scrubbed from `bash`/`call` child env #164, opt-in symmetric
-request-body logging behind `ENTANGLEMENT_LOG_BODIES` #165)
+request-body logging behind `ENTANGLEMENT_LOG_BODIES` #165),
+and the architecture, seams & build-hygiene epic (#200 — built-in profile trio
+deduped to a single source #201, `OutEvent::FileChange` given a real emitter in
+the executor #202/[ADR-0060](../docs/adr/0060-filechange-audit-via-executor-as-path-kind-hash.md),
+`tool_runner`'s interception ladder made an explicit pipeline #203, registry
+loaders unified with a shared env-override-honoring loader #204, seam plumbing
+deduped — one `reply`/approval-park helper + a `tool_names` module #205,
+`Tool`/`ToolRegistry` moved to the runtime with the dead core surface dropped
+#206/[ADR-0059](../docs/adr/0059-tool-trait-and-registry-live-in-the-runtime.md),
+hygiene gates fixed to fail loudly and widened past ADR-0006 via shared
+`scripts/dep-gate.sh` #207, and `main.rs` reworked to import the lib modules with
+the `cli`/`provider` features split #208)
 are **complete**.
 Current phase is the July 2026 audit backlog — thematic epics tracked on GitHub
 with P0/P1/P2 labels and blocked-by links:
 #190 (provider seam + per-endpoint pool), #166 (exec-tool maturity),
-#200 (architecture cleanup), #209 (docs), with
-WebSocket `serve` (#153) deliberately last.
+#209 (docs), with WebSocket `serve` (#153) deliberately last.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
 — z.ai (primary)/OpenAI/Ollama via one OpenAI-compat client + a separate
