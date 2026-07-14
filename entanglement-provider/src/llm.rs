@@ -144,6 +144,30 @@ pub struct LlmResponse {
     pub tool_calls: Vec<ToolCall>,
 }
 
+/// Per-request generation knobs, resolved by the head from the effective model's
+/// catalog capabilities + agent profile (#191). This is the channel that makes
+/// the catalog's capability metadata (`supports_temperature`/`default_temperature`/
+/// `max_output_tokens`/`supports_thinking`) load-bearing instead of write-only:
+/// the head only populates a field when the model actually supports it, and each
+/// client maps the present fields to its wire format, omitting the rest.
+///
+/// Every field is optional — a `None` (or a `None` [`LlmRequest::generation`])
+/// leaves that knob at the backend's own default.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GenerationParams {
+    /// Sampling temperature. `None` ⇒ omit (the model's default), which the head
+    /// also does for a model with `supports_temperature: false`.
+    pub temperature: Option<f32>,
+    /// Hard cap on tokens generated this turn. OpenAI-compat sends it as
+    /// `max_tokens`; Anthropic (which *requires* a cap) uses it in place of its
+    /// built-in fallback. `None` ⇒ the client's own default.
+    pub max_output_tokens: Option<u32>,
+    /// Extended-thinking budget in tokens (Anthropic `thinking.budget_tokens`).
+    /// `None` — or a model with `supports_thinking: false` — leaves thinking off.
+    /// Wires without a thinking channel (OpenAI-compat) omit it.
+    pub thinking_budget_tokens: Option<u32>,
+}
+
 /// Everything the model needs for one completion, drawn from the session's
 /// active agent profile + registered tools.
 pub struct LlmRequest<'a> {
@@ -152,6 +176,9 @@ pub struct LlmRequest<'a> {
     pub model: Option<&'a str>,
     pub messages: &'a [crate::Message],
     pub tools: &'a [ToolSpec],
+    /// Resolved generation knobs (temperature / max-tokens / thinking budget).
+    /// `None` ⇒ the backend's own defaults for every knob (#191).
+    pub generation: Option<GenerationParams>,
 }
 
 /// A boxed, owned, sendable stream of model events. `'static` so the session
@@ -322,6 +349,7 @@ mod tests {
             model: None,
             messages,
             tools,
+            generation: None,
         }
     }
 

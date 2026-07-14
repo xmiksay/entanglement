@@ -14,6 +14,12 @@
 # each endpoint falls back to the client default (RetryConfig::rpm, 50);
 # override per provider in your user `providers.yml` or via `{NAME}_RPM`.
 #
+# Capability flags gate the generation-parameter channel (#191): the head sends a
+# model's `default_temperature` only when `supports_temperature`, and extended
+# thinking only when `supports_thinking` AND a `thinking_budget_tokens` is set.
+# Budgets are left unset here so thinking stays off until you opt in — add
+# `thinking_budget_tokens: <n>` to a thinking-capable model in your user file.
+#
 # Provider order is also the key auto-detect priority (z.ai first).
 
 providers:

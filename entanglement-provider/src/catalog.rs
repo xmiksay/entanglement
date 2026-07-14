@@ -92,6 +92,13 @@ pub struct ModelEntry {
     pub max_output_tokens: Option<u32>,
     #[serde(default)]
     pub supports_thinking: bool,
+    /// Extended-thinking budget in tokens to request when thinking is enabled for
+    /// this model (#191). Only meaningful with `supports_thinking`; left unset in
+    /// the embedded defaults so thinking stays off until a user opts in — the
+    /// channel is now reachable (a user `providers.yml` sets a budget), not forced
+    /// on. Surfaces as Anthropic's `thinking.budget_tokens`.
+    #[serde(default)]
+    pub thinking_budget_tokens: Option<u32>,
     #[serde(default = "default_true")]
     pub supports_temperature: bool,
     #[serde(default)]
@@ -142,6 +149,27 @@ impl ModelEntry {
     /// Human-facing label, falling back to the id when `display_name` is unset.
     pub fn display_name(&self) -> &str {
         self.display_name.as_deref().unwrap_or(&self.id)
+    }
+
+    /// The generation knobs this model's catalog capabilities license (#191). A
+    /// flag off means the knob is dropped rather than sent: no temperature when
+    /// `supports_temperature: false`, no thinking budget when `supports_thinking:
+    /// false`. This is where the previously write-only capability metadata becomes
+    /// load-bearing — the head threads the result onto every [`crate::LlmRequest`].
+    pub fn generation_params(&self) -> crate::GenerationParams {
+        crate::GenerationParams {
+            temperature: if self.supports_temperature {
+                self.default_temperature
+            } else {
+                None
+            },
+            max_output_tokens: self.max_output_tokens,
+            thinking_budget_tokens: if self.supports_thinking {
+                self.thinking_budget_tokens
+            } else {
+                None
+            },
+        }
     }
 }
 
@@ -438,6 +466,38 @@ mod tests {
     fn scalar_override_replaces() {
         let c = merge_str("providers:\n  - name: zai\n    default_model: glm-4.7\n");
         assert_eq!(c.provider("zai").unwrap().default_model, "glm-4.7");
+    }
+
+    #[test]
+    fn generation_params_gate_on_capability_flags() {
+        let c = Catalog::builtin();
+        // glm-5.2 supports temperature with a catalog default; no thinking budget
+        // is configured, so thinking stays off even though it *supports* it.
+        let glm = c.model("zai", "glm-5.2").unwrap().generation_params();
+        assert_eq!(glm.temperature, Some(0.7));
+        assert_eq!(glm.max_output_tokens, Some(16384));
+        assert_eq!(glm.thinking_budget_tokens, None);
+
+        // A user file that opts a supporting model into thinking and turns another
+        // model's temperature off: both flags must gate the resolved knobs.
+        let merged = merge_str(
+            "providers:\n\
+             \x20 - name: zai\n\
+             \x20   models:\n\
+             \x20     - id: glm-5.2\n\
+             \x20       thinking_budget_tokens: 8000\n\
+             \x20     - id: glm-4.7\n\
+             \x20       supports_temperature: false\n\
+             \x20       default_temperature: 0.9\n",
+        );
+        let glm52 = merged.model("zai", "glm-5.2").unwrap().generation_params();
+        assert_eq!(glm52.thinking_budget_tokens, Some(8000));
+        // supports_thinking off drops the budget; supports_temperature off drops
+        // the temperature even though a default_temperature is present.
+        let glm47 = merged.model("zai", "glm-4.7").unwrap();
+        let g47 = glm47.generation_params();
+        assert!(!glm47.supports_temperature);
+        assert_eq!(g47.temperature, None);
     }
 
     #[test]

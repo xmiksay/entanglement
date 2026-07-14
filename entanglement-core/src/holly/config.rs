@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile};
-use entanglement_provider::{EchoLlm, Llm, LlmFactory, ModelPricing, ToolSpec};
+use entanglement_provider::{EchoLlm, GenerationParams, Llm, LlmFactory, ModelPricing, ToolSpec};
 
 use super::DEFAULT_PROFILE;
 
@@ -42,6 +42,13 @@ pub struct EngineConfig {
     /// Anthropic-shaped ceiling. `None` (unknown model / `EchoLlm`) falls back to
     /// [`CONTEXT_LIMIT_TOKENS`][crate::context::CONTEXT_LIMIT_TOKENS].
     pub context_window: Option<usize>,
+    /// Resolved generation knobs for the active model (#191), supplied by the
+    /// runtime from the catalog [`ModelEntry`][entanglement_provider::ModelEntry]'s
+    /// capability metadata (temperature/max-output/thinking). Core threads it onto
+    /// every [`LlmRequest`][entanglement_provider::LlmRequest] so the previously
+    /// write-only catalog flags actually reach the provider. `None` (echo / a model
+    /// absent from the catalog) sends no knobs — the backend's own defaults win.
+    pub generation: Option<GenerationParams>,
     /// Per-model USD pricing keyed by catalog model id (#192), supplied by the
     /// runtime from the provider catalog. The engine multiplies a turn's reported
     /// [`Usage`][entanglement_provider::Usage] by the entry for the effective
@@ -68,6 +75,7 @@ impl Default for EngineConfig {
             profile_tool_specs: HashMap::new(),
             default_model: None,
             context_window: None,
+            generation: None,
             pricing: HashMap::new(),
         }
     }

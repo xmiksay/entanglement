@@ -33,8 +33,8 @@ use std::collections::BTreeMap;
 
 use crate::client::HttpClient;
 use crate::{
-    Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, StopReason, ToolCall, ToolSpec,
-    Usage,
+    GenerationParams, Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, StopReason,
+    ToolCall, ToolSpec, Usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -102,7 +102,7 @@ pub fn openai_factory(
 impl Llm for OpenAiLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         let model = req.model.unwrap_or(&self.default_model).to_string();
-        let body = build_body(&model, req.system, req.messages, req.tools);
+        let body = build_body(&model, req.system, req.messages, req.tools, req.generation);
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         tracing::debug!(
@@ -260,7 +260,13 @@ impl PendingTool {
 
 // ── request body ────────────────────────────────────────────────────────────
 
-fn build_body(model: &str, system: &str, messages: &[Message], tools: &[ToolSpec]) -> Value {
+fn build_body(
+    model: &str,
+    system: &str,
+    messages: &[Message],
+    tools: &[ToolSpec],
+    generation: Option<GenerationParams>,
+) -> Value {
     let mut msgs = Vec::with_capacity(messages.len() + 1);
     if !system.is_empty() {
         msgs.push(json!({ "role": "system", "content": system }));
@@ -274,6 +280,18 @@ fn build_body(model: &str, system: &str, messages: &[Message], tools: &[ToolSpec
     });
     if !tools.is_empty() {
         body["tools"] = json!(convert_tools(tools));
+    }
+    // Generation knobs the head resolved for this model (#191). The OpenAI-compat
+    // wire carries temperature + `max_tokens`; it has no standard thinking-budget
+    // field, so `thinking_budget_tokens` is dropped here (the Anthropic wire owns
+    // that channel).
+    if let Some(g) = generation {
+        if let Some(temp) = g.temperature {
+            body["temperature"] = json!(temp);
+        }
+        if let Some(max) = g.max_output_tokens {
+            body["max_tokens"] = json!(max);
+        }
     }
     body
 }
@@ -448,10 +466,14 @@ mod tests {
             "be helpful",
             &[msg(MessageRole::User, "hi")],
             &[],
+            None,
         );
         assert_eq!(body["stream"], true);
         assert_eq!(body["stream_options"]["include_usage"], true);
         assert!(body.get("tools").is_none());
+        // No generation params ⇒ no temperature/max_tokens on the wire.
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("max_tokens").is_none());
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[0]["content"], "be helpful");
@@ -461,10 +483,48 @@ mod tests {
     #[test]
     fn body_includes_tools_with_parameters_schema() {
         let spec = ToolSpec::new("greet", "say hi");
-        let body = build_body("glm-5.2", "sys", &[msg(MessageRole::User, "hi")], &[spec]);
+        let body = build_body(
+            "glm-5.2",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[spec],
+            None,
+        );
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "greet");
         assert!(body["tools"][0]["function"]["parameters"].is_object());
+    }
+
+    #[test]
+    fn generation_params_set_temperature_and_max_tokens() {
+        let body = build_body(
+            "glm-5.2",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            Some(GenerationParams {
+                temperature: Some(0.7),
+                max_output_tokens: Some(2048),
+                // No thinking channel on the OpenAI-compat wire — dropped.
+                thinking_budget_tokens: Some(4096),
+            }),
+        );
+        assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+        assert_eq!(body["max_tokens"], 2048);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn generation_params_omit_unset_knobs() {
+        let body = build_body(
+            "glm-5.2",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            Some(GenerationParams::default()),
+        );
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("max_tokens").is_none());
     }
 
     #[test]

@@ -73,9 +73,15 @@ the `serde_yaml::Value` level, `deny_unknown_fields` on the final parse. A
 (proxy, vLLM, new vendor) with zero code change; `ENTANGLEMENT_PROVIDER=<name>`
 resolves against the catalog, so custom providers are selectable. `ModelEntry`
 adds capability flags (`supports_thinking`/`supports_temperature`/
-`default_temperature`) + **pricing** (USD/M: input/output/cached_input/
-cache_write). Precedence: **env > user YAML > embedded defaults**. See
-`entanglement-provider::catalog`.
+`default_temperature`/`max_output_tokens`/`thinking_budget_tokens`) + **pricing**
+(USD/M: input/output/cached_input/cache_write). Those flags are no longer
+write-only (✅ #191): `ModelEntry::generation_params()` gates them into a
+`GenerationParams { temperature, max_output_tokens, thinking_budget_tokens }` the
+runtime resolves onto `EngineConfig::generation` and core threads onto every
+`LlmRequest`; each client maps the present knobs to its wire and omits the rest
+(OpenAI: `temperature`+`max_tokens`; Anthropic: `max_output_tokens` +
+`thinking` when a budget is set, else `temperature`). Precedence: **env > user
+YAML > embedded defaults**. See `entanglement-provider::catalog`.
 
 z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
 format). No key → `EchoLlm`. Detail in

@@ -107,6 +107,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         model: None,
         messages: &messages,
         tools: &[],
+        generation: None,
     };
     let stream = llm.stream(req).await.expect("stream should start");
     stream
@@ -237,6 +238,7 @@ async fn stream_err(base_url: &str) -> String {
         model: None,
         messages: &messages,
         tools: &[],
+        generation: None,
     };
     match llm.stream(req).await {
         Ok(_) => panic!("expected stream() to fail on a 429 response"),

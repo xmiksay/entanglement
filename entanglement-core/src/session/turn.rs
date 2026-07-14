@@ -169,7 +169,7 @@ async fn run_round(
     }
 
     let (text_buf, tool_calls, finish) =
-        match stream_round(session, rx, s, events, stash, &specs).await {
+        match stream_round(session, rx, s, events, stash, &specs, cfg.generation).await {
             StreamedRound::Complete {
                 text,
                 tool_calls,
