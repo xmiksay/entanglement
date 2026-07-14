@@ -16,8 +16,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
-    SessionId, ToolCall,
+    LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
+    ToolCall,
 };
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::skills::{load_registry, LoadSkillTool};
@@ -148,7 +148,7 @@ async fn load_skill_then_read_a_substituted_ref() {
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -226,7 +226,7 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
     // permission (default Deny): `load_skill` is gated exactly like `read`, no
     // exemption (ADR-0037). Using a non-masked profile keeps this focused on the
     // permission path, distinct from the #116 tool mask.
-    let mut profiles = ProfileRegistry::new();
+    let mut profiles = entanglement_runtime::agents::built_in_registry();
     profiles.insert(AgentProfile {
         name: "denyskill".into(),
         description: String::new(),

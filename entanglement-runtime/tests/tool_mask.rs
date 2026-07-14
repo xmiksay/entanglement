@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, ProfileRegistry, SessionId, ToolCall,
+    LlmStream, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -77,6 +77,9 @@ fn spawn_with_edit_call() -> Holly {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve the `SetAgent { agent: "explore" }` below.
+        profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -85,7 +88,7 @@ fn spawn_with_edit_call() -> Holly {
     let _executor = spawn_tool_executor(
         &holly,
         reg,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     holly

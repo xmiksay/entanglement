@@ -83,8 +83,12 @@ pub enum ConfigError {
     MissingDefaultProfile,
 }
 
-/// Named set of [`AgentProfile`]s. Comes with `build`, `plan`, `explore`
-/// built-ins (mirroring opencode); add your own with [`insert`][Self::insert].
+/// Named set of [`AgentProfile`]s. Comes with only the `build` built-in — the
+/// one profile every session starts under and [`resolve`][Self::resolve] falls
+/// back to. The full `build`/`plan`/`explore` trio is defined once, as markdown,
+/// in `entanglement-runtime`'s embedded agent registry (#201): core can't parse
+/// agent frontmatter, so it carries no `plan`/`explore` copy to drift from that
+/// source. Add your own with [`insert`][Self::insert].
 #[derive(Clone, Default)]
 pub struct ProfileRegistry {
     profiles: HashMap<String, AgentProfile>,
@@ -93,9 +97,7 @@ pub struct ProfileRegistry {
 impl ProfileRegistry {
     pub fn new() -> Self {
         let mut reg = Self::default();
-        for profile in built_in_profiles() {
-            reg.insert(profile);
-        }
+        reg.insert(default_profile());
         reg
     }
 
@@ -147,81 +149,28 @@ impl ProfileRegistry {
     }
 }
 
-/// The built-in `build` profile — the synthesized fallback the supervisor uses
-/// when a custom registry omits it (see [`ProfileRegistry::resolve`]).
+/// The built-in `build` profile — the only profile core carries. It is both the
+/// default a fresh session starts under and the synthesized fallback the
+/// supervisor uses when a custom registry omits it (see
+/// [`ProfileRegistry::resolve`]). An inherit-all coding agent: no tool mask, no
+/// plan authority (default-closed, #231/ADR-0049). The runtime re-defines this
+/// same shape as `build.md` and owns the `plan`/`explore` siblings (#201).
 fn default_profile() -> AgentProfile {
-    let [build, ..] = built_in_profiles();
-    build
-}
-
-fn built_in_profiles() -> [AgentProfile; 3] {
-    [
-        AgentProfile {
-            name: "build".into(),
-            description: "Coding agent — implements changes using the available tools.".into(),
-            mode: AgentMode::Primary,
-            system_prompt: "You are a coding agent. Implement the requested changes using the available tools.".into(),
-            model: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            // `build` spawns everything except primaries (the target-side mode
-            // gate, #119) — no `spawnable_agents` list, so user-defined
-            // exploration agents stay spawnable without editing this built-in.
-            can_spawn: None,
-            spawnable_agents: None,
-        },
-        AgentProfile {
-            name: "plan".into(),
-            description: "Planning agent — produces a plan without making changes.".into(),
-            mode: AgentMode::Primary,
-            system_prompt: "You are a planning agent. Analyze the request and produce a plan without making changes. Record the working plan with the update_plan tool, and delegate research to exploration agents.".into(),
-            model: None,
-            permission: PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-            // Physically read-only (#140, ADR-0041): the plan agent authors the
-            // plan and delegates research — no `edit`/`write`/`bash`. Via
-            // `tool_masked`'s ancestor intersection, every child spawned under
-            // plan is clamped to this read-only set too.
-            // The plan agent authors the plan: its allowlist explicitly opts into
-            // `update_plan`/`propose_plan`, which is now what grants plan authority
-            // (#231, ADR-0049) — an inherit-all profile never gets them by default.
-            tools: Some(vec![
-                "read".into(),
-                "glob".into(),
-                "grep".into(),
-                "agent".into(),
-                "agent_spawn".into(),
-                "agent_poll".into(),
-                "ask_user".into(),
-                "load_skill".into(),
-                "update_plan".into(),
-                "propose_plan".into(),
-            ]),
-            disallowed_tools: Vec::new(),
-            // `plan` may spawn (a primary), but omits `spawnable_agents` so any
-            // user-defined exploration agent stays reachable (#119).
-            can_spawn: None,
-            spawnable_agents: None,
-        },
-        AgentProfile {
-            name: "explore".into(),
-            description: "Read-only exploration agent — answers questions about the codebase.".into(),
-            mode: AgentMode::Subagent,
-            system_prompt: "You are a read-only exploration agent. Answer questions about the codebase using only read tools.".into(),
-            model: None,
-            permission: PermissionProfile::new(Permission::Deny)
-                .with("read", Permission::Allow)
-                .with("glob", Permission::Allow)
-                .with("grep", Permission::Allow),
-            // Reference read-only agent (#116): the read trio is *all* it can
-            // reach — no `edit`/`write`, no `bash`, no `agent_spawn`. A physical
-            // boundary, matching the `permission` denies above.
-            tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
-            disallowed_tools: Vec::new(),
-            // Reference leaf: a `Subagent` mode defaults `can_spawn` closed (#119),
-            // so the whole `agent_*` family is withheld — matching the tool mask.
-            can_spawn: None,
-            spawnable_agents: None,
-        },
-    ]
+    AgentProfile {
+        name: "build".into(),
+        description: "Coding agent — implements changes using the available tools.".into(),
+        mode: AgentMode::Primary,
+        system_prompt:
+            "You are a coding agent. Implement the requested changes using the available tools."
+                .into(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Allow),
+        tools: None,
+        disallowed_tools: Vec::new(),
+        // `build` spawns everything except primaries (the target-side mode gate,
+        // #119) — no `spawnable_agents` list, so user-defined exploration agents
+        // stay spawnable without editing this built-in.
+        can_spawn: None,
+        spawnable_agents: None,
+    }
 }

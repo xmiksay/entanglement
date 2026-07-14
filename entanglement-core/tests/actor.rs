@@ -458,34 +458,49 @@ async fn update_plan_and_update_tasks_round_trip_as_tool_exec() {
 
 #[tokio::test]
 async fn set_agent_emits_agent_changed() {
-    let holly = Holly::spawn(EngineConfig::default());
+    // Core carries only the `build` built-in (#201); the runtime owns the
+    // plan/explore trio. Register a second profile here to exercise the switch.
+    let mut cfg = EngineConfig::default();
+    cfg.profiles.insert(AgentProfile {
+        name: "reviewer".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: "Review the changes.".into(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Ask),
+        tools: None,
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+    });
+    let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
     holly
         .send(InMsg::SetAgent {
             session: sid.clone(),
-            agent: "plan".into(),
+            agent: "reviewer".into(),
         })
         .await
         .unwrap();
 
     let mut saw_build = false;
-    let mut saw_plan = false;
+    let mut saw_reviewer = false;
     while let Ok(ev) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
         if let Ok(OutEvent::AgentChanged { agent, .. }) = &ev {
             if agent == "build" {
                 saw_build = true;
             }
-            if agent == "plan" {
-                saw_plan = true;
+            if agent == "reviewer" {
+                saw_reviewer = true;
             }
         }
-        if saw_plan {
+        if saw_reviewer {
             break;
         }
     }
     assert!(saw_build, "session should start under build");
-    assert!(saw_plan, "should switch to plan");
+    assert!(saw_reviewer, "should switch to reviewer");
 }
 
 #[tokio::test]

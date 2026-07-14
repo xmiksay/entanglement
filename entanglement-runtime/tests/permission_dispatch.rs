@@ -95,14 +95,14 @@ fn spawn_with_bash_call_using(input: &str, profiles: ProfileRegistry) -> Holly {
 
 /// Wire the built-in profiles (build/plan/explore).
 fn spawn_with_bash_call(input: &str) -> Holly {
-    spawn_with_bash_call_using(input, ProfileRegistry::new())
+    spawn_with_bash_call_using(input, entanglement_runtime::agents::built_in_registry())
 }
 
 /// Built-ins plus an `askbash` profile that *advertises* bash (no tool mask) but
 /// grades it `Ask` — the built-in `plan` now physically masks bash out (#140), so
 /// the Ask dispatch path needs a profile that still lets bash through the mask.
 fn ask_bash_registry() -> ProfileRegistry {
-    let mut profiles = ProfileRegistry::new();
+    let mut profiles = entanglement_runtime::agents::built_in_registry();
     profiles.insert(AgentProfile {
         name: "askbash".into(),
         description: String::new(),
@@ -171,7 +171,7 @@ async fn deny_refuses_without_request() {
     // permission profile — so this exercises the `Deny` dispatch path, distinct
     // from the physical tool mask (#116), which would refuse bash before
     // permission even resolves (see the `tool_mask` integration test).
-    let mut profiles = ProfileRegistry::new();
+    let mut profiles = entanglement_runtime::agents::built_in_registry();
     profiles.insert(AgentProfile {
         name: "denybash".into(),
         description: String::new(),
@@ -273,7 +273,7 @@ async fn ask_emits_request_then_runs_on_approve() {
 /// A profile that grades `bash` by its command (#173): `git *` runs outright,
 /// `rm *` is denied, anything else asks.
 fn scoped_bash_registry() -> ProfileRegistry {
-    let mut profiles = ProfileRegistry::new();
+    let mut profiles = entanglement_runtime::agents::built_in_registry();
     profiles.insert(AgentProfile {
         name: "scopedbash".into(),
         description: String::new(),

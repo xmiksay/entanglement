@@ -107,7 +107,7 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
 /// A single primary profile with a caller-shaped permission, advertising every
 /// tool (no mask) so binding behavior is decided by permission alone.
 fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
-    let mut profiles = ProfileRegistry::new();
+    let mut profiles = entanglement_runtime::agents::built_in_registry();
     profiles.insert(AgentProfile {
         name: name.into(),
         description: String::new(),

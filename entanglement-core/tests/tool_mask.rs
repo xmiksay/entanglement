@@ -11,9 +11,30 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, SessionId, ToolSpec,
+    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmSession, LlmStream, Permission, PermissionProfile, SessionId, ToolSpec,
 };
+
+/// The read-only `explore` profile the runtime ships as `explore.md` — core no
+/// longer carries it (#201), so these mask tests register it directly. A
+/// `Subagent` leaf whose `read`/`glob`/`grep` allowlist masks out `edit`.
+fn explore_profile() -> AgentProfile {
+    AgentProfile {
+        name: "explore".into(),
+        description: "Read-only exploration agent.".into(),
+        mode: AgentMode::Subagent,
+        system_prompt: "You are a read-only exploration agent.".into(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Deny)
+            .with("read", Permission::Allow)
+            .with("glob", Permission::Allow)
+            .with("grep", Permission::Allow),
+        tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+    }
+}
 
 /// An LLM that records the tool names advertised in each request, then replies
 /// with plain text so the turn ends immediately.
@@ -46,6 +67,7 @@ fn recording_config(seen: Arc<Mutex<Vec<Vec<String>>>>) -> EngineConfig {
         ToolSpec::new("read", "read a file"),
         ToolSpec::new("edit", "edit a file"),
     ];
+    cfg.profiles.insert(explore_profile());
     cfg
 }
 

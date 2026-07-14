@@ -198,8 +198,7 @@ mod tests {
         // explicitly allowlists `propose_plan` gets the spec. The built-in `plan`
         // profile does (its allowlist lists it); `build` (inherit-all) and
         // `explore` (read trio) do not.
-        use entanglement_core::ProfileRegistry;
-        let reg = ProfileRegistry::new();
+        let reg = crate::agents::built_in_registry();
         assert!(
             specs_for(reg.get("build").unwrap()).is_empty(),
             "an inherit-all profile gets no propose_plan spec"

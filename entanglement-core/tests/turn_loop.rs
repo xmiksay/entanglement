@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, SessionId, ToolCall,
+    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
+    ToolCall,
 };
 
 mod common;
@@ -321,12 +322,26 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
             tool_calls: vec![],
         },
     ]);
-    let cfg = EngineConfig {
+    let mut cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             LlmSession::new(Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)))
         }),
         ..EngineConfig::default()
     };
+    // Core carries only the `build` built-in (#201); register a second profile to
+    // switch to, so the stashed SetAgent has a real target to resolve.
+    cfg.profiles.insert(AgentProfile {
+        name: "reviewer".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: "Review the changes.".into(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Ask),
+        tools: None,
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+    });
     let holly = Holly::spawn(cfg);
     // The tool call is an unknown tool; execution is now a runtime round-trip
     // (#58) so the turn only completes once the executor answers.
@@ -350,26 +365,26 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
     holly
         .send(InMsg::SetAgent {
             session: sid.clone(),
-            agent: "plan".into(),
+            agent: "reviewer".into(),
         })
         .await
         .unwrap();
 
     // Watch for the AgentChanged event (fires when the stashed SetAgent is
     // replayed after turn 1 completes).
-    let mut saw_plan = false;
+    let mut saw_reviewer = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub2.recv()).await {
         if let OutEvent::AgentChanged { agent, session, .. } = ev {
-            if session == sid && agent == "plan" {
-                saw_plan = true;
+            if session == sid && agent == "reviewer" {
+                saw_reviewer = true;
                 break;
             }
         }
     }
     assert!(
-        saw_plan,
-        "stashed SetAgent should have switched the session to the plan profile"
+        saw_reviewer,
+        "stashed SetAgent should have switched the session to the reviewer profile"
     );
 
     // Now send a real follow-up Prompt; it runs on the still-alive session.

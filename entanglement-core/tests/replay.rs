@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Llm, LlmRequest, LlmResponse, LlmSession, LlmStream,
-    OutEvent, SessionId,
+    stream_from_response, AgentMode, AgentProfile, EngineConfig, Llm, LlmRequest, LlmResponse,
+    LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
 };
 
 /// An LLM that replays a scripted list of responses, in order.
@@ -337,7 +337,7 @@ async fn profile_changes_during_replay() {
             None,
             OutEvent::AgentChanged {
                 session: sid.clone(),
-                agent: "plan".to_string(),
+                agent: "reviewer".to_string(),
                 profile_detail: None,
             },
         ),
@@ -358,12 +358,26 @@ async fn profile_changes_during_replay() {
         ),
     ];
 
-    let cfg = factory(vec![]);
+    // Core carries only the `build` built-in (#201); replay resolves the
+    // `AgentChanged` name against the registry, so register the target here.
+    let mut cfg = factory(vec![]);
+    cfg.profiles.insert(AgentProfile {
+        name: "reviewer".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: "Review the changes.".into(),
+        model: None,
+        permission: PermissionProfile::new(Permission::Ask),
+        tools: None,
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+    });
     let result = entanglement_core::session::Session::replay(&records, &cfg);
 
     assert!(result.is_ok());
     let session = result.unwrap();
-    assert_eq!(session.profile.name, "plan");
+    assert_eq!(session.profile.name, "reviewer");
 }
 
 #[tokio::test]

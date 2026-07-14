@@ -465,7 +465,7 @@ mod tests {
         // The default registry: build/plan (Primary, not targets), explore
         // (Subagent, a target). `build` may spawn, so it gets the triple — but
         // only `explore` is a valid target, so the enum lists it alone.
-        let reg = ProfileRegistry::new();
+        let reg = crate::agents::built_in_registry();
         let build = reg.get("build").unwrap();
         let specs = spawn_specs_for(build, &reg);
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn spawn_specs_empty_for_a_non_spawning_profile() {
         // `explore` is a Subagent leaf — it may not spawn, so it gets no family.
-        let reg = ProfileRegistry::new();
+        let reg = crate::agents::built_in_registry();
         let explore = reg.get("explore").unwrap();
         assert!(spawn_specs_for(explore, &reg).is_empty());
     }
