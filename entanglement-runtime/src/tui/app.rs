@@ -220,6 +220,20 @@ impl App {
             }
             self.mark_dirty();
         }
+        // A live model switch (#218) updates the head's model display (context
+        // bar) directly — model_info is app-global, not per-session-view state.
+        if let OutEvent::ModelChanged {
+            model,
+            context_window,
+            ..
+        } = &event
+        {
+            self.set_model_info(ModelInfo {
+                id: model.clone(),
+                display_name: model.clone(),
+                context_window: context_window.map(|w| w as u32),
+            });
+        }
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();
         }

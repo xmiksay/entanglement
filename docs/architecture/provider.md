@@ -105,7 +105,12 @@ honoring `Retry-After` per endpoint; before #217 those responses came back as
 per-endpoint state is the reason a session carries **no** per-session connection
 handle: the `LlmSession` newtype was collapsed to a plain `Box<dyn Llm>` (#195,
 [ADR-0062](../adr/0062-collapse-llmsession-placeholder-newtype.md)) — resilience
-belongs to the endpoint, shared across sessions, not to the conversation.
+belongs to the endpoint, shared across sessions, not to the conversation. A
+**live model/provider switch** (#218,
+[ADR-0063](../adr/0063-realtime-model-provider-switch.md)) rebuilds that
+`Box<dyn Llm>` from a `ResolvedModel` the runtime resolves against this catalog +
+the warm per-endpoint client, so switching mid-session neither restarts the engine
+nor cold-starts the pool.
 
 **Request-body logging is opt-in and symmetric** (#165): every client emits a
 `debug!` *summary* per request (model, message/tool counts — no payload). The

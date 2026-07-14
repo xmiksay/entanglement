@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile};
-use entanglement_provider::{EchoLlm, GenerationParams, Llm, LlmFactory, ModelPricing, ToolSpec};
+use entanglement_provider::{
+    EchoLlm, GenerationParams, Llm, LlmFactory, ModelPricing, ModelResolver, ToolSpec,
+};
 
 use super::DEFAULT_PROFILE;
 
@@ -55,6 +57,15 @@ pub struct EngineConfig {
     /// model to fill [`OutEvent::Usage`][crate::protocol::OutEvent::Usage]'s
     /// `cost_usd`; a model absent from the map yields `None` (unknown cost).
     pub pricing: HashMap<String, ModelPricing>,
+    /// Re-resolves a `(provider, model)` pair against the catalog for a live
+    /// model/provider switch (#218) — the seam that lets a running session swap
+    /// its [`Session::llm`][crate::session::Session] without restarting the
+    /// engine. Supplied by the runtime capturing the provider catalog + the
+    /// per-endpoint HTTP client (already warm, #217). `None` (the `EchoLlm`
+    /// default, or an embedder that doesn't wire it) makes an
+    /// [`InMsg::SetModel`][crate::protocol::InMsg::SetModel] a no-op that surfaces
+    /// an [`OutEvent::Error`][crate::protocol::OutEvent::Error].
+    pub model_resolver: Option<ModelResolver>,
 }
 
 impl EngineConfig {
@@ -77,6 +88,7 @@ impl Default for EngineConfig {
             context_window: None,
             generation: None,
             pricing: HashMap::new(),
+            model_resolver: None,
         }
     }
 }

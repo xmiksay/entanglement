@@ -45,14 +45,25 @@ and runs nothing inline — the built-ins were removed in #231
 former plan-authority tools (`update_plan`/`update_tasks`) are now ordinary
 permission-gated runtime state tools carried on `tool_specs`/`profile_tool_specs`.
 Each round-trip's `Finish` is priced against
-`EngineConfig.pricing` (effective model = `profile.model` else `default_model`),
+`EngineConfig.pricing` (effective model = `session.model` (a live switch) else
+`profile.model` else `default_model`),
 folded into the session's `SessionUsage`, and emitted as `OutEvent::Usage`; a
 `StopReason::MaxTokens` also emits a truncation-warning `Error` (✅ #192,
 [ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)). Permission dispatch and approval no longer run
 here — the runtime tool executor owns them (§3, §8, ✅ #59). While parked, the
-session loop stashes a `Prompt`/`SetAgent` for the live turn's fold site /
-replay-after-turn; only the stash gate differs from idle (the stash is popped
-only between turns). Setup errors (the initial `stream()` call)
+session loop stashes a `Prompt`/`SetAgent`/`SetModel` for the live turn's fold
+site / replay-after-turn; only the stash gate differs from idle (the stash is
+popped only between turns).
+
+**Live model/provider switch** (✅ #218,
+[ADR-0063](../adr/0063-realtime-model-provider-switch.md)): an idle `SetModel {
+provider, model }` re-resolves via `EngineConfig.model_resolver` (a
+runtime-supplied `Fn(&str,&str) -> Result<ResolvedModel,_>` capturing the catalog
++ warm per-endpoint client, #217), rebuilds `Session::llm`, and retargets the
+per-session `model` (overrides `profile.model` on the request + in pricing) +
+`generation` + the `Context` window budget — no restart. Emits `ModelChanged`
+(unknown provider / missing key → `Error`); deferred mid-turn like `SetAgent`, and
+replay re-applies it to re-bind a resumed session. Setup errors (the initial `stream()` call)
 surface as `Error` + `Done` with no partial to commit. A **mid-stream** failure
 is handled to keep the committed context aligned with what the user saw (#181,
 [ADR-0057](../adr/0057-mid-stream-error-partial-commit-and-retry.md)):

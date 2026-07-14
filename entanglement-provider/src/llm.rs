@@ -224,6 +224,39 @@ pub trait Llm: Send {
 /// [ADR-0062]: ../../docs/adr/0062-collapse-llmsession-placeholder-newtype.md
 pub type LlmFactory = std::sync::Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>;
 
+/// Everything a live session needs to re-bind itself to a different
+/// model/provider without an engine restart (#218): the factory that builds the
+/// new `Box<dyn Llm>`, the effective model id + provider it resolved to, and the
+/// per-model generation knobs + context window that must follow the switch. The
+/// runtime resolves it from the catalog + user config (reusing the same wire /
+/// base / key resolution as startup); core applies it to a running session on
+/// a `SetModel` message — rebuilding `Session::llm`, retargeting the request
+/// model, re-budgeting the context window.
+#[derive(Clone)]
+pub struct ResolvedModel {
+    /// Catalog provider name the switch landed on (canonical, from the entry).
+    pub provider: String,
+    /// The effective model id — sent on every subsequent request and used to
+    /// price the turn.
+    pub model: String,
+    /// Builds the new per-session backend bound to `provider`/`model`.
+    pub llm_factory: LlmFactory,
+    /// Generation knobs for `model` (temperature / max-output / thinking), gated
+    /// by its catalog capabilities. `None` for a model absent from the catalog.
+    pub generation: Option<GenerationParams>,
+    /// `model`'s context window in tokens, so the session re-budgets its history
+    /// against the real window. `None` (unknown model) falls back to the flat cap.
+    pub context_window: Option<usize>,
+}
+
+/// Re-resolves a `(provider, model)` pair to a [`ResolvedModel`] for a
+/// mid-session switch (#218), or `Err(message)` when the provider is unknown or
+/// its API key is unset. Held by the engine config so a session can swap its LLM
+/// with no restart; the runtime builds it capturing the provider catalog + the
+/// per-endpoint HTTP client (already warm, #217).
+pub type ModelResolver =
+    std::sync::Arc<dyn Fn(&str, &str) -> Result<ResolvedModel, String> + Send + Sync>;
+
 /// Deterministic stub backend. Emits a configured reply as a single text chunk
 /// then `Finish` — ideal for bootstrap wiring and unit tests.
 pub struct DummyLlm {

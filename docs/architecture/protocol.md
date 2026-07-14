@@ -15,6 +15,7 @@ InMsg    = Prompt{session,text} | Approve{session,request_id,scope?}  // approva
          | AnswerQuestion{session,request_id,answer}  // ask_user answer → runtime (#90)
          | Stop{session}
          | SetAgent{session,agent}   // switch profile (plan/task state is a runtime tool now, #231)
+         | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
          | ListSessions{session}   // supervisor-global query; session = correlation id (#21)
          | CloseSession{session}   // explicit destroy → SessionEnded (#21)
@@ -25,6 +26,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | SessionList{session,sessions:[SessionInfo]}   // reply to ListSessions, no seq (#21)
          | Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
+         | ModelChanged{session,provider,model,context_window?}   // point-in-time, no seq; reply to SetModel (#218, ADR-0063)
          | Plan{session,seq,content}          // markdown prose snapshot, runtime-emitted (#231)
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)

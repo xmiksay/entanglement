@@ -26,9 +26,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId};
 use entanglement_provider::{
-    Catalog, GenerationParams, HttpClient, ModelInfo, ModelPricing, ProviderEntry, Wire,
+    Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
+    ProviderEntry, ResolvedModel, Wire,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use host::{host_tools, BashTool, CallTool};
 use pipe::pipe;
@@ -73,6 +75,10 @@ fn build_config(
     user_config: &config::Config,
 ) -> (EngineConfig, ModelInfo, ToolRegistry) {
     let (mut cfg, model_info) = select_provider(catalog, http_client, user_config);
+    // Realtime model/provider switch (#218): give the engine a resolver so a
+    // session can re-bind its LLM from the catalog with no restart. Captures the
+    // catalog + the warm per-endpoint HTTP client (#217).
+    cfg.model_resolver = Some(build_model_resolver(catalog.clone(), http_client.clone()));
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
     cfg.profiles = profiles;
     // Thread the resolved model's context window into the engine (#178) so each
@@ -310,26 +316,14 @@ fn openai_wire_config(
     catalog: &Catalog,
     user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
-    let key = match &entry.key_env {
-        Some(k) => Some(env_nonempty(k)?), // keyed provider missing its key: skip
-        None => None,                      // keyless (Ollama)
-    };
-    let name = entry.name.to_uppercase();
     let model = resolve_model(entry, user_config);
-    let base = env_nonempty(&format!("{name}_API_BASE"))
-        .or_else(|| env_nonempty(&format!("{name}_BASE")))
-        .or_else(|| entry.base_url.clone())
-        .unwrap_or_else(|| entanglement_provider::OPENAI_BASE.to_string());
-    eprintln!("skutter: provider={} model={model} base={base}", entry.name);
+    // Reuse the mid-session builder so startup and a live switch resolve the
+    // wire/base/key identically (#218); a keyed provider missing its key → skip.
+    let llm_factory = openai_factory_for(entry, &model, http_client).ok()?;
+    eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
-            llm_factory: entanglement_provider::openai_factory(
-                base,
-                key,
-                model.clone(),
-                resolve_rpm(entry),
-                http_client.clone(),
-            ),
+            llm_factory,
             default_model: Some(model.clone()),
             generation: generation_for(entry, &model, catalog),
             pricing: pricing_map(catalog),
@@ -346,17 +340,12 @@ fn anthropic_wire_config(
     catalog: &Catalog,
     user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
-    let key = env_nonempty(entry.key_env.as_deref()?)?;
     let model = resolve_model(entry, user_config);
+    let llm_factory = anthropic_factory_for(entry, &model, http_client).ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
-            llm_factory: entanglement_provider::anthropic_factory(
-                key,
-                model.clone(),
-                resolve_rpm(entry),
-                http_client.clone(),
-            ),
+            llm_factory,
             default_model: Some(model.clone()),
             generation: generation_for(entry, &model, catalog),
             pricing: pricing_map(catalog),
@@ -364,6 +353,88 @@ fn anthropic_wire_config(
         },
         model_info_for(entry, &model, catalog),
     ))
+}
+
+/// Build an OpenAI-compat [`LlmFactory`] for an explicit `(entry, model)`.
+/// Shared by startup ([`openai_wire_config`]) and the live-switch resolver
+/// ([`build_model_resolver`], #218). `Err(message)` when a keyed provider's API
+/// key is unset — startup maps it to a skip, the switch surfaces it to the head.
+fn openai_factory_for(
+    entry: &ProviderEntry,
+    model: &str,
+    http_client: &HttpClient,
+) -> Result<LlmFactory, String> {
+    let key = match &entry.key_env {
+        Some(k) => Some(
+            env_nonempty(k)
+                .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
+        ),
+        None => None, // keyless (Ollama)
+    };
+    let name = entry.name.to_uppercase();
+    let base = env_nonempty(&format!("{name}_API_BASE"))
+        .or_else(|| env_nonempty(&format!("{name}_BASE")))
+        .or_else(|| entry.base_url.clone())
+        .unwrap_or_else(|| entanglement_provider::OPENAI_BASE.to_string());
+    Ok(entanglement_provider::openai_factory(
+        base,
+        key,
+        model.to_string(),
+        resolve_rpm(entry),
+        http_client.clone(),
+    ))
+}
+
+/// Build an Anthropic-wire [`LlmFactory`] for an explicit `(entry, model)`.
+/// Shared by startup and the live-switch resolver (#218). Always keyed;
+/// `Err(message)` when the key env is absent/unset.
+fn anthropic_factory_for(
+    entry: &ProviderEntry,
+    model: &str,
+    http_client: &HttpClient,
+) -> Result<LlmFactory, String> {
+    let key_env = entry
+        .key_env
+        .as_deref()
+        .ok_or_else(|| format!("provider `{}` has no API key env", entry.name))?;
+    let key = env_nonempty(key_env).ok_or_else(|| format!("{key_env} is not set"))?;
+    Ok(entanglement_provider::anthropic_factory(
+        key,
+        model.to_string(),
+        resolve_rpm(entry),
+        http_client.clone(),
+    ))
+}
+
+/// Build the live model/provider resolver the engine calls on `SetModel` (#218).
+/// Captures the catalog + the per-endpoint HTTP client (clients stay warm across
+/// switches, #217) and re-runs the same wire/base/key resolution as startup for
+/// an explicit `(provider, model)` — so a mid-session switch binds exactly like a
+/// fresh launch would, minus the model-default fallback (the model is chosen by
+/// the head). An unknown provider / missing key comes back as `Err` for the head
+/// to surface.
+fn build_model_resolver(catalog: Catalog, http_client: HttpClient) -> ModelResolver {
+    Arc::new(move |provider: &str, model: &str| {
+        let entry = catalog
+            .provider(provider)
+            .ok_or_else(|| format!("unknown provider `{provider}`"))?;
+        let llm_factory = match entry.wire {
+            Wire::Openai => openai_factory_for(entry, model, &http_client)?,
+            Wire::Anthropic => anthropic_factory_for(entry, model, &http_client)?,
+        };
+        Ok(ResolvedModel {
+            provider: entry.name.clone(),
+            model: model.to_string(),
+            llm_factory,
+            generation: catalog
+                .model(provider, model)
+                .map(|m| m.generation_params()),
+            context_window: catalog
+                .model(provider, model)
+                .and_then(|m| m.context_window)
+                .map(|w| w as usize),
+        })
+    })
 }
 
 fn echo_model_info() -> ModelInfo {
