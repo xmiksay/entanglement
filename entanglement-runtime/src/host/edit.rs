@@ -10,13 +10,10 @@ use entanglement_core::protocol::FileChangeKind;
 use serde::Deserialize;
 
 type CanEditCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
-type OnEditCallback =
-    Box<dyn Fn(String, Option<Vec<u8>>, Option<Vec<u8>>, FileChangeKind) + Send + Sync>;
 
 pub struct EditTool {
     root: std::path::PathBuf,
     can_edit: Option<CanEditCallback>,
-    on_edit: Option<OnEditCallback>,
 }
 
 impl EditTool {
@@ -24,7 +21,6 @@ impl EditTool {
         Self {
             root,
             can_edit: None,
-            on_edit: None,
         }
     }
 
@@ -34,15 +30,6 @@ impl EditTool {
         F: Fn(&str) -> Result<()> + Send + Sync + 'static,
     {
         self.can_edit = Some(Box::new(f));
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_on_edit<F>(mut self, f: F) -> Self
-    where
-        F: Fn(String, Option<Vec<u8>>, Option<Vec<u8>>, FileChangeKind) + Send + Sync + 'static,
-    {
-        self.on_edit = Some(Box::new(f));
         self
     }
 }
@@ -118,14 +105,11 @@ impl Tool for EditTool {
                 .await
                 .with_context(|| "creating file".to_string())?;
 
-            if let Some(ref on_edit) = self.on_edit {
-                on_edit(
-                    parsed.path.clone(),
-                    None,
-                    Some(parsed.new_string.into_bytes()),
-                    FileChangeKind::Create,
-                );
-            }
+            crate::file_change::record(
+                parsed.path.clone(),
+                FileChangeKind::Create,
+                parsed.new_string.as_bytes(),
+            );
 
             return Ok(format!("created file: {}", parsed.path));
         }
@@ -133,7 +117,6 @@ impl Tool for EditTool {
         let content = tokio::fs::read_to_string(&target_abs)
             .await
             .with_context(|| "reading before modify".to_string())?;
-        let before_bytes = content.clone().into_bytes();
 
         let matches: Vec<_> = content.match_indices(&parsed.old_string).collect();
         if matches.is_empty() {
@@ -156,20 +139,15 @@ impl Tool for EditTool {
                 &content[idx + parsed.old_string.len()..]
             )
         };
-        let after_bytes = replaced.clone().into_bytes();
-
         tokio::fs::write(&target_abs, &replaced)
             .await
             .with_context(|| "writing modified file".to_string())?;
 
-        if let Some(ref on_edit) = self.on_edit {
-            on_edit(
-                parsed.path.clone(),
-                Some(before_bytes),
-                Some(after_bytes),
-                FileChangeKind::Edit,
-            );
-        }
+        crate::file_change::record(
+            parsed.path.clone(),
+            FileChangeKind::Edit,
+            replaced.as_bytes(),
+        );
 
         Ok(format!(
             "{} matches replaced",
@@ -181,7 +159,6 @@ impl Tool for EditTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
@@ -275,26 +252,34 @@ mod tests {
         );
     }
 
+    /// Under a `file_change::capture` scope a replace records an `Edit` with the
+    /// after-content hash; a create records a `Create`.
     #[tokio::test]
-    async fn on_edit_callback_reports_before_and_after() {
-        type EditRecord = (String, Option<Vec<u8>>, Option<Vec<u8>>, FileChangeKind);
+    async fn records_file_change_under_capture() {
+        use sha2::{Digest, Sha256};
         let dir = tmp();
         std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
-        let seen: Arc<Mutex<Vec<EditRecord>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = seen.clone();
-        let tool =
-            EditTool::new(dir.path().to_path_buf()).with_on_edit(move |p, before, after, kind| {
-                sink.lock().unwrap().push((p, before, after, kind))
-            });
-        tool.run(r#"{"path":"a.txt","oldString":"alpha","newString":"beta"}"#)
-            .await
-            .unwrap();
-        let recorded = seen.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].0, "a.txt");
-        assert_eq!(recorded[0].1.as_deref(), Some(&b"alpha\n"[..]));
-        assert_eq!(recorded[0].2.as_deref(), Some(&b"beta\n"[..]));
-        assert_eq!(recorded[0].3, FileChangeKind::Edit);
+        let tool = EditTool::new(dir.path().to_path_buf());
+
+        let (res, rec) = crate::file_change::capture(
+            tool.run(r#"{"path":"a.txt","oldString":"alpha","newString":"beta"}"#),
+        )
+        .await;
+        res.unwrap();
+        let rec = rec.expect("edit records a change");
+        assert_eq!(rec.path, "a.txt");
+        assert_eq!(rec.kind, FileChangeKind::Edit);
+        assert_eq!(rec.hash, format!("{:x}", Sha256::digest(b"beta\n")));
+
+        let (res, rec) = crate::file_change::capture(
+            tool.run(r#"{"path":"new.txt","oldString":"","newString":"body\n"}"#),
+        )
+        .await;
+        res.unwrap();
+        let rec = rec.expect("create records a change");
+        assert_eq!(rec.path, "new.txt");
+        assert_eq!(rec.kind, FileChangeKind::Create);
+        assert_eq!(rec.hash, format!("{:x}", Sha256::digest(b"body\n")));
     }
 
     #[tokio::test]
