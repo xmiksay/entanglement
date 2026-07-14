@@ -187,7 +187,14 @@ provider-key env file #220), and the engine-robustness epic (#176 — inner-loop
 compaction + refuse-over-window #178, `Stop` raced against the stream via
 `tokio::select!` #179, `CloseSession` cascade over the spawn sub-tree #180,
 interrupted-partial commit + single mid-stream retry #181, mid-turn `Prompt`
-folded into the live turn #182/[ADR-0058](../docs/adr/0058-mid-turn-prompt-folds-into-live-turn.md))
+folded into the live turn #182/[ADR-0058](../docs/adr/0058-mid-turn-prompt-folds-into-live-turn.md)),
+and the security & filesystem-containment epic (#161 — project-local definitions
+trusted-by-design #162/[ADR-0047](../docs/adr/0047-local-trust-boundary.md)
+(the mitigation is inspection, not restriction), canonicalizing symlink-safe root
+containment for `read`/`edit`/`write` + `glob`/`grep`
+#163/[ADR-0054](../docs/adr/0054-canonicalizing-symlink-safe-root-containment.md),
+provider API keys scrubbed from `bash`/`call` child env #164, opt-in symmetric
+request-body logging behind `ENTANGLEMENT_LOG_BODIES` #165)
 are **complete**.
 Current phase is the July 2026 audit backlog — thematic epics tracked on GitHub
 with P0/P1/P2 labels and blocked-by links:
