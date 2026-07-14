@@ -141,7 +141,7 @@ impl Session {
         // either. `iterations` restarts at 0: `MAX_TURNS` is a runaway guard,
         // not a quota. Guarded to the resumed root's own events so a child's
         // interleaved tail is not misattributed (#275).
-        let is_root = |sid: &SessionId| root.as_ref().map_or(true, |r| r == sid);
+        let is_root = |sid: &SessionId| root.as_ref().is_none_or(|r| r == sid);
         let tail: Vec<ToolCall> = pending_tools
             .iter()
             .filter(|(sid, _)| is_root(sid))

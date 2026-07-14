@@ -34,7 +34,7 @@ use crate::EngineConfig;
 use entanglement_provider::LlmSession;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use emit::{emit_tool_output, next_seq};
+use emit::{emit_tool_exec, emit_tool_output, next_seq};
 use turn::drive_turn;
 
 /// Commands routed to a single session by the supervisor (InMsg minus session id).
@@ -146,6 +146,29 @@ pub(crate) async fn session_loop(
         agent: s.profile.name.clone(),
         profile_detail: Some(s.profile.detail()),
     });
+
+    // A session resumed mid-turn (#271/#272, ADR-0061): re-offer every pending
+    // call — same `request_id`, fresh `seq` — so the tool executor (or an
+    // external resolver) answers it exactly like a first offer, then fall into
+    // the loop parked. At-least-once by design: a tool that ran before the
+    // crash but whose result was never logged runs again. Display `ToolCall`
+    // events are not re-emitted — heads rebuild those from the log. A drained
+    // tail (every result logged, next round never streamed) has nothing to
+    // re-offer; continue the turn directly.
+    if let Some(turn) = s.turn.as_ref() {
+        if turn.pending.is_empty() {
+            drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
+        } else {
+            let _ = events.send(OutEvent::Status {
+                session: session.clone(),
+                state: AgentState::Thinking,
+            });
+            let pending = turn.pending.clone();
+            for c in &pending {
+                emit_tool_exec(&events, &session, c, &mut s.seq);
+            }
+        }
+    }
 
     loop {
         // Pop the stash only when idle: a command stashed during a live turn
