@@ -125,7 +125,11 @@ endpoint (proxy, local vLLM, new vendor) is `wire: openai` + `base_url` +
 `model_by_id(id)`.
 
 **Provider selection (`skutter`):** the catalog loads once at startup; a
-malformed user file is a loud error, never a silent fallback. `ENTANGLEMENT_PROVIDER=<name>`
+malformed user file is a loud error, never a silent fallback — and so is an
+explicit `ENTANGLEMENT_PROVIDERS_FILE` that points at a missing file (a mistyped
+override no longer silently yields the embedded defaults, #204; the *default*
+`${config_dir}` path being absent stays the normal "no user override" case).
+`ENTANGLEMENT_PROVIDER=<name>`
 looks `<name>` up **in the catalog** (so custom providers work; `echo` stays a
 built-in stub), erroring loudly if its key env is missing; if unset, auto-detect
 by iterating catalog order and picking the first provider whose `key_env` is set

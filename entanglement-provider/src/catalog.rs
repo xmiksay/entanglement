@@ -25,7 +25,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_yaml::Value;
 
@@ -154,10 +154,17 @@ impl Catalog {
     }
 
     /// Resolve the user override file and, if it exists, deep-merge it over the
-    /// builtin. A malformed user file is a loud error (never a silent fallback).
+    /// builtin. A malformed user file is a loud error (never a silent fallback);
+    /// so, now, is an explicit `ENTANGLEMENT_PROVIDERS_FILE` pointing at a path
+    /// that does not exist — the default `${config_dir}` path being absent stays
+    /// the normal "no user override" case (#204).
     pub fn load() -> Result<Catalog> {
         match providers_file_path() {
-            Some(path) if path.exists() => Catalog::load_from(&path),
+            Some(loc) if loc.path.exists() => Catalog::load_from(&loc.path),
+            Some(loc) if loc.explicit => bail!(
+                "{PROVIDERS_FILE_ENV} points at a missing provider catalog: {}",
+                loc.path.display()
+            ),
             _ => Ok(Catalog::builtin()),
         }
     }
@@ -209,13 +216,28 @@ impl Catalog {
     }
 }
 
+/// A resolved catalog-file location plus whether it came from an explicit
+/// `ENTANGLEMENT_PROVIDERS_FILE` override (vs the default `${config_dir}` path),
+/// so [`Catalog::load`] can be loud about a missing *explicit* override while
+/// staying quiet about a missing *default* (#204).
+struct CatalogFile {
+    path: PathBuf,
+    explicit: bool,
+}
+
 /// The user override file path: `${config_dir}/entanglement/providers.yml`,
 /// overridable via `ENTANGLEMENT_PROVIDERS_FILE`.
-fn providers_file_path() -> Option<PathBuf> {
+fn providers_file_path() -> Option<CatalogFile> {
     if let Some(p) = std::env::var_os(PROVIDERS_FILE_ENV) {
-        return Some(PathBuf::from(p));
+        return Some(CatalogFile {
+            path: PathBuf::from(p),
+            explicit: true,
+        });
     }
-    dirs::config_dir().map(|d| d.join("entanglement").join("providers.yml"))
+    dirs::config_dir().map(|d| CatalogFile {
+        path: d.join("entanglement").join("providers.yml"),
+        explicit: false,
+    })
 }
 
 // ── merge ────────────────────────────────────────────────────────────────────
@@ -274,7 +296,13 @@ fn merge_seq_by(base: Value, over: Value, id_key: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    /// `load()` reads a process-global env var (`PROVIDERS_FILE_ENV`); tests that
+    /// set it must not race under cargo's parallel test threads.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn builtin_parses() {
@@ -391,6 +419,19 @@ mod tests {
     fn load_from_missing_file_errors() {
         let err = Catalog::load_from(Path::new("/no/such/providers.yml")).unwrap_err();
         assert!(err.to_string().contains("reading provider catalog"));
+    }
+
+    #[test]
+    fn explicit_env_override_at_missing_path_is_a_loud_error() {
+        // A user who sets ENTANGLEMENT_PROVIDERS_FILE and mistypes it should not
+        // silently get the embedded defaults — that override must be honored or
+        // loudly rejected (#204). `load()` reads a process-global env var, so
+        // serialize against any other env-touching test in this binary.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(PROVIDERS_FILE_ENV, "/no/such/providers.yml");
+        let err = Catalog::load().unwrap_err();
+        std::env::remove_var(PROVIDERS_FILE_ENV);
+        assert!(err.to_string().contains(PROVIDERS_FILE_ENV), "got: {err:#}");
     }
 
     #[test]

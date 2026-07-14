@@ -271,26 +271,10 @@ pub fn prompt_report(
     }))
 }
 
-/// Which of the three precedence layers a definition came from (#185). Ordered
-/// low → high, so `built-in < user < project` matches discovery order and the
-/// later-wins collision rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum AgentLayer {
-    BuiltIn,
-    User,
-    Project,
-}
-
-impl AgentLayer {
-    /// Short label for the `skutter inspect agents` table and `replaces=` logs.
-    pub fn label(self) -> &'static str {
-        match self {
-            AgentLayer::BuiltIn => "built-in",
-            AgentLayer::User => "user",
-            AgentLayer::Project => "project",
-        }
-    }
-}
+/// Which of the three precedence layers a definition came from (#185). The
+/// shared [`crate::layers::Layer`] — `built-in < user < project`, later wins on
+/// a `name` collision — re-exported under the agents-facing name.
+pub use crate::layers::Layer as AgentLayer;
 
 /// A discovered agent definition file *before* parsing: which layer it came from
 /// (#185), a display label for its origin (`built-in (build.md)` or the file
@@ -304,9 +288,10 @@ struct RawAgent {
 /// Enumerate every agent definition in precedence order — embedded built-ins,
 /// then the user dir, then the project dir — without parsing them. Later entries
 /// win on a `name` collision, so consumers keep the last match. A missing dir is
-/// fine; an unreadable dir or file is an error.
+/// fine; an unreadable dir or file is an error. A missing *explicit*
+/// `ENTANGLEMENT_AGENTS_DIR` override is warned by [`crate::layers::load_layers`].
 fn discover(root: &Path) -> Result<Vec<RawAgent>> {
-    let mut raws: Vec<RawAgent> = BUILT_INS
+    let built_ins: Vec<RawAgent> = BUILT_INS
         .iter()
         .map(|(file, contents)| RawAgent {
             layer: AgentLayer::BuiltIn,
@@ -314,15 +299,7 @@ fn discover(root: &Path) -> Result<Vec<RawAgent>> {
             content: (*contents).to_string(),
         })
         .collect();
-    if let Some(dir) = user_agents_dir() {
-        read_dir_raws(AgentLayer::User, &dir, &mut raws)?;
-    }
-    read_dir_raws(
-        AgentLayer::Project,
-        &root.join(".entanglement").join("agents"),
-        &mut raws,
-    )?;
-    Ok(raws)
+    crate::layers::load_layers(root, "agents", AGENTS_DIR_ENV, built_ins, read_dir_raws)
 }
 
 /// Append every `*.md` file in `dir` (if it exists) to `raws`, tagged with
@@ -465,15 +442,6 @@ pub(crate) fn permission_from_value(value: &serde_yaml::Value) -> Result<Permiss
         }
     }
     Ok(PermissionProfile { rules, default })
-}
-
-/// The user agents dir: `${config_dir}/entanglement/agents`, overridable via
-/// `ENTANGLEMENT_AGENTS_DIR` (which tests point at a temp dir).
-fn user_agents_dir() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(AGENTS_DIR_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("agents"))
 }
 
 #[cfg(test)]
