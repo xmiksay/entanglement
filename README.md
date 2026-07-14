@@ -56,8 +56,10 @@ approval live entirely in the runtime (#59).
 
 Session snapshots (`OutEvent::Plan`, `OutEvent::TaskList` — both markdown
 `content`) are orthogonal — emitted by the runtime's `update_plan` /
-`update_tasks` state tools (ordinary host tools, gated by the permission path;
-ADR-0049), so every head can render plan/task panels natively.
+`update_tasks` state tools: permission-gated but carrying no host resource, so
+the runtime intercepts them out of the tool registry and emits the snapshot
+instead of dispatching (#231, ADR-0049). Every head renders plan/task panels
+natively.
 
 **Definitions are data, layered** (embedded < user < project, later wins).
 Agents (`ENTANGLEMENT_AGENTS_DIR`) and skills (`ENTANGLEMENT_SKILLS_DIR`) are
@@ -75,8 +77,8 @@ is `provider (leaf) ← core ← runtime` ([ADR-0053](docs/adr/0053-invert-core-
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-provider` | **leaf** crate owning the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmSession`, `ToolCall`/`ToolSpec`) + wire `Message`; z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
-| `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, the `Tool` **trait**, `Context`. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest` is transitive via provider (ADR-0053). Enforced via `make tree`. |
-| `entanglement-runtime` | the head crate (binary `skutter`): host-tool impls (✅), tool execution + permission dispatch (✅ #58/#59), approval, user sessions, all transports (stdio ✅, TUI ✅, WS 🚧). Selects the concrete provider + glues it to core. Feature-gated `cli`/`tui` (`default = ["tui"]`); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI-free; `make check-lean` enforces. |
+| `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, `Context`. Advertises tool *schemas* (`ToolSpec`) only — holds no executable tools. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest` is transitive via provider (ADR-0053). Enforced via `make tree`. |
+| `entanglement-runtime` | the head crate (binary `skutter`): the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, user sessions, all transports (stdio ✅, TUI ✅, WS 🚧). Selects the concrete provider + glues it to core. Feature-gated `cli`/`provider`/`tui` (`default = ["tui"]`); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI-free; `make check-lean` enforces. |
 
 ## Build & develop
 
