@@ -83,6 +83,15 @@ impl Context {
         self.limit
     }
 
+    /// Re-budget the history against a new model's context window after a live
+    /// model switch (#218): the compaction/refuse threshold must follow the model
+    /// the session now runs under. `None` (unknown model) resets to the flat
+    /// [`CONTEXT_LIMIT_TOKENS`] fallback. History is left intact — the next turn
+    /// compacts against the new limit if it now overflows.
+    pub fn set_window(&mut self, context_window: Option<usize>) {
+        self.limit = Self::budget_for(context_window);
+    }
+
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }

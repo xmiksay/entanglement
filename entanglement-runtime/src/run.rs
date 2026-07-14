@@ -111,6 +111,9 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
             _ => {}
         },
         OutEvent::AgentChanged { agent, .. } => writeln!(out, "# agent: {agent}")?,
+        OutEvent::ModelChanged {
+            provider, model, ..
+        } => writeln!(out, "# model: {provider}/{model}")?,
         OutEvent::Plan { content, .. } => writeln!(out, "▸ plan:\n{content}")?,
         OutEvent::TextDelta { text, .. } => writeln!(out, "> {text}")?,
         OutEvent::ReasoningDelta { text, .. } => writeln!(out, "· {text}")?,

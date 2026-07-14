@@ -116,13 +116,27 @@ pub(super) async fn handle_profile_picker_event(
     Ok(false)
 }
 
-pub(super) async fn handle_model_picker_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+pub(super) async fn handle_model_picker_event(
+    app: &mut App,
+    holly: &Holly,
+    key: KeyEvent,
+) -> Result<bool> {
     match key.code {
         KeyCode::Esc => {
             app.close_model_picker();
         }
         KeyCode::Enter => {
-            app.close_model_picker();
+            // Realtime switch (#218): send the picked `(provider, model)` to the
+            // live engine; the resulting `ModelChanged` updates the context bar.
+            if let Some((provider, model)) = app.select_model_picker() {
+                let _ = holly
+                    .send(InMsg::SetModel {
+                        session: app.active_session_id().clone(),
+                        provider,
+                        model,
+                    })
+                    .await;
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.model_picker_next();

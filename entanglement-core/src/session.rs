@@ -31,7 +31,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::context::Context;
 use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::Llm;
+use entanglement_provider::{GenerationParams, Llm};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use emit::{emit_tool_exec, emit_tool_output, next_seq};
@@ -47,6 +47,10 @@ pub(crate) enum SessionCmd {
     /// (#59) and never reaches the session loop.
     ToolResult(String, String),
     SetAgent(String),
+    /// Switch the live model/provider (`provider`, `model`) — #218. Re-resolves
+    /// against [`EngineConfig::model_resolver`][crate::EngineConfig] and rebuilds
+    /// `Session::llm` without restarting the engine.
+    SetModel(String, String),
     Stop,
 }
 
@@ -64,6 +68,15 @@ pub struct Session {
     pub ctx: Context,
     pub llm: Box<dyn Llm>,
     pub profile: AgentProfile,
+    /// Effective model id when the user switched model/provider mid-session
+    /// (#218), overriding the profile's pinned [`AgentProfile::model`] on every
+    /// request and in pricing. `None` keeps the profile's model (the startup
+    /// default). Set by [`SessionCmd::SetModel`]; reset only by another switch.
+    pub model: Option<String>,
+    /// Effective generation knobs for the active model (#218). Seeded from
+    /// [`EngineConfig::generation`][crate::EngineConfig] at creation and replaced
+    /// on a model switch so temperature / max-output / thinking follow the model.
+    pub generation: Option<GenerationParams>,
     pub seq: u64,
     pub parent: Option<SessionId>,
     /// Cumulative token usage + cost across every model round-trip this session
@@ -100,6 +113,8 @@ impl Session {
             ctx: Context::with_window(cfg.context_window),
             llm: (cfg.llm_factory)(),
             profile,
+            model: None,
+            generation: cfg.generation,
             seq: 0,
             parent: None,
             usage: SessionUsage::default(),
@@ -220,6 +235,45 @@ pub(crate) async fn session_loop(
                             session: session.clone(),
                             seq: next_seq(&mut s.seq),
                             message: format!("unknown agent: {name}"),
+                        });
+                    }
+                }
+            }
+            // Live model/provider switch (#218): re-resolve against the runtime's
+            // catalog-backed resolver, rebuild the backend, and retarget the
+            // request model + generation + context-window budget — no restart.
+            // Deferred during a live turn (stash replay), like `SetAgent`.
+            Some(SessionCmd::SetModel(provider, model)) => {
+                if s.turn.is_some() {
+                    stash.push_back(SessionCmd::SetModel(provider, model));
+                    continue;
+                }
+                let Some(resolver) = cfg.model_resolver.as_ref() else {
+                    let _ = events.send(OutEvent::Error {
+                        session: session.clone(),
+                        seq: next_seq(&mut s.seq),
+                        message: "model switching is not supported by this engine".to_string(),
+                    });
+                    continue;
+                };
+                match resolver(&provider, &model) {
+                    Ok(resolved) => {
+                        s.llm = (resolved.llm_factory)();
+                        s.model = Some(resolved.model.clone());
+                        s.generation = resolved.generation;
+                        s.ctx.set_window(resolved.context_window);
+                        let _ = events.send(OutEvent::ModelChanged {
+                            session: session.clone(),
+                            provider: resolved.provider,
+                            model: resolved.model,
+                            context_window: resolved.context_window,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = events.send(OutEvent::Error {
+                            session: session.clone(),
+                            seq: next_seq(&mut s.seq),
+                            message: format!("cannot switch model: {e}"),
                         });
                     }
                 }

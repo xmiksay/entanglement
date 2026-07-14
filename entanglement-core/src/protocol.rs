@@ -479,6 +479,21 @@ pub enum InMsg {
     CloseSession { session: SessionId },
     /// Switch the session to a different agent profile by name (e.g. `plan`).
     SetAgent { session: SessionId, agent: String },
+    /// Switch the session's live model/provider without restarting the engine
+    /// (#218). The runtime re-resolves `(provider, model)` against the catalog +
+    /// user config (via [`EngineConfig::model_resolver`][crate::EngineConfig]),
+    /// rebuilds the session's `Box<dyn Llm>`, and retargets generation + the
+    /// context-window budget. Both fields are catalog-qualified — a head's model
+    /// picker yields the provider alongside the model — so this covers a
+    /// same-provider model change and a full provider switch uniformly. On
+    /// success the session emits [`OutEvent::ModelChanged`]; an unknown
+    /// provider / missing key surfaces [`OutEvent::Error`]. Applied once the live
+    /// turn ends when one is running (stash replay), like [`SetAgent`][InMsg::SetAgent].
+    SetModel {
+        session: SessionId,
+        provider: String,
+        model: String,
+    },
     /// Spawn a child session (sub-agent) under `parent`, running `prompt` beneath
     /// the named `agent` profile (#60, ADR-0021). `session` is the *child's* id.
     /// The supervisor records the parent link (populating the session tree the
@@ -513,6 +528,7 @@ impl InMsg {
             | InMsg::ListSessions { session }
             | InMsg::CloseSession { session }
             | InMsg::SetAgent { session, .. }
+            | InMsg::SetModel { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => session,
         }
@@ -567,6 +583,18 @@ pub enum OutEvent {
         agent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         profile_detail: Option<ProfileDetail>,
+    },
+    /// The session switched to a different model/provider mid-run (point-in-time,
+    /// no `seq`), in reply to [`InMsg::SetModel`] (#218). Carries the resolved
+    /// `provider`/`model` and the new `context_window` (tokens) so a head can
+    /// update its context bar / model display without re-reading the catalog.
+    /// Replay re-applies it to re-bind a resumed session to the switched model.
+    ModelChanged {
+        session: SessionId,
+        provider: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_window: Option<usize>,
     },
     /// The agent's strategy plan (markdown prose), full snapshot on every change.
     /// Emitted by the runtime when it handles an `update_plan` state tool call
@@ -711,6 +739,7 @@ impl OutEvent {
             | OutEvent::SessionList { session, .. }
             | OutEvent::Status { session, .. }
             | OutEvent::AgentChanged { session, .. }
+            | OutEvent::ModelChanged { session, .. }
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }
             | OutEvent::ReasoningDelta { session, .. }
@@ -737,7 +766,8 @@ impl OutEvent {
             | OutEvent::SessionEnded { .. }
             | OutEvent::SessionList { .. }
             | OutEvent::Status { .. }
-            | OutEvent::AgentChanged { .. } => 0,
+            | OutEvent::AgentChanged { .. }
+            | OutEvent::ModelChanged { .. } => 0,
             OutEvent::Plan { seq, .. }
             | OutEvent::TextDelta { seq, .. }
             | OutEvent::ReasoningDelta { seq, .. }

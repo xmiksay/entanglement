@@ -30,7 +30,7 @@ pub(super) async fn handle_event(
                     return handle_profile_picker_event(app, holly, key).await;
                 }
                 if app.showing_model_picker() {
-                    return handle_model_picker_event(app, key).await;
+                    return handle_model_picker_event(app, holly, key).await;
                 }
                 if app.showing_help() {
                     if key.code == KeyCode::Esc {

@@ -100,9 +100,9 @@ all live in this crate now (✅ #52–#55, #118, #195, #217,
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetAgent | Spawn | ListSessions | CloseSession
+          | SetAgent | SetModel | Spawn | ListSessions | CloseSession
           | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged
+OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged | ModelChanged
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | FileChange
 ```
@@ -138,6 +138,18 @@ re-document them here):
   (sibling of `config.yml`, not its ceiling section).
 - **Session-multiplexed**: every frame carries `SessionId`; content frames carry
   monotonic `seq`. Supervisor-global vs session-scoped routing is explicit.
+- **Model/provider switch is live, not a restart** (#218,
+  [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)): `SetModel {
+  provider, model }` re-resolves against a runtime-supplied resolver held on
+  `EngineConfig::model_resolver` (`Option<ModelResolver>`, the core↔runtime seam —
+  the entry→`Llm` mapping lives in the runtime, so core calls a captured closure),
+  rebuilds `Session::llm`, and retargets the per-session effective model +
+  `generation` + context-window budget without restarting the engine. Emits
+  `ModelChanged` (unknown provider / missing key → `Error`); deferred during a live
+  turn like `SetAgent`, and replay re-applies it to re-bind a resumed session. The
+  TUI `/model` picker now drives it end-to-end. The former `LlmSession` placeholder
+  ([ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md)) stayed
+  collapsed: the switch lives on `Session` fields, not a re-introduced newtype.
 - **Definitions are data, layered** embedded < user < project, later wins; the
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
   Agents (`ENTANGLEMENT_AGENTS_DIR`), skills (`ENTANGLEMENT_SKILLS_DIR`), the

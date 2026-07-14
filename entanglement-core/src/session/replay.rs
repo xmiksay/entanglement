@@ -114,6 +114,29 @@ impl Session {
                         session.profile = profile.clone();
                     }
                 }
+                // Re-bind a resumed session to the model it was switched to
+                // (#218) so the continued turn runs under the same provider/model
+                // + generation + context budget the user picked. Best-effort: an
+                // embedder replaying without a resolver (or a provider whose key
+                // is now unset) keeps the startup default rather than failing.
+                OutEvent::ModelChanged {
+                    provider, model, ..
+                } => {
+                    if let Some(resolver) = cfg.model_resolver.as_ref() {
+                        match resolver(provider, model) {
+                            Ok(resolved) => {
+                                session.llm = (resolved.llm_factory)();
+                                session.model = Some(resolved.model);
+                                session.generation = resolved.generation;
+                                session.ctx.set_window(resolved.context_window);
+                            }
+                            Err(e) => tracing::warn!(
+                                provider, model, error = %e,
+                                "replay: could not re-resolve switched model; keeping default"
+                            ),
+                        }
+                    }
+                }
                 // `Plan`/`TaskList` are the runtime's display state now (#231,
                 // ADR-0049): they carry nothing the engine's `Context` needs, so
                 // replay ignores them. A resuming head folds them from the log

@@ -169,7 +169,7 @@ async fn run_round(
     }
 
     let (text_buf, tool_calls, finish) =
-        match stream_round(session, rx, s, events, stash, &specs, cfg.generation).await {
+        match stream_round(session, rx, s, events, stash, &specs).await {
             StreamedRound::Complete {
                 text,
                 tool_calls,
@@ -186,7 +186,12 @@ async fn run_round(
     // (#192). A `max_tokens`-truncated reply is surfaced as a recoverable
     // warning so it no longer commits silently as a clean turn.
     if let Some((stop_reason, usage)) = finish {
-        let model = s.profile.model.as_deref().or(cfg.default_model.as_deref());
+        // A live model switch (#218) prices the turn under the switched model.
+        let model = s
+            .model
+            .as_deref()
+            .or(s.profile.model.as_deref())
+            .or(cfg.default_model.as_deref());
         let cost = model
             .and_then(|m| cfg.pricing.get(m))
             .map(|p| p.cost_usd(&usage));

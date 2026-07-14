@@ -162,6 +162,50 @@ fn record_bash_passthrough_appends_tool_call_and_output() {
 }
 
 #[test]
+fn select_model_picker_maps_flat_index_to_provider_and_model() {
+    // The picker selection is a flat index across per-provider groups (#218);
+    // `select_model_picker` must resolve it to the right `(provider, model)`.
+    let mut app = App::new_for_test(SessionId::new("test"));
+    let groups = app.available_models().to_vec();
+    assert!(!groups.is_empty(), "builtin catalog has providers");
+
+    // First row → first provider's first model.
+    app.model_picker_state().select(Some(0));
+    assert_eq!(
+        app.select_model_picker(),
+        Some((groups[0].0.clone(), groups[0].1[0].clone()))
+    );
+
+    // A flat index landing in the second group resolves to that provider.
+    if groups.len() > 1 {
+        let idx = groups[0].1.len(); // first row of the second group
+        app.model_picker_state().select(Some(idx));
+        assert_eq!(
+            app.select_model_picker(),
+            Some((groups[1].0.clone(), groups[1].1[0].clone()))
+        );
+    }
+}
+
+#[test]
+fn model_changed_event_updates_the_context_bar() {
+    // A live switch (#218) surfaces `ModelChanged`; the head updates its global
+    // model display from it without re-reading the catalog.
+    let sid = SessionId::new("test");
+    let mut app = App::new_for_test(sid.clone());
+    app.handle_out_event(OutEvent::ModelChanged {
+        session: sid,
+        provider: "anthropic".to_string(),
+        model: "claude-x".to_string(),
+        context_window: Some(200_000),
+    });
+
+    let info = app.model_info();
+    assert_eq!(info.id, "claude-x");
+    assert_eq!(info.context_window, Some(200_000));
+}
+
+#[test]
 fn set_model_info_preserves_resolved_context_window() {
     // Regression (issue #103): the resolved `ModelInfo` — context window
     // included — must be carried verbatim. Re-deriving it from the catalog

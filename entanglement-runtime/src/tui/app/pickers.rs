@@ -142,6 +142,25 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Resolve the highlighted model-picker row to its `(provider, model)` pair
+    /// and close the picker (#218). The selection is a flat index across the
+    /// per-provider groups, so walk the groups the same way
+    /// [`model_picker_next`][Self::model_picker_next] counts them. `None` when
+    /// nothing is selected.
+    pub fn select_model_picker(&mut self) -> Option<(String, String)> {
+        let mut idx = self.model_picker_state.selected()?;
+        for (provider, models) in &self.available_models {
+            if idx < models.len() {
+                let choice = (provider.clone(), models[idx].clone());
+                self.showing_model_picker = false;
+                self.mark_dirty();
+                return Some(choice);
+            }
+            idx -= models.len();
+        }
+        None
+    }
+
     pub fn toggle_model_picker(&mut self) {
         self.showing_model_picker = !self.showing_model_picker;
         if self.showing_model_picker {

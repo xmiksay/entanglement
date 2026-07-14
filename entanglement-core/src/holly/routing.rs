@@ -104,6 +104,9 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> SessionCmd {
         } => SessionCmd::ToolResult(request_id, output),
         InMsg::Stop { .. } => SessionCmd::Stop,
         InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
+        InMsg::SetModel {
+            provider, model, ..
+        } => SessionCmd::SetModel(provider, model),
         // Approve/Reject/AnswerQuestion and the ListSessions/CloseSession
         // lifecycle queries are filtered out before routing (see supervisor);
         // Resume and Spawn are handled specially. None reach here.

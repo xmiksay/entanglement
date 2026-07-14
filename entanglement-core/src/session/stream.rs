@@ -12,9 +12,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::emit::{emit_turn_error, next_seq};
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
-use entanglement_provider::{
-    GenerationParams, LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage,
-};
+use entanglement_provider::{LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage};
 
 /// Outcome of one streamed round-trip.
 pub(super) enum StreamedRound {
@@ -47,9 +45,12 @@ pub(super) async fn stream_round(
     events: &broadcast::Sender<OutEvent>,
     stash: &mut VecDeque<SessionCmd>,
     specs: &[ToolSpec],
-    generation: Option<GenerationParams>,
 ) -> StreamedRound {
     const STREAM_RETRIES: usize = 1;
+    // Effective generation for the model the session currently runs under — the
+    // startup default, or the last live switch (#218). `Copy`, so snapshot it
+    // once rather than re-borrow `s` while `s.llm` streams below.
+    let generation = s.generation;
     let mut attempt: usize = 0;
     let mut text_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -59,7 +60,8 @@ pub(super) async fn stream_round(
     loop {
         let req = LlmRequest {
             system: &s.profile.system_prompt,
-            model: s.profile.model.as_deref(),
+            // A live model switch (#218) overrides the profile's pinned model.
+            model: s.model.as_deref().or(s.profile.model.as_deref()),
             messages: s.ctx.messages(),
             tools: specs,
             generation,
