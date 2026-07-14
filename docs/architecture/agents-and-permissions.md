@@ -138,10 +138,13 @@ below realize one model:
   (`subagent`/`all`) and on its `spawnable_agents` allowlist — so `build`/`plan`
   (primaries) are unreachable spawn targets from mode defaults alone. Plan
   authorship (`update_plan`, ✅ #231, below) and the plan-accept handoff (#141)
-  complete the agent hierarchy. Embedders using core directly still get a
-  hardcoded
-  `build`/`plan`/`explore` fallback via `ProfileRegistry::new()`; add your own with
-  `ProfileRegistry::insert`.
+  complete the agent hierarchy. The built-in trio is defined **once**, here as
+  markdown (#201): core carries only the `build` profile its `resolve()` fallback
+  needs (it can't parse frontmatter, so it holds no `plan`/`explore` copy to drift
+  from these files). Embedders using core directly get that single `build`
+  fallback via `ProfileRegistry::new()`; the runtime rebuilds the full trio from
+  the embedded markdown (`entanglement_runtime::agents::built_in_registry`). Add
+  your own with `ProfileRegistry::insert`.
 - **Physical tool restriction (✅ #116, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)):**
   an agent's `tools` allowlist / `disallowed_tools` denylist masks its tool set —
   `registry ∩ allowlist − denylist` — on *both* sides of the core↔runtime seam,

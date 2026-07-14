@@ -148,6 +148,29 @@ pub fn load_registry(
     Ok(reg)
 }
 
+/// Parse *only* the embedded built-in trio (`build`/`plan`/`explore`) into a
+/// [`ProfileRegistry`], skipping the user/project layers [`load_registry`]
+/// consults. The runtime is the single source of the built-in trio (#201): core
+/// carries only the `build` fallback [`ProfileRegistry::new`] synthesizes, so
+/// callers that need the full trio without touching the filesystem parse the
+/// embedded markdown here. Prompts are composed with an identity
+/// [`PromptContext`] (no brief/env/skills), matching the raw built-in bodies.
+///
+/// The embedded definitions are compile-time constants guarded by
+/// [`tests::built_ins_parse_with_expected_shape`], so a parse failure here is a
+/// build-time bug, not a runtime condition.
+pub fn built_in_registry() -> ProfileRegistry {
+    let ctx = PromptContext::default();
+    let skills = SkillRegistry::default();
+    let mut reg = ProfileRegistry::default();
+    for (file, contents) in BUILT_INS {
+        let profile = parse_definition(contents, &ctx, &skills)
+            .unwrap_or_else(|e| panic!("embedded built-in agent `{file}` must parse: {e}"));
+        reg.insert(profile);
+    }
+    reg
+}
+
 /// One resolved agent for `skutter inspect agents` (#185): the winning
 /// definition plus the provenance the silent `insert` used to swallow — which
 /// layer/source won, and every lower-layer definition of the same name it

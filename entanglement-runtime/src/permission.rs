@@ -316,8 +316,7 @@ mod tests {
 
     #[test]
     fn spawn_refusal_layers_the_four_checks() {
-        use entanglement_core::ProfileRegistry;
-        let reg = ProfileRegistry::new(); // build/plan (Primary), explore (Subagent)
+        let reg = crate::agents::built_in_registry(); // build/plan (Primary), explore (Subagent)
         let build = reg.get("build").unwrap();
         let explore = reg.get("explore").unwrap();
 
@@ -338,8 +337,7 @@ mod tests {
 
     #[test]
     fn spawn_refusal_honors_the_allowlist() {
-        use entanglement_core::ProfileRegistry;
-        let mut reg = ProfileRegistry::new();
+        let mut reg = crate::agents::built_in_registry();
         // A worker leaf (Subagent) plus a second spawnable target.
         reg.insert(masked_profile(
             "worker",

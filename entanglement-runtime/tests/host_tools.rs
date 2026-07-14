@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, ProfileRegistry, SessionId, ToolCall,
+    LlmStream, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::host::{host_tools, BashTool, CallTool};
 use entanglement_runtime::tool_runner::spawn_tool_executor;
@@ -106,6 +106,9 @@ async fn read_tool_runs_through_engine_under_build_profile() {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -114,7 +117,7 @@ async fn read_tool_runs_through_engine_under_build_profile() {
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -179,6 +182,9 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -187,7 +193,7 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -261,13 +267,16 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -347,13 +356,16 @@ async fn write_tool_denied_under_explore_profile() {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -423,13 +435,16 @@ async fn write_tool_masked_under_plan_profile() {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -495,6 +510,9 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -503,7 +521,7 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -573,13 +591,16 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
             LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
         }),
         tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");

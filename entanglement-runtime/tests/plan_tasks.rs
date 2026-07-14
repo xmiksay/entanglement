@@ -133,7 +133,7 @@ async fn update_tasks_allow_emits_tasklist_and_acks() {
     let holly = spawn_calling(
         "update_tasks",
         r#"{"content":"- [x] a\n- [ ] b"}"#,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
     );
     let sid = SessionId::new("s1");
     let events = collect_until_done(&holly, &sid, None).await;
@@ -157,7 +157,7 @@ async fn update_tasks_allow_emits_tasklist_and_acks() {
 
 #[tokio::test]
 async fn update_plan_allow_emits_plan_snapshot() {
-    let mut reg = ProfileRegistry::new();
+    let mut reg = entanglement_runtime::agents::built_in_registry();
     reg.insert(perm_profile(
         "author",
         PermissionProfile::new(Permission::Allow),
@@ -183,7 +183,7 @@ async fn read_only_explore_cannot_mutate_tasks_via_mask() {
     let holly = spawn_calling(
         "update_tasks",
         r#"{"content":"- [ ] sneaky"}"#,
-        ProfileRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
     );
     let sid = SessionId::new("s1");
     let events = collect_until_done(&holly, &sid, Some("explore")).await;
@@ -209,7 +209,7 @@ async fn permission_deny_closes_task_mutation() {
     // The ordinary permission path also gates it: an inherit-all profile that
     // *denies* `update_tasks` refuses the call (no mask involved) — the #175 fix
     // as a permission-profile entry.
-    let mut reg = ProfileRegistry::new();
+    let mut reg = entanglement_runtime::agents::built_in_registry();
     reg.insert(perm_profile(
         "locked",
         PermissionProfile::new(Permission::Allow).with("update_tasks", Permission::Deny),
