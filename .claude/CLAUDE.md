@@ -239,11 +239,19 @@ SIGKILLs the whole tree and grandchildren can't orphan #168, timeouts return the
 **partial output buffered before the kill** instead of discarding it #169, `Stop`
 aborts the in-flight tool task whose drop-guard group-kills the same tree #167,
 and `bash` gains `workdir` + `run_in_background` (detached, polled via
-`bash_output`) with head+tail truncation so the trailing error survives #170)
+`bash_output`) with head+tail truncation so the trailing error survives #170),
+and the provider / `Llm` seam epic (#190 — generation-parameter channel wired
+from catalog capabilities into every `LlmRequest` #191, `LlmEvent::Finish`
+usage/stop-reason surfaced end-to-end via `OutEvent::Usage` #192, ADR-0007
+retry/backoff + per-endpoint rate-limit made live #193/#217/[ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md),
+streaming tool-arg deltas via `LlmEvent::ToolCallDelta`/`OutEvent::ToolCallDelta`
+#194, the empty `LlmSession` placeholder collapsed to a plain `Box<dyn Llm>`
+#195/[ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md), and
+realtime model/provider switch without an engine restart
+#218/[ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md))
 are **complete**.
 Current phase is the July 2026 audit backlog — thematic epics tracked on GitHub
 with P0/P1/P2 labels and blocked-by links:
-#190 (provider seam + per-endpoint pool),
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
 [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)),
