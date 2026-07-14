@@ -29,6 +29,7 @@ pub mod agent_poll;
 pub mod agents;
 pub mod ask_user;
 pub mod config;
+pub mod file_change;
 pub mod frontmatter;
 pub mod grants;
 pub mod host;

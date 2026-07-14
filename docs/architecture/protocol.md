@@ -37,7 +37,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?}  // per-round-trip usage + cost (#192)
          | Error{session,seq,message}
          | Done{session,seq}
-         | FileChange{session,seq,path,before?,after?,change_kind}   // file-change audit record (#41)
+         | FileChange{session,seq,path,change_kind,hash}   // file-change audit: runtime executor emits on edit/write; hash = sha256(after) (#202, ADR-0060)
 ```
 
 `AnswerQuestion` mirrors `Approve`/`Reject`: the supervisor drops it off the

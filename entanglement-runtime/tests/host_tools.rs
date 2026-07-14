@@ -8,12 +8,19 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use entanglement_core::protocol::FileChangeKind;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
     LlmStream, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::host::{host_tools, BashTool, CallTool};
 use entanglement_runtime::tool_runner::spawn_tool_executor;
+use sha2::{Digest, Sha256};
+
+/// Lowercase hex SHA-256, matching the `FileChange.hash` the executor emits.
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
 
 /// An LLM that replays a scripted list of responses in order, then a plain
 /// text reply (so a turn loop that re-prompts after a tool call terminates).
@@ -224,6 +231,23 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
     // The create actually landed on disk.
     let on_disk = std::fs::read_to_string(root.join("out.txt")).unwrap();
     assert_eq!(on_disk, "created\n");
+    // The executor emits the FileChange audit for the create (#202): path,
+    // `Create`, and the SHA-256 of the after-content — no file bytes on the wire.
+    let (path, kind, hash) = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::FileChange {
+                path,
+                change_kind,
+                hash,
+                ..
+            } => Some((path.clone(), *change_kind, hash.clone())),
+            _ => None,
+        })
+        .expect("expected a FileChange");
+    assert_eq!(path, "out.txt");
+    assert_eq!(kind, FileChangeKind::Create);
+    assert_eq!(hash, sha256_hex(b"created\n"));
 }
 
 #[tokio::test]
@@ -322,6 +346,35 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
     );
     let on_disk = std::fs::read_to_string(root.join("pkg/out.txt")).unwrap();
     assert_eq!(on_disk, "only\n");
+    // Both writes emit a FileChange audit (#202): the first `Create`, the second
+    // `Edit`, each carrying the after-content hash in ToolExec order.
+    let changes: Vec<(String, FileChangeKind, String)> = events
+        .iter()
+        .filter_map(|e| match e {
+            OutEvent::FileChange {
+                path,
+                change_kind,
+                hash,
+                ..
+            } => Some((path.clone(), *change_kind, hash.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        vec![
+            (
+                "pkg/out.txt".into(),
+                FileChangeKind::Create,
+                sha256_hex(b"a\nb\n")
+            ),
+            (
+                "pkg/out.txt".into(),
+                FileChangeKind::Edit,
+                sha256_hex(b"only\n")
+            ),
+        ],
+    );
 }
 
 #[tokio::test]

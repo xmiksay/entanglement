@@ -24,7 +24,6 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::tools::ToolRegistry;
-use entanglement_core::protocol::FileChangeKind;
 
 pub mod bash;
 pub mod call;
@@ -217,21 +216,6 @@ pub fn host_tools(root: PathBuf) -> ToolRegistry {
     reg.register(GlobTool::new(root.clone()));
     reg.register(GrepTool::new(root.clone()));
     reg.register(EditTool::new(root.clone()));
-    reg.register(WriteTool::new(root.clone()));
-    reg
-}
-
-#[allow(dead_code)]
-pub fn host_tools_with_callbacks<F, G>(root: PathBuf, on_read: F, on_edit: G) -> ToolRegistry
-where
-    F: Fn(String, Vec<u8>) + Send + Sync + 'static,
-    G: Fn(String, Option<Vec<u8>>, Option<Vec<u8>>, FileChangeKind) + Send + Sync + 'static,
-{
-    let mut reg = ToolRegistry::new();
-    reg.register(ReadTool::new(root.clone()).with_on_read(on_read));
-    reg.register(GlobTool::new(root.clone()));
-    reg.register(GrepTool::new(root.clone()));
-    reg.register(EditTool::new(root.clone()).with_on_edit(on_edit));
     reg.register(WriteTool::new(root.clone()));
     reg
 }

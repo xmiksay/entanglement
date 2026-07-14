@@ -673,16 +673,17 @@ pub enum OutEvent {
     },
     /// Turn finished cleanly. Heads waiting on a one-shot turn exit on this.
     Done { session: SessionId, seq: u64 },
-    /// File change record (audit log entry). Emitted after each successful edit
-    /// or create. The record carries before/after bytes and change kind for
-    /// diff rendering and audit tracking.
+    /// File change record (audit log entry). Emitted by the runtime's tool
+    /// executor after each successful `edit`/`write` (#202). The record carries
+    /// the `path`, `change_kind`, and a content **hash** (lowercase hex SHA-256
+    /// of the after-content) — not the whole-file bytes: the event fans out to
+    /// every subscriber, so a large edit must not clone its contents per head.
     FileChange {
         session: SessionId,
         seq: u64,
         path: String,
-        before: Option<Vec<u8>>,
-        after: Option<Vec<u8>>,
         change_kind: FileChangeKind,
+        hash: String,
     },
 }
 

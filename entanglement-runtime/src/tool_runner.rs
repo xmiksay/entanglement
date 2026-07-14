@@ -522,13 +522,20 @@ async fn run_and_reply(
         }
         crate::plan_tasks::ack(&tool)
     } else {
-        tools
-            .execute(&ToolCall {
+        // `edit`/`write` record their change into the capture scope (#202); the
+        // executor stamps it with this call's session/seq and broadcasts the
+        // `FileChange` audit event before replying with the `ToolResult`.
+        crate::file_change::capture_and_emit(
+            holly.events(),
+            &session,
+            seq,
+            tools.execute(&ToolCall {
                 id: request_id.clone(),
                 name: tool,
                 input,
-            })
-            .await
+            }),
+        )
+        .await
     };
     seam::reply(holly, session, request_id, output).await;
 }

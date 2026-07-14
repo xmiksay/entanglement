@@ -12,13 +12,10 @@ use entanglement_core::protocol::FileChangeKind;
 use serde::Deserialize;
 
 type CanWriteCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
-type OnWriteCallback =
-    Box<dyn Fn(String, Option<Vec<u8>>, Option<Vec<u8>>, FileChangeKind) + Send + Sync>;
 
 pub struct WriteTool {
     root: std::path::PathBuf,
     can_write: Option<CanWriteCallback>,
-    on_write: Option<OnWriteCallback>,
 }
 
 impl WriteTool {
@@ -26,7 +23,6 @@ impl WriteTool {
         Self {
             root,
             can_write: None,
-            on_write: None,
         }
     }
 
@@ -36,15 +32,6 @@ impl WriteTool {
         F: Fn(&str) -> Result<()> + Send + Sync + 'static,
     {
         self.can_write = Some(Box::new(f));
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_on_write<F>(mut self, f: F) -> Self
-    where
-        F: Fn(String, Option<Vec<u8>>, Option<Vec<u8>>, FileChangeKind) + Send + Sync + 'static,
-    {
-        self.on_write = Some(Box::new(f));
         self
     }
 }
@@ -98,8 +85,9 @@ impl Tool for WriteTool {
             can_write(&parsed.path)?;
         }
 
-        // Capture the prior content (if any) for the audit's `before` bytes and
-        // the overwrite line-count report, before we truncate it.
+        // Read the prior line count (if any) for the overwrite report — and, via
+        // its presence, whether this write creates or overwrites — before we
+        // truncate the file.
         let before = tokio::fs::read(&target_abs).await.ok();
 
         if let Some(parent) = target_abs.parent() {
@@ -112,7 +100,6 @@ impl Tool for WriteTool {
             .with_context(|| "writing file".to_string())?;
 
         let new_lines = count_lines(&parsed.content);
-        let after_bytes = parsed.content.into_bytes();
         let (change_kind, summary) = match &before {
             None => (
                 FileChangeKind::Create,
@@ -130,9 +117,7 @@ impl Tool for WriteTool {
             }
         };
 
-        if let Some(ref on_write) = self.on_write {
-            on_write(parsed.path.clone(), before, Some(after_bytes), change_kind);
-        }
+        crate::file_change::record(parsed.path.clone(), change_kind, parsed.content.as_bytes());
 
         Ok(summary)
     }
@@ -144,7 +129,6 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -239,36 +223,27 @@ mod tests {
         assert!(!out.contains(secret), "confirmation leaked content: {out}");
     }
 
-    /// The `FileChange` audit records `Create` with no `before` on first write,
-    /// and `Edit` with the prior bytes as `before` on overwrite (#41 machinery).
+    /// The `FileChange` audit records `Create` on the first write and `Edit` on
+    /// a subsequent overwrite, each carrying the after-content hash (#202).
     #[tokio::test]
-    async fn on_write_emits_correct_kind_and_before_after() {
+    async fn records_create_then_edit_under_capture() {
+        use sha2::{Digest, Sha256};
         let dir = TempDir::new();
-        type Rec = (String, Option<Vec<u8>>, Option<Vec<u8>>, FileChangeKind);
-        let seen: Arc<Mutex<Vec<Rec>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = seen.clone();
-        let tool =
-            WriteTool::new(dir.path.clone()).with_on_write(move |path, before, after, kind| {
-                sink.lock().unwrap().push((path, before, after, kind));
-            });
+        let tool = WriteTool::new(dir.path.clone());
 
-        tool.run(r#"{"path":"c.txt","content":"first\n"}"#)
-            .await
-            .unwrap();
-        tool.run(r#"{"path":"c.txt","content":"second\n"}"#)
-            .await
-            .unwrap();
+        let (res, rec) =
+            crate::file_change::capture(tool.run(r#"{"path":"c.txt","content":"first\n"}"#)).await;
+        res.unwrap();
+        let rec = rec.expect("create records a change");
+        assert_eq!(rec.path, "c.txt");
+        assert_eq!(rec.kind, FileChangeKind::Create);
+        assert_eq!(rec.hash, format!("{:x}", Sha256::digest(b"first\n")));
 
-        let recs = seen.lock().unwrap();
-        assert_eq!(recs.len(), 2);
-        let (p0, before0, after0, kind0) = &recs[0];
-        assert_eq!(p0, "c.txt");
-        assert_eq!(*kind0, FileChangeKind::Create);
-        assert!(before0.is_none(), "create should have no before");
-        assert_eq!(after0.as_deref(), Some(b"first\n".as_ref()));
-        let (_, before1, after1, kind1) = &recs[1];
-        assert_eq!(*kind1, FileChangeKind::Edit);
-        assert_eq!(before1.as_deref(), Some(b"first\n".as_ref()));
-        assert_eq!(after1.as_deref(), Some(b"second\n".as_ref()));
+        let (res, rec) =
+            crate::file_change::capture(tool.run(r#"{"path":"c.txt","content":"second\n"}"#)).await;
+        res.unwrap();
+        let rec = rec.expect("overwrite records a change");
+        assert_eq!(rec.kind, FileChangeKind::Edit);
+        assert_eq!(rec.hash, format!("{:x}", Sha256::digest(b"second\n")));
     }
 }
