@@ -82,7 +82,8 @@ tools and makes no policy decision:
 | `grep` | `{pattern, path?}` | matches as `path:lineno:line` over files matched by `path` (default `**/*`) |
 | `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists → hints `write`); non-unique match errors unless `replaceAll` |
 | `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
-| `bash` ⚠ | `{command, timeout?}` | `sh -c` rooted at root; `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600; spawned in its **own process group** (`process_group(0)`) so an expiry SIGKILLs the whole tree — grandchildren (a launched server/pipeline) can't orphan (#168); a `Stop`-driven task abort drops the wait future, whose group-kill guard SIGKILLs the same group so cancellation matches the timeout's containment rather than orphaning under bare `kill_on_drop` (#167). Output is drained incrementally, so a timeout returns the **partial output buffered before the kill** under a `[killed: timed out after Ns]` header instead of discarding it (#169) |
+| `bash` ⚠ | `{command, timeout?, workdir?, run_in_background?}` | `sh -c` rooted at root (or at `workdir`, a subdir validated under root by the same symlink-safe containment as the fs tools, #170); `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600; spawned in its **own process group** (`process_group(0)`) so an expiry SIGKILLs the whole tree — grandchildren (a launched server/pipeline) can't orphan (#168); a `Stop`-driven task abort drops the wait future, whose group-kill guard SIGKILLs the same group so cancellation matches the timeout's containment rather than orphaning under bare `kill_on_drop` (#167). Output is drained incrementally, so a timeout returns the **partial output buffered before the kill** under a `[killed: timed out after Ns]` header instead of discarding it (#169). Oversized output is capped **head + tail** (¼ head / ¾ tail, `truncate_head_tail`) so the trailing error survives — head-only truncation dropped exactly what a failing build needs (#170). `run_in_background: true` spawns the command **detached** and returns a job id instead of blocking — poll it with `bash_output` (#170) |
+| `bash_output` ⚠ | `{job_id, kill?}` | poll a background `bash` job (started with `run_in_background`) for the output produced **since the last poll**, plus status (`running` / `exited N` / `exited (killed)`). Buffers are drained per poll (`mem::take`) so memory is reclaimed and each read is incremental; between polls each stream is capped at 256 KiB dropping the **oldest** bytes (the live tip is kept) with a `[N bytes … dropped]` notice. `kill: true` SIGKILLs the job's whole process group before reading. Registered as a pair with `bash` under the same opt-in gate (#170) |
 | `call` ⚠ | `{command, args?, tail?, timeout?}` | **argv, no shell** — `command`+`args` exec verbatim (no `sh -c`, so no pipe/glob/`$VAR`/metachar interpretation); output tailed to the last `tail` lines per stream (default 30, `tail=0` = full, byte-cap still applies), with a `(… N earlier lines omitted, tail=30 — rerun with tail=0 …)` notice; same envelope as `bash` (`[exit N]` + stdout + `[stderr]`, 120 s/600 s, own-process-group kill on timeout #168, partial output preserved on timeout #169) — ADR-0045 |
 | `rhai` | `{script, timeout?}` | run a Rhai script ([rhai.rs](https://rhai.rs)) in a **capability-sandboxed** engine — no fs/network/process/env access; the only host bindings are `read`/`glob`/`grep`/`edit`/`write`, each routed through that tool's permission check; last-expression value serialized + captured `print(...)`; bounded by op/string/array/map caps + wall-clock (default 5 s, max 30) — [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md) |
 
@@ -110,7 +111,9 @@ tools and makes no policy decision:
   a broader env-allowlist policy can ride the future sandbox ADR.
 - **Bounded output:** 32 KiB byte cap with a truncation notice; `read` defaults
   to 2000 lines; `glob`/`grep` cap at 1000 results. Prevents a huge file/tree
-  from blowing the context window.
+  from blowing the context window. `bash`/`bash_output` cap **head + tail**
+  (`truncate_head_tail`) rather than head-only — build/test output puts the
+  load-bearing error at the end (#170).
 - **Empty-result contract (ADR-0016):** a host tool may not return a silent
   zero-output when multiple distinguishable underlying states produce it.
   `list_files` returns `FileList { files, matched_dirs, skipped_errors }`;
@@ -124,14 +127,16 @@ tools and makes no policy decision:
   the model sees a real `input_schema` per host tool (not an empty object).
 - **Wiring (ADR-0010):** `host_tools(root)` registers the **root-contained
   quintet** (`read`/`glob`/`grep`/`edit`/`write`; `write` added in ADR-0031).
-  the exec pair is opt-in — the `skutter`
-  binary registers `BashTool` **and** `CallTool` only when
-  `ENTANGLEMENT_ENABLE_BASH=1` (one gate, whole pair), because they run
-  unsandboxed (ADR-0009/ADR-0045). `EngineConfig::default()` ships an empty
-  registry (embedders opt in via `host_tools`).
+  the exec set is opt-in — the `skutter`
+  binary registers `BashTool`, `CallTool`, **and** `BashOutputTool` (the
+  background-job poller, #170) only when `ENTANGLEMENT_ENABLE_BASH=1` (one gate,
+  whole set), because they run unsandboxed (ADR-0009/ADR-0045). `bash` and
+  `bash_output` share one `JobRegistry` so background jobs are pollable across the
+  pair. `EngineConfig::default()` ships an empty registry (embedders opt in via
+  `host_tools`).
 
-`edit`/`write`/`bash`/`call` are advertised only to the inherit-all `build`
-profile (`tools: None`), which auto-allows them (default `Allow`). The `plan`
+`edit`/`write`/`bash`/`bash_output`/`call` are advertised only to the inherit-all
+`build` profile (`tools: None`), which auto-allows them (default `Allow`). The `plan`
 and `explore` profiles set an explicit `tools` allowlist that omits them
 (#116/#140, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)), so
 the tools are **masked out** of those profiles entirely — never advertised, so

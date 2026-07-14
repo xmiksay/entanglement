@@ -147,7 +147,7 @@ re-document them here):
 | turn loop, tool round-trip, steering, cancellation | [engine](../docs/architecture/engine.md) |
 | streaming client, catalog, pool/retry/rate-limit | [provider](../docs/architecture/provider.md) |
 | stdio/TUI/`serve` heads, event-sourced persistence | [heads & persistence](../docs/architecture/heads-and-persistence.md) |
-| dependency gates, the quintet + exec tools (`bash`/`call`/`rhai`) | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
+| dependency gates, the quintet + exec tools (`bash`/`call`/`bash_output`/`rhai`) | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
 
 Debugging: `skutter inspect prompt|agents|skills|config` re-runs the load-time
 discovery with **no engine** and prints the resolved prompt / registries / user
@@ -226,7 +226,8 @@ Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-stre
 — z.ai (primary)/OpenAI/Ollama via one OpenAI-compat client + a separate
 Anthropic client; `ENTANGLEMENT_PROVIDER` or key auto-detect, else `EchoLlm`.
 Heads: stdio `run`/`pipe`, `tui`, and the `sessions`/`inspect` subcommands. Tools:
-the root-contained quintet, the opt-in exec pair `bash`/`call`
-(`ENTANGLEMENT_ENABLE_BASH=1`), and the sandboxed `rhai` tool. `skutter serve`
+the root-contained quintet, the opt-in exec set `bash`/`call`/`bash_output`
+(`ENTANGLEMENT_ENABLE_BASH=1`; `bash` gains `workdir` + `run_in_background`, polled
+via `bash_output`, #170), and the sandboxed `rhai` tool. `skutter serve`
 (axum WS, local-only, [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md))
 is the next head.
