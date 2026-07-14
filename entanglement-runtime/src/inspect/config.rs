@@ -80,5 +80,31 @@ fn render_config(resolved: &Resolved) -> String {
             let _ = writeln!(out, "  {pat}: {perm:?}");
         }
     }
+
+    let _ = writeln!(out, "\nhooks (← {}):", from("hooks"));
+    if c.hooks.is_empty() {
+        let _ = writeln!(out, "  (none)");
+    } else {
+        render_hook_list(&mut out, "pre_tool_use", &c.hooks.pre_tool_use);
+        render_hook_list(&mut out, "post_tool_use", &c.hooks.post_tool_use);
+        render_hook_list(&mut out, "user_prompt_submit", &c.hooks.user_prompt_submit);
+    }
     out
+}
+
+/// Render one lifecycle point's configured hooks: each command with its optional
+/// tool filter. Skips a point with no hooks so only the active ones show.
+fn render_hook_list(out: &mut String, point: &str, hooks: &[crate::hooks::HookSpec]) {
+    if hooks.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "  {point}:");
+    for h in hooks {
+        let scope = if h.tools.is_empty() {
+            String::new()
+        } else {
+            format!("  [tools: {}]", h.tools.join(", "))
+        };
+        let _ = writeln!(out, "    - {}{scope}", h.command);
+    }
 }

@@ -85,6 +85,35 @@ fn first_run_scaffolds_a_commented_template() {
 }
 
 #[test]
+fn configured_hooks_show_in_inspect() {
+    // #199: a `hooks:` section resolves end-to-end and `inspect config` renders it,
+    // including the per-tool filter. Empty ⇒ `(none)`.
+    let dir = tempfile::tempdir().unwrap();
+    let user_file = dir.path().join("user.yml");
+    std::fs::write(
+        &user_file,
+        "hooks:\n  pre_tool_use:\n    - command: \"echo hi\"\n      tools: [bash]\n",
+    )
+    .unwrap();
+
+    let out = inspect_config(dir.path(), &user_file);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("pre_tool_use:"), "got: {stdout}");
+    assert!(stdout.contains("echo hi"), "got: {stdout}");
+    assert!(stdout.contains("[tools: bash]"), "got: {stdout}");
+}
+
+#[test]
+fn no_hooks_show_as_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = inspect_config(dir.path(), &dir.path().join("nope.yml"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("hooks (← default):"), "got: {stdout}");
+    assert!(stdout.contains("(none)"), "got: {stdout}");
+}
+
+#[test]
 fn malformed_config_exits_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let bad = dir.path().join("bad.yml");

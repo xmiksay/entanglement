@@ -36,3 +36,17 @@ verbose: false
 # in the managed grants.yml, not here.
 permissions:
   default: allow
+
+# Lifecycle hooks (#199, ADR-0066) — external commands run around tool execution
+# and on prompt ingress, for policy / telemetry / formatting. Three lists:
+#   pre_tool_use       — before a tool runs; a non-zero exit *blocks* the tool
+#                        (its output becomes the tool result). The policy gate.
+#   post_tool_use      — after a tool's result; observational side-effect
+#                        (a formatter/telemetry sink). Cannot rewrite the result.
+#   user_prompt_submit — when a prompt reaches the engine; observational.
+# Each entry is `{command, tools?, timeout_secs?}`: `command` runs via `sh -c`
+# with the event JSON on stdin (`{event, session, tool?, input?, output?,
+# prompt?}`) and ENTANGLEMENT_HOOK_EVENT / _SESSION_ID / _TOOL_NAME in the env;
+# `tools` (tool hooks only) scopes it to named tools (empty ⇒ all); `timeout_secs`
+# defaults to 30. Empty by default (no hooks).
+hooks: {}

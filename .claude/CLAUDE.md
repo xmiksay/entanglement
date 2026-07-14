@@ -158,7 +158,14 @@ re-document them here):
   share this loader. Provider API **keys** live in a sibling managed env file (#220,
   `${config_dir}/entanglement/.env`, override `ENTANGLEMENT_ENV_FILE`): scaffolded
   commented on first run, loaded at startup into the process env for vars the real
-  env left unset (env > file), kept out of any repo.
+  env left unset (env > file), kept out of any repo. The config's `hooks:` section
+  (#199, [ADR-0066](../docs/adr/0066-lifecycle-hooks-as-runtime-interceptors.md))
+  wires **lifecycle hooks** — `sh -c` commands run as a **runtime interceptor**
+  around the generic tool dispatch (`pre_tool_use` non-zero exit *vetoes* the
+  call; `post_tool_use` is an observational side-effect) and off the inbound
+  `Prompt` fan-out (`user_prompt_submit`), each in its own process group. Scoped
+  to the generic `Intercept::Permission` route (orchestration + `rhai` bypass);
+  wired via `tool_runner::spawn_tool_executor_with_hooks`.
 
 | Topic | Module |
 | --- | --- |
@@ -167,7 +174,7 @@ re-document them here):
 | turn loop, tool round-trip, steering, cancellation | [engine](../docs/architecture/engine.md) |
 | streaming client, catalog, pool/retry/rate-limit | [provider](../docs/architecture/provider.md) |
 | stdio/TUI/`serve` heads, event-sourced persistence | [heads & persistence](../docs/architecture/heads-and-persistence.md) |
-| dependency gates, the quintet + exec tools (`bash`/`call`/`bash_output`/`rhai`) | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
+| dependency gates, the quintet + exec tools (`bash`/`call`/`bash_output`/`rhai`), lifecycle hooks | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
 
 Debugging: `skutter inspect prompt|agents|skills|config` re-runs the load-time
 discovery with **no engine** and prints the resolved prompt / registries / user

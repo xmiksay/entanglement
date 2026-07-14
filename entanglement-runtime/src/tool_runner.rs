@@ -38,6 +38,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::cancel::{CancelRegistry, TaskCanceller};
 use crate::grants::GrantStore;
+use crate::hooks::Hooks;
 use crate::permission::{
     clamp_to_base, effective_permission, permission_arg, spawn_refusal, tool_masked,
 };
@@ -134,7 +135,28 @@ pub fn spawn_tool_executor(
     profiles: ProfileRegistry,
     base: PermissionProfile,
 ) -> tokio::task::JoinHandle<()> {
+    spawn_tool_executor_with_hooks(holly, tools, profiles, base, Hooks::default())
+}
+
+/// Like [`spawn_tool_executor`] but with user-configured lifecycle hooks (#199,
+/// ADR-0066): `pre_tool_use` can veto a generic tool dispatch, `post_tool_use`
+/// runs as a side-effect after it, and `user_prompt_submit` fires on every
+/// inbound `Prompt`. The no-hook wrapper keeps the historical 4-arg signature for
+/// callers (and tests) that need no hooks.
+pub fn spawn_tool_executor_with_hooks(
+    holly: &Holly,
+    tools: ToolRegistry,
+    profiles: ProfileRegistry,
+    base: PermissionProfile,
+    hooks: Hooks,
+) -> tokio::task::JoinHandle<()> {
+    let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
+    // Subscribe to the inbound fan-out *synchronously*, before this function
+    // returns, so a `Prompt`/`Stop` the caller sends right after spawning can't
+    // race ahead of the watcher's subscription (the `user_prompt_submit` hook,
+    // #199, depends on catching that first prompt).
+    let inbound = holly.subscribe_inbound();
     let holly = holly.clone();
     tokio::spawn(async move {
         // Active profile per session, folded from lifecycle events in the order
@@ -161,13 +183,26 @@ pub fn spawn_tool_executor(
         let cancels = CancelRegistry::default();
         {
             // Watch inbound for `Stop` in its own task so the outbound loop below
-            // is untouched; both share the same `cancels` registry.
+            // is untouched; both share the same `cancels` registry. The same task
+            // fires the `user_prompt_submit` hooks (#199) off each `Prompt` — the
+            // engine's inbound fan-out is the runtime-side ingress seam.
             let cancels = cancels.clone();
-            let mut inbound = holly.subscribe_inbound();
+            let hooks = hooks.clone();
+            let mut inbound = inbound;
             tokio::spawn(async move {
                 loop {
                     match inbound.recv().await {
                         Ok(InMsg::Stop { session }) => cancels.cancel_session(&session),
+                        Ok(InMsg::Prompt { session, content })
+                            if !hooks.user_prompt_submit.is_empty() =>
+                        {
+                            // Detach so a slow hook can't stall the Stop watcher.
+                            let hooks = hooks.clone();
+                            tokio::spawn(async move {
+                                let text = entanglement_core::content_text(&content);
+                                hooks.run_user_prompt_submit(&session, &text).await;
+                            });
+                        }
                         Ok(_) => {}
                         Err(RecvError::Lagged(_)) => {}
                         Err(RecvError::Closed) => break,
@@ -419,14 +454,15 @@ pub fn spawn_tool_executor(
                             let tools = tools.clone();
                             let holly = holly.clone();
                             let grants = grants.clone();
+                            let hooks = hooks.clone();
                             // Register so a `Stop` aborts this task mid-execution:
                             // aborting the future drops the exec tool's child,
                             // firing its process-group SIGKILL guard (#167/#168).
                             let reg_session = session.clone();
                             let handle = tokio::spawn(async move {
                                 dispatch(
-                                    &holly, &tools, &grants, session, seq, request_id, tool, input,
-                                    perm,
+                                    &holly, &tools, &grants, &hooks, session, seq, request_id,
+                                    tool, input, perm,
                                 )
                                 .await;
                             });
@@ -448,11 +484,17 @@ pub fn spawn_tool_executor(
 }
 
 /// Resolve one `ToolExec` per its permission and reply with a `ToolResult`.
+///
+/// A `pre_tool_use` hook (#199) runs first and can **veto** the call before the
+/// permission decision: a non-zero-exit hook short-circuits with a denial
+/// `ToolResult`, so the tool neither prompts nor runs. Cleared hooks fall through
+/// to the normal `Allow | Ask | Deny` dispatch.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch(
     holly: &Holly,
     tools: &ToolRegistry,
     grants: &Mutex<GrantStore>,
+    hooks: &Hooks,
     session: SessionId,
     seq: u64,
     request_id: String,
@@ -460,9 +502,13 @@ async fn dispatch(
     input: String,
     perm: Permission,
 ) {
+    if let Some(reason) = hooks.run_pre_tool_use(&session, &tool, &input).await {
+        seam::reply(holly, session, request_id, reason).await;
+        return;
+    }
     match perm {
         Permission::Allow => {
-            run_and_reply(holly, tools, session, seq, request_id, tool, input).await;
+            run_and_reply(holly, tools, hooks, session, seq, request_id, tool, input).await;
         }
         Permission::Deny => {
             let output = format!("tool `{tool}` denied by permission profile");
@@ -489,6 +535,7 @@ async fn dispatch(
                 holly,
                 tools,
                 grants,
+                hooks,
                 &mut inbound,
                 session,
                 seq,
@@ -510,6 +557,7 @@ async fn await_decision(
     holly: &Holly,
     tools: &ToolRegistry,
     grants: &Mutex<GrantStore>,
+    hooks: &Hooks,
     inbound: &mut tokio::sync::broadcast::Receiver<InMsg>,
     session: SessionId,
     seq: u64,
@@ -530,7 +578,7 @@ async fn await_decision(
                     .unwrap()
                     .record(&session, &tool, arg.as_deref(), scope);
             }
-            run_and_reply(holly, tools, session, seq, request_id, tool, input).await;
+            run_and_reply(holly, tools, hooks, session, seq, request_id, tool, input).await;
         }
         seam::Decision::Reject { reason } => {
             set_thinking(holly, &session);
@@ -550,6 +598,7 @@ async fn await_decision(
 async fn run_and_reply(
     holly: &Holly,
     tools: &ToolRegistry,
+    hooks: &Hooks,
     session: SessionId,
     seq: u64,
     request_id: String,
@@ -563,7 +612,9 @@ async fn run_and_reply(
         if let Some(ev) = crate::plan_tasks::state_event(&session, seq, &tool, &input) {
             let _ = holly.events().send(ev);
         }
-        seam::reply(holly, session, request_id, crate::plan_tasks::ack(&tool)).await;
+        let ack = crate::plan_tasks::ack(&tool);
+        hooks.run_post_tool_use(&session, &tool, &input, &ack).await;
+        seam::reply(holly, session, request_id, ack).await;
         return;
     }
     // Every other tool executes against the host registry, returning multimodal
@@ -577,11 +628,21 @@ async fn run_and_reply(
         seq,
         tools.execute(&ToolCall {
             id: request_id.clone(),
-            name: tool,
-            input,
+            name: tool.clone(),
+            input: input.clone(),
         }),
     )
     .await;
+    // `post_tool_use` (#199) observes the result before it is folded back — a
+    // pure side-effect (formatter/telemetry); it cannot rewrite `content`.
+    hooks
+        .run_post_tool_use(
+            &session,
+            &tool,
+            &input,
+            &entanglement_core::content_text(&content),
+        )
+        .await;
     seam::reply_content(holly, session, request_id, content).await;
 }
 

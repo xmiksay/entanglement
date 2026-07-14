@@ -49,6 +49,7 @@ fn merge_user(user: &str) -> Config {
         model: raw.model,
         verbose: raw.verbose,
         permissions,
+        hooks: raw.hooks,
     }
 }
 
@@ -218,4 +219,37 @@ fn malformed_user_file_is_a_loud_error() {
         format!("{err:#}").contains("parsing user config"),
         "got: {err:#}"
     );
+}
+
+#[test]
+fn hooks_default_to_empty() {
+    // No `hooks:` section ⇒ every lifecycle list is empty (a no-op).
+    assert!(defaults().hooks.is_empty());
+}
+
+#[test]
+fn hooks_parse_from_user_file() {
+    let c = merge_user(
+        "hooks:\n  \
+         pre_tool_use:\n    \
+         - command: \"echo hi\"\n      \
+         tools: [bash, edit]\n  \
+         user_prompt_submit:\n    \
+         - command: \"logger\"\n",
+    );
+    assert_eq!(c.hooks.pre_tool_use.len(), 1);
+    assert_eq!(c.hooks.pre_tool_use[0].command, "echo hi");
+    assert_eq!(c.hooks.pre_tool_use[0].tools, vec!["bash", "edit"]);
+    assert!(c.hooks.post_tool_use.is_empty());
+    assert_eq!(c.hooks.user_prompt_submit.len(), 1);
+    assert!(!c.hooks.is_empty());
+}
+
+#[test]
+fn unknown_hook_event_is_a_loud_error() {
+    // `deny_unknown_fields` on `Hooks` rejects a typo'd lifecycle name.
+    let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
+    let over: Value = serde_yaml::from_str("hooks:\n  pre_tool_yoos:\n    - command: x\n").unwrap();
+    let merged = merge_value(base, over);
+    assert!(serde_yaml::from_value::<RawConfig>(merged).is_err());
 }

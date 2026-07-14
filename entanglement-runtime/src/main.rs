@@ -658,14 +658,16 @@ async fn main() -> Result<()> {
     // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
     // answer the engine's ToolExec round-trip, gating each call on `profiles`.
     // The user config's `permissions` section is the global ceiling clamped over
-    // every resolved grade (#172). The TUI also needs the registry (its
-    // entry-agent picker is registry-driven, #119), so hand the executor a clone
-    // and keep `profiles` for the head below.
-    let tool_executor = tool_runner::spawn_tool_executor(
+    // every resolved grade (#172), and its `hooks` section wires the lifecycle
+    // hooks (#199) around tool dispatch and prompt ingress. The TUI also needs the
+    // registry (its entry-agent picker is registry-driven, #119), so hand the
+    // executor a clone and keep `profiles` for the head below.
+    let tool_executor = tool_runner::spawn_tool_executor_with_hooks(
         &holly,
         tools,
         profiles.clone(),
         user_config.permissions.clone(),
+        user_config.hooks.clone(),
     );
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
