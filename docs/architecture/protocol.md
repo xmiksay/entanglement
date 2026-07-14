@@ -12,7 +12,8 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          //   content: [{type:text,text} | {type:image,source:{type:base64,media_type,data}}]; legacy `text:"…"` still deserializes (#197, ADR-0064)
          | Reject{session,request_id,reason?}                         // runtime, not core (#59)
          //   scope: once (default) | session | always  — persisted grants (#174, ADR-0052)
-         | ToolResult{session,request_id,output}   // runtime → core: tool ran (#58)
+         | ToolResult{session,request_id,content:[ContentPart]}   // runtime → core: tool ran (#58)
+         //   content: text, or an image block when `read` opens an image (#221); legacy `output:"…"` still deserializes
          | AnswerQuestion{session,request_id,answer}  // ask_user answer → runtime (#90)
          | Stop{session}
          | SetAgent{session,agent}   // switch profile (plan/task state is a runtime tool now, #231)
@@ -36,7 +37,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
          | ToolExec{session,seq,request_id,tool,input}      // core → runtime: dispatch it (#58/#59)
          | UserQuestion{session,seq,request_id,question,options,allow_free_form}  // ask_user prompt (#90)
-         | ToolOutput{session,seq,request_id,tool,output}
+         | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart]}   // output = display text; content carries an image result for faithful replay (#221)
          | TaskList{session,seq,content}      // full outline snapshot (markdown)
          | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?}  // per-round-trip usage + cost (#192)
          | Error{session,seq,message}

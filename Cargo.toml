@@ -24,6 +24,9 @@ serde_yaml = "0.9"
 # Pure-Rust SHA-256 — hygiene-gate-clean (no UI/transport); used for the
 # EchoLlm system-prompt fingerprint.
 sha2 = "0.10"
+# Pure-Rust base64 — inline-encodes an image `read` for the model's image
+# content block (#221). Lean-build + cross-compile clean.
+base64 = "0.22"
 dirs = "5"
 async-trait = "0.1"
 async-stream = "0.3"

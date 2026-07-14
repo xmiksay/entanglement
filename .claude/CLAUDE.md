@@ -261,7 +261,11 @@ Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-stre
 — z.ai (primary)/OpenAI/Ollama via one OpenAI-compat client + a separate
 Anthropic client; `ENTANGLEMENT_PROVIDER` or key auto-detect, else `EchoLlm`.
 Heads: stdio `run`/`pipe`, `tui`, and the `sessions`/`inspect` subcommands. Tools:
-the root-contained quintet, the opt-in exec set `bash`/`call`/`bash_output`
+the root-contained quintet (`read` on an image file — `png`/`jpg`/`jpeg`/`gif`/
+`webp` — emits a base64 **image content block** through a now-multimodal
+`ToolResult`/`ToolOutput` path, #221/[ADR-0065](../docs/adr/0065-read-emits-image-content-blocks.md),
+built on the `Message`/`Prompt` content-block migration #197/[ADR-0064](../docs/adr/0064-message-content-blocks.md)),
+the opt-in exec set `bash`/`call`/`bash_output`
 (`ENTANGLEMENT_ENABLE_BASH=1`; `bash` gains `workdir` + `run_in_background`, polled
 via `bash_output`, #170), and the sandboxed `rhai` tool. `skutter serve`
 (axum WS, local-only, [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md))

@@ -76,6 +76,15 @@ pub fn content_text(content: &[ContentPart]) -> String {
     content.iter().filter_map(ContentPart::as_text).collect()
 }
 
+/// Whether `content` carries at least one [image][ContentPart::Image] part. Lets
+/// the converters and the tool-result fold pick the multimodal path (block array
+/// / trailing user message) only when an image is actually present (#221).
+pub fn content_has_image(content: &[ContentPart]) -> bool {
+    content
+        .iter()
+        .any(|p| matches!(p, ContentPart::Image { .. }))
+}
+
 /// Build the content vec for a text-only message: empty text → no parts (so an
 /// assistant turn that is tool-calls-only carries no stray empty text block),
 /// non-empty → a single [`Text`][ContentPart::Text] part.

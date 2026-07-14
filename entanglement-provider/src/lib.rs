@@ -41,7 +41,9 @@ pub use llm::{
     LlmRequest, LlmResponse, LlmStream, ModelResolver, ResolvedModel, StopReason, ToolCall,
     ToolSpec, Usage,
 };
-pub use message::{content_text, ContentPart, ImageSource, Message, MessageRole};
+pub use message::{
+    content_has_image, content_text, ContentPart, ImageSource, Message, MessageRole,
+};
 pub use openai::{
     openai_factory, OpenAiLlm, OLLAMA_BASE, OPENAI_BASE, ZAI_CODING_PLAN_BASE, ZAI_GENERAL_BASE,
 };

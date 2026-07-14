@@ -330,11 +330,31 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 out.push(entry);
             }
             MessageRole::Tool => {
+                // OpenAI's `role: "tool"` message only accepts string content, so
+                // an image tool result (#221 `read`) can't ride inside it. The
+                // text (if any) stays on the tool message; the image blocks are
+                // handed to the model as a following `role: "user"` message with
+                // `image_url` parts, keeping the `tool_call_id` linkage intact.
+                let images: Vec<ContentPart> = m
+                    .content
+                    .iter()
+                    .filter(|p| matches!(p, ContentPart::Image { .. }))
+                    .cloned()
+                    .collect();
+                let text = m.text();
+                let content = if text.is_empty() && !images.is_empty() {
+                    "[image returned; see the following message]".to_string()
+                } else {
+                    text
+                };
                 out.push(json!({
                     "role": "tool",
                     "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
-                    "content": m.text(),
+                    "content": content,
                 }));
+                if !images.is_empty() {
+                    out.push(json!({ "role": "user", "content": openai_content(&images) }));
+                }
             }
         }
     }
@@ -538,6 +558,36 @@ mod tests {
             content[1],
             json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } })
         );
+    }
+
+    #[test]
+    fn tool_result_with_image_appends_a_user_image_message() {
+        // #221: OpenAI's `role: "tool"` message can't hold an image, so the image
+        // is handed to the model as a trailing `role: "user"` message with an
+        // `image_url` block; the tool message keeps a text placeholder.
+        let tool = Message::tool_content("call-1", vec![ContentPart::image("image/png", "AAAA")]);
+        let out = convert_messages(&[tool]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["role"], "tool");
+        assert_eq!(out[0]["tool_call_id"], "call-1");
+        assert_eq!(
+            out[0]["content"],
+            "[image returned; see the following message]"
+        );
+        assert_eq!(out[1]["role"], "user");
+        assert_eq!(
+            out[1]["content"][0],
+            json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } })
+        );
+    }
+
+    #[test]
+    fn text_only_tool_result_stays_a_single_string_message() {
+        let tool = Message::tool("call-1", "done");
+        let out = convert_messages(&[tool]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "tool");
+        assert_eq!(out[0]["content"], "done");
     }
 
     #[test]

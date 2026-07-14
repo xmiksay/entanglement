@@ -41,11 +41,12 @@ use turn::drive_turn;
 #[derive(Debug, Clone)]
 pub(crate) enum SessionCmd {
     Prompt(Vec<ContentPart>),
-    /// Output of a runtime-executed tool (`request_id`, `output`) — resolves a
-    /// pending [`OutEvent::ToolExec`] round-trip (#58). Approval (`Approve`/
-    /// `Reject`) is no longer a core command: the runtime tool executor owns it
-    /// (#59) and never reaches the session loop.
-    ToolResult(String, String),
+    /// Output of a runtime-executed tool (`request_id`, multimodal `content`) —
+    /// resolves a pending [`OutEvent::ToolExec`] round-trip (#58). `content` is
+    /// text today, an image block when `read` opens an image (#221). Approval
+    /// (`Approve`/`Reject`) is no longer a core command: the runtime tool executor
+    /// owns it (#59) and never reaches the session loop.
+    ToolResult(String, Vec<ContentPart>),
     SetAgent(String),
     /// Switch the live model/provider (`provider`, `model`) — #218. Re-resolves
     /// against [`EngineConfig::model_resolver`][crate::EngineConfig] and rebuilds
@@ -283,7 +284,7 @@ pub(crate) async fn session_loop(
             // fold — and continue the turn once the batch drains. No match:
             // stale (late result after a cancel), duplicate, or unknown id —
             // drop it rather than corrupt context.
-            Some(SessionCmd::ToolResult(id, output)) => {
+            Some(SessionCmd::ToolResult(id, content)) => {
                 match s.turn.as_mut().and_then(|t| t.resolve(&id)) {
                     Some(call) => {
                         emit_tool_output(
@@ -291,10 +292,10 @@ pub(crate) async fn session_loop(
                             &session,
                             &call.id,
                             &call.name,
-                            output.clone(),
+                            content.clone(),
                             &mut s.seq,
                         );
-                        s.ctx.push_tool(&call.id, output);
+                        s.ctx.push_tool_content(&call.id, content);
                         if s.turn.as_ref().is_some_and(TurnState::is_drained) {
                             drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
                         }

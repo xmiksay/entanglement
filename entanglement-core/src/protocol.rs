@@ -412,9 +412,11 @@ pub struct ProfileDetail {
 // ┃ Messages
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Back-compat deserializer for [`InMsg::Prompt`]'s `content` (#197): accepts
-/// either the current `[ContentPart]` array or the legacy bare-`String` under the
-/// `text` alias. An empty legacy string yields no parts.
+/// Back-compat deserializer for a content field that migrated from a bare string
+/// to `[ContentPart]`: [`InMsg::Prompt`]'s `content` (#197, legacy `text`) and
+/// [`InMsg::ToolResult`]'s `content` (#221, legacy `output`) both use it. Accepts
+/// either the array or the legacy string (aliased on the field); an empty legacy
+/// string yields no parts.
 fn de_prompt_content<'de, D>(d: D) -> Result<Vec<ContentPart>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -473,11 +475,15 @@ pub enum InMsg {
     /// [`OutEvent::ToolExec`]). The runtime owns tool execution (ADR-0006/0010):
     /// core emits a `ToolExec` request and parks the turn until this arrives.
     /// Distinct from [`Approve`][InMsg::Approve]/[`Reject`][InMsg::Reject], which
-    /// stay for approval semantics.
+    /// stay for approval semantics. `content` carries the result as multimodal
+    /// [`ContentPart`]s (#221) — text today, an image block when `read` opens an
+    /// image file. A serde back-compat shim accepts the legacy text-only
+    /// `output: "…"` shape so pre-migration logs still deserialize.
     ToolResult {
         session: SessionId,
         request_id: String,
-        output: String,
+        #[serde(alias = "output", default, deserialize_with = "de_prompt_content")]
+        content: Vec<ContentPart>,
     },
     /// Answer a pending model-driven question (`request_id` from
     /// [`OutEvent::UserQuestion`]). Like [`Approve`][InMsg::Approve]/
@@ -557,6 +563,28 @@ impl InMsg {
             vec![ContentPart::text(text)]
         };
         InMsg::Prompt { session, content }
+    }
+
+    /// Build a text [`ToolResult`][InMsg::ToolResult] — the common case. Empty
+    /// text yields an empty `content` (matching [`Message::tool`]'s fold);
+    /// multimodal results (an image `read`, #221) build the `content` vec
+    /// directly.
+    pub fn tool_result(
+        session: SessionId,
+        request_id: impl Into<String>,
+        output: impl Into<String>,
+    ) -> Self {
+        let output = output.into();
+        let content = if output.is_empty() {
+            Vec::new()
+        } else {
+            vec![ContentPart::text(output)]
+        };
+        InMsg::ToolResult {
+            session,
+            request_id: request_id.into(),
+            content,
+        }
     }
 
     /// The session this message targets.
@@ -721,13 +749,20 @@ pub enum OutEvent {
         options: Vec<QuestionOption>,
         allow_free_form: bool,
     },
-    /// Result of an executed tool, a denied tool, or a built-in tool.
+    /// Result of an executed tool, a denied tool, or a built-in tool. `output` is
+    /// the text rendering heads display (for an image result, a short
+    /// placeholder). `content` carries the full multimodal result (#221) — empty
+    /// for the common text-only case (heads read `output`), populated with the
+    /// image block(s) when `read` opens an image so **replay** reconstructs the
+    /// model's view faithfully instead of degrading it to the placeholder.
     ToolOutput {
         session: SessionId,
         seq: u64,
         request_id: String,
         tool: String,
         output: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        content: Vec<ContentPart>,
     },
     /// Full snapshot of the session's task outline (sent on every change).
     /// Markdown, typically a `- [ ]`/`- [x]` checklist — displayed to the user
@@ -889,6 +924,27 @@ mod tests {
             }
             other => panic!("expected Prompt, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tool_result_accepts_legacy_output_shape() {
+        // Tool results persisted before #221 carry a bare `output` string; the
+        // shim aliases it into the multimodal `content` shape.
+        let legacy = r#"{"kind":"tool_result","session":"s1","request_id":"r1","output":"done"}"#;
+        let back: InMsg = serde_json::from_str(legacy).unwrap();
+        assert_eq!(back, InMsg::tool_result(SessionId::new("s1"), "r1", "done"));
+    }
+
+    #[test]
+    fn tool_result_roundtrips_image_content_block() {
+        let msg = InMsg::ToolResult {
+            session: SessionId::new("s1"),
+            request_id: "r1".into(),
+            content: vec![ContentPart::image("image/png", "AAAA")],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: InMsg = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, back);
     }
 
     #[test]

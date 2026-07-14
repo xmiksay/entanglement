@@ -33,11 +33,7 @@ where
                 }) => {
                     let output = exec(&tool, &input);
                     let _ = holly
-                        .send(InMsg::ToolResult {
-                            session,
-                            request_id,
-                            output,
-                        })
+                        .send(InMsg::tool_result(session, request_id, output))
                         .await;
                 }
                 Ok(_) | Err(RecvError::Lagged(_)) => {}

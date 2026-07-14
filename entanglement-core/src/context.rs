@@ -122,6 +122,17 @@ impl Context {
     pub fn push_tool(&mut self, tool_call_id: impl Into<String>, text: impl Into<String>) {
         self.push(Message::tool(tool_call_id, text));
     }
+    /// Push a tool result with explicit multimodal content — an image block when
+    /// `read` opens an image file (#221). The construction paths never emit an
+    /// empty text part, so an empty result yields empty content, matching
+    /// [`push_tool`][Self::push_tool].
+    pub fn push_tool_content(
+        &mut self,
+        tool_call_id: impl Into<String>,
+        content: Vec<ContentPart>,
+    ) {
+        self.push(Message::tool_content(tool_call_id, content));
+    }
 
     pub fn clear(&mut self) {
         self.messages.clear();

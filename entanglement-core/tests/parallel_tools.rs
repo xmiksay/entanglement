@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    Message, OutEvent, SessionId, ToolCall,
+    stream_from_response, ContentPart, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, Message, OutEvent, SessionId, ToolCall,
 };
 
 fn call(id: &str, name: &str) -> ToolCall {
@@ -141,11 +141,7 @@ async fn batch_emits_up_front_and_resolves_out_of_order() {
     // Answer out of order: c, a, b.
     for id in ["c", "a", "b"] {
         holly
-            .send(InMsg::ToolResult {
-                session: sid.clone(),
-                request_id: id.into(),
-                output: format!("out-{id}"),
-            })
+            .send(InMsg::tool_result(sid.clone(), id, format!("out-{id}")))
             .await
             .unwrap();
     }
@@ -201,11 +197,7 @@ async fn duplicate_and_unknown_results_are_dropped() {
 
     for (id, out) in [("nope", "bogus"), ("a", "real"), ("a", "dup")] {
         holly
-            .send(InMsg::ToolResult {
-                session: sid.clone(),
-                request_id: id.into(),
-                output: out.into(),
-            })
+            .send(InMsg::tool_result(sid.clone(), id, out))
             .await
             .unwrap();
     }
@@ -238,6 +230,56 @@ async fn duplicate_and_unknown_results_are_dropped() {
     assert_eq!(tool_msgs[0].text(), "real");
 }
 
+/// An image tool result (#221 `read`) folds into context as a `Tool`-role
+/// message carrying the image content block — so the model sees the image on the
+/// next round — and the emitted `ToolOutput` carries the same content for replay.
+#[tokio::test]
+async fn image_tool_result_folds_into_context_and_event() {
+    let (holly, seen) = engine(vec![
+        LlmResponse {
+            text: String::new(),
+            tool_calls: vec![call("a", "read")],
+        },
+        LlmResponse {
+            text: "final".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    let obs = holly.subscribe();
+
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    assert_eq!(await_tool_execs(&mut sub, &sid, 1).await, vec!["a"]);
+
+    let image = ContentPart::image("image/png", "AAAA");
+    holly
+        .send(InMsg::ToolResult {
+            session: sid.clone(),
+            request_id: "a".into(),
+            content: vec![image.clone()],
+        })
+        .await
+        .unwrap();
+
+    let events = collect_for(obs, &sid, Duration::from_millis(500)).await;
+    // The display event keeps the multimodal content for faithful replay.
+    let output_content = events.iter().find_map(|e| match e {
+        OutEvent::ToolOutput { content, .. } => Some(content.clone()),
+        _ => None,
+    });
+    assert_eq!(output_content, Some(vec![image.clone()]));
+
+    // The second round's context carries the image as a tool message.
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "two round-trips");
+    let tool_msg = seen[1]
+        .iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("a"))
+        .expect("tool message for `a`");
+    assert_eq!(tool_msg.content, vec![image]);
+}
+
 /// `Stop` while parked mid-batch cancels the turn (no `Done`) but keeps the
 /// session alive with the committed assistant message and the already-arrived
 /// output in context.
@@ -263,11 +305,7 @@ async fn stop_while_parked_keeps_session_and_context() {
 
     // One result lands, then the user cancels.
     holly
-        .send(InMsg::ToolResult {
-            session: sid.clone(),
-            request_id: "a".into(),
-            output: "out-a".into(),
-        })
+        .send(InMsg::tool_result(sid.clone(), "a", "out-a"))
         .await
         .unwrap();
     holly
@@ -278,11 +316,7 @@ async fn stop_while_parked_keeps_session_and_context() {
         .unwrap();
     // A late result for the cancelled call is stale and must be dropped.
     holly
-        .send(InMsg::ToolResult {
-            session: sid.clone(),
-            request_id: "b".into(),
-            output: "out-b".into(),
-        })
+        .send(InMsg::tool_result(sid.clone(), "b", "out-b"))
         .await
         .unwrap();
 
@@ -354,11 +388,7 @@ async fn prompt_while_parked_folds_into_live_turn() {
         .await
         .unwrap();
     holly
-        .send(InMsg::ToolResult {
-            session: sid.clone(),
-            request_id: "a".into(),
-            output: "out-a".into(),
-        })
+        .send(InMsg::tool_result(sid.clone(), "a", "out-a"))
         .await
         .unwrap();
 

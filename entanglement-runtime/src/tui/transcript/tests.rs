@@ -239,6 +239,7 @@ fn narrow_widths_do_not_panic() {
         request_id: "c1".to_string(),
         tool: "read".to_string(),
         output: "file body".to_string(),
+        content: vec![],
     });
     app.handle_out_event(OutEvent::Error {
         session: sid.clone(),
