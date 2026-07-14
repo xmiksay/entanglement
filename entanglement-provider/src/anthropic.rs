@@ -90,6 +90,14 @@ impl Llm for AnthropicLlm {
         let model = req.model.unwrap_or(&self.default_model);
         let body = build_body(model, req.system, req.messages, req.tools, self.max_tokens);
 
+        tracing::debug!(
+            model = %model,
+            messages_count = req.messages.len(),
+            tools_count = req.tools.len(),
+            "anthropic request"
+        );
+        crate::client::log_request_body("anthropic", &body);
+
         let response = self
             .http
             .execute_with_retry(ANTHROPIC_API_URL, Some(&self.api_key), self.rpm, || {

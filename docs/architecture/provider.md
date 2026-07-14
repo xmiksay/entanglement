@@ -96,6 +96,16 @@ honoring `Retry-After` per endpoint; before #217 those responses came back as
 provider-owned `LlmSession` handle (#195) references this per-endpoint state
 through its boxed backend.
 
+**Request-body logging is opt-in and symmetric** (#165): every client emits a
+`debug!` *summary* per request (model, message/tool counts — no payload). The
+full request body — system prompt, the **entire conversation**, tool schemas
+(repo/user data; API keys never appear, they ride in headers) — is logged only
+through the shared `client::log_request_body(provider, &body)` helper, gated
+behind `ENTANGLEMENT_LOG_BODIES=1` and truncated to 8 KiB on a UTF-8 boundary.
+Raising `RUST_LOG` verbosity alone will **not** emit it; the flag is a separate,
+explicit opt-in. Both `OpenAiLlm` and `AnthropicLlm` route through the one helper
+so body logging is identical across backends.
+
 **Provider/model catalog (`entanglement-provider::catalog`, #118,
 [ADR-0032](../adr/0032-yaml-provider-model-catalog.md)):** the
 provider + model list is **YAML, not code** — an embedded default
