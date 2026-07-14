@@ -33,6 +33,7 @@ pub mod frontmatter;
 pub mod grants;
 pub mod host;
 pub mod inspect;
+pub mod layers;
 pub mod permission;
 pub mod persistence;
 pub mod plan_tasks;

@@ -17,8 +17,12 @@ below realize one model:
 - **Data, not code** — agents (`*.md` frontmatter+body), skills (`SKILL.md` dirs),
   and the provider catalog share one loader: embedded default < user
   (`${config_dir}/entanglement/…`) < project (`<root>/.entanglement/…`), later
-  wins on `name`; a malformed override is a loud error. Editing a built-in is
-  dropping a same-`name` file in a higher layer. This precedence is uniform (the
+  wins on `name`; a malformed override is a loud error. The agent and skill
+  loaders share a runtime-local `layers` helper (`layers::load_layers`, #204):
+  an *explicit* `ENTANGLEMENT_AGENTS_DIR`/`ENTANGLEMENT_SKILLS_DIR` override that
+  points at a missing directory is `warn!`ed instead of silently swallowed (the
+  default `${config_dir}` path being absent stays the normal "no user layer"
+  case). Editing a built-in is dropping a same-`name` file in a higher layer. This precedence is uniform (the
   user config/settings file follows it too) and the project layer is **trusted** —
   running inside a repo means the repo is trusted, with inspection (`skutter
   inspect`) as the mitigation rather than an enforced boundary

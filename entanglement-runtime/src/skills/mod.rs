@@ -143,26 +143,10 @@ impl SkillRegistry {
     }
 }
 
-/// Which precedence layer a skill definition came from (#186), mirroring
-/// [`crate::agents::AgentLayer`]. Ordered low → high so `built-in < user <
-/// project` matches discovery order and the later-wins collision rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SkillLayer {
-    BuiltIn,
-    User,
-    Project,
-}
-
-impl SkillLayer {
-    /// Short label for the `skutter inspect skills` table and `replaces=` logs.
-    pub fn label(self) -> &'static str {
-        match self {
-            SkillLayer::BuiltIn => "built-in",
-            SkillLayer::User => "user",
-            SkillLayer::Project => "project",
-        }
-    }
-}
+/// Which precedence layer a skill definition came from (#186). The shared
+/// [`crate::layers::Layer`] — `built-in < user < project`, later wins on a
+/// `name` collision — re-exported under the skills-facing name.
+pub use crate::layers::Layer as SkillLayer;
 
 /// A discovered `SKILL.md` *before* parsing: which layer it came from (#186), a
 /// display label for its origin (`built-in (commit.md)` or the file path), the
@@ -256,9 +240,10 @@ pub fn resolve_registry(root: &Path) -> Result<Vec<SkillResolution>> {
 /// Enumerate every `SKILL.md` in precedence order — embedded built-ins, then the
 /// user dir, then the project dir — without parsing. Later entries win on a
 /// `name` collision, so consumers keep the last match. A missing dir is fine; an
-/// unreadable dir or file is an error.
+/// unreadable dir or file is an error. A missing *explicit*
+/// `ENTANGLEMENT_SKILLS_DIR` override is warned by [`crate::layers::load_layers`].
 fn discover(root: &Path) -> Result<Vec<RawSkill>> {
-    let mut raws: Vec<RawSkill> = BUILT_INS
+    let built_ins: Vec<RawSkill> = BUILT_INS
         .iter()
         .map(|(file, contents)| RawSkill {
             // Embedded built-ins are guarded by `built_ins_parse`, so a parse
@@ -269,15 +254,7 @@ fn discover(root: &Path) -> Result<Vec<RawSkill>> {
             content: (*contents).to_string(),
         })
         .collect();
-    if let Some(dir) = user_skills_dir() {
-        discover_dir(SkillLayer::User, &dir, &mut raws)?;
-    }
-    discover_dir(
-        SkillLayer::Project,
-        &root.join(".entanglement").join("skills"),
-        &mut raws,
-    )?;
-    Ok(raws)
+    crate::layers::load_layers(root, "skills", SKILLS_DIR_ENV, built_ins, discover_dir)
 }
 
 /// Append every `SKILL.md` under `dir` (recursively), tagged with `layer`, to
@@ -372,15 +349,6 @@ fn parse_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
         root_dir,
         body,
     })
-}
-
-/// The user skills dir: `${config_dir}/entanglement/skills`, overridable via
-/// `ENTANGLEMENT_SKILLS_DIR` (which tests point at a temp dir).
-fn user_skills_dir() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(SKILLS_DIR_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("skills"))
 }
 
 #[cfg(test)]
