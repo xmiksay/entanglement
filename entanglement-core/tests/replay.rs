@@ -663,3 +663,84 @@ async fn child_session_tail_is_not_misattributed_to_the_root() {
         "a child's pending call must not park the resumed root"
     );
 }
+
+#[tokio::test]
+async fn child_session_committed_events_are_not_folded_into_the_root() {
+    let root = SessionId::new("test-root-fold");
+    let child = SessionId::new("test-child-fold");
+    let records = vec![
+        (
+            None,
+            OutEvent::SessionStarted {
+                session: root.clone(),
+                parent: None,
+                profile: "build".to_string(),
+                model: None,
+                root: true,
+                ts: 0,
+            },
+        ),
+        prompt_record(&root, "hello root"),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: root.clone(),
+                seq: 1,
+                text: "root reply".to_string(),
+            },
+        ),
+        (
+            None,
+            OutEvent::Done {
+                session: root.clone(),
+                seq: 2,
+            },
+        ),
+        // A spawned child completes a whole turn, interleaved in the root's
+        // log. Its user/assistant messages must not land in the root's context
+        // (#275) — the general fold, not just the mid-turn tail, filters.
+        (
+            None,
+            OutEvent::SessionStarted {
+                session: child.clone(),
+                parent: Some(root.clone()),
+                profile: "build".to_string(),
+                model: None,
+                root: false,
+                ts: 0,
+            },
+        ),
+        prompt_record(&child, "child task"),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: child.clone(),
+                seq: 1,
+                text: "child reply".to_string(),
+            },
+        ),
+        (
+            None,
+            OutEvent::Done {
+                session: child.clone(),
+                seq: 2,
+            },
+        ),
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+
+    let messages = session.ctx.messages();
+    assert_eq!(
+        messages.len(),
+        2,
+        "only the root's user + assistant turn is folded"
+    );
+    assert_eq!(messages[0].text, "hello root");
+    assert_eq!(messages[1].text, "root reply");
+    assert!(
+        messages.iter().all(|m| m.text != "child task"),
+        "child prompt must not appear in the root's context"
+    );
+}

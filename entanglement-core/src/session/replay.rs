@@ -32,30 +32,45 @@ impl Session {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("default 'build' profile not found"))?;
 
+        // A root log persists the whole spawn sub-tree, so the record stream
+        // interleaves a spawned child's events with the resumed root's. Fold
+        // only the root's own records — otherwise a child's text/tool events
+        // are misattributed to the root's `Context` (#275). Root = the first
+        // session flagged `root` in the log; a log with none (a standalone
+        // session captured on its own) folds every record.
+        let root: Option<SessionId> = records.iter().find_map(|(_, ev)| match ev {
+            OutEvent::SessionStarted {
+                session,
+                root: true,
+                ..
+            } => Some(session.clone()),
+            _ => None,
+        });
+        let is_root = |sid: &SessionId| root.as_ref().is_none_or(|r| r == sid);
+
         let mut session = Self::new_empty(cfg, default_profile);
         let mut pending_text: String = String::new();
-        // Tool calls/outputs carry their originating session so the mid-turn
-        // tail below can be guarded against a root log's interleaved child
-        // events. The general fold still ignores the session id — that
-        // pre-existing misattribution flaw is tracked separately (#275).
-        let mut pending_tools: Vec<(SessionId, ToolCall)> = Vec::new();
-        let mut pending_tool_outputs: Vec<(SessionId, String, String)> = Vec::new();
-        let mut root: Option<SessionId> = None;
+        let mut pending_tools: Vec<ToolCall> = Vec::new();
+        let mut pending_tool_outputs: Vec<(String, String)> = Vec::new();
         let mut max_seq: u64 = 0;
 
         for (in_msg, out_event) in records {
+            // Skip any record belonging to a spawned child session (#275): the
+            // whole fold below stays scoped to the resumed root.
+            if !is_root(out_event.session()) {
+                continue;
+            }
             max_seq = max_seq.max(out_event.seq());
 
             if let Some(InMsg::Prompt { text, .. }) = in_msg {
                 if !pending_text.is_empty() || !pending_tools.is_empty() {
-                    session.ctx.push_assistant(
-                        pending_text.clone(),
-                        pending_tools.iter().map(|(_, c)| c.clone()).collect(),
-                    );
+                    session
+                        .ctx
+                        .push_assistant(pending_text.clone(), pending_tools.clone());
                     pending_text.clear();
                     pending_tools.clear();
                 }
-                for (_, request_id, output) in &pending_tool_outputs {
+                for (request_id, output) in &pending_tool_outputs {
                     session.ctx.push_tool(request_id.clone(), output.clone());
                 }
                 pending_tool_outputs.clear();
@@ -64,15 +79,7 @@ impl Session {
             }
 
             match out_event {
-                OutEvent::SessionStarted {
-                    session: sid,
-                    parent,
-                    root: is_root,
-                    ..
-                } => {
-                    if *is_root && root.is_none() {
-                        root = Some(sid.clone());
-                    }
+                OutEvent::SessionStarted { parent, .. } => {
                     session.parent = parent.clone();
                 }
                 OutEvent::TextDelta { text, .. } => {
@@ -82,28 +89,21 @@ impl Session {
                     // Reasoning is not stored in context; it's display-only.
                 }
                 OutEvent::ToolCall {
-                    session: sid,
                     request_id,
                     tool,
                     input,
                     ..
                 } => {
-                    pending_tools.push((
-                        sid.clone(),
-                        ToolCall {
-                            id: request_id.clone(),
-                            name: tool.clone(),
-                            input: input.clone(),
-                        },
-                    ));
+                    pending_tools.push(ToolCall {
+                        id: request_id.clone(),
+                        name: tool.clone(),
+                        input: input.clone(),
+                    });
                 }
                 OutEvent::ToolOutput {
-                    session: sid,
-                    request_id,
-                    output,
-                    ..
+                    request_id, output, ..
                 } => {
-                    pending_tool_outputs.push((sid.clone(), request_id.clone(), output.clone()));
+                    pending_tool_outputs.push((request_id.clone(), output.clone()));
                 }
                 OutEvent::AgentChanged { agent, .. } => {
                     if let Some(profile) = cfg.profiles.get(agent) {
@@ -116,14 +116,13 @@ impl Session {
                 // itself to restore its plan/task panels.
                 OutEvent::Done { .. } => {
                     if !pending_text.is_empty() || !pending_tools.is_empty() {
-                        session.ctx.push_assistant(
-                            pending_text.clone(),
-                            pending_tools.iter().map(|(_, c)| c.clone()).collect(),
-                        );
+                        session
+                            .ctx
+                            .push_assistant(pending_text.clone(), pending_tools.clone());
                         pending_text.clear();
                         pending_tools.clear();
                     }
-                    for (_, request_id, output) in &pending_tool_outputs {
+                    for (request_id, output) in &pending_tool_outputs {
                         session.ctx.push_tool(request_id.clone(), output.clone());
                     }
                     pending_tool_outputs.clear();
@@ -139,32 +138,23 @@ impl Session {
         // tail (deltas with no `ToolCall`) is a genuine mid-stream crash and
         // stays dropped, matching the live engine, which never committed it
         // either. `iterations` restarts at 0: `MAX_TURNS` is a runaway guard,
-        // not a quota. Guarded to the resumed root's own events so a child's
-        // interleaved tail is not misattributed (#275).
-        let is_root = |sid: &SessionId| root.as_ref().is_none_or(|r| r == sid);
-        let tail: Vec<ToolCall> = pending_tools
-            .iter()
-            .filter(|(sid, _)| is_root(sid))
-            .map(|(_, c)| c.clone())
-            .collect();
-        if !tail.is_empty() {
+        // not a quota. The fold above already dropped every child record, so
+        // this tail is the resumed root's own.
+        if !pending_tools.is_empty() {
             session
                 .ctx
-                .push_assistant(pending_text.clone(), tail.clone());
+                .push_assistant(pending_text.clone(), pending_tools.clone());
             let resolved: HashSet<&str> = pending_tool_outputs
                 .iter()
-                .filter(|(sid, ..)| is_root(sid))
-                .map(|(_, id, _)| id.as_str())
+                .map(|(id, _)| id.as_str())
                 .collect();
-            for (sid, request_id, output) in &pending_tool_outputs {
-                if is_root(sid) {
-                    session.ctx.push_tool(request_id.clone(), output.clone());
-                }
+            for (request_id, output) in &pending_tool_outputs {
+                session.ctx.push_tool(request_id.clone(), output.clone());
             }
             // Pending = calls without a logged output. Kept `Some` even when
             // fully resolved (the crash hit before the next round streamed):
             // resume then continues the turn instead of re-offering.
-            let pending: Vec<ToolCall> = tail
+            let pending: Vec<ToolCall> = pending_tools
                 .into_iter()
                 .filter(|c| !resolved.contains(c.id.as_str()))
                 .collect();
