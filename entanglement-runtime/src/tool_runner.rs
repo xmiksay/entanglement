@@ -59,6 +59,64 @@ fn apply_grant(
     }
 }
 
+/// How the executor routes a `ToolExec` once the tool mask (#116) has cleared.
+///
+/// Classification is a **pure function of the tool name** ([`Intercept::classify`]),
+/// which makes the ladder's one load-bearing invariant — the mask precedes every
+/// route (#203) — structural rather than comment-enforced: the loop checks
+/// [`tool_masked`] before it ever calls `classify`, and the routes are a `match`
+/// (mutually exclusive) instead of a fall-through chain of `if tool == X { … }`
+/// branches, so a newly added route can no longer be silently mis-ordered ahead
+/// of the mask. Adding a tool means adding a variant here and its `match` arm in
+/// the dispatch loop — both checked by the compiler's exhaustiveness rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Intercept {
+    /// `agent`/`agent_spawn`: session orchestration only (touches no host
+    /// resource), gated by the per-profile spawn control, not per-tool approval
+    /// (#60/#119/#120). The two variants share one guard path and differ only in
+    /// whether the launch blocks for the answer.
+    Spawn,
+    /// `agent_poll`: the join half of a non-blocking spawn (#89, ADR-0026) — it
+    /// reads accumulated spawn state, starting no session and touching no host.
+    AgentPoll,
+    /// `ask_user`: a runtime-owned prompt tool (#90, ADR-0027) that surfaces a
+    /// question to the head instead of running against the registry.
+    AskUser,
+    /// `propose_plan`: the plan agent's finalize step (#141, ADR-0042),
+    /// force-parked on the `Ask` path since user approval *is* its semantics.
+    ProposePlan,
+    /// `rhai`: a sandboxed script tool (#122, ADR-0046) that resolves its own
+    /// permission live against the loop's profile snapshot inside the script task.
+    Rhai,
+    /// Every other host tool: the generic `Allow | Ask | Deny` dispatch.
+    Permission,
+}
+
+impl Intercept {
+    /// Route an (already-unmasked) tool by name.
+    fn classify(tool: &str) -> Self {
+        match tool {
+            AGENT_TOOL | AGENT_SPAWN_TOOL => Self::Spawn,
+            AGENT_POLL_TOOL => Self::AgentPoll,
+            ASK_USER_TOOL => Self::AskUser,
+            PROPOSE_PLAN_TOOL => Self::ProposePlan,
+            RHAI_TOOL => Self::Rhai,
+            _ => Self::Permission,
+        }
+    }
+
+    /// Whether this route skips the per-tool `Allow | Ask | Deny` decision. The
+    /// spawn/poll/prompt/plan routes touch no host resource, so permission does
+    /// not apply; `Rhai` resolves permission itself inside the script task; the
+    /// generic `Permission` route *is* the permission decision.
+    fn bypasses_permission(self) -> bool {
+        matches!(
+            self,
+            Self::Spawn | Self::AgentPoll | Self::AskUser | Self::ProposePlan
+        )
+    }
+}
+
 /// Spawn the per-engine tool executor. Subscribes synchronously (so no
 /// `ToolExec` emitted before the task is scheduled is missed) and runs until the
 /// engine's outbox closes. `profiles` is the runtime's copy of the engine's
@@ -139,205 +197,199 @@ pub fn spawn_tool_executor(
                         });
                         continue;
                     }
-                    // The `agent_spawn`/`agent` family only orchestrates sessions
-                    // (touches no host resource), so it bypasses per-tool approval
-                    // (#60). It is instead gated by the per-profile spawn control
-                    // (#119): the spawner must `may_spawn` and the *target* must be
-                    // spawnable and on its allowlist — refused before a child is minted, in
-                    // front of the ADR-0023 budget and the ADR-0024 clamp. Both
-                    // variants share this guard path — refusals are identical
-                    // (#120); they differ only in whether the launch blocks.
-                    // Subscribe *before* handing off so the child's `Done` can't
-                    // race ahead of the watcher.
-                    let blocking = tool == AGENT_TOOL;
-                    if tool == AGENT_SPAWN_TOOL || blocking {
-                        let target = crate::subagent::target_agent(&input);
-                        if let Some(refusal) =
-                            spawn_refusal(active.get(&session), &target, &profiles)
-                        {
-                            let holly = holly.clone();
-                            tokio::spawn(async move {
-                                seam::reply(&holly, session, request_id, refusal).await;
-                            });
-                            continue;
-                        }
-                        match spawn_guard.try_spawn(&session) {
-                            Ok(()) => {
-                                let child_events = holly.subscribe();
-                                let registry = registry.clone();
-                                let holly = holly.clone();
-                                tokio::spawn(async move {
-                                    // `agent` parks for the answer; `agent_spawn`
-                                    // hands the handle back at once — one guard
-                                    // path, two return shapes (#120).
-                                    if blocking {
-                                        crate::subagent::run_agent(
-                                            holly,
-                                            child_events,
-                                            registry,
-                                            session,
-                                            request_id,
-                                            input,
-                                        )
-                                        .await;
-                                    } else {
-                                        crate::subagent::launch_subagent(
-                                            holly,
-                                            child_events,
-                                            registry,
-                                            session,
-                                            request_id,
-                                            input,
-                                        )
-                                        .await;
-                                    }
-                                });
-                            }
-                            // Over a limit: refuse without starting a child, but
-                            // still answer the parent's parked tool call so its
-                            // turn continues with a clear explanation.
-                            Err(refusal) => {
+                    // Route the unmasked tool through its interception. The mask
+                    // above runs *structurally before* this classifier, and the
+                    // routes are a `match` (mutually exclusive) rather than an
+                    // ordered ladder of `if tool == X` branches — so no route can
+                    // be silently mis-ordered ahead of the mask (#203). Each
+                    // handler runs on its own task; the loop only routes.
+                    let route = Intercept::classify(&tool);
+                    tracing::trace!(
+                        %tool,
+                        ?route,
+                        bypasses_permission = route.bypasses_permission(),
+                        "routing tool exec"
+                    );
+                    match route {
+                        Intercept::Spawn => {
+                            // Spawn control (#119): the spawner must `may_spawn` and
+                            // the *target* must be spawnable and on its allowlist —
+                            // refused before a child is minted, in front of the
+                            // ADR-0023 budget and the ADR-0024 clamp. Subscribe
+                            // *before* handing off so the child's `Done` can't race
+                            // ahead of the watcher.
+                            let blocking = tool == AGENT_TOOL;
+                            let target = crate::subagent::target_agent(&input);
+                            if let Some(refusal) =
+                                spawn_refusal(active.get(&session), &target, &profiles)
+                            {
                                 let holly = holly.clone();
                                 tokio::spawn(async move {
                                     seam::reply(&holly, session, request_id, refusal).await;
                                 });
+                            } else {
+                                match spawn_guard.try_spawn(&session) {
+                                    Ok(()) => {
+                                        let child_events = holly.subscribe();
+                                        let registry = registry.clone();
+                                        let holly = holly.clone();
+                                        tokio::spawn(async move {
+                                            // `agent` parks for the answer; `agent_spawn`
+                                            // hands the handle back at once — one guard
+                                            // path, two return shapes (#120).
+                                            if blocking {
+                                                crate::subagent::run_agent(
+                                                    holly,
+                                                    child_events,
+                                                    registry,
+                                                    session,
+                                                    request_id,
+                                                    input,
+                                                )
+                                                .await;
+                                            } else {
+                                                crate::subagent::launch_subagent(
+                                                    holly,
+                                                    child_events,
+                                                    registry,
+                                                    session,
+                                                    request_id,
+                                                    input,
+                                                )
+                                                .await;
+                                            }
+                                        });
+                                    }
+                                    // Over a limit: refuse without starting a child,
+                                    // but still answer the parent's parked tool call
+                                    // so its turn continues with a clear explanation.
+                                    Err(refusal) => {
+                                        let holly = holly.clone();
+                                        tokio::spawn(async move {
+                                            seam::reply(&holly, session, request_id, refusal).await;
+                                        });
+                                    }
+                                }
                             }
                         }
-                        continue;
-                    }
-                    // `agent_poll` is the join half of non-blocking spawn (#89,
-                    // ADR-0026): it starts no session and touches no host
-                    // resource — it only reads accumulated spawn state — so like
-                    // `agent_spawn` it bypasses permission and the spawn budget.
-                    if tool == AGENT_POLL_TOOL {
-                        let registry = registry.clone();
-                        let holly = holly.clone();
-                        tokio::spawn(async move {
-                            crate::agent_poll::run_agent_poll(
-                                holly, registry, session, request_id, input,
-                            )
-                            .await;
-                        });
-                        continue;
-                    }
-                    // `ask_user` is a runtime-owned prompt tool (#90, ADR-0027):
-                    // like `agent_spawn` it touches no host resource, so it
-                    // bypasses permission and instead surfaces a question to the
-                    // head. Subscribe *before* handing off so a fast answer can't
-                    // race ahead of the parked executor task.
-                    if tool == ASK_USER_TOOL {
-                        let inbound = holly.subscribe_inbound();
-                        let holly = holly.clone();
-                        tokio::spawn(async move {
-                            crate::ask_user::run_ask_user(
-                                holly, inbound, session, seq, request_id, input,
-                            )
-                            .await;
-                        });
-                        continue;
-                    }
-                    // `propose_plan` is the plan agent's finalize step (#141,
-                    // ADR-0042): plan acceptance rides the tool-approval round-trip.
-                    // Like `ask_user` it is intercepted before permission and
-                    // **force-parked on the `Ask` path unconditionally** — a
-                    // profile can never `Allow` it, since user approval *is* the
-                    // tool's semantics. Approve just acks the model (no engine
-                    // plan state, #231); the head handles the fresh-`build`-session
-                    // handoff (head policy, no new protocol surface).
-                    if tool == PROPOSE_PLAN_TOOL {
-                        let inbound = holly.subscribe_inbound();
-                        let holly = holly.clone();
-                        tokio::spawn(async move {
-                            crate::propose_plan::run_propose_plan(
-                                holly, inbound, session, seq, request_id, input,
-                            )
-                            .await;
-                        });
-                        continue;
-                    }
-                    // `rhai` is a runtime-owned sandboxed script tool (#122,
-                    // ADR-0046). Like the others it is intercepted before the
-                    // generic dispatch, because its bindings resolve permission
-                    // live against this loop's profile state — captured here as a
-                    // per-run snapshot and moved into the script task. The tool's
-                    // *own* Allow/Ask/Deny is resolved the same way; the tool mask
-                    // (checked above) already withholds it from a read-only
-                    // profile like `explore`.
-                    if tool == RHAI_TOOL {
-                        let arg = permission_arg(&tool, &input);
-                        let self_perm = apply_grant(
-                            &grants,
-                            &session,
-                            &tool,
-                            arg.as_deref(),
-                            clamp_to_base(
-                                effective_permission(
-                                    &active,
-                                    &spawn_guard,
-                                    &session,
-                                    &tool,
-                                    arg.as_deref(),
-                                ),
-                                &base,
-                                &tool,
-                                arg.as_deref(),
-                            ),
-                        );
-                        let policy = crate::script::BindingPolicy::capture(
-                            &active,
-                            &spawn_guard,
-                            &session,
-                            &base,
-                        );
-                        let inbound = holly.subscribe_inbound();
-                        let tools = tools.clone();
-                        let holly = holly.clone();
-                        tokio::spawn(async move {
-                            crate::script::run_rhai(
-                                holly, tools, policy, self_perm, session, seq, request_id, inbound,
-                                input,
-                            )
-                            .await;
-                        });
-                        continue;
-                    }
-                    // Resolve permission before spawning so the read of `active`
-                    // stays ordered with the lifecycle events above. A child
-                    // sub-agent is clamped to its parent chain (#77): its effective
-                    // permission can never exceed any ancestor's, so a child cannot
-                    // touch the shared tree in ways the parent couldn't. A root
-                    // session (no ancestors) resolves to its own profile unchanged;
-                    // a session we never saw start defaults to `Allow`. The
-                    // tool-specific argument (command/path, #173) lets an
-                    // argument-scoped rule resolve against the actual call.
-                    let arg = permission_arg(&tool, &input);
-                    let perm = apply_grant(
-                        &grants,
-                        &session,
-                        &tool,
-                        arg.as_deref(),
-                        clamp_to_base(
-                            effective_permission(
-                                &active,
-                                &spawn_guard,
+                        Intercept::AgentPoll => {
+                            let registry = registry.clone();
+                            let holly = holly.clone();
+                            tokio::spawn(async move {
+                                crate::agent_poll::run_agent_poll(
+                                    holly, registry, session, request_id, input,
+                                )
+                                .await;
+                            });
+                        }
+                        Intercept::AskUser => {
+                            // Subscribe *before* handing off so a fast answer can't
+                            // race ahead of the parked executor task.
+                            let inbound = holly.subscribe_inbound();
+                            let holly = holly.clone();
+                            tokio::spawn(async move {
+                                crate::ask_user::run_ask_user(
+                                    holly, inbound, session, seq, request_id, input,
+                                )
+                                .await;
+                            });
+                        }
+                        Intercept::ProposePlan => {
+                            // Approve just acks the model (no engine plan state,
+                            // #231); the head handles the fresh-`build`-session
+                            // handoff (head policy, no new protocol surface).
+                            let inbound = holly.subscribe_inbound();
+                            let holly = holly.clone();
+                            tokio::spawn(async move {
+                                crate::propose_plan::run_propose_plan(
+                                    holly, inbound, session, seq, request_id, input,
+                                )
+                                .await;
+                            });
+                        }
+                        Intercept::Rhai => {
+                            // The bindings resolve permission live against this
+                            // loop's profile state — captured here as a per-run
+                            // snapshot and moved into the script task. The tool's
+                            // *own* Allow/Ask/Deny is resolved the same way.
+                            let arg = permission_arg(&tool, &input);
+                            let self_perm = apply_grant(
+                                &grants,
                                 &session,
                                 &tool,
                                 arg.as_deref(),
-                            ),
-                            &base,
-                            &tool,
-                            arg.as_deref(),
-                        ),
-                    );
-                    let tools = tools.clone();
-                    let holly = holly.clone();
-                    let grants = grants.clone();
-                    tokio::spawn(async move {
-                        dispatch(
-                            &holly, &tools, &grants, session, seq, request_id, tool, input, perm,
-                        )
-                        .await;
-                    });
+                                clamp_to_base(
+                                    effective_permission(
+                                        &active,
+                                        &spawn_guard,
+                                        &session,
+                                        &tool,
+                                        arg.as_deref(),
+                                    ),
+                                    &base,
+                                    &tool,
+                                    arg.as_deref(),
+                                ),
+                            );
+                            let policy = crate::script::BindingPolicy::capture(
+                                &active,
+                                &spawn_guard,
+                                &session,
+                                &base,
+                            );
+                            let inbound = holly.subscribe_inbound();
+                            let tools = tools.clone();
+                            let holly = holly.clone();
+                            tokio::spawn(async move {
+                                crate::script::run_rhai(
+                                    holly, tools, policy, self_perm, session, seq, request_id,
+                                    inbound, input,
+                                )
+                                .await;
+                            });
+                        }
+                        Intercept::Permission => {
+                            // Resolve permission before spawning so the read of
+                            // `active` stays ordered with the lifecycle events
+                            // above. A child sub-agent is clamped to its parent
+                            // chain (#77): its effective permission can never exceed
+                            // any ancestor's, so a child cannot touch the shared tree
+                            // in ways the parent couldn't. A root session (no
+                            // ancestors) resolves to its own profile unchanged; a
+                            // session we never saw start defaults to `Allow`. The
+                            // tool-specific argument (command/path, #173) lets an
+                            // argument-scoped rule resolve against the actual call.
+                            let arg = permission_arg(&tool, &input);
+                            let perm = apply_grant(
+                                &grants,
+                                &session,
+                                &tool,
+                                arg.as_deref(),
+                                clamp_to_base(
+                                    effective_permission(
+                                        &active,
+                                        &spawn_guard,
+                                        &session,
+                                        &tool,
+                                        arg.as_deref(),
+                                    ),
+                                    &base,
+                                    &tool,
+                                    arg.as_deref(),
+                                ),
+                            );
+                            let tools = tools.clone();
+                            let holly = holly.clone();
+                            let grants = grants.clone();
+                            tokio::spawn(async move {
+                                dispatch(
+                                    &holly, &tools, &grants, session, seq, request_id, tool, input,
+                                    perm,
+                                )
+                                .await;
+                            });
+                        }
+                    }
                 }
                 Ok(_) => {}
                 // A lagging executor drops broadcast events; the affected turn
@@ -486,4 +538,55 @@ fn set_thinking(holly: &Holly, session: &SessionId) {
         session: session.clone(),
         state: AgentState::Thinking,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool_names::UPDATE_PLAN_TOOL;
+
+    #[test]
+    fn classify_maps_each_orchestration_tool_to_its_route() {
+        assert_eq!(Intercept::classify(AGENT_TOOL), Intercept::Spawn);
+        assert_eq!(Intercept::classify(AGENT_SPAWN_TOOL), Intercept::Spawn);
+        assert_eq!(Intercept::classify(AGENT_POLL_TOOL), Intercept::AgentPoll);
+        assert_eq!(Intercept::classify(ASK_USER_TOOL), Intercept::AskUser);
+        assert_eq!(
+            Intercept::classify(PROPOSE_PLAN_TOOL),
+            Intercept::ProposePlan
+        );
+        assert_eq!(Intercept::classify(RHAI_TOOL), Intercept::Rhai);
+    }
+
+    #[test]
+    fn classify_routes_every_other_tool_to_permission() {
+        // Host-registry tools and runtime state tools take the generic path.
+        for tool in [
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "call",
+            UPDATE_PLAN_TOOL,
+            "",
+        ] {
+            assert_eq!(
+                Intercept::classify(tool),
+                Intercept::Permission,
+                "`{tool}` should fall through to the permission dispatch"
+            );
+        }
+    }
+
+    #[test]
+    fn only_orchestration_routes_bypass_permission() {
+        // The spawn/poll/prompt/plan routes touch no host resource; `rhai`
+        // resolves permission itself and the generic path *is* the decision.
+        assert!(Intercept::Spawn.bypasses_permission());
+        assert!(Intercept::AgentPoll.bypasses_permission());
+        assert!(Intercept::AskUser.bypasses_permission());
+        assert!(Intercept::ProposePlan.bypasses_permission());
+        assert!(!Intercept::Rhai.bypasses_permission());
+        assert!(!Intercept::Permission.bypasses_permission());
+    }
 }
