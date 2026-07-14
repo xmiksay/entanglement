@@ -84,6 +84,7 @@ tools and makes no policy decision:
 | `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
 | `bash` ⚠ | `{command, timeout?}` | `sh -c` rooted at root; `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600, `kill_on_drop` reaps on expiry |
 | `call` ⚠ | `{command, args?, tail?, timeout?}` | **argv, no shell** — `command`+`args` exec verbatim (no `sh -c`, so no pipe/glob/`$VAR`/metachar interpretation); output tailed to the last `tail` lines per stream (default 30, `tail=0` = full, byte-cap still applies), with a `(… N earlier lines omitted, tail=30 — rerun with tail=0 …)` notice; same envelope as `bash` (`[exit N]` + stdout + `[stderr]`, 120 s/600 s, `kill_on_drop`) — ADR-0045 |
+| `rhai` | `{script, timeout?}` | run a Rhai script ([rhai.rs](https://rhai.rs)) in a **capability-sandboxed** engine — no fs/network/process/env access; the only host bindings are `read`/`glob`/`grep`/`edit`/`write`, each routed through that tool's permission check; last-expression value serialized + captured `print(...)`; bounded by op/string/array/map caps + wall-clock (default 5 s, max 30) — [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md) |
 
 - **Working directory:** each tool holds a `root` (the cwd, **canonicalized once
   at startup**); model-supplied paths resolve against it and are rejected on `..`
@@ -129,21 +130,32 @@ tools and makes no policy decision:
   unsandboxed (ADR-0009/ADR-0045). `EngineConfig::default()` ships an empty
   registry (embedders opt in via `host_tools`).
 
-`edit`/`write`/`bash`/`call` slot into the existing permission profiles with no profile
-changes: `build` auto-allows them (default `Allow`), `plan` asks (default
-`Ask`), `explore` denies (default `Deny`). The opt-in gate is
-orthogonal to the permission profile: it controls *registration* (whether the
-tool is advertised at all), the profile controls *dispatch* (Allow/Ask/Deny
-when the model calls it).
+`edit`/`write`/`bash`/`call` are advertised only to the inherit-all `build`
+profile (`tools: None`), which auto-allows them (default `Allow`). The `plan`
+and `explore` profiles set an explicit `tools` allowlist that omits them
+(#116/#140, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)), so
+the tools are **masked out** of those profiles entirely — never advertised, so
+no `Allow`/`Ask`/`Deny` default is reached for them there. The opt-in gate is
+orthogonal to both mask and profile: it controls *registration* (whether the
+tool is advertised at all), the mask controls *existence* per profile, and the
+profile controls *dispatch* (Allow/Ask/Deny when the model calls a tool that
+survives the mask).
 
-Four **runtime-owned orchestration tools** are *not* in the registry — the
+Five **runtime-owned orchestration tools** are *not* in the registry — the
 `tool_runner` intercepts them on `ToolExec` before permission resolution (they
 touch no host resource) and advertises their schemas separately: the `agent_*`
 family (§5, ADR-0033) —
 `agent_spawn { agent, prompt }` (renamed from `spawn_agent`, ADR-0022), its
 non-blocking join `agent_poll { agent_id, timeout_secs }` (ADR-0026), and the
-blocking `agent { agent, prompt }` (spawn-and-wait in one call) — plus
-`ask_user { question, options, allow_free_form }` (§5, ADR-0027).
+blocking `agent { agent, prompt }` (spawn-and-wait in one call) —
+`ask_user { question, options, allow_free_form }` (§5, ADR-0027), and
+`propose_plan { plan }`, the plan agent's finalize step, force-parked on the
+user-approval round-trip since acceptance *is* its semantics (#141,
+[ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md);
+advertised only to a profile that explicitly allowlists it, #231). The `rhai`
+script tool (table above) is intercepted the same way but is **not** a bypass:
+it resolves its own `Allow`/`Ask`/`Deny` live inside the sandboxed script task
+(#122, [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md)).
 
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs
