@@ -212,11 +212,18 @@ deduped — one `reply`/approval-park helper + a `tool_names` module #205,
 #206/[ADR-0059](../docs/adr/0059-tool-trait-and-registry-live-in-the-runtime.md),
 hygiene gates fixed to fail loudly and widened past ADR-0006 via shared
 `scripts/dep-gate.sh` #207, and `main.rs` reworked to import the lib modules with
-the `cli`/`provider` features split #208)
+the `cli`/`provider` features split #208),
+and the command-execution-maturity epic (#166 — exec tools (`bash`/`call`)
+spawned in their **own process group** (`process_group(0)`) so a timeout/cancel
+SIGKILLs the whole tree and grandchildren can't orphan #168, timeouts return the
+**partial output buffered before the kill** instead of discarding it #169, `Stop`
+aborts the in-flight tool task whose drop-guard group-kills the same tree #167,
+and `bash` gains `workdir` + `run_in_background` (detached, polled via
+`bash_output`) with head+tail truncation so the trailing error survives #170)
 are **complete**.
 Current phase is the July 2026 audit backlog — thematic epics tracked on GitHub
 with P0/P1/P2 labels and blocked-by links:
-#190 (provider seam + per-endpoint pool), #166 (exec-tool maturity),
+#190 (provider seam + per-endpoint pool),
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
 [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)),
