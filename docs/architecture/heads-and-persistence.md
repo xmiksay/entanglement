@@ -120,7 +120,7 @@ persistence machinery with none of the CLI/TUI/transport weight
   they stay fresh across mid-session definition edits. `Tab`/`←`/`→` switch tabs,
   arrows/`j`/`k`/`PgUp`/`PgDn` (or the wheel) scroll, `Esc` closes.
 
-## 6b. Session persistence & resume (`persistence` + `session_store`)
+## 6b. Session persistence & resume — [ADR-0020](../adr/0020-event-sourced-session-persistence.md) (`persistence` + `session_store`)
 
 Sessions are event-sourced to disk, one JSONL file per **root** session under
 `<data_dir>/entanglement/sessions/<safe-cwd>/<root_id>.jsonl` (`session_store`).
