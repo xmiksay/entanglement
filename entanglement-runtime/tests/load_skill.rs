@@ -16,8 +16,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
-    ToolCall,
+    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::skills::{load_registry, LoadSkillTool};
@@ -139,7 +138,7 @@ async fn load_skill_then_read_a_substituted_ref() {
     tools.register(LoadSkillTool::new(registry));
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
         ..EngineConfig::default()
@@ -241,7 +240,7 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
     });
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
         profiles: profiles.clone(),

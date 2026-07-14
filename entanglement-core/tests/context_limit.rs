@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmSession, LlmStream, OutEvent, SessionId,
+    EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmStream, OutEvent, SessionId,
 };
 
 /// `Llm` that records whether it was ever asked to stream. The refuse path must
@@ -42,9 +42,9 @@ async fn over_window_prompt_is_refused_without_sending() {
     let calls_for_factory = calls.clone();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(CountingLlm {
+            Box::new(CountingLlm {
                 calls: calls_for_factory.clone(),
-            }))
+            }) as Box<dyn Llm>
         }),
         // Tiny window → ~85-token budget; a large prompt blows it and no tool
         // output exists to prune, so the turn is refused.

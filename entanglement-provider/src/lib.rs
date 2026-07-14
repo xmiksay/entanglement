@@ -38,7 +38,7 @@ pub use catalog::{Catalog, ModelEntry, ModelPricing, ProviderEntry, Wire};
 pub use client::{HttpClient, RetryConfig};
 pub use llm::{
     stream_from_response, DummyLlm, EchoLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse,
-    LlmSession, LlmStream, StopReason, ToolCall, ToolSpec, Usage,
+    LlmStream, StopReason, ToolCall, ToolSpec, Usage,
 };
 pub use message::{Message, MessageRole};
 pub use openai::{

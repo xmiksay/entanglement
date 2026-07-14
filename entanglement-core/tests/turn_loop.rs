@@ -14,8 +14,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
-    ToolCall,
+    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 
 mod common;
@@ -97,7 +96,7 @@ async fn prompt_arriving_during_streaming_is_stashed_and_replayed() {
     ]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)))
+            Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };
@@ -164,7 +163,7 @@ async fn prompt_arriving_mid_turn_folds_into_the_live_turn() {
     ]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)))
+            Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };
@@ -249,9 +248,9 @@ async fn runaway_tool_loop_is_bounded_within_a_single_prompt() {
     let calls_for_factory = calls.clone();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(LoopingLlm {
+            Box::new(LoopingLlm {
                 calls: calls_for_factory.clone(),
-            }))
+            }) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };
@@ -324,7 +323,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
     ]);
     let mut cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)))
+            Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };

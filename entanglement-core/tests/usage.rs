@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, ModelPricing,
-    OutEvent, SessionId, StopReason, Usage,
+    EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmStream, ModelPricing, OutEvent,
+    SessionId, StopReason, Usage,
 };
 use futures::stream;
 use futures::StreamExt;
@@ -47,7 +47,7 @@ fn config(
         prices.insert("test-model".to_string(), p);
     }
     EngineConfig {
-        llm_factory: Arc::new(move || LlmSession::new(Box::new(FinishLlm { stop_reason, usage }))),
+        llm_factory: Arc::new(move || Box::new(FinishLlm { stop_reason, usage }) as Box<dyn Llm>),
         default_model: Some("test-model".to_string()),
         pricing: prices,
         ..EngineConfig::default()

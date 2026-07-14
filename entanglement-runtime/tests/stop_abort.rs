@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, Permission, PermissionProfile, ProfileRegistry, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    Permission, PermissionProfile, ProfileRegistry, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -84,7 +84,7 @@ fn spawn_blocking_bash(started: Arc<AtomicBool>, completed: Arc<AtomicBool>) -> 
     let profiles: ProfileRegistry = entanglement_runtime::agents::built_in_registry();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         profiles: profiles.clone(),
         ..EngineConfig::default()

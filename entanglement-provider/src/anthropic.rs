@@ -20,8 +20,7 @@
 
 use crate::client::HttpClient;
 use crate::{
-    Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, Message, MessageRole, StopReason, ToolSpec,
-    Usage,
+    Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, StopReason, ToolSpec, Usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -81,7 +80,7 @@ pub fn anthropic_factory(
     http: HttpClient,
 ) -> crate::LlmFactory {
     let llm = AnthropicLlm::new(api_key, default_model, rpm, http);
-    std::sync::Arc::new(move || LlmSession::new(Box::new(llm.clone())))
+    std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
 #[async_trait]

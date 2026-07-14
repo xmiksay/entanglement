@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmSession, LlmStream, Permission, PermissionProfile, SessionId, ToolSpec,
+    LlmResponse, LlmStream, Permission, PermissionProfile, SessionId, ToolSpec,
 };
 
 /// The read-only `explore` profile the runtime ships as `explore.md` — core no
@@ -59,7 +59,7 @@ impl Llm for RecordingLlm {
 fn recording_config(seen: Arc<Mutex<Vec<Vec<String>>>>) -> EngineConfig {
     let mut cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(RecordingLlm { seen: seen.clone() }))
+            Box::new(RecordingLlm { seen: seen.clone() }) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };

@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmSession, LlmStream, MessageRole,
-    OutEvent, SessionId, StopReason, Usage,
+    EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmStream, MessageRole, OutEvent,
+    SessionId, StopReason, Usage,
 };
 use futures::stream;
 use futures::StreamExt;
@@ -84,7 +84,7 @@ where
     L: Llm + 'static,
 {
     EngineConfig {
-        llm_factory: Arc::new(move || LlmSession::new(Box::new(make()))),
+        llm_factory: Arc::new(move || Box::new(make()) as Box<dyn Llm>),
         ..EngineConfig::default()
     }
 }

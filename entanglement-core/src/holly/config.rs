@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile};
-use entanglement_provider::{EchoLlm, LlmFactory, LlmSession, ModelPricing, ToolSpec};
+use entanglement_provider::{EchoLlm, Llm, LlmFactory, ModelPricing, ToolSpec};
 
 use super::DEFAULT_PROFILE;
 
@@ -62,7 +62,7 @@ impl EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            llm_factory: Arc::new(|| LlmSession::new(Box::new(EchoLlm))),
+            llm_factory: Arc::new(|| Box::new(EchoLlm) as Box<dyn Llm>),
             tool_specs: Vec::new(),
             profiles: ProfileRegistry::new(),
             profile_tool_specs: HashMap::new(),

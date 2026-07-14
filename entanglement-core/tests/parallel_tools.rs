@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, Message, OutEvent, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    Message, OutEvent, SessionId, ToolCall,
 };
 
 fn call(id: &str, name: &str) -> ToolCall {
@@ -59,10 +59,10 @@ fn engine(responses: Vec<LlmResponse>) -> (Holly, Arc<Mutex<Vec<Vec<Message>>>>)
     let responses = Arc::new(responses);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(RecordingLlm::new(
+            Box::new(RecordingLlm::new(
                 (*responses).clone(),
                 seen_factory.clone(),
-            )))
+            )) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };

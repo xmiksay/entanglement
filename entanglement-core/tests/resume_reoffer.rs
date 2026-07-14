@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentState, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
-    LlmSession, LlmStream, OutEvent, SessionId,
+    LlmStream, OutEvent, SessionId,
 };
 
 struct ScriptedLlm {
@@ -34,9 +34,9 @@ fn engine(responses: Vec<LlmResponse>) -> Holly {
     let responses = Arc::new(responses);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm {
+            Box::new(ScriptedLlm {
                 responses: (*responses).clone(),
-            }))
+            }) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };

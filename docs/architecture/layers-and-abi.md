@@ -26,8 +26,8 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
 └─────────┬────────────────────────────────────────────────────────────────┘
           │ depends on provider; consumes the `Llm` trait + DTOs
  ┌─────────▼──────────── entanglement-provider (leaf, LLM ABI + I/O) ────────┐
-│ OWNS the `Llm` trait, LlmRequest/Response/Event/Stream, LlmSession,       │
-│ LlmFactory, ToolCall/ToolSpec, Message/MessageRole · OpenAI-compat +      │
+│ OWNS the `Llm` trait, LlmRequest/Response/Event/Stream, LlmFactory,       │
+│ ToolCall/ToolSpec, Message/MessageRole · OpenAI-compat +                  │
 │ Anthropic clients · pool · retry · rate-limit · reasoning stream          │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -72,7 +72,7 @@ decision + approval wait) also moved to the runtime (✅ #59, §3): core emits
 `ToolExec` for *every* host tool and no longer consults `PermissionProfile`; the
 runtime tool executor resolves the permission and drives approval. Core's
 `Session` is now slimmed to loop + turn state (✅ #61): it holds the `Context`,
-the provider session handle (`llm`, #55), the profile, the plan/tasks snapshots,
+the LLM backend (`llm: Box<dyn Llm>`, #55; no per-session handle — [ADR-0062](../adr/0062-collapse-llmsession-placeholder-newtype.md)), the profile, the plan/tasks snapshots,
 and the loop counters — no cached tool set (the schemas come from
 `EngineConfig.tool_specs` at turn time).
 

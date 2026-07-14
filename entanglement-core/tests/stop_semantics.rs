@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, Message, MessageRole, OutEvent, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    Message, MessageRole, OutEvent, SessionId, ToolCall,
 };
 use futures::StreamExt;
 
@@ -82,7 +82,7 @@ fn capturing_factory(
     r.reverse();
     EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(CapturingLlm::new(r.clone(), seen.clone())))
+            Box::new(CapturingLlm::new(r.clone(), seen.clone())) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     }
@@ -131,11 +131,11 @@ async fn stop_preempts_a_stalled_stream() {
     let seen2 = seen.clone();
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(StallingLlm {
+            Box::new(StallingLlm {
                 seen: seen2.clone(),
                 stalled_once: Mutex::new(false),
                 reply: "recovered".into(),
-            }))
+            }) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     });

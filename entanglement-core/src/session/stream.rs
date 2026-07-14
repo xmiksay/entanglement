@@ -12,7 +12,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::emit::{emit_turn_error, next_seq};
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
-use entanglement_provider::{Llm, LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage};
+use entanglement_provider::{LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage};
 
 /// Outcome of one streamed round-trip.
 pub(super) enum StreamedRound {

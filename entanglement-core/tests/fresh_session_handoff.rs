@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, MessageRole, OutEvent, SessionId,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    MessageRole, OutEvent, SessionId,
 };
 
 /// An LLM that records the user messages of the first request it receives, so the
@@ -46,9 +46,9 @@ async fn set_agent_then_prompt_on_fresh_id_starts_a_root_build_session() {
     let seen_for_factory = seen.clone();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(CapturingLlm {
+            Box::new(CapturingLlm {
                 seen_user_messages: seen_for_factory.clone(),
-            }))
+            }) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };
