@@ -4,16 +4,14 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{emit_turn_error, emit_usage, next_seq};
+use super::stream::{stream_round, StreamedRound};
 use super::tools::handle_tool_call;
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
-use entanglement_provider::{
-    Llm, LlmEvent, LlmRequest, ModelPricing, StopReason, ToolCall, ToolSpec,
-};
+use entanglement_provider::{ModelPricing, StopReason, ToolSpec};
 
 /// Runs one reasoning turn to completion. Returns `Err(())` only when a
 /// `SessionCmd::Stop` arrives during tool-request approval (cancel-via-Esc);
@@ -140,166 +138,18 @@ pub(crate) async fn run_turn(
             }
         }
 
-        // Stream the model's reply, re-requesting once if the stream fails
-        // *before* any user-visible output (#181). The provider retries only
-        // connect-level failures and 429s (ADR-0050); a stream that drops after
-        // the first byte is invisible to it. A transparent re-request is safe
-        // only while nothing has been shown — once a `TextDelta`/`ReasoningDelta`
-        // is on screen we cannot silently re-stream over it, so a later failure
-        // instead commits the partial with an `[interrupted]` marker (below) to
-        // keep the context we send next turn aligned with what the user saw.
-        const STREAM_RETRIES: usize = 1;
-        let mut attempt: usize = 0;
-        let mut text_buf = String::new();
-        let mut tool_calls: Vec<ToolCall> = Vec::new();
-        let mut finish: Option<(Option<StopReason>, entanglement_provider::Usage)> = None;
-        let mut shown = false;
-        let stream_err: Option<String>;
-        loop {
-            let req = LlmRequest {
-                system: &s.profile.system_prompt,
-                model: s.profile.model.as_deref(),
-                messages: s.ctx.messages(),
-                tools: &specs,
+        let (text_buf, tool_calls, finish) =
+            match stream_round(session, rx, s, events, stash, &specs).await {
+                StreamedRound::Complete {
+                    text,
+                    tool_calls,
+                    finish,
+                } => (text, tool_calls, finish),
+                // Cancelled: Stop / inbox close mid-stream — the turn ends but
+                // the session stays alive (cancel semantics, ADR-0017).
+                // Failed: partial committed + Error/Done already emitted (#181).
+                StreamedRound::Cancelled | StreamedRound::Failed => return Ok(()),
             };
-            tracing::debug!(
-                messages_count = req.messages.len(),
-                estimated_tokens = s.ctx.estimated_tokens(),
-                attempt,
-                "sending request to LLM"
-            );
-            let mut stream = match s.llm.stream(req).await {
-                Ok(st) => st,
-                Err(e) => {
-                    emit_turn_error(session, &mut s.seq, events, e.to_string());
-                    return Ok(());
-                }
-            };
-
-            // Consume the stream: emit incremental TextDelta, assemble tool calls.
-            let mut attempt_err: Option<String> = None;
-            loop {
-                // Race the stream against the inbox so a mid-stream command
-                // preempts immediately (#179): a stalled-but-connected provider
-                // would otherwise block cancellation until the HTTP client's read
-                // timeout fires. `biased` polls the inbox first so a queued `Stop`
-                // wins even when the stream also has an event ready; dropping the
-                // stream aborts the underlying reqwest request. Non-Stop commands
-                // are stashed for replay after this turn ends (ADR-0018 —
-                // previously silently dropped).
-                let ev = tokio::select! {
-                    biased;
-                    cmd = rx.recv() => {
-                        match cmd {
-                            Some(SessionCmd::Stop) => {
-                                tracing::debug!("turn interrupted during streaming");
-                                drop(stream);
-                                let _ = events.send(OutEvent::Status {
-                                    session: session.clone(),
-                                    state: AgentState::Idle,
-                                });
-                                return Ok(());
-                            }
-                            // Inbox closed (supervisor gone): abort the stream and
-                            // end the turn; the session loop ends on its next recv.
-                            None => {
-                                drop(stream);
-                                return Ok(());
-                            }
-                            Some(other) => {
-                                tracing::debug!(
-                                    cmd = ?other,
-                                    "command arrived mid-stream; stashed for replay after turn"
-                                );
-                                stash.push_back(other);
-                                continue;
-                            }
-                        }
-                    }
-                    next = stream.next() => match next {
-                        Some(ev) => ev,
-                        None => break,
-                    },
-                };
-                match ev {
-                    Ok(LlmEvent::Text(delta)) => {
-                        if !delta.is_empty() {
-                            shown = true;
-                            text_buf.push_str(&delta);
-                            let _ = events.send(OutEvent::TextDelta {
-                                session: session.clone(),
-                                seq: next_seq(&mut s.seq),
-                                text: delta,
-                            });
-                        }
-                    }
-                    Ok(LlmEvent::Reasoning(delta)) => {
-                        if !delta.is_empty() {
-                            shown = true;
-                            let _ = events.send(OutEvent::ReasoningDelta {
-                                session: session.clone(),
-                                seq: next_seq(&mut s.seq),
-                                text: delta,
-                            });
-                        }
-                    }
-                    Ok(LlmEvent::ToolCall(call)) => tool_calls.push(call),
-                    Ok(LlmEvent::Finish { stop_reason, usage }) => {
-                        finish = Some((stop_reason, usage))
-                    }
-                    Err(e) => {
-                        attempt_err = Some(e.to_string());
-                        break;
-                    }
-                }
-            }
-            drop(stream);
-
-            match attempt_err {
-                None => {
-                    stream_err = None;
-                    break;
-                }
-                Some(e) => {
-                    if !shown && attempt < STREAM_RETRIES {
-                        attempt += 1;
-                        // Nothing was shown, so re-request from a clean slate.
-                        text_buf.clear();
-                        tool_calls.clear();
-                        finish = None;
-                        tracing::warn!(
-                            error = %e,
-                            attempt,
-                            "stream failed before any output; re-requesting turn"
-                        );
-                        continue;
-                    }
-                    stream_err = Some(e);
-                    break;
-                }
-            }
-        }
-
-        if let Some(msg) = stream_err {
-            // A mid-stream failure after partial output. Commit the partial with
-            // an `[interrupted]` marker so the context we send next turn matches
-            // what the user saw (#181) — otherwise the model continues as if it
-            // had said nothing. Stream the marker too, so display and context stay
-            // identical. Any half-assembled tool calls are dropped: without the
-            // `Finish` they may be incomplete and unsafe to execute.
-            if !text_buf.is_empty() {
-                const MARKER: &str = "\n\n[interrupted]";
-                let _ = events.send(OutEvent::TextDelta {
-                    session: session.clone(),
-                    seq: next_seq(&mut s.seq),
-                    text: MARKER.to_string(),
-                });
-                text_buf.push_str(MARKER);
-                s.ctx.push_assistant(text_buf, Vec::new());
-            }
-            emit_turn_error(session, &mut s.seq, events, msg);
-            return Ok(());
-        }
 
         // Fold this round-trip's usage into the session total and emit the delta
         // (#192). A `max_tokens`-truncated reply is surfaced as a recoverable

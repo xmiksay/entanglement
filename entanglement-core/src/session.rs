@@ -15,6 +15,7 @@
 
 mod emit;
 mod replay;
+mod stream;
 mod tools;
 mod turn;
 
