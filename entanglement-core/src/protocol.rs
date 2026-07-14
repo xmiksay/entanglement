@@ -588,6 +588,22 @@ pub enum OutEvent {
         seq: u64,
         text: String,
     },
+    /// Incremental tool-call argument fragment (#194), correlated to the
+    /// eventual [`ToolCall`][OutEvent::ToolCall]/[`ToolExec`][OutEvent::ToolExec]
+    /// by `request_id`. Display-only: lets a head render file-sized `edit`/
+    /// `write` arguments as they stream, before the assembled `ToolCall` (which
+    /// core emits once at round end, ADR-0061) arrives. `tool` labels the stream;
+    /// `delta` is a raw JSON-argument substring — fragments concatenated in
+    /// arrival order rebuild the call `input`. Additive: a head that ignores it
+    /// still gets the full `ToolCall`, so replay reconstructs state from that
+    /// (this variant is skipped on the replay fold).
+    ToolCallDelta {
+        session: SessionId,
+        seq: u64,
+        request_id: String,
+        tool: String,
+        delta: String,
+    },
     /// A tool is being called or about to be approved (display-only). Emitted
     /// for every tool call, before execution, so heads can show what's being called
     /// (tool name + input arguments). Separate from `ToolRequest` which handles
@@ -698,6 +714,7 @@ impl OutEvent {
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }
             | OutEvent::ReasoningDelta { session, .. }
+            | OutEvent::ToolCallDelta { session, .. }
             | OutEvent::ToolCall { session, .. }
             | OutEvent::ToolRequest { session, .. }
             | OutEvent::ToolExec { session, .. }
@@ -724,6 +741,7 @@ impl OutEvent {
             OutEvent::Plan { seq, .. }
             | OutEvent::TextDelta { seq, .. }
             | OutEvent::ReasoningDelta { seq, .. }
+            | OutEvent::ToolCallDelta { seq, .. }
             | OutEvent::ToolCall { seq, .. }
             | OutEvent::ToolRequest { seq, .. }
             | OutEvent::ToolExec { seq, .. }
@@ -843,6 +861,23 @@ mod tests {
             assert_eq!(ev, back);
             assert_eq!(back.seq(), 5);
         }
+    }
+
+    #[test]
+    fn tool_call_delta_roundtrips() {
+        let ev = OutEvent::ToolCallDelta {
+            session: SessionId::new("s1"),
+            seq: 7,
+            request_id: "call_1".into(),
+            tool: "edit".into(),
+            delta: r#"{"path":"src/"#.into(),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains(r#""kind":"tool_call_delta""#), "{json}");
+        let back: OutEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
+        assert_eq!(back.seq(), 7);
+        assert_eq!(back.session(), &SessionId::new("s1"));
     }
 
     #[test]

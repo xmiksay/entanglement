@@ -28,6 +28,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | Plan{session,seq,content}          // markdown prose snapshot, runtime-emitted (#231)
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
+         | ToolCallDelta{session,seq,request_id,tool,delta}   // streamed tool-arg fragment; display-only, before the assembled ToolCall (#194)
          | ToolCall{session,seq,request_id,tool,input}      // display-only, every call (before exec)
          | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
          | ToolExec{session,seq,request_id,tool,input}      // core → runtime: dispatch it (#58/#59)

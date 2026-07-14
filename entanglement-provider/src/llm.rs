@@ -125,6 +125,19 @@ pub enum LlmEvent {
     Text(String),
     /// Incremental reasoning/thinking text (extended thinking from models).
     Reasoning(String),
+    /// Incremental tool-call argument fragment (#194), streamed as the model
+    /// emits a tool call's JSON input *before* the assembled [`ToolCall`].
+    /// Correlated to that final call by `id`; `name` rides every fragment so a
+    /// head can label the stream before the args finish. `delta` is a raw
+    /// substring of the JSON argument text — the fragments concatenated in
+    /// arrival order rebuild [`ToolCall::input`]. Additive: a consumer that only
+    /// needs the assembled call can ignore it and still get the terminal
+    /// [`ToolCall`].
+    ToolCallDelta {
+        id: String,
+        name: String,
+        delta: String,
+    },
     /// A tool the model wants to run, fully assembled (id + name + JSON input).
     ToolCall(ToolCall),
     /// Stream ended cleanly. Carries the normalized [`StopReason`] and [`Usage`]

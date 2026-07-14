@@ -423,7 +423,17 @@ fn handle_chunk(
                         entry.name = n.to_string();
                     }
                     if let Some(a) = func.get("arguments").and_then(|v| v.as_str()) {
-                        entry.arguments.push_str(a);
+                        if !a.is_empty() {
+                            entry.arguments.push_str(a);
+                            // Surface the raw arg fragment as it streams (#194) so
+                            // heads can render file-sized `edit`/`write` inputs
+                            // before the assembled `ToolCall` flushes at finish.
+                            out.push(LlmEvent::ToolCallDelta {
+                                id: entry.id.clone(),
+                                name: entry.name.clone(),
+                                delta: a.to_string(),
+                            });
+                        }
                     }
                 }
             }
@@ -612,6 +622,63 @@ mod tests {
             })]
         );
         assert!(tools.is_empty(), "flush should drain the map");
+    }
+
+    #[test]
+    fn tool_arg_fragments_stream_as_deltas_before_the_assembled_call() {
+        // Each `function.arguments` fragment is surfaced as a `ToolCallDelta`
+        // (id + name + raw fragment) as it arrives (#194); the concatenated
+        // deltas rebuild the eventual `ToolCall::input`.
+        let mut tools = BTreeMap::new();
+        let d1 = json!({ "choices": [{ "delta": { "tool_calls": [
+            { "index": 0, "id": "c1", "type": "function",
+              "function": { "name": "greet", "arguments": "{\"nm\":" } }
+        ] } }] });
+        let d2 = json!({ "choices": [{ "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "\"sam\"}" } }
+        ] } }] });
+
+        let e1 = handle_chunk(&d1, &mut tools, &mut Usage::default()).unwrap();
+        assert_eq!(
+            e1,
+            vec![LlmEvent::ToolCallDelta {
+                id: "c1".into(),
+                name: "greet".into(),
+                delta: "{\"nm\":".into(),
+            }]
+        );
+        let e2 = handle_chunk(&d2, &mut tools, &mut Usage::default()).unwrap();
+        assert_eq!(
+            e2,
+            vec![LlmEvent::ToolCallDelta {
+                id: "c1".into(),
+                name: "greet".into(),
+                delta: "\"sam\"}".into(),
+            }]
+        );
+        // Fragments joined equal what a flush would assemble as the input.
+        let joined: String = [&e1, &e2]
+            .iter()
+            .flat_map(|evs| evs.iter())
+            .map(|ev| match ev {
+                LlmEvent::ToolCallDelta { delta, .. } => delta.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(joined, r#"{"nm":"sam"}"#);
+    }
+
+    #[test]
+    fn empty_arg_fragment_emits_no_delta() {
+        // A tool-call delta that only carries id/name (no args yet) must not
+        // emit an empty `ToolCallDelta`.
+        let mut tools = BTreeMap::new();
+        let d = json!({ "choices": [{ "delta": { "tool_calls": [
+            { "index": 0, "id": "c1", "type": "function",
+              "function": { "name": "greet", "arguments": "" } }
+        ] } }] });
+        let evs = handle_chunk(&d, &mut tools, &mut Usage::default()).unwrap();
+        assert!(evs.is_empty(), "no args ⇒ no delta: {evs:?}");
     }
 
     #[test]

@@ -67,6 +67,9 @@ impl SessionView {
                 {
                     self.clear_approval();
                     self.clear_question();
+                    // A finished/interrupted turn leaves no call still streaming;
+                    // drop trackers for any that never got their assembled call.
+                    self.streaming_tool_calls.clear();
                 }
                 true
             }
@@ -104,15 +107,71 @@ impl SessionView {
                     false
                 }
             }
+            // Streamed tool-arg fragment (#194): open a `ToolCall` entry on the
+            // first fragment and grow its `input` in place as more arrive, so a
+            // file-sized `edit`/`write` argument renders live instead of popping
+            // in whole at round end.
+            OutEvent::ToolCallDelta {
+                seq,
+                request_id,
+                tool,
+                delta,
+                ..
+            } => {
+                if seq > self.last_seen_seq {
+                    self.last_seen_seq = seq;
+                    self.clear_pending_user();
+                    match self.streaming_tool_calls.get(&request_id).copied() {
+                        Some(idx) => {
+                            if let Some(TranscriptEntry::ToolCall { input, .. }) =
+                                self.transcript.get_mut(idx)
+                            {
+                                input.push_str(&delta);
+                            }
+                        }
+                        None => {
+                            let idx = self.transcript.len();
+                            self.transcript
+                                .push(TranscriptEntry::ToolCall { tool, input: delta });
+                            self.streaming_tool_calls.insert(request_id, idx);
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
             OutEvent::ToolCall {
-                seq, tool, input, ..
+                seq,
+                request_id,
+                tool,
+                input,
+                ..
             } => {
                 if seq > self.last_seen_seq {
                     self.clear_pending_user();
-                    self.transcript.push(TranscriptEntry::ToolCall {
-                        tool: tool.clone(),
-                        input: input.clone(),
-                    });
+                    // If the call streamed its args, finalize the in-progress
+                    // entry with the authoritative input rather than duplicating
+                    // it (#194); otherwise push a fresh entry (non-streaming
+                    // providers land here directly).
+                    match self.streaming_tool_calls.remove(&request_id) {
+                        Some(idx) => {
+                            if let Some(TranscriptEntry::ToolCall {
+                                tool: t,
+                                input: buf,
+                            }) = self.transcript.get_mut(idx)
+                            {
+                                *t = tool.clone();
+                                *buf = input.clone();
+                            }
+                        }
+                        None => {
+                            self.transcript.push(TranscriptEntry::ToolCall {
+                                tool: tool.clone(),
+                                input: input.clone(),
+                            });
+                        }
+                    }
                     self.last_seen_seq = seq;
                     true
                 } else {

@@ -103,7 +103,7 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
           | SetAgent | Spawn | ListSessions | CloseSession
           | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged
-          | Plan | TextDelta | ReasoningDelta | ToolCall | ToolRequest | ToolExec
+          | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | FileChange
 ```
 

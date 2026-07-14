@@ -114,6 +114,9 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::Plan { content, .. } => writeln!(out, "▸ plan:\n{content}")?,
         OutEvent::TextDelta { text, .. } => writeln!(out, "> {text}")?,
         OutEvent::ReasoningDelta { text, .. } => writeln!(out, "· {text}")?,
+        // Streaming tool-arg fragment (#194): the batch renderer prints the whole
+        // call on `ToolCall`, so the per-fragment delta is display-only noise here.
+        OutEvent::ToolCallDelta { .. } => {}
         OutEvent::ToolCall { tool, input, .. } => writeln!(out, "→ {tool}: {input}")?,
         OutEvent::ToolRequest { tool, input, .. } => writeln!(out, "? {tool}: {input}")?,
         OutEvent::UserQuestion {
