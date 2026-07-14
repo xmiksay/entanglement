@@ -24,13 +24,11 @@ pub struct EngineConfig {
     pub tool_specs: Vec<ToolSpec>,
     pub profiles: ProfileRegistry,
     /// Per-profile tool specs appended to [`tool_specs`][Self::tool_specs] for
-    /// the active profile only (#119, ADR-0040). `run_turn` looks the running
-    /// session's profile name up here and appends its entry (also filtered
-    /// through [`AgentProfile::advertises_tool`]) after the #116 mask. Populated
-    /// by the runtime with each profile's spawnable roster (the
-    /// `agent_spawn`/`agent`/`agent_poll` triple, target-name enum + description
-    /// scoped to that profile). A generic table — later per-profile features
-    /// reuse it. Empty for a profile that may not spawn or has no valid targets.
+    /// the active profile only (#119, ADR-0040). At turn time `run_turn` looks
+    /// the running session's profile name up here and appends its entry (also
+    /// filtered through [`AgentProfile::advertises_tool`]) after the #116 mask.
+    /// A generic table keyed by profile name; the embedder fills it (an entry is
+    /// absent/empty when a profile advertises no profile-scoped tools).
     pub profile_tool_specs: HashMap<String, Vec<ToolSpec>>,
     /// The backend's resolved default model id — what a profile with
     /// `model: None` actually runs under (#192). Lets the engine price a turn

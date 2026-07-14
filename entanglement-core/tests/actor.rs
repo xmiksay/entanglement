@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
-    ToolCall, ToolRegistry,
+    ToolCall,
 };
 
 mod common;
@@ -359,18 +359,7 @@ async fn every_host_tool_round_trips_through_toolexec() {
     // Core relocated execution (#58) and permission dispatch (#59): every host
     // tool is emitted as a ToolExec (core no longer decides Allow/Ask/Deny, so
     // never a ToolRequest), and the runtime executor's output must surface as
-    // ToolOutput. A real tool proves the value round-trips.
-    struct EchoTool;
-    #[async_trait]
-    impl entanglement_core::Tool for EchoTool {
-        fn name(&self) -> &'static str {
-            "echo"
-        }
-        async fn run(&self, input: &str) -> anyhow::Result<String> {
-            Ok(format!("echoed: {input}"))
-        }
-    }
-
+    // ToolOutput. A modeled `echo` tool proves the value round-trips.
     let holly = Holly::spawn(factory(vec![LlmResponse {
         text: "".into(),
         tool_calls: vec![ToolCall {
@@ -379,9 +368,10 @@ async fn every_host_tool_round_trips_through_toolexec() {
             input: "ping".into(),
         }],
     }]));
-    let mut reg = ToolRegistry::new();
-    reg.register(EchoTool);
-    spawn_tool_executor(&holly, reg);
+    spawn_tool_executor(&holly, |name, input| match name {
+        "echo" => format!("echoed: {input}"),
+        other => format!("unknown tool: `{other}`"),
+    });
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly

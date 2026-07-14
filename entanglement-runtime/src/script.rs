@@ -29,8 +29,10 @@ use std::time::{Duration, Instant};
 
 use entanglement_core::{
     AgentProfile, AgentState, Holly, InMsg, OutEvent, Permission, PermissionProfile, SessionId,
-    ToolCall, ToolRegistry, ToolSpec,
+    ToolCall, ToolSpec,
 };
+
+use crate::tools::ToolRegistry;
 use rhai::packages::{Package, StandardPackage};
 use rhai::{Dynamic, Engine, EvalAltResult, Position};
 use serde::Deserialize;

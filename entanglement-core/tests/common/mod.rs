@@ -1,17 +1,24 @@
 //! Shared helpers for core integration tests.
 
-use entanglement_core::{Holly, InMsg, OutEvent, ToolCall, ToolRegistry};
+use entanglement_core::{Holly, InMsg, OutEvent};
 use tokio::sync::broadcast::error::RecvError;
 
 /// Minimal stand-in for the runtime tool-executor (#58). Core no longer runs
 /// tools inline — a cleared tool call becomes an [`OutEvent::ToolExec`] the
-/// runtime answers. Integration tests that drive a tool call to completion
-/// spawn one of these against a registry (empty is fine: unknown tools report
-/// back, exactly as the old inline `ToolRegistry::execute` did).
+/// runtime answers. `exec` maps `(tool, input)` to the output string; the
+/// executor sends it straight back as [`InMsg::ToolResult`], exactly as the
+/// real runtime executor does after resolving permission.
+///
+/// Core no longer owns a `ToolRegistry` (that vocabulary moved to the runtime,
+/// #206), so tests describe the tool surface with a plain closure instead.
+/// [`unknown_tool`] is the default: it mirrors the old empty-registry behavior.
 ///
 /// Subscribes synchronously so no `ToolExec` emitted before the task is
 /// scheduled is missed.
-pub fn spawn_tool_executor(holly: &Holly, tools: ToolRegistry) {
+pub fn spawn_tool_executor<F>(holly: &Holly, exec: F)
+where
+    F: Fn(&str, &str) -> String + Send + Sync + 'static,
+{
     let mut sub = holly.subscribe();
     let holly = holly.clone();
     tokio::spawn(async move {
@@ -24,13 +31,7 @@ pub fn spawn_tool_executor(holly: &Holly, tools: ToolRegistry) {
                     input,
                     ..
                 }) => {
-                    let output = tools
-                        .execute(&ToolCall {
-                            id: request_id.clone(),
-                            name: tool,
-                            input,
-                        })
-                        .await;
+                    let output = exec(&tool, &input);
                     let _ = holly
                         .send(InMsg::ToolResult {
                             session,
@@ -44,4 +45,12 @@ pub fn spawn_tool_executor(holly: &Holly, tools: ToolRegistry) {
             }
         }
     });
+}
+
+/// Default executor reply for a tool the test doesn't model — mirrors the old
+/// `ToolRegistry::execute` unknown-tool string. (Not every test binary that
+/// includes this shared module references it.)
+#[allow(dead_code)]
+pub fn unknown_tool(name: &str, _input: &str) -> String {
+    format!("unknown tool: `{name}`")
 }

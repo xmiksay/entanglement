@@ -11,13 +11,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, MessageRole, OutEvent, Permission, SessionId, ToolCall, ToolRegistry,
+    LlmStream, MessageRole, OutEvent, Permission, SessionId, ToolCall,
 };
 use std::sync::Mutex;
 
 use entanglement_runtime::agents::load_registry;
 use entanglement_runtime::system_prompt::PromptContext;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::ToolRegistry;
 
 /// `ENTANGLEMENT_AGENTS_DIR` is process-global; every test that sets it must
 /// serialize through this lock so parallel runs don't clobber each other's dir.

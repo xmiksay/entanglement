@@ -43,6 +43,12 @@ pub mod skills;
 pub mod subagent;
 pub mod system_prompt;
 pub mod tool_runner;
+// The host-tool vocabulary (`Tool` trait + `ToolRegistry`) lives here, not in
+// core: core holds no executable tools, only advertises schemas and round-trips
+// each call back to the runtime (#206, ADR-0006/0010/0053).
+pub mod tools;
+
+pub use tools::{Tool, ToolRegistry};
 
 // Tracing-subscriber setup is head plumbing, so it rides the `cli` feature and
 // stays out of the lean library (tracing-subscriber is on the `check-lean`

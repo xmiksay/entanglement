@@ -23,8 +23,8 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::tools::ToolRegistry;
 use entanglement_core::protocol::FileChangeKind;
-use entanglement_core::tools::ToolRegistry;
 
 pub mod bash;
 pub mod call;
@@ -239,7 +239,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::tools::Tool;
+    use crate::tools::Tool;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};

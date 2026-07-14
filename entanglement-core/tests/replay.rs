@@ -7,7 +7,6 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Llm, LlmRequest, LlmResponse, LlmSession, LlmStream,
     OutEvent, SessionId,
 };
-use std::path::Path;
 
 /// An LLM that replays a scripted list of responses, in order.
 struct ScriptedLlm {
@@ -78,7 +77,7 @@ async fn text_only_turn_replay_fidelity() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg, Path::new("."));
+    let result = entanglement_core::session::Session::replay(&records, &cfg);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -139,7 +138,7 @@ async fn single_tool_turn_replay_fidelity() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg, Path::new("."));
+    let result = entanglement_core::session::Session::replay(&records, &cfg);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -231,7 +230,7 @@ async fn multi_tool_turn_replay_fidelity() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg, Path::new("."));
+    let result = entanglement_core::session::Session::replay(&records, &cfg);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -307,7 +306,7 @@ async fn multi_turn_conversation_replay_fidelity() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg, Path::new("."));
+    let result = entanglement_core::session::Session::replay(&records, &cfg);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -360,7 +359,7 @@ async fn profile_changes_during_replay() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg, Path::new("."));
+    let result = entanglement_core::session::Session::replay(&records, &cfg);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -407,7 +406,7 @@ async fn seq_tracking_during_replay() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg, Path::new("."));
+    let result = entanglement_core::session::Session::replay(&records, &cfg);
 
     assert!(result.is_ok());
     let session = result.unwrap();

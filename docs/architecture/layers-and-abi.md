@@ -15,13 +15,13 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
 
 ```
 ┌──────────── entanglement-runtime (head, binary `skutter`) ─────────────┐
-│ user sessions · host tools · tool execution · permission dispatch ·    │
-│ approval UX · persistence · transports (stdio ✅, TUI ✅, WS 🚧)        │
-│ selects the concrete provider client · glues core + provider           │
+│ user sessions · `Tool` trait + `ToolRegistry` · host tools · tool exec │
+│ permission dispatch · approval UX · persistence · transports           │
+│ (stdio ✅, TUI ✅, WS 🚧) · selects the concrete provider · glues core   │
 └─────────▲──────────────────────────────────────────────▲───────────────┘
           │ send()/subscribe() (ABI)      tool exec + approval (protocol)
 ┌─────────┴──────────────── entanglement-core (engine) ───┴───────────────┐
-│ Holly actor · InMsg/OutEvent · agent turn loop · Tool *trait* · Context │
+│ Holly actor · InMsg/OutEvent · agent turn loop · Context · tool schemas │
 │ drives `dyn Llm` from the turn loop · re-exports the provider ABI       │
 └─────────┬────────────────────────────────────────────────────────────────┘
           │ depends on provider; consumes the `Llm` trait + DTOs
@@ -32,9 +32,11 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **core** — the reasoning engine: actor, protocol, turn loop, the `Tool` *trait*
-  (not implementations), `Context` (the rolling conversation history, built on
-  provider's `Message`), `EngineConfig`. Depends on provider and drives `dyn Llm`
+- **core** — the reasoning engine: actor, protocol, turn loop, `Context` (the
+  rolling conversation history, built on provider's `Message`), `EngineConfig`.
+  Advertises tool *schemas* (`ToolSpec`) only — the `Tool` trait + `ToolRegistry`
+  are runtime vocabulary ([ADR-0059](../adr/0059-tool-trait-and-registry-live-in-the-runtime.md), #206).
+  Depends on provider and drives `dyn Llm`
   from the turn loop; re-exports the provider ABI (`pub use
   entanglement_provider::{Llm, Message, ToolSpec, …}`) for its heads. No UI/web
   deps, but **no longer transport-free** — `reqwest`/`hyper`/`tower` ride in
@@ -42,7 +44,9 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
 - **provider** — a **leaf crate** (no `entanglement-*` deps) that owns the LLM
   ABI *and* all LLM I/O behind the `Llm` trait (§5b). Usable standalone for raw
   LLM queries with no engine.
-- **runtime** — the head: host tools + their execution, permission dispatch +
+- **runtime** — the head: the `Tool` trait + `ToolRegistry`
+  ([ADR-0059](../adr/0059-tool-trait-and-registry-live-in-the-runtime.md), #206),
+  host tools + their execution, permission dispatch +
   approval, user sessions, every transport (§6, §8). Feature-gated
   ([ADR-0025](../adr/0025-runtime-cargo-feature-gates.md)): `default = ["tui"]` is
   the full `skutter` binary, while `--no-default-features` is a **lean library**
@@ -59,8 +63,10 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
   live in the binary (#208).
 
 **Responsibility relocation is mostly landed:** the host-tool *implementations*
-now live in `entanglement-runtime` (✅ #57, §8), and tool *execution* moved there
-too — core emits `OutEvent::ToolExec` and the runtime answers with
+now live in `entanglement-runtime` (✅ #57, §8) — as does the `Tool` trait +
+`ToolRegistry` that types them (✅ #206, [ADR-0059](../adr/0059-tool-trait-and-registry-live-in-the-runtime.md)),
+so core carries no tool vocabulary beyond the advertised `ToolSpec`. Tool
+*execution* moved there too — core emits `OutEvent::ToolExec` and the runtime answers with
 `InMsg::ToolResult` (✅ #58, §3, §8). *Permission dispatch* (the `Allow|Ask|Deny`
 decision + approval wait) also moved to the runtime (✅ #59, §3): core emits
 `ToolExec` for *every* host tool and no longer consults `PermissionProfile`; the

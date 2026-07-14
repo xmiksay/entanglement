@@ -12,7 +12,6 @@ pub mod context;
 pub mod holly;
 pub mod protocol;
 pub mod session;
-pub mod tools;
 
 pub use context::Context;
 pub use holly::{ConfigError, EngineConfig, Holly, ProfileRegistry};
@@ -27,4 +26,3 @@ pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, OutEvent,
     Permission, PermissionProfile, ProfileDetail, QuestionOption, SessionId, SessionInfo,
 };
-pub use tools::{Tool, ToolRegistry};

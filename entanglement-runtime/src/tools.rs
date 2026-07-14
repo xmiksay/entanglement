@@ -1,12 +1,21 @@
-//! Tool registry. Concrete tools (`ReadFile`, `WriteFile`, `Bash`) land in a
-//! later phase; the trait + registry are in place so the engine can already
-//! dispatch, advertise tools to the model, and report unknown tools.
+//! The host-tool vocabulary: the [`Tool`] trait every concrete host tool
+//! implements and the [`ToolRegistry`] that owns them. Both live in the
+//! **runtime** — core holds no executable tools, only advertises tool *schemas*
+//! and round-trips each call back here (#58/#59, #206, ADR-0006/0010/0053). The
+//! concrete tools (`read`/`glob`/`grep`/`edit`/`write`/`bash`/`call`/`rhai`, …)
+//! live in [`crate::host`] and [`crate::script`]; [`crate::tool_runner`] resolves
+//! permission and executes the cleared call against a registry.
+//!
+//! [`ToolSpec`]/[`ToolCall`] are the LLM ABI DTOs; they ride in
+//! `entanglement-provider` (carried by `LlmRequest`/`LlmResponse`) and core
+//! re-exports them, so the runtime pulls them from `entanglement_core` — keeping
+//! the lean library free of a direct provider dependency (ADR-0025/0053).
 
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use entanglement_provider::{ToolCall, ToolSpec};
+use entanglement_core::{ToolCall, ToolSpec};
 
 /// A single capability the engine can execute on the host.
 #[async_trait]

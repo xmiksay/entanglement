@@ -7,9 +7,9 @@
 //! (ADR-0010).
 
 use super::truncate_output;
+use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use entanglement_core::tools::Tool;
 use serde::Deserialize;
 
 const MAX_CALL_TIMEOUT_SECONDS: u64 = 600;
