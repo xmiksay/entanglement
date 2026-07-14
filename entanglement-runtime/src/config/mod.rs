@@ -28,6 +28,9 @@
 //!   [`crate::permission::clamp_to_base`]). Argument/path patterns (#173) build on
 //!   it. It is a pure *ceiling*; the orthogonal "always allow" grants (#174) that
 //!   *raise* an `Ask` live in a separate managed file ([`crate::grants`]), not here.
+//! - `hooks` — lifecycle hooks (#199, ADR-0066): external commands run around
+//!   tool execution (`pre_`/`post_tool_use`) and on prompt ingress
+//!   (`user_prompt_submit`). See [`crate::hooks`]. Empty by default.
 //! - general settings — `agent` / `provider` / `model` / `verbose`. Each is a
 //!   *fallback*: an explicit CLI flag or environment variable wins over the file
 //!   (env > config > embedded default).
@@ -48,6 +51,7 @@ use serde::Deserialize;
 use serde_yaml::Value;
 
 use crate::agents::permission_from_value;
+use crate::hooks::Hooks;
 
 pub mod env_file;
 
@@ -82,6 +86,11 @@ struct RawConfig {
     /// uses ([`permission_from_value`]).
     #[serde(default)]
     permissions: Option<Value>,
+    /// Lifecycle hooks (#199): external commands run around tool execution and on
+    /// prompt ingress. Deserializes straight into [`Hooks`] (plain serde, unlike
+    /// `permissions`); absent ⇒ no hooks.
+    #[serde(default)]
+    hooks: Hooks,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -97,6 +106,8 @@ pub struct Config {
     pub verbose: bool,
     /// The global permission ceiling. Allow-all by default (a no-op).
     pub permissions: PermissionProfile,
+    /// Lifecycle hooks (#199). Empty by default (a no-op).
+    pub hooks: Hooks,
 }
 
 /// Which of the three precedence layers a value came from. Ordered low → high so
@@ -222,6 +233,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         model: raw.model,
         verbose: raw.verbose,
         permissions,
+        hooks: raw.hooks,
     };
     Ok(Resolved {
         config,
@@ -235,7 +247,14 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
 
 /// The winning layer for each top-level key any layer set, in a stable key order.
 fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
-    const KEYS: &[&str] = &["agent", "provider", "model", "verbose", "permissions"];
+    const KEYS: &[&str] = &[
+        "agent",
+        "provider",
+        "model",
+        "verbose",
+        "permissions",
+        "hooks",
+    ];
     KEYS.iter()
         .filter_map(|key| {
             // Highest layer that carries this key wins (layers are low→high).

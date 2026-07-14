@@ -33,6 +33,7 @@ pub mod config;
 pub mod file_change;
 pub mod frontmatter;
 pub mod grants;
+pub mod hooks;
 pub mod host;
 pub mod inspect;
 pub mod layers;

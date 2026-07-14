@@ -162,6 +162,45 @@ script tool (table above) is intercepted the same way but is **not** a bypass:
 it resolves its own `Allow`/`Ask`/`Deny` live inside the sandboxed script task
 (#122, [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md)).
 
+## 9. Lifecycle hooks — [ADR-0066](../adr/0066-lifecycle-hooks-as-runtime-interceptors.md) (#199)
+
+User-configured external commands run around tool execution and on prompt
+ingress, for policy, telemetry, and formatting side-effects. Hooks are a
+**runtime interceptor** (`entanglement-runtime::hooks`), not a core concept:
+core neither knows nor cares that a command runs before a tool. They hang off the
+two seams the runtime already owns — the `tool_runner` dispatch of a `ToolExec`
+and the inbound `InMsg::Prompt` fan-out — so no new protocol surface is added.
+
+| point | fires | can block? | payload |
+| --- | --- | --- | --- |
+| `pre_tool_use` | top of the generic `dispatch` (`Intercept::Permission`), **before** the `Allow`/`Ask`/`Deny` decision | **yes** — a non-zero exit vetoes: the tool neither prompts nor runs, and the hook's output becomes the `ToolResult` | `{event, session, tool, input}` |
+| `post_tool_use` | in `run_and_reply` after the tool result, before it folds back | no — observational (exit code logged, never fed to the model); it cannot rewrite the result | `{event, session, tool, input, output}` |
+| `user_prompt_submit` | when an `InMsg::Prompt` reaches the engine (the executor's inbound `Stop` watcher) | no — observational | `{event, session, prompt}` |
+
+- **Config:** the `hooks:` section of the layered user config (§ADR-0047/#172).
+  `Config.hooks: Hooks` is three `Vec<HookSpec>` deep-merged and
+  `deny_unknown_fields`-validated by the same loader as `permissions`. A
+  `HookSpec` is `{command, tools?, timeout_secs?}`; `tools` is an optional
+  name-filter for the tool hooks (empty ⇒ every tool), ignored by
+  `user_prompt_submit`. Empty section ⇒ no hooks (the norm).
+- **Execution:** each hook is an `sh -c <command>` child fed the JSON payload on
+  stdin and given `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` /
+  `ENTANGLEMENT_TOOL_NAME` (tool hooks) env vars. It runs under `timeout_secs`
+  (default 30) in its **own process group**, reusing the exec tools' containment
+  (`host::exec`, §8/#168) so a hook that spawns children can't orphan them. A
+  timeout or a spawn failure counts as a **failure**, so a `pre_tool_use` hook
+  that can't launch **fails closed** (vetoes the tool) rather than letting it
+  through.
+- **Scope:** only the generic host-tool dispatch route. The orchestration tools
+  (`agent`/`ask_user`/`propose_plan`, which touch no host resource) and the
+  self-permissioning `rhai` tool bypass hooks — matching the issue's "around
+  `tool_runner::dispatch`" scope.
+- **Wiring:** `spawn_tool_executor_with_hooks(holly, tools, profiles, base, hooks)`
+  is the seam `main.rs` uses; the historical `spawn_tool_executor` is a no-hook
+  wrapper (existing callers/tests unchanged). The inbound subscription is hoisted
+  synchronous before the executor task spawns so a first `Prompt` can't race the
+  `user_prompt_submit` watcher.
+
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs
 [perm]: ../entanglement-core/src/protocol.rs

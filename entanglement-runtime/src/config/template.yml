@@ -36,3 +36,21 @@
 #  default: allow
 #  bash: ask
 #  bash(rm *): deny
+
+# Lifecycle hooks — external commands run around tool execution and on prompt
+# ingress (policy / telemetry / formatting). Each command runs via `sh -c` with
+# the event JSON on stdin and ENTANGLEMENT_HOOK_EVENT / _SESSION_ID / _TOOL_NAME
+# in the env. `tools` (tool hooks only) scopes a hook to named tools; omit for
+# all. `timeout_secs` defaults to 30.
+#   pre_tool_use       — before a tool runs; a NON-ZERO EXIT BLOCKS the tool.
+#   post_tool_use      — after the result; observational side-effect only.
+#   user_prompt_submit — when a prompt arrives; observational.
+#hooks:
+#  pre_tool_use:
+#    - command: "jq -e '.input.command | test(\"rm -rf\") | not'"
+#      tools: [bash]
+#  post_tool_use:
+#    - command: "jq -r '.input.path' | xargs -r prettier --write"
+#      tools: [write, edit]
+#  user_prompt_submit:
+#    - command: "logger -t entanglement-prompt"
