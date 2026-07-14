@@ -131,7 +131,7 @@ async fn drain<R: AsyncRead + Unpin>(reader: Option<R>) -> Vec<u8> {
 /// whole group in one call — the leader plus any grandchildren it spawned. Best
 /// effort: a failure means the group was already gone.
 #[cfg(unix)]
-fn kill_process_group(pid: u32) {
+pub(crate) fn kill_process_group(pid: u32) {
     // SAFETY: `kill(2)` with a negative pid and SIGKILL is a plain syscall with
     // no memory effects; the worst case is ESRCH (group already reaped).
     unsafe {

@@ -26,19 +26,23 @@ use anyhow::{Context, Result};
 use crate::tools::ToolRegistry;
 
 pub mod bash;
+pub mod bash_output;
 pub mod call;
 pub mod edit;
 pub mod exec;
 pub mod glob;
 pub mod grep;
+pub mod jobs;
 pub mod read;
 pub mod write;
 
 pub use bash::BashTool;
+pub use bash_output::BashOutputTool;
 pub use call::CallTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
+pub use jobs::JobRegistry;
 pub use read::ReadTool;
 pub use write::WriteTool;
 
@@ -134,6 +138,37 @@ pub fn truncate_output(s: String) -> String {
     }
     let mut out = String::from(&s[..cut]);
     out.push_str(&format!("\n... [truncated: {} bytes total]", s.len()));
+    out
+}
+
+/// Byte-cap `s` at [`MAX_OUTPUT_BYTES`] keeping a **head + tail** slice, with a
+/// notice naming the omitted middle. For build/test output the *tail* (the
+/// error, the failing assertion, the summary line) is the load-bearing part, so
+/// head-only truncation ([`truncate_output`]) throws away exactly what the model
+/// needs — the tail gets three-quarters of the budget, the head one quarter for
+/// the invocation context (#170). Cuts land on UTF-8 boundaries.
+pub fn truncate_head_tail(s: String) -> String {
+    if s.len() <= MAX_OUTPUT_BYTES {
+        return s;
+    }
+    let head_budget = MAX_OUTPUT_BYTES / 4;
+    let tail_budget = MAX_OUTPUT_BYTES - head_budget;
+    let mut head_end = head_budget;
+    while head_end > 0 && !s.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = s.len() - tail_budget;
+    while tail_start < s.len() && !s.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let omitted = tail_start - head_end;
+    let mut out = String::with_capacity(head_end + (s.len() - tail_start) + 64);
+    out.push_str(&s[..head_end]);
+    out.push_str(&format!(
+        "\n... [truncated: {omitted} bytes omitted from the middle; {} bytes total]\n",
+        s.len()
+    ));
+    out.push_str(&s[tail_start..]);
     out
 }
 
@@ -267,6 +302,29 @@ mod tests {
         assert!(out.contains("2: beta"), "got: {out}");
     }
     */
+
+    #[test]
+    fn truncate_head_tail_keeps_both_ends_under_cap() {
+        // A body far over the cap, with unique head and tail markers.
+        let mut s = String::from("HEAD_MARKER");
+        s.push_str(&"x".repeat(MAX_OUTPUT_BYTES * 2));
+        s.push_str("TAIL_MARKER");
+        let out = truncate_head_tail(s.clone());
+        assert!(
+            out.len() < MAX_OUTPUT_BYTES + 128,
+            "over cap: {}",
+            out.len()
+        );
+        assert!(out.starts_with("HEAD_MARKER"), "head lost");
+        assert!(out.ends_with("TAIL_MARKER"), "tail lost");
+        assert!(out.contains("omitted from the middle"), "notice missing");
+    }
+
+    #[test]
+    fn truncate_head_tail_passes_through_small_input() {
+        let s = "small output\n".to_string();
+        assert_eq!(truncate_head_tail(s.clone()), s);
+    }
 
     #[tokio::test]
     async fn glob_lists_matching_files_relative() {

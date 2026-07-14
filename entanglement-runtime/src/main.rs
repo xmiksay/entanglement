@@ -91,8 +91,16 @@ fn build_config(
         // Both scrub the catalog's provider API-key env vars before spawn so a
         // model-authored command can't exfiltrate the credentials (#164).
         let secret_env = catalog.key_envs();
-        tools.register(BashTool::new(root.clone()).with_secret_env(secret_env.clone()));
+        // One job registry shared by `bash` (spawner) and `bash_output` (poller)
+        // so background jobs are pollable across the pair (#170).
+        let jobs = host::JobRegistry::new();
+        tools.register(
+            BashTool::new(root.clone())
+                .with_secret_env(secret_env.clone())
+                .with_jobs(jobs.clone()),
+        );
         tools.register(CallTool::new(root.clone()).with_secret_env(secret_env));
+        tools.register(host::BashOutputTool::new(jobs));
         eprintln!(
             "skutter: bash + call enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
              run unsandboxed with full privileges"
