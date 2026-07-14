@@ -119,6 +119,18 @@ preserved across a Stop+Prompt round-trip — Esc-in-approval or a stray Stop
 between turns no longer causes amnesia. The supervisor map entry is only
 removed on global inbox close (engine shutdown).
 
+Clearing `TurnState` cancels the *turn*, but core never owns the executing tool,
+so a `Stop` that lands while a `bash`/`call` command or a `rhai` script is
+already running would leave that work going (✅ #167). The **runtime executor**
+closes this: it registers each in-flight tool task per session
+(`runtime::cancel::CancelRegistry`) and an inbound-fan-out watcher aborts every
+one of them on that session's `Stop`. Aborting the async task drops its future —
+which for `bash`/`call` fires the exec tools' process-group SIGKILL guard so
+grandchildren don't orphan (matching the timeout path, #168) — while a `rhai`
+task pairs the abort with a cooperative stop flag the (un-abortable
+`spawn_blocking`) engine's progress callback polls, terminating it with an
+uncatchable `ErrorTerminated` the script can't `try`/`catch` and continue past.
+
 **Sub-agent spawn** (✅ #60, [ADR-0022](../adr/0022-subagent-spawn.md), builds on the
 [ADR-0021](../adr/0021-hierarchical-session-model.md) tree). The model calls a
 runtime-owned `agent_spawn { agent, prompt }` tool (renamed from `spawn_agent`,
@@ -258,5 +270,9 @@ each binding's mask + clamped permission); its *own* Allow/Ask/Deny is resolved
 the same way as any host tool. Rhai's engine is sync, so the script runs under
 `spawn_blocking` and each binding crosses a small **bridge** — `mpsc` request +
 `oneshot` reply — to the async resolver on the executor task; the timeout is
-enforced inside the engine, not by aborting the blocking task. No exec bindings
-(`bash`/`call`) in v1 — that would escape the sandbox.
+enforced inside the engine, not by aborting the blocking task. A session `Stop`
+(#167) reaches the blocking engine the same way: it trips a cooperative flag the
+progress callback polls, terminating the script with an uncatchable
+`ErrorTerminated` (unlike a thrown binding error, a script can't `try`/`catch` it
+and continue). No exec bindings (`bash`/`call`) in v1 — that would escape the
+sandbox.

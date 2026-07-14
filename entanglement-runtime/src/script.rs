@@ -24,6 +24,7 @@
 //! or re-enter the parser.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -184,6 +185,7 @@ pub async fn run_rhai(
     request_id: String,
     mut inbound: Receiver<InMsg>,
     input: String,
+    stop: Arc<AtomicBool>,
 ) {
     let parsed: ScriptInput = match serde_json::from_str(&input) {
         Ok(p) => p,
@@ -250,6 +252,7 @@ pub async fn run_rhai(
         &mut inbound,
         parsed.script,
         timeout,
+        stop,
     )
     .await
     {
@@ -271,15 +274,17 @@ async fn execute_script(
     inbound: &mut Receiver<InMsg>,
     script: String,
     timeout: Duration,
+    stop: Arc<AtomicBool>,
 ) -> Option<String> {
     let (tx, mut rx) = mpsc::unbounded_channel::<BindingCall>();
     let prints = Arc::new(Mutex::new(String::new()));
     let engine_prints = prints.clone();
     let start = Instant::now();
 
+    let engine_stop = stop.clone();
     let handle = tokio::task::spawn_blocking(move || {
         let mut engine = Engine::new_raw();
-        configure_engine(&mut engine, timeout, start, engine_prints);
+        configure_engine(&mut engine, timeout, start, engine_prints, engine_stop);
         register_bindings(&mut engine, tx);
         engine.eval::<Dynamic>(&script)
     });
@@ -311,7 +316,10 @@ async fn execute_script(
     }
 
     let eval_result = handle.await;
-    if stopped {
+    // A `Stop` for this session (#167): the engine unwound because its progress
+    // callback saw the flag. The turn is being cancelled, so no reply is owed —
+    // guard here too, since the servicing task's abort may not have landed yet.
+    if stopped || stop.load(Ordering::SeqCst) {
         return None;
     }
     let prints = prints.lock().map(|p| p.clone()).unwrap_or_default();
@@ -443,6 +451,7 @@ fn configure_engine(
     timeout: Duration,
     start: Instant,
     prints: Arc<Mutex<String>>,
+    stop: Arc<AtomicBool>,
 ) {
     engine.register_global_module(StandardPackage::new().as_shared_module());
     engine.set_max_operations(MAX_OPERATIONS);
@@ -453,7 +462,12 @@ fn configure_engine(
     // No re-entry into the parser from inside a script.
     engine.disable_symbol("eval");
     engine.on_progress(move |_ops| {
-        if start.elapsed() >= timeout {
+        // A `Stop` for the session trips this flag (#167): terminating from the
+        // progress callback yields `ErrorTerminated`, which — unlike a thrown
+        // binding error — the script cannot `try`/`catch` and keep running.
+        if stop.load(Ordering::Relaxed) {
+            Some(Dynamic::from("script stopped".to_string()))
+        } else if start.elapsed() >= timeout {
             Some(Dynamic::from(format!(
                 "script exceeded the {}s time limit",
                 timeout.as_secs()
@@ -616,6 +630,7 @@ mod tests {
             timeout,
             Instant::now(),
             Arc::new(Mutex::new(String::new())),
+            Arc::new(AtomicBool::new(false)),
         );
         engine
     }
@@ -695,6 +710,28 @@ mod tests {
     }
 
     #[test]
+    fn stop_flag_terminates_and_cannot_be_caught() {
+        // #167: a `Stop` trips the flag; the engine terminates via the progress
+        // callback, and a wrapping `try`/`catch` cannot swallow it and continue.
+        let stop = Arc::new(AtomicBool::new(true));
+        let mut engine = Engine::new_raw();
+        configure_engine(
+            &mut engine,
+            Duration::from_secs(30),
+            Instant::now(),
+            Arc::new(Mutex::new(String::new())),
+            stop,
+        );
+        let err = engine
+            .eval::<Dynamic>(r#"try { let i = 0; loop { i += 1; } } catch(e) { 0 }"#)
+            .unwrap_err();
+        assert!(
+            matches!(*err, EvalAltResult::ErrorTerminated(_, _)),
+            "expected terminated-by-stop, got: {err}"
+        );
+    }
+
+    #[test]
     fn string_size_cap_is_enforced() {
         let engine = sandbox_engine(Duration::from_secs(30));
         // Doubling a string blows past MAX_STRING_SIZE well before it OOMs.
@@ -718,6 +755,7 @@ mod tests {
             Duration::from_secs(5),
             Instant::now(),
             prints.clone(),
+            Arc::new(AtomicBool::new(false)),
         );
         let _ = engine
             .eval::<Dynamic>(r#"print("hello"); print("world");"#)

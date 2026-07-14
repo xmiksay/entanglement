@@ -25,6 +25,7 @@
 //! keeps concurrently parked approvals from stealing each other's answers.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use entanglement_core::{
@@ -35,6 +36,7 @@ use entanglement_core::{
 use crate::tools::ToolRegistry;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::cancel::{CancelRegistry, TaskCanceller};
 use crate::grants::GrantStore;
 use crate::permission::{
     clamp_to_base, effective_permission, permission_arg, spawn_refusal, tool_masked,
@@ -152,6 +154,27 @@ pub fn spawn_tool_executor(
         // reads it to skip the prompt for an already-granted call. `Mutex` (never
         // held across an `.await`) keeps the loop's reads ordered with those writes.
         let grants = Arc::new(Mutex::new(GrantStore::load()));
+        // In-flight tool tasks per session (#167). A `Stop` on the inbound
+        // fan-out aborts every task registered for that session, so a running
+        // `bash`/`call` command or `rhai` script is actually cancelled — core
+        // only clears the parked turn state, it never owns the execution.
+        let cancels = CancelRegistry::default();
+        {
+            // Watch inbound for `Stop` in its own task so the outbound loop below
+            // is untouched; both share the same `cancels` registry.
+            let cancels = cancels.clone();
+            let mut inbound = holly.subscribe_inbound();
+            tokio::spawn(async move {
+                loop {
+                    match inbound.recv().await {
+                        Ok(InMsg::Stop { session }) => cancels.cancel_session(&session),
+                        Ok(_) => {}
+                        Err(RecvError::Lagged(_)) => {}
+                        Err(RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
         loop {
             match sub.recv().await {
                 Ok(OutEvent::SessionStarted {
@@ -174,6 +197,8 @@ pub fn spawn_tool_executor(
                     // Drop the closed session's in-memory grants (#174); persisted
                     // "always" grants survive.
                     grants.lock().unwrap().forget_session(&session);
+                    // Its in-flight tool bookkeeping is moot once the session ends.
+                    cancels.forget_session(&session);
                 }
                 Ok(OutEvent::ToolExec {
                     session,
@@ -343,13 +368,23 @@ pub fn spawn_tool_executor(
                             let inbound = holly.subscribe_inbound();
                             let tools = tools.clone();
                             let holly = holly.clone();
-                            tokio::spawn(async move {
+                            // The blocking engine can't be aborted, so pair the
+                            // task abort with a cooperative stop flag its progress
+                            // callback polls (#167).
+                            let stop = Arc::new(AtomicBool::new(false));
+                            let reg_session = session.clone();
+                            let run_stop = stop.clone();
+                            let handle = tokio::spawn(async move {
                                 crate::script::run_rhai(
                                     holly, tools, policy, self_perm, session, seq, request_id,
-                                    inbound, input,
+                                    inbound, input, run_stop,
                                 )
                                 .await;
                             });
+                            cancels.register(
+                                &reg_session,
+                                TaskCanceller::script(handle.abort_handle(), stop),
+                            );
                         }
                         Intercept::Permission => {
                             // Resolve permission before spawning so the read of
@@ -384,13 +419,19 @@ pub fn spawn_tool_executor(
                             let tools = tools.clone();
                             let holly = holly.clone();
                             let grants = grants.clone();
-                            tokio::spawn(async move {
+                            // Register so a `Stop` aborts this task mid-execution:
+                            // aborting the future drops the exec tool's child,
+                            // firing its process-group SIGKILL guard (#167/#168).
+                            let reg_session = session.clone();
+                            let handle = tokio::spawn(async move {
                                 dispatch(
                                     &holly, &tools, &grants, session, seq, request_id, tool, input,
                                     perm,
                                 )
                                 .await;
                             });
+                            cancels
+                                .register(&reg_session, TaskCanceller::task(handle.abort_handle()));
                         }
                     }
                 }
