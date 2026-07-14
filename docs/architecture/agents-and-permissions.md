@@ -158,7 +158,7 @@ below realize one model:
   orthogonal to `permission` (which grades `Allow`/`Ask`/`Deny` among the tools
   that survive the mask). The mask rides the core `AgentProfile`
   (`tools`/`disallowed_tools` + `advertises_tool`), so it travels per session with
-  no new protocol surface. **(a) Advertisement:** core's `run_turn` filters both
+  no new protocol surface. **(a) Advertisement:** core's turn loop (`run_round`) filters both
   `EngineConfig.tool_specs` and the active profile's `profile_tool_specs` entry by
   the mask — a masked tool's schema never reaches the model. `update_plan`/
   `update_tasks` are ordinary runtime state tools now (✅ #231, below): they ride
@@ -179,7 +179,7 @@ below realize one model:
   runtime = enforcement. **Structural half:** the `agent_spawn`/`agent`/`agent_poll`
   triple moves out of the shared `tool_specs` into
   `EngineConfig.profile_tool_specs` (a `HashMap<profile, Vec<ToolSpec>>` the runtime
-  fills via `subagent::spawn_specs_for`); `run_turn` appends the active profile's
+  fills via `subagent::spawn_specs_for`); the turn loop appends the active profile's
   entry (roster + `agent` enum scoped to who *it* may spawn, empty when it may not),
   so an out-of-list spawn is a schema violation before an executor refusal.
   **Executor half:** `runtime::permission::spawn_refusal(spawner, target, registry)`
@@ -308,7 +308,7 @@ below realize one model:
   **Access** is the orthogonal #116 tool mask: an agent that must not load skills
   at runtime simply doesn't advertise `load_skill` (`disallowed_tools: [load_skill]`
   or an allowlist omitting it), refused both from the advertised specs (core's
-  `run_turn` filter) and at dispatch (`tool_masked`). The two compose to preserve
+  `run_round` filter) and at dispatch (`tool_masked`). The two compose to preserve
   both corners: "preload X but block everything else" (`skills: [x]` + `load_skill`
   masked out) and "preload nothing, request on demand" (no `skills:`, `load_skill`
   available). Default stays permissive — a subagent may discover + load any skill
@@ -317,7 +317,7 @@ below realize one model:
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
   **runtime** concern ([ADR-0003](../adr/0003-agent-and-permission-profiles.md) /
   [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md)). Core emits
-  `ToolExec` for *every* host tool and parks on `ToolResult` (§8); it never reads
+  `ToolExec` for *every* host tool — the whole batch up front since #270 ([ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)) — and parks the turn as explicit `TurnState` until each `ToolResult` lands (§8); it never reads
   `PermissionProfile`. The runtime `tool_runner` (§8) tracks each session's active
   profile (folded from `SessionStarted`/`AgentChanged` against a `ProfileRegistry`
   copy it holds), resolves the permission, and — for `Ask` — emits the
