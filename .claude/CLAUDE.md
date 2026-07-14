@@ -102,8 +102,15 @@ OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged
 Load-bearing invariants (details in the split architecture docs — do **not**
 re-document them here):
 
-- **Tool execution is a protocol round-trip** (#58): core emits `ToolExec` for
-  every host tool and awaits the runtime's `ToolResult`. Core holds no executable
+- **Tool execution is a protocol round-trip, parked as data** (#58, #270,
+  [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)): a
+  round ending in tool calls batch-emits `ToolExec` for **every** call up front
+  and parks the turn as explicit serde state (`Session.turn: Option<TurnState>`,
+  pending set + round counter); `ToolResult`s resolve in **any order** (the
+  runtime executor or any external resolver answers), the turn re-enters on
+  drain. Replay reconstructs a mid-turn tail; resume re-offers pending calls
+  at-least-once — the event log + `Holly::resume` is the embedder persistence
+  seam (no DB in-repo). Core holds no executable
   tools and makes no policy call — only schemas (`EngineConfig.tool_specs` +
   per-profile `profile_tool_specs`, #119).
 - **Permission lives entirely in the runtime** (#59): `tool_runner` resolves
@@ -210,7 +217,10 @@ are **complete**.
 Current phase is the July 2026 audit backlog — thematic epics tracked on GitHub
 with P0/P1/P2 labels and blocked-by links:
 #190 (provider seam + per-endpoint pool), #166 (exec-tool maturity),
-#209 (docs), with WebSocket `serve` (#153) deliberately last.
+#209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
+`TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
+[ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)),
+with WebSocket `serve` (#153) deliberately last.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
 — z.ai (primary)/OpenAI/Ollama via one OpenAI-compat client + a separate

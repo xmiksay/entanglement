@@ -426,3 +426,240 @@ async fn seq_tracking_during_replay() {
     let session = result.unwrap();
     assert_eq!(session.seq, 30, "Should track the max seq number");
 }
+
+// --- Mid-turn tails (#271, ADR-0061) -------------------------------------
+//
+// A log that ends after `ToolCall`/`ToolExec` with no matching `ToolOutput`
+// used to be silently dropped by the fold; it now reconstructs a parked
+// `TurnState` so resume can re-offer the unanswered calls.
+
+fn prompt_record(sid: &SessionId, text: &str) -> (Option<entanglement_core::InMsg>, OutEvent) {
+    (
+        Some(entanglement_core::InMsg::Prompt {
+            session: sid.clone(),
+            text: text.to_string(),
+        }),
+        OutEvent::Status {
+            session: sid.clone(),
+            state: entanglement_core::AgentState::Thinking,
+        },
+    )
+}
+
+fn tool_call_record(
+    sid: &SessionId,
+    seq: u64,
+    id: &str,
+) -> (Option<entanglement_core::InMsg>, OutEvent) {
+    (
+        None,
+        OutEvent::ToolCall {
+            session: sid.clone(),
+            seq,
+            request_id: id.to_string(),
+            tool: "read".to_string(),
+            input: "{}".to_string(),
+        },
+    )
+}
+
+fn tool_exec_record(
+    sid: &SessionId,
+    seq: u64,
+    id: &str,
+) -> (Option<entanglement_core::InMsg>, OutEvent) {
+    (
+        None,
+        OutEvent::ToolExec {
+            session: sid.clone(),
+            seq,
+            request_id: id.to_string(),
+            tool: "read".to_string(),
+            input: "{}".to_string(),
+        },
+    )
+}
+
+fn tool_output_record(
+    sid: &SessionId,
+    seq: u64,
+    id: &str,
+    out: &str,
+) -> (Option<entanglement_core::InMsg>, OutEvent) {
+    (
+        None,
+        OutEvent::ToolOutput {
+            session: sid.clone(),
+            seq,
+            request_id: id.to_string(),
+            tool: "read".to_string(),
+            output: out.to_string(),
+        },
+    )
+}
+
+#[tokio::test]
+async fn mid_turn_tail_reconstructs_pending_turn_state() {
+    let sid = SessionId::new("test-tail-pending");
+    let records = vec![
+        prompt_record(&sid, "read file"),
+        tool_call_record(&sid, 1, "call_1"),
+        tool_exec_record(&sid, 2, "call_1"),
+        // log ends here: crash between ToolExec and ToolResult
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+
+    let messages = session.ctx.messages();
+    assert_eq!(messages.len(), 2, "user + committed assistant tail");
+    assert_eq!(messages[1].tool_calls.len(), 1);
+
+    let turn = session
+        .turn
+        .expect("mid-turn tail must reconstruct TurnState");
+    assert_eq!(turn.iterations, 0, "runaway guard restarts on resume");
+    assert_eq!(turn.pending.len(), 1);
+    assert_eq!(turn.pending[0].id, "call_1");
+}
+
+#[tokio::test]
+async fn partially_resolved_tail_pends_only_unanswered_calls() {
+    let sid = SessionId::new("test-tail-partial");
+    let records = vec![
+        prompt_record(&sid, "read two files"),
+        tool_call_record(&sid, 1, "call_1"),
+        tool_call_record(&sid, 2, "call_2"),
+        tool_exec_record(&sid, 3, "call_1"),
+        tool_exec_record(&sid, 4, "call_2"),
+        tool_output_record(&sid, 5, "call_1", "content a"),
+        // crash before call_2's result
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+
+    let messages = session.ctx.messages();
+    assert_eq!(messages.len(), 3, "user + assistant + resolved tool output");
+    assert_eq!(messages[2].tool_call_id.as_deref(), Some("call_1"));
+
+    let turn = session.turn.expect("unanswered call must stay pending");
+    assert_eq!(turn.pending.len(), 1);
+    assert_eq!(turn.pending[0].id, "call_2");
+}
+
+#[tokio::test]
+async fn text_only_tail_stays_dropped() {
+    let sid = SessionId::new("test-tail-text");
+    let records = vec![
+        prompt_record(&sid, "hello"),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: 1,
+                text: "partial".to_string(),
+            },
+        ),
+        // mid-stream crash: no ToolCall, no Done
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+
+    assert!(session.turn.is_none(), "a mid-stream tail is not resumable");
+    assert_eq!(
+        session.ctx.messages().len(),
+        1,
+        "only the user prompt survives — the live engine never committed the partial either"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_tool_exec_records_fold_idempotently() {
+    let sid = SessionId::new("test-tail-dup-exec");
+    // A prior resume re-offered call_1 (same request_id, fresh seq), then the
+    // process crashed again: the log holds two ToolExec records but one
+    // ToolCall. Pending derives from ToolCall events, so no duplicate.
+    let records = vec![
+        prompt_record(&sid, "read file"),
+        tool_call_record(&sid, 1, "call_1"),
+        tool_exec_record(&sid, 2, "call_1"),
+        tool_exec_record(&sid, 3, "call_1"),
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+
+    let turn = session.turn.expect("tail must reconstruct");
+    assert_eq!(turn.pending.len(), 1, "re-offer records must not duplicate");
+}
+
+#[tokio::test]
+async fn fully_resolved_tail_keeps_turn_live_for_continuation() {
+    let sid = SessionId::new("test-tail-resolved");
+    // Crash after the last result landed but before the next round streamed:
+    // nothing to re-offer, but the turn is unfinished — resume continues it.
+    let records = vec![
+        prompt_record(&sid, "read file"),
+        tool_call_record(&sid, 1, "call_1"),
+        tool_exec_record(&sid, 2, "call_1"),
+        tool_output_record(&sid, 3, "call_1", "content"),
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+
+    let turn = session
+        .turn
+        .expect("drained-but-unfinished tail keeps the turn live");
+    assert!(turn.pending.is_empty(), "nothing left to re-offer");
+    assert_eq!(session.ctx.messages().len(), 3);
+}
+
+#[tokio::test]
+async fn child_session_tail_is_not_misattributed_to_the_root() {
+    let root = SessionId::new("test-root");
+    let child = SessionId::new("test-child");
+    let records = vec![
+        (
+            None,
+            OutEvent::SessionStarted {
+                session: root.clone(),
+                parent: None,
+                profile: "build".to_string(),
+                model: None,
+                root: true,
+                ts: 0,
+            },
+        ),
+        prompt_record(&root, "hello"),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: root.clone(),
+                seq: 1,
+                text: "done".to_string(),
+            },
+        ),
+        (
+            None,
+            OutEvent::Done {
+                session: root.clone(),
+                seq: 2,
+            },
+        ),
+        // A spawned child's interleaved unfinished tail (root logs hold the
+        // whole tree) must not become the root's pending turn (#275 guard).
+        tool_call_record(&child, 3, "child_call"),
+        tool_exec_record(&child, 4, "child_call"),
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+
+    assert!(
+        session.turn.is_none(),
+        "a child's pending call must not park the resumed root"
+    );
+}

@@ -146,6 +146,21 @@ assistant/tool messages and the model appears to forget the conversation.
   exposes `skutter run --resume <id>` and `skutter sessions` (lists past root
   sessions for the cwd); the TUI `/resume` modal restores the full visible
   transcript (`restore_from_records`) *and* reseeds engine context.
+- **Mid-turn tails are resumable** (#271/#272,
+  [ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)). A log
+  ending after `ToolCall`/`ToolExec` with no matching `ToolOutput` replays into
+  a **parked `TurnState`**: the completed assistant message commits, logged
+  outputs fold, and the unanswered calls become `Session.turn.pending`. On
+  resume the session **re-offers** each pending call as a fresh `ToolExec`
+  (same `request_id`, fresh `seq`) — the tool executor, or any external
+  resolver holding a `Holly` handle, answers it like a first offer;
+  **at-least-once**, so a tool that ran before the crash but whose result never
+  reached disk runs again. A drained tail (all results logged, next round never
+  streamed) continues the turn directly; a text-only tail (mid-stream crash)
+  stays dropped. This event-log + `Holly::resume` path is also the persistence
+  seam for embedders of `entanglement-core`: records are serde values storable
+  anywhere (a DB, a queue); the JSONL store here is the reference
+  implementation.
 - **One-shot flush**: a `run` invocation ends the moment the turn does, so `main`
   aborts the tool executor and drops its `Holly` handle to close the broadcast
   channels, then awaits the persistence task so buffered events reach disk before

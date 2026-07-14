@@ -5,36 +5,50 @@
 ## 5. Per-session engine (`session/`)
 
 The turn loop lives in the `session/` split — `session/turn.rs` (the live
-reasoning turn), `session/tools.rs` (the tool-call round-trip), and
+reasoning turn: `drive_turn`/`run_round`), `session/stream.rs` (one streamed
+round-trip), `session/turn_state.rs` (the parked-turn state), and
 `session/emit.rs` (outbound-event helpers), with `session/replay.rs` holding the
 pure state reconstruction.
 
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
 token estimate), an `LlmSession` handle (from `EngineConfig::llm_factory`), the
-active `AgentProfile`, the `TaskList`, the `Plan`, and a per-session `seq`.
+active `AgentProfile`, a per-session `seq`, and `turn: Option<TurnState>` — the
+in-flight turn as **explicit, serde-serializable state** (#270,
+[ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)): `Some`
+while a turn is live (streaming or parked on unresolved tool calls), `None`
+when idle.
 The `LlmSession` is a **provider-owned session/connection handle**
 ([ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): the *conversation
 history* stays in core's `Context`, but the *connection* state (pool, retry,
 rate-limit budget) belongs to the provider. The factory hands core a pooled
 session handle that wraps the streaming backend.
 
-Turn loop: send `LlmRequest { system, model, messages, tools }` → consume the
-streamed `LlmEvent`s (emit `TextDelta` per `Text` chunk, gather `ToolCall`s,
-fold `Finish`) → for each tool call, hand it to the runtime (emit `ToolExec`,
-park on `ToolResult`) → loop until the model returns no tool calls → `Done`.
+Turn loop (`run_round`, driven by `drive_turn`): send `LlmRequest { system,
+model, messages, tools }` → consume the streamed `LlmEvent`s (emit `TextDelta`
+per `Text` chunk, gather `ToolCall`s, fold `Finish`) → if the reply carries
+tool calls, **emit the whole batch up front** — the per-call (`ToolCall`,
+`ToolExec`) pair for every call — record it as `TurnState::pending`, and
+*return to the session loop* (`RoundOutcome::Parked`); the loop resolves each
+`InMsg::ToolResult` against the pending set (**any order** — outputs fold into
+`Context` on arrival, in arrival order) and re-enters `drive_turn` when the
+batch drains → rounds repeat until the model returns no tool calls → `Done`.
+Batch calls thereby execute **concurrently**, not serially in call order
+(#270, [ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md));
+a stale, duplicate, or unknown `ToolResult` is dropped with a debug trace.
 **Every** tool call takes the runtime round-trip; core holds no executable tools
 and runs nothing inline — the built-ins were removed in #231
 ([ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)), and the
 former plan-authority tools (`update_plan`/`update_tasks`) are now ordinary
-permission-gated runtime state tools carried on `tool_specs`/`profile_tool_specs`
-(`session/tools.rs`). Each round-trip's `Finish` is priced against
+permission-gated runtime state tools carried on `tool_specs`/`profile_tool_specs`.
+Each round-trip's `Finish` is priced against
 `EngineConfig.pricing` (effective model = `profile.model` else `default_model`),
 folded into the session's `SessionUsage`, and emitted as `OutEvent::Usage`; a
 `StopReason::MaxTokens` also emits a truncation-warning `Error` (✅ #192,
 [ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)). Permission dispatch and approval no longer run
-here — the runtime tool executor owns them (§3, §8, ✅ #59). The tool-result
-wait parks the task on its inbox; any non-matching message (e.g. a new prompt) is
-stashed and processed after the turn. Setup errors (the initial `stream()` call)
+here — the runtime tool executor owns them (§3, §8, ✅ #59). While parked, the
+session loop stashes a `Prompt`/`SetAgent` for the live turn's fold site /
+replay-after-turn; only the stash gate differs from idle (the stash is popped
+only between turns). Setup errors (the initial `stream()` call)
 surface as `Error` + `Done` with no partial to commit. A **mid-stream** failure
 is handled to keep the committed context aligned with what the user saw (#181,
 [ADR-0057](../adr/0057-mid-stream-error-partial-commit-and-retry.md)):
@@ -46,10 +60,10 @@ shown, core instead **commits the partial** assistant message with an appended
 context stay identical) before the `Error` + `Done`, so the next turn's context
 matches the display instead of continuing as if the model said nothing. Any
 half-assembled tool calls are dropped (no `Finish` ⇒ possibly incomplete). The
-same stash discipline applies inside the streaming loop and between tool calls
-(ADR-0018): a mid-turn `Stop` interrupts, every other queued command (`Prompt`,
-`SetAgent`, …) is pushed onto the replay stash, so a follow-up sent while the
-engine is busy is never silently dropped. A stashed **`Prompt` is additionally
+same stash discipline applies inside the streaming loop and while the turn is
+parked (ADR-0018): a mid-turn `Stop` interrupts, every other queued command
+(`Prompt`, `SetAgent`, …) is pushed onto the replay stash, so a follow-up sent
+while the engine is busy is never silently dropped. A stashed **`Prompt` is additionally
 *folded into the live turn*** (#182,
 [ADR-0058](../adr/0058-mid-turn-prompt-folds-into-live-turn.md)): at the top of each inner-loop iteration —
 before the next model request — core drains every stashed `Prompt` into `ctx`
@@ -64,14 +78,16 @@ inbox against the stream** with a `biased` `tokio::select!` (#179) — not a
 `try_recv` polled only after each event yields — so a `Stop` preempts a
 connected-but-silent provider immediately (dropping the stream aborts the
 `reqwest` request) instead of blocking until the HTTP client's read timeout.
-Between tool calls, where no network wait intervenes, a `try_recv` drain still
-suffices.
+While parked there is no racing to do: the session loop itself is the receiver,
+handling `ToolResult`/`Stop`/`Prompt` directly against the pending `TurnState`.
 
 **Loop bounds — `MAX_TURNS` and context-over-limit** (`session/turn.rs`). The
-inner LLM→tool loop is capped at `MAX_TURNS = 50` iterations (one iteration =
-one LLM round-trip that may fan out into tool calls), reset per prompt (#177), so
-a model wedged in a tool loop can't run forever while a legitimate long session
-(many prompts) is never capped. **Beware:** the trip path emits **only** an
+turn is capped at `MAX_TURNS = 50` rounds (one round = one LLM round-trip that
+may fan out into tool calls), counted on `TurnState::iterations` and reset per
+prompt (#177 — a fresh `TurnState` per `Prompt`; a folded mid-turn prompt does
+not reset it), so a model wedged in a tool loop can't run forever while a
+legitimate long session (many prompts) is never capped. Resume resets the
+counter too (a runaway guard, not a quota — ADR-0061). **Beware:** the trip path emits **only** an
 `OutEvent::Error` and returns — *not* the `Error` + `Done` + `Status` triple that
 `emit_turn_error` (`session/emit.rs`) fires on a backend error — so a one-shot
 head awaiting `Done` hangs when the turn limit trips. That missing-`Done` is a
@@ -94,8 +110,10 @@ truncation `Error` remains a recoverable warning that runs on to its normal
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop *races* it via `tokio::select!` so a
-stalled stream can't delay cancel (#179); between-tool dispatch polls `try_recv`;
-the tool-result wait returns cancelled) but does *not* evict the
+stalled stream can't delay cancel (#179); a **parked** turn is cancelled by
+clearing its `TurnState` — the committed assistant message and any
+already-arrived outputs stay in `Context`, and a late `ToolResult` for the
+cancelled batch is dropped as stale) but does *not* evict the
 session from the supervisor map or end its task. The session's `Context` is
 preserved across a Stop+Prompt round-trip — Esc-in-approval or a stray Stop
 between turns no longer causes amnesia. The supervisor map entry is only

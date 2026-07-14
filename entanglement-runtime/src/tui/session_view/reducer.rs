@@ -56,6 +56,10 @@ impl SessionView {
             // view update — the app handles it, if at all.
             OutEvent::SessionList { .. } => false,
             OutEvent::Status { state, .. } => {
+                // Known cosmetic flap (#273): with two parked Asks, resolving
+                // the first flips Status WaitingApproval→Thinking while the
+                // second still waits. Deliberately not special-cased — only
+                // terminal states drop the queues.
                 self.state = state;
                 if state == AgentState::Idle
                     || state == AgentState::Done
@@ -124,8 +128,14 @@ impl SessionView {
             } => {
                 if seq > self.last_seen_seq {
                     self.last_seen_seq = seq;
-                    self.pending_tool_request = Some((request_id.clone(), tool, input));
-                    self.approval_mode = ApprovalMode::WaitingForApproval { request_id };
+                    // Core batch-emits a turn's tool calls (#270, ADR-0061), so
+                    // more requests can land while one is already prompted —
+                    // queue them; only the front drives `approval_mode` (#273).
+                    self.pending_tool_requests
+                        .push_back((request_id.clone(), tool, input));
+                    if matches!(self.approval_mode, ApprovalMode::Normal) {
+                        self.approval_mode = ApprovalMode::WaitingForApproval { request_id };
+                    }
                     true
                 } else {
                     false
@@ -141,7 +151,9 @@ impl SessionView {
             } => {
                 if seq > self.last_seen_seq {
                     self.last_seen_seq = seq;
-                    self.pending_question = Some(PendingQuestion {
+                    // Queued like approvals (#273): the front is the one
+                    // rendered; answering it promotes the next.
+                    self.pending_questions.push_back(PendingQuestion {
                         request_id,
                         question,
                         options,

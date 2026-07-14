@@ -84,6 +84,24 @@ pub(crate) fn emit_tool_call(
     });
 }
 
+/// Hand a tool call to whoever executes it (#58): every host tool is a
+/// protocol round-trip — the engine emits `ToolExec` and the runtime executor
+/// (or any external resolver) answers with `InMsg::ToolResult`.
+pub(crate) fn emit_tool_exec(
+    events: &broadcast::Sender<OutEvent>,
+    session: &SessionId,
+    call: &entanglement_provider::ToolCall,
+    seq: &mut u64,
+) {
+    let _ = events.send(OutEvent::ToolExec {
+        session: session.clone(),
+        seq: next_seq(seq),
+        request_id: call.id.clone(),
+        tool: call.name.clone(),
+        input: call.input.clone(),
+    });
+}
+
 pub(crate) fn emit_tool_output(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,

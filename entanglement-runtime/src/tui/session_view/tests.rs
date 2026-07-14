@@ -50,6 +50,92 @@ fn tool_request_sets_waiting_then_status_clears() {
     assert!(v.pending_tool_request().is_none());
 }
 
+fn tool_request(seq: u64, request_id: &str, tool: &str) -> OutEvent {
+    OutEvent::ToolRequest {
+        session: sid(),
+        seq,
+        request_id: request_id.into(),
+        tool: tool.into(),
+        input: "{}".into(),
+    }
+}
+
+#[test]
+fn concurrent_tool_requests_queue_and_first_is_surfaced() {
+    // Core batch-emits tool calls (#270), so a second ToolRequest can land
+    // while the first is still prompted — it must queue, not overwrite (#273).
+    let mut v = SessionView::new();
+    v.apply_event(tool_request(1, "t1", "read"));
+    v.apply_event(tool_request(2, "t2", "write"));
+
+    assert!(matches!(
+        v.approval_mode(),
+        ApprovalMode::WaitingForApproval { request_id } if request_id == "t1"
+    ));
+    assert_eq!(
+        v.pending_tool_request().map(|(id, ..)| id.as_str()),
+        Some("t1")
+    );
+    assert_eq!(v.queued_approvals(), 1);
+}
+
+#[test]
+fn advancing_approval_promotes_next_queued_request() {
+    // Approve and reject share this path: the answered front pops and the
+    // next parked request is prompted immediately with its own request_id.
+    let mut v = SessionView::new();
+    v.apply_event(tool_request(1, "t1", "read"));
+    v.apply_event(tool_request(2, "t2", "write"));
+
+    v.advance_approval();
+    assert!(matches!(
+        v.approval_mode(),
+        ApprovalMode::WaitingForApproval { request_id } if request_id == "t2"
+    ));
+    assert_eq!(
+        v.pending_tool_request().map(|(_, tool, _)| tool.as_str()),
+        Some("write")
+    );
+    assert_eq!(v.queued_approvals(), 0);
+
+    v.advance_approval();
+    assert!(matches!(v.approval_mode(), ApprovalMode::Normal));
+    assert!(v.pending_tool_request().is_none());
+}
+
+#[test]
+fn advancing_from_reject_reason_entry_promotes_next_request() {
+    // A reject typed via the reason box must also promote the next parked
+    // request, not leave the mode stuck on the popped one.
+    let mut v = SessionView::new();
+    v.apply_event(tool_request(1, "t1", "read"));
+    v.apply_event(tool_request(2, "t2", "write"));
+    v.set_approval_mode(ApprovalMode::EnteringRejectReason {
+        request_id: "t1".into(),
+    });
+
+    v.advance_approval();
+    assert!(matches!(
+        v.approval_mode(),
+        ApprovalMode::WaitingForApproval { request_id } if request_id == "t2"
+    ));
+}
+
+#[test]
+fn terminal_status_drops_the_whole_approval_queue() {
+    let mut v = SessionView::new();
+    v.apply_event(tool_request(1, "t1", "read"));
+    v.apply_event(tool_request(2, "t2", "write"));
+
+    v.apply_event(OutEvent::Status {
+        session: sid(),
+        state: AgentState::Idle,
+    });
+    assert!(!v.is_waiting_approval());
+    assert!(v.pending_tool_request().is_none());
+    assert_eq!(v.queued_approvals(), 0);
+}
+
 #[test]
 fn user_question_sets_pending_then_status_clears() {
     use entanglement_core::QuestionOption;
@@ -84,6 +170,68 @@ fn user_question_sets_pending_then_status_clears() {
     assert_eq!(v.pending_question().unwrap().selected, 0);
 
     // A terminal status clears the pending question.
+    v.apply_event(OutEvent::Status {
+        session: sid(),
+        state: AgentState::Done,
+    });
+    assert!(!v.is_asking());
+}
+
+fn question(seq: u64, request_id: &str, text: &str) -> OutEvent {
+    use entanglement_core::QuestionOption;
+    OutEvent::UserQuestion {
+        session: sid(),
+        seq,
+        request_id: request_id.into(),
+        question: text.into(),
+        options: vec![QuestionOption {
+            label: "A".into(),
+            description: None,
+        }],
+        allow_free_form: true,
+    }
+}
+
+#[test]
+fn concurrent_questions_queue_and_first_is_surfaced() {
+    // Same batch rationale as approvals (#273): a second ask_user must queue
+    // behind the prompted one instead of overwriting it.
+    let mut v = SessionView::new();
+    v.apply_event(question(1, "q1", "First?"));
+    v.apply_event(question(2, "q2", "Second?"));
+
+    assert!(v.is_asking());
+    assert_eq!(
+        v.pending_question().map(|q| q.request_id.as_str()),
+        Some("q1")
+    );
+}
+
+#[test]
+fn advancing_question_promotes_next_with_fresh_selection() {
+    let mut v = SessionView::new();
+    v.apply_event(question(1, "q1", "First?"));
+    v.apply_event(question(2, "q2", "Second?"));
+
+    // Selection state on the front question must not bleed into the next.
+    v.question_move(1);
+    v.advance_question();
+
+    let q = v.pending_question().expect("second question surfaced");
+    assert_eq!(q.request_id, "q2");
+    assert_eq!(q.selected, 0);
+    assert!(!q.entering_free_form);
+
+    v.advance_question();
+    assert!(!v.is_asking());
+}
+
+#[test]
+fn terminal_status_drops_the_whole_question_queue() {
+    let mut v = SessionView::new();
+    v.apply_event(question(1, "q1", "First?"));
+    v.apply_event(question(2, "q2", "Second?"));
+
     v.apply_event(OutEvent::Status {
         session: sid(),
         state: AgentState::Done,
