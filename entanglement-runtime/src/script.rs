@@ -396,15 +396,18 @@ async fn service_binding(
 
 /// Execute a delegated host tool and return its text output verbatim (the
 /// registry already formats failures as a string, so a binding never hard-errors
-/// the run — it surfaces the message to the script).
+/// the run — it surfaces the message to the script). A `rhai` script is a text
+/// context, so an image result (#221) collapses to its text parts (empty for an
+/// image-only `read`) rather than smuggling base64 into the script.
 async fn exec(tools: &ToolRegistry, call: &BindingCall) -> String {
-    tools
+    let content = tools
         .execute(&ToolCall {
             id: format!("rhai:{}", call.tool),
             name: call.tool.to_string(),
             input: call.input.clone(),
         })
-        .await
+        .await;
+    entanglement_core::content_text(&content)
 }
 
 /// Outcome of a parked approval round-trip.

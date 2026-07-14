@@ -16,17 +16,35 @@
 //! Centralizing both here means a park-loop fix (a new terminal message, a
 //! changed Lagged policy) propagates to every call site instead of drifting.
 
-use entanglement_core::{ApprovalScope, Holly, InMsg, SessionId};
+use entanglement_core::{ApprovalScope, ContentPart, Holly, InMsg, SessionId};
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
-/// Fold a tool's output back to core as the #58 `ToolResult`, completing the
-/// parked `ToolExec` round-trip. Every runtime-owned tool ends here.
+/// Fold a **text** tool result back to core as the #58 `ToolResult`, completing
+/// the parked `ToolExec` round-trip. The text-producing tools (denials, refusals,
+/// `rhai`, `ask_user`, …) all end here; an empty string folds to no content
+/// parts, matching a text-only tool message.
 pub async fn reply(holly: &Holly, session: SessionId, request_id: String, output: String) {
+    let content = if output.is_empty() {
+        Vec::new()
+    } else {
+        vec![ContentPart::text(output)]
+    };
+    reply_content(holly, session, request_id, content).await;
+}
+
+/// Fold a **multimodal** tool result back to core (#221) — `read` uses this to
+/// return an image content block. Other callers use the text [`reply`].
+pub async fn reply_content(
+    holly: &Holly,
+    session: SessionId,
+    request_id: String,
+    content: Vec<ContentPart>,
+) {
     let _ = holly
         .send(InMsg::ToolResult {
             session,
             request_id,
-            output,
+            content,
         })
         .await;
 }

@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use entanglement_core::{ToolCall, ToolSpec};
+use entanglement_core::{ContentPart, ToolCall, ToolSpec};
 
 /// A single capability the engine can execute on the host.
 #[async_trait]
@@ -37,6 +37,27 @@ pub trait Tool: Send + Sync {
     }
 
     async fn run(&self, input: &str) -> anyhow::Result<String>;
+
+    /// Multimodal execution — what the tool executor actually calls. The default
+    /// wraps [`run`][Tool::run]'s text in a single text part (empty text → no
+    /// parts, matching a text-only tool result). `read` overrides it to emit an
+    /// image content block when it opens an image file (#221); every other tool
+    /// keeps the plain-text `run`.
+    async fn run_content(&self, input: &str) -> anyhow::Result<Vec<ContentPart>> {
+        let text = self.run(input).await?;
+        Ok(text_parts(text))
+    }
+}
+
+/// One text part for a non-empty string, none for an empty one — the same fold
+/// [`entanglement_core::Message::tool`] applies, so a text-only result keeps its
+/// exact prior shape.
+pub(crate) fn text_parts(text: String) -> Vec<ContentPart> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![ContentPart::text(text)]
+    }
 }
 
 /// Named lookup of tools. Cloning is cheap (tools are shared behind `Arc`), so
@@ -70,15 +91,17 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Execute a model-requested [`ToolCall`]. Unknown tools yield a string the
-    /// engine feeds back to the model rather than erroring the run.
-    pub async fn execute(&self, call: &ToolCall) -> String {
+    /// Execute a model-requested [`ToolCall`], returning the result as multimodal
+    /// [`ContentPart`]s (#221) — text for most tools, an image block for `read` on
+    /// an image. Unknown tools and failures yield a text part the engine feeds
+    /// back to the model rather than erroring the run.
+    pub async fn execute(&self, call: &ToolCall) -> Vec<ContentPart> {
         match self.tools.get(call.name.as_str()) {
-            Some(tool) => match tool.run(&call.input).await {
-                Ok(out) => out,
-                Err(e) => format!("tool `{}` failed: {e}", call.name),
+            Some(tool) => match tool.run_content(&call.input).await {
+                Ok(content) => content,
+                Err(e) => text_parts(format!("tool `{}` failed: {e}", call.name)),
             },
-            None => format!("unknown tool: `{}`", call.name),
+            None => text_parts(format!("unknown tool: `{}`", call.name)),
         }
     }
 }
@@ -112,7 +135,7 @@ mod tests {
                 input: "hi".into(),
             })
             .await;
-        assert_eq!(out, "hi");
+        assert_eq!(out, vec![ContentPart::text("hi")]);
     }
 
     #[tokio::test]
@@ -125,7 +148,8 @@ mod tests {
                 input: "".into(),
             })
             .await;
-        assert!(out.contains("unknown tool"));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].as_text().unwrap().contains("unknown tool"));
     }
 
     #[test]

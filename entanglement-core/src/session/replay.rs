@@ -9,7 +9,7 @@ use anyhow::Result;
 use super::{Session, TurnState};
 use crate::protocol::{InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::ToolCall;
+use entanglement_provider::{ContentPart, ToolCall};
 
 impl Session {
     /// Resume a session from replayed log records.
@@ -51,7 +51,9 @@ impl Session {
         let mut session = Self::new_empty(cfg, default_profile);
         let mut pending_text: String = String::new();
         let mut pending_tools: Vec<ToolCall> = Vec::new();
-        let mut pending_tool_outputs: Vec<(String, String)> = Vec::new();
+        // Reconstructed tool results keyed by request id — multimodal so an image
+        // read (#221) rebuilds as its image block, not the display placeholder.
+        let mut pending_tool_outputs: Vec<(String, Vec<ContentPart>)> = Vec::new();
         let mut max_seq: u64 = 0;
 
         for (in_msg, out_event) in records {
@@ -71,7 +73,9 @@ impl Session {
                     pending_tools.clear();
                 }
                 for (request_id, output) in &pending_tool_outputs {
-                    session.ctx.push_tool(request_id.clone(), output.clone());
+                    session
+                        .ctx
+                        .push_tool_content(request_id.clone(), output.clone());
                 }
                 pending_tool_outputs.clear();
 
@@ -105,9 +109,23 @@ impl Session {
                     });
                 }
                 OutEvent::ToolOutput {
-                    request_id, output, ..
+                    request_id,
+                    output,
+                    content,
+                    ..
                 } => {
-                    pending_tool_outputs.push((request_id.clone(), output.clone()));
+                    // Prefer the multimodal `content` (an image read, #221); fall
+                    // back to the text `output` for the common case (and for logs
+                    // written before the field existed). An empty text yields no
+                    // parts, matching the live fold.
+                    let parts = if !content.is_empty() {
+                        content.clone()
+                    } else if output.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![ContentPart::text(output.clone())]
+                    };
+                    pending_tool_outputs.push((request_id.clone(), parts));
                 }
                 OutEvent::AgentChanged { agent, .. } => {
                     if let Some(profile) = cfg.profiles.get(agent) {
@@ -150,7 +168,9 @@ impl Session {
                         pending_tools.clear();
                     }
                     for (request_id, output) in &pending_tool_outputs {
-                        session.ctx.push_tool(request_id.clone(), output.clone());
+                        session
+                            .ctx
+                            .push_tool_content(request_id.clone(), output.clone());
                     }
                     pending_tool_outputs.clear();
                 }
@@ -176,7 +196,9 @@ impl Session {
                 .map(|(id, _)| id.as_str())
                 .collect();
             for (request_id, output) in &pending_tool_outputs {
-                session.ctx.push_tool(request_id.clone(), output.clone());
+                session
+                    .ctx
+                    .push_tool_content(request_id.clone(), output.clone());
             }
             // Pending = calls without a logged output. Kept `Some` even when
             // fully resolved (the crash hit before the next round streamed):

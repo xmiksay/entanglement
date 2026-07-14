@@ -126,6 +126,7 @@ async fn single_tool_turn_replay_fidelity() {
                 request_id: "call_1".to_string(),
                 tool: "read".to_string(),
                 output: "file content".to_string(),
+                content: vec![],
             },
         ),
         (
@@ -208,6 +209,7 @@ async fn multi_tool_turn_replay_fidelity() {
                 request_id: "call_1".to_string(),
                 tool: "read".to_string(),
                 output: "content a".to_string(),
+                content: vec![],
             },
         ),
         (
@@ -218,6 +220,7 @@ async fn multi_tool_turn_replay_fidelity() {
                 request_id: "call_2".to_string(),
                 tool: "read".to_string(),
                 output: "content b".to_string(),
+                content: vec![],
             },
         ),
         (
@@ -494,6 +497,7 @@ fn tool_output_record(
             request_id: id.to_string(),
             tool: "read".to_string(),
             output: out.to_string(),
+            content: vec![],
         },
     )
 }

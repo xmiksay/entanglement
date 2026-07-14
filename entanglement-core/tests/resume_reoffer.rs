@@ -116,11 +116,7 @@ async fn resume_reoffers_pending_calls_and_completes() {
 
     // Any resolver answers it by message; the turn continues to Done.
     holly
-        .send(InMsg::ToolResult {
-            session: sid.clone(),
-            request_id: "call_1".into(),
-            output: "content".into(),
-        })
+        .send(InMsg::tool_result(sid.clone(), "call_1", "content"))
         .await
         .unwrap();
 
@@ -162,6 +158,7 @@ async fn resume_of_drained_tail_continues_the_turn_without_reoffer() {
             request_id: "call_1".into(),
             tool: "read".into(),
             output: "content".into(),
+            content: vec![],
         },
     ));
 

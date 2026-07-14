@@ -100,8 +100,10 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> SessionCmd {
     match msg {
         InMsg::Prompt { content, .. } => SessionCmd::Prompt(content),
         InMsg::ToolResult {
-            request_id, output, ..
-        } => SessionCmd::ToolResult(request_id, output),
+            request_id,
+            content,
+            ..
+        } => SessionCmd::ToolResult(request_id, content),
         InMsg::Stop { .. } => SessionCmd::Stop,
         InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
         InMsg::SetModel {

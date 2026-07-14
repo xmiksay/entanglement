@@ -5,7 +5,7 @@ use tokio::sync::broadcast;
 
 use super::Session;
 use crate::protocol::{AgentState, OutEvent, SessionId};
-use entanglement_provider::Usage;
+use entanglement_provider::{content_has_image, ContentPart, ImageSource, Usage};
 
 pub(crate) fn next_seq(s: &mut u64) -> u64 {
     *s += 1;
@@ -107,14 +107,36 @@ pub(crate) fn emit_tool_output(
     session: &SessionId,
     request_id: &str,
     tool: &str,
-    output: String,
+    content: Vec<ContentPart>,
     seq: &mut u64,
 ) {
+    // Heads render text; an image result shows a short placeholder. The full
+    // multimodal `content` rides only when it carries an image, so replay can
+    // rebuild the model's view faithfully (#221) while the common text-only case
+    // stays a bare `output` string (no duplicated array in the event log).
+    let has_image = content_has_image(&content);
+    let output = tool_output_display(&content);
     let _ = events.send(OutEvent::ToolOutput {
         session: session.clone(),
         seq: next_seq(seq),
         request_id: request_id.to_string(),
         tool: tool.to_string(),
         output,
+        content: if has_image { content } else { Vec::new() },
     });
+}
+
+/// The text a head displays for a tool result: text parts verbatim, each image
+/// part as a compact `[image: <media_type>]` placeholder (its base64 is useless
+/// on a terminal).
+fn tool_output_display(content: &[ContentPart]) -> String {
+    content
+        .iter()
+        .map(|p| match p {
+            ContentPart::Text { text } => text.clone(),
+            ContentPart::Image {
+                source: ImageSource::Base64 { media_type, .. },
+            } => format!("[image: {media_type}]"),
+        })
+        .collect()
 }

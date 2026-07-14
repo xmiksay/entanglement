@@ -558,30 +558,31 @@ async fn run_and_reply(
 ) {
     // `update_plan`/`update_tasks` carry no host resource (#231, ADR-0049): they
     // are not in the registry. The runtime emits their `Plan`/`TaskList` snapshot
-    // — reusing the `ToolExec` seq — and acks, instead of dispatching. Every
-    // other tool executes against the host registry.
-    let output = if crate::plan_tasks::is_state_tool(&tool) {
+    // — reusing the `ToolExec` seq — and acks (text), instead of dispatching.
+    if crate::plan_tasks::is_state_tool(&tool) {
         if let Some(ev) = crate::plan_tasks::state_event(&session, seq, &tool, &input) {
             let _ = holly.events().send(ev);
         }
-        crate::plan_tasks::ack(&tool)
-    } else {
-        // `edit`/`write` record their change into the capture scope (#202); the
-        // executor stamps it with this call's session/seq and broadcasts the
-        // `FileChange` audit event before replying with the `ToolResult`.
-        crate::file_change::capture_and_emit(
-            holly.events(),
-            &session,
-            seq,
-            tools.execute(&ToolCall {
-                id: request_id.clone(),
-                name: tool,
-                input,
-            }),
-        )
-        .await
-    };
-    seam::reply(holly, session, request_id, output).await;
+        seam::reply(holly, session, request_id, crate::plan_tasks::ack(&tool)).await;
+        return;
+    }
+    // Every other tool executes against the host registry, returning multimodal
+    // content (a text result, or an image block for `read` on an image, #221).
+    // `edit`/`write` record their change into the capture scope (#202); the
+    // executor stamps it with this call's session/seq and broadcasts the
+    // `FileChange` audit event before replying with the `ToolResult`.
+    let content = crate::file_change::capture_and_emit(
+        holly.events(),
+        &session,
+        seq,
+        tools.execute(&ToolCall {
+            id: request_id.clone(),
+            name: tool,
+            input,
+        }),
+    )
+    .await;
+    seam::reply_content(holly, session, request_id, content).await;
 }
 
 fn set_thinking(holly: &Holly, session: &SessionId) {
