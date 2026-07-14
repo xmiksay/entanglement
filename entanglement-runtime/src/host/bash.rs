@@ -92,15 +92,26 @@ impl Tool for BashTool {
                 &output.stdout,
                 &output.stderr,
             )),
-            Ok(ExecOutcome::TimedOut) => Ok(format!("[killed: timed out after {secs}s]")),
+            // Return the output buffered before the kill alongside the notice —
+            // the prefix is often the diagnostic the model needs (#169).
+            Ok(ExecOutcome::TimedOut { stdout, stderr }) => Ok(format_bash_streams(
+                &format!("[killed: timed out after {secs}s]\n"),
+                &stdout,
+                &stderr,
+            )),
             Err(e) => Err(anyhow::anyhow!("bash io error: {e}")),
         }
     }
 }
 
 fn format_bash_output(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("[exit {}]\n", code.unwrap_or(-1)));
+    format_bash_streams(&format!("[exit {}]\n", code.unwrap_or(-1)), stdout, stderr)
+}
+
+/// Assemble `header` + stdout + a `[stderr]` block, then apply the byte cap.
+/// Shared by the exit path (`[exit N]`) and the timeout path (`[killed: …]`).
+fn format_bash_streams(header: &str, stdout: &[u8], stderr: &[u8]) -> String {
+    let mut out = String::from(header);
     let stdout_str = String::from_utf8_lossy(stdout);
     if !stdout_str.is_empty() {
         out.push_str(&stdout_str);
@@ -174,6 +185,23 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("killed") && out.contains("timed out"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn run_timeout_returns_buffered_partial_output() {
+        // #169: a line printed before the deadline must accompany the notice.
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"command":"echo early; echo late 1>&2; sleep 5","timeout":1}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("timed out after 1s"), "{out}");
+        assert!(out.contains("early"), "buffered stdout lost: {out}");
+        assert!(
+            out.contains("[stderr]") && out.contains("late"),
+            "buffered stderr lost: {out}"
+        );
     }
 
     #[tokio::test]

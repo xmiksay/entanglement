@@ -11,14 +11,18 @@
 use std::process::Output;
 use std::time::Duration;
 
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 
 /// Outcome of running a child to completion or aborting it on timeout.
 pub enum ExecOutcome {
     /// Child exited (any status); its fully-drained stdout/stderr.
     Completed(Output),
-    /// The timeout elapsed and the process group was killed.
-    TimedOut,
+    /// The timeout elapsed and the process group was killed. Carries the
+    /// stdout/stderr captured *before* the kill — the prefix a slow command
+    /// printed is often the diagnostic the model needs, so it must not be
+    /// discarded along with the process (#169).
+    TimedOut { stdout: Vec<u8>, stderr: Vec<u8> },
 }
 
 /// Put the child in its own process group so its entire descendant tree can be
@@ -30,17 +34,29 @@ pub fn own_process_group(cmd: &mut Command) {
 }
 
 /// Run `child` to completion or until `dur` elapses, draining stdout+stderr
-/// concurrently. On timeout the child's whole process group is SIGKILLed (#168)
-/// so grandchildren don't orphan, then [`ExecOutcome::TimedOut`] is returned.
-/// `kill_on_drop` (set by the caller) still covers the plain-cancellation drop
-/// path.
-pub async fn wait_or_kill_group(child: Child, dur: Duration) -> std::io::Result<ExecOutcome> {
-    // Capture the pid before `wait_with_output` consumes the child: on timeout
-    // the future is dropped (killing the leader via `kill_on_drop`), but the
-    // group's other members need the pgid to be reaped.
+/// concurrently into buffers. On timeout the child's whole process group is
+/// SIGKILLed (#168) so grandchildren don't orphan, then the output captured so
+/// far is returned as [`ExecOutcome::TimedOut`] (#169) — the reader tasks hit
+/// EOF once the group dies and hand back the accumulated prefix. `kill_on_drop`
+/// (set by the caller) still covers the plain-cancellation drop path.
+pub async fn wait_or_kill_group(mut child: Child, dur: Duration) -> std::io::Result<ExecOutcome> {
+    // Take the pipes and drain them in background tasks so a timeout doesn't
+    // discard whatever the command already printed — we join the readers to
+    // recover the buffered prefix on both the completed and timed-out paths.
     let pid = child.id();
-    match tokio::time::timeout(dur, child.wait_with_output()).await {
-        Ok(Ok(output)) => Ok(ExecOutcome::Completed(output)),
+    let out_task = tokio::spawn(drain(child.stdout.take()));
+    let err_task = tokio::spawn(drain(child.stderr.take()));
+
+    match tokio::time::timeout(dur, child.wait()).await {
+        Ok(Ok(status)) => {
+            let stdout = out_task.await.unwrap_or_default();
+            let stderr = err_task.await.unwrap_or_default();
+            Ok(ExecOutcome::Completed(Output {
+                status,
+                stdout,
+                stderr,
+            }))
+        }
         Ok(Err(e)) => Err(e),
         Err(_) => {
             #[cfg(unix)]
@@ -49,9 +65,23 @@ pub async fn wait_or_kill_group(child: Child, dur: Duration) -> std::io::Result<
             }
             #[cfg(not(unix))]
             let _ = pid;
-            Ok(ExecOutcome::TimedOut)
+            // The group is dead, so every write end of the pipes is closed; the
+            // readers return the prefix captured before the kill.
+            let stdout = out_task.await.unwrap_or_default();
+            let stderr = err_task.await.unwrap_or_default();
+            Ok(ExecOutcome::TimedOut { stdout, stderr })
         }
     }
+}
+
+/// Read a child pipe to EOF into a buffer, returning whatever was captured. A
+/// read error yields the bytes accumulated so far rather than losing them.
+async fn drain<R: AsyncRead + Unpin>(reader: Option<R>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    if let Some(mut r) = reader {
+        let _ = r.read_to_end(&mut buf).await;
+    }
+    buf
 }
 
 /// SIGKILL every process in the group led by `pid` (pgid == leader pid, since
@@ -93,7 +123,7 @@ mod tests {
         let outcome = wait_or_kill_group(child, Duration::from_millis(200))
             .await
             .unwrap();
-        assert!(matches!(outcome, ExecOutcome::TimedOut));
+        assert!(matches!(outcome, ExecOutcome::TimedOut { .. }));
 
         // Wait past the grandchild's own delay: if the group kill worked it was
         // SIGKILLed mid-sleep and never touched the marker.
@@ -103,6 +133,34 @@ mod tests {
             "backgrounded grandchild survived the timeout and wrote {}",
             marker.display()
         );
+    }
+
+    /// #169: output printed before the timeout must survive the group kill. The
+    /// command emits a line, then sleeps past the deadline; the captured prefix
+    /// must contain that line even though the process was SIGKILLed.
+    #[tokio::test]
+    async fn timeout_preserves_partial_output() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo early-diagnostic; sleep 300"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        own_process_group(&mut cmd);
+        let child = cmd.spawn().unwrap();
+
+        match wait_or_kill_group(child, Duration::from_millis(300))
+            .await
+            .unwrap()
+        {
+            ExecOutcome::TimedOut { stdout, .. } => {
+                assert!(
+                    String::from_utf8_lossy(&stdout).contains("early-diagnostic"),
+                    "buffered prefix lost on timeout: {:?}",
+                    String::from_utf8_lossy(&stdout)
+                );
+            }
+            ExecOutcome::Completed(_) => panic!("slept-past-deadline command should time out"),
+        }
     }
 
     #[tokio::test]
@@ -121,7 +179,7 @@ mod tests {
             ExecOutcome::Completed(output) => {
                 assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hi");
             }
-            ExecOutcome::TimedOut => panic!("fast command should not time out"),
+            ExecOutcome::TimedOut { .. } => panic!("fast command should not time out"),
         }
     }
 }
