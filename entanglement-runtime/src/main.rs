@@ -19,7 +19,7 @@ mod tui;
 
 use entanglement_runtime::{
     agents, ask_user, config, host, inspect, logging, persistence, plan_tasks, propose_plan,
-    script, session_store, skills, subagent, system_prompt, tool_runner, ToolRegistry,
+    script, session_store, skills, subagent, system_prompt, tool_names, tool_runner, ToolRegistry,
 };
 
 use anyhow::{Context, Result};

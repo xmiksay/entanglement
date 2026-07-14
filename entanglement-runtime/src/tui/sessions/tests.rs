@@ -83,7 +83,7 @@ fn propose_plan_request_renders_accept_prompt_and_handoff_switches_session() {
         session: plan_session.clone(),
         seq: 1,
         request_id: "pp1".to_string(),
-        tool: crate::propose_plan::PROPOSE_PLAN_TOOL.to_string(),
+        tool: crate::tool_names::PROPOSE_PLAN_TOOL.to_string(),
         input: r##"{"plan":"# Do it"}"##.to_string(),
     });
     assert!(matches!(
@@ -94,7 +94,7 @@ fn propose_plan_request_renders_accept_prompt_and_handoff_switches_session() {
         .active_view()
         .pending_tool_request()
         .expect("pending propose_plan request");
-    assert_eq!(tool, crate::propose_plan::PROPOSE_PLAN_TOOL);
+    assert_eq!(tool, crate::tool_names::PROPOSE_PLAN_TOOL);
     assert_eq!(crate::propose_plan::parse_plan(input), "# Do it");
 
     // The handoff mints a fresh root build session and switches to it.

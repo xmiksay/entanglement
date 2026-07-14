@@ -79,7 +79,7 @@ pub async fn run_one(
             request_id, tool, ..
         } = &ev
         {
-            if tool == crate::propose_plan::PROPOSE_PLAN_TOOL {
+            if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
                 holly
                     .send(InMsg::Reject {
                         session: session.clone(),

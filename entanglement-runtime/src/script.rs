@@ -36,20 +36,15 @@ use crate::tools::ToolRegistry;
 use rhai::packages::{Package, StandardPackage};
 use rhai::{Dynamic, Engine, EvalAltResult, Position};
 use serde::Deserialize;
-use tokio::sync::broadcast::{error::RecvError, Receiver};
+use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
 
 use crate::host::truncate_output;
 use crate::permission::{min_permission, permission_arg, permission_chain, tool_masked};
+use crate::seam;
 use crate::subagent::SpawnGuard;
-
-/// Tool name the model calls to run a sandboxed script.
-pub const RHAI_TOOL: &str = "rhai";
-
-/// The host functions bound into every script — exactly the root-contained
-/// quintet, so `rhai` is precisely as privileged as the always-registered tools.
-pub const BINDING_TOOLS: [&str; 5] = ["read", "glob", "grep", "edit", "write"];
+use crate::tool_names::{BINDING_TOOLS, RHAI_TOOL};
 
 /// Default wall-clock budget for a script, in seconds, when the model omits
 /// `timeout`. Clamped to [`MAX_TIMEOUT_SECS`].
@@ -193,7 +188,7 @@ pub async fn run_rhai(
     let parsed: ScriptInput = match serde_json::from_str(&input) {
         Ok(p) => p,
         Err(e) => {
-            reply(
+            seam::reply(
                 &holly,
                 session,
                 request_id,
@@ -214,7 +209,7 @@ pub async fn run_rhai(
     match self_perm {
         Permission::Deny => {
             let out = format!("tool `{RHAI_TOOL}` denied by permission profile");
-            reply(&holly, session, request_id, out).await;
+            seam::reply(&holly, session, request_id, out).await;
             return;
         }
         Permission::Ask => {
@@ -233,7 +228,7 @@ pub async fn run_rhai(
                 Approval::Rejected(reason) => {
                     set_state(&holly, &session, AgentState::Thinking);
                     let out = format!("tool `{RHAI_TOOL}` rejected: {reason}");
-                    reply(&holly, session, request_id, out).await;
+                    seam::reply(&holly, session, request_id, out).await;
                     return;
                 }
                 // Stop unwinds silently: core cancels the turn on the same Stop.
@@ -258,7 +253,7 @@ pub async fn run_rhai(
     )
     .await
     {
-        reply(&holly, session, request_id, output).await;
+        seam::reply(&holly, session, request_id, output).await;
     }
 }
 
@@ -430,25 +425,13 @@ async fn await_approval(
         input: input.to_string(),
     });
     set_state(holly, session, AgentState::WaitingApproval);
-    loop {
-        match inbound.recv().await {
-            Ok(InMsg::Approve {
-                session: s,
-                request_id: rid,
-                ..
-            }) if &s == session && rid == request_id => return Approval::Approved,
-            Ok(InMsg::Reject {
-                session: s,
-                request_id: rid,
-                reason,
-            }) if &s == session && rid == request_id => {
-                return Approval::Rejected(reason.unwrap_or_else(|| "user".to_string()))
-            }
-            Ok(InMsg::Stop { session: s }) if &s == session => return Approval::Stopped,
-            Ok(_) => {}
-            Err(RecvError::Lagged(_)) => {}
-            Err(RecvError::Closed) => return Approval::Stopped,
+    match seam::await_decision(inbound, session, request_id).await {
+        seam::Decision::Approve { .. } => Approval::Approved,
+        seam::Decision::Reject { reason } => {
+            Approval::Rejected(reason.unwrap_or_else(|| "user".to_string()))
         }
+        // `Stop`, a closed inbox, or an unexpected `Answer` all unwind the run.
+        seam::Decision::Stop | seam::Decision::Answer { .. } => Approval::Stopped,
     }
 }
 
@@ -610,16 +593,6 @@ fn serialize_return(value: &Dynamic) -> String {
         Ok(s) => s,
         Err(_) => value.to_string(),
     }
-}
-
-async fn reply(holly: &Holly, session: SessionId, request_id: String, output: String) {
-    let _ = holly
-        .send(InMsg::ToolResult {
-            session,
-            request_id,
-            output,
-        })
-        .await;
 }
 
 fn set_state(holly: &Holly, session: &SessionId, state: AgentState) {

@@ -18,11 +18,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use entanglement_core::{Holly, InMsg, SessionId, ToolSpec};
+use entanglement_core::{Holly, SessionId, ToolSpec};
 use tokio::sync::watch;
 
-/// Tool name the model calls to await a launched sub-agent's answer.
-pub const AGENT_POLL_TOOL: &str = "agent_poll";
+use crate::seam::reply;
+use crate::tool_names::AGENT_POLL_TOOL;
 
 /// Default poll timeout when the model omits `timeout_secs`.
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -222,16 +222,6 @@ fn parse_input(input: &str) -> (Option<String>, u64) {
         }
         Err(_) => (None, DEFAULT_TIMEOUT_SECS),
     }
-}
-
-async fn reply(holly: &Holly, session: SessionId, request_id: String, output: String) {
-    let _ = holly
-        .send(InMsg::ToolResult {
-            session,
-            request_id,
-            output,
-        })
-        .await;
 }
 
 #[cfg(test)]

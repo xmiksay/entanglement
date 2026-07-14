@@ -40,9 +40,7 @@ use regex::Regex;
 use serde::Deserialize;
 
 use super::SkillRegistry;
-
-/// Tool name the model calls to load a skill's full instructions.
-pub const LOAD_SKILL_TOOL: &str = "load_skill";
+use crate::tool_names::LOAD_SKILL_TOOL;
 
 /// The `load_skill` host tool. Holds the shared startup [`SkillRegistry`] and
 /// resolves a `skill_name` against it deterministically.
@@ -66,7 +64,6 @@ impl Tool for LoadSkillTool {
     fn name(&self) -> &'static str {
         LOAD_SKILL_TOOL
     }
-    // ^ single source of truth for the tool name (also the integration-test handle).
     fn description(&self) -> &str {
         "Load a skill's full instructions by name (pick one from the skill index \
          in your system prompt). Returns the skill body with every file path \
