@@ -385,7 +385,18 @@ fn handle_frame(
                             current_tool.as_mut(),
                             delta.get("partial_json").and_then(|t| t.as_str()),
                         ) {
-                            tool.input_buf.push_str(partial);
+                            if !partial.is_empty() {
+                                tool.input_buf.push_str(partial);
+                                // Surface the raw arg fragment as it streams (#194)
+                                // so heads can render file-sized `edit`/`write`
+                                // inputs before `content_block_stop` finalizes the
+                                // assembled `ToolCall`.
+                                out.push(LlmEvent::ToolCallDelta {
+                                    id: tool.id.clone(),
+                                    name: tool.name.clone(),
+                                    delta: partial.to_string(),
+                                });
+                            }
                         }
                     }
                     Some("thinking_delta") => {
@@ -623,6 +634,76 @@ mod tests {
         .unwrap();
         assert_eq!(
             evs,
+            vec![LlmEvent::ToolCall(crate::ToolCall {
+                id: "t1".into(),
+                name: "greet".into(),
+                input: r#"{"nm":"sam"}"#.into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn input_json_deltas_stream_as_tool_call_deltas() {
+        // Each `input_json_delta` is surfaced as a `ToolCallDelta` (id + name +
+        // raw fragment) as it arrives (#194), and the block still finalizes into
+        // the assembled `ToolCall` on `content_block_stop`.
+        let start = json!({
+            "content_block": { "type": "tool_use", "id": "t1", "name": "greet", "input": {} }
+        });
+        let d1 = json!({ "delta": { "type": "input_json_delta", "partial_json": "{\"nm\":" } });
+        let d2 = json!({ "delta": { "type": "input_json_delta", "partial_json": "\"sam\"}" } });
+
+        let mut tool = None;
+        let _ = handle_frame(
+            "content_block_start",
+            Some(start),
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        let e1 = handle_frame(
+            "content_block_delta",
+            Some(d1),
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(
+            e1,
+            vec![LlmEvent::ToolCallDelta {
+                id: "t1".into(),
+                name: "greet".into(),
+                delta: "{\"nm\":".into(),
+            }]
+        );
+        let e2 = handle_frame(
+            "content_block_delta",
+            Some(d2),
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(
+            e2,
+            vec![LlmEvent::ToolCallDelta {
+                id: "t1".into(),
+                name: "greet".into(),
+                delta: "\"sam\"}".into(),
+            }]
+        );
+        let stop = handle_frame(
+            "content_block_stop",
+            None,
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(
+            stop,
             vec![LlmEvent::ToolCall(crate::ToolCall {
                 id: "t1".into(),
                 name: "greet".into(),

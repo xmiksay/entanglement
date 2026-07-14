@@ -1,5 +1,5 @@
 use entanglement_core::{AgentState, OutEvent, QuestionOption, SessionId};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 mod reducer;
 mod scroll;
@@ -108,6 +108,11 @@ pub struct SessionView {
     /// the run's first `ReasoningDelta` (a stable id — runs are coalesced from
     /// consecutive deltas at render time). Absent = collapsed (the default).
     expanded_reasoning: HashSet<usize>,
+    /// In-progress streamed tool calls (#194): `request_id → transcript index`
+    /// of the `ToolCall` entry whose `input` is growing as `ToolCallDelta`
+    /// fragments arrive. The assembled `ToolCall` finalizes and removes the
+    /// entry; a terminal status drops any that never finished.
+    streaming_tool_calls: HashMap<String, usize>,
 }
 
 impl SessionView {
@@ -131,6 +136,7 @@ impl SessionView {
             started_ms: None,
             ended_ms: None,
             expanded_reasoning: HashSet::new(),
+            streaming_tool_calls: HashMap::new(),
         }
     }
 

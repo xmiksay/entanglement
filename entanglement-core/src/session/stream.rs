@@ -145,6 +145,22 @@ pub(super) async fn stream_round(
                         });
                     }
                 }
+                Ok(LlmEvent::ToolCallDelta { id, name, delta }) => {
+                    if !delta.is_empty() {
+                        // Streamed arg fragment (#194): forward for live display.
+                        // Counts as user-visible output, so a later failure no
+                        // longer silently re-requests over it (#181) — the
+                        // assembled `ToolCall` still arrives on the same stream.
+                        shown = true;
+                        let _ = events.send(OutEvent::ToolCallDelta {
+                            session: session.clone(),
+                            seq: next_seq(&mut s.seq),
+                            request_id: id,
+                            tool: name,
+                            delta,
+                        });
+                    }
+                }
                 Ok(LlmEvent::ToolCall(call)) => tool_calls.push(call),
                 Ok(LlmEvent::Finish { stop_reason, usage }) => finish = Some((stop_reason, usage)),
                 Err(e) => {

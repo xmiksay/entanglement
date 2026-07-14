@@ -27,6 +27,65 @@ fn seq_dedupe_drops_replay() {
 }
 
 #[test]
+fn tool_call_deltas_grow_one_entry_then_the_assembled_call_finalizes_it() {
+    // Streamed arg fragments (#194) coalesce into a single growing `ToolCall`
+    // entry; the assembled `ToolCall` finalizes it with the authoritative input
+    // instead of pushing a duplicate.
+    let mut v = SessionView::new();
+    assert!(v.apply_event(OutEvent::ToolCallDelta {
+        session: sid(),
+        seq: 1,
+        request_id: "c1".into(),
+        tool: "edit".into(),
+        delta: r#"{"path":"#.into(),
+    }));
+    assert!(v.apply_event(OutEvent::ToolCallDelta {
+        session: sid(),
+        seq: 2,
+        request_id: "c1".into(),
+        tool: "edit".into(),
+        delta: r#""a.rs"}"#.into(),
+    }));
+    // One entry so far, args growing live.
+    assert_eq!(v.transcript().len(), 1);
+    match &v.transcript()[0] {
+        TranscriptEntry::ToolCall { tool, input } => {
+            assert_eq!(tool, "edit");
+            assert_eq!(input, r#"{"path":"a.rs"}"#);
+        }
+        other => panic!("expected a ToolCall entry, got {other:?}"),
+    }
+
+    // The assembled call finalizes the same entry — no duplicate.
+    assert!(v.apply_event(OutEvent::ToolCall {
+        session: sid(),
+        seq: 3,
+        request_id: "c1".into(),
+        tool: "edit".into(),
+        input: r#"{"path":"a.rs"}"#.into(),
+    }));
+    assert_eq!(v.transcript().len(), 1);
+    match &v.transcript()[0] {
+        TranscriptEntry::ToolCall { input, .. } => assert_eq!(input, r#"{"path":"a.rs"}"#),
+        other => panic!("expected a ToolCall entry, got {other:?}"),
+    }
+}
+
+#[test]
+fn tool_call_without_deltas_still_pushes_an_entry() {
+    // A provider that emits no streaming fragments lands on `ToolCall` directly.
+    let mut v = SessionView::new();
+    assert!(v.apply_event(OutEvent::ToolCall {
+        session: sid(),
+        seq: 1,
+        request_id: "c1".into(),
+        tool: "read".into(),
+        input: "{}".into(),
+    }));
+    assert_eq!(v.transcript().len(), 1);
+}
+
+#[test]
 fn tool_request_sets_waiting_then_status_clears() {
     let mut v = SessionView::new();
     v.apply_event(OutEvent::ToolRequest {

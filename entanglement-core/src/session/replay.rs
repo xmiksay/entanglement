@@ -88,6 +88,10 @@ impl Session {
                 OutEvent::ReasoningDelta { .. } => {
                     // Reasoning is not stored in context; it's display-only.
                 }
+                OutEvent::ToolCallDelta { .. } => {
+                    // Streaming arg fragments (#194) are display-only; the
+                    // assembled `ToolCall` below reconstructs the call for context.
+                }
                 OutEvent::ToolCall {
                     request_id,
                     tool,

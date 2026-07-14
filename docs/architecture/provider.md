@@ -22,6 +22,7 @@ struct Usage { input_tokens?, output_tokens?, cached_input_tokens?, cache_write_
 enum LlmEvent {
     Text(String),
     Reasoning(String),   // thinking/reasoning tokens, streamed distinctly
+    ToolCallDelta { id, name, delta },   // streamed tool-arg fragment, before ToolCall (#194)
     ToolCall(ToolCall),
     Finish { stop_reason: StopReason?, usage: Usage },   // normalized (#192)
 }
@@ -34,6 +35,14 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   `thinking`/`redacted_thinking` blocks, OpenAI `reasoning_content`) instead of
   dropping it; core re-emits it as a reasoning `OutEvent` heads render distinctly
   from answer text.
+- **`LlmEvent::ToolCallDelta`** (#194) streams a tool call's JSON arguments as
+  they arrive — OpenAI `tool_calls[].function.arguments` fragments, Anthropic
+  `input_json_delta.partial_json` — *before* the assembled `ToolCall` that both
+  clients still emit on flush / `content_block_stop`. Correlated to that final
+  call by `id`; core re-emits it as `OutEvent::ToolCallDelta` so a head can render
+  file-sized `edit`/`write` arguments live. Additive: a consumer that ignores it
+  still gets the full `ToolCall` (replay reconstructs state from that, not the
+  fragments).
 - **`LlmEvent::Finish`** is normalized (#192,
   [ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)): `StopReason`
   collapses `finish_reason`/`stop_reason` across both wires, and `Usage` splits the
