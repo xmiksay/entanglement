@@ -50,6 +50,8 @@ dirs = { workspace = true }
 # Host tool dependencies
 glob = { workspace = true }
 regex = { workspace = true }
+# Process-group kill for the exec tools (`bash`/`call`) on timeout/cancel (#168).
+libc = { workspace = true }
 async-trait = { workspace = true }
 # `FileChange` audit content hash (#202). Pure Rust — rides in the lean library.
 sha2 = { workspace = true }

@@ -599,6 +599,7 @@ dependencies = [
  "entanglement-core",
  "entanglement-provider",
  "glob",
+ "libc",
  "pulldown-cmark",
  "ratatui",
  "regex",
