@@ -28,6 +28,7 @@
 pub mod agent_poll;
 pub mod agents;
 pub mod ask_user;
+pub mod cancel;
 pub mod config;
 pub mod file_change;
 pub mod frontmatter;

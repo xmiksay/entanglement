@@ -33,22 +33,58 @@ pub fn own_process_group(cmd: &mut Command) {
     cmd.process_group(0);
 }
 
+/// SIGKILL the child's process group if this guard is dropped while still armed.
+/// A `Stop` (#167) aborts the executor task, which drops the future holding the
+/// running child; `kill_on_drop` would then reap only the direct child, leaving
+/// grandchildren orphaned exactly as on the timeout path (#168). Disarmed on
+/// every normal exit of [`wait_or_kill_group`], so it only fires on a cancel.
+struct GroupKillGuard {
+    /// Group leader pid (== pgid, since the child was spawned `process_group(0)`),
+    /// or `None` once disarmed / when the child had no pid.
+    pgid: Option<u32>,
+}
+
+impl GroupKillGuard {
+    fn new(pgid: Option<u32>) -> Self {
+        Self { pgid }
+    }
+
+    fn disarm(&mut self) {
+        self.pgid = None;
+    }
+}
+
+impl Drop for GroupKillGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.pgid {
+            kill_process_group(pid);
+        }
+    }
+}
+
 /// Run `child` to completion or until `dur` elapses, draining stdout+stderr
 /// concurrently into buffers. On timeout the child's whole process group is
 /// SIGKILLed (#168) so grandchildren don't orphan, then the output captured so
 /// far is returned as [`ExecOutcome::TimedOut`] (#169) — the reader tasks hit
-/// EOF once the group dies and hand back the accumulated prefix. `kill_on_drop`
-/// (set by the caller) still covers the plain-cancellation drop path.
+/// EOF once the group dies and hand back the accumulated prefix. If the future
+/// is instead dropped mid-wait (a `Stop`-driven task abort, #167), the
+/// [`GroupKillGuard`] kills the same group so cancellation matches the timeout's
+/// containment rather than orphaning grandchildren under `kill_on_drop`.
 pub async fn wait_or_kill_group(mut child: Child, dur: Duration) -> std::io::Result<ExecOutcome> {
     // Take the pipes and drain them in background tasks so a timeout doesn't
     // discard whatever the command already printed — we join the readers to
     // recover the buffered prefix on both the completed and timed-out paths.
     let pid = child.id();
+    // Armed until a normal exit disarms it: fires the group kill if this frame is
+    // dropped mid-wait (the executor task was aborted by a `Stop`).
+    let mut kill_guard = GroupKillGuard::new(pid);
     let out_task = tokio::spawn(drain(child.stdout.take()));
     let err_task = tokio::spawn(drain(child.stderr.take()));
 
     match tokio::time::timeout(dur, child.wait()).await {
         Ok(Ok(status)) => {
+            kill_guard.disarm();
             let stdout = out_task.await.unwrap_or_default();
             let stderr = err_task.await.unwrap_or_default();
             Ok(ExecOutcome::Completed(Output {
@@ -57,8 +93,14 @@ pub async fn wait_or_kill_group(mut child: Child, dur: Duration) -> std::io::Res
                 stderr,
             }))
         }
-        Ok(Err(e)) => Err(e),
+        Ok(Err(e)) => {
+            kill_guard.disarm();
+            Err(e)
+        }
         Err(_) => {
+            // The timeout owns the kill explicitly (it must precede the drain to
+            // close the pipes); disarm so the guard doesn't double-signal.
+            kill_guard.disarm();
             #[cfg(unix)]
             if let Some(pid) = pid {
                 kill_process_group(pid);
@@ -131,6 +173,43 @@ mod tests {
         assert!(
             !marker.exists(),
             "backgrounded grandchild survived the timeout and wrote {}",
+            marker.display()
+        );
+    }
+
+    /// #167: a `Stop`-driven abort drops the wait future mid-run. The
+    /// [`GroupKillGuard`] must then SIGKILL the whole group, matching the
+    /// timeout's containment — otherwise a backgrounded grandchild orphans under
+    /// bare `kill_on_drop` (which reaps only the direct child). Here the future is
+    /// dropped by an outer timeout well before its own (long) deadline.
+    #[tokio::test]
+    async fn dropped_future_kills_backgrounded_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let script = format!("(sleep 1 && touch {}) & sleep 300", marker.display());
+
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &script])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        own_process_group(&mut cmd);
+        let child = cmd.spawn().unwrap();
+
+        // A 300s inner deadline that never fires; the outer 200ms timeout drops
+        // the future instead — the same drop an aborted executor task triggers.
+        let fut = wait_or_kill_group(child, Duration::from_secs(300));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), fut)
+                .await
+                .is_err(),
+            "the inner wait should still be running when we drop it"
+        );
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !marker.exists(),
+            "backgrounded grandchild survived the cancelled exec and wrote {}",
             marker.display()
         );
     }
