@@ -18,9 +18,12 @@ and the crate table below.
 ## The contract (one set of types, every head)
 
 ```
-InMsg    : Prompt | Approve | Reject | Stop | SetAgent                          (harness → engine)
-OutEvent : Status | AgentChanged | Plan | TextDelta | ToolRequest | ToolOutput
-           | TaskList | Error | Done                                            (engine → harness)
+InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
+          | SetAgent | Spawn | ListSessions | CloseSession
+          | Resume (internal, not serialized)                                   (harness → engine)
+OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged
+          | Plan | TextDelta | ReasoningDelta | ToolCall | ToolRequest | ToolExec
+          | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | FileChange (engine → harness)
 ```
 
 Every frame is **session-scoped** (one connection multiplexes many sessions via
@@ -37,15 +40,32 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 
 ## Agent profiles (opencode-style)
 
-A session runs under an **agent profile** = `{ system prompt, model, permission
-profile, mode }`. Switch with `SetAgent` (Build ↔ Plan ↔ Explore). The permission
-profile (`Allow | Ask | Deny` per tool) drives the approval flow — `Plan` denies
-edits, `Build` allows everything. Built-ins: `build`, `plan`, `explore`.
+A session runs under an **agent profile** — `{ name, description, mode, model,
+system_prompt, permission, tools, disallowed_tools, can_spawn,
+spawnable_agents }`. Switch the *primary* profile with `SetAgent`; the cycle is
+`build ↔ plan` — `explore` is now `mode: subagent`, so it is filtered out of the
+primary cycle and only reachable via spawn. Built-ins: `build`, `plan`,
+`explore`.
+
+The permission profile (`Allow | Ask | Deny` per tool, name-or-`*` or
+argument-scoped `tool(pattern)`) drives the approval flow. `build` allows
+everything; `plan` **asks** by default and, since #140, its `tools:` allowlist
+masks `edit`/`write` out of the toolset entirely (so it plans without touching
+files) — `explore` is the deny profile (read-only). Permission resolution and
+approval live entirely in the runtime (#59).
 
 Session snapshots (`OutEvent::Plan`, `OutEvent::TaskList` — both markdown
 `content`) are orthogonal — emitted by the runtime's `update_plan` /
 `update_tasks` state tools (ordinary host tools, gated by the permission path;
 ADR-0049), so every head can render plan/task panels natively.
+
+**Definitions are data, layered** (embedded < user < project, later wins).
+Agents (`ENTANGLEMENT_AGENTS_DIR`) and skills (`ENTANGLEMENT_SKILLS_DIR`) are
+`.md` files with YAML frontmatter — drop one in and it joins the registry with
+no code change; `skutter inspect agents|skills` shows the resolved set with
+layer provenance. Beyond the root-contained quintet (`read`/`write`/`edit`/
+`glob`/`grep`), the exec tools are the opt-in pair `bash`/`call`
+(`ENTANGLEMENT_ENABLE_BASH=1`) and the sandboxed `rhai` scripting tool.
 
 ## Crates
 
@@ -66,6 +86,7 @@ in `.cargo/config.toml`.
 ```bash
 make run          # one dummy turn, text output
 make run-json     # one dummy turn, NDJSON events
+make run-tui      # launch the terminal UI
 make test         # unit + integration
 make lint         # clippy --all-targets -D warnings
 make verify       # check-fmt + tree + check-lean + lint + test (CI-equivalent)
