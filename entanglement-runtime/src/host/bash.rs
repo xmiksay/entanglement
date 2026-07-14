@@ -1,6 +1,7 @@
 //! `bash` — run a shell command rooted at the working directory.
 //! Runs unsandboxed with the engine's full privileges (ADR-0009).
 
+use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::truncate_output;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -77,19 +78,22 @@ impl Tool for BashTool {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        // Own process group so a timeout kills the whole tree, not just `sh`
+        // (a launched server/pipeline would otherwise orphan — #168).
+        own_process_group(&mut cmd);
         for var in &self.secret_env {
             cmd.env_remove(var);
         }
         let child = cmd.spawn().with_context(|| "spawning bash command")?;
 
-        match tokio::time::timeout(dur, child.wait_with_output()).await {
-            Ok(Ok(output)) => Ok(format_bash_output(
+        match wait_or_kill_group(child, dur).await {
+            Ok(ExecOutcome::Completed(output)) => Ok(format_bash_output(
                 output.status.code(),
                 &output.stdout,
                 &output.stderr,
             )),
-            Ok(Err(e)) => Err(anyhow::anyhow!("bash io error: {e}")),
-            Err(_) => Ok(format!("[killed: timed out after {secs}s]")),
+            Ok(ExecOutcome::TimedOut) => Ok(format!("[killed: timed out after {secs}s]")),
+            Err(e) => Err(anyhow::anyhow!("bash io error: {e}")),
         }
     }
 }

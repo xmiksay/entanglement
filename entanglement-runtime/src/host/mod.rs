@@ -28,6 +28,7 @@ use crate::tools::ToolRegistry;
 pub mod bash;
 pub mod call;
 pub mod edit;
+pub mod exec;
 pub mod glob;
 pub mod grep;
 pub mod read;
