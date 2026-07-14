@@ -89,6 +89,20 @@ fn render_config(resolved: &Resolved) -> String {
         render_hook_list(&mut out, "post_tool_use", &c.hooks.post_tool_use);
         render_hook_list(&mut out, "user_prompt_submit", &c.hooks.user_prompt_submit);
     }
+
+    let _ = writeln!(out, "\nmcp servers (← {}):", from("mcp"));
+    if c.mcp.is_empty() {
+        let _ = writeln!(out, "  (none)");
+    } else {
+        // Stable order — the config map's iteration order is unspecified.
+        let mut names: Vec<&String> = c.mcp.keys().collect();
+        names.sort();
+        for name in names {
+            let s = &c.mcp[name];
+            let state = if s.disabled { " (disabled)" } else { "" };
+            let _ = writeln!(out, "  {name}{state}: {} {}", s.command, s.args.join(" "));
+        }
+    }
     out
 }
 

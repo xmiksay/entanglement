@@ -67,7 +67,7 @@ use tui::tui;
 /// (`cfg.tool_specs`). The returned [`ToolRegistry`] stays in the runtime and
 /// is handed to [`tool_runner::spawn_tool_executor`], which answers the
 /// [`entanglement_core::OutEvent::ToolExec`] round-trip.
-fn build_config(
+async fn build_config(
     catalog: &Catalog,
     http_client: &HttpClient,
     profiles: ProfileRegistry,
@@ -118,6 +118,13 @@ fn build_config(
     // reads the filesystem), so it is registered here and goes through the *same*
     // per-call permission gate as `read` — no runtime-executor interception.
     tools.register(LoadSkillTool::new(skills));
+    // External MCP tool servers (#198): spawn each configured server, discover its
+    // `tools/list`, and register every tool into the same registry as a
+    // runtime-side provider. They then ride `tool_specs` (schemas) and the
+    // `ToolExec` round-trip (execution) with no core change — governed by the same
+    // permission profiles as any host tool. A server that fails to connect is
+    // logged and skipped, never fatal.
+    entanglement_runtime::mcp::connect(&user_config.mcp, &mut tools).await;
     cfg.tool_specs = tools.specs();
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
@@ -643,7 +650,8 @@ async fn main() -> Result<()> {
         profiles,
         skill_registry,
         &user_config,
-    );
+    )
+    .await;
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.
     if let Err(e) = engine_config.validate() {

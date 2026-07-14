@@ -201,6 +201,45 @@ and the inbound `InMsg::Prompt` fan-out — so no new protocol surface is added.
   synchronous before the executor task spawns so a first `Prompt` can't race the
   `user_prompt_submit` watcher.
 
+## 10. MCP client — external tool servers — [ADR-0067](../adr/0067-mcp-client-as-runtime-tool-provider.md) (#198)
+
+Attach any external [MCP](https://modelcontextprotocol.io) tool server as a
+**runtime-side tool provider**, with **no core change**. Since the `Tool` trait +
+`ToolRegistry` live in the runtime (§ADR-0059), an external tool is the same shape
+as a host tool: a `dyn Tool` with a name, description, and `inputSchema`. The MCP
+client (`entanglement-runtime::mcp`) spawns each server, discovers its tools, and
+registers them into the same registry — so they ride `EngineConfig.tool_specs`
+(schemas) and the `ToolExec`/`ToolResult` round-trip (execution) unchanged, under
+the same permission profiles as `read`/`bash`.
+
+- **Transport (`mcp::client::McpClient`):** one JSON-RPC 2.0 session per server
+  over its **stdio**, newline-delimited frames (the MCP stdio transport). Handshake
+  is `initialize` + `notifications/initialized`; then `tools/list` (discovery) and
+  `tools/call` (execution). A background reader task demultiplexes responses to
+  callers by JSON-RPC `id`; notifications are dropped. A **60 s** per-request
+  timeout keeps a hung server from parking a turn, and the reader **drains all
+  pending requests with an error on EOF** so a crashed server can't hang a caller.
+  The subprocess is held for the client's lifetime (`kill_on_drop`); keeping the
+  registered tools alive keeps the server alive.
+- **Proxy (`mcp::tool::McpTool`):** adapts one remote tool. `schema()` returns the
+  server's `inputSchema` verbatim; `run()` JSON-decodes the model's input to the
+  `arguments` object, calls `tools/call`, and flattens the result's text content
+  (v1 is text-only — a non-text block is noted, an `isError` result prefixed).
+  Advertised name **`mcp__<server>__<tool>`**, sanitized to the providers'
+  `^[A-Za-z0-9_-]+$` rule, so it can't collide with a host tool or another server.
+- **Config:** the `mcp:` section of the layered user config (§ADR-0047/#172), a map
+  of server name → `{command, args, env, disabled}`, `deny_unknown_fields`-validated
+  by the same loader as `permissions`/`hooks`. Empty ⇒ no servers (the norm).
+  `skutter inspect config` lists the configured servers.
+- **Wiring:** `build_config` is `async` and calls `mcp::connect(&config.mcp, &mut
+  tools)` after the host tools are registered but before `tool_specs` is derived, so
+  MCP tools flow into both the advertised schemas and the executor's registry with
+  the existing code. Connection is **best-effort per server**: a spawn / handshake /
+  `tools/list` failure is logged and skipped — a down server degrades to "that tool
+  is absent," never a startup failure. The whole module lives in the **lean
+  library** (tokio process + `serde_json`), so an embedder gets external tool
+  servers with no CLI/TUI/transport dependency.
+
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs
 [perm]: ../entanglement-core/src/protocol.rs

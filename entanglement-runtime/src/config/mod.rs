@@ -43,6 +43,7 @@
 //! commented out the file parses to `Null` and is skipped in the merge
 //! ([`read_layer`]) — a no-op until a user uncomments a key.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -52,6 +53,7 @@ use serde_yaml::Value;
 
 use crate::agents::permission_from_value;
 use crate::hooks::Hooks;
+use crate::mcp::McpServerConfig;
 
 pub mod env_file;
 
@@ -91,6 +93,11 @@ struct RawConfig {
     /// `permissions`); absent ⇒ no hooks.
     #[serde(default)]
     hooks: Hooks,
+    /// External MCP tool servers (#198): a map of server name → spawn config. Each
+    /// server's tools are discovered and registered into the runtime tool
+    /// registry. Absent ⇒ no servers.
+    #[serde(default)]
+    mcp: HashMap<String, McpServerConfig>,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -108,6 +115,8 @@ pub struct Config {
     pub permissions: PermissionProfile,
     /// Lifecycle hooks (#199). Empty by default (a no-op).
     pub hooks: Hooks,
+    /// External MCP tool servers (#198). Empty by default (a no-op).
+    pub mcp: HashMap<String, McpServerConfig>,
 }
 
 /// Which of the three precedence layers a value came from. Ordered low → high so
@@ -234,6 +243,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         verbose: raw.verbose,
         permissions,
         hooks: raw.hooks,
+        mcp: raw.mcp,
     };
     Ok(Resolved {
         config,
@@ -254,6 +264,7 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "verbose",
         "permissions",
         "hooks",
+        "mcp",
     ];
     KEYS.iter()
         .filter_map(|key| {

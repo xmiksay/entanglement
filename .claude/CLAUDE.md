@@ -165,7 +165,13 @@ re-document them here):
   call; `post_tool_use` is an observational side-effect) and off the inbound
   `Prompt` fan-out (`user_prompt_submit`), each in its own process group. Scoped
   to the generic `Intercept::Permission` route (orchestration + `rhai` bypass);
-  wired via `tool_runner::spawn_tool_executor_with_hooks`.
+  wired via `tool_runner::spawn_tool_executor_with_hooks`. The config's `mcp:`
+  section (#198, [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md))
+  declares **external MCP tool servers** (`{command, args, env, disabled}` per
+  server), each spawned over JSON-RPC/stdio by `entanglement-runtime::mcp` and its
+  `tools/list` registered into the `ToolRegistry` as `mcp__<server>__<tool>` — a
+  runtime-side tool provider, no core change, governed by the same permission
+  profiles as any host tool; a server that fails to connect is logged and skipped.
 
 | Topic | Module |
 | --- | --- |
@@ -174,7 +180,7 @@ re-document them here):
 | turn loop, tool round-trip, steering, cancellation | [engine](../docs/architecture/engine.md) |
 | streaming client, catalog, pool/retry/rate-limit | [provider](../docs/architecture/provider.md) |
 | stdio/TUI/`serve` heads, event-sourced persistence | [heads & persistence](../docs/architecture/heads-and-persistence.md) |
-| dependency gates, the quintet + exec tools (`bash`/`call`/`bash_output`/`rhai`), lifecycle hooks | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
+| dependency gates, the quintet + exec tools (`bash`/`call`/`bash_output`/`rhai`), lifecycle hooks, MCP client (external tool servers) | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
 
 Debugging: `skutter inspect prompt|agents|skills|config` re-runs the load-time
 discovery with **no engine** and prints the resolved prompt / registries / user
@@ -274,6 +280,11 @@ the root-contained quintet (`read` on an image file — `png`/`jpg`/`jpeg`/`gif`
 built on the `Message`/`Prompt` content-block migration #197/[ADR-0064](../docs/adr/0064-message-content-blocks.md)),
 the opt-in exec set `bash`/`call`/`bash_output`
 (`ENTANGLEMENT_ENABLE_BASH=1`; `bash` gains `workdir` + `run_in_background`, polled
-via `bash_output`, #170), and the sandboxed `rhai` tool. `skutter serve`
+via `bash_output`, #170), and the sandboxed `rhai` tool. **External MCP tool
+servers** attach as a runtime-side tool provider (#198,
+[ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)): the user
+config's `mcp:` section declares servers, each spawned over JSON-RPC/stdio, its
+`tools/list` registered into the `ToolRegistry` as `mcp__<server>__<tool>` — no
+core change, same permission profiles as any host tool. `skutter serve`
 (axum WS, local-only, [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md))
 is the next head.
