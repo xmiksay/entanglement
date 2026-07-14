@@ -20,7 +20,8 @@
 
 use crate::client::HttpClient;
 use crate::{
-    Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, StopReason, ToolSpec, Usage,
+    GenerationParams, Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, StopReason,
+    ToolSpec, Usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -29,6 +30,8 @@ use serde_json::{json, Value};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// Fallback output cap when the request carries no
+/// [`GenerationParams::max_output_tokens`] (Anthropic *requires* `max_tokens`).
 const DEFAULT_MAX_TOKENS: u32 = 16_384;
 
 /// Streaming Anthropic Messages client. Cheap to clone (the HTTP client is
@@ -37,7 +40,9 @@ const DEFAULT_MAX_TOKENS: u32 = 16_384;
 pub struct AnthropicLlm {
     api_key: String,
     default_model: String,
-    max_tokens: u32,
+    /// Fallback output cap ([`DEFAULT_MAX_TOKENS`]) used only when a request omits
+    /// its own [`GenerationParams::max_output_tokens`] (#191).
+    default_max_tokens: u32,
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
     rpm: Option<u32>,
@@ -51,20 +56,10 @@ impl AnthropicLlm {
         rpm: Option<u32>,
         http: HttpClient,
     ) -> Self {
-        Self::with_max_tokens(api_key, default_model, DEFAULT_MAX_TOKENS, rpm, http)
-    }
-
-    pub fn with_max_tokens(
-        api_key: impl Into<String>,
-        default_model: impl Into<String>,
-        max_tokens: u32,
-        rpm: Option<u32>,
-        http: HttpClient,
-    ) -> Self {
         Self {
             api_key: api_key.into(),
             default_model: default_model.into(),
-            max_tokens,
+            default_max_tokens: DEFAULT_MAX_TOKENS,
             rpm,
             http,
         }
@@ -87,7 +82,14 @@ pub fn anthropic_factory(
 impl Llm for AnthropicLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         let model = req.model.unwrap_or(&self.default_model);
-        let body = build_body(model, req.system, req.messages, req.tools, self.max_tokens);
+        let body = build_body(
+            model,
+            req.system,
+            req.messages,
+            req.tools,
+            self.default_max_tokens,
+            req.generation,
+        );
 
         tracing::debug!(
             model = %model,
@@ -185,8 +187,11 @@ fn build_body(
     system: &str,
     messages: &[Message],
     tools: &[ToolSpec],
-    max_tokens: u32,
+    default_max_tokens: u32,
+    generation: Option<GenerationParams>,
 ) -> Value {
+    let g = generation.unwrap_or_default();
+    let mut max_tokens = g.max_output_tokens.unwrap_or(default_max_tokens);
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -196,6 +201,19 @@ fn build_body(
     });
     if !tools.is_empty() {
         body["tools"] = json!(convert_tools(tools));
+    }
+    // Extended thinking (#191): enable it with the resolved budget when the head
+    // set one. Anthropic requires `budget_tokens < max_tokens`, so bump the cap if
+    // the budget would swallow it; and with thinking on, `temperature` may only be
+    // its default, so it is omitted. Without a budget, temperature passes through.
+    if let Some(budget) = g.thinking_budget_tokens {
+        if budget >= max_tokens {
+            max_tokens = budget.saturating_add(DEFAULT_MAX_TOKENS);
+            body["max_tokens"] = json!(max_tokens);
+        }
+        body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+    } else if let Some(temp) = g.temperature {
+        body["temperature"] = json!(temp);
     }
     body
 }
@@ -430,10 +448,14 @@ mod tests {
             &[msg(MessageRole::User, "hi")],
             &[],
             1024,
+            None,
         );
         assert!(body.get("tools").is_none());
         assert_eq!(body["stream"], true);
+        // No request params ⇒ the client's fallback cap, no temperature/thinking.
         assert_eq!(body["max_tokens"], 1024);
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("thinking").is_none());
     }
 
     #[test]
@@ -445,9 +467,71 @@ mod tests {
             &[msg(MessageRole::User, "hi")],
             &[spec],
             1024,
+            None,
         );
         assert_eq!(body["tools"][0]["name"], "greet");
         assert!(body["tools"][0]["input_schema"].is_object());
+    }
+
+    #[test]
+    fn generation_max_output_tokens_overrides_fallback() {
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            Some(GenerationParams {
+                temperature: Some(0.3),
+                max_output_tokens: Some(8000),
+                thinking_budget_tokens: None,
+            }),
+        );
+        assert_eq!(body["max_tokens"], 8000);
+        assert!((body["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn thinking_budget_enables_thinking_and_drops_temperature() {
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            Some(GenerationParams {
+                temperature: Some(0.7),
+                max_output_tokens: Some(20_000),
+                thinking_budget_tokens: Some(10_000),
+            }),
+        );
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 10_000);
+        assert_eq!(body["max_tokens"], 20_000);
+        // With thinking on, temperature must be its default — omitted, not sent.
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn thinking_budget_bumps_max_tokens_when_it_would_swallow_the_cap() {
+        // Anthropic requires budget_tokens < max_tokens; a budget at/over the cap
+        // must lift the cap rather than send an invalid request.
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            Some(GenerationParams {
+                temperature: None,
+                max_output_tokens: Some(4000),
+                thinking_budget_tokens: Some(4000),
+            }),
+        );
+        let max = body["max_tokens"].as_u64().unwrap();
+        let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
+        assert!(max > budget, "max_tokens {max} must exceed budget {budget}");
     }
 
     #[test]

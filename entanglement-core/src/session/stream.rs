@@ -12,7 +12,9 @@ use tokio::sync::{broadcast, mpsc};
 use super::emit::{emit_turn_error, next_seq};
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
-use entanglement_provider::{LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage};
+use entanglement_provider::{
+    GenerationParams, LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage,
+};
 
 /// Outcome of one streamed round-trip.
 pub(super) enum StreamedRound {
@@ -45,6 +47,7 @@ pub(super) async fn stream_round(
     events: &broadcast::Sender<OutEvent>,
     stash: &mut VecDeque<SessionCmd>,
     specs: &[ToolSpec],
+    generation: Option<GenerationParams>,
 ) -> StreamedRound {
     const STREAM_RETRIES: usize = 1;
     let mut attempt: usize = 0;
@@ -59,6 +62,7 @@ pub(super) async fn stream_round(
             model: s.profile.model.as_deref(),
             messages: s.ctx.messages(),
             tools: specs,
+            generation,
         };
         tracing::debug!(
             messages_count = req.messages.len(),

@@ -37,8 +37,8 @@ pub use anthropic::{anthropic_factory, AnthropicLlm};
 pub use catalog::{Catalog, ModelEntry, ModelPricing, ProviderEntry, Wire};
 pub use client::{HttpClient, RetryConfig};
 pub use llm::{
-    stream_from_response, DummyLlm, EchoLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse,
-    LlmStream, StopReason, ToolCall, ToolSpec, Usage,
+    stream_from_response, DummyLlm, EchoLlm, GenerationParams, Llm, LlmEvent, LlmFactory,
+    LlmRequest, LlmResponse, LlmStream, StopReason, ToolCall, ToolSpec, Usage,
 };
 pub use message::{Message, MessageRole};
 pub use openai::{

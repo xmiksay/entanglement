@@ -121,10 +121,27 @@ loud). A `wire: openai | anthropic` tag on each provider is what makes
 user-defined providers work with **zero code change** — any OpenAI-compatible
 endpoint (proxy, local vLLM, new vendor) is `wire: openai` + `base_url` +
 `key_env`. `ModelEntry` carries capability flags (`supports_thinking`,
-`supports_temperature`, `default_temperature`) and **pricing** (USD/M tokens:
+`supports_temperature`, `default_temperature`, `max_output_tokens`,
+`thinking_budget_tokens`) and **pricing** (USD/M tokens:
 `input`/`output`/`cached_input`/`cache_write`, all optional). Lookups:
 `Catalog::{builtin,load,load_from}`, `provider(name)`, `model(provider,id)`,
 `model_by_id(id)`.
+
+**Generation-parameter channel (#191).** Those capability flags used to be
+write-only — the YAML promised temperature/thinking behavior no client sent.
+`ModelEntry::generation_params()` now turns them into a `GenerationParams`
+`{ temperature, max_output_tokens, thinking_budget_tokens }`, gated on the flags:
+temperature only when `supports_temperature`, a thinking budget only when
+`supports_thinking` (and a budget is configured — the embedded defaults leave it
+unset, so extended thinking is *reachable*, not forced on). The runtime resolves
+it for the chosen model onto `EngineConfig::generation`; core threads it onto
+every `LlmRequest { …, generation }`. Each client maps the present knobs to its
+wire and omits the rest: `OpenAiLlm` sends `temperature` + `max_tokens` (no
+thinking channel on that wire); `AnthropicLlm` uses `max_output_tokens` in place
+of its `DEFAULT_MAX_TOKENS` fallback, emits `thinking { type: enabled,
+budget_tokens }` when a budget is set (bumping `max_tokens` above the budget and
+dropping `temperature`, per Anthropic's constraints), else passes `temperature`
+through.
 
 **Provider selection (`skutter`):** the catalog loads once at startup; a
 malformed user file is a loud error, never a silent fallback — and so is an

@@ -25,7 +25,9 @@ use entanglement_runtime::{
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId};
-use entanglement_provider::{Catalog, HttpClient, ModelInfo, ModelPricing, ProviderEntry, Wire};
+use entanglement_provider::{
+    Catalog, GenerationParams, HttpClient, ModelInfo, ModelPricing, ProviderEntry, Wire,
+};
 use std::collections::HashMap;
 
 use host::{host_tools, BashTool, CallTool};
@@ -268,6 +270,20 @@ fn model_info_for(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> Mode
     ModelInfo::from_catalog(catalog.model(&entry.name, model), model)
 }
 
+/// Resolve the generation knobs for `model` from its catalog capability metadata
+/// (#191): temperature only when `supports_temperature`, thinking budget only when
+/// `supports_thinking`, plus `max_output_tokens`. `None` when the chosen model is
+/// absent from the catalog (an env-typed id) — the client then uses its defaults.
+fn generation_for(
+    entry: &ProviderEntry,
+    model: &str,
+    catalog: &Catalog,
+) -> Option<GenerationParams> {
+    catalog
+        .model(&entry.name, model)
+        .map(|m| m.generation_params())
+}
+
 /// Per-model USD pricing keyed by model id, flattened across every provider in
 /// the catalog (#192). The engine looks a turn's effective model up here to price
 /// its reported usage; a model with no `pricing` block is simply absent (unknown
@@ -315,6 +331,7 @@ fn openai_wire_config(
                 http_client.clone(),
             ),
             default_model: Some(model.clone()),
+            generation: generation_for(entry, &model, catalog),
             pricing: pricing_map(catalog),
             ..EngineConfig::default()
         },
@@ -341,6 +358,7 @@ fn anthropic_wire_config(
                 http_client.clone(),
             ),
             default_model: Some(model.clone()),
+            generation: generation_for(entry, &model, catalog),
             pricing: pricing_map(catalog),
             ..EngineConfig::default()
         },
