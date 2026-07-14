@@ -182,11 +182,17 @@ model & user-configuration epic (#171 — layered user config file + permission
 ceiling #172, argument-scoped rule keys #173, approval scope + persisted "always
 allow" grants #174, `update_plan`/`update_tasks` demoted to permission-gated
 runtime state tools #175/#231, first-run config scaffold #219, managed
-provider-key env file #220) are **complete**.
+provider-key env file #220), and the engine-robustness epic (#176 — inner-loop
+`MAX_TURNS` reset per prompt #177, per-model context budget with tool-output
+compaction + refuse-over-window #178, `Stop` raced against the stream via
+`tokio::select!` #179, `CloseSession` cascade over the spawn sub-tree #180,
+interrupted-partial commit + single mid-stream retry #181, mid-turn `Prompt`
+folded into the live turn #182/[ADR-0058](../docs/adr/0058-mid-turn-prompt-folds-into-live-turn.md))
+are **complete**.
 Current phase is the July 2026 audit backlog — thematic epics tracked on GitHub
 with P0/P1/P2 labels and blocked-by links:
-#190 (provider seam + per-endpoint pool), #176 (engine robustness),
-#166 (exec-tool maturity), #200 (architecture cleanup), #209 (docs), with
+#190 (provider seam + per-endpoint pool), #166 (exec-tool maturity),
+#200 (architecture cleanup), #209 (docs), with
 WebSocket `serve` (#153) deliberately last.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
