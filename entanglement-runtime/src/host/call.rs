@@ -131,7 +131,15 @@ impl Tool for CallTool {
                 &output.stderr,
                 parsed.tail,
             )),
-            Ok(ExecOutcome::TimedOut) => Ok(format!("[killed: timed out after {secs}s]")),
+            // Return the output buffered before the kill (tailed like a normal
+            // result) alongside the notice — the prefix is often the diagnostic
+            // the model needs (#169).
+            Ok(ExecOutcome::TimedOut { stdout, stderr }) => Ok(format_call_streams(
+                &format!("[killed: timed out after {secs}s]\n"),
+                &stdout,
+                &stderr,
+                parsed.tail,
+            )),
             Err(e) => Err(anyhow::anyhow!("call io error: {e}")),
         }
     }
@@ -163,8 +171,18 @@ fn tail_lines(s: &str, tail: u32) -> String {
 /// are independent limits — either may fire, and the byte-cap notice names the
 /// byte limit explicitly.
 fn format_call_output(code: Option<i32>, stdout: &[u8], stderr: &[u8], tail: u32) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("[exit {}]\n", code.unwrap_or(-1)));
+    format_call_streams(
+        &format!("[exit {}]\n", code.unwrap_or(-1)),
+        stdout,
+        stderr,
+        tail,
+    )
+}
+
+/// `header` + tailed stdout + a tailed `[stderr]` block, byte-capped. Shared by
+/// the exit path (`[exit N]`) and the timeout path (`[killed: …]`, #169).
+fn format_call_streams(header: &str, stdout: &[u8], stderr: &[u8], tail: u32) -> String {
+    let mut out = String::from(header);
     let stdout_str = String::from_utf8_lossy(stdout);
     let stdout_tailed = tail_lines(&stdout_str, tail);
     if !stdout_tailed.is_empty() {
@@ -291,6 +309,26 @@ mod tests {
             serde_json::json!({ "command": "sleep", "args": ["30"], "timeout": 1 }).to_string();
         let out = tool.run(&input).await.unwrap();
         assert!(out.contains("timed out after 1s"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn timeout_returns_buffered_partial_output() {
+        // #169: output emitted before the deadline must accompany the notice.
+        // `call` runs no shell, so exec `sh` directly to print then sleep.
+        let tool = CallTool::new(std::env::temp_dir());
+        let input = serde_json::json!({
+            "command": "sh",
+            "args": ["-c", "echo early; echo late 1>&2; sleep 30"],
+            "timeout": 1,
+        })
+        .to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert!(out.contains("timed out after 1s"), "got: {out}");
+        assert!(out.contains("early"), "buffered stdout lost: {out}");
+        assert!(
+            out.contains("[stderr]") && out.contains("late"),
+            "buffered stderr lost: {out}"
+        );
     }
 
     #[tokio::test]
