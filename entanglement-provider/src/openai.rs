@@ -33,8 +33,8 @@ use std::collections::BTreeMap;
 
 use crate::client::HttpClient;
 use crate::{
-    GenerationParams, Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, StopReason,
-    ToolCall, ToolSpec, Usage,
+    ContentPart, GenerationParams, ImageSource, Llm, LlmEvent, LlmRequest, LlmStream, Message,
+    MessageRole, StopReason, ToolCall, ToolSpec, Usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -304,10 +304,10 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
     for m in messages {
         match m.role {
             MessageRole::User => {
-                out.push(json!({ "role": "user", "content": m.text }));
+                out.push(json!({ "role": "user", "content": openai_content(&m.content) }));
             }
             MessageRole::Assistant => {
-                let mut entry = json!({ "role": "assistant", "content": m.text });
+                let mut entry = json!({ "role": "assistant", "content": m.text() });
                 if !m.tool_calls.is_empty() {
                     let calls: Vec<Value> = m
                         .tool_calls
@@ -333,12 +333,37 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 out.push(json!({
                     "role": "tool",
                     "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
-                    "content": m.text,
+                    "content": m.text(),
                 }));
             }
         }
     }
     out
+}
+
+/// Render a message's content to OpenAI's `content` field. All-text collapses to
+/// a plain string (the common case, smaller wire); any image part switches to the
+/// multimodal block array (`text` / `image_url` with a `data:` URL, #197/#221).
+fn openai_content(content: &[ContentPart]) -> Value {
+    if content
+        .iter()
+        .all(|p| matches!(p, ContentPart::Text { .. }))
+    {
+        return Value::String(crate::content_text(content));
+    }
+    let blocks: Vec<Value> = content
+        .iter()
+        .map(|p| match p {
+            ContentPart::Text { text } => json!({ "type": "text", "text": text }),
+            ContentPart::Image {
+                source: ImageSource::Base64 { media_type, data },
+            } => json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{media_type};base64,{data}") },
+            }),
+        })
+        .collect();
+    Value::Array(blocks)
 }
 
 fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
@@ -463,7 +488,11 @@ mod tests {
     fn msg(role: MessageRole, text: &str) -> Message {
         Message {
             role,
-            text: text.into(),
+            content: if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![ContentPart::text(text)]
+            },
             tool_calls: Vec::new(),
             tool_call_id: None,
         }
@@ -488,6 +517,27 @@ mod tests {
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[0]["content"], "be helpful");
         assert_eq!(msgs[1]["role"], "user");
+    }
+
+    #[test]
+    fn text_only_user_content_stays_a_plain_string() {
+        let out = convert_messages(&[msg(MessageRole::User, "hi")]);
+        assert_eq!(out[0]["content"], "hi");
+    }
+
+    #[test]
+    fn user_image_renders_data_url_block() {
+        let user = Message::user_content(vec![
+            ContentPart::text("look"),
+            ContentPart::image("image/png", "AAAA"),
+        ]);
+        let out = convert_messages(&[user]);
+        let content = &out[0]["content"];
+        assert_eq!(content[0], json!({ "type": "text", "text": "look" }));
+        assert_eq!(
+            content[1],
+            json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } })
+        );
     }
 
     #[test]
@@ -539,20 +589,7 @@ mod tests {
 
     #[test]
     fn tool_results_become_one_message_each() {
-        let msgs = vec![
-            Message {
-                role: MessageRole::Tool,
-                text: "r1".into(),
-                tool_calls: vec![],
-                tool_call_id: Some("a".into()),
-            },
-            Message {
-                role: MessageRole::Tool,
-                text: "r2".into(),
-                tool_calls: vec![],
-                tool_call_id: Some("b".into()),
-            },
-        ];
+        let msgs = vec![Message::tool("a", "r1"), Message::tool("b", "r2")];
         let out = convert_messages(&msgs);
         // Unlike Anthropic, two tool results are two messages, not one.
         assert_eq!(out.len(), 2);
@@ -564,16 +601,14 @@ mod tests {
 
     #[test]
     fn assistant_with_tool_calls_serializes_arguments() {
-        let msgs = vec![Message {
-            role: MessageRole::Assistant,
-            text: "thinking".into(),
-            tool_calls: vec![ToolCall {
+        let msgs = vec![Message::assistant(
+            "thinking",
+            vec![ToolCall {
                 id: "c1".into(),
                 name: "greet".into(),
                 input: r#"{"nm":"sam"}"#.into(),
             }],
-            tool_call_id: None,
-        }];
+        )];
         let out = convert_messages(&msgs);
         assert_eq!(out[0]["role"], "assistant");
         assert_eq!(out[0]["content"], "thinking");

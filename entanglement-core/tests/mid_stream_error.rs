@@ -38,7 +38,7 @@ impl Llm for MidStreamErrLlm {
             .messages
             .iter()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
-            .map(|m| m.text.clone())
+            .map(|m| m.text().clone())
             .collect::<Vec<_>>()
             .join("|");
         let events = vec![
@@ -132,13 +132,7 @@ async fn mid_stream_error_commits_partial_with_interrupted_marker() {
 
     // First turn: partial shown, then a mid-stream failure.
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "hi".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
     let first = collect(sub, &sid).await;
 
     // The partial and the marker are both streamed, so display and context match.
@@ -153,10 +147,7 @@ async fn mid_stream_error_commits_partial_with_interrupted_marker() {
     // had said nothing.
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "continue".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "continue"))
         .await
         .unwrap();
     let second = collect(sub, &sid).await;
@@ -174,13 +165,7 @@ async fn stream_failure_before_output_is_re_requested_transparently() {
     }));
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "hi".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
     let events = collect(sub, &sid).await;
 
     // A single prompt recovers within one turn: the re-request's output is shown

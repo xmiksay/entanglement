@@ -48,10 +48,7 @@ fn engine(responses: Vec<LlmResponse>) -> Holly {
 fn mid_turn_records(sid: &SessionId) -> Vec<(Option<InMsg>, OutEvent)> {
     vec![
         (
-            Some(InMsg::Prompt {
-                session: sid.clone(),
-                text: "read file".into(),
-            }),
+            Some(InMsg::prompt(sid.clone(), "read file")),
             OutEvent::Status {
                 session: sid.clone(),
                 state: AgentState::Thinking,

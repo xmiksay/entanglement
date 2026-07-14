@@ -42,10 +42,10 @@ async fn text_only_turn_replay_fidelity() {
     let sid = SessionId::new("test-text-only");
     let records = vec![
         (
-            Some(entanglement_core::InMsg::Prompt {
-                session: sid.clone(),
-                text: "hello".to_string(),
-            }),
+            Some(entanglement_core::InMsg::prompt(
+                sid.clone(),
+                "hello".to_string(),
+            )),
             OutEvent::Status {
                 session: sid.clone(),
                 state: entanglement_core::AgentState::Thinking,
@@ -89,9 +89,9 @@ async fn text_only_turn_replay_fidelity() {
         "Should have 2 messages (user + assistant)"
     );
     assert_eq!(messages[0].role, entanglement_core::MessageRole::User);
-    assert_eq!(messages[0].text, "hello");
+    assert_eq!(messages[0].text(), "hello");
     assert_eq!(messages[1].role, entanglement_core::MessageRole::Assistant);
-    assert_eq!(messages[1].text, "Hi there");
+    assert_eq!(messages[1].text(), "Hi there");
 }
 
 #[tokio::test]
@@ -99,10 +99,10 @@ async fn single_tool_turn_replay_fidelity() {
     let sid = SessionId::new("test-single-tool");
     let records = vec![
         (
-            Some(entanglement_core::InMsg::Prompt {
-                session: sid.clone(),
-                text: "read file".to_string(),
-            }),
+            Some(entanglement_core::InMsg::prompt(
+                sid.clone(),
+                "read file".to_string(),
+            )),
             OutEvent::Status {
                 session: sid.clone(),
                 state: entanglement_core::AgentState::Thinking,
@@ -152,9 +152,9 @@ async fn single_tool_turn_replay_fidelity() {
         "Should have 3 messages (user, assistant, tool)"
     );
     assert_eq!(messages[0].role, entanglement_core::MessageRole::User);
-    assert_eq!(messages[0].text, "read file");
+    assert_eq!(messages[0].text(), "read file");
     assert_eq!(messages[1].role, entanglement_core::MessageRole::Assistant);
-    assert_eq!(messages[1].text, "");
+    assert_eq!(messages[1].text(), "");
     assert_eq!(messages[1].tool_calls.len(), 1);
     assert_eq!(messages[1].tool_calls[0].id, "call_1");
     assert_eq!(messages[1].tool_calls[0].name, "read");
@@ -163,7 +163,7 @@ async fn single_tool_turn_replay_fidelity() {
         messages[2].tool_call_id.as_ref().unwrap(),
         &"call_1".to_string()
     );
-    assert_eq!(messages[2].text, "file content");
+    assert_eq!(messages[2].text(), "file content");
 }
 
 #[tokio::test]
@@ -171,10 +171,10 @@ async fn multi_tool_turn_replay_fidelity() {
     let sid = SessionId::new("test-multi-tool");
     let records = vec![
         (
-            Some(entanglement_core::InMsg::Prompt {
-                session: sid.clone(),
-                text: "read two files".to_string(),
-            }),
+            Some(entanglement_core::InMsg::prompt(
+                sid.clone(),
+                "read two files".to_string(),
+            )),
             OutEvent::Status {
                 session: sid.clone(),
                 state: entanglement_core::AgentState::Thinking,
@@ -245,8 +245,8 @@ async fn multi_tool_turn_replay_fidelity() {
     assert_eq!(messages[1].tool_calls.len(), 2);
     assert_eq!(messages[1].tool_calls[0].id, "call_1");
     assert_eq!(messages[1].tool_calls[1].id, "call_2");
-    assert_eq!(messages[2].text, "content a");
-    assert_eq!(messages[3].text, "content b");
+    assert_eq!(messages[2].text(), "content a");
+    assert_eq!(messages[3].text(), "content b");
 }
 
 #[tokio::test]
@@ -254,10 +254,10 @@ async fn multi_turn_conversation_replay_fidelity() {
     let sid = SessionId::new("test-multi-turn");
     let records = vec![
         (
-            Some(entanglement_core::InMsg::Prompt {
-                session: sid.clone(),
-                text: "hello".to_string(),
-            }),
+            Some(entanglement_core::InMsg::prompt(
+                sid.clone(),
+                "hello".to_string(),
+            )),
             OutEvent::Status {
                 session: sid.clone(),
                 state: entanglement_core::AgentState::Thinking,
@@ -279,10 +279,10 @@ async fn multi_turn_conversation_replay_fidelity() {
             },
         ),
         (
-            Some(entanglement_core::InMsg::Prompt {
-                session: sid.clone(),
-                text: "how are you?".to_string(),
-            }),
+            Some(entanglement_core::InMsg::prompt(
+                sid.clone(),
+                "how are you?".to_string(),
+            )),
             OutEvent::Status {
                 session: sid.clone(),
                 state: entanglement_core::AgentState::Thinking,
@@ -313,10 +313,10 @@ async fn multi_turn_conversation_replay_fidelity() {
     let messages = session.ctx.messages();
 
     assert_eq!(messages.len(), 4, "Should have 4 messages (2 turns × 2)");
-    assert_eq!(messages[0].text, "hello");
-    assert_eq!(messages[1].text, "Hi");
-    assert_eq!(messages[2].text, "how are you?");
-    assert_eq!(messages[3].text, "Good");
+    assert_eq!(messages[0].text(), "hello");
+    assert_eq!(messages[1].text(), "Hi");
+    assert_eq!(messages[2].text(), "how are you?");
+    assert_eq!(messages[3].text(), "Good");
 }
 
 #[tokio::test]
@@ -324,10 +324,10 @@ async fn profile_changes_during_replay() {
     let sid = SessionId::new("test-profile-change");
     let records = vec![
         (
-            Some(entanglement_core::InMsg::Prompt {
-                session: sid.clone(),
-                text: "hello".to_string(),
-            }),
+            Some(entanglement_core::InMsg::prompt(
+                sid.clone(),
+                "hello".to_string(),
+            )),
             OutEvent::Status {
                 session: sid.clone(),
                 state: entanglement_core::AgentState::Thinking,
@@ -385,10 +385,10 @@ async fn seq_tracking_during_replay() {
     let sid = SessionId::new("test-seq-tracking");
     let records = vec![
         (
-            Some(entanglement_core::InMsg::Prompt {
-                session: sid.clone(),
-                text: "hello".to_string(),
-            }),
+            Some(entanglement_core::InMsg::prompt(
+                sid.clone(),
+                "hello".to_string(),
+            )),
             OutEvent::Status {
                 session: sid.clone(),
                 state: entanglement_core::AgentState::Thinking,
@@ -435,10 +435,10 @@ async fn seq_tracking_during_replay() {
 
 fn prompt_record(sid: &SessionId, text: &str) -> (Option<entanglement_core::InMsg>, OutEvent) {
     (
-        Some(entanglement_core::InMsg::Prompt {
-            session: sid.clone(),
-            text: text.to_string(),
-        }),
+        Some(entanglement_core::InMsg::prompt(
+            sid.clone(),
+            text.to_string(),
+        )),
         OutEvent::Status {
             session: sid.clone(),
             state: entanglement_core::AgentState::Thinking,
@@ -737,10 +737,10 @@ async fn child_session_committed_events_are_not_folded_into_the_root() {
         2,
         "only the root's user + assistant turn is folded"
     );
-    assert_eq!(messages[0].text, "hello root");
-    assert_eq!(messages[1].text, "root reply");
+    assert_eq!(messages[0].text(), "hello root");
+    assert_eq!(messages[1].text(), "root reply");
     assert!(
-        messages.iter().all(|m| m.text != "child task"),
+        messages.iter().all(|m| m.text() != "child task"),
         "child prompt must not appear in the root's context"
     );
 }

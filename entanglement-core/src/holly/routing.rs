@@ -98,7 +98,7 @@ pub(super) fn resume_meta(
 
 pub(super) fn msg_to_cmd(msg: InMsg) -> SessionCmd {
     match msg {
-        InMsg::Prompt { text, .. } => SessionCmd::Prompt(text),
+        InMsg::Prompt { content, .. } => SessionCmd::Prompt(content),
         InMsg::ToolResult {
             request_id, output, ..
         } => SessionCmd::ToolResult(request_id, output),

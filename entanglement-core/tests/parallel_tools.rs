@@ -131,13 +131,7 @@ async fn batch_emits_up_front_and_resolves_out_of_order() {
     let mut sub = holly.subscribe();
     let obs = holly.subscribe();
 
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 
     // All three ToolExec arrive while zero results have been sent — the batch
     // is emitted up front, not one-at-a-time.
@@ -201,13 +195,7 @@ async fn duplicate_and_unknown_results_are_dropped() {
     let mut sub = holly.subscribe();
     let obs = holly.subscribe();
 
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let ids = await_tool_execs(&mut sub, &sid, 1).await;
     assert_eq!(ids, vec!["a"]);
 
@@ -247,7 +235,7 @@ async fn duplicate_and_unknown_results_are_dropped() {
         .filter(|m| m.tool_call_id.as_deref() == Some("a"))
         .collect();
     assert_eq!(tool_msgs.len(), 1, "one tool message per resolved call");
-    assert_eq!(tool_msgs[0].text, "real");
+    assert_eq!(tool_msgs[0].text(), "real");
 }
 
 /// `Stop` while parked mid-batch cancels the turn (no `Done`) but keeps the
@@ -269,13 +257,7 @@ async fn stop_while_parked_keeps_session_and_context() {
     let mut sub = holly.subscribe();
     let obs = holly.subscribe();
 
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let ids = await_tool_execs(&mut sub, &sid, 2).await;
     assert_eq!(ids.len(), 2);
 
@@ -324,10 +306,7 @@ async fn stop_while_parked_keeps_session_and_context() {
     // context (assistant tool-call message + out-a tool message).
     let obs2 = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "again".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "again"))
         .await
         .unwrap();
     let events = collect_for(obs2, &sid, Duration::from_millis(500)).await;
@@ -342,7 +321,7 @@ async fn stop_while_parked_keeps_session_and_context() {
     assert!(
         second
             .iter()
-            .any(|m| m.tool_call_id.as_deref() == Some("a") && m.text == "out-a"),
+            .any(|m| m.tool_call_id.as_deref() == Some("a") && m.text() == "out-a"),
         "already-arrived output survives the cancel in context"
     );
 }
@@ -365,22 +344,13 @@ async fn prompt_while_parked_folds_into_live_turn() {
     let mut sub = holly.subscribe();
     let obs = holly.subscribe();
 
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let ids = await_tool_execs(&mut sub, &sid, 1).await;
     assert_eq!(ids, vec!["a"]);
 
     // Steering arrives while parked — before the result.
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "steer".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "steer"))
         .await
         .unwrap();
     holly
@@ -404,7 +374,7 @@ async fn prompt_while_parked_folds_into_live_turn() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 2, "no third round-trip for the folded prompt");
     assert!(
-        seen[1].iter().any(|m| m.text == "steer"),
+        seen[1].iter().any(|m| m.text() == "steer"),
         "the folded prompt reaches the model on the next round"
     );
 }

@@ -152,13 +152,7 @@ mod tests {
             append(
                 cwd,
                 r,
-                &LogRecord::new(
-                    r.clone(),
-                    LogPayload::In(InMsg::Prompt {
-                        session: r.clone(),
-                        text: "hi".into(),
-                    }),
-                ),
+                &LogRecord::new(r.clone(), LogPayload::In(InMsg::prompt(r.clone(), "hi"))),
             )
             .expect("append");
         }

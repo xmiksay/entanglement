@@ -335,11 +335,11 @@ impl Llm for EchoLlm {
 /// names. With `full`, the full system text is appended on its own line.
 fn echo_reply(req: &LlmRequest<'_>, full: bool) -> String {
     let total = req.messages.len();
-    let users: Vec<&str> = req
+    let users: Vec<String> = req
         .messages
         .iter()
         .filter(|m| m.role == crate::MessageRole::User)
-        .map(|m| m.text.as_str())
+        .map(|m| m.text())
         .collect();
     let tools: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
     let mut reply = format!(

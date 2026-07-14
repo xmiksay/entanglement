@@ -89,13 +89,7 @@ async fn collect_until_done(holly: &Holly, sid: &SessionId, agent: Option<&str>)
             .await
             .unwrap();
     }
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let mut events = Vec::new();
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
         if ev.session() != sid {

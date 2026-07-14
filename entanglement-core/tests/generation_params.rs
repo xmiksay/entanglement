@@ -63,10 +63,7 @@ async fn first_recorded(
 async fn run_one_turn(cfg: EngineConfig) {
     let holly = Holly::spawn(cfg);
     holly
-        .send(InMsg::Prompt {
-            session: SessionId::new("s1"),
-            text: "go".into(),
-        })
+        .send(InMsg::prompt(SessionId::new("s1"), "go"))
         .await
         .unwrap();
 }

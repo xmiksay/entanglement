@@ -65,10 +65,7 @@ async fn supervisor_falls_back_when_build_missing() {
     let mut sub = holly.subscribe();
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "hi".to_string(),
-        })
+        .send(InMsg::prompt(sid.clone(), "hi".to_string()))
         .await
         .expect("send prompt");
 

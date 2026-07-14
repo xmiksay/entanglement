@@ -72,13 +72,7 @@ async fn list_sessions_enumerates_live_sessions() {
     let s2 = SessionId::new("s2");
     let mut sub = holly.subscribe();
     for s in [&s1, &s2] {
-        holly
-            .send(InMsg::Prompt {
-                session: s.clone(),
-                text: "hi".into(),
-            })
-            .await
-            .unwrap();
+        holly.send(InMsg::prompt(s.clone(), "hi")).await.unwrap();
     }
     let corr = SessionId::new("query");
     holly
@@ -110,13 +104,7 @@ async fn close_session_terminates_and_drops_from_list() {
     let holly = Holly::spawn(factory(vec![]));
     let s1 = SessionId::new("s1");
     let mut sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: s1.clone(),
-            text: "hi".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(s1.clone(), "hi")).await.unwrap();
     // Let the turn finish before closing, so `SessionEnded` follows `Done`.
     recv_until(
         &mut sub,
@@ -204,10 +192,7 @@ async fn close_session_cascades_to_descendants() {
 
     // Materialize the parent as a live root session.
     holly
-        .send(InMsg::Prompt {
-            session: parent.clone(),
-            text: "hi".into(),
-        })
+        .send(InMsg::prompt(parent.clone(), "hi"))
         .await
         .unwrap();
     recv_until(
@@ -336,13 +321,7 @@ async fn dummy_turn_streams_text_and_done() {
     }]));
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "hi".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
     let events = collect(sub, &sid).await;
 
     assert!(events
@@ -371,13 +350,7 @@ async fn every_host_tool_round_trips_through_toolexec() {
     });
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
 
     assert!(
@@ -419,10 +392,7 @@ async fn update_plan_and_update_tasks_round_trip_as_tool_exec() {
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "track".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "track"))
         .await
         .unwrap();
 
@@ -515,20 +485,8 @@ async fn two_sessions_are_independent() {
     let s1 = SessionId::new("s1");
     let s2 = SessionId::new("s2");
     let sub1 = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: s1.clone(),
-            text: "hi".into(),
-        })
-        .await
-        .unwrap();
-    holly
-        .send(InMsg::Prompt {
-            session: s2.clone(),
-            text: "hi".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(s1.clone(), "hi")).await.unwrap();
+    holly.send(InMsg::prompt(s2.clone(), "hi")).await.unwrap();
 
     let e1 = collect(sub1, &s1).await;
     assert!(e1

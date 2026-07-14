@@ -8,7 +8,8 @@ One set of serde-tagged types crosses every transport:
 
 ```
 #[serde(tag = "kind", rename_all = "snake_case")]
-InMsg    = Prompt{session,text} | Approve{session,request_id,scope?}  // approval →
+InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,scope?}  // approval →
+         //   content: [{type:text,text} | {type:image,source:{type:base64,media_type,data}}]; legacy `text:"…"` still deserializes (#197, ADR-0064)
          | Reject{session,request_id,reason?}                         // runtime, not core (#59)
          //   scope: once (default) | session | always  — persisted grants (#174, ADR-0052)
          | ToolResult{session,request_id,output}   // runtime → core: tool ran (#58)

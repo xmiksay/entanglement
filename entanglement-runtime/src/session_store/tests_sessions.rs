@@ -60,18 +60,12 @@ fn multi_session_interleaving() {
 
     let root_record = LogRecord::new(
         root_id.clone(),
-        LogPayload::In(InMsg::Prompt {
-            session: root_id.clone(),
-            text: "root".to_string(),
-        }),
+        LogPayload::In(InMsg::prompt(root_id.clone(), "root".to_string())),
     );
 
     let sub_record = LogRecord::new(
         sub_id.clone(),
-        LogPayload::In(InMsg::Prompt {
-            session: sub_id.clone(),
-            text: "sub".to_string(),
-        }),
+        LogPayload::In(InMsg::prompt(sub_id.clone(), "sub".to_string())),
     );
 
     append(cwd, &root_id, &root_record).expect("append should succeed");

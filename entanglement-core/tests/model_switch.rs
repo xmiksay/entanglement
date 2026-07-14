@@ -104,13 +104,7 @@ async fn set_model_rebinds_backend_and_retargets_requests() {
 
     // First turn runs under the startup backend (no per-request model pin, the
     // profile has none) with the startup generation.
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "one".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "one")).await.unwrap();
     recv_until(&mut sub, |e| matches!(e, OutEvent::Done { .. })).await;
 
     // Switch to a different provider/model mid-session.
@@ -139,13 +133,7 @@ async fn set_model_rebinds_backend_and_retargets_requests() {
 
     // Second turn must hit the *switched* backend, naming the new model and
     // carrying the resolved generation for that model.
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "two".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "two")).await.unwrap();
     recv_until(&mut sub, |e| matches!(e, OutEvent::Done { .. })).await;
 
     let start = start_seen.lock().unwrap().clone();

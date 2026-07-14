@@ -62,7 +62,7 @@ impl Session {
             }
             max_seq = max_seq.max(out_event.seq());
 
-            if let Some(InMsg::Prompt { text, .. }) = in_msg {
+            if let Some(InMsg::Prompt { content, .. }) = in_msg {
                 if !pending_text.is_empty() || !pending_tools.is_empty() {
                     session
                         .ctx
@@ -75,7 +75,7 @@ impl Session {
                 }
                 pending_tool_outputs.clear();
 
-                session.ctx.push_user(text.clone());
+                session.ctx.push_user_content(content.clone());
             }
 
             match out_event {

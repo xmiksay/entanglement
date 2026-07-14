@@ -86,13 +86,7 @@ fn spawn_with_propose_plan_call(input: &str) -> Holly {
 /// all-`Allow` profile — proving `propose_plan` force-parks regardless.
 async fn await_request(holly: &Holly, sid: &SessionId) -> String {
     let mut watch = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
         if let OutEvent::ToolRequest {
             request_id, tool, ..

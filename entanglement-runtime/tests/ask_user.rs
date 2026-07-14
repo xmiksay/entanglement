@@ -90,13 +90,7 @@ async fn ask_user_emits_question_and_folds_answer_back() {
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
     let mut watch = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 
     // The executor surfaces the question with the parsed options.
     let mut request_id = None;

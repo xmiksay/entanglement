@@ -153,10 +153,7 @@ async fn load_skill_then_read_a_substituted_ref() {
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "use the demo skill".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "use the demo skill"))
         .await
         .unwrap();
 
@@ -263,10 +260,7 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
         .unwrap();
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "try the demo skill".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "try the demo skill"))
         .await
         .unwrap();
 

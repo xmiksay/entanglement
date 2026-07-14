@@ -243,8 +243,8 @@ protocol surface, so pipe/WS heads implement it identically:
 1. mint a fresh `SessionId::new_uuid()`;
 2. `SetAgent { session: new, agent: "build" }` — lazy session creation starts a
    **root** `build` session;
-3. `Prompt { session: new, text: wrap(plan) }` — the accepted plan verbatim as the
-   first user message;
+3. `Prompt { session: new, content: [text wrap(plan)] }` (via `InMsg::prompt`) —
+   the accepted plan verbatim as the first user message;
 4. switch the head's active view to the new session.
 
 The build session is a **root, not a child** of the plan session: a parent link

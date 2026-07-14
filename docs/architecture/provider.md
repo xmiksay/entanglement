@@ -7,8 +7,10 @@
 The `Llm` **trait** — together with its DTOs (`LlmRequest`/`LlmResponse`/
 `LlmEvent`/`LlmStream`, `LlmFactory`, `ToolCall`, `ToolSpec`,
 `stream_from_response`), the stub backends (`DummyLlm`/`EchoLlm`, in
-`src/llm.rs`), and the wire message types (`Message`/`MessageRole`, in
-`src/message.rs`) — lives **in `entanglement-provider`**. Since
+`src/llm.rs`), and the wire message types (`Message`/`MessageRole` plus the
+multimodal `ContentPart`/`ImageSource`, in `src/message.rs` — a `Message`'s body
+is `content: Vec<ContentPart>`, #197/[ADR-0064](../adr/0064-message-content-blocks.md))
+— lives **in `entanglement-provider`**. Since
 [ADR-0053](../adr/0053-invert-core-provider-seam.md) inverted the seam, the
 provider is a **leaf crate** (no `entanglement-*` deps) that owns this LLM ABI;
 `entanglement-core` *depends on* provider, consumes the `Llm` trait from its turn
@@ -70,6 +72,11 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   fragments). `anthropic_factory(key, model, rpm)`.
 - `ToolSpec.schema` surfaces as `input_schema` (Anthropic) / `parameters`
   (OpenAI-compat); `Message.tool_call_id` → `tool_use_id` / `tool_call_id`.
+- A `Message`'s `content: Vec<ContentPart>` renders per wire (#197,
+  [ADR-0064](../adr/0064-message-content-blocks.md)): text-only user content stays
+  a plain string (OpenAI) / string content (Anthropic); an image part switches to
+  the block array — OpenAI `image_url` with a `data:` URL, Anthropic an `image`
+  block with a base64 `source` (incl. image `tool_result`s, the #221 path).
 
 **Resilience the provider layer owns — per endpoint** (#217,
 [ADR-0050](../adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)): one

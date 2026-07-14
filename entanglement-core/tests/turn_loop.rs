@@ -105,10 +105,7 @@ async fn prompt_arriving_during_streaming_is_stashed_and_replayed() {
     let sub = holly.subscribe();
 
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "first".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "first"))
         .await
         .unwrap();
 
@@ -117,10 +114,7 @@ async fn prompt_arriving_during_streaming_is_stashed_and_replayed() {
     // inbox before the streaming consumer's first try_recv poll.
     tokio::time::sleep(Duration::from_millis(20)).await;
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "second".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "second"))
         .await
         .unwrap();
 
@@ -173,10 +167,7 @@ async fn prompt_arriving_mid_turn_folds_into_the_live_turn() {
     let mut sub = holly.subscribe();
 
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "first".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "first"))
         .await
         .unwrap();
 
@@ -184,10 +175,7 @@ async fn prompt_arriving_mid_turn_folds_into_the_live_turn() {
     // so it lands in the inbox and is stashed mid-turn.
     tokio::time::sleep(Duration::from_millis(20)).await;
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "steer".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "steer"))
         .await
         .unwrap();
 
@@ -260,10 +248,7 @@ async fn runaway_tool_loop_is_bounded_within_a_single_prompt() {
     let mut sub = holly.subscribe();
 
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "spin".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "spin"))
         .await
         .unwrap();
 
@@ -349,10 +334,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
     let sub = holly.subscribe();
 
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "first".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "first"))
         .await
         .unwrap();
     // Inject SetAgent mid-turn. Before ADR-0018 this was silently dropped;
@@ -388,10 +370,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
 
     // Now send a real follow-up Prompt; it runs on the still-alive session.
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "second".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "second"))
         .await
         .unwrap();
 

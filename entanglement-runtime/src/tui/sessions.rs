@@ -166,8 +166,8 @@ impl SessionRegistry {
         let mut view = SessionView::new();
         for record in records {
             match &record.payload {
-                LogPayload::In(InMsg::Prompt { text, .. }) => {
-                    view.record_user_message(text.clone());
+                LogPayload::In(InMsg::Prompt { content, .. }) => {
+                    view.record_user_message(entanglement_core::content_text(content));
                 }
                 LogPayload::In(_) => {}
                 LogPayload::Out(event) => {

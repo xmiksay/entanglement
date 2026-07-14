@@ -303,8 +303,10 @@ async fn supervisor(
             tokio::spawn(
                 async move { session_loop(sid, srx, ev, cfg2, profile, None, parent).await },
             );
-            // Queue the initial prompt; the child drains it after its lifecycle events.
-            let _ = stx.send(SessionCmd::Prompt(prompt.clone())).await;
+            // Queue the initial prompt; the child drains it after its lifecycle
+            // events. Spawn prompts are text-only (#197).
+            let content = vec![entanglement_provider::ContentPart::text(prompt.clone())];
+            let _ = stx.send(SessionCmd::Prompt(content)).await;
             sessions.insert(child.clone(), stx);
             continue;
         }

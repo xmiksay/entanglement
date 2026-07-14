@@ -82,13 +82,7 @@ async fn run(cfg: EngineConfig) -> Vec<OutEvent> {
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "hi".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
     collect(sub, &sid).await
 }
 

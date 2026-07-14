@@ -28,10 +28,7 @@ pub async fn run_one(
             .await?;
     }
     holly
-        .send(InMsg::Prompt {
-            session: session.clone(),
-            text: prompt.to_string(),
-        })
+        .send(InMsg::prompt(session.clone(), prompt.to_string()))
         .await?;
 
     let stdout = std::io::stdout();

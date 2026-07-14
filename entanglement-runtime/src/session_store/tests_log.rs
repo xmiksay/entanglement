@@ -47,10 +47,7 @@ fn append_and_read_roundtrip() {
 
     let record1 = LogRecord::new(
         session_id.clone(),
-        LogPayload::In(InMsg::Prompt {
-            session: session_id.clone(),
-            text: "hello".to_string(),
-        }),
+        LogPayload::In(InMsg::prompt(session_id.clone(), "hello".to_string())),
     );
 
     let record2 = LogRecord::new(
@@ -70,7 +67,9 @@ fn append_and_read_roundtrip() {
     assert_eq!(records[1].session, session_id);
 
     match &records[0].payload {
-        LogPayload::In(InMsg::Prompt { text, .. }) => assert_eq!(text, "hello"),
+        LogPayload::In(InMsg::Prompt { content, .. }) => {
+            assert_eq!(entanglement_core::content_text(content), "hello")
+        }
         _ => panic!("Expected Prompt"),
     }
 
@@ -86,10 +85,7 @@ fn pair_records_associates_each_prompt_with_following_events() {
     let prompt = |t: &str| {
         LogRecord::new(
             sid.clone(),
-            LogPayload::In(InMsg::Prompt {
-                session: sid.clone(),
-                text: t.to_string(),
-            }),
+            LogPayload::In(InMsg::prompt(sid.clone(), t.to_string())),
         )
     };
     let text = |seq: u64, t: &str| {
@@ -127,15 +123,15 @@ fn pair_records_associates_each_prompt_with_following_events() {
     // First prompt pairs with the first out event; it's consumed so the
     // trailing events of that turn pair with `None`.
     match &paired[0] {
-        (Some(InMsg::Prompt { text, .. }), OutEvent::TextDelta { .. }) => {
-            assert_eq!(text, "hi")
+        (Some(InMsg::Prompt { content, .. }), OutEvent::TextDelta { .. }) => {
+            assert_eq!(entanglement_core::content_text(content), "hi")
         }
         other => panic!("unexpected pairing: {other:?}"),
     }
     assert!(matches!(paired[1], (None, OutEvent::Done { .. })));
     match &paired[2] {
-        (Some(InMsg::Prompt { text, .. }), OutEvent::TextDelta { .. }) => {
-            assert_eq!(text, "again")
+        (Some(InMsg::Prompt { content, .. }), OutEvent::TextDelta { .. }) => {
+            assert_eq!(entanglement_core::content_text(content), "again")
         }
         other => panic!("unexpected pairing: {other:?}"),
     }
@@ -147,10 +143,7 @@ fn pair_records_drops_trailing_inbound_without_output() {
     let sid = SessionId::new("s");
     let records = vec![LogRecord::new(
         sid.clone(),
-        LogPayload::In(InMsg::Prompt {
-            session: sid.clone(),
-            text: "no reply yet".to_string(),
-        }),
+        LogPayload::In(InMsg::prompt(sid.clone(), "no reply yet".to_string())),
     )];
     assert!(pair_records(&records).is_empty());
 }
@@ -163,10 +156,7 @@ fn read_skips_corrupt_lines() {
 
     let valid_record = LogRecord::new(
         session_id.clone(),
-        LogPayload::In(InMsg::Prompt {
-            session: session_id.clone(),
-            text: "valid".to_string(),
-        }),
+        LogPayload::In(InMsg::prompt(session_id.clone(), "valid".to_string())),
     );
 
     append(cwd, &session_id, &valid_record).expect("append should succeed");
@@ -194,10 +184,7 @@ fn read_tolerates_truncated_tail_line() {
         &session_id,
         &LogRecord::new(
             session_id.clone(),
-            LogPayload::In(InMsg::Prompt {
-                session: session_id.clone(),
-                text: "kept".to_string(),
-            }),
+            LogPayload::In(InMsg::prompt(session_id.clone(), "kept".to_string())),
         ),
     )
     .expect("append should succeed");
@@ -226,10 +213,7 @@ fn read_rejects_interior_corruption() {
         &session_id,
         &LogRecord::new(
             session_id.clone(),
-            LogPayload::In(InMsg::Prompt {
-                session: session_id.clone(),
-                text: "one".to_string(),
-            }),
+            LogPayload::In(InMsg::prompt(session_id.clone(), "one".to_string())),
         ),
     )
     .expect("append should succeed");

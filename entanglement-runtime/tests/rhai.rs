@@ -157,13 +157,7 @@ async fn prompt(holly: &Holly, sid: &SessionId, agent: &str) {
         })
         .await
         .unwrap();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 }
 
 #[tokio::test]

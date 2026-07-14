@@ -127,9 +127,9 @@ async fn run_round(
     let mut i = 0;
     while i < stash.len() {
         if matches!(stash[i], SessionCmd::Prompt(_)) {
-            if let Some(SessionCmd::Prompt(text)) = stash.remove(i) {
+            if let Some(SessionCmd::Prompt(content)) = stash.remove(i) {
                 tracing::debug!("folding mid-turn prompt into live context");
-                s.ctx.push_user(text);
+                s.ctx.push_user_content(content);
             }
         } else {
             i += 1;
