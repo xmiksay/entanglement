@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, MessageRole, OutEvent, Permission, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    MessageRole, OutEvent, Permission, SessionId, ToolCall,
 };
 use std::sync::Mutex;
 
@@ -254,7 +254,7 @@ async fn spawn_under_a_file_defined_profile() {
     assert!(profiles.get("worker").is_some(), "worker loaded from disk");
 
     let cfg = EngineConfig {
-        llm_factory: Arc::new(|| LlmSession::new(Box::new(DelegateLlm))),
+        llm_factory: Arc::new(|| Box::new(DelegateLlm) as Box<dyn Llm>),
         profiles: profiles.clone(),
         ..EngineConfig::default()
     };

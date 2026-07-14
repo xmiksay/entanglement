@@ -19,8 +19,7 @@ pub use holly::{ConfigError, EngineConfig, Holly, ProfileRegistry};
 // the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
 pub use entanglement_provider::{
     stream_from_response, DummyLlm, EchoLlm, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse,
-    LlmSession, LlmStream, Message, MessageRole, ModelPricing, StopReason, ToolCall, ToolSpec,
-    Usage,
+    LlmStream, Message, MessageRole, ModelPricing, StopReason, ToolCall, ToolSpec, Usage,
 };
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, OutEvent,

@@ -10,8 +10,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::host::{host_tools, BashTool, CallTool};
 use entanglement_runtime::tool_runner::spawn_tool_executor;
@@ -110,7 +110,7 @@ async fn read_tool_runs_through_engine_under_build_profile() {
     let tools = host_tools(root.clone());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
@@ -186,7 +186,7 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
     let tools = host_tools(root.clone());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
@@ -288,7 +288,7 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
     let tools = host_tools(root.clone());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
@@ -406,7 +406,7 @@ async fn write_tool_denied_under_explore_profile() {
     let tools = host_tools(root.clone());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
@@ -485,7 +485,7 @@ async fn write_tool_masked_under_plan_profile() {
     let tools = host_tools(root.clone());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
@@ -560,7 +560,7 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     tools.register(BashTool::new(root.clone()));
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
@@ -641,7 +641,7 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
     tools.register(CallTool::new(root.clone()));
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to

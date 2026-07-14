@@ -169,35 +169,20 @@ pub trait Llm: Send {
 
 /// Factory that produces a fresh per-session LLM instance. Sessions run
 /// concurrently, so each gets its own (cheaply-clonable) backend.
-pub type LlmFactory = std::sync::Arc<dyn Fn() -> LlmSession + Send + Sync>;
-
-/// Provider-owned "live session/connection handle" — the object a session holds
-/// for its LLM backend, distinct from `Context` (the conversation history), which
-/// lives in `entanglement-core`. It is a newtype around `Box<dyn Llm>`; the boxed
-/// backend carries the provider layer's pool/retry/rate-limit context, which since
-/// #217 is **keyed per endpoint** (RPM budget + `Retry-After` window) rather than a
-/// single global throttle — so the connection state this handle references is
-/// isolated per API endpoint.
-pub struct LlmSession {
-    inner: Box<dyn Llm>,
-}
-
-impl LlmSession {
-    pub fn new(llm: Box<dyn Llm>) -> Self {
-        Self { inner: llm }
-    }
-
-    pub fn inner_mut(&mut self) -> &mut dyn Llm {
-        &mut *self.inner
-    }
-}
-
-#[async_trait]
-impl Llm for LlmSession {
-    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        self.inner.stream(req).await
-    }
-}
+///
+/// A session simply owns its `Box<dyn Llm>`; there is deliberately **no
+/// per-session wrapper**. The provider layer's resilience state (connection pool,
+/// retry/backoff, RPM budget + `Retry-After` window) is **keyed per endpoint**,
+/// not per session, since #217 / [ADR-0050]: sessions talking to the same endpoint
+/// share one budget so a throttled endpoint doesn't starve siblings. There is thus
+/// no honest session-scoped state for a handle to hold — the earlier `LlmSession`
+/// newtype was an empty placeholder and was collapsed away (#195 /
+/// [ADR-0062]). Re-introduce the newtype only when genuinely per-session state
+/// (e.g. a session-pinned model override or conversation-scoped budget) arrives.
+///
+/// [ADR-0050]: ../../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md
+/// [ADR-0062]: ../../docs/adr/0062-collapse-llmsession-placeholder-newtype.md
+pub type LlmFactory = std::sync::Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>;
 
 /// Deterministic stub backend. Emits a configured reply as a single text chunk
 /// then `Finish` — ideal for bootstrap wiring and unit tests.

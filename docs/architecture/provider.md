@@ -5,7 +5,7 @@
 ## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md), [ADR-0053](../adr/0053-invert-core-provider-seam.md)
 
 The `Llm` **trait** — together with its DTOs (`LlmRequest`/`LlmResponse`/
-`LlmEvent`/`LlmStream`, `LlmSession`, `LlmFactory`, `ToolCall`, `ToolSpec`,
+`LlmEvent`/`LlmStream`, `LlmFactory`, `ToolCall`, `ToolSpec`,
 `stream_from_response`), the stub backends (`DummyLlm`/`EchoLlm`, in
 `src/llm.rs`), and the wire message types (`Message`/`MessageRole`, in
 `src/message.rs`) — lives **in `entanglement-provider`**. Since
@@ -92,9 +92,11 @@ a hung one dies fast. Both `OpenAiLlm` and `AnthropicLlm` use this one helper.
 honoring `Retry-After` per endpoint; before #217 those responses came back as
 `reqwest::Ok` and were never retried (#193). `RetryConfig` (`max_attempts`,
 `initial_backoff`, `max_backoff`, `rpm`) tunes it; `HttpClient::with_config` +
-`RetryConfig::no_retry()` build variants (tests use the latter). The
-provider-owned `LlmSession` handle (#195) references this per-endpoint state
-through its boxed backend.
+`RetryConfig::no_retry()` build variants (tests use the latter). This
+per-endpoint state is the reason a session carries **no** per-session connection
+handle: the `LlmSession` newtype was collapsed to a plain `Box<dyn Llm>` (#195,
+[ADR-0062](../adr/0062-collapse-llmsession-placeholder-newtype.md)) — resilience
+belongs to the endpoint, shared across sessions, not to the conversation.
 
 **Request-body logging is opt-in and symmetric** (#165): every client emits a
 `debug!` *summary* per request (model, message/tool counts — no payload). The

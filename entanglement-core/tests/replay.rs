@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Llm, LlmRequest, LlmResponse,
-    LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
+    LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
 };
 
 /// An LLM that replays a scripted list of responses, in order.
@@ -32,7 +32,7 @@ impl Llm for ScriptedLlm {
 
 fn factory(_responses: Vec<LlmResponse>) -> EngineConfig {
     EngineConfig {
-        llm_factory: Arc::new(move || LlmSession::new(Box::new(ScriptedLlm::new(vec![])))),
+        llm_factory: Arc::new(move || Box::new(ScriptedLlm::new(vec![])) as Box<dyn Llm>),
         ..EngineConfig::default()
     }
 }

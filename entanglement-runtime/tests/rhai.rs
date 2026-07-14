@@ -12,8 +12,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmSession, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
-    SessionId, ToolCall,
+    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId,
+    ToolCall,
 };
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::tool_names::RHAI_TOOL;
@@ -89,7 +89,7 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
     ]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         profiles: profiles.clone(),
         ..EngineConfig::default()

@@ -11,17 +11,21 @@ round-trip), `session/turn_state.rs` (the parked-turn state), and
 pure state reconstruction.
 
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
-token estimate), an `LlmSession` handle (from `EngineConfig::llm_factory`), the
+token estimate), an LLM backend `llm: Box<dyn Llm>` (from
+`EngineConfig::llm_factory`), the
 active `AgentProfile`, a per-session `seq`, and `turn: Option<TurnState>` — the
 in-flight turn as **explicit, serde-serializable state** (#270,
 [ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)): `Some`
 while a turn is live (streaming or parked on unresolved tool calls), `None`
 when idle.
-The `LlmSession` is a **provider-owned session/connection handle**
-([ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): the *conversation
-history* stays in core's `Context`, but the *connection* state (pool, retry,
-rate-limit budget) belongs to the provider. The factory hands core a pooled
-session handle that wraps the streaming backend.
+The backend is a **plain `Box<dyn Llm>`, not a per-session handle**
+([ADR-0062](../adr/0062-collapse-llmsession-placeholder-newtype.md), collapsing
+the former `LlmSession` placeholder): the *conversation history* stays in core's
+`Context`, and the *connection* state (pool, retry, rate-limit budget) belongs to
+the provider — but that state is keyed **per endpoint** and shared across
+sessions (#217, [ADR-0050](../adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)),
+so there is no honest session-scoped state to wrap. The factory hands core the
+streaming backend directly.
 
 Turn loop (`run_round`, driven by `drive_turn`): send `LlmRequest { system,
 model, messages, tools }` → consume the streamed `LlmEvent`s (emit `TextDelta`

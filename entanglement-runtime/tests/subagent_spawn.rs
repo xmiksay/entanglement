@@ -10,8 +10,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmSession, LlmStream, MessageRole, OutEvent, Permission, PermissionProfile,
-    SessionId, ToolCall,
+    LlmResponse, LlmStream, MessageRole, OutEvent, Permission, PermissionProfile, SessionId,
+    ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::ToolRegistry;
@@ -106,7 +106,7 @@ impl Llm for SpawnPollLlm {
 
 fn config(make: impl Fn() -> SpawnPollLlm + Send + Sync + 'static) -> EngineConfig {
     EngineConfig {
-        llm_factory: Arc::new(move || LlmSession::new(Box::new(make()))),
+        llm_factory: Arc::new(move || Box::new(make()) as Box<dyn Llm>),
         // Core carries only `build` now (#201); spawn tests target `explore`/`plan`,
         // so the engine needs the full runtime trio.
         profiles: entanglement_runtime::agents::built_in_registry(),
@@ -263,7 +263,7 @@ impl Llm for FanOutLlm {
 #[tokio::test]
 async fn two_sub_agents_fan_out_and_both_answers_are_polled() {
     let cfg = EngineConfig {
-        llm_factory: Arc::new(|| LlmSession::new(Box::new(FanOutLlm))),
+        llm_factory: Arc::new(|| Box::new(FanOutLlm) as Box<dyn Llm>),
         // Core carries only `build` now (#201); the spawn targets need the trio.
         profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
@@ -334,7 +334,7 @@ async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
     let mut profiles = entanglement_runtime::agents::built_in_registry();
     profiles.insert(all_mode_worker());
     let cfg = EngineConfig {
-        llm_factory: Arc::new(|| LlmSession::new(Box::new(RecursiveLlm))),
+        llm_factory: Arc::new(|| Box::new(RecursiveLlm) as Box<dyn Llm>),
         profiles,
         ..EngineConfig::default()
     };
@@ -470,7 +470,7 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
     });
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ExploreThenSpawnLlm { tool: leaf_tool }))
+            Box::new(ExploreThenSpawnLlm { tool: leaf_tool }) as Box<dyn Llm>
         }),
         profiles: profiles.clone(),
         ..EngineConfig::default()
@@ -573,7 +573,7 @@ impl Llm for BlockingAgentLlm {
 #[tokio::test]
 async fn agent_blocks_and_returns_child_answer_in_one_call() {
     let cfg = EngineConfig {
-        llm_factory: Arc::new(|| LlmSession::new(Box::new(BlockingAgentLlm))),
+        llm_factory: Arc::new(|| Box::new(BlockingAgentLlm) as Box<dyn Llm>),
         // Core carries only `build` now (#201); the spawn targets need the trio.
         profiles: entanglement_runtime::agents::built_in_registry(),
         ..EngineConfig::default()
@@ -685,10 +685,10 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
     let (r, p) = (release.clone(), poll_id.clone());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(StopThenPollLlm {
+            Box::new(StopThenPollLlm {
                 release: r.clone(),
                 poll_id: p.clone(),
-            }))
+            }) as Box<dyn Llm>
         }),
         // Core carries only `build` now (#201); the spawn target needs the trio.
         profiles: entanglement_runtime::agents::built_in_registry(),
@@ -871,10 +871,10 @@ async fn spawn_outside_the_allowlist_is_refused() {
     profiles.insert(subagent_helper());
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| {
-            LlmSession::new(Box::new(SpawnPollLlm {
+            Box::new(SpawnPollLlm {
                 agent_spawn: "helper",
                 child_answer: "unused",
-            }))
+            }) as Box<dyn Llm>
         }),
         profiles: profiles.clone(),
         ..EngineConfig::default()
@@ -900,10 +900,10 @@ async fn primary_with_can_spawn_false_cannot_spawn() {
     profiles.insert(build);
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| {
-            LlmSession::new(Box::new(SpawnPollLlm {
+            Box::new(SpawnPollLlm {
                 agent_spawn: "explore",
                 child_answer: "unused",
-            }))
+            }) as Box<dyn Llm>
         }),
         profiles: profiles.clone(),
         ..EngineConfig::default()

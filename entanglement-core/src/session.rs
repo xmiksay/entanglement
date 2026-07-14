@@ -31,7 +31,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::context::Context;
 use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::LlmSession;
+use entanglement_provider::Llm;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use emit::{emit_tool_exec, emit_tool_output, next_seq};
@@ -51,7 +51,10 @@ pub(crate) enum SessionCmd {
 }
 
 /// Mutable per-session loop + turn state (#61). Holds the conversation
-/// [`Context`], the provider session handle (`llm`, #55), the active profile,
+/// [`Context`], the provider LLM backend (`llm`, a plain `Box<dyn Llm>` — the
+/// resilience state it references is keyed per endpoint in the provider, not per
+/// session, so there is no session-scoped handle to wrap it, #195/ADR-0062), the
+/// active profile,
 /// and the emit sequence — nothing pointing at the filesystem or a fixed tool
 /// set. Plan/task snapshots are the runtime's display state, not engine state
 /// (#231, ADR-0049), so the session carries neither. The tool schemas advertised
@@ -59,7 +62,7 @@ pub(crate) enum SessionCmd {
 /// [`EngineConfig::tool_specs`] at turn time (see [`turn`]).
 pub struct Session {
     pub ctx: Context,
-    pub llm: LlmSession,
+    pub llm: Box<dyn Llm>,
     pub profile: AgentProfile,
     pub seq: u64,
     pub parent: Option<SessionId>,

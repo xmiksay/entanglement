@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_names::ASK_USER_TOOL;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
@@ -67,7 +67,7 @@ fn spawn_with_ask_user_call(input: &str) -> Holly {
     ]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };

@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, SessionId,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, SessionId,
 };
 use entanglement_runtime::agents::load_registry;
 use entanglement_runtime::system_prompt::{EnvBlock, PromptContext, SkillDisclosure};
@@ -103,9 +103,9 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
     let seen_factory = seen.clone();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(RecordingLlm {
+            Box::new(RecordingLlm {
                 seen: seen_factory.clone(),
-            }))
+            }) as Box<dyn Llm>
         }),
         profiles,
         ..EngineConfig::default()

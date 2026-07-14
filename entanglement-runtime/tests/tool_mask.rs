@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmSession,
-    LlmStream, OutEvent, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -75,7 +75,7 @@ fn spawn_with_edit_call() -> Holly {
     ]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
-            LlmSession::new(Box::new(ScriptedLlm::new((*scripted).clone())))
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve the `SetAgent { agent: "explore" }` below.
