@@ -91,13 +91,7 @@ async fn build_profile_advertises_edit() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let holly = Holly::spawn(recording_config(seen.clone()));
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let names = first_recorded(&seen).await;
     assert!(names.iter().any(|n| n == "read"), "got {names:?}");
     assert!(names.iter().any(|n| n == "edit"), "got {names:?}");
@@ -116,10 +110,7 @@ async fn explore_profile_hides_edit_via_set_agent() {
         .await
         .unwrap();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "look around".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "look around"))
         .await
         .unwrap();
     let names = first_recorded(&seen).await;
@@ -152,10 +143,7 @@ async fn spawned_explore_child_request_carries_no_edit_spec() {
 
     // Start the parent so it exists as the spawn target.
     holly
-        .send(InMsg::Prompt {
-            session: parent.clone(),
-            text: "start".into(),
-        })
+        .send(InMsg::prompt(parent.clone(), "start"))
         .await
         .unwrap();
 

@@ -108,13 +108,7 @@ async fn stop_aborts_a_running_tool_task() {
     let holly = spawn_blocking_bash(started.clone(), completed.clone());
     let sid = SessionId::new("s1");
 
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 
     // Wait for the tool to actually be running, then stop the session.
     let mut waited = 0;

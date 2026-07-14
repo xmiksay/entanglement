@@ -32,10 +32,7 @@ pub async fn pipe(holly: &Holly, default_session: &SessionId) -> Result<()> {
                 }
                 Err(e) => {
                     let _ = holly2
-                        .send(InMsg::Prompt {
-                            session: default_session.clone(),
-                            text: trimmed.to_string(),
-                        })
+                        .send(InMsg::prompt(default_session.clone(), trimmed.to_string()))
                         .await;
                     eprintln!("note: treated line as prompt for default session ({e})");
                 }

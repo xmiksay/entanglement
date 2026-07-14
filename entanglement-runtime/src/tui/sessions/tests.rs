@@ -254,10 +254,7 @@ fn restore_from_records_rebuilds_transcript_and_switches() {
 
     let prompt = LogRecord::new(
         restored.clone(),
-        LogPayload::In(InMsg::Prompt {
-            session: restored.clone(),
-            text: "My name is Miksa".to_string(),
-        }),
+        LogPayload::In(InMsg::prompt(restored.clone(), "My name is Miksa")),
     );
     let reply = LogRecord::new(
         restored.clone(),

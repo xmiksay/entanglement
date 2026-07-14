@@ -142,13 +142,7 @@ async fn allow_runs_without_approval() {
     let holly = spawn_with_bash_call("echo hi");
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
 
     assert!(
@@ -194,13 +188,7 @@ async fn deny_refuses_without_request() {
         .await
         .unwrap();
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "rm".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "rm")).await.unwrap();
     let events = collect(sub, &sid).await;
 
     assert!(
@@ -237,13 +225,7 @@ async fn ask_emits_request_then_runs_on_approve() {
         .unwrap();
     let sub = holly.subscribe();
     let mut watch = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "run".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
 
     let mut got_request = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
@@ -307,13 +289,7 @@ async fn argument_scoped_allow_runs_matching_command_without_approval() {
         .await
         .unwrap();
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
 
     assert!(
@@ -346,13 +322,7 @@ async fn argument_scoped_deny_blocks_matching_command() {
         .await
         .unwrap();
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "rm".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "rm")).await.unwrap();
     let events = collect(sub, &sid).await;
 
     assert!(
@@ -386,10 +356,7 @@ async fn argument_scoped_falls_through_to_coarse_ask() {
         .unwrap();
     let mut watch = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "list".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "list"))
         .await
         .unwrap();
 
@@ -420,13 +387,7 @@ async fn ask_rejected_reports_rejection() {
         .unwrap();
     let sub = holly.subscribe();
     let mut watch = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "run".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
 
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
         if matches!(&ev, OutEvent::ToolRequest { .. }) {
@@ -511,13 +472,7 @@ async fn session_grant_skips_the_second_prompt() {
     // Turn 1: the Ask prompts; approve it for the session.
     let sub1 = holly.subscribe();
     let mut watch = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "run".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
     let mut asked = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
         if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
@@ -545,10 +500,7 @@ async fn session_grant_skips_the_second_prompt() {
     // Turn 2: the identical call must NOT prompt again — the session grant runs it.
     let sub2 = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "run again".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "run again"))
         .await
         .unwrap();
     let turn2 = collect(sub2, &sid).await;

@@ -31,7 +31,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::context::Context;
 use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::{GenerationParams, Llm};
+use entanglement_provider::{ContentPart, GenerationParams, Llm};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use emit::{emit_tool_exec, emit_tool_output, next_seq};
@@ -40,7 +40,7 @@ use turn::drive_turn;
 /// Commands routed to a single session by the supervisor (InMsg minus session id).
 #[derive(Debug, Clone)]
 pub(crate) enum SessionCmd {
-    Prompt(String),
+    Prompt(Vec<ContentPart>),
     /// Output of a runtime-executed tool (`request_id`, `output`) — resolves a
     /// pending [`OutEvent::ToolExec`] round-trip (#58). Approval (`Approve`/
     /// `Reject`) is no longer a core command: the runtime tool executor owns it
@@ -202,14 +202,14 @@ pub(crate) async fn session_loop(
             rx.recv().await
         };
         match cmd {
-            Some(SessionCmd::Prompt(text)) => {
+            Some(SessionCmd::Prompt(content)) => {
                 if s.turn.is_some() {
                     // Mid-turn steering (#182, ADR-0058): stash it — the next
                     // round folds stashed prompts into the live context before
                     // the model request.
-                    stash.push_back(SessionCmd::Prompt(text));
+                    stash.push_back(SessionCmd::Prompt(content));
                 } else {
-                    s.ctx.push_user(text);
+                    s.ctx.push_user_content(content);
                     s.turn = Some(TurnState::default());
                     drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
                 }

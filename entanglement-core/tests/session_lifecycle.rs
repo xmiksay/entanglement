@@ -91,13 +91,7 @@ async fn closed_id_is_not_resurrected_by_a_later_prompt() {
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
 
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "hi".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
     recv_until(
         &mut sub,
         |e| matches!(e, OutEvent::Done { session, .. } if *session == sid),
@@ -118,10 +112,7 @@ async fn closed_id_is_not_resurrected_by_a_later_prompt() {
     // Re-prompt the retired id: must be refused, never a second start.
     let mut sub2 = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "again".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "again"))
         .await
         .unwrap();
 
@@ -181,13 +172,7 @@ async fn resume_of_a_live_id_is_refused() {
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
 
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "hi".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
     recv_until(
         &mut sub,
         |e| matches!(e, OutEvent::Done { session, .. } if *session == sid),
@@ -214,10 +199,7 @@ async fn resume_of_a_live_id_is_refused() {
 
     // The original session is unharmed: it still answers a follow-up prompt.
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "still there?".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "still there?"))
         .await
         .unwrap();
     recv_until(

@@ -116,13 +116,7 @@ async fn tool_arg_fragments_surface_as_tool_call_deltas() {
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
-    holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "go".into(),
-        })
-        .await
-        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 
     let events = collect(sub, &sid).await;
 

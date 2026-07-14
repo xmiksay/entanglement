@@ -52,7 +52,7 @@ fn last_tool<'a>(req: &'a LlmRequest<'_>) -> Option<&'a str> {
         .iter()
         .rev()
         .find(|m| m.role == MessageRole::Tool)
-        .map(|m| m.text.as_str())
+        .and_then(|m| m.content.iter().find_map(|p| p.as_text()))
 }
 
 fn last_user<'a>(req: &'a LlmRequest<'_>) -> &'a str {
@@ -60,7 +60,7 @@ fn last_user<'a>(req: &'a LlmRequest<'_>) -> &'a str {
         .iter()
         .rev()
         .find(|m| m.role == MessageRole::User)
-        .map(|m| m.text.as_str())
+        .and_then(|m| m.content.iter().find_map(|p| p.as_text()))
         .unwrap_or("")
 }
 
@@ -136,10 +136,7 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: parent.clone(),
-            text: "parent-task".into(),
-        })
+        .send(InMsg::prompt(parent.clone(), "parent-task"))
         .await
         .unwrap();
 
@@ -214,7 +211,7 @@ impl Llm for FanOutLlm {
             .messages
             .iter()
             .filter(|m| m.role == MessageRole::Tool)
-            .map(|m| m.text.as_str())
+            .filter_map(|m| m.content.iter().find_map(|p| p.as_text()))
             .collect();
         // Both polls have returned once both child answers are in the transcript.
         if tool_msgs.iter().any(|t| t.contains("child-a"))
@@ -280,10 +277,7 @@ async fn two_sub_agents_fan_out_and_both_answers_are_polled() {
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: parent.clone(),
-            text: "delegate".into(),
-        })
+        .send(InMsg::prompt(parent.clone(), "delegate"))
         .await
         .unwrap();
 
@@ -350,10 +344,7 @@ async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
     let root = SessionId::new("root");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: root.clone(),
-            text: "start".into(),
-        })
+        .send(InMsg::prompt(root.clone(), "start"))
         .await
         .unwrap();
 
@@ -487,10 +478,7 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
     let root = SessionId::new("root");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: root.clone(),
-            text: "start".into(),
-        })
+        .send(InMsg::prompt(root.clone(), "start"))
         .await
         .unwrap();
 
@@ -590,10 +578,7 @@ async fn agent_blocks_and_returns_child_answer_in_one_call() {
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: parent.clone(),
-            text: "delegate".into(),
-        })
+        .send(InMsg::prompt(parent.clone(), "delegate"))
         .await
         .unwrap();
 
@@ -706,10 +691,7 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: parent.clone(),
-            text: "delegate".into(),
-        })
+        .send(InMsg::prompt(parent.clone(), "delegate"))
         .await
         .unwrap();
 
@@ -745,10 +727,7 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
 
     // Re-ask: poll the captured handle. The answer must still be collectable.
     holly
-        .send(InMsg::Prompt {
-            session: parent.clone(),
-            text: "poll-now".into(),
-        })
+        .send(InMsg::prompt(parent.clone(), "poll-now"))
         .await
         .unwrap();
 
@@ -809,10 +788,7 @@ async fn assert_root_spawn_refused(holly: &Holly, expected: &str) {
     let root = SessionId::new("root");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: root.clone(),
-            text: "start".into(),
-        })
+        .send(InMsg::prompt(root.clone(), "start"))
         .await
         .unwrap();
 

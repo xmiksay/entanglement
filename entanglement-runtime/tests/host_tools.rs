@@ -130,10 +130,7 @@ async fn read_tool_runs_through_engine_under_build_profile() {
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "read it".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "read it"))
         .await
         .unwrap();
 
@@ -206,10 +203,7 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "make the file".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "make the file"))
         .await
         .unwrap();
 
@@ -306,10 +300,7 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "write the file".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "write the file"))
         .await
         .unwrap();
 
@@ -431,10 +422,7 @@ async fn write_tool_denied_under_explore_profile() {
         .unwrap();
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "try to write".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "try to write"))
         .await
         .unwrap();
 
@@ -510,10 +498,7 @@ async fn write_tool_masked_under_plan_profile() {
         .unwrap();
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "try to write".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "try to write"))
         .await
         .unwrap();
 
@@ -580,10 +565,7 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "run it".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "run it"))
         .await
         .unwrap();
 
@@ -659,10 +641,7 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "call it".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "call it"))
         .await
         .unwrap();
 

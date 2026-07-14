@@ -30,7 +30,7 @@ impl Llm for CapturingLlm {
                 .messages
                 .iter()
                 .filter(|m| m.role == MessageRole::User)
-                .map(|m| m.text.clone())
+                .map(|m| m.text().clone())
                 .collect();
         }
         Ok(stream_from_response(LlmResponse {
@@ -66,10 +66,7 @@ async fn set_agent_then_prompt_on_fresh_id_starts_a_root_build_session() {
         .unwrap();
     let plan = "# Approved plan\n1. implement it";
     holly
-        .send(InMsg::Prompt {
-            session: fresh.clone(),
-            text: plan.into(),
-        })
+        .send(InMsg::prompt(fresh.clone(), plan))
         .await
         .unwrap();
 

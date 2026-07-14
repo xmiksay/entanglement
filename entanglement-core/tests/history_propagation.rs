@@ -65,10 +65,7 @@ async fn prompt_done_prompt_echoes_full_history() {
     // Turn 1: Prompt("alpha"), await Done.
     let sub1 = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "alpha".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "alpha"))
         .await
         .unwrap();
     let e1 = collect(sub1, &sid).await;
@@ -91,10 +88,7 @@ async fn prompt_done_prompt_echoes_full_history() {
     // Turn 2: Prompt("beta"), await Done. The EchoLlm must now see [User:"alpha", Assistant:echo1, User:"beta"].
     let sub2 = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "beta".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "beta"))
         .await
         .unwrap();
     let e2 = collect(sub2, &sid).await;
@@ -129,17 +123,11 @@ async fn overlapping_prompt_echoes_prior_history() {
     // The second Prompt lands in the session inbox mid-stream and is
     // stashed per ADR-0018, then replayed after turn 1 finishes.
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "alpha".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "alpha"))
         .await
         .unwrap();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "beta".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "beta"))
         .await
         .unwrap();
 

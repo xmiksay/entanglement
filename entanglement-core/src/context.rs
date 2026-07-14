@@ -7,7 +7,7 @@
 //! `entanglement-provider` alongside the `Llm` request contract (ADR-0053);
 //! this module owns the rolling history built on top of them.
 
-use entanglement_provider::{Message, MessageRole, ToolCall};
+use entanglement_provider::{ContentPart, Message, MessageRole, ToolCall};
 
 /// Approximate tokens-per-char for the heuristic estimator.
 ///
@@ -99,7 +99,8 @@ impl Context {
     pub fn push(&mut self, message: Message) {
         tracing::debug!(
             role = ?message.role,
-            text_len = message.text.len(),
+            text_len = message.text().len(),
+            content_parts = message.content.len(),
             tool_calls = message.tool_calls.len(),
             tool_call_id = message.tool_call_id.as_deref(),
             "pushing message to context"
@@ -109,6 +110,11 @@ impl Context {
 
     pub fn push_user(&mut self, text: impl Into<String>) {
         self.push(Message::user(text));
+    }
+    /// Push a user turn with explicit multimodal content (e.g. a screenshot
+    /// prompt, #197).
+    pub fn push_user_content(&mut self, content: Vec<ContentPart>) {
+        self.push(Message::user_content(content));
     }
     pub fn push_assistant(&mut self, text: impl Into<String>, tool_calls: Vec<ToolCall>) {
         self.push(Message::assistant(text, tool_calls));
@@ -127,7 +133,7 @@ impl Context {
             .messages
             .iter()
             .map(|m| {
-                m.text.chars().count()
+                m.text().chars().count()
                     + m.tool_calls
                         .iter()
                         .map(|c| c.input.chars().count())
@@ -158,8 +164,8 @@ impl Context {
                 break;
             }
             let msg = &mut self.messages[i];
-            if msg.role == MessageRole::Tool && msg.text != PRUNED_PLACEHOLDER {
-                msg.text = PRUNED_PLACEHOLDER.to_string();
+            if msg.role == MessageRole::Tool && msg.text() != PRUNED_PLACEHOLDER {
+                msg.content = vec![ContentPart::text(PRUNED_PLACEHOLDER)];
             }
         }
         self.within_limit()
@@ -212,11 +218,11 @@ mod tests {
         );
         assert!(ctx.within_limit());
         // Oldest outputs pruned, the small most-recent one preserved.
-        assert_eq!(ctx.messages()[1].text, PRUNED_PLACEHOLDER);
-        assert_eq!(ctx.messages()[2].text, PRUNED_PLACEHOLDER);
-        assert_eq!(ctx.messages()[3].text, "recent");
+        assert_eq!(ctx.messages()[1].text(), PRUNED_PLACEHOLDER);
+        assert_eq!(ctx.messages()[2].text(), PRUNED_PLACEHOLDER);
+        assert_eq!(ctx.messages()[3].text(), "recent");
         // User text is never pruned.
-        assert_eq!(ctx.messages()[0].text, "start");
+        assert_eq!(ctx.messages()[0].text(), "start");
     }
 
     #[test]
@@ -236,6 +242,6 @@ mod tests {
         ctx.push_tool("a", "small output");
         assert!(ctx.compact());
         // Nothing pruned when already within budget.
-        assert_eq!(ctx.messages()[0].text, "small output");
+        assert_eq!(ctx.messages()[0].text(), "small output");
     }
 }

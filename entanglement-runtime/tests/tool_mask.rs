@@ -125,10 +125,7 @@ async fn masked_edit_is_refused_and_never_runs() {
         .unwrap();
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "please edit".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "please edit"))
         .await
         .unwrap();
     let events = collect(sub, &sid).await;
@@ -162,10 +159,7 @@ async fn build_profile_runs_edit_unmasked() {
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "edit it".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "edit it"))
         .await
         .unwrap();
     let events = collect(sub, &sid).await;

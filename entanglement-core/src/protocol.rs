@@ -10,6 +10,7 @@
 //! ([`Status`][OutEvent::Status], [`AgentChanged`][OutEvent::AgentChanged])
 //! are point-in-time and carry no `seq`.
 
+use entanglement_provider::ContentPart;
 use serde::{Deserialize, Serialize};
 
 /// Stable identifier for a conversation session. Serialized transparently as a
@@ -411,6 +412,26 @@ pub struct ProfileDetail {
 // ┃ Messages
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Back-compat deserializer for [`InMsg::Prompt`]'s `content` (#197): accepts
+/// either the current `[ContentPart]` array or the legacy bare-`String` under the
+/// `text` alias. An empty legacy string yields no parts.
+fn de_prompt_content<'de, D>(d: D) -> Result<Vec<ContentPart>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Text(String),
+        Parts(Vec<ContentPart>),
+    }
+    Ok(match Repr::deserialize(d)? {
+        Repr::Text(t) if t.is_empty() => Vec::new(),
+        Repr::Text(t) => vec![ContentPart::text(t)],
+        Repr::Parts(p) => p,
+    })
+}
+
 /// Inbound: harness → engine. One connection multiplexes sessions via
 /// [`SessionId`].
 ///
@@ -420,8 +441,17 @@ pub struct ProfileDetail {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InMsg {
-    /// Feed a new user prompt into the conversation.
-    Prompt { session: SessionId, text: String },
+    /// Feed a new user prompt into the conversation. `content` carries the
+    /// message body as multimodal [`ContentPart`]s (#197, ADR-0064) — text
+    /// and/or image blocks. A serde back-compat shim accepts the legacy
+    /// text-only `text: "…"` shape so logs persisted before the migration still
+    /// deserialize; new writes emit `content`. Build the text-only case with
+    /// [`InMsg::prompt`].
+    Prompt {
+        session: SessionId,
+        #[serde(alias = "text", default, deserialize_with = "de_prompt_content")]
+        content: Vec<ContentPart>,
+    },
     /// Approve a pending tool request (`request_id` from [`OutEvent::ToolRequest`]).
     /// `scope` (#174) controls how long the approval lasts — [`ApprovalScope::Once`]
     /// by default, so a head that omits it keeps the historical one-shot behavior
@@ -516,6 +546,19 @@ pub enum InMsg {
 }
 
 impl InMsg {
+    /// Build a text-only [`Prompt`][InMsg::Prompt] — the common case. Empty text
+    /// yields an empty `content` (no stray text part). Multimodal prompts build
+    /// the `content` vec directly.
+    pub fn prompt(session: SessionId, text: impl Into<String>) -> Self {
+        let text = text.into();
+        let content = if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![ContentPart::text(text)]
+        };
+        InMsg::Prompt { session, content }
+    }
+
     /// The session this message targets.
     pub fn session(&self) -> &SessionId {
         match self {
@@ -812,14 +855,40 @@ mod tests {
 
     #[test]
     fn inbound_roundtrips_as_tagged_json() {
-        let msg = InMsg::Prompt {
-            session: SessionId::new("s1"),
-            text: "hi".into(),
-        };
+        let msg = InMsg::prompt(SessionId::new("s1"), "hi");
         let json = serde_json::to_string(&msg).unwrap();
-        assert_eq!(json, r#"{"kind":"prompt","session":"s1","text":"hi"}"#);
+        assert_eq!(
+            json,
+            r#"{"kind":"prompt","session":"s1","content":[{"type":"text","text":"hi"}]}"#
+        );
         let back: InMsg = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn prompt_accepts_legacy_text_shape() {
+        // Logs persisted before #197 carry a bare `text` string; the shim must
+        // still deserialize them into the content-block shape.
+        let legacy = r#"{"kind":"prompt","session":"s1","text":"hi"}"#;
+        let back: InMsg = serde_json::from_str(legacy).unwrap();
+        assert_eq!(back, InMsg::prompt(SessionId::new("s1"), "hi"));
+    }
+
+    #[test]
+    fn prompt_accepts_image_content_block() {
+        let json = r#"{"kind":"prompt","session":"s1","content":[
+            {"type":"text","text":"look"},
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}
+        ]}"#;
+        let back: InMsg = serde_json::from_str(json).unwrap();
+        match back {
+            InMsg::Prompt { content, .. } => {
+                assert_eq!(content.len(), 2);
+                assert_eq!(content[0], ContentPart::text("look"));
+                assert_eq!(content[1], ContentPart::image("image/png", "AAAA"));
+            }
+            other => panic!("expected Prompt, got {other:?}"),
+        }
     }
 
     #[test]

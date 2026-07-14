@@ -228,10 +228,7 @@ pub(super) async fn handle_event(
                                     }
                                     app.record_user_message(text.clone());
                                     if let Err(e) = holly
-                                        .send(InMsg::Prompt {
-                                            session: app.active_session_id().clone(),
-                                            text,
-                                        })
+                                        .send(InMsg::prompt(app.active_session_id().clone(), text))
                                         .await
                                     {
                                         debug!("Failed to send prompt: {}", e);
@@ -353,10 +350,7 @@ async fn handoff_accepted_plan(app: &mut App, holly: &Holly, plan: String) {
         .await;
     let text = crate::propose_plan::wrap_plan(&plan);
     let _ = holly
-        .send(InMsg::Prompt {
-            session: new_session.clone(),
-            text: text.clone(),
-        })
+        .send(InMsg::prompt(new_session.clone(), text.clone()))
         .await;
     // Adopt the fresh id head-side and switch to it, then mirror the first user
     // message locally (the engine never echoes `InMsg::Prompt` as an `OutEvent`).

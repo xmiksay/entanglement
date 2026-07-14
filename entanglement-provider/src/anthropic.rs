@@ -20,8 +20,8 @@
 
 use crate::client::HttpClient;
 use crate::{
-    GenerationParams, Llm, LlmEvent, LlmRequest, LlmStream, Message, MessageRole, StopReason,
-    ToolSpec, Usage,
+    ContentPart, GenerationParams, ImageSource, Llm, LlmEvent, LlmRequest, LlmStream, Message,
+    MessageRole, StopReason, ToolSpec, Usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -227,16 +227,14 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
     while i < messages.len() {
         match messages[i].role {
             MessageRole::User => {
-                if !messages[i].text.is_empty() {
-                    out.push(json!({ "role": "user", "content": messages[i].text }));
+                if !messages[i].content.is_empty() {
+                    let content = anthropic_blocks(&messages[i].content);
+                    out.push(json!({ "role": "user", "content": content }));
                 }
                 i += 1;
             }
             MessageRole::Assistant => {
-                let mut blocks: Vec<Value> = Vec::new();
-                if !messages[i].text.is_empty() {
-                    blocks.push(json!({ "type": "text", "text": messages[i].text }));
-                }
+                let mut blocks: Vec<Value> = anthropic_blocks(&messages[i].content);
                 for tc in &messages[i].tool_calls {
                     let input: Value =
                         serde_json::from_str(&tc.input).unwrap_or_else(|_| json!({}));
@@ -256,10 +254,22 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 let mut results: Vec<Value> = Vec::new();
                 while i < messages.len() && messages[i].role == MessageRole::Tool {
                     let id = messages[i].tool_call_id.clone().unwrap_or_default();
+                    // Anthropic's `tool_result` content is a string for the
+                    // text-only case (back-compat) or an array of blocks when the
+                    // result carries an image (#221 `read`).
+                    let content = if messages[i]
+                        .content
+                        .iter()
+                        .all(|p| matches!(p, ContentPart::Text { .. }))
+                    {
+                        json!(messages[i].text())
+                    } else {
+                        json!(anthropic_blocks(&messages[i].content))
+                    };
                     results.push(json!({
                         "type": "tool_result",
                         "tool_use_id": id,
-                        "content": messages[i].text,
+                        "content": content,
                     }));
                     i += 1;
                 }
@@ -270,6 +280,23 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
         }
     }
     out
+}
+
+/// Render a message's content parts to Anthropic content blocks (`text` /
+/// `image` with a base64 source, #197/#221).
+fn anthropic_blocks(content: &[ContentPart]) -> Vec<Value> {
+    content
+        .iter()
+        .map(|p| match p {
+            ContentPart::Text { text } => json!({ "type": "text", "text": text }),
+            ContentPart::Image {
+                source: ImageSource::Base64 { media_type, data },
+            } => json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": media_type, "data": data },
+            }),
+        })
+        .collect()
 }
 
 fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
@@ -445,7 +472,11 @@ mod tests {
     fn msg(role: MessageRole, text: &str) -> Message {
         Message {
             role,
-            text: text.into(),
+            content: if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![ContentPart::text(text)]
+            },
             tool_calls: Vec::new(),
             tool_call_id: None,
         }
@@ -548,24 +579,9 @@ mod tests {
     #[test]
     fn consecutive_tool_results_merge_into_one_user_turn() {
         let msgs = vec![
-            Message {
-                role: MessageRole::Assistant,
-                text: "".into(),
-                tool_calls: vec![],
-                tool_call_id: None,
-            },
-            Message {
-                role: MessageRole::Tool,
-                text: "r1".into(),
-                tool_calls: vec![],
-                tool_call_id: Some("a".into()),
-            },
-            Message {
-                role: MessageRole::Tool,
-                text: "r2".into(),
-                tool_calls: vec![],
-                tool_call_id: Some("b".into()),
-            },
+            Message::assistant("", vec![]),
+            Message::tool("a", "r1"),
+            Message::tool("b", "r2"),
         ];
         let out = convert_messages(&msgs);
         // assistant (empty text, no calls) is dropped; both results land in one user msg.
@@ -574,6 +590,42 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["tool_use_id"], "a");
         assert_eq!(blocks[1]["tool_use_id"], "b");
+    }
+
+    #[test]
+    fn user_image_renders_image_block() {
+        let user = Message::user_content(vec![
+            ContentPart::text("look"),
+            ContentPart::image("image/png", "AAAA"),
+        ]);
+        let out = convert_messages(&[user]);
+        let blocks = out[0]["content"].as_array().unwrap();
+        assert_eq!(blocks[0], json!({ "type": "text", "text": "look" }));
+        assert_eq!(
+            blocks[1],
+            json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" },
+            })
+        );
+    }
+
+    #[test]
+    fn tool_result_with_image_renders_block_array() {
+        // #221: `read` on an image emits an image tool result; text-only results
+        // stay plain strings (asserted by `consecutive_tool_results_…`).
+        let tool = Message::tool_content("a", vec![ContentPart::image("image/png", "AAAA")]);
+        let out = convert_messages(&[tool]);
+        let result = &out[0]["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["tool_use_id"], "a");
+        assert_eq!(
+            result["content"][0],
+            json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" },
+            })
+        );
     }
 
     #[test]

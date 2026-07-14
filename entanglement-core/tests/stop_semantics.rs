@@ -144,10 +144,7 @@ async fn stop_preempts_a_stalled_stream() {
     // Turn 1: the model stalls. Watch for Thinking so we know the stream is live.
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "first-prompt".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "first-prompt"))
         .await
         .unwrap();
     let mut thinking = false;
@@ -184,10 +181,7 @@ async fn stop_preempts_a_stalled_stream() {
     // The session task survives the interrupt and answers a fresh prompt.
     let sub2 = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "second-prompt".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "second-prompt"))
         .await
         .unwrap();
     let events = collect(sub2, &sid).await;
@@ -220,10 +214,7 @@ async fn stop_while_idle_preserves_context_for_next_prompt() {
     // Turn 1: completes normally.
     let sub1 = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "first-prompt".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "first-prompt"))
         .await
         .unwrap();
     let e1 = collect(sub1, &sid).await;
@@ -245,10 +236,7 @@ async fn stop_while_idle_preserves_context_for_next_prompt() {
     // Turn 2: the Llm must see the first user prompt still in history.
     let sub2 = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "second-prompt".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "second-prompt"))
         .await
         .unwrap();
     let e2 = collect(sub2, &sid).await;
@@ -266,7 +254,7 @@ async fn stop_while_idle_preserves_context_for_next_prompt() {
     let user_texts: Vec<&str> = last_messages
         .iter()
         .filter(|m| m.role == MessageRole::User)
-        .map(|m| m.text.as_str())
+        .filter_map(|m| m.content.iter().find_map(|p| p.as_text()))
         .collect();
     assert!(
         user_texts.contains(&"first-prompt"),
@@ -310,10 +298,7 @@ async fn stop_during_tool_exec_keeps_session_alive() {
 
     let _sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "first-prompt".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "first-prompt"))
         .await
         .unwrap();
 
@@ -343,10 +328,7 @@ async fn stop_during_tool_exec_keeps_session_alive() {
     // Re-prompt — the session task must still be alive.
     let sub3 = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "second-prompt".into(),
-        })
+        .send(InMsg::prompt(sid.clone(), "second-prompt"))
         .await
         .unwrap();
     let events = collect(sub3, &sid).await;
@@ -366,7 +348,7 @@ async fn stop_during_tool_exec_keeps_session_alive() {
     let last = snapshots.last().unwrap();
     assert!(
         last.iter()
-            .any(|m| m.role == MessageRole::User && m.text == "first-prompt"),
+            .any(|m| m.role == MessageRole::User && m.text() == "first-prompt"),
         "post-Stop turn should still see the original first-prompt in history"
     );
 }

@@ -56,10 +56,8 @@ async fn over_window_prompt_is_refused_without_sending() {
     let mut sub = holly.subscribe();
 
     holly
-        .send(InMsg::Prompt {
-            session: sid.clone(),
-            text: "x".repeat(4000), // ~1143 tokens, far over budget
-        })
+        // ~1143 tokens, far over budget
+        .send(InMsg::prompt(sid.clone(), "x".repeat(4000)))
         .await
         .unwrap();
 

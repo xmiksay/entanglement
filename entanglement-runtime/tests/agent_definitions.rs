@@ -208,7 +208,7 @@ fn last_tool<'a>(req: &'a LlmRequest<'_>) -> Option<&'a str> {
         .iter()
         .rev()
         .find(|m| m.role == MessageRole::Tool)
-        .map(|m| m.text.as_str())
+        .and_then(|m| m.content.iter().find_map(|p| p.as_text()))
 }
 
 fn last_user<'a>(req: &'a LlmRequest<'_>) -> &'a str {
@@ -216,7 +216,7 @@ fn last_user<'a>(req: &'a LlmRequest<'_>) -> &'a str {
         .iter()
         .rev()
         .find(|m| m.role == MessageRole::User)
-        .map(|m| m.text.as_str())
+        .and_then(|m| m.content.iter().find_map(|p| p.as_text()))
         .unwrap_or("")
 }
 
@@ -269,10 +269,7 @@ async fn spawn_under_a_file_defined_profile() {
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::Prompt {
-            session: parent.clone(),
-            text: "delegate".into(),
-        })
+        .send(InMsg::prompt(parent.clone(), "delegate"))
         .await
         .unwrap();
 
