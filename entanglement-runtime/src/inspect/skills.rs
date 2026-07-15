@@ -88,8 +88,9 @@ pub(super) fn render_skill_table(resolved: &[SkillResolution]) -> String {
 /// Dry-run the `load_skill` resolution for one skill without a model: identity +
 /// layer provenance (winner + what it overrode), then the exact `load_skill`
 /// output (path-substituted body + `available_refs`). A `${SKILL_DIR}` or
-/// relative-path bug surfaces right here.
-fn render_skill_dry_run(entry: &SkillResolution) -> String {
+/// relative-path bug surfaces right here. Shared with the TUI overlay's
+/// per-skill detail pane (#331).
+pub(super) fn render_skill_dry_run(entry: &SkillResolution) -> String {
     let skill = &entry.meta;
     let mut out = String::new();
     let _ = writeln!(out, "name:        {}", skill.name);

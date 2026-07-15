@@ -316,7 +316,10 @@ Debugging: `skutter inspect prompt|agents|skills|config` re-runs the load-time
 discovery with **no engine** and prints the resolved prompt / registries / user
 config, including the layer that won an override (✅ #184/#185/#186, #172). The TUI exposes the same three
 views in-session via `/inspect` (or `<leader>i`) as a read-only overlay over the
-active session's resolved state (✅ #214). Trust & scope decisions:
+active session's resolved state (✅ #214); the Agents and Skills tabs are
+**two-level** (✅ #331): a selectable list where `Enter` drills into the per-item
+detail pane rendered by the same per-name code path the CLI uses, `Esc`/`Backspace`
+returns to the list. Trust & scope decisions:
 [ADR-0047](../docs/adr/0047-local-trust-boundary.md) (repo trusted; config
 precedence system < user < repo) and
 [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md) (local-only `serve`).

@@ -29,7 +29,9 @@ pub use agents::inspect_agents;
 pub use config::inspect_config;
 pub use prompt::inspect_prompt;
 pub use skills::inspect_skills;
-pub use tui::tui_reports;
+pub use tui::{
+    agent_detail, skill_detail, tui_reports, InspectItem, InspectListTab, InspectReports,
+};
 
 use std::fmt::Write as _;
 

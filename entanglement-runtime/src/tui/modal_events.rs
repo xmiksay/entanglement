@@ -57,7 +57,13 @@ fn wheel_modal_next(app: &mut App) -> bool {
     } else if app.showing_resume_modal() {
         app.resume_next();
     } else if app.showing_inspect() {
-        app.inspect_scroll_down(3);
+        // Level-aware (#331): the list level moves the highlight, the detail /
+        // Prompt level scrolls the document.
+        if app.inspect_showing_list() {
+            app.inspect_list_down(1);
+        } else {
+            app.inspect_scroll_down(3);
+        }
     } else if app.showing_help() {
         // Consume without acting — the help dialog has no selection.
     } else {
@@ -80,7 +86,11 @@ fn wheel_modal_prev(app: &mut App) -> bool {
     } else if app.showing_resume_modal() {
         app.resume_prev();
     } else if app.showing_inspect() {
-        app.inspect_scroll_up(3);
+        if app.inspect_showing_list() {
+            app.inspect_list_up(1);
+        } else {
+            app.inspect_scroll_up(3);
+        }
     } else if app.showing_help() {
     } else {
         return false;
@@ -260,19 +270,51 @@ pub(super) async fn handle_command_palette_event(app: &mut App, key: KeyEvent) -
     Ok(false)
 }
 
-/// Drives the read-only inspection overlay (#214): `Tab`/`←`/`→` switch tabs,
-/// arrows/`j`/`k`/`PgUp`/`PgDn` scroll the current pane, `Esc` closes. No engine
-/// traffic — it's a pure view over already-resolved state.
+/// Drives the read-only inspection overlay (#214, drill-down #331): `Tab`/`←`/
+/// `→` switch tabs from either level; on the **list** level arrows/`j`/`k` move
+/// the highlight, `Enter` opens the per-item detail, `Esc` closes; on the
+/// **detail** level arrows/`j`/`k`/`PgUp`/`PgDn` scroll, `Esc`/`Backspace`
+/// returns to the list (and a second `Esc` closes). The Prompt tab is always a
+/// scroll-only document. No engine traffic — it's a pure view over
+/// already-resolved state.
 pub(super) async fn handle_inspect_event(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
+        // `Esc` is level-aware (#331): from the detail pane it returns to the
+        // list; from the list (or the scroll-only Prompt tab) it closes the
+        // overlay as before. `inspect_showing_list()` is true only on the list
+        // level of a two-level tab, so its negation on a list-capable tab means
+        // the detail pane is open.
         KeyCode::Esc => {
-            app.close_inspect();
+            if app.inspect_tab().list_tab().is_some() && !app.inspect_showing_list() {
+                app.inspect_back_to_list();
+            } else {
+                app.close_inspect();
+            }
         }
         KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
             app.inspect_next_tab();
         }
         KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
             app.inspect_prev_tab();
+        }
+        // On the list level, `Enter` opens the highlighted item's detail (#331);
+        // on the detail/Prompt level `Enter` is a no-op (the scroll-only
+        // document has nothing to drill into).
+        KeyCode::Enter if app.inspect_showing_list() => {
+            app.inspect_open_detail();
+        }
+        // `Backspace` returns from the detail pane to the list (#331); a no-op
+        // on the list level (where `Esc` closes) and the Prompt tab.
+        KeyCode::Backspace => {
+            app.inspect_back_to_list();
+        }
+        // Vertical movement is level-aware: on the list level it moves the
+        // highlight, on the detail/Prompt level it scrolls the document.
+        KeyCode::Down | KeyCode::Char('j') if app.inspect_showing_list() => {
+            app.inspect_list_down(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') if app.inspect_showing_list() => {
+            app.inspect_list_up(1);
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.inspect_scroll_down(1);
