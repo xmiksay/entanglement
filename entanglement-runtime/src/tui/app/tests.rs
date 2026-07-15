@@ -58,7 +58,9 @@ static AGENT_MODELS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn app_with_store(sid: SessionId, path: &std::path::Path) -> App {
     std::env::set_var("ENTANGLEMENT_AGENT_MODELS_FILE", path);
     let mut app = App::new_for_test(sid);
-    app.set_agent_models(crate::config::agent_models::AgentModelStore::load());
+    app.set_agent_models(std::sync::Arc::new(std::sync::Mutex::new(
+        crate::config::agent_models::AgentModelStore::load(),
+    )));
     app
 }
 

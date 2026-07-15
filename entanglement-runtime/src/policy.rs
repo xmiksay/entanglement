@@ -120,6 +120,13 @@ impl DefaultGrantStore {
             inner: Mutex::new(FileGrantStore::load()),
         }
     }
+
+    /// Re-read the persisted `Always` grants from disk (#329) — the watcher's
+    /// hook for picking up a grant another skutter instance recorded, without
+    /// disturbing this process's in-memory `Session`-scoped grants.
+    pub fn reload(&self) {
+        self.inner.lock().unwrap().reload();
+    }
 }
 
 #[async_trait]

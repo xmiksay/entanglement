@@ -68,6 +68,10 @@ pub mod tool_runner;
 // core: core holds no executable tools, only advertises schemas and round-trips
 // each call back to the runtime (#206, ADR-0006/0010/0053).
 pub mod tools;
+// inotify-backed watcher for definition dirs + managed files (#329):
+// live-reloads the runtime's own profile/skill registry mirrors — never
+// core's `EngineConfig`, which stays pinned for the process lifetime.
+pub mod watch;
 
 pub use tools::{Tool, ToolRegistry};
 

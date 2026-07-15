@@ -90,7 +90,8 @@ pub struct App {
     // matching `ModelChanged` for the active session commits the write; an `Error`
     // (or a `ModelChanged` with no pending, i.e. a `SetAgent` pin application)
     // clears it without writing. `None` store in tests / when no config dir.
-    agent_models: Option<crate::config::agent_models::AgentModelStore>,
+    agent_models:
+        Option<std::sync::Arc<std::sync::Mutex<crate::config::agent_models::AgentModelStore>>>,
     /// `(agent, provider, model)` awaiting its `ModelChanged` confirmation.
     pending_model_persist: Option<(String, String, String)>,
 
@@ -227,6 +228,16 @@ impl App {
     /// `InMsg::Prompt` back as an `OutEvent`).
     pub fn record_user_message(&mut self, text: String) {
         self.sessions.active_view_mut().record_user_message(text);
+        self.mark_dirty();
+    }
+
+    /// Records a head-side status line into the active session's transcript
+    /// (#329) — the definitions watcher's one-line notice after a debounced
+    /// reload, mirroring the `/key`/`/model` status pattern.
+    pub fn record_reload_status(&mut self, message: String) {
+        self.sessions
+            .active_view_mut()
+            .record_status("reload", message);
         self.mark_dirty();
     }
 

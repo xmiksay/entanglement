@@ -18,9 +18,9 @@ mod run;
 mod tui;
 
 use entanglement_runtime::{
-    agents, ask_user, config, history, host, inspect, logging, persistence, plan_tasks,
+    agents, ask_user, config, history, host, inspect, logging, persistence, plan_tasks, policy,
     propose_plan, script, session_store, skills, subagent, system_prompt, tool_names, tool_runner,
-    ToolRegistry,
+    watch, ToolRegistry,
 };
 
 use anyhow::{Context, Result};
@@ -30,8 +30,9 @@ use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
     ProviderEntry, ResolvedModel, WebSearchConfig, Wire,
 };
+use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use host::{host_tools, BashTool, CallTool};
 use pipe::pipe;
@@ -72,7 +73,7 @@ async fn build_config(
     catalog: &Catalog,
     http_client: &HttpClient,
     profiles: ProfileRegistry,
-    skills: std::sync::Arc<skills::SkillRegistry>,
+    skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
     user_config: &config::Config,
 ) -> (EngineConfig, ModelInfo, ToolRegistry, Vec<String>) {
     let (mut cfg, model_info) = select_provider(catalog, http_client, user_config);
@@ -765,6 +766,12 @@ async fn main() -> Result<()> {
     // (user_only skills withheld) — selection stays the model's own reasoning.
     let skill_registry =
         std::sync::Arc::new(skills::load_registry(&cwd).context("loading skill definitions")?);
+    // The runtime's own live-reloadable mirror (#329, ADR-0084): a definitions
+    // watcher swaps this for a freshly-loaded registry on a debounced dir
+    // change. `load_skill` (below) and the watcher both share this handle;
+    // core's own copy (built into `engine_config` below) has no such seam.
+    let live_skills: Arc<RwLock<Arc<skills::SkillRegistry>>> =
+        Arc::new(RwLock::new(skill_registry.clone()));
     let mut prompt_ctx = system_prompt::PromptContext::load(&cwd);
     prompt_ctx.skills = skill_registry.disclosures();
     // The skill registry also resolves per-agent `skills:` preload bodies (#117),
@@ -777,6 +784,9 @@ async fn main() -> Result<()> {
     // into the TUI so a `/model` choice under an active profile persists back.
     let agent_models = config::agent_models::AgentModelStore::load();
     agent_models.apply(&mut profiles);
+    // Shared with the definitions watcher (#329): a reload re-reads the managed
+    // file and re-applies it onto the freshly-loaded profiles the same way.
+    let live_agent_models = Arc::new(Mutex::new(agent_models));
 
     let http_client = HttpClient::new();
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
@@ -785,7 +795,7 @@ async fn main() -> Result<()> {
         &catalog,
         &http_client,
         profiles,
-        skill_registry,
+        live_skills.clone(),
         &user_config,
     )
     .await;
@@ -795,23 +805,39 @@ async fn main() -> Result<()> {
         eprintln!("skutter: invalid engine configuration: {e}");
         std::process::exit(2);
     }
-    // The runtime keeps its own copy of the profile registry to resolve
-    // permissions (#59); the engine gets the same shape via `engine_config`.
-    let profiles = engine_config.profiles.clone();
+    // The runtime keeps its own live-reloadable mirror of the profile registry
+    // (#329, ADR-0084) to resolve permissions (#59) and drive the TUI picker;
+    // the engine gets its own (immutable-for-the-process-lifetime) copy via
+    // `engine_config`, captured here *before* it moves into `Holly::spawn`.
+    let live_profiles: Arc<RwLock<ProfileRegistry>> =
+        Arc::new(RwLock::new(engine_config.profiles.clone()));
     let holly = Holly::spawn(engine_config);
 
     // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
-    // answer the engine's ToolExec round-trip, gating each call on `profiles`.
-    // The user config's `permissions` section is the global ceiling clamped over
-    // every resolved grade (#172), and its `hooks` section wires the lifecycle
-    // hooks (#199) around tool dispatch and prompt ingress. The TUI also needs the
-    // registry (its entry-agent picker is registry-driven, #119), so hand the
-    // executor a clone and keep `profiles` for the head below.
-    let tool_executor = tool_runner::spawn_tool_executor_with_hooks(
+    // answer the engine's ToolExec round-trip, gating each call on
+    // `live_profiles`. The user config's `permissions` section is the global
+    // ceiling clamped over every resolved grade (#172), and its `hooks` section
+    // wires the lifecycle hooks (#199) around tool dispatch and prompt ingress.
+    // Built directly against `spawn_tool_executor_with_policy` (#311) rather
+    // than the `_with_hooks` convenience wrapper (which owns a plain
+    // `ProfileRegistry`) because the head needs its own handles on `active` and
+    // `grants` — `grants` feeds the definitions watcher's `LiveDefinitions`
+    // below (#329), so a persisted "always allow" grant another skutter
+    // instance recorded is visible on the next reload.
+    let active = Arc::new(Mutex::new(HashMap::new()));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        active.clone(),
+        user_config.permissions.clone(),
+    ));
+    let grants = Arc::new(DefaultGrantStore::load());
+    let tool_executor = tool_runner::spawn_tool_executor_with_policy(
         &holly,
         tools,
-        profiles.clone(),
+        live_profiles.clone(),
         user_config.permissions.clone(),
+        active,
+        resolver,
+        grants.clone(),
         user_config.hooks.clone(),
     );
 
@@ -819,6 +845,21 @@ async fn main() -> Result<()> {
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
     // Answer `ReplayFrom` late-subscriber history queries from that same log (#160).
     history::spawn_history_responder(&holly, cwd.clone());
+
+    // Live definitions watcher (#329, ADR-0084): inotify on the resolved
+    // agent/skill dirs + managed files, debounced, reloading straight into the
+    // runtime-held mirrors above — never core's `EngineConfig`, which stays
+    // pinned to what was loaded at process start (ADR-0081 precedent: live
+    // registry mutation in core is a rejected design). `reload_rx` only matters
+    // to the TUI (a status line); every other head lets its messages drop.
+    let live = watch::LiveDefinitions {
+        profiles: live_profiles.clone(),
+        skills: live_skills.clone(),
+        agent_models: live_agent_models.clone(),
+        grants: grants.clone(),
+    };
+    let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let watcher_handle = watch::spawn_watcher(cwd.clone(), live, Some(reload_tx));
 
     let result = match cli.cmd {
         Some(Cmd::Run {
@@ -895,8 +936,9 @@ async fn main() -> Result<()> {
                 session_id,
                 model_info,
                 catalog,
-                profiles,
-                agent_models,
+                live_profiles,
+                live_agent_models,
+                reload_rx,
                 cwd.clone(),
                 bash_enabled,
                 tool_names,
@@ -928,6 +970,9 @@ async fn main() -> Result<()> {
     // holds a `Holly` clone (an inbox + event sender), so aborting it is required
     // for the channels to actually close.
     tool_executor.abort();
+    if let Some(h) = watcher_handle {
+        h.abort();
+    }
     drop(holly);
     let _ = persistence_handle.await;
 

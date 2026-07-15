@@ -160,7 +160,9 @@ async fn load_skill_then_read_a_substituted_ref() {
     std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
 
     let mut tools = host_tools(root.clone());
-    tools.register(LoadSkillTool::new(registry));
+    tools.register(LoadSkillTool::new(Arc::new(std::sync::RwLock::new(
+        registry,
+    ))));
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -243,7 +245,9 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
     std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
 
     let mut tools = host_tools(root.clone());
-    tools.register(LoadSkillTool::new(registry));
+    tools.register(LoadSkillTool::new(Arc::new(std::sync::RwLock::new(
+        registry,
+    ))));
     // A profile that *advertises* `load_skill` (no tool mask) but denies it via
     // permission (default Deny): `load_skill` is gated exactly like `read`, no
     // exemption (ADR-0037). Using a non-masked profile keeps this focused on the

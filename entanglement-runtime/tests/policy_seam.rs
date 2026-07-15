@@ -147,7 +147,7 @@ fn spawn_with_policy(
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         reg,
-        profiles,
+        Arc::new(std::sync::RwLock::new(profiles)),
         PermissionProfile::new(Permission::Allow),
         active,
         resolver,

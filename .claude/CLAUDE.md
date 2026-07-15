@@ -338,6 +338,19 @@ re-document them here):
   by the same permission profiles as any host tool; a server that fails to connect
   is logged and skipped. `HttpClient` is public so a multi-tenant embedder can
   assemble per-user registries with per-user tokens without the YAML path.
+- **Live reload + managed-file locking** (#329, [ADR-0084](../docs/adr/0084-runtime-live-reload-and-managed-file-locking.md)):
+  a runtime `watch.rs` (inotify via `notify`/`notify-debouncer-mini`, 500ms debounce)
+  watches the agent/skill dirs above plus `${config_dir}/entanglement/` and
+  `<root>/.entanglement/`, reloading into **runtime-held mirrors**
+  (`watch::LiveDefinitions`) that `tool_runner` permission resolution, `load_skill`,
+  and the TUI `/agent` picker read live — never core's `EngineConfig.profiles`,
+  which stays pinned per session for the process lifetime (same "live registry
+  mutation rejected" reasoning as [ADR-0081](../docs/adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)).
+  The three managed files above (`grants.yml`/`agent-models.yml`/the env file) are
+  now advisory-locked across concurrent `skutter` instances
+  (`config::lock::with_locked_file`, an `fd-lock` on a sibling `.lock` file,
+  read-current-then-merge under the lock) so two instances no longer clobber each
+  other's write.
 
 | Topic | Module |
 | --- | --- |

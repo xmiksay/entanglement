@@ -59,6 +59,7 @@ pub mod agent_models;
 pub mod atomic;
 pub mod env_file;
 pub mod env_key;
+pub mod lock;
 
 /// The CLI `skutter config set-key` handler (rpassword prompt + catalog lookup).
 /// Behind `cli`+`provider`: it prompts (rpassword, a `cli`-feature dep) and looks

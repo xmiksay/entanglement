@@ -32,7 +32,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::tools::Tool;
 use anyhow::{anyhow, bail, Context, Result};
@@ -43,14 +43,16 @@ use serde::Deserialize;
 use super::SkillRegistry;
 use crate::tool_names::LOAD_SKILL_TOOL;
 
-/// The `load_skill` host tool. Holds the shared startup [`SkillRegistry`] and
-/// resolves a `skill_name` against it deterministically.
+/// The `load_skill` host tool. Holds the shared, live-reloadable
+/// [`SkillRegistry`] (#329: an `Arc<RwLock<..>>` so a definitions-dir change
+/// swaps in a fresh registry without restarting the engine) and resolves a
+/// `skill_name` against its *current* value deterministically.
 pub struct LoadSkillTool {
-    registry: Arc<SkillRegistry>,
+    registry: Arc<RwLock<Arc<SkillRegistry>>>,
 }
 
 impl LoadSkillTool {
-    pub fn new(registry: Arc<SkillRegistry>) -> Self {
+    pub fn new(registry: Arc<RwLock<Arc<SkillRegistry>>>) -> Self {
         Self { registry }
     }
 }
@@ -87,7 +89,11 @@ impl Tool for LoadSkillTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: LoadSkillInput = serde_json::from_str(input)
             .context("invalid input to load_skill: expected {\"skill_name\": string}")?;
-        load(&self.registry, &parsed.skill_name)
+        // Snapshot the current registry `Arc` under the lock (cheap — a refcount
+        // bump) rather than holding the lock across the lookup below, so a
+        // concurrent reload's write lock is never contended by this async call.
+        let registry = self.registry.read().unwrap().clone();
+        load(&registry, &parsed.skill_name)
     }
 }
 
