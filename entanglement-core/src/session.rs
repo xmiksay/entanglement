@@ -25,10 +25,13 @@ mod turn_state;
 pub use turn_state::TurnState;
 
 use std::collections::VecDeque;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
 use crate::context::Context;
+use crate::holly::SeqRegistry;
 use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
 use entanglement_provider::{ContentPart, GenerationParams, Llm};
@@ -78,7 +81,13 @@ pub struct Session {
     /// [`EngineConfig::generation`][crate::EngineConfig] at creation and replaced
     /// on a model switch so temperature / max-output / thinking follow the model.
     pub generation: Option<GenerationParams>,
-    pub seq: u64,
+    /// Monotonic per-session emit counter, shared (`Arc<AtomicU64>`, #157) with
+    /// the supervisor's seq registry so runtime-authored events minted while this
+    /// session is parked (an approval `ToolRequest`, a `Plan`/`TaskList` snapshot,
+    /// a `FileChange`) draw a fresh seq from the *same* sequence via
+    /// [`Holly::emit_for_session`][crate::Holly] — keeping `(session, seq)` unique
+    /// instead of reusing the parked `ToolExec` seq (the pre-#157 defect).
+    pub seq: Arc<AtomicU64>,
     pub parent: Option<SessionId>,
     /// Cumulative token usage + cost across every model round-trip this session
     /// has run (#192). Each `LlmEvent::Finish` folds its normalized `Usage` in
@@ -116,7 +125,7 @@ impl Session {
             profile,
             model: None,
             generation: cfg.generation,
-            seq: 0,
+            seq: Arc::new(AtomicU64::new(0)),
             parent: None,
             usage: SessionUsage::default(),
             turn: None,
@@ -129,6 +138,7 @@ impl Session {
 ///
 /// If `initial_session` is provided, it's used as the starting state (for resume);
 /// otherwise, a fresh session is created.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn session_loop(
     session: SessionId,
     mut rx: mpsc::Receiver<SessionCmd>,
@@ -137,6 +147,7 @@ pub(crate) async fn session_loop(
     profile: AgentProfile,
     initial_session: Option<Session>,
     parent: Option<SessionId>,
+    seqs: SeqRegistry,
 ) {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -154,6 +165,14 @@ pub(crate) async fn session_loop(
     });
 
     let mut s = initial_session.unwrap_or_else(|| Session::new_empty(&cfg, profile));
+    // Publish this session's shared seq counter so the runtime can mint a fresh
+    // seq for events it authors while the session is parked (#157). Registered
+    // before the first turn (hence before any `ToolExec`), so a runtime emit
+    // never races ahead of registration. On a resume it's the replay-seeded
+    // counter, so runtime seqs continue past the reconstructed tail.
+    seqs.lock()
+        .expect("seq registry mutex poisoned")
+        .insert(session.clone(), Arc::clone(&s.seq));
     let mut stash: VecDeque<SessionCmd> = VecDeque::new();
 
     let _ = events.send(OutEvent::Status {
@@ -184,7 +203,7 @@ pub(crate) async fn session_loop(
             });
             let pending = turn.pending.clone();
             for c in &pending {
-                emit_tool_exec(&events, &session, c, &mut s.seq);
+                emit_tool_exec(&events, &session, c, &s.seq);
             }
         }
     }
@@ -234,7 +253,7 @@ pub(crate) async fn session_loop(
                     None => {
                         let _ = events.send(OutEvent::Error {
                             session: session.clone(),
-                            seq: next_seq(&mut s.seq),
+                            seq: next_seq(&s.seq),
                             message: format!("unknown agent: {name}"),
                         });
                     }
@@ -252,7 +271,7 @@ pub(crate) async fn session_loop(
                 let Some(resolver) = cfg.model_resolver.as_ref() else {
                     let _ = events.send(OutEvent::Error {
                         session: session.clone(),
-                        seq: next_seq(&mut s.seq),
+                        seq: next_seq(&s.seq),
                         message: "model switching is not supported by this engine".to_string(),
                     });
                     continue;
@@ -273,7 +292,7 @@ pub(crate) async fn session_loop(
                     Err(e) => {
                         let _ = events.send(OutEvent::Error {
                             session: session.clone(),
-                            seq: next_seq(&mut s.seq),
+                            seq: next_seq(&s.seq),
                             message: format!("cannot switch model: {e}"),
                         });
                     }
@@ -293,7 +312,7 @@ pub(crate) async fn session_loop(
                             &call.id,
                             &call.name,
                             content.clone(),
-                            &mut s.seq,
+                            &s.seq,
                         );
                         s.ctx.push_tool_content(&call.id, content);
                         if s.turn.as_ref().is_some_and(TurnState::is_drained) {
@@ -322,6 +341,12 @@ pub(crate) async fn session_loop(
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64;
+                // Retire the shared seq counter: no more content will be minted
+                // for this id (a late runtime emit for a gone session falls back
+                // to seq 0, harmless — there is no live content stream to collide).
+                seqs.lock()
+                    .expect("seq registry mutex poisoned")
+                    .remove(&session);
                 let _ = events.send(OutEvent::SessionEnded {
                     session: session.clone(),
                     ts,

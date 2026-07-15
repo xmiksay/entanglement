@@ -8,10 +8,12 @@
 //! (stdio, WS, TUI) is a thin adapter over these two methods.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::protocol::{InMsg, OutEvent, SessionId, SessionInfo};
+use crate::protocol::{AgentState, InMsg, OutEvent, SessionId, SessionInfo};
 use crate::session::{session_loop, Session, SessionCmd};
 
 mod config;
@@ -19,6 +21,29 @@ mod routing;
 
 pub use config::{ConfigError, EngineConfig, ProfileRegistry};
 use routing::{emit_supervisor_error, msg_to_cmd, resume_meta, route_to_session};
+
+/// Per-session monotonic seq counters, shared between each session task (which
+/// owns the same `Arc<AtomicU64>` as its `Session::seq`) and the supervisor +
+/// runtime (#157). A runtime service authoring an event for a *parked* session —
+/// an approval `ToolRequest`, a `Plan`/`TaskList` snapshot, a `FileChange` —
+/// mints a fresh seq from this shared counter via [`Holly::emit_for_session`]
+/// instead of reusing the parked `ToolExec` seq, so `(session, seq)` stays unique
+/// across every authored event. The session task registers its counter on start
+/// and removes it on exit; a `Mutex` (never held across an `.await`) orders the
+/// map reads/writes.
+pub(crate) type SeqRegistry = Arc<Mutex<HashMap<SessionId, Arc<AtomicU64>>>>;
+
+/// Mint the next monotonic seq for `session` from `seqs`, or `0` when the session
+/// has no live counter (already ended, never started, or a supervisor error for
+/// an id that never spawned a session). Shared by [`Holly::emit_for_session`] and
+/// the supervisor's [`routing::emit_supervisor_error`].
+pub(crate) fn next_seq_for(seqs: &SeqRegistry, session: &SessionId) -> u64 {
+    seqs.lock()
+        .expect("seq registry mutex poisoned")
+        .get(session)
+        .map(|c| c.fetch_add(1, Ordering::Relaxed) + 1)
+        .unwrap_or(0)
+}
 
 const INBOX_CAPACITY: usize = 256;
 const OUTBOX_CAPACITY: usize = 1024;
@@ -43,6 +68,8 @@ pub struct Holly {
     /// e.g. the tool executor watching `Approve`/`Reject`/`Stop` while it owns
     /// permission dispatch + approval (ADR-0010, #59).
     inbound: broadcast::Sender<InMsg>,
+    /// Shared per-session seq counters (#157) — see [`SeqRegistry`].
+    seqs: SeqRegistry,
 }
 
 impl Holly {
@@ -51,15 +78,25 @@ impl Holly {
         let (inbox, rx) = mpsc::channel::<InMsg>(INBOX_CAPACITY);
         let (events, _) = broadcast::channel::<OutEvent>(OUTBOX_CAPACITY);
         let (inbound, _) = broadcast::channel::<InMsg>(INBOX_CAPACITY);
+        let seqs: SeqRegistry = Arc::new(Mutex::new(HashMap::new()));
         let supervisor_events = events.clone();
         let supervisor_inbound = inbound.clone();
-        tokio::spawn(
-            async move { supervisor(rx, supervisor_events, supervisor_inbound, cfg).await },
-        );
+        let supervisor_seqs = seqs.clone();
+        tokio::spawn(async move {
+            supervisor(
+                rx,
+                supervisor_events,
+                supervisor_inbound,
+                supervisor_seqs,
+                cfg,
+            )
+            .await
+        });
         Self {
             inbox,
             events,
             inbound,
+            seqs,
         }
     }
 
@@ -73,9 +110,39 @@ impl Holly {
         self.events.subscribe()
     }
 
-    /// Borrow the outbound sender (for heads that want to subscribe once).
-    pub fn events(&self) -> &broadcast::Sender<OutEvent> {
-        &self.events
+    /// Mint a fresh monotonic per-session `seq` and broadcast a runtime-authored
+    /// content event for `session` (#157). The sanctioned way for a runtime
+    /// service to emit a seq-bearing [`OutEvent`] while a session is parked (an
+    /// approval `ToolRequest`/`UserQuestion`, a `Plan`/`TaskList` snapshot, a
+    /// `FileChange`): the seq is drawn from the session's shared counter — the
+    /// *same* sequence the session task uses — so `(session, seq)` stays unique
+    /// instead of reusing the parked `ToolExec` seq. `make` receives the minted
+    /// seq and builds the event. A session with no live counter (already ended,
+    /// or never started) mints seq `0` — harmless, as there is no live content
+    /// stream to collide with.
+    pub fn emit_for_session(&self, session: &SessionId, make: impl FnOnce(u64) -> OutEvent) {
+        let seq = self.next_seq(session);
+        let _ = self.events.send(make(seq));
+    }
+
+    /// Broadcast a point-in-time lifecycle [`OutEvent::Status`] for `session`.
+    /// Status carries no `seq` (it's not content, so it's exempt from the seq
+    /// contract), so no counter is touched — this is the seq-less sibling of
+    /// [`emit_for_session`][Self::emit_for_session] for the runtime's `Thinking`/
+    /// `WaitingApproval` transitions around a parked tool call.
+    pub fn emit_status(&self, session: &SessionId, state: AgentState) {
+        let _ = self.events.send(OutEvent::Status {
+            session: session.clone(),
+            state,
+        });
+    }
+
+    /// Mint the next seq for `session` from the shared registry, or `0` when the
+    /// session has no live counter (ended / never started). Shared by
+    /// [`emit_for_session`][Self::emit_for_session] and the supervisor's
+    /// error-emission path.
+    pub(crate) fn next_seq(&self, session: &SessionId) -> u64 {
+        next_seq_for(&self.seqs, session)
     }
 
     /// Subscribe to the inbound [`InMsg`] fan-out. Every message sent through
@@ -120,6 +187,7 @@ async fn supervisor(
     mut rx: mpsc::Receiver<InMsg>,
     events: broadcast::Sender<OutEvent>,
     inbound: broadcast::Sender<InMsg>,
+    seqs: SeqRegistry,
     cfg: EngineConfig,
 ) {
     let mut sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>> = HashMap::new();
@@ -194,6 +262,7 @@ async fn supervisor(
             if closed.contains(&session_id) {
                 emit_supervisor_error(
                     &events,
+                    &seqs,
                     &session_id,
                     "cannot resume a closed session id (ids are single-use)",
                 );
@@ -204,6 +273,7 @@ async fn supervisor(
             if sessions.contains_key(&session_id) {
                 emit_supervisor_error(
                     &events,
+                    &seqs,
                     &session_id,
                     "cannot resume an already-live session id",
                 );
@@ -220,6 +290,7 @@ async fn supervisor(
                     tracing::error!("Failed to replay session {}: {}", session_id, e);
                     emit_supervisor_error(
                         &events,
+                        &seqs,
                         &session_id,
                         &format!("failed to resume session: {e}"),
                     );
@@ -238,8 +309,19 @@ async fn supervisor(
             let sid = session_id.clone();
             let profile = initial_session.profile.clone();
             let parent = initial_session.parent.clone();
+            let seqs2 = seqs.clone();
             tokio::spawn(async move {
-                session_loop(sid, srx, ev, cfg2, profile, Some(initial_session), parent).await;
+                session_loop(
+                    sid,
+                    srx,
+                    ev,
+                    cfg2,
+                    profile,
+                    Some(initial_session),
+                    parent,
+                    seqs2,
+                )
+                .await;
             });
             sessions.insert(session_id.clone(), stx);
             continue;
@@ -260,6 +342,7 @@ async fn supervisor(
             if closed.contains(child) {
                 emit_supervisor_error(
                     &events,
+                    &seqs,
                     child,
                     "cannot spawn a closed session id (ids are single-use)",
                 );
@@ -276,6 +359,7 @@ async fn supervisor(
                 None => {
                     emit_supervisor_error(
                         &events,
+                        &seqs,
                         child,
                         &format!("cannot spawn unknown agent profile `{agent}`"),
                     );
@@ -300,9 +384,10 @@ async fn supervisor(
             let cfg2 = cfg.clone();
             let sid = child.clone();
             let parent = Some(parent.clone());
-            tokio::spawn(
-                async move { session_loop(sid, srx, ev, cfg2, profile, None, parent).await },
-            );
+            let seqs2 = seqs.clone();
+            tokio::spawn(async move {
+                session_loop(sid, srx, ev, cfg2, profile, None, parent, seqs2).await
+            });
             // Queue the initial prompt; the child drains it after its lifecycle
             // events. Spawn prompts are text-only (#197).
             let content = vec![entanglement_provider::ContentPart::text(prompt.clone())];
@@ -320,6 +405,7 @@ async fn supervisor(
             if closed.contains(&session_id) {
                 emit_supervisor_error(
                     &events,
+                    &seqs,
                     &session_id,
                     "session id is closed (ids are single-use); mint a fresh session id",
                 );
@@ -341,14 +427,15 @@ async fn supervisor(
             let ev = events.clone();
             let cfg2 = cfg.clone();
             let sid = session_id.clone();
-            tokio::spawn(
-                async move { session_loop(sid, srx, ev, cfg2, profile, None, parent).await },
-            );
+            let seqs2 = seqs.clone();
+            tokio::spawn(async move {
+                session_loop(sid, srx, ev, cfg2, profile, None, parent, seqs2).await
+            });
             sessions.insert(session_id.clone(), stx);
         }
 
         if let Some(tx) = sessions.get(&session_id) {
-            route_to_session(tx, cmd, &session_id, &events).await;
+            route_to_session(tx, cmd, &session_id, &events, &seqs).await;
         }
     }
     // Inbox closed: signal every session to stop. Their tasks return on receipt.

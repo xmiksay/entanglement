@@ -385,3 +385,34 @@ fn tool_call_first_clears_pending_prompt() {
     });
     assert!(!user_pending(&v));
 }
+
+#[test]
+fn supervisor_error_with_seq_zero_renders_even_after_seq_advances() {
+    // ex-#159 / #157: a supervisor lifecycle error for an id with no live session
+    // carries seq 0 (no counter to mint from). Once prior content has advanced
+    // `last_seen_seq` past 0, a plain `seq > last_seen_seq` guard would drop it,
+    // leaving the refusal structurally invisible. The seq-0 bypass renders it.
+    let mut v = SessionView::new();
+    assert!(v.apply_event(OutEvent::TextDelta {
+        session: sid(),
+        seq: 5,
+        text: "working".into(),
+    }));
+    assert!(v.apply_event(OutEvent::Error {
+        session: sid(),
+        seq: 0,
+        message: "session id is closed".into(),
+    }));
+    let errors = v
+        .transcript()
+        .iter()
+        .filter(|e| matches!(e, TranscriptEntry::Error { .. }))
+        .count();
+    assert_eq!(errors, 1, "seq-0 supervisor error must render");
+    // A genuinely-stale seq-bearing error still dedupes (bypass is seq-0 only).
+    assert!(!v.apply_event(OutEvent::Error {
+        session: sid(),
+        seq: 3,
+        message: "stale replay".into(),
+    }));
+}

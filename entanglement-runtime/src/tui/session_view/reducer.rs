@@ -258,7 +258,16 @@ impl SessionView {
             // `App::handle_out_event`), not per-view transcript content (#192).
             OutEvent::Usage { .. } => false,
             OutEvent::Error { seq, message, .. } => {
-                if seq > self.last_seen_seq {
+                // A supervisor lifecycle error for an id with no live session
+                // (refused resume/spawn of a closed/unknown id) carries seq `0` —
+                // a value core never mints (#157) — so it can't satisfy
+                // `seq > last_seen_seq` and would otherwise be dropped, leaving the
+                // refusal structurally invisible (ex-#159). Render it
+                // unconditionally; it doesn't advance the dedupe watermark.
+                if seq == 0 {
+                    self.transcript.push(TranscriptEntry::Error { message });
+                    true
+                } else if seq > self.last_seen_seq {
                     self.transcript.push(TranscriptEntry::Error { message });
                     self.last_seen_seq = seq;
                     true

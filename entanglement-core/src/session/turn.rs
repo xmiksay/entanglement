@@ -108,7 +108,7 @@ async fn run_round(
     if turn.iterations > MAX_TURNS {
         let _ = events.send(OutEvent::Error {
             session: session.clone(),
-            seq: next_seq(&mut s.seq),
+            seq: next_seq(&s.seq),
             message: format!("exceeded maximum turn limit ({MAX_TURNS}) - possible infinite loop"),
         });
         return RoundOutcome::TurnEnded;
@@ -155,7 +155,7 @@ async fn run_round(
         } else {
             emit_turn_error(
                 session,
-                &mut s.seq,
+                &s.seq,
                 events,
                 format!(
                     "context window exceeded: {after} tokens estimated after \
@@ -199,7 +199,7 @@ async fn run_round(
         if stop_reason == Some(StopReason::MaxTokens) {
             let _ = events.send(OutEvent::Error {
                 session: session.clone(),
-                seq: next_seq(&mut s.seq),
+                seq: next_seq(&s.seq),
                 message: "model response truncated: hit the max output token limit \
                           (stop reason: max_tokens)"
                     .to_string(),
@@ -219,7 +219,7 @@ async fn run_round(
         tracing::debug!("no tool calls - emitting Done");
         let _ = events.send(OutEvent::Done {
             session: session.clone(),
-            seq: next_seq(&mut s.seq),
+            seq: next_seq(&s.seq),
         });
         let _ = events.send(OutEvent::Status {
             session: session.clone(),
@@ -235,15 +235,8 @@ async fn run_round(
     // against the pending set (ADR-0061; deliberate change from the serial
     // in-call-order dispatch this replaced).
     for call in &tool_calls {
-        emit_tool_call(
-            events,
-            session,
-            &call.id,
-            &call.name,
-            &call.input,
-            &mut s.seq,
-        );
-        emit_tool_exec(events, session, call, &mut s.seq);
+        emit_tool_call(events, session, &call.id, &call.name, &call.input, &s.seq);
+        emit_tool_exec(events, session, call, &s.seq);
     }
     if let Some(turn) = s.turn.as_mut() {
         turn.begin_batch(tool_calls);

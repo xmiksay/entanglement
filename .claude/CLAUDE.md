@@ -138,6 +138,19 @@ re-document them here):
   (sibling of `config.yml`, not its ceiling section).
 - **Session-multiplexed**: every frame carries `SessionId`; content frames carry
   monotonic `seq`. Supervisor-global vs session-scoped routing is explicit.
+  `(session, seq)` is **unique across every authored content event** (#157,
+  [ADR-0068](../docs/adr/0068-shared-per-session-seq-counter.md)): the seq comes
+  from one per-session counter (`Session.seq: Arc<AtomicU64>`) shared by the core
+  session task and the runtime via a supervisor-held registry, so a
+  runtime-authored event minted while the session is parked — an approval
+  `ToolRequest`/`UserQuestion`, a `Plan`/`TaskList` snapshot, a `FileChange` —
+  mints a fresh seq via `Holly::emit_for_session` instead of reusing the parked
+  `ToolExec` seq; seq-less `Status` goes through `Holly::emit_status` (the raw
+  outbound sender is no longer exposed). The one exemption: a supervisor
+  lifecycle `Error` for an id with **no live session** carries `seq == 0` (a value
+  core never mints), which heads render unconditionally (the seq-`0` bypass)
+  rather than dropping under a `seq > last` dedupe — this is what made
+  supervisor-shed errors TUI-invisible (absorbs #159).
 - **Model/provider switch is live, not a restart** (#218,
   [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)): `SetModel {
   provider, model }` re-resolves against a runtime-supplied resolver held on

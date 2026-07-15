@@ -81,6 +81,26 @@ than parking its single loop and stalling every other session.
 - **Monotonic `seq`** on content events so a head can dedupe against replayed
   history (`agent`'s pattern); lifecycle frames (`Status`, `AgentChanged`)
   carry no `seq`.
+- **`(session, seq)` is unique across every authored content event** (#157). The
+  seq comes from **one per-session counter** (`Arc<AtomicU64>`), shared by the
+  core session task and the runtime through a supervisor-held registry: a session
+  task registers its counter on start / removes it on exit, and a runtime service
+  authoring an event for a *parked* session — an approval `ToolRequest`/
+  `UserQuestion`, a `Plan`/`TaskList` snapshot, a `FileChange` — mints a **fresh**
+  seq from that same counter via `Holly::emit_for_session` instead of reusing the
+  parked `ToolExec` seq (the pre-#157 defect that split authorship across crates
+  and made a strict `seq > last` dedupe drop every approval prompt). The seq-less
+  `Status` transitions the runtime emits around a parked call go through
+  `Holly::emit_status`; the raw outbound sender is no longer exposed.
+  - **Supervisor lifecycle errors are the one exemption**: an `Error` the
+    supervisor emits for an id with **no live session** (a refused resume/spawn of
+    a closed/unknown id, a saturated *dead* channel) has no counter to draw from,
+    so it carries `seq == 0` — a value core never mints, so it can't collide with
+    content — and a head renders it **unconditionally** (the seq-`0` bypass)
+    rather than dropping it under a `seq > last` dedupe (ex-#159, the reason
+    supervisor-shed errors were invisible in the TUI). A supervisor error for a
+    session that *is* still live (e.g. its channel saturated) mints a real seq
+    from the live counter and takes its ordered place in that stream.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/0004-structured-plan-and-task-events.md)
 

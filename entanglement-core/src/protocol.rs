@@ -9,6 +9,19 @@
 //! dedupe/order against replayed history; lifecycle frames
 //! ([`Status`][OutEvent::Status], [`AgentChanged`][OutEvent::AgentChanged])
 //! are point-in-time and carry no `seq`.
+//!
+//! `(session, seq)` is unique across every authored content event (#157): the
+//! seq is drawn from one per-session counter shared by the core session task and
+//! the runtime (via [`Holly::emit_for_session`][crate::Holly]), so a
+//! runtime-authored event minted while the session is parked — an approval
+//! [`ToolRequest`][OutEvent::ToolRequest]/[`UserQuestion`][OutEvent::UserQuestion],
+//! a [`Plan`][OutEvent::Plan]/[`TaskList`][OutEvent::TaskList] snapshot, a
+//! [`FileChange`][OutEvent::FileChange] — gets a fresh seq rather than reusing
+//! the parked [`ToolExec`][OutEvent::ToolExec] seq. The one exemption is a
+//! supervisor lifecycle [`Error`][OutEvent::Error] for an id with no live session
+//! (a refused resume/spawn of a closed/unknown id): it has no counter to draw
+//! from and carries `seq == 0` — a value core never mints — which a head renders
+//! unconditionally instead of dropping under a `seq > last` dedupe.
 
 use entanglement_provider::ContentPart;
 use serde::{Deserialize, Serialize};

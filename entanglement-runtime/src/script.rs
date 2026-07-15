@@ -181,7 +181,6 @@ pub async fn run_rhai(
     policy: BindingPolicy,
     self_perm: Permission,
     session: SessionId,
-    seq: u64,
     request_id: String,
     mut inbound: Receiver<InMsg>,
     input: String,
@@ -219,7 +218,6 @@ pub async fn run_rhai(
                 &holly,
                 &mut inbound,
                 &session,
-                seq,
                 &request_id,
                 RHAI_TOOL,
                 &parsed.script,
@@ -247,7 +245,6 @@ pub async fn run_rhai(
         &policy,
         &holly,
         &session,
-        seq,
         &request_id,
         &mut inbound,
         parsed.script,
@@ -269,7 +266,6 @@ async fn execute_script(
     policy: &BindingPolicy,
     holly: &Holly,
     session: &SessionId,
-    seq: u64,
     request_id: &str,
     inbound: &mut Receiver<InMsg>,
     script: String,
@@ -302,7 +298,6 @@ async fn execute_script(
             policy,
             holly,
             session,
-            seq,
             request_id,
             inbound,
             &mut approved,
@@ -337,7 +332,6 @@ async fn service_binding(
     policy: &BindingPolicy,
     holly: &Holly,
     session: &SessionId,
-    seq: u64,
     request_id: &str,
     inbound: &mut Receiver<InMsg>,
     approved: &mut HashSet<&'static str>,
@@ -365,16 +359,7 @@ async fn service_binding(
             // binding's tool + args; the script source rode the outer approval.
             let bind_rid = format!("{request_id}:rhai:{}", call.tool);
             let card_tool = format!("{} (rhai)", call.tool);
-            match await_approval(
-                holly,
-                inbound,
-                session,
-                seq,
-                &bind_rid,
-                &card_tool,
-                &call.input,
-            )
-            .await
+            match await_approval(holly, inbound, session, &bind_rid, &card_tool, &call.input).await
             {
                 Approval::Approved => {
                     approved.insert(call.tool);
@@ -423,12 +408,12 @@ async fn await_approval(
     holly: &Holly,
     inbound: &mut Receiver<InMsg>,
     session: &SessionId,
-    seq: u64,
     request_id: &str,
     tool: &str,
     input: &str,
 ) -> Approval {
-    let _ = holly.events().send(OutEvent::ToolRequest {
+    // Mint a fresh per-session seq (#157) rather than reusing the `ToolExec` seq.
+    holly.emit_for_session(session, |seq| OutEvent::ToolRequest {
         session: session.clone(),
         seq,
         request_id: request_id.to_string(),
@@ -613,10 +598,7 @@ fn serialize_return(value: &Dynamic) -> String {
 }
 
 fn set_state(holly: &Holly, session: &SessionId, state: AgentState) {
-    let _ = holly.events().send(OutEvent::Status {
-        session: session.clone(),
-        state,
-    });
+    holly.emit_status(session, state);
 }
 
 #[cfg(test)]

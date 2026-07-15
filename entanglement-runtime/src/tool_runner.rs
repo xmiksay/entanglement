@@ -235,9 +235,13 @@ pub fn spawn_tool_executor_with_hooks(
                     // Its in-flight tool bookkeeping is moot once the session ends.
                     cancels.forget_session(&session);
                 }
+                // The parked `ToolExec` seq is deliberately ignored (#157): every
+                // event the runtime authors around this call (an approval
+                // `ToolRequest`/`UserQuestion`, a `Plan`/`TaskList` snapshot, a
+                // `FileChange`) mints a fresh per-session seq via
+                // `Holly::emit_for_session`, so `(session, seq)` stays unique.
                 Ok(OutEvent::ToolExec {
                     session,
-                    seq,
                     request_id,
                     tool,
                     input,
@@ -352,7 +356,7 @@ pub fn spawn_tool_executor_with_hooks(
                             let holly = holly.clone();
                             tokio::spawn(async move {
                                 crate::ask_user::run_ask_user(
-                                    holly, inbound, session, seq, request_id, input,
+                                    holly, inbound, session, request_id, input,
                                 )
                                 .await;
                             });
@@ -365,7 +369,7 @@ pub fn spawn_tool_executor_with_hooks(
                             let holly = holly.clone();
                             tokio::spawn(async move {
                                 crate::propose_plan::run_propose_plan(
-                                    holly, inbound, session, seq, request_id, input,
+                                    holly, inbound, session, request_id, input,
                                 )
                                 .await;
                             });
@@ -411,8 +415,8 @@ pub fn spawn_tool_executor_with_hooks(
                             let run_stop = stop.clone();
                             let handle = tokio::spawn(async move {
                                 crate::script::run_rhai(
-                                    holly, tools, policy, self_perm, session, seq, request_id,
-                                    inbound, input, run_stop,
+                                    holly, tools, policy, self_perm, session, request_id, inbound,
+                                    input, run_stop,
                                 )
                                 .await;
                             });
@@ -461,8 +465,8 @@ pub fn spawn_tool_executor_with_hooks(
                             let reg_session = session.clone();
                             let handle = tokio::spawn(async move {
                                 dispatch(
-                                    &holly, &tools, &grants, &hooks, session, seq, request_id,
-                                    tool, input, perm,
+                                    &holly, &tools, &grants, &hooks, session, request_id, tool,
+                                    input, perm,
                                 )
                                 .await;
                             });
@@ -496,7 +500,6 @@ async fn dispatch(
     grants: &Mutex<GrantStore>,
     hooks: &Hooks,
     session: SessionId,
-    seq: u64,
     request_id: String,
     tool: String,
     input: String,
@@ -508,7 +511,7 @@ async fn dispatch(
     }
     match perm {
         Permission::Allow => {
-            run_and_reply(holly, tools, hooks, session, seq, request_id, tool, input).await;
+            run_and_reply(holly, tools, hooks, session, request_id, tool, input).await;
         }
         Permission::Deny => {
             let output = format!("tool `{tool}` denied by permission profile");
@@ -516,21 +519,18 @@ async fn dispatch(
         }
         Permission::Ask => {
             // Subscribe *before* prompting so a fast approval can't race ahead of
-            // us. The prompt reuses the `ToolExec` seq: core's next content event
-            // (the `ToolOutput`) carries a higher seq, so a head's monotonic
-            // dedupe still honors the request.
+            // us. The prompt mints a **fresh** per-session seq (#157) from the
+            // parked session's shared counter, so `(session, seq)` stays unique
+            // instead of reusing the `ToolExec` seq.
             let mut inbound = holly.subscribe_inbound();
-            let _ = holly.events().send(OutEvent::ToolRequest {
+            holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
                 session: session.clone(),
                 seq,
                 request_id: request_id.clone(),
                 tool: tool.clone(),
                 input: input.clone(),
             });
-            let _ = holly.events().send(OutEvent::Status {
-                session: session.clone(),
-                state: AgentState::WaitingApproval,
-            });
+            holly.emit_status(&session, AgentState::WaitingApproval);
             await_decision(
                 holly,
                 tools,
@@ -538,7 +538,6 @@ async fn dispatch(
                 hooks,
                 &mut inbound,
                 session,
-                seq,
                 request_id,
                 tool,
                 input,
@@ -560,7 +559,6 @@ async fn await_decision(
     hooks: &Hooks,
     inbound: &mut tokio::sync::broadcast::Receiver<InMsg>,
     session: SessionId,
-    seq: u64,
     request_id: String,
     tool: String,
     input: String,
@@ -578,7 +576,7 @@ async fn await_decision(
                     .unwrap()
                     .record(&session, &tool, arg.as_deref(), scope);
             }
-            run_and_reply(holly, tools, hooks, session, seq, request_id, tool, input).await;
+            run_and_reply(holly, tools, hooks, session, request_id, tool, input).await;
         }
         seam::Decision::Reject { reason } => {
             set_thinking(holly, &session);
@@ -594,24 +592,25 @@ async fn await_decision(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_and_reply(
     holly: &Holly,
     tools: &ToolRegistry,
     hooks: &Hooks,
     session: SessionId,
-    seq: u64,
     request_id: String,
     tool: String,
     input: String,
 ) {
     // `update_plan`/`update_tasks` carry no host resource (#231, ADR-0049): they
     // are not in the registry. The runtime emits their `Plan`/`TaskList` snapshot
-    // — reusing the `ToolExec` seq — and acks (text), instead of dispatching.
+    // — minting a **fresh** per-session seq (#157) so it takes an ordered place in
+    // the content stream instead of colliding with the parked `ToolExec` seq — and
+    // acks (text), instead of dispatching.
     if crate::plan_tasks::is_state_tool(&tool) {
-        if let Some(ev) = crate::plan_tasks::state_event(&session, seq, &tool, &input) {
-            let _ = holly.events().send(ev);
-        }
+        holly.emit_for_session(&session, |seq| {
+            crate::plan_tasks::state_event(&session, seq, &tool, &input)
+                .expect("is_state_tool ⇒ state_event is Some")
+        });
         let ack = crate::plan_tasks::ack(&tool);
         hooks.run_post_tool_use(&session, &tool, &input, &ack).await;
         seam::reply(holly, session, request_id, ack).await;
@@ -620,12 +619,11 @@ async fn run_and_reply(
     // Every other tool executes against the host registry, returning multimodal
     // content (a text result, or an image block for `read` on an image, #221).
     // `edit`/`write` record their change into the capture scope (#202); the
-    // executor stamps it with this call's session/seq and broadcasts the
-    // `FileChange` audit event before replying with the `ToolResult`.
+    // executor mints a fresh `FileChange` seq (#157) and broadcasts the audit
+    // event before replying with the `ToolResult`.
     let content = crate::file_change::capture_and_emit(
-        holly.events(),
+        holly,
         &session,
-        seq,
         tools.execute(&ToolCall {
             id: request_id.clone(),
             name: tool.clone(),
@@ -647,10 +645,7 @@ async fn run_and_reply(
 }
 
 fn set_thinking(holly: &Holly, session: &SessionId) {
-    let _ = holly.events().send(OutEvent::Status {
-        session: session.clone(),
-        state: AgentState::Thinking,
-    });
+    holly.emit_status(session, AgentState::Thinking);
 }
 
 #[cfg(test)]

@@ -75,7 +75,7 @@ pub(super) async fn stream_round(
         let mut stream = match s.llm.stream(req).await {
             Ok(st) => st,
             Err(e) => {
-                emit_turn_error(session, &mut s.seq, events, e.to_string());
+                emit_turn_error(session, &s.seq, events, e.to_string());
                 return StreamedRound::Failed;
             }
         };
@@ -132,7 +132,7 @@ pub(super) async fn stream_round(
                         text_buf.push_str(&delta);
                         let _ = events.send(OutEvent::TextDelta {
                             session: session.clone(),
-                            seq: next_seq(&mut s.seq),
+                            seq: next_seq(&s.seq),
                             text: delta,
                         });
                     }
@@ -142,7 +142,7 @@ pub(super) async fn stream_round(
                         shown = true;
                         let _ = events.send(OutEvent::ReasoningDelta {
                             session: session.clone(),
-                            seq: next_seq(&mut s.seq),
+                            seq: next_seq(&s.seq),
                             text: delta,
                         });
                     }
@@ -156,7 +156,7 @@ pub(super) async fn stream_round(
                         shown = true;
                         let _ = events.send(OutEvent::ToolCallDelta {
                             session: session.clone(),
-                            seq: next_seq(&mut s.seq),
+                            seq: next_seq(&s.seq),
                             request_id: id,
                             tool: name,
                             delta,
@@ -209,13 +209,13 @@ pub(super) async fn stream_round(
             const MARKER: &str = "\n\n[interrupted]";
             let _ = events.send(OutEvent::TextDelta {
                 session: session.clone(),
-                seq: next_seq(&mut s.seq),
+                seq: next_seq(&s.seq),
                 text: MARKER.to_string(),
             });
             text_buf.push_str(MARKER);
             s.ctx.push_assistant(text_buf, Vec::new());
         }
-        emit_turn_error(session, &mut s.seq, events, msg);
+        emit_turn_error(session, &s.seq, events, msg);
         return StreamedRound::Failed;
     }
 
