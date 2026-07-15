@@ -24,6 +24,15 @@ pub(super) async fn handle_event(
     match ev {
         Event::Key(key) => {
             if key.kind == KeyEventKind::Press {
+                // Two-stage Ctrl+C (ADR-0087): intercepted once here, before any
+                // modal/approval routing, so it behaves identically in every
+                // context and the eleven duplicate `Char('c')` arms are gone.
+                // Ctrl+Q stays an unconditional immediate quit (the escape hatch);
+                // any other key disarms a pending quit.
+                if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+                    return Ok(app.handle_quit_key());
+                }
+                app.clear_quit_pending();
                 if app.showing_sessions_modal() {
                     return handle_sessions_modal_event(app, key).await;
                 }
@@ -204,9 +213,7 @@ pub(super) async fn handle_event(
                         KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
                             app.toggle_command_palette();
                         }
-                        KeyCode::Char('q') | KeyCode::Char('c')
-                            if key.modifiers == KeyModifiers::CONTROL =>
-                        {
+                        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
                             return Ok(true);
                         }
                         KeyCode::PageUp => {
@@ -345,6 +352,14 @@ pub(super) async fn handle_event(
             if matches!(app.approval_mode(), ApprovalMode::Normal) {
                 app.input().insert_str(&s);
                 app.update_mention();
+            }
+        }
+        // External SIGINT (ADR-0087): route through the same two-stage path as
+        // an in-app Ctrl+C so an out-of-band signal never leaves the terminal
+        // in raw mode (the "half killed" state).
+        Event::Interrupt => {
+            if app.handle_quit_key() {
+                return Ok(true);
             }
         }
     }

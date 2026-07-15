@@ -144,15 +144,30 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("{} in / {} out", app.input_tokens(), app.output_tokens())
     };
-    let help_text = app.help_text();
 
-    let info_line = Line::from(vec![
-        Span::styled(model_display, Style::default().fg(Color::Cyan)),
-        Span::raw(" | "),
-        Span::styled(tokens_display, Style::default().fg(Color::Yellow)),
-        Span::raw(" | "),
-        Span::styled(help_text, Style::default().dim()),
-    ]);
+    // A pending two-stage quit (ADR-0087) replaces the help text with a
+    // highlighted "press again" hint so the armed state is unmissable.
+    let info_line = if app.quit_pending() {
+        Line::from(vec![
+            Span::styled(model_display, Style::default().fg(Color::Cyan)),
+            Span::raw(" | "),
+            Span::styled(tokens_display, Style::default().fg(Color::Yellow)),
+            Span::raw(" | "),
+            Span::styled(
+                "Press Ctrl+C again to quit",
+                Style::default().fg(Color::Yellow).bold(),
+            ),
+        ])
+    } else {
+        let help_text = app.help_text();
+        Line::from(vec![
+            Span::styled(model_display, Style::default().fg(Color::Cyan)),
+            Span::raw(" | "),
+            Span::styled(tokens_display, Style::default().fg(Color::Yellow)),
+            Span::raw(" | "),
+            Span::styled(help_text, Style::default().dim()),
+        ])
+    };
 
     let paragraph = Paragraph::new(info_line)
         .alignment(Alignment::Right)
