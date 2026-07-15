@@ -19,9 +19,18 @@ pub enum TranscriptEntry {
         text: String,
     },
     ToolCall {
+        /// `None` for head-side passthroughs (`!bash`) that never round-trip
+        /// through the engine; `Some` for engine tool calls, keyed so the paired
+        /// `ToolOutput` folds into this same entry (#340).
+        request_id: Option<String>,
         tool: String,
         input: String,
+        /// `None` until the paired `ToolOutput` arrives (still running).
+        output: Option<String>,
     },
+    /// Standalone out-of-band notices only (`record_status`, or a `ToolOutput`
+    /// with no matching call); a tool op's real output folds into its
+    /// [`TranscriptEntry::ToolCall`] (#340).
     ToolOutput {
         tool: Option<String>,
         output: String,
@@ -104,10 +113,10 @@ pub struct SessionView {
     /// for sub-agent (child) sessions in the sessions list (#89, ADR-0026).
     started_ms: Option<u64>,
     ended_ms: Option<u64>,
-    /// Reasoning runs the user has expanded, keyed by the transcript index of
-    /// the run's first `ReasoningDelta` (a stable id — runs are coalesced from
-    /// consecutive deltas at render time). Absent = collapsed (the default).
-    expanded_reasoning: HashSet<usize>,
+    /// Collapsible blocks the user has expanded, keyed by the transcript index
+    /// that mints the block's stable id: a reasoning run's first `ReasoningDelta`
+    /// or a tool op's `ToolCall` (#340). Absent = collapsed (the default).
+    expanded_blocks: HashSet<usize>,
     /// In-progress streamed tool calls (#194): `request_id → transcript index`
     /// of the `ToolCall` entry whose `input` is growing as `ToolCallDelta`
     /// fragments arrive. The assembled `ToolCall` finalizes and removes the
@@ -135,21 +144,22 @@ impl SessionView {
             parent: None,
             started_ms: None,
             ended_ms: None,
-            expanded_reasoning: HashSet::new(),
+            expanded_blocks: HashSet::new(),
             streaming_tool_calls: HashMap::new(),
         }
     }
 
-    /// Whether the reasoning run identified by `id` (transcript index of its
-    /// first `ReasoningDelta`) is currently expanded.
-    pub fn reasoning_expanded(&self, id: usize) -> bool {
-        self.expanded_reasoning.contains(&id)
+    /// Whether the collapsible block identified by `id` (a reasoning run's or a
+    /// tool op's minting transcript index) is currently expanded.
+    pub fn block_expanded(&self, id: usize) -> bool {
+        self.expanded_blocks.contains(&id)
     }
 
-    /// Flips a reasoning run between collapsed and expanded.
-    pub fn toggle_reasoning(&mut self, id: usize) {
-        if !self.expanded_reasoning.remove(&id) {
-            self.expanded_reasoning.insert(id);
+    /// Flips a collapsible block (reasoning run or tool op) between collapsed
+    /// and expanded.
+    pub fn toggle_block(&mut self, id: usize) {
+        if !self.expanded_blocks.remove(&id) {
+            self.expanded_blocks.insert(id);
         }
     }
 

@@ -29,13 +29,13 @@ impl SessionView {
     /// captured output, reusing the tool call/output entries so it renders like
     /// any other tool run. Local only — not sent to the engine or the model.
     pub fn record_bash_passthrough(&mut self, command: String, output: String) {
+        // Head-side, no engine round-trip: `request_id` is `None` and the output
+        // is folded in immediately, so it renders as one collapsible op (#340).
         self.transcript.push(TranscriptEntry::ToolCall {
+            request_id: None,
             tool: "!bash".to_string(),
             input: command,
-        });
-        self.transcript.push(TranscriptEntry::ToolOutput {
-            tool: Some("!bash".to_string()),
-            output,
+            output: Some(output),
         });
     }
 
@@ -150,8 +150,12 @@ impl SessionView {
                         }
                         None => {
                             let idx = self.transcript.len();
-                            self.transcript
-                                .push(TranscriptEntry::ToolCall { tool, input: delta });
+                            self.transcript.push(TranscriptEntry::ToolCall {
+                                request_id: Some(request_id.clone()),
+                                tool,
+                                input: delta,
+                                output: None,
+                            });
                             self.streaming_tool_calls.insert(request_id, idx);
                         }
                     }
@@ -178,6 +182,7 @@ impl SessionView {
                             if let Some(TranscriptEntry::ToolCall {
                                 tool: t,
                                 input: buf,
+                                ..
                             }) = self.transcript.get_mut(idx)
                             {
                                 *t = tool.clone();
@@ -186,8 +191,10 @@ impl SessionView {
                         }
                         None => {
                             self.transcript.push(TranscriptEntry::ToolCall {
+                                request_id: Some(request_id.clone()),
                                 tool: tool.clone(),
                                 input: input.clone(),
+                                output: None,
                             });
                         }
                     }
@@ -248,14 +255,34 @@ impl SessionView {
             // UI. The call is already shown via `ToolCall`.
             OutEvent::ToolExec { .. } => false,
             OutEvent::ToolOutput {
-                seq, tool, output, ..
+                seq,
+                request_id,
+                tool,
+                output,
+                ..
             } => {
                 if seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::ToolOutput {
-                        tool: Some(tool.clone()),
-                        output,
-                    });
                     self.last_seen_seq = seq;
+                    // Fold the output into its call so one op is one entry (#340).
+                    // Batch results resolve out of order (#270), so scan from the
+                    // back for the unfilled `ToolCall` with this `request_id`.
+                    let folded = self.transcript.iter_mut().rev().find_map(|e| match e {
+                        TranscriptEntry::ToolCall {
+                            request_id: Some(id),
+                            output: slot @ None,
+                            ..
+                        } if *id == request_id => Some(slot),
+                        _ => None,
+                    });
+                    match folded {
+                        Some(slot) => *slot = Some(output),
+                        // No matching call (e.g. a stray/duplicate output): keep
+                        // the standalone notice rather than dropping it.
+                        None => self.transcript.push(TranscriptEntry::ToolOutput {
+                            tool: Some(tool.clone()),
+                            output,
+                        }),
+                    }
                     true
                 } else {
                     false

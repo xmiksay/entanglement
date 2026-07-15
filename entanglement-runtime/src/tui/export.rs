@@ -104,9 +104,19 @@ fn append_entry(out: &mut String, entry: &TranscriptEntry) {
             out.push_str(text.trim_end());
             out.push_str("\n\n");
         }
-        TranscriptEntry::ToolCall { tool, input } => {
+        TranscriptEntry::ToolCall {
+            tool,
+            input,
+            output,
+            ..
+        } => {
             out.push_str(&format!("### Tool call: `{tool}`\n\n"));
             out.push_str(&fenced(&pretty_json(input), "json"));
+            // The paired output now folds into the call (#340) — emit it inline.
+            if let Some(output) = output {
+                out.push_str(&format!("**Output** (`{tool}`):\n\n"));
+                out.push_str(&fenced(output.trim_end(), ""));
+            }
         }
         TranscriptEntry::ToolOutput { tool, output } => {
             match tool {
@@ -215,16 +225,12 @@ mod tests {
 
     #[test]
     fn tool_call_pretty_prints_json_and_output_is_fenced() {
-        let transcript = vec![
-            TranscriptEntry::ToolCall {
-                tool: "read".into(),
-                input: r#"{"path":"a.rs"}"#.into(),
-            },
-            TranscriptEntry::ToolOutput {
-                tool: Some("read".into()),
-                output: "fn main() {}".into(),
-            },
-        ];
+        let transcript = vec![TranscriptEntry::ToolCall {
+            request_id: Some("c1".into()),
+            tool: "read".into(),
+            input: r#"{"path":"a.rs"}"#.into(),
+            output: Some("fn main() {}".into()),
+        }];
         let md = transcript_to_markdown(&sid(), None, None, &transcript, 0);
         assert!(md.contains("### Tool call: `read`"));
         // Pretty-printed JSON spans multiple lines.

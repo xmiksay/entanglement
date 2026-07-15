@@ -91,8 +91,11 @@ persistence machinery with none of the CLI/TUI/transport weight
   (opt out with `ENTANGLEMENT_TUI_NO_MOUSE=1`, which restores native text
   selection): the wheel scrolls the chat (or the open modal's selection), and a
   left click hit-tests the chat area to toggle a transcript block — reasoning
-  runs render collapsed as a `▸ Thinking (N lines)` header, expanded on click
-  (or via the leader `t` key). **Attention signals** (issue #14, `tui::attention`):
+  runs render collapsed as a `▸ Thinking (N lines)` header, and each **tool
+  operation** as a single collapsible `▸ {tool}  {primary_arg}  ✓` line with its
+  paired output folded in (#340; the `ToolOutput` matches its `ToolCall` by
+  `request_id`, so batch results still pair correctly), both expanded on click
+  (or via the leader `t` key, which toggles the most recent block of either kind). **Attention signals** (issue #14, `tui::attention`):
   a `Status` transition into `WaitingApproval`, `Done`, or `Error` rings the
   terminal bell — and, opt-in via `ENTANGLEMENT_TUI_NOTIFY=1`, emits an OSC 9
   desktop notification (iTerm2/kitty/WezTerm; silently dropped elsewhere). Core
