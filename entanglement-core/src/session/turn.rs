@@ -236,7 +236,7 @@ async fn run_round(
     // in-call-order dispatch this replaced).
     for call in &tool_calls {
         emit_tool_call(events, session, &call.id, &call.name, &call.input, &s.seq);
-        emit_tool_exec(events, session, call, &s.seq);
+        emit_tool_exec(events, session, call, &s.profile.name, &s.seq);
     }
     if let Some(turn) = s.turn.as_mut() {
         turn.begin_batch(tool_calls);

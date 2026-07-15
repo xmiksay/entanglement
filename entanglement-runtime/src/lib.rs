@@ -41,6 +41,7 @@ pub mod layers;
 // (#198). Lives in the lean library (tokio process + serde_json only), so an
 // embedder gets external tools without any CLI/TUI/transport dep.
 pub mod mcp;
+pub mod pending;
 pub mod permission;
 pub mod persistence;
 pub mod plan_tasks;

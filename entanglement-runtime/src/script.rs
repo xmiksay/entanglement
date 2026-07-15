@@ -29,19 +29,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use entanglement_core::{
-    AgentProfile, AgentState, Holly, InMsg, OutEvent, Permission, PermissionProfile, SessionId,
-    ToolCall, ToolSpec,
+    AgentProfile, AgentState, Holly, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
+    ToolSpec,
 };
 
 use crate::tools::ToolRegistry;
 use rhai::packages::{Package, StandardPackage};
 use rhai::{Dynamic, Engine, EvalAltResult, Position};
 use serde::Deserialize;
-use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
 
 use crate::host::truncate_output;
+use crate::pending::{self, PendingDecisions};
 use crate::permission::{min_permission, permission_arg, permission_chain, tool_masked};
 use crate::seam;
 use crate::subagent::SpawnGuard;
@@ -171,9 +171,10 @@ struct BindingCall {
 
 /// Orchestrate one `rhai` call: gate the tool itself, then run the script with
 /// its bindings resolving permission live. `self_perm` is `rhai`'s own effective
-/// permission; `policy` is the per-binding snapshot. The caller subscribes to the
-/// inbound fan-out *before* handing off (so a fast approval can't race ahead) and
-/// passes the receiver in, mirroring the approval path in [`crate::tool_runner`].
+/// permission; `policy` is the per-binding snapshot. Approvals (rhai's own gate
+/// and each binding `Ask`) route through the lag-proof [`PendingDecisions`]
+/// registry (#156) — register-before-emit per request id, mirroring
+/// [`crate::tool_runner`].
 #[allow(clippy::too_many_arguments)]
 pub async fn run_rhai(
     holly: Holly,
@@ -182,7 +183,7 @@ pub async fn run_rhai(
     self_perm: Permission,
     session: SessionId,
     request_id: String,
-    mut inbound: Receiver<InMsg>,
+    pending: PendingDecisions,
     input: String,
     stop: Arc<AtomicBool>,
 ) {
@@ -216,7 +217,7 @@ pub async fn run_rhai(
         Permission::Ask => {
             match await_approval(
                 &holly,
-                &mut inbound,
+                &pending,
                 &session,
                 &request_id,
                 RHAI_TOOL,
@@ -246,7 +247,7 @@ pub async fn run_rhai(
         &holly,
         &session,
         &request_id,
-        &mut inbound,
+        &pending,
         parsed.script,
         timeout,
         stop,
@@ -267,7 +268,7 @@ async fn execute_script(
     holly: &Holly,
     session: &SessionId,
     request_id: &str,
-    inbound: &mut Receiver<InMsg>,
+    pending: &PendingDecisions,
     script: String,
     timeout: Duration,
     stop: Arc<AtomicBool>,
@@ -299,7 +300,7 @@ async fn execute_script(
             holly,
             session,
             request_id,
-            inbound,
+            pending,
             &mut approved,
             &call,
         )
@@ -333,7 +334,7 @@ async fn service_binding(
     holly: &Holly,
     session: &SessionId,
     request_id: &str,
-    inbound: &mut Receiver<InMsg>,
+    pending: &PendingDecisions,
     approved: &mut HashSet<&'static str>,
     call: &BindingCall,
 ) -> (Result<String, String>, bool) {
@@ -359,7 +360,7 @@ async fn service_binding(
             // binding's tool + args; the script source rode the outer approval.
             let bind_rid = format!("{request_id}:rhai:{}", call.tool);
             let card_tool = format!("{} (rhai)", call.tool);
-            match await_approval(holly, inbound, session, &bind_rid, &card_tool, &call.input).await
+            match await_approval(holly, pending, session, &bind_rid, &card_tool, &call.input).await
             {
                 Approval::Approved => {
                     approved.insert(call.tool);
@@ -402,16 +403,21 @@ enum Approval {
     Stopped,
 }
 
-/// Emit a `ToolRequest` and park for the head's decision on the inbound fan-out.
-/// Shared by `rhai`'s own gate and each binding's `Ask`.
+/// Emit a `ToolRequest` and park for the head's decision via the lag-proof
+/// [`PendingDecisions`] registry (#156). Shared by `rhai`'s own gate and each
+/// binding's `Ask`; registers per `request_id` before emitting so a fast decision
+/// routes to this waiter rather than racing a subscription that could lag.
 async fn await_approval(
     holly: &Holly,
-    inbound: &mut Receiver<InMsg>,
+    pending: &PendingDecisions,
     session: &SessionId,
     request_id: &str,
     tool: &str,
     input: &str,
 ) -> Approval {
+    // Register before emitting so the inbound router can never resolve the
+    // decision ahead of this waiter (#156).
+    let rx = pending.register(session, request_id);
     // Mint a fresh per-session seq (#157) rather than reusing the `ToolExec` seq.
     holly.emit_for_session(session, |seq| OutEvent::ToolRequest {
         session: session.clone(),
@@ -421,7 +427,7 @@ async fn await_approval(
         input: input.to_string(),
     });
     set_state(holly, session, AgentState::WaitingApproval);
-    match seam::await_decision(inbound, session, request_id).await {
+    match pending::await_decision(rx).await {
         seam::Decision::Approve { .. } => Approval::Approved,
         seam::Decision::Reject { reason } => {
             Approval::Rejected(reason.unwrap_or_else(|| "user".to_string()))

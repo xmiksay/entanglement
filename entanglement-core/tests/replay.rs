@@ -483,6 +483,7 @@ fn tool_exec_record(
             request_id: id.to_string(),
             tool: "read".to_string(),
             input: "{}".to_string(),
+            agent: String::new(),
         },
     )
 }
