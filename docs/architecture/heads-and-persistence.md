@@ -185,7 +185,13 @@ assistant/tool messages and the model appears to forget the conversation.
   stream, and `Holly::resume` seeds a session from `Session::replay`. The CLI
   exposes `skutter run --resume <id>` and `skutter sessions` (lists past root
   sessions for the cwd); the TUI `/resume` modal restores the full visible
-  transcript (`restore_from_records`) *and* reseeds engine context.
+  transcript (`restore_from_records`) *and* reseeds engine context. Both
+  listings carry a **first-prompt snippet** (#327): `list_sessions` captures the
+  first `InMsg::Prompt` in the same pass that finds `SessionStarted` (no extra
+  I/O), truncates it to ~60 chars on a word boundary with `…`
+  (`SessionMeta::first_prompt`), and both `skutter sessions` (DESCRIPTION column)
+  and the `/resume` rows render it beside the bare UUID. The in-memory
+  `ListSessions`/`SessionList` supervisor query is unaffected (no capture-at-spawn).
 - **Mid-turn tails are resumable** (#271/#272,
   [ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)). A log
   ending after `ToolCall`/`ToolExec` with no matching `ToolOutput` replays into

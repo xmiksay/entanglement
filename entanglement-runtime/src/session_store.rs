@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use entanglement_core::{InMsg, OutEvent, SessionId};
+use entanglement_core::{content_text, InMsg, OutEvent, SessionId};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -137,6 +137,45 @@ pub struct SessionMeta {
     pub parent: Option<SessionId>,
     /// Whether this is a root session.
     pub root: bool,
+    /// Truncated snippet of the first user prompt, for human-readable listings
+    /// (#327). `None` when the log carries no `Prompt` (e.g. a session that only
+    /// ever received tool results). See [`first_prompt_snippet`].
+    pub first_prompt: Option<String>,
+}
+
+/// Maximum length (in chars) of a [`SessionMeta::first_prompt`] snippet before
+/// the trailing `…` ellipsis (#327).
+const FIRST_PROMPT_MAX: usize = 60;
+
+/// Renders a first-prompt snippet for session listings (#327): the leading run
+/// of `text`, cut at the first newline, then truncated to ~[`FIRST_PROMPT_MAX`]
+/// chars on a word boundary, with a trailing `…` when anything was dropped.
+fn first_prompt_snippet(text: &str) -> String {
+    // A prompt often opens with a whole paragraph; the first raw line is the
+    // label. Keep the untrimmed line to measure how much followed it.
+    let raw_first_line = text.lines().next().unwrap_or("");
+    let first_line = raw_first_line.trim();
+    // Anything with content after the first line counts as dropped → ellipsis.
+    let has_more = !text[raw_first_line.len()..].trim().is_empty();
+
+    if first_line.chars().count() <= FIRST_PROMPT_MAX {
+        return if has_more {
+            format!("{first_line}…")
+        } else {
+            first_line.to_string()
+        };
+    }
+
+    // Over the budget: cut at the last word boundary within the window so we
+    // don't slice a word in half, falling back to a hard char cut if the first
+    // word alone already overflows.
+    let window: String = first_line.chars().take(FIRST_PROMPT_MAX).collect();
+    let cut = window
+        .rfind(char::is_whitespace)
+        .map(|i| window[..i].trim_end().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(window);
+    format!("{cut}…")
 }
 
 /// Appends a log record to a session file.
@@ -311,10 +350,12 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
         };
         // The first record is now the opening `Prompt` (inbound logging landed
         // ahead of `SessionStarted`), so scan for the `SessionStarted` event
-        // rather than assuming it's record zero.
-        let meta = records
-            .iter()
-            .find_map(|r| match &r.payload {
+        // rather than assuming it's record zero. Capture the first user `Prompt`
+        // snippet in the same pass — no extra I/O (#327).
+        let mut started: Option<SessionMeta> = None;
+        let mut first_prompt: Option<String> = None;
+        for r in &records {
+            match &r.payload {
                 LogPayload::Out(OutEvent::SessionStarted {
                     profile,
                     model,
@@ -322,26 +363,39 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
                     ts,
                     parent,
                     ..
-                }) => Some(SessionMeta {
-                    id: session_id.clone(),
-                    agent: profile.clone(),
-                    model: model.clone(),
-                    created: *ts,
-                    last_active,
-                    parent: parent.clone(),
-                    root: *root,
-                }),
-                _ => None,
-            })
-            .unwrap_or_else(|| SessionMeta {
-                id: session_id.clone(),
-                agent: "unknown".to_string(),
-                model: None,
-                created: last_active,
-                last_active,
-                parent: None,
-                root: true,
-            });
+                }) if started.is_none() => {
+                    started = Some(SessionMeta {
+                        id: session_id.clone(),
+                        agent: profile.clone(),
+                        model: model.clone(),
+                        created: *ts,
+                        last_active,
+                        parent: parent.clone(),
+                        root: *root,
+                        first_prompt: None,
+                    });
+                }
+                LogPayload::In(InMsg::Prompt { content, .. }) if first_prompt.is_none() => {
+                    let text = content_text(content);
+                    if !text.trim().is_empty() {
+                        first_prompt = Some(first_prompt_snippet(&text));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut meta = started.unwrap_or_else(|| SessionMeta {
+            id: session_id.clone(),
+            agent: "unknown".to_string(),
+            model: None,
+            created: last_active,
+            last_active,
+            parent: None,
+            root: true,
+            first_prompt: None,
+        });
+        meta.first_prompt = first_prompt;
 
         sessions.push(meta);
     }

@@ -97,6 +97,7 @@ fn children_of_finds_direct_children() {
             last_active: 0,
             parent: None,
             root: true,
+            first_prompt: None,
         },
         SessionMeta {
             id: child1_id.clone(),
@@ -106,6 +107,7 @@ fn children_of_finds_direct_children() {
             last_active: 0,
             parent: Some(root_id.clone()),
             root: false,
+            first_prompt: None,
         },
         SessionMeta {
             id: child2_id.clone(),
@@ -115,6 +117,7 @@ fn children_of_finds_direct_children() {
             last_active: 0,
             parent: Some(root_id.clone()),
             root: false,
+            first_prompt: None,
         },
         SessionMeta {
             id: grandchild_id.clone(),
@@ -124,6 +127,7 @@ fn children_of_finds_direct_children() {
             last_active: 0,
             parent: Some(child1_id.clone()),
             root: false,
+            first_prompt: None,
         },
     ];
 
@@ -152,6 +156,7 @@ fn root_of_walks_up_parent_chain() {
             last_active: 0,
             parent: None,
             root: true,
+            first_prompt: None,
         },
         SessionMeta {
             id: child1_id.clone(),
@@ -161,6 +166,7 @@ fn root_of_walks_up_parent_chain() {
             last_active: 0,
             parent: Some(root_id.clone()),
             root: false,
+            first_prompt: None,
         },
         SessionMeta {
             id: child2_id.clone(),
@@ -170,6 +176,7 @@ fn root_of_walks_up_parent_chain() {
             last_active: 0,
             parent: Some(child1_id.clone()),
             root: false,
+            first_prompt: None,
         },
     ];
 
@@ -190,9 +197,101 @@ fn root_of_returns_self_for_orphan_session() {
         last_active: 0,
         parent: None,
         root: true,
+        first_prompt: None,
     }];
 
     assert_eq!(root_of(&sessions, &orphan_id), orphan_id);
+}
+
+#[test]
+fn first_prompt_snippet_truncates_on_word_boundary() {
+    // Short single line: verbatim, no ellipsis.
+    assert_eq!(first_prompt_snippet("fix the bug"), "fix the bug");
+
+    // Multi-line: only the first line, with an ellipsis for the dropped tail.
+    assert_eq!(
+        first_prompt_snippet("summarize this\nplus a lot more context"),
+        "summarize this…"
+    );
+
+    // Over the char budget: cut at a word boundary, ellipsis appended, and the
+    // result (minus the ellipsis) never exceeds the budget.
+    let long = "please refactor the entire authentication subsystem into a much cleaner design";
+    let snippet = first_prompt_snippet(long);
+    assert!(
+        snippet.ends_with('…'),
+        "long prompt should be truncated: {snippet}"
+    );
+    let body = snippet.trim_end_matches('…');
+    assert!(
+        !body.contains("cleaner"),
+        "tail past the budget dropped: {snippet}"
+    );
+    assert!(
+        body.chars().count() <= FIRST_PROMPT_MAX,
+        "snippet body over budget: {snippet}"
+    );
+    assert!(long.starts_with(body), "no mid-word cut: {snippet}");
+}
+
+#[test]
+fn list_sessions_captures_first_prompt_content_and_legacy_text() {
+    use entanglement_core::ContentPart;
+
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let cwd = temp_dir.path();
+
+    let started = |id: &SessionId| {
+        LogRecord::new(
+            id.clone(),
+            LogPayload::Out(OutEvent::SessionStarted {
+                session: id.clone(),
+                parent: None,
+                profile: "build".to_string(),
+                model: None,
+                root: true,
+                ts: 1000,
+            }),
+        )
+    };
+
+    // Session A: a modern content-block prompt (#197/ADR-0064). The `Prompt`
+    // record precedes `SessionStarted`, matching the real inbound-logging order.
+    let a = SessionId::new("modern");
+    let a_prompt = LogRecord::new(
+        a.clone(),
+        LogPayload::In(InMsg::Prompt {
+            session: a.clone(),
+            content: vec![ContentPart::text("hello from the block path")],
+        }),
+    );
+    append(cwd, &a, &a_prompt).expect("append should succeed");
+    append(cwd, &a, &started(&a)).expect("append should succeed");
+
+    // Session B: a legacy `text:`-shaped prompt written before the migration,
+    // deserialized via the serde alias (ADR-0064 back-compat).
+    let b = SessionId::new("legacy");
+    let legacy_line = r#"{"ts":1,"session":"legacy","payload":{"direction":"in","kind":"prompt","session":"legacy","text":"legacy prompt text"}}"#;
+    let b_path = session_path(cwd, &b).expect("session_path should succeed");
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&b_path)
+        .expect("open should succeed");
+    writeln!(f, "{legacy_line}").expect("write should succeed");
+    drop(f);
+    append(cwd, &b, &started(&b)).expect("append should succeed");
+
+    let sessions = list_sessions(cwd).expect("list_sessions should succeed");
+
+    let a_meta = sessions.iter().find(|s| s.id == a).expect("A present");
+    assert_eq!(
+        a_meta.first_prompt.as_deref(),
+        Some("hello from the block path")
+    );
+
+    let b_meta = sessions.iter().find(|s| s.id == b).expect("B present");
+    assert_eq!(b_meta.first_prompt.as_deref(), Some("legacy prompt text"));
 }
 
 #[test]

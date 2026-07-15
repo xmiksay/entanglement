@@ -878,17 +878,19 @@ fn print_sessions(cwd: &std::path::Path) -> Result<()> {
     }
 
     println!(
-        "{:<28}  {:<10}  {:<20}  LAST ACTIVE",
-        "ID", "AGENT", "MODEL"
+        "{:<28}  {:<10}  {:<16}  {:<14}  DESCRIPTION",
+        "ID", "AGENT", "MODEL", "LAST ACTIVE"
     );
     for s in &sessions {
         let model = s.model.as_deref().unwrap_or("default");
+        let description = s.first_prompt.as_deref().unwrap_or("");
         println!(
-            "{:<28}  {:<10}  {:<20}  {}",
+            "{:<28}  {:<10}  {:<16}  {:<14}  {}",
             s.id.0,
             s.agent,
             model,
-            format_relative(s.last_active)
+            format_relative(s.last_active),
+            description
         );
     }
     Ok(())
