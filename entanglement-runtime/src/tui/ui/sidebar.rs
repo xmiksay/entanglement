@@ -25,6 +25,7 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
             AgentState::Idle => "idle",
             AgentState::Thinking => "thinking",
             AgentState::WaitingApproval => "waiting",
+            AgentState::WaitingAnswer => "waiting",
             AgentState::Done => "done",
             AgentState::Error => "error",
         };

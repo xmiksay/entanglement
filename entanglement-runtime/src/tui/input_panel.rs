@@ -27,6 +27,7 @@ pub fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
         AgentState::Idle => Color::Green,
         AgentState::Thinking => Color::Yellow,
         AgentState::WaitingApproval => Color::Cyan,
+        AgentState::WaitingAnswer => Color::Cyan,
         AgentState::Done => Color::Blue,
         AgentState::Error => Color::Red,
     };
@@ -35,6 +36,7 @@ pub fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
         AgentState::Idle => "Idle",
         AgentState::Thinking => "Thinking",
         AgentState::WaitingApproval => "WaitingApproval",
+        AgentState::WaitingAnswer => "WaitingAnswer",
         AgentState::Done => "Done",
         AgentState::Error => "Error",
     };

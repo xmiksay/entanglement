@@ -18,8 +18,9 @@ mod run;
 mod tui;
 
 use entanglement_runtime::{
-    agents, ask_user, config, host, inspect, logging, persistence, plan_tasks, propose_plan,
-    script, session_store, skills, subagent, system_prompt, tool_names, tool_runner, ToolRegistry,
+    agents, ask_user, config, history, host, inspect, logging, persistence, plan_tasks,
+    propose_plan, script, session_store, skills, subagent, system_prompt, tool_names, tool_runner,
+    ToolRegistry,
 };
 
 use anyhow::{Context, Result};
@@ -680,6 +681,8 @@ async fn main() -> Result<()> {
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
+    // Answer `ReplayFrom` late-subscriber history queries from that same log (#160).
+    history::spawn_history_responder(&holly, cwd.clone());
 
     let result = match cli.cmd {
         Some(Cmd::Run {

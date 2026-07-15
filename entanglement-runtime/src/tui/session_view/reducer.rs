@@ -52,9 +52,11 @@ impl SessionView {
                 self.ended_ms = Some(ts);
                 true
             }
-            // Supervisor-global enumeration reply (ADR-0028): not a per-session
-            // view update — the app handles it, if at all.
+            // Supervisor-global query replies (ADR-0028, #160): not per-session
+            // view updates — `handle_out_event` filters them out before they
+            // reach a view, so these arms only keep the match exhaustive.
             OutEvent::SessionList { .. } => false,
+            OutEvent::History { .. } => false,
             OutEvent::Status { state, .. } => {
                 // Known cosmetic flap (#273): with two parked Asks, resolving
                 // the first flips Status WaitingApproval→Thinking while the

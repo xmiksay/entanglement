@@ -73,7 +73,7 @@ async fn set_agent_then_prompt_on_fresh_id_starts_a_root_build_session() {
     let mut started_as_root = None;
     let mut changed_to_build = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() != &fresh {
+        if ev.session() != Some(&fresh) {
             continue;
         }
         match &ev {

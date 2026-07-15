@@ -45,7 +45,9 @@ fn record_gap(cwd: &Path, roots: &HashMap<SessionId, SessionId>, dropped: u64, k
 /// `InMsg::Resume` is skipped (it carries the whole prior log → recursion/bloat)
 /// and `InMsg::Spawn` is skipped (it would create a stray single-line child file
 /// that lists as a bogus root; a child's turns are already captured in the root
-/// file via out events).
+/// file via out events). The supervisor-global queries `InMsg::ListSessions` /
+/// `InMsg::ReplayFrom` and their session-less replies `OutEvent::SessionList` /
+/// `OutEvent::History` carry no durable state, so they are skipped too (#160).
 ///
 /// A `roots` map, folded from `SessionStarted { root, parent }`, routes every
 /// record (root + spawned children) into the **root's** `{root_id}.jsonl`. Before
@@ -76,10 +78,21 @@ pub fn spawn_persistence_subscriber(holly: &Holly, cwd: PathBuf) -> tokio::task:
 
                 in_msg = inbound.recv(), if in_open => match in_msg {
                     Ok(msg) => {
-                        if matches!(msg, InMsg::Resume { .. } | InMsg::Spawn { .. }) {
+                        // Resume/Spawn are skipped (recursion/bloat / stray child
+                        // file); the supervisor-global queries carry no durable
+                        // state, so ListSessions/ReplayFrom are skipped too (#160).
+                        if matches!(
+                            msg,
+                            InMsg::Resume { .. }
+                                | InMsg::Spawn { .. }
+                                | InMsg::ListSessions { .. }
+                                | InMsg::ReplayFrom { .. }
+                        ) {
                             continue;
                         }
-                        let session_id = msg.session().clone();
+                        let Some(session_id) = msg.session().cloned() else {
+                            continue;
+                        };
                         let root = roots
                             .get(&session_id)
                             .cloned()
@@ -98,7 +111,11 @@ pub fn spawn_persistence_subscriber(holly: &Holly, cwd: PathBuf) -> tokio::task:
 
                 out = events.recv(), if out_open => match out {
                     Ok(ev) => {
-                        let session_id = ev.session().clone();
+                        // A session-less query reply (SessionList/History, #160)
+                        // is transient — never persisted.
+                        let Some(session_id) = ev.session().cloned() else {
+                            continue;
+                        };
                         if let OutEvent::SessionStarted { session, parent, root, .. } = &ev {
                             let root_id = if *root {
                                 session.clone()

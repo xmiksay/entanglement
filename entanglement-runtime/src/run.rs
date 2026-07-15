@@ -46,7 +46,7 @@ pub async fn run_one(
             Ok(Err(RecvError::Closed)) => break,
             Err(_) => anyhow::bail!("timed out waiting for engine event"),
         };
-        if ev.session() != session {
+        if ev.session() != Some(session) {
             continue;
         }
         if json {
@@ -108,9 +108,13 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::SessionStarted { .. } => {}
         OutEvent::SessionEnded { .. } => {}
         OutEvent::SessionList { .. } => {}
+        // History is a late-subscriber query reply (#160); the one-shot head
+        // never issues `ReplayFrom`, so nothing to render.
+        OutEvent::History { .. } => {}
         OutEvent::Status { state, .. } => match state {
             AgentState::Thinking => writeln!(out, "… thinking")?,
             AgentState::WaitingApproval => writeln!(out, "… waiting for approval")?,
+            AgentState::WaitingAnswer => writeln!(out, "… waiting for answer")?,
             AgentState::Error => writeln!(out, "! turn ended in error")?,
             _ => {}
         },

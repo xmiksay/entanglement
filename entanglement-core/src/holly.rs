@@ -198,6 +198,20 @@ impl Holly {
         });
     }
 
+    /// Broadcast a runtime-authored [`OutEvent::History`] reply to an
+    /// [`InMsg::ReplayFrom`] query (#160, ADR-0072). Like
+    /// [`emit_status`][Self::emit_status] it carries no `seq` — a supervisor-global
+    /// query reply, not session content — so no counter is touched. The sanctioned
+    /// way for the runtime's log-owning history responder to answer a late
+    /// subscriber without the raw outbound sender being exposed.
+    pub fn emit_history(&self, correlation_id: String, session: SessionId, events: Vec<OutEvent>) {
+        let _ = self.events.send(OutEvent::History {
+            correlation_id,
+            session,
+            events,
+        });
+    }
+
     /// Mint the next seq for `session` from the shared registry, or `0` when the
     /// session has no live counter (ended / never started). Shared by
     /// [`emit_for_session`][Self::emit_for_session] and the supervisor's
@@ -268,34 +282,42 @@ async fn supervisor(
     let mut parent_links: HashMap<SessionId, Option<SessionId>> = HashMap::new();
 
     while let Some(msg) = rx.recv().await {
-        let session_id = msg.session().clone();
-
         // Fan the message out to inbound subscribers (runtime services) before
         // routing it. A closed/lagging subscriber is not fatal to routing.
         let _ = inbound.send(msg.clone());
 
-        // Approval decisions are a runtime concern now (#59): the tool executor
-        // consumes `Approve`/`Reject` off the inbound fan-out above. The engine
-        // no longer parks on them, so there is nothing to route to a session.
-        // `AnswerQuestion` is the same shape for the `ask_user` tool (ADR-0027).
+        // Runtime-consumed off the inbound fan-out above, never routed to a
+        // session task: approval decisions (`Approve`/`Reject`, #59),
+        // `AnswerQuestion` for `ask_user` (ADR-0027), and the `ReplayFrom`
+        // history query answered by the runtime's log-owning responder (#160).
         if matches!(
             msg,
-            InMsg::Approve { .. } | InMsg::Reject { .. } | InMsg::AnswerQuestion { .. }
+            InMsg::Approve { .. }
+                | InMsg::Reject { .. }
+                | InMsg::AnswerQuestion { .. }
+                | InMsg::ReplayFrom { .. }
         ) {
             continue;
         }
 
         // Supervisor-global lifecycle queries (ADR-0028): answered here, never
-        // routed to a session task.
-        if let InMsg::ListSessions { session } = &msg {
+        // routed to a session task. `correlation_id` is an opaque token echoed
+        // on the reply (#160) — not an overloaded session id.
+        if let InMsg::ListSessions { correlation_id } = &msg {
             let mut list: Vec<SessionInfo> = session_meta.values().cloned().collect();
             list.sort_by(|a, b| a.session.0.cmp(&b.session.0));
             let _ = events.send(OutEvent::SessionList {
-                session: session.clone(),
+                correlation_id: correlation_id.clone(),
                 sessions: list,
             });
             continue;
         }
+
+        // Every remaining variant is session-scoped; `ListSessions` (the only
+        // session-less variant) is handled above.
+        let Some(session_id) = msg.session().cloned() else {
+            continue;
+        };
         if let InMsg::CloseSession { session } = &msg {
             // Cascade (#180): closing a session retires its whole sub-tree, not
             // just the target. `parent_links` is child→parent, so a spawned
@@ -457,7 +479,16 @@ async fn supervisor(
             continue;
         }
 
-        let cmd = msg_to_cmd(msg.clone());
+        // Non-routable variants are all handled/continued above; a stray one
+        // maps to `None` and is dropped rather than crashing the supervisor
+        // (#160 — the former `unreachable!` would have taken down every session).
+        let Some(cmd) = msg_to_cmd(msg.clone()) else {
+            tracing::warn!(
+                variant = msg.variant_name(),
+                "non-routable message reached session routing; dropped"
+            );
+            continue;
+        };
 
         if !sessions.contains_key(&session_id) {
             // A closed id is spent (ADR-0028): a `Prompt` that raced behind its

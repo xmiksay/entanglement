@@ -120,7 +120,7 @@ async fn approve_folds_accepted_output_and_records_no_plan() {
     let mut saw_plan = false;
     let mut got_output = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() != &sid {
+        if ev.session() != Some(&sid) {
             continue;
         }
         match &ev {
@@ -159,7 +159,7 @@ async fn reject_folds_reason_and_records_no_plan() {
     let mut saw_plan = false;
     let mut got_output = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() != &sid {
+        if ev.session() != Some(&sid) {
             continue;
         }
         match &ev {

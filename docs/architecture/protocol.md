@@ -19,13 +19,15 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetAgent{session,agent}   // switch profile (plan/task state is a runtime tool now, #231)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
-         | ListSessions{session}   // supervisor-global query; session = correlation id (#21)
+         | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
+         | ReplayFrom{session,correlation_id,after_seq}   // late-subscriber history fetch → History (#160, ADR-0072)
          | CloseSession{session}   // explicit destroy → SessionEnded (#21)
          | Resume{session,records}   // internal, not serialized (#[serde(skip)]); replay log → session (§6b)
 
 OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle, no seq
          | SessionEnded{session,ts}           // lifecycle, no seq
-         | SessionList{session,sessions:[SessionInfo]}   // reply to ListSessions, no seq (#21)
+         | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072)
+         | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
          | ModelChanged{session,provider,model,context_window?}   // point-in-time, no seq; reply to SetModel (#218, ADR-0063)
@@ -71,8 +73,12 @@ a remote attacker; the WS head's `send_from_wire` call and per-connection
 answers/acts on them directly rather than routing to a session task.
 `ListSessions` returns one `SessionList` snapshot of the live
 `SessionInfo{session,parent?,profile,root,profile_detail?}` set — a reconnecting
-head enumerates in one round-trip instead of folding the whole broadcast; its
-`session` field is a correlation id the reply echoes. `profile_detail`
+head enumerates in one round-trip instead of folding the whole broadcast. Both
+the query and the reply carry an opaque **`correlation_id`** the head mints and
+the reply echoes — not an overloaded `SessionId` (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)),
+so `InMsg::session()`/`OutEvent::session()` return `Option<&SessionId>` and are
+`None` for these session-less queries (a head's event router drops a `None`
+rather than keying a phantom per-session view). `profile_detail`
 (**#189**, optional) carries the active profile's resolved posture — `mode`, the
 #116 tool mask (`tools`/`disallowed_tools`), and the `PermissionProfile` rules —
 so a head renders the permission posture without re-reading the agent `.md`
@@ -93,11 +99,26 @@ id (which would restart `seq` at 0). The supervisor routes to sessions with a
 non-blocking `try_send` + bounded retry, shedding to a saturated session rather
 than parking its single loop and stalling every other session.
 
+**Late-subscriber history fetch** (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)).
+A head that connected after a turn started asks
+`ReplayFrom{session,correlation_id,after_seq}` for the events it missed. Because
+the event log is the **runtime's** persistence seam (core holds no log), this is
+answered *out-of-core*: a runtime history responder (spawned beside the
+persistence subscriber, `history.rs`) reads it off the inbound fan-out — like the
+supervisor answers `ListSessions`, just runtime-side — and broadcasts one
+`History{correlation_id,session,events}` snapshot of every persisted content event
+whose `seq` exceeds `after_seq` (via the seq-less `Holly::emit_history`, keeping
+the raw sender closed). The query and reply are transient — neither is persisted
+nor folded on replay. Delivery is a `correlation_id`-matched broadcast; sending
+the reply to only the requesting socket is the WS `serve` head's concern (#153).
+
 - **Session-multiplexed** like the `agent` reference's `task_id`: one connection
   routes many sessions by `SessionId`.
 - **Monotonic `seq`** on content events so a head can dedupe against replayed
-  history (`agent`'s pattern); lifecycle frames (`Status`, `AgentChanged`)
-  carry no `seq`.
+  history (`agent`'s pattern); lifecycle/query frames (`Status`, `AgentChanged`,
+  `SessionList`, `History`, …) carry no `seq`. `OutEvent::seq()` returns
+  `Option<u64>` — `None` for those — so the real seq-`0` sentinel below is a
+  distinct `Some(0)`, not confused with "no seq" (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)).
 - **`(session, seq)` is unique across every authored content event** (#157). The
   seq comes from **one per-session counter** (`Arc<AtomicU64>`), shared by the
   core session task and the runtime through a supervisor-held registry: a session

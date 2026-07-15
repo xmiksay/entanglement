@@ -100,9 +100,9 @@ all live in this crate now (✅ #52–#55, #118, #195, #217,
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetAgent | SetModel | Spawn | ListSessions | CloseSession
+          | SetAgent | SetModel | Spawn | ListSessions | ReplayFrom | CloseSession
           | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionList | Status | AgentChanged | ModelChanged
+OutEvent : SessionStarted | SessionEnded | SessionList | History | Status | AgentChanged | ModelChanged
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | FileChange
 ```
@@ -170,6 +170,20 @@ re-document them here):
   core never mints), which heads render unconditionally (the seq-`0` bypass)
   rather than dropping under a `seq > last` dedupe — this is what made
   supervisor-shed errors TUI-invisible (absorbs #159).
+- **Wire settled before `serve` freezes it** (#160,
+  [ADR-0072](../docs/adr/0072-protocol-warts-settled-before-serve.md)):
+  `ListSessions`/`SessionList` carry a `correlation_id: String` (not an overloaded
+  `SessionId`), so `InMsg::session()`/`OutEvent::session()` are `Option` (`None`
+  for these session-less queries) and `OutEvent::seq()` is `Option<u64>` (`None`
+  for lifecycle/query events, so the real seq-`0` sentinel stays a distinct
+  `Some(0)`). `AgentState::WaitingAnswer` marks a parked `ask_user` question
+  distinctly from `WaitingApproval`; every cancel path already acks with
+  `Status::Idle`. `msg_to_cmd` returns `Option<SessionCmd>` (log-and-drop) instead
+  of an `unreachable!` that would panic the whole supervisor. A wire-allowed
+  `ReplayFrom { session, correlation_id, after_seq }` late-subscriber query is
+  answered **out-of-core** by a runtime history responder (beside the persistence
+  subscriber) that reads the log and broadcasts `OutEvent::History` (content past
+  the cursor) via a seq-less `Holly::emit_history`; neither is persisted/replayed.
 - **Model/provider switch is live, not a restart** (#218,
   [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)): `SetModel {
   provider, model }` re-resolves against a runtime-supplied resolver held on

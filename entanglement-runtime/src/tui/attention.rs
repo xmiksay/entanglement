@@ -44,6 +44,7 @@ impl Signal {
 fn describe(state: AgentState) -> &'static str {
     match state {
         AgentState::WaitingApproval => "waiting for approval",
+        AgentState::WaitingAnswer => "waiting for answer",
         AgentState::Done => "turn complete",
         AgentState::Error => "turn failed",
         AgentState::Idle | AgentState::Thinking => "",
@@ -92,7 +93,10 @@ impl Attention {
     fn decide(&self, state: AgentState) -> Option<Signal> {
         let worth_signalling = matches!(
             state,
-            AgentState::WaitingApproval | AgentState::Done | AgentState::Error
+            AgentState::WaitingApproval
+                | AgentState::WaitingAnswer
+                | AgentState::Done
+                | AgentState::Error
         );
         if !worth_signalling || self.focused == Some(true) {
             return None;

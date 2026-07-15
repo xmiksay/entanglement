@@ -108,7 +108,7 @@ async fn reoffered_tool_exec_runs_only_once() {
     // Drain to Done (the second round's "ok").
     let mut done = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() == &sid && matches!(ev, OutEvent::Done { .. }) {
+        if ev.session() == Some(&sid) && matches!(ev, OutEvent::Done { .. }) {
             done = true;
             break;
         }
@@ -186,7 +186,7 @@ async fn resolved_id_can_be_reused_in_a_later_round() {
 
     let mut done = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() == &sid && matches!(ev, OutEvent::Done { .. }) {
+        if ev.session() == Some(&sid) && matches!(ev, OutEvent::Done { .. }) {
             done = true;
             break;
         }
