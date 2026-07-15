@@ -843,8 +843,13 @@ async fn main() -> Result<()> {
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
-    // Answer `ReplayFrom` late-subscriber history queries from that same log (#160).
-    history::spawn_history_responder(&holly, cwd.clone());
+    // Answer `ReplayFrom` late-subscriber history queries from that same log
+    // (#160). The handle is kept so it can be aborted at shutdown — like the
+    // tool executor and watcher, it holds a `Holly` clone (an inbound
+    // subscriber + event emitter) that keeps the broadcast channels open until
+    // every clone is dropped. Aborting it is what lets the persistence
+    // subscriber see `RecvError::Closed` and flush.
+    let history_handle = history::spawn_history_responder(&holly, cwd.clone());
 
     // Live definitions watcher (#329, ADR-0084): inotify on the resolved
     // agent/skill dirs + managed files, debounced, reloading straight into the
@@ -967,9 +972,11 @@ async fn main() -> Result<()> {
     // Shut the engine down and let the persistence task flush before exit: a
     // one-shot `run` ends the instant the turn does, and the detached subscriber
     // still holds broadcast-buffered events it hasn't written. The tool executor
-    // holds a `Holly` clone (an inbox + event sender), so aborting it is required
-    // for the channels to actually close.
+    // and history responder each hold a `Holly` clone (an inbox + event sender),
+    // so aborting them is required for the channels to actually close and the
+    // persistence subscriber to drain + exit.
     tool_executor.abort();
+    history_handle.abort();
     if let Some(h) = watcher_handle {
         h.abort();
     }
