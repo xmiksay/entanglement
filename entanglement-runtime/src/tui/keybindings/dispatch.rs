@@ -10,6 +10,22 @@ pub enum LeaderState {
     },
 }
 
+/// Outcome of feeding a key to the leader handler.
+///
+/// The caller must distinguish "I ate this key" (arming the leader or resolving
+/// a chord) from "this key isn't mine" — otherwise arming `Ctrl+X` falls through
+/// to the generic Ctrl-char arm and leaks a literal `x` into the input (#326).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LeaderResult {
+    /// A complete chord resolved to an action.
+    Action(Action),
+    /// The key was consumed (armed the leader, extended a chord, or cancelled) —
+    /// the caller must not process it further.
+    Consumed,
+    /// Not a leader key; the caller handles it normally.
+    NotMine,
+}
+
 pub struct LeaderKeyHandler {
     state: LeaderState,
     keymap: KeyMap,
@@ -38,7 +54,7 @@ impl LeaderKeyHandler {
         self.timeout
     }
 
-    pub fn handle_key(&mut self, event: &KeyEvent) -> Option<Action> {
+    pub fn handle_key(&mut self, event: &KeyEvent) -> LeaderResult {
         let sequence = KeySequence::from_event(event);
 
         match &self.state {
@@ -48,9 +64,9 @@ impl LeaderKeyHandler {
                         sequence: sequence.clone(),
                         started_at: std::time::Instant::now(),
                     };
-                    None
+                    LeaderResult::Consumed
                 } else {
-                    None
+                    LeaderResult::NotMine
                 }
             }
             LeaderState::Pending {
@@ -59,7 +75,7 @@ impl LeaderKeyHandler {
             } => {
                 if event.code == KeyCode::Esc {
                     self.state = LeaderState::Idle;
-                    return None;
+                    return LeaderResult::Consumed;
                 }
 
                 let extended = pending_sequence.extend_with(match event.code {
@@ -69,10 +85,12 @@ impl LeaderKeyHandler {
 
                 if let Some(action) = self.keymap.get(&extended) {
                     self.state = LeaderState::Idle;
-                    Some(action.clone())
+                    LeaderResult::Action(action.clone())
                 } else {
                     let candidates = self.keymap.get_candidates(&extended);
                     if candidates.is_empty() {
+                        // Unknown chord: swallow the second key too — an invalid
+                        // `Ctrl+X z` must not leak a literal `z` — and reset (#326).
                         self.state = LeaderState::Idle;
                     } else {
                         self.state = LeaderState::Pending {
@@ -80,7 +98,7 @@ impl LeaderKeyHandler {
                             started_at: *started_at,
                         };
                     }
-                    None
+                    LeaderResult::Consumed
                 }
             }
         }

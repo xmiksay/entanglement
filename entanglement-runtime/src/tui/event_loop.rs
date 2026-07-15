@@ -6,6 +6,7 @@ use tracing::debug;
 use super::app::App;
 use super::attention::Attention;
 use super::event::Event;
+use super::keybindings::LeaderResult;
 use super::modal_events::{
     handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
     handle_model_picker_event, handle_mouse, handle_profile_picker_event, handle_question_event,
@@ -67,11 +68,17 @@ pub(super) async fn handle_event(
                 }
 
                 if matches!(current_mode, ApprovalMode::Normal) {
-                    if let Some(action) = app.leader_handler().handle_key(&key) {
-                        if app.dispatch_action(action) {
-                            return Ok(true);
+                    match app.leader_handler().handle_key(&key) {
+                        LeaderResult::Action(action) => {
+                            if app.dispatch_action(action) {
+                                return Ok(true);
+                            }
+                            return Ok(false);
                         }
-                        return Ok(false);
+                        // Arming the leader or extending/cancelling a chord must
+                        // not fall through to the generic Ctrl-char arm (#326).
+                        LeaderResult::Consumed => return Ok(false),
+                        LeaderResult::NotMine => {}
                     }
                 }
 

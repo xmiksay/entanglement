@@ -27,8 +27,19 @@ fn test_leader_handler_pending_state() {
     let leader_event = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
 
     assert!(matches!(handler.state(), LeaderState::Idle));
-    assert!(handler.handle_key(&leader_event).is_none());
+    // Arming the leader consumes the key — it must NOT fall through and leak an
+    // `x` into the input (#326).
+    assert_eq!(handler.handle_key(&leader_event), LeaderResult::Consumed);
     assert!(matches!(handler.state(), LeaderState::Pending { .. }));
+}
+
+#[test]
+fn test_leader_handler_non_leader_key_is_not_mine() {
+    let mut handler = LeaderKeyHandler::new();
+    let other_event = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty());
+
+    assert_eq!(handler.handle_key(&other_event), LeaderResult::NotMine);
+    assert!(matches!(handler.state(), LeaderState::Idle));
 }
 
 #[test]
@@ -38,8 +49,21 @@ fn test_leader_handler_dispatches_action() {
     let quit_event = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty());
 
     handler.handle_key(&leader_event);
-    let action = handler.handle_key(&quit_event);
-    assert_eq!(action, Some(Action::Quit));
+    let result = handler.handle_key(&quit_event);
+    assert_eq!(result, LeaderResult::Action(Action::Quit));
+    assert!(matches!(handler.state(), LeaderState::Idle));
+}
+
+#[test]
+fn test_leader_handler_invalid_chord_consumed_and_reset() {
+    let mut handler = LeaderKeyHandler::new();
+    let leader_event = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+    // `z` is not bound to any chord — the second key must be swallowed too, not
+    // leaked into the input, and the handler must reset to idle (#326).
+    let invalid_event = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::empty());
+
+    handler.handle_key(&leader_event);
+    assert_eq!(handler.handle_key(&invalid_event), LeaderResult::Consumed);
     assert!(matches!(handler.state(), LeaderState::Idle));
 }
 
@@ -50,7 +74,7 @@ fn test_leader_handler_esc_cancels() {
     let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::empty());
 
     handler.handle_key(&leader_event);
-    handler.handle_key(&esc_event);
+    assert_eq!(handler.handle_key(&esc_event), LeaderResult::Consumed);
     assert!(matches!(handler.state(), LeaderState::Idle));
 }
 

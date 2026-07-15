@@ -280,7 +280,7 @@ impl Default for KeyMap {
 }
 
 mod dispatch;
-pub use dispatch::{LeaderKeyHandler, LeaderState};
+pub use dispatch::{LeaderKeyHandler, LeaderResult, LeaderState};
 
 #[cfg(test)]
 mod tests;
