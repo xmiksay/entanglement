@@ -130,8 +130,14 @@ persistence machinery with none of the CLI/TUI/transport weight
   the active agent's full detail (permission / mask / spawn / plan authorship); the
   Skills tab is the exact `disclosures()` block the model sees plus the full table
   (including `user_only`). Views resolve on open from the cwd + live agent, so
-  they stay fresh across mid-session definition edits. `Tab`/`←`/`→` switch tabs,
-  arrows/`j`/`k`/`PgUp`/`PgDn` (or the wheel) scroll, `Esc` closes. **`/key`
+  they stay fresh across mid-session definition edits. The Agents and Skills tabs
+  are **two-level** (✅ #331): a selectable list (name + summary + winning layer)
+  where `j`/`k`/arrows move the highlight and `Enter` opens the per-item detail
+  pane rendered by the same per-name code path the CLI uses (`inspect agents
+  <name>` / `inspect skills <name>`); `Esc`/`Backspace` returns to the list, `Esc`
+  again closes. The Prompt tab stays a single scroll-only document. `Tab`/`←`/`→`
+  switch tabs from either level, arrows/`j`/`k`/`PgUp`/`PgDn` (or the wheel)
+  scroll the document panes, `Esc` closes. **`/key`
   dialog** (✅ #304, [ADR-0073](../adr/0073-managed-env-file-writer-and-key-surfaces.md),
   `tui::key_dialog`): a two-stage modal after the `/model` pattern — a keyed-provider
   list, then a masked input (`masked()` renders bullets only, the key is never
