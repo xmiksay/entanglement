@@ -96,6 +96,21 @@ connected-but-silent provider immediately (dropping the stream aborts the
 While parked there is no racing to do: the session loop itself is the receiver,
 handling `ToolResult`/`Stop`/`Prompt` directly against the pending `TurnState`.
 
+**Parked-turn re-offer timer** (✅ #274,
+[ADR-0071](../adr/0071-parked-turn-reoffer-timer.md)). `OutEvent::ToolExec` rides
+the lossy outbound `broadcast`, so the runtime executor can lag
+(`RecvError::Lagged`), drop an offer, and strand the parked turn with no
+in-process recovery — restart + `Holly::resume` was the only cure. So while
+parked the session loop bounds its `rx.recv()` with
+`tokio::time::timeout(EngineConfig.reoffer_interval, …)` (default 60s; `None`
+disables it). After that much *silence* — no `ToolResult` arriving — it
+**re-offers** every `TurnState::pending` call via the same `emit_tool_exec` the
+resume path uses (same `request_id`, fresh `seq`), then loops; the batch draining
+retires the timer. This is sound **only** because the runtime executor is
+idempotent by `request_id` (a per-session in-flight set, cleared on the resolving
+`ToolOutput`): a re-offer to a call it is still running is a no-op there, not a
+double-run. At-least-once, exactly like resume.
+
 **Loop bounds — `MAX_TURNS` and context-over-limit** (`session/turn.rs`). The
 turn is capped at `MAX_TURNS = 50` rounds (one round = one LLM round-trip that
 may fan out into tool calls), counted on `TurnState::iterations` and reset per
