@@ -46,11 +46,12 @@ use crate::tools::ToolRegistry;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::cancel::{CancelRegistry, TaskCanceller};
-use crate::grants::GrantStore;
 use crate::hooks::Hooks;
 use crate::permission::{
-    clamp_to_base, effective_permission, permission_arg, spawn_refusal, tool_masked,
+    ancestor_chain, clamp_to_base, effective_permission, min_permission, permission_arg,
+    spawn_refusal, tool_masked,
 };
+use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver};
 use crate::seam;
 use crate::tool_names::{
     AGENT_POLL_TOOL, AGENT_SPAWN_TOOL, AGENT_TOOL, ASK_USER_TOOL, PROPOSE_PLAN_TOOL, RHAI_TOOL,
@@ -61,16 +62,42 @@ use crate::tool_names::{
 /// *identical* later call skip the prompt. Only `Ask` is widened — a `Deny` (a
 /// hard policy floor) and an outright `Allow` pass through untouched.
 fn apply_grant(
-    grants: &Mutex<GrantStore>,
+    grants: &dyn GrantStore,
     session: &SessionId,
     tool: &str,
     arg: Option<&str>,
     perm: Permission,
 ) -> Permission {
-    if perm == Permission::Ask && grants.lock().unwrap().is_granted(session, tool, arg) {
+    if perm == Permission::Ask && grants.is_granted(session, tool, arg) {
         Permission::Allow
     } else {
         perm
+    }
+}
+
+/// Least-privileged resolver grade across a call's ancestor chain — the sub-agent
+/// privilege ceiling (ADR-0024) applied *on top of* whatever the pluggable
+/// [`PermissionResolver`] returns, so a tenant rule can never widen a child
+/// beyond its parent. For the default [`ProfileResolver`] this reproduces
+/// `effective_permission` + `clamp_to_base` (the clamp is monotonic, so
+/// min-of-clamped equals clamp-of-min). An empty chain is impossible — the leaf
+/// session is always present — but defaults to `Deny` if one ever arrives.
+async fn resolve_effective(
+    resolver: &dyn PermissionResolver,
+    chain: &[SessionId],
+    tool: &str,
+    input: &str,
+) -> Permission {
+    let mut perm = Permission::Allow;
+    let mut any = false;
+    for session in chain {
+        perm = min_permission(perm, resolver.resolve(session, tool, input).await);
+        any = true;
+    }
+    if any {
+        perm
+    } else {
+        Permission::Deny
     }
 }
 
@@ -159,6 +186,39 @@ pub fn spawn_tool_executor_with_hooks(
     base: PermissionProfile,
     hooks: Hooks,
 ) -> tokio::task::JoinHandle<()> {
+    // The default single-user policy (#311): the executor folds lifecycle events
+    // into `active`, and the default `ProfileResolver` reads that same map so its
+    // grade stays byte-identical with the pre-seam `effective_permission` path.
+    // "Always allow" grants persist to the managed file.
+    let active = Arc::new(Mutex::new(HashMap::new()));
+    let resolver: Arc<dyn PermissionResolver> =
+        Arc::new(ProfileResolver::new(active.clone(), base.clone()));
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    spawn_tool_executor_with_policy(
+        holly, tools, profiles, base, active, resolver, grants, hooks,
+    )
+}
+
+/// Like [`spawn_tool_executor_with_hooks`] but with pluggable policy seams (#311):
+/// a [`PermissionResolver`] decides each call's `Allow | Ask | Deny` grade and a
+/// [`GrantStore`] persists "always allow" grants, so a multi-tenant embedder can
+/// store rules per user in its own DB without forking the executor. `active` is
+/// the shared per-session profile map the executor folds lifecycle events into —
+/// still driving tool masking (#116) and spawn gating (#119), which stay in the
+/// ladder on top of the resolver — and which the default [`ProfileResolver`]
+/// reads. The two default wrappers above plug in [`ProfileResolver`] +
+/// [`DefaultGrantStore`] for the CLI, byte-identical to the pre-seam behavior.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_tool_executor_with_policy(
+    holly: &Holly,
+    tools: ToolRegistry,
+    profiles: ProfileRegistry,
+    base: PermissionProfile,
+    active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
+    resolver: Arc<dyn PermissionResolver>,
+    grants: Arc<dyn GrantStore>,
+    hooks: Hooks,
+) -> tokio::task::JoinHandle<()> {
     let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
     // Subscribe to the inbound fan-out *synchronously*, before this function
@@ -171,8 +231,10 @@ pub fn spawn_tool_executor_with_hooks(
         // Active profile per session. Folded from lifecycle events, but the fold
         // is a *lossy* broadcast — so it is authoritatively self-healed on every
         // `ToolExec` from the profile name that event carries (#156). See the
-        // `ToolExec` arm below.
-        let mut active: HashMap<SessionId, AgentProfile> = HashMap::new();
+        // `ToolExec` arm below. Shared (`Arc<Mutex<..>>`, a param) with the
+        // default `ProfileResolver` (#311) so it reads the same folded view; this
+        // loop is the sole writer, so the brief locks never contend.
+        //
         // Per-session *in-flight* request_id dedupe (#274, ADR-0071): the set of
         // `ToolExec` request ids this executor has dispatched but not yet seen
         // resolved. Core arms a re-offer timer while a turn is parked and re-emits
@@ -196,12 +258,11 @@ pub fn spawn_tool_executor_with_hooks(
         // Answer + timing per launched sub-agent, keyed by its handle (#89).
         // Shared with the detached launch watchers and `agent_poll` tasks.
         let registry = crate::agent_poll::AgentRegistry::default();
-        // "Always allow" grants (#174): the persisted set loaded from the managed
-        // file, plus per-session grants recorded live. Shared with the per-request
-        // dispatch tasks, which record the wider scopes off an `Approve`; the loop
-        // reads it to skip the prompt for an already-granted call. `Mutex` (never
-        // held across an `.await`) keeps the loop's reads ordered with those writes.
-        let grants = Arc::new(Mutex::new(GrantStore::load()));
+        // "Always allow" grants (#174), now a pluggable [`GrantStore`] trait
+        // object (#311): the default persists to the managed file, a multi-tenant
+        // embedder to its DB. Shared with the per-request dispatch tasks, which
+        // record the wider scopes off an `Approve`; the loop reads it (sync
+        // `is_granted`) to skip the prompt for an already-granted call.
         // In-flight tool tasks per session (#167). A `Stop` on the inbound
         // fan-out aborts every task registered for that session, so a running
         // `bash`/`call` command or `rhai` script is actually cancelled — core
@@ -270,12 +331,12 @@ pub fn spawn_tool_executor_with_hooks(
                 }) => {
                     spawn_guard.record_start(session.clone(), parent);
                     if let Some(p) = profiles.get(&profile) {
-                        active.insert(session, p.clone());
+                        active.lock().unwrap().insert(session, p.clone());
                     }
                 }
                 Ok(OutEvent::AgentChanged { session, agent, .. }) => {
                     if let Some(p) = profiles.get(&agent) {
-                        active.insert(session, p.clone());
+                        active.lock().unwrap().insert(session, p.clone());
                     }
                 }
                 // A hibernated session (#318) tore down just like an ended one, so
@@ -285,7 +346,7 @@ pub fn spawn_tool_executor_with_hooks(
                 | Ok(OutEvent::SessionHibernated { session, .. }) => {
                     // Drop the closed session's in-memory grants (#174); persisted
                     // "always" grants survive.
-                    grants.lock().unwrap().forget_session(&session);
+                    grants.forget_session(&session);
                     // Its in-flight tool bookkeeping is moot once the session ends.
                     cancels.forget_session(&session);
                     // Drop the re-offer dedupe set (#274): its request ids can
@@ -349,7 +410,7 @@ pub fn spawn_tool_executor_with_hooks(
                     // fail-closed `permission_for`/`tool_masked` defaults cover
                     // only the residual unknown case (empty/unresolved `agent`).
                     if let Some(p) = profiles.get(&agent) {
-                        active.insert(session.clone(), p.clone());
+                        active.lock().unwrap().insert(session.clone(), p.clone());
                     }
                     // Physical tool restriction (#116, ADR-0038): a tool outside
                     // the session's effective advertised set — its profile's
@@ -359,7 +420,11 @@ pub fn spawn_tool_executor_with_hooks(
                     // hallucinated call to a masked `edit`/`agent_spawn` is a
                     // hard boundary, not a persona nudge. Core already withholds
                     // the schema; this closes the gap if the model calls it anyway.
-                    if tool_masked(&active, &spawn_guard, &session, &tool) {
+                    let masked = {
+                        let active = active.lock().unwrap();
+                        tool_masked(&active, &spawn_guard, &session, &tool)
+                    };
+                    if masked {
                         let holly = holly.clone();
                         tokio::spawn(async move {
                             let output =
@@ -391,9 +456,11 @@ pub fn spawn_tool_executor_with_hooks(
                             // ahead of the watcher.
                             let blocking = tool == AGENT_TOOL;
                             let target = crate::subagent::target_agent(&input);
-                            if let Some(refusal) =
+                            let refusal = {
+                                let active = active.lock().unwrap();
                                 spawn_refusal(active.get(&session), &target, &profiles)
-                            {
+                            };
+                            if let Some(refusal) = refusal {
                                 let holly = holly.clone();
                                 tokio::spawn(async move {
                                     seam::reply(&holly, session, request_id, refusal).await;
@@ -483,14 +550,15 @@ pub fn spawn_tool_executor_with_hooks(
                             // The bindings resolve permission live against this
                             // loop's profile state — captured here as a per-run
                             // snapshot and moved into the script task. The tool's
-                            // *own* Allow/Ask/Deny is resolved the same way.
+                            // *own* Allow/Ask/Deny is resolved the same way. `rhai`
+                            // keeps the profile/base path (its inner bindings are a
+                            // separate sync mechanism), so it is not routed through
+                            // the pluggable resolver (#311); the sync grant read
+                            // still upgrades its own `Ask`.
                             let arg = permission_arg(&tool, &input);
-                            let self_perm = apply_grant(
-                                &grants,
-                                &session,
-                                &tool,
-                                arg.as_deref(),
-                                clamp_to_base(
+                            let (base_self, policy) = {
+                                let active = active.lock().unwrap();
+                                let base_self = clamp_to_base(
                                     effective_permission(
                                         &active,
                                         &spawn_guard,
@@ -501,14 +569,17 @@ pub fn spawn_tool_executor_with_hooks(
                                     &base,
                                     &tool,
                                     arg.as_deref(),
-                                ),
-                            );
-                            let policy = crate::script::BindingPolicy::capture(
-                                &active,
-                                &spawn_guard,
-                                &session,
-                                &base,
-                            );
+                                );
+                                let policy = crate::script::BindingPolicy::capture(
+                                    &active,
+                                    &spawn_guard,
+                                    &session,
+                                    &base,
+                                );
+                                (base_self, policy)
+                            };
+                            let self_perm =
+                                apply_grant(&*grants, &session, &tool, arg.as_deref(), base_self);
                             let pending = pending.clone();
                             let tools = tools.clone();
                             let holly = holly.clone();
@@ -531,36 +602,17 @@ pub fn spawn_tool_executor_with_hooks(
                             );
                         }
                         Intercept::Permission => {
-                            // Resolve permission before spawning so the read of
-                            // `active` stays ordered with the lifecycle events
-                            // above (and the `ToolExec.agent` self-heal). A child
-                            // sub-agent is clamped to its parent chain (#77): its
-                            // effective permission can never exceed any ancestor's,
-                            // so a child cannot touch the shared tree in ways the
-                            // parent couldn't. A root session (no ancestors)
-                            // resolves to its own profile unchanged; a session we
-                            // never saw start defaults to `Deny` (fail-closed,
-                            // #156). The tool-specific argument (command/path, #173)
-                            // lets an argument-scoped rule resolve against the call.
-                            let arg = permission_arg(&tool, &input);
-                            let perm = apply_grant(
-                                &grants,
-                                &session,
-                                &tool,
-                                arg.as_deref(),
-                                clamp_to_base(
-                                    effective_permission(
-                                        &active,
-                                        &spawn_guard,
-                                        &session,
-                                        &tool,
-                                        arg.as_deref(),
-                                    ),
-                                    &base,
-                                    &tool,
-                                    arg.as_deref(),
-                                ),
-                            );
+                            // Snapshot the ancestor chain *before* spawning so it
+                            // stays ordered with the lifecycle events above (and the
+                            // `ToolExec.agent` self-heal); the detached task resolves
+                            // each session's grade through the pluggable resolver
+                            // (#311) and clamps least-privilege across the chain, so
+                            // a child sub-agent can never exceed any ancestor (#77).
+                            // A root (no ancestors) resolves to its own grade; an
+                            // unseen session defaults to `Deny` (fail-closed, #156).
+                            // The DB-backed resolver runs in the task, never the loop.
+                            let chain = ancestor_chain(&spawn_guard, &session);
+                            let resolver = resolver.clone();
                             let tools = tools.clone();
                             let holly = holly.clone();
                             let grants = grants.clone();
@@ -572,8 +624,8 @@ pub fn spawn_tool_executor_with_hooks(
                             let reg_session = session.clone();
                             let handle = tokio::spawn(async move {
                                 dispatch(
-                                    &holly, &tools, &grants, &hooks, &pending, session, request_id,
-                                    tool, input, perm,
+                                    &holly, &tools, &*resolver, &chain, &*grants, &hooks, &pending,
+                                    session, request_id, tool, input,
                                 )
                                 .await;
                             });
@@ -596,23 +648,35 @@ pub fn spawn_tool_executor_with_hooks(
 
 /// Resolve one `ToolExec` per its permission and reply with a `ToolResult`.
 ///
-/// A `pre_tool_use` hook (#199) runs first and can **veto** the call before the
-/// permission decision: a non-zero-exit hook short-circuits with a denial
-/// `ToolResult`, so the tool neither prompts nor runs. Cleared hooks fall through
-/// to the normal `Allow | Ask | Deny` dispatch.
+/// The grade comes from the pluggable [`PermissionResolver`] (#311), clamped
+/// least-privilege across the call's ancestor `chain` (the sub-agent ceiling,
+/// ADR-0024) and upgraded from `Ask` to `Allow` by an existing [`GrantStore`]
+/// grant. The DB-backed resolve runs here in the detached task, not the loop.
+///
+/// A `pre_tool_use` hook (#199) can **veto** the call: a non-zero-exit hook
+/// short-circuits with a denial `ToolResult`, so the tool neither prompts nor
+/// runs. Cleared hooks fall through to the normal `Allow | Ask | Deny` dispatch.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch(
     holly: &Holly,
     tools: &ToolRegistry,
-    grants: &Mutex<GrantStore>,
+    resolver: &dyn PermissionResolver,
+    chain: &[SessionId],
+    grants: &dyn GrantStore,
     hooks: &Hooks,
     pending: &crate::pending::PendingDecisions,
     session: SessionId,
     request_id: String,
     tool: String,
     input: String,
-    perm: Permission,
 ) {
+    // Resolve + apply grants first (matching the pre-seam order where `perm` was
+    // computed before the hook ran), so a grant upgrade and the veto compose the
+    // same way. The tool-specific argument (command/path, #173) lets an
+    // argument-scoped rule resolve against the call.
+    let arg = permission_arg(&tool, &input);
+    let base_perm = resolve_effective(resolver, chain, &tool, &input).await;
+    let perm = apply_grant(grants, &session, &tool, arg.as_deref(), base_perm);
     if let Some(reason) = hooks.run_pre_tool_use(&session, &tool, &input).await {
         seam::reply(holly, session, request_id, reason).await;
         return;
@@ -657,7 +721,7 @@ async fn dispatch(
 async fn await_decision(
     holly: &Holly,
     tools: &ToolRegistry,
-    grants: &Mutex<GrantStore>,
+    grants: &dyn GrantStore,
     hooks: &Hooks,
     rx: tokio::sync::oneshot::Receiver<seam::Decision>,
     session: SessionId,
@@ -668,15 +732,13 @@ async fn await_decision(
     match crate::pending::await_decision(rx).await {
         seam::Decision::Approve { scope } => {
             set_thinking(holly, &session);
-            // Record the wider scopes (#174) so an identical later call skips
-            // this prompt. `Once` records nothing. Done before the (awaiting)
-            // run so the guard is dropped before the `.await`.
+            // Record the wider scopes (#174) so an identical later call skips this
+            // prompt — through the pluggable [`GrantStore`] (#311), so an
+            // `ApprovalScope::Always` lands in the embedder's store (a file for the
+            // default, a DB row for a multi-tenant one). `Once` records nothing.
             if scope != ApprovalScope::Once {
                 let arg = permission_arg(&tool, &input);
-                grants
-                    .lock()
-                    .unwrap()
-                    .record(&session, &tool, arg.as_deref(), scope);
+                grants.record(&session, &tool, arg.as_deref(), scope).await;
             }
             run_and_reply(holly, tools, hooks, session, request_id, tool, input).await;
         }
@@ -799,5 +861,51 @@ mod tests {
         assert!(Intercept::ProposePlan.bypasses_permission());
         assert!(!Intercept::Rhai.bypasses_permission());
         assert!(!Intercept::Permission.bypasses_permission());
+    }
+
+    /// A resolver that answers a fixed grade per session id (default `Allow`),
+    /// so a test can prove the executor's ancestor clamp (#311, ADR-0024) sits
+    /// *on top of* the pluggable resolver.
+    struct PerSessionResolver(std::collections::HashMap<SessionId, Permission>);
+
+    #[async_trait::async_trait]
+    impl PermissionResolver for PerSessionResolver {
+        async fn resolve(&self, session: &SessionId, _tool: &str, _input: &str) -> Permission {
+            self.0.get(session).copied().unwrap_or(Permission::Allow)
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_clamps_least_privilege_over_the_chain() {
+        let child = SessionId::new("child");
+        let parent = SessionId::new("parent");
+        // The tenant rule *widens* the child to Allow, but its parent resolves
+        // Ask — the chain min must clamp the child back to Ask, so a resolver can
+        // never widen a sub-agent beyond its ancestor.
+        let resolver = PerSessionResolver(
+            [
+                (child.clone(), Permission::Allow),
+                (parent.clone(), Permission::Ask),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let chain = vec![child.clone(), parent.clone()];
+        assert_eq!(
+            resolve_effective(&resolver, &chain, "bash", "{}").await,
+            Permission::Ask
+        );
+        // A root (single-element chain) resolves to its own grade unchanged.
+        assert_eq!(
+            resolve_effective(&resolver, std::slice::from_ref(&child), "bash", "{}").await,
+            Permission::Allow
+        );
+        // A parent `Deny` floors the child regardless of the tenant's Allow.
+        let deny_parent =
+            PerSessionResolver([(parent.clone(), Permission::Deny)].into_iter().collect());
+        assert_eq!(
+            resolve_effective(&deny_parent, &chain, "bash", "{}").await,
+            Permission::Deny
+        );
     }
 }

@@ -209,6 +209,37 @@ and the inbound `InMsg::Prompt` fan-out — so no new protocol surface is added.
   synchronous before the executor task spawns so a first `Prompt` can't race the
   `user_prompt_submit` watcher.
 
+### Pluggable policy seams — `PermissionResolver` + `GrantStore` — [ADR-0079](../adr/0079-pluggable-permission-resolver-and-grant-store.md) (#311)
+
+The executor hard-codes *no* policy source. `spawn_tool_executor_with_policy(…,
+resolver: Arc<dyn PermissionResolver>, grants: Arc<dyn GrantStore>, …)` (module
+`entanglement-runtime::policy`) drives two trait objects, so a multi-tenant
+embedder that stores rules per user in its own DB swaps both without forking the
+~350-line executor — keeping the shared interception ladder, spawn/mask gating,
+hooks, rhai, and plan/tasks tools.
+
+- **`PermissionResolver::resolve(session, tool, input) → Permission`** decides one
+  session's `Allow|Ask|Deny` grade (async — a real embedder hits a DB, and the
+  ladder already runs in a detached task). It runs **where the profile/base
+  resolution ran before**, but the sub-agent ancestor clamp (ADR-0024) and
+  spawn/mask gating stay in the ladder **on top of** it: the executor snapshots
+  the call's ancestor chain (`permission::ancestor_chain`) in the loop and takes
+  the least-privileged resolver grade across it (`resolve_effective`), so a tenant
+  rule can never widen a child beyond its parent. `apply_grant` then upgrades a
+  resolved `Ask` to `Allow` from a `GrantStore` grant.
+- **`GrantStore`** persists + reads "always allow" grants (§ agents-and-permissions
+  #174). `record(session, tool, arg, scope)` is async so an `ApprovalScope::Always`
+  can hit a DB; `is_granted` is a sync fast check. A multi-tenant store writes its
+  "always" rule to the DB and resolves later reads through its own resolver, so its
+  `is_granted` can return `false`.
+- **Defaults (byte-identical CLI):** `ProfileResolver` reads the same
+  `Arc<Mutex<active-profile map>>` the executor folds lifecycle events into and
+  returns own-profile-clamped-by-base — since `clamp_to_base` is monotonic,
+  min-of-clamped over the chain equals the pre-seam `effective_permission` +
+  `clamp_to_base`. `DefaultGrantStore` wraps the managed file store
+  (`grants::FileGrantStore`). `rhai` keeps the profile/base path (its inner
+  bindings are a separate sync mechanism) and is not routed through the resolver.
+
 ## 10. MCP client — external tool servers — [ADR-0067](../adr/0067-mcp-client-as-runtime-tool-provider.md) (#198)
 
 Attach any external [MCP](https://modelcontextprotocol.io) tool server as a
