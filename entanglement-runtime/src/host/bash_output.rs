@@ -10,6 +10,7 @@ use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::borrow::Cow;
 
 pub struct BashOutputTool {
     jobs: JobRegistry,
@@ -30,8 +31,8 @@ struct BashOutputInput {
 
 #[async_trait]
 impl Tool for BashOutputTool {
-    fn name(&self) -> &'static str {
-        "bash_output"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("bash_output")
     }
     fn description(&self) -> &str {
         "Poll a background `bash` job (started with run_in_background=true) for \

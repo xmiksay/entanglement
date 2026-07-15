@@ -3,6 +3,7 @@
 //! `spawn_tool_executor` resolves `Allow | Ask | Deny` against the active
 //! `AgentProfile` and drives the approval round-trip on `Ask`.
 
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -49,8 +50,8 @@ impl Llm for ScriptedLlm {
 struct EchoBash;
 #[async_trait]
 impl Tool for EchoBash {
-    fn name(&self) -> &'static str {
-        "bash"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("bash")
     }
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))

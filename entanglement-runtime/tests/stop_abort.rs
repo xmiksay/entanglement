@@ -6,6 +6,7 @@
 //! slow tool that flips a `completed` flag only *after* its work must therefore
 //! never flip it once the turn is stopped mid-execution.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -54,8 +55,8 @@ struct BlockingTool {
 }
 #[async_trait]
 impl Tool for BlockingTool {
-    fn name(&self) -> &'static str {
-        "bash"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("bash")
     }
     async fn run(&self, _input: &str) -> anyhow::Result<String> {
         self.started.store(true, Ordering::SeqCst);

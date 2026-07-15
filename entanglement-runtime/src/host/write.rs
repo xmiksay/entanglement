@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
 use serde::Deserialize;
+use std::borrow::Cow;
 
 type CanWriteCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 
@@ -51,8 +52,8 @@ fn count_lines(s: &str) -> usize {
 
 #[async_trait]
 impl Tool for WriteTool {
-    fn name(&self) -> &'static str {
-        "write"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("write")
     }
     fn description(&self) -> &str {
         "Create or fully overwrite a file under the working directory with the \

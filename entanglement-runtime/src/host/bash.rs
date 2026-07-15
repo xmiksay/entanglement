@@ -8,6 +8,7 @@ use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 const MAX_BASH_TIMEOUT_SECONDS: u64 = 600;
@@ -97,8 +98,8 @@ struct BashInput {
 
 #[async_trait]
 impl Tool for BashTool {
-    fn name(&self) -> &'static str {
-        "bash"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("bash")
     }
     fn description(&self) -> &str {
         "Run a shell command rooted at the working directory. The command \
