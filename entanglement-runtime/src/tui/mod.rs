@@ -84,16 +84,18 @@ pub async fn tui(
     let (event_tx, mut event_rx) = mpsc::channel(128);
     spawn_crossterm_task(event_tx.clone());
 
-    // Registry-driven entry-agent roster (#119): the `/agent` picker and
-    // Tab-cycle offer only entry agents (`mode ∈ {primary, all}`) — a `subagent`
-    // leaf like `explore` is a spawn target, never a manual entry agent. Ordered
-    // by the registry's stable `iter` (name-sorted).
+    // Registry-driven entry-agent roster (#119): the `/agent` picker lists every
+    // entry agent (`mode ∈ {primary, all}`) — a `subagent` leaf like `explore` is
+    // a spawn target, never a manual entry agent. The mode is carried through so
+    // the Tab cycle can narrow to `primary` only (#322). Ordered by the
+    // registry's stable `iter` (name-sorted).
     let entry_profiles: Vec<app::ProfileInfo> = profiles
         .iter()
         .filter(|p| matches!(p.mode, AgentMode::Primary | AgentMode::All))
         .map(|p| app::ProfileInfo {
             name: p.name.clone(),
             description: p.description.clone(),
+            mode: p.mode,
         })
         .collect();
     let mut app = App::new(initial_session, catalog, entry_profiles);

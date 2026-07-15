@@ -1,9 +1,46 @@
-use super::App;
+use super::{App, ProfileInfo};
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::session_view::TranscriptEntry;
-use entanglement_core::{AgentState, OutEvent, SessionId};
-use entanglement_provider::ModelInfo;
+use entanglement_core::{AgentMode, AgentState, OutEvent, SessionId};
+use entanglement_provider::{Catalog, ModelInfo};
 use ratatui::layout::Rect;
+
+/// Build an `App` over a custom entry-agent roster so the Tab-cycle ring
+/// filtering (#322) can be exercised: `build`/`plan` as `Primary`, `helper` as
+/// `All`.
+fn app_with_mixed_modes(sid: SessionId) -> App {
+    App::new(
+        sid,
+        Catalog::builtin(),
+        vec![
+            ProfileInfo {
+                name: "build".to_string(),
+                description: "Coding agent".to_string(),
+                mode: AgentMode::Primary,
+            },
+            ProfileInfo {
+                name: "plan".to_string(),
+                description: "Planning agent".to_string(),
+                mode: AgentMode::Primary,
+            },
+            ProfileInfo {
+                name: "helper".to_string(),
+                description: "Cross-vendor helper".to_string(),
+                mode: AgentMode::All,
+            },
+        ],
+    )
+}
+
+/// Move the active session's agent off the cycle ring, as the Ctrl+A picker
+/// would when landing on an `all`-mode agent.
+fn set_agent(app: &mut App, sid: &SessionId, agent: &str) {
+    app.handle_out_event(OutEvent::AgentChanged {
+        session: sid.clone(),
+        agent: agent.to_string(),
+        profile_detail: None,
+    });
+}
 
 #[test]
 fn history_up_down_navigates_and_restores_draft() {
@@ -221,4 +258,59 @@ fn set_model_info_preserves_resolved_context_window() {
     assert_eq!(info.id, "claude-sonnet-4-5");
     assert_eq!(info.display_name, "Claude Sonnet 4.5");
     assert_eq!(info.context_window, Some(200_000));
+}
+
+#[test]
+fn tab_cycle_skips_mode_all_agents() {
+    // The implicit Tab cycle ring is `mode: primary` only (#322): a cross-vendor
+    // `all`-mode agent stays out of the ring, so cycling only ever visits
+    // build↔plan.
+    let sid = SessionId::new("test");
+    let mut app = app_with_mixed_modes(sid.clone());
+    set_agent(&mut app, &sid, "build");
+
+    assert_eq!(app.cycle_primary_profile().as_deref(), Some("plan"));
+    assert_eq!(app.cycle_primary_profile().as_deref(), Some("build"));
+    assert_eq!(app.cycle_primary_profile().as_deref(), Some("plan"));
+}
+
+#[test]
+fn tab_cycle_from_off_ring_agent_lands_on_first_primary() {
+    // Picking `helper` (an `all`-mode agent) via Ctrl+A puts the session off the
+    // ring; Tab must land on the first ring entry, not the one after index 0.
+    let sid = SessionId::new("test");
+    let mut app = app_with_mixed_modes(sid.clone());
+    set_agent(&mut app, &sid, "helper");
+
+    assert_eq!(app.cycle_primary_profile().as_deref(), Some("build"));
+}
+
+#[test]
+fn reverse_tab_cycle_wraps_and_lands_on_last_primary_off_ring() {
+    let sid = SessionId::new("test");
+    let mut app = app_with_mixed_modes(sid.clone());
+
+    // On-ring: from build, backwards wraps to plan (the last ring entry).
+    set_agent(&mut app, &sid, "build");
+    assert_eq!(app.cycle_primary_profile_back().as_deref(), Some("plan"));
+    assert_eq!(app.cycle_primary_profile_back().as_deref(), Some("build"));
+
+    // Off-ring `helper` → the last ring entry.
+    set_agent(&mut app, &sid, "helper");
+    assert_eq!(app.cycle_primary_profile_back().as_deref(), Some("plan"));
+}
+
+#[test]
+fn agent_picker_still_lists_all_entry_agents() {
+    // The Ctrl+A picker roster is unchanged — it still lists every entry agent
+    // (`primary | all`), including the `all`-mode `helper` the Tab ring skips.
+    let sid = SessionId::new("test");
+    let app = app_with_mixed_modes(sid);
+
+    let names: Vec<&str> = app
+        .available_profiles()
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["build", "plan", "helper"]);
 }

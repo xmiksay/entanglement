@@ -166,6 +166,25 @@ pub(super) async fn handle_event(
                                     .await;
                             }
                         }
+                        // crossterm reports Shift+Tab as `BackTab` (the SHIFT
+                        // modifier is not guaranteed), so match the key code, not
+                        // a modifier. Mirrors the Tab arm in reverse (#322).
+                        KeyCode::BackTab if app.mention_visible() => {
+                            app.accept_mention();
+                        }
+                        KeyCode::BackTab => {
+                            let input_text = app.input().lines().join("\n");
+                            if input_text.starts_with('/') && input_text.chars().count() == 1 {
+                                app.toggle_command_palette();
+                            } else if let Some(agent_name) = app.cycle_primary_profile_back() {
+                                let _ = holly
+                                    .send(entanglement_core::InMsg::SetAgent {
+                                        session: app.active_session_id().clone(),
+                                        agent: agent_name,
+                                    })
+                                    .await;
+                            }
+                        }
                         KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
                             app.toggle_profile_picker();
                         }

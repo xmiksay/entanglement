@@ -226,8 +226,14 @@ below realize one model:
   each a clear `ToolOutput` with no child minted. The allowlist is checked per
   spawning session against *its own* profile (**not transitive**). Supervisor
   hardening: `InMsg::Spawn` with an unknown name now `get()`s + errors instead of
-  silently escalating to `build`. The TUI `/agent` picker/Tab-cycle is
-  registry-driven, filtered to `mode ∈ {primary, all}`.
+  silently escalating to `build`. The TUI roster is registry-driven: the
+  `/agent` picker (Ctrl+A) lists every entry agent (`mode ∈ {primary, all}`),
+  while the implicit **Tab cycle** ring is `mode: primary` only (#322) — so
+  cross-vendor `all`-mode agents (ADR-0074) don't flood it — with `Shift+Tab`
+  (crossterm `BackTab`) reverse-cycling the same ring; if no primaries exist the
+  ring falls back to the whole entry list so Tab is never empty. Explicit
+  selection stays unrestricted: `--agent`, `user_config.agent`, and `SetAgent`
+  accept any registered name; the filter governs only the implicit cycle.
 - **Plan/task state tools (✅ #231, [ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)):**
   `update_plan` and `update_tasks` are **runtime** state tools, not core built-ins.
   Each replaces the session's *display* plan/task outline; the runtime executor
