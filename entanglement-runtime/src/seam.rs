@@ -2,25 +2,25 @@
 //!
 //! Every runtime-owned tool — the generic `tool_runner` dispatch plus
 //! `ask_user`, `propose_plan`, `rhai`, `agent_spawn`/`agent`, `agent_poll` —
-//! speaks the same #58 round-trip: it emits a request event, parks on the
-//! engine's inbound fan-out for the head's decision, and folds the outcome back
-//! as an [`InMsg::ToolResult`]. Two steps of that round-trip were copied across
-//! every module:
+//! speaks the same #58 round-trip: it emits a request event, parks for the
+//! head's decision, and folds the outcome back as an [`InMsg::ToolResult`]. Two
+//! steps of that round-trip were copied across every module:
 //!
 //! - **[`reply`]** — the `ToolResult` fold-back (was duplicated 6×);
-//! - **[`await_decision`]** — the park loop that filters the head's answer to
-//!   the waiting `(session, request_id)` and treats the ADR-0017
-//!   Stop/Lagged/Closed cases identically (was duplicated across `tool_runner`,
-//!   `propose_plan`, `ask_user`, and `script`).
-//!
-//! Centralizing both here means a park-loop fix (a new terminal message, a
-//! changed Lagged policy) propagates to every call site instead of drifting.
+//! - the **park for a decision** — previously each orchestrator held its own
+//!   `broadcast` subscription of the inbound fan-out and filtered it to
+//!   `(session, request_id)`. That per-task subscriber could *lag* under burst
+//!   and silently drop the very `Approve`/`Reject`/`AnswerQuestion` it waited for,
+//!   parking the request forever (#156). Decision delivery now runs off the
+//!   lag-proof [`crate::pending::PendingDecisions`] registry: a single light
+//!   router task ([`crate::tool_runner`]) consumes the fan-out and fans each
+//!   decision — mapped here by [`Decision::from_inmsg`] — to its parked waiter's
+//!   oneshot. This module keeps the [`Decision`] type and the fold-back.
 
 use entanglement_core::{ApprovalScope, ContentPart, Holly, InMsg, SessionId};
 // `ToolResult` folds back over the privileged in-process handle (#155), not the
 // untrusted wire path — a forged `ToolResult` off a wire head must never resolve
 // a parked turn.
-use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 /// Fold a **text** tool result back to core as the #58 `ToolResult`, completing
 /// the parked `ToolExec` round-trip. The text-producing tools (denials, refusals,
@@ -61,41 +61,32 @@ pub enum Decision {
     Stop,
 }
 
-/// Park on the engine's inbound fan-out until the head answers the pending
-/// request for `(session, request_id)`, then return the [`Decision`]. Messages
-/// for other sessions/requests are ignored; a `Lagged` gap is skipped; a `Stop`
-/// for the session or a closed inbox both resolve to [`Decision::Stop`].
-///
-/// The caller emits its request event (`ToolRequest`/`UserQuestion`) and sets
-/// the waiting status *before* calling this — subscribing to the inbound
-/// fan-out first (the callers do so synchronously) so a fast answer can't race
-/// ahead of the park.
-pub async fn await_decision(
-    inbound: &mut Receiver<InMsg>,
-    session: &SessionId,
-    request_id: &str,
-) -> Decision {
-    loop {
-        match inbound.recv().await {
-            Ok(InMsg::Approve {
-                session: s,
-                request_id: rid,
+impl Decision {
+    /// Map an inbound frame to its routing tuple `(session, request_id,
+    /// Decision)`, or `None` for a frame that is not a head decision (#156). The
+    /// executor's single inbound router uses this to fan each `Approve`/`Reject`/
+    /// `AnswerQuestion` to its parked waiter in
+    /// [`crate::pending::PendingDecisions`]. `Stop` is *not* mapped here — it is
+    /// session-scoped, not request-scoped, so the router unwinds every waiter of
+    /// the session via [`crate::pending::PendingDecisions::stop_session`].
+    pub fn from_inmsg(msg: InMsg) -> Option<(SessionId, String, Decision)> {
+        match msg {
+            InMsg::Approve {
+                session,
+                request_id,
                 scope,
-            }) if &s == session && rid == request_id => return Decision::Approve { scope },
-            Ok(InMsg::Reject {
-                session: s,
-                request_id: rid,
+            } => Some((session, request_id, Decision::Approve { scope })),
+            InMsg::Reject {
+                session,
+                request_id,
                 reason,
-            }) if &s == session && rid == request_id => return Decision::Reject { reason },
-            Ok(InMsg::AnswerQuestion {
-                session: s,
-                request_id: rid,
+            } => Some((session, request_id, Decision::Reject { reason })),
+            InMsg::AnswerQuestion {
+                session,
+                request_id,
                 answer,
-            }) if &s == session && rid == request_id => return Decision::Answer { answer },
-            Ok(InMsg::Stop { session: s }) if &s == session => return Decision::Stop,
-            Ok(_) => {}
-            Err(RecvError::Lagged(_)) => {}
-            Err(RecvError::Closed) => return Decision::Stop,
+            } => Some((session, request_id, Decision::Answer { answer })),
+            _ => None,
         }
     }
 }

@@ -203,7 +203,7 @@ pub(crate) async fn session_loop(
             });
             let pending = turn.pending.clone();
             for c in &pending {
-                emit_tool_exec(&events, &session, c, &s.seq);
+                emit_tool_exec(&events, &session, c, &s.profile.name, &s.seq);
             }
         }
     }

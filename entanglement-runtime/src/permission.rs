@@ -153,7 +153,11 @@ fn resolve_with_source(
 /// session's own profile *and* every ancestor's profile advertise it: the mask
 /// intersects down the chain, so a child never gains a tool an ancestor lacked
 /// (mirrors [`effective_permission`]'s privilege ceiling). An unseen session in
-/// the chain masks nothing (default-open, matching the permission fallback).
+/// the chain masks **everything** — **fail-closed** (#156): under broadcast
+/// overload a dropped `SessionStarted`/`AgentChanged` must not silently un-mask a
+/// restricted session. The executor self-heals the leaf from `ToolExec.agent`, so
+/// this fires only for a genuinely-unknown session (matching the [`permission_for`]
+/// `Deny` fallback).
 ///
 /// Orthogonal to permission: this decides a tool's *existence*, the `resolve`
 /// grade decides `Allow`/`Ask`/`Deny` among the tools that survive here.
@@ -167,10 +171,11 @@ pub fn tool_masked(
     // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
     let mut visited = HashSet::new();
     while visited.insert(current.clone()) {
-        if let Some(profile) = active.get(&current) {
-            if !profile.advertises_tool(tool) {
-                return true;
-            }
+        match active.get(&current) {
+            Some(profile) if !profile.advertises_tool(tool) => return true,
+            Some(_) => {}
+            // Unseen session in the chain ⇒ fail-closed (#156).
+            None => return true,
         }
         match guard.parent_of(&current) {
             Some(parent) => current = parent,
@@ -228,8 +233,13 @@ pub fn clamp_to_base(
 }
 
 /// A session's own permission for a `tool` call; an unseen session defaults to
-/// `Allow` (nothing to gate on), matching the pre-#77 fallback. `arg` carries the
-/// tool-specific argument (#173) so argument-scoped rules resolve.
+/// `Deny` — **fail-closed** (#156). The executor folds its per-session profile
+/// map from the lossy `SessionStarted`/`AgentChanged` broadcast, so under burst a
+/// dropped lifecycle event would otherwise leave a restricted session unseen and
+/// silently allow-all. The executor self-heals the leaf from `ToolExec.agent`
+/// before resolving, so this floor fires only for a genuinely-unknown session (an
+/// unresolved agent name, or an ancestor whose spawn was itself dropped). `arg`
+/// carries the tool-specific argument (#173) so argument-scoped rules resolve.
 fn permission_for(
     active: &HashMap<SessionId, AgentProfile>,
     session: &SessionId,
@@ -239,7 +249,7 @@ fn permission_for(
     active
         .get(session)
         .map(|p| p.permission.resolve(tool, arg))
-        .unwrap_or(Permission::Allow)
+        .unwrap_or(Permission::Deny)
 }
 
 /// The argument string an argument-scoped permission rule (#173) matches
@@ -463,13 +473,63 @@ mod tests {
         assert!(!tool_masked(&active, &guard, &s, "read"));
         assert!(tool_masked(&active, &guard, &s, "edit"));
         assert!(tool_masked(&active, &guard, &s, "agent_spawn"));
-        // An unseen session masks nothing (default-open).
-        assert!(!tool_masked(
-            &active,
-            &guard,
-            &SessionId::new("other"),
-            "edit"
-        ));
+        // An unseen session masks everything — fail-closed (#156). Even a tool a
+        // seen profile would advertise (`read`) is refused until the session's
+        // profile is known, so a dropped `SessionStarted` cannot un-mask a
+        // restricted session under overload.
+        let other = SessionId::new("other");
+        assert!(tool_masked(&active, &guard, &other, "edit"));
+        assert!(tool_masked(&active, &guard, &other, "read"));
+    }
+
+    #[test]
+    fn unseen_session_resolves_to_deny() {
+        // #156: a session whose lifecycle events were dropped under broadcast
+        // overload is unseen — its effective permission must be `Deny`
+        // (fail-closed), not the pre-#156 allow-all default that inverted the
+        // security posture. An allow-all *seen* session resolves normally.
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+        );
+        let seen = SessionId::new("seen");
+        let mut active = HashMap::new();
+        active.insert(seen.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(&active, &guard, &seen, "edit", None),
+            Permission::Allow
+        );
+        // An unseen session (never inserted) fails closed.
+        assert_eq!(
+            effective_permission(&active, &guard, &SessionId::new("ghost"), "edit", None),
+            Permission::Deny
+        );
+    }
+
+    #[test]
+    fn unseen_ancestor_clamps_child_to_deny() {
+        // #156: if a parent's `SessionStarted` was dropped, the parent is unseen.
+        // The child's effective permission must clamp to `Deny` down the chain
+        // rather than fall through to the child's own (allow-all) grade.
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+        );
+        let parent = SessionId::new("parent");
+        let child = SessionId::new("child");
+        let mut active = HashMap::new();
+        // Only the child is seen; the parent's lifecycle event was lost.
+        active.insert(child.clone(), build);
+        let mut guard = SpawnGuard::new();
+        guard.record_start(parent.clone(), None);
+        guard.record_start(child.clone(), Some(parent.clone()));
+        assert_eq!(
+            effective_permission(&active, &guard, &child, "edit", None),
+            Permission::Deny
+        );
     }
 
     #[test]

@@ -24,9 +24,9 @@
 //! the plan root's spawn budget (ADR-0023), and accept is a transfer of authority
 //! *from the user* — correctly modeled as a root (ADR-0042).
 
-use entanglement_core::{AgentProfile, AgentState, Holly, InMsg, OutEvent, SessionId, ToolSpec};
-use tokio::sync::broadcast::Receiver;
+use entanglement_core::{AgentProfile, AgentState, Holly, OutEvent, SessionId, ToolSpec};
 
+use crate::pending::{self, PendingDecisions};
 use crate::seam;
 use crate::tool_names::PROPOSE_PLAN_TOOL;
 
@@ -103,17 +103,22 @@ pub fn wrap_plan(plan: &str) -> String {
 /// Orchestrate one `propose_plan` call: surface the plan as a standard approval
 /// prompt and park for the head's decision.
 ///
-/// The caller subscribes to the inbound fan-out *before* handing off (so a fast
-/// decision can't race ahead) and passes the receiver in — mirroring the approval
-/// path in [`crate::tool_runner`]. A `Stop` while parked unwinds silently: core's
-/// turn cancels on the same `Stop`, so no `ToolResult` is owed.
+/// Registers the waiter with the lag-proof [`PendingDecisions`] registry (#156)
+/// *before* emitting the request, so a fast decision routes to this park rather
+/// than racing a per-task broadcast subscription that could lag and drop it. A
+/// `Stop` while parked unwinds silently: core's turn cancels on the same `Stop`,
+/// so no `ToolResult` is owed.
 pub async fn run_propose_plan(
     holly: Holly,
-    mut inbound: Receiver<InMsg>,
+    pending: PendingDecisions,
     session: SessionId,
     request_id: String,
     input: String,
 ) {
+    // Register before emitting so the inbound router can never resolve the
+    // decision ahead of this waiter (#156).
+    let rx = pending.register(&session, &request_id);
+
     // A standard `ToolRequest` — the head renders the usual approve/reject prompt.
     // Mints a fresh per-session seq (#157) rather than reusing the `ToolExec` seq.
     holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
@@ -125,7 +130,7 @@ pub async fn run_propose_plan(
     });
     holly.emit_status(&session, AgentState::WaitingApproval);
 
-    match seam::await_decision(&mut inbound, &session, &request_id).await {
+    match pending::await_decision(rx).await {
         seam::Decision::Approve { .. } => {
             set_thinking(&holly, &session);
             // Tell the model the plan was accepted so it can end its turn; the

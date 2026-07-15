@@ -6,23 +6,32 @@
 //! Core emits [`OutEvent::ToolExec`] for **every** host tool and parks on
 //! [`InMsg::ToolResult`]; it no longer consults `PermissionProfile`. This task:
 //!
-//! 1. tracks each session's active [`AgentProfile`] from `SessionStarted` /
-//!    `AgentChanged` (ADR-0020), resolved against the [`ProfileRegistry`] it was
-//!    handed at startup;
+//! 1. tracks each session's active [`AgentProfile`] — folded from `SessionStarted`
+//!    / `AgentChanged` (ADR-0020) but **self-healed** on every `ToolExec` from the
+//!    profile name the event carries (#156), resolved against the
+//!    [`ProfileRegistry`] handed at startup. That fold is a *lossy* broadcast, so
+//!    under burst a dropped lifecycle event would otherwise leave a restricted
+//!    session unseen; the self-heal makes the gate authoritative, and the
+//!    `permission_for`/`tool_masked` defaults fail *closed* (`Deny`/masked) for the
+//!    residual unknown case rather than the pre-#156 allow-all fallback that
+//!    inverted the security posture under overload;
 //! 2. on `ToolExec`, resolves the permission for the tool:
 //!    - `Deny` → replies `ToolResult("…denied…")` without running it;
 //!    - `Allow` → runs it and replies `ToolResult`;
 //!    - `Ask` → emits [`OutEvent::ToolRequest`] (the approval prompt) and awaits
-//!      the head's `Approve`/`Reject`/`Stop` on the engine's inbound fan-out
-//!      ([`Holly::subscribe_inbound`]), then runs-or-refuses accordingly.
+//!      the head's `Approve`/`Reject`/`Stop`, then runs-or-refuses accordingly.
 //!
 //! Each request runs on its own detached task so a slow tool (or a pending
 //! approval) can't stall anything else. Core dispatches a model turn's tool
 //! calls as a **batch** (#270, ADR-0061): every `ToolExec` of the batch is
 //! emitted up front and the turn parks until all results have returned, so
 //! multiple executor tasks — and multiple pending approvals — per session are
-//! normal. `seam::await_decision` filters by `(session, request_id)`, which
-//! keeps concurrently parked approvals from stealing each other's answers.
+//! normal. Decision delivery is lag-proof (#156): a parked approval registers a
+//! oneshot in [`crate::pending::PendingDecisions`] keyed by `(session,
+//! request_id)`, and a single light inbound router (spawned below) fans each
+//! `Approve`/`Reject`/`AnswerQuestion` to its waiter — replacing the former
+//! per-task `broadcast` subscription that could lag and silently drop a decision,
+//! parking the request forever.
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -159,9 +168,10 @@ pub fn spawn_tool_executor_with_hooks(
     let inbound = holly.subscribe_inbound();
     let holly = holly.clone();
     tokio::spawn(async move {
-        // Active profile per session, folded from lifecycle events in the order
-        // the engine emits them (a session's `AgentChanged` always precedes any
-        // `ToolExec` it produces under that profile).
+        // Active profile per session. Folded from lifecycle events, but the fold
+        // is a *lossy* broadcast — so it is authoritatively self-healed on every
+        // `ToolExec` from the profile name that event carries (#156). See the
+        // `ToolExec` arm below.
         let mut active: HashMap<SessionId, AgentProfile> = HashMap::new();
         // Bounds the spawn tree (#76): tracks parent links from lifecycle events
         // and per-root spawn budgets. Lives in this single-threaded loop, so the
@@ -181,30 +191,54 @@ pub fn spawn_tool_executor_with_hooks(
         // `bash`/`call` command or `rhai` script is actually cancelled — core
         // only clears the parked turn state, it never owns the execution.
         let cancels = CancelRegistry::default();
+        // Lag-proof decision delivery (#156): parked approvals await a oneshot
+        // registered here, and the single inbound router below fans each head
+        // decision to its waiter — closing the window where a per-task broadcast
+        // park lagged and silently dropped an `Approve`/`Reject`/`Answer`.
+        let pending = crate::pending::PendingDecisions::default();
         {
-            // Watch inbound for `Stop` in its own task so the outbound loop below
-            // is untouched; both share the same `cancels` registry. The same task
-            // fires the `user_prompt_submit` hooks (#199) off each `Prompt` — the
-            // engine's inbound fan-out is the runtime-side ingress seam.
+            // The single inbound router (#156): the *sole* consumer of the inbound
+            // fan-out for decisions. It watches `Stop` (cancel in-flight tools +
+            // unwind parked approvals, #167), fires the `user_prompt_submit` hooks
+            // (#199) off each `Prompt`, and resolves every `Approve`/`Reject`/
+            // `Answer` to its parked waiter. One light map-lookup-per-frame loop
+            // drains far faster than a park loop, so it does not lag the way the
+            // per-task subscriptions it replaced did.
             let cancels = cancels.clone();
             let hooks = hooks.clone();
+            let pending = pending.clone();
             let mut inbound = inbound;
             tokio::spawn(async move {
                 loop {
                     match inbound.recv().await {
-                        Ok(InMsg::Stop { session }) => cancels.cancel_session(&session),
+                        Ok(InMsg::Stop { session }) => {
+                            cancels.cancel_session(&session);
+                            pending.stop_session(&session);
+                        }
                         Ok(InMsg::Prompt { session, content })
                             if !hooks.user_prompt_submit.is_empty() =>
                         {
-                            // Detach so a slow hook can't stall the Stop watcher.
+                            // Detach so a slow hook can't stall the router.
                             let hooks = hooks.clone();
                             tokio::spawn(async move {
                                 let text = entanglement_core::content_text(&content);
                                 hooks.run_user_prompt_submit(&session, &text).await;
                             });
                         }
-                        Ok(_) => {}
-                        Err(RecvError::Lagged(_)) => {}
+                        Ok(other) => {
+                            if let Some((s, rid, decision)) = seam::Decision::from_inmsg(other) {
+                                pending.resolve(&s, &rid, decision);
+                            }
+                        }
+                        // A lagging router would strand a decision; warn loudly.
+                        // In practice this loop can't fall behind the inbound fill
+                        // rate — this is not the #156 failure mode it fixes.
+                        Err(RecvError::Lagged(n)) => {
+                            tracing::warn!(
+                                skipped = n,
+                                "decision router lagged; some inbound frames dropped"
+                            );
+                        }
                         Err(RecvError::Closed) => break,
                     }
                 }
@@ -245,8 +279,22 @@ pub fn spawn_tool_executor_with_hooks(
                     request_id,
                     tool,
                     input,
+                    agent,
                     ..
                 }) => {
+                    // Authoritative self-heal (#156): the emitting session's
+                    // active profile rides on the `ToolExec` itself, so resolve it
+                    // from the registry and overwrite the folded entry *before*
+                    // any mask/permission decision. The lifecycle fold above is a
+                    // lossy broadcast — under burst a dropped
+                    // `SessionStarted`/`AgentChanged` would leave a restricted
+                    // session unseen and (pre-#156) fail *open*. This makes the
+                    // leaf's gate authoritative regardless of that drop; the
+                    // fail-closed `permission_for`/`tool_masked` defaults cover
+                    // only the residual unknown case (empty/unresolved `agent`).
+                    if let Some(p) = profiles.get(&agent) {
+                        active.insert(session.clone(), p.clone());
+                    }
                     // Physical tool restriction (#116, ADR-0038): a tool outside
                     // the session's effective advertised set — its profile's
                     // allowlist/denylist, intersected down the ancestor chain —
@@ -350,13 +398,14 @@ pub fn spawn_tool_executor_with_hooks(
                             });
                         }
                         Intercept::AskUser => {
-                            // Subscribe *before* handing off so a fast answer can't
-                            // race ahead of the parked executor task.
-                            let inbound = holly.subscribe_inbound();
+                            // Registers with `pending` before emitting the question
+                            // (#156), so a fast answer routes to the parked waiter
+                            // rather than racing a per-task broadcast park.
+                            let pending = pending.clone();
                             let holly = holly.clone();
                             tokio::spawn(async move {
                                 crate::ask_user::run_ask_user(
-                                    holly, inbound, session, request_id, input,
+                                    holly, pending, session, request_id, input,
                                 )
                                 .await;
                             });
@@ -365,11 +414,11 @@ pub fn spawn_tool_executor_with_hooks(
                             // Approve just acks the model (no engine plan state,
                             // #231); the head handles the fresh-`build`-session
                             // handoff (head policy, no new protocol surface).
-                            let inbound = holly.subscribe_inbound();
+                            let pending = pending.clone();
                             let holly = holly.clone();
                             tokio::spawn(async move {
                                 crate::propose_plan::run_propose_plan(
-                                    holly, inbound, session, request_id, input,
+                                    holly, pending, session, request_id, input,
                                 )
                                 .await;
                             });
@@ -404,7 +453,7 @@ pub fn spawn_tool_executor_with_hooks(
                                 &session,
                                 &base,
                             );
-                            let inbound = holly.subscribe_inbound();
+                            let pending = pending.clone();
                             let tools = tools.clone();
                             let holly = holly.clone();
                             // The blocking engine can't be aborted, so pair the
@@ -415,7 +464,7 @@ pub fn spawn_tool_executor_with_hooks(
                             let run_stop = stop.clone();
                             let handle = tokio::spawn(async move {
                                 crate::script::run_rhai(
-                                    holly, tools, policy, self_perm, session, request_id, inbound,
+                                    holly, tools, policy, self_perm, session, request_id, pending,
                                     input, run_stop,
                                 )
                                 .await;
@@ -428,14 +477,15 @@ pub fn spawn_tool_executor_with_hooks(
                         Intercept::Permission => {
                             // Resolve permission before spawning so the read of
                             // `active` stays ordered with the lifecycle events
-                            // above. A child sub-agent is clamped to its parent
-                            // chain (#77): its effective permission can never exceed
-                            // any ancestor's, so a child cannot touch the shared tree
-                            // in ways the parent couldn't. A root session (no
-                            // ancestors) resolves to its own profile unchanged; a
-                            // session we never saw start defaults to `Allow`. The
-                            // tool-specific argument (command/path, #173) lets an
-                            // argument-scoped rule resolve against the actual call.
+                            // above (and the `ToolExec.agent` self-heal). A child
+                            // sub-agent is clamped to its parent chain (#77): its
+                            // effective permission can never exceed any ancestor's,
+                            // so a child cannot touch the shared tree in ways the
+                            // parent couldn't. A root session (no ancestors)
+                            // resolves to its own profile unchanged; a session we
+                            // never saw start defaults to `Deny` (fail-closed,
+                            // #156). The tool-specific argument (command/path, #173)
+                            // lets an argument-scoped rule resolve against the call.
                             let arg = permission_arg(&tool, &input);
                             let perm = apply_grant(
                                 &grants,
@@ -459,14 +509,15 @@ pub fn spawn_tool_executor_with_hooks(
                             let holly = holly.clone();
                             let grants = grants.clone();
                             let hooks = hooks.clone();
+                            let pending = pending.clone();
                             // Register so a `Stop` aborts this task mid-execution:
                             // aborting the future drops the exec tool's child,
                             // firing its process-group SIGKILL guard (#167/#168).
                             let reg_session = session.clone();
                             let handle = tokio::spawn(async move {
                                 dispatch(
-                                    &holly, &tools, &grants, &hooks, session, request_id, tool,
-                                    input, perm,
+                                    &holly, &tools, &grants, &hooks, &pending, session, request_id,
+                                    tool, input, perm,
                                 )
                                 .await;
                             });
@@ -499,6 +550,7 @@ async fn dispatch(
     tools: &ToolRegistry,
     grants: &Mutex<GrantStore>,
     hooks: &Hooks,
+    pending: &crate::pending::PendingDecisions,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -518,11 +570,13 @@ async fn dispatch(
             seam::reply(holly, session, request_id, output).await;
         }
         Permission::Ask => {
-            // Subscribe *before* prompting so a fast approval can't race ahead of
-            // us. The prompt mints a **fresh** per-session seq (#157) from the
-            // parked session's shared counter, so `(session, seq)` stays unique
+            // Register the waiter *before* prompting (#156) so the inbound router
+            // can never process the approval before this park exists — the
+            // lag-proof successor to the old "subscribe before prompting"
+            // discipline. The prompt mints a **fresh** per-session seq (#157) from
+            // the parked session's shared counter, so `(session, seq)` stays unique
             // instead of reusing the `ToolExec` seq.
-            let mut inbound = holly.subscribe_inbound();
+            let rx = pending.register(&session, &request_id);
             holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
                 session: session.clone(),
                 seq,
@@ -532,15 +586,7 @@ async fn dispatch(
             });
             holly.emit_status(&session, AgentState::WaitingApproval);
             await_decision(
-                holly,
-                tools,
-                grants,
-                hooks,
-                &mut inbound,
-                session,
-                request_id,
-                tool,
-                input,
+                holly, tools, grants, hooks, rx, session, request_id, tool, input,
             )
             .await;
         }
@@ -557,13 +603,13 @@ async fn await_decision(
     tools: &ToolRegistry,
     grants: &Mutex<GrantStore>,
     hooks: &Hooks,
-    inbound: &mut tokio::sync::broadcast::Receiver<InMsg>,
+    rx: tokio::sync::oneshot::Receiver<seam::Decision>,
     session: SessionId,
     request_id: String,
     tool: String,
     input: String,
 ) {
-    match seam::await_decision(inbound, &session, &request_id).await {
+    match crate::pending::await_decision(rx).await {
         seam::Decision::Approve { scope } => {
             set_thinking(holly, &session);
             // Record the wider scopes (#174) so an identical later call skips

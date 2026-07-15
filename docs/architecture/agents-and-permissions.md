@@ -69,6 +69,16 @@ below realize one model:
     on approve, run the tool and reply `ToolResult`; on reject, reply
     `ToolResult("…rejected…")`.
   - `Deny` → reply `ToolResult("…denied…")` without running the tool.
+- **Lag-proof decision delivery (✅ #156, [ADR-0070](../adr/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md)):**
+  the `Ask` park (and `ask_user`/`propose_plan`/each `rhai` binding) no longer holds
+  its own `broadcast` subscription of the inbound fan-out — that per-task subscriber
+  could *lag* under burst and silently drop the `Approve`/`Reject`/`AnswerQuestion`
+  it waited for, parking the request forever. Instead each registers a `oneshot` in
+  a shared `runtime::pending::PendingDecisions` map keyed by `(session, request_id)`
+  *before* emitting its request, and a **single light inbound router** (the
+  executor's `Stop`/`user_prompt_submit` watcher, now the sole inbound consumer for
+  decisions) fans each decision to its waiter and unwinds a session's waiters on
+  `Stop`.
 - **Approval scope + persisted grants (✅ #174, [ADR-0052](../adr/0052-approval-scope-and-persisted-grants.md)):**
   `InMsg::Approve` carries a `scope: Once | Session | Always` (core enum, default
   `Once`, `skip_serializing_if` so a bare approve is wire-identical to the pre-#174
@@ -319,9 +329,18 @@ below realize one model:
   [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md)). Core emits
   `ToolExec` for *every* host tool — the whole batch up front since #270 ([ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)) — and parks the turn as explicit `TurnState` until each `ToolResult` lands (§8); it never reads
   `PermissionProfile`. The runtime `tool_runner` (§8) tracks each session's active
-  profile (folded from `SessionStarted`/`AgentChanged` against a `ProfileRegistry`
-  copy it holds), resolves the permission, and — for `Ask` — emits the
-  `ToolRequest` prompt and awaits `Approve`/`Reject`/`Stop` off the engine's
-  **inbound fan-out** (`Holly::subscribe_inbound()`), so every head stays a thin
-  protocol adapter (it just sends the same frames; the runtime, not core, acts on
-  them).
+  profile against a `ProfileRegistry` copy it holds, resolves the permission, and —
+  for `Ask` — emits the `ToolRequest` prompt and awaits `Approve`/`Reject`/`Stop`,
+  so every head stays a thin protocol adapter (it just sends the same frames; the
+  runtime, not core, acts on them).
+- **Authoritative gating, fail-closed (✅ #156, [ADR-0070](../adr/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md)):**
+  the profile map was folded *only* from the **lossy** `SessionStarted`/`AgentChanged`
+  broadcast, with a fail-*open* default — an unseen session resolved to `Allow` and
+  *unmasked*. Under burst a dropped lifecycle frame therefore ran a restricted
+  `explore` session allow-all/unmasked: the posture inverted under overload. Fixed
+  two ways. `OutEvent::ToolExec` now carries `agent` (the emitting session's profile
+  name); the executor **self-heals** its map from that field before any
+  mask/permission decision, so the leaf's gate is authoritative regardless of a
+  dropped `SessionStarted` (ancestors self-heal via their own spawn `ToolExec`s).
+  And the residual-unknown fallback flips **fail-closed**: an unseen session resolves
+  to `Deny` (`permission_for`) and to *masked* (`tool_masked`) — degraded but safe.

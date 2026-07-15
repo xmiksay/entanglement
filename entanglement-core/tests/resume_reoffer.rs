@@ -72,6 +72,7 @@ fn mid_turn_records(sid: &SessionId) -> Vec<(Option<InMsg>, OutEvent)> {
                 request_id: "call_1".into(),
                 tool: "read".into(),
                 input: "{}".into(),
+                agent: "build".into(),
             },
         ),
     ]

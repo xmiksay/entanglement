@@ -35,7 +35,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | ToolCallDelta{session,seq,request_id,tool,delta}   // streamed tool-arg fragment; display-only, before the assembled ToolCall (#194)
          | ToolCall{session,seq,request_id,tool,input}      // display-only, every call (before exec)
          | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
-         | ToolExec{session,seq,request_id,tool,input}      // core → runtime: dispatch it (#58/#59)
+         | ToolExec{session,seq,request_id,tool,input,agent}   // core → runtime: dispatch it (#58/#59); agent = active profile name for authoritative gating (#156)
          | UserQuestion{session,seq,request_id,question,options,allow_free_form}  // ask_user prompt (#90)
          | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart]}   // output = display text; content carries an image result for faithful replay (#221)
          | TaskList{session,seq,content}      // full outline snapshot (markdown)

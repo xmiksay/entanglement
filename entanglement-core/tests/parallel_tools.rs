@@ -112,6 +112,43 @@ async fn await_tool_execs(
     ids
 }
 
+/// #156: every `ToolExec` carries the emitting session's active profile name, so
+/// the runtime executor can gate the call authoritatively instead of folding a
+/// lossy `SessionStarted`/`AgentChanged` broadcast. A default session runs under
+/// `build`.
+#[tokio::test]
+async fn tool_exec_carries_the_active_profile_name() {
+    let (holly, _) = engine(vec![
+        LlmResponse {
+            text: String::new(),
+            tool_calls: vec![call("a", "read")],
+        },
+        LlmResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let agent = loop {
+        let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await else {
+            panic!("no ToolExec arrived");
+        };
+        if let OutEvent::ToolExec { session, agent, .. } = ev {
+            if session == sid {
+                break agent;
+            }
+        }
+    };
+    assert_eq!(
+        agent, "build",
+        "ToolExec must name the session's active profile"
+    );
+}
+
 /// The whole batch is offered before any result is consumed, and results
 /// resolve out of order: outputs surface in *arrival* order and the turn
 /// continues to exactly one `Done`.

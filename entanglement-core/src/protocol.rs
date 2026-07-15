@@ -785,12 +785,22 @@ pub enum OutEvent {
     /// [`ToolRequest`][OutEvent::ToolRequest] (human approval) and
     /// [`ToolCall`][OutEvent::ToolCall] (display-only): only `ToolExec` drives
     /// execution, so a denied tool never runs (ADR-0006/0010).
+    ///
+    /// `agent` carries the emitting session's active profile name (#156): the
+    /// runtime executor resolves permission/mask against it *authoritatively*,
+    /// self-healing its per-session profile map from this field instead of the
+    /// lossy `SessionStarted`/`AgentChanged` broadcast fold — so a dropped
+    /// lifecycle event under burst can no longer silently downgrade a restricted
+    /// session to allow-all/unmasked. `#[serde(default)]` keeps pre-#156 logs
+    /// deserializable (empty ⇒ the executor falls back to its folded state).
     ToolExec {
         session: SessionId,
         seq: u64,
         request_id: String,
         tool: String,
         input: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        agent: String,
     },
     /// The model asked the user a decision question via the runtime-owned
     /// `ask_user` tool (ADR-0027). Carries the prompt, labelled `options`, and

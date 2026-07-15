@@ -13,9 +13,9 @@
 //! text verbatim. A `Stop` for the session while parked unwinds silently: core's
 //! turn cancels on the same `Stop`, so no `ToolResult` is owed (mirrors approval).
 
-use entanglement_core::{AgentState, Holly, InMsg, OutEvent, QuestionOption, SessionId, ToolSpec};
-use tokio::sync::broadcast::Receiver;
+use entanglement_core::{AgentState, Holly, OutEvent, QuestionOption, SessionId, ToolSpec};
 
+use crate::pending::{self, PendingDecisions};
 use crate::seam;
 use crate::tool_names::ASK_USER_TOOL;
 
@@ -123,17 +123,21 @@ fn parse_option(v: &serde_json::Value) -> Option<QuestionOption> {
 /// Orchestrate one `ask_user` call: surface the question, await the head's
 /// answer, and reply to the model with it.
 ///
-/// The caller subscribes to the inbound fan-out *before* handing off (so a fast
-/// answer can't race ahead) and passes the receiver in — mirroring the approval
-/// path in [`crate::tool_runner`].
+/// Registers the waiter with the lag-proof [`PendingDecisions`] registry (#156)
+/// *before* emitting the question, so a fast answer routes to this park rather
+/// than racing a per-task broadcast subscription that could lag and drop it.
 pub async fn run_ask_user(
     holly: Holly,
-    mut inbound: Receiver<InMsg>,
+    pending: PendingDecisions,
     session: SessionId,
     request_id: String,
     input: String,
 ) {
     let q = parse_input(&input);
+
+    // Register before emitting so the inbound router can never resolve the answer
+    // ahead of this waiter (#156).
+    let rx = pending.register(&session, &request_id);
 
     // Mint a fresh per-session seq (#157) so the question takes an ordered place
     // in the content stream rather than reusing the parked `ToolExec` seq. Moved
@@ -154,12 +158,10 @@ pub async fn run_ask_user(
     holly.emit_status(&session, AgentState::WaitingApproval);
 
     // Only an `AnswerQuestion` for this request folds an answer back; `Stop`
-    // (and a closed inbox) unwind silently — core cancels the turn on the same
+    // (and a dropped registry) unwind silently — core cancels the turn on the same
     // `Stop`, so no `ToolResult` is owed. Approve/Reject never target an
     // `ask_user` request id.
-    if let seam::Decision::Answer { answer } =
-        seam::await_decision(&mut inbound, &session, &request_id).await
-    {
+    if let seam::Decision::Answer { answer } = pending::await_decision(rx).await {
         holly.emit_status(&session, AgentState::Thinking);
         seam::reply(&holly, session, request_id, answer).await;
     }
