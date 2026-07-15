@@ -27,3 +27,8 @@ throughout the docs and ADRs map as follows:
 Trust & scope decisions cut across modules: the local trust boundary
 ([ADR-0047](adr/0047-local-trust-boundary.md)) and the local-only `serve` head
 ([ADR-0048](adr/0048-serve-head-local-trust-model.md)).
+
+Building a custom, multi-tenant head on top of `entanglement-runtime`'s
+embeddable library (rather than one of the four shipped interfaces) is a
+separate *how to integrate* guide, not a description of this repo's own
+heads: see [`embedding.md`](embedding.md).

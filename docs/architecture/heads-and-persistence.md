@@ -20,7 +20,11 @@ providers without dragging in clap or the TUI stack).
 Building the crate with `default-features = false` yields an **embeddable
 library** — the tool-execution loop, permission dispatch, sub-agent spawn, and
 persistence machinery with none of the CLI/TUI/transport weight
-([ADR-0025](../adr/0025-runtime-cargo-feature-gates.md), §7).
+([ADR-0025](../adr/0025-runtime-cargo-feature-gates.md), §7). Wiring a custom,
+multi-tenant head on top of this library (session namespacing, the trust
+split, pluggable persistence/policy, approval-across-restart) is covered in
+[`../embedding.md`](../embedding.md), backed by a compiling
+[`examples/embedded.rs`](../../entanglement-runtime/examples/embedded.rs).
 
 - **ABI** — `holly.send()` / `holly.subscribe()`. Done.
 - **stdio** (`skutter run` / `skutter pipe`): one-shot `run [--format text|json]
