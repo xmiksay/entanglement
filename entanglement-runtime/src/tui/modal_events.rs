@@ -234,14 +234,31 @@ pub(super) async fn handle_sessions_modal_event(app: &mut App, key: KeyEvent) ->
     Ok(false)
 }
 
-pub(super) async fn handle_command_palette_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+pub(super) async fn handle_command_palette_event(
+    app: &mut App,
+    holly: &Holly,
+    key: KeyEvent,
+) -> Result<bool> {
     match key.code {
         KeyCode::Esc => {
             app.close_command_palette();
         }
         KeyCode::Enter => {
             if let Some(cmd) = app.command_palette().execute_selected() {
-                if app.execute_command(cmd) {
+                // The palette carries no trailing free text, so a picked
+                // `/compact` always runs with empty `args` (#324) — unlike
+                // typing `/compact <instructions>` and pressing Enter directly
+                // (`event_loop::send_compact`), which this dispatch can't
+                // reach since it needs `holly` + the raw input text together.
+                if cmd == crate::tui::commands::Command::Compact {
+                    let _ = holly
+                        .send(InMsg::Oneshot {
+                            session: app.active_session_id().clone(),
+                            op: "compact".to_string(),
+                            args: serde_json::Value::Object(serde_json::Map::new()),
+                        })
+                        .await;
+                } else if app.execute_command(cmd) {
                     return Ok(true);
                 }
             }

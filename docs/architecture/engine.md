@@ -148,12 +148,35 @@ back to the flat `CONTEXT_LIMIT_TOKENS` (180k). Over budget, core **compacts**
 (`Context::compact` prunes the oldest tool outputs to a placeholder,
 newest-first-preserved) and, if that still doesn't fit, **refuses** the turn via
 `emit_turn_error` (a `"context window exceeded"` `Error` + `Done` + `Status`) —
-it no longer warns-and-sends an over-window request. LLM summarization of the
-surviving history is a later phase. So both the turn-limit trip and the
+it no longer warns-and-sends an over-window request. This automatic prune-only
+path is unrelated to (and unchanged by) the deliberate, user-triggered LLM
+*summarization* op below — `Context::compact` never calls the model, it only
+ever discards. So both the turn-limit trip and the
 context-refusal *end* a turn — the former on an `Error` with no `Done` (the #177
 gap), the latter on the full `emit_turn_error` triple; the #192 `max_tokens`
 truncation `Error` remains a recoverable warning that runs on to its normal
 `Done`.
+
+**Single-shot ops — `InMsg::Oneshot` (`session/ops.rs`, #324,
+[ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).**
+Separate from the turn loop above: `run_oneshot` never streams tool calls and
+never parks — it either completes in one round-trip or fails cleanly. Routed
+like `SetAgent`/`SetModel` (`SessionCmd::Oneshot`, deferred via the stash gate
+while `s.turn.is_some()`), so it only ever runs with no turn in flight — the
+invariant that lets `compact_op` call `s.llm.stream(...)` directly (via a small
+`oneshot_text` helper that drains the stream for `Text` chunks + the `Finish`
+usage) instead of going through `session/stream.rs`'s inbox-racing
+`tokio::select!`. `"compact"` renders the history as a plain-text transcript
+(each `Tool`-role message truncated head+tail past ~2k chars so one oversized
+tool output can't blow the summarizer's own context window), optionally
+appends `args.instructions`, and asks the model to summarize it with a
+tool-less `LlmRequest` (`tools: &[]`). On success, `Context::apply_compaction`
+replaces the whole history with one summary message (`Message::user`, plus any
+preserved tail) and the session emits `Compacted`/`Usage`/`Done`/
+`Status::Done` — the ordinary terminal sequence, so a one-shot head still
+unblocks on `Done`. On failure, the ordinary `emit_turn_error` triple runs and
+`Context` is untouched. Model resolution and pricing mirror the turn loop:
+`s.model` → `s.profile.model` → (pricing only) `cfg.default_model`.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop *races* it via `tokio::select!` so a

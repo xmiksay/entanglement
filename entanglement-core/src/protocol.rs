@@ -600,6 +600,18 @@ pub enum InMsg {
         provider: String,
         model: String,
     },
+    /// Run a single out-of-band LLM op outside the turn loop (#324, ADR-0082).
+    /// The generic surface is the **wire shape** — an opaque `op` string plus
+    /// `args` — not a plugin registry: `session::ops::run_oneshot` matches on
+    /// `op` (`"compact"` today; an unknown op emits a recoverable `Error`).
+    /// Mutates only the caller's own `Context`, so it is wire-allowed. Deferred
+    /// while a turn is live (stash replay), like `SetAgent`/`SetModel`.
+    Oneshot {
+        session: SessionId,
+        op: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
     /// Spawn a child session (sub-agent) under `parent`, running `prompt` beneath
     /// the named `agent` profile (#60, ADR-0021). `session` is the *child's* id.
     /// The supervisor records the parent link (populating the session tree the
@@ -674,6 +686,7 @@ impl InMsg {
             | InMsg::HibernateSession { session }
             | InMsg::SetAgent { session, .. }
             | InMsg::SetModel { session, .. }
+            | InMsg::Oneshot { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => Some(session),
             InMsg::ListSessions { .. } => None,
@@ -727,6 +740,7 @@ impl InMsg {
             InMsg::HibernateSession { .. } => "hibernate_session",
             InMsg::SetAgent { .. } => "set_agent",
             InMsg::SetModel { .. } => "set_model",
+            InMsg::Oneshot { .. } => "oneshot",
             InMsg::Spawn { .. } => "spawn",
             InMsg::Resume { .. } => "resume",
         }
@@ -954,6 +968,22 @@ pub enum OutEvent {
     },
     /// Turn finished cleanly. Heads waiting on a one-shot turn exit on this.
     Done { session: SessionId, seq: u64 },
+    /// Session compaction ran (#324, ADR-0082): the live history was replaced
+    /// with an LLM-generated `summary` via `Context::apply_compaction` — a
+    /// persisted, seq-bearing content event (persistence is variant-agnostic;
+    /// seq-bearing ⇒ folded into `ReplayFrom` history and the replay fold, see
+    /// [`Session::replay`][crate::session::Session::replay]). `kept` is how many
+    /// trailing messages were preserved verbatim after the summary; v1 always
+    /// `0` (keep-tail is deferred — a `Tool` message replayed without its
+    /// assistant parent breaks Anthropic's `tool_use`/`tool_result` pairing —
+    /// the field future-proofs the wire for it).
+    Compacted {
+        session: SessionId,
+        seq: u64,
+        summary: String,
+        #[serde(default)]
+        kept: u64,
+    },
     /// File change record (audit log entry). Emitted by the runtime's tool
     /// executor after each successful `edit`/`write` (#202). The record carries
     /// the `path`, `change_kind`, and a content **hash** (lowercase hex SHA-256
@@ -995,6 +1025,7 @@ impl OutEvent {
             | OutEvent::Usage { session, .. }
             | OutEvent::Error { session, .. }
             | OutEvent::Done { session, .. }
+            | OutEvent::Compacted { session, .. }
             | OutEvent::FileChange { session, .. } => Some(session),
             OutEvent::SessionList { .. } => None,
         }
@@ -1030,6 +1061,7 @@ impl OutEvent {
             | OutEvent::Usage { seq, .. }
             | OutEvent::Error { seq, .. }
             | OutEvent::Done { seq, .. }
+            | OutEvent::Compacted { seq, .. }
             | OutEvent::FileChange { seq, .. } => Some(*seq),
         }
     }
@@ -1116,6 +1148,11 @@ mod tests {
                 session: s.clone(),
                 provider: "zai".into(),
                 model: "glm-5.2".into(),
+            },
+            InMsg::Oneshot {
+                session: s.clone(),
+                op: "compact".into(),
+                args: serde_json::Value::Null,
             },
         ] {
             assert!(
@@ -1400,6 +1437,58 @@ mod tests {
         // A head-authored query the wire may forward, unlike the runtime-authored trio.
         assert!(msg.wire_allowed());
         assert_eq!(msg.session(), Some(&SessionId::new("s1")));
+    }
+
+    #[test]
+    fn oneshot_roundtrips_defaults_args_and_is_wire_allowed() {
+        let msg = InMsg::Oneshot {
+            session: SessionId::new("s1"),
+            op: "compact".into(),
+            args: serde_json::json!({"instructions": "keep the file list"}),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+        assert!(msg.wire_allowed());
+        assert_eq!(msg.session(), Some(&SessionId::new("s1")));
+        assert_eq!(msg.variant_name(), "oneshot");
+
+        // `args` defaults to `Value::Null` when omitted on the wire.
+        let bare = r#"{"kind":"oneshot","session":"s1","op":"compact"}"#;
+        assert_eq!(
+            serde_json::from_str::<InMsg>(bare).unwrap(),
+            InMsg::Oneshot {
+                session: SessionId::new("s1"),
+                op: "compact".into(),
+                args: serde_json::Value::Null,
+            }
+        );
+    }
+
+    #[test]
+    fn compacted_event_roundtrips_and_carries_seq() {
+        let ev = OutEvent::Compacted {
+            session: SessionId::new("s1"),
+            seq: 6,
+            summary: "user asked for X, agent did Y".into(),
+            kept: 0,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: OutEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
+        assert_eq!(back.seq(), Some(6));
+        assert_eq!(back.session(), Some(&SessionId::new("s1")));
+
+        // `kept` defaults to 0 when omitted on the wire (older writer shape).
+        let bare = r#"{"kind":"compacted","session":"s1","seq":6,"summary":"x"}"#;
+        assert_eq!(
+            serde_json::from_str::<OutEvent>(bare).unwrap(),
+            OutEvent::Compacted {
+                session: SessionId::new("s1"),
+                seq: 6,
+                summary: "x".into(),
+                kept: 0,
+            }
+        );
     }
 
     #[test]

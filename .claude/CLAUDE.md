@@ -119,11 +119,11 @@ Enabling *is* consent — it runs **outside** the permission ladder
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetAgent | SetModel | Spawn | ListSessions | ReplayFrom | CloseSession
+          | SetAgent | SetModel | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
           | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status | AgentChanged | ModelChanged
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
-          | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | FileChange
+          | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
 ```
 
 Load-bearing invariants (details in the split architecture docs — do **not**
@@ -239,6 +239,25 @@ re-document them here):
   (`ENTANGLEMENT_AGENT_MODELS_FILE`), overlaid onto the registry at startup
   (persisted file > frontmatter); core stays policy-free (the runtime resolves
   which model wins). `atomic_write` now lives in shared `config::atomic`.
+- **Single-shot session ops + persisted compaction** (#324,
+  [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)):
+  `InMsg::Oneshot { session, op: String, args: Value }` is a generic **wire
+  envelope** for a single out-of-band LLM call outside the turn loop — not a
+  plugin registry, the genericity is in the wire shape, `session::ops::run_oneshot`
+  is a plain `match op.as_str()`. `"compact"` (session compaction via LLM
+  summarization) is the first op: routed like `SetAgent`/`SetModel`
+  (`SessionCmd::Oneshot`, deferred via the same stash gate while a turn is live),
+  it renders the transcript, asks the model to summarize it with a tool-less
+  request, and replaces the whole history via the new
+  `Context::apply_compaction(summary, kept)` — one **user-role** summary message
+  plus `kept` preserved trailing messages (always `0` in v1; keep-tail deferred).
+  The result is `OutEvent::Compacted { session, seq, summary, kept }`, a
+  **persisted, seq-bearing** content event — persistence and `ReplayFrom` cover
+  it for free (both are variant-agnostic over any seq-bearing event) —
+  and `Session::replay`'s `Compacted` fold calls the same `apply_compaction`, so
+  a resumed session stays compacted. The old prune-only `Context::compact`
+  (#178) is unchanged and still the automatic pre-round fallback; `"compact"`
+  only runs on request (`InMsg::Oneshot`, TUI `/compact [instructions]`).
 - **Session hibernation is eviction, not termination** (#318,
   [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)): a third
   lifecycle state between `live` and the terminal tombstone. `HibernateSession {
@@ -420,6 +439,10 @@ stranded by a `broadcast`-lag drop landed here, #274/[ADR-0071](../docs/adr/0071
 The pre-`serve` hardening epic #153 is **complete** — all six findings (#274,
 #155, #156, #157, #158, #160) landed, and the local WebSocket `serve` head they
 gated shipped last, per [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md).
+The generic one-shot op framework (#324, `InMsg::Oneshot`, session compaction
+as its first op, [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md))
+is **complete**; auto-summarize-on-context-threshold is a natural follow-up
+issue, not yet scheduled.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
 — z.ai (primary)/OpenAI/Ollama via one OpenAI-compat client + a separate

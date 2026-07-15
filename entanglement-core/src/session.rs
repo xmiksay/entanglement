@@ -11,12 +11,13 @@
 //! (#231, ADR-0049) — the engine holds no plan/task state and makes no
 //! plan-authority call.
 //!
-//! Split along the natural seam (#109): the replay/fold that reconstructs a
-//! session from a persisted log lives in [`replay`]; the live reasoning turn in
-//! [`turn`]; the streamed round-trip in [`stream`]; the parked-turn state in
-//! [`turn_state`]; the outbound-event emit helpers in [`emit`].
+//! Split along the natural seam (#109): [`replay`] reconstructs a session from
+//! a persisted log; [`turn`] is the live reasoning turn; [`stream`] is the
+//! streamed round-trip; [`turn_state`] is the parked-turn state; [`emit`] is
+//! the outbound-event helpers; [`ops`] is single-shot ops (#324, ADR-0082).
 
 mod emit;
+mod ops;
 mod replay;
 mod state;
 mod stream;
@@ -38,6 +39,7 @@ use entanglement_provider::ContentPart;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use emit::{emit_tool_exec, emit_tool_output, next_seq};
+use ops::run_oneshot;
 use turn::drive_turn;
 
 /// Commands routed to a single session by the supervisor (InMsg minus session id).
@@ -55,6 +57,8 @@ pub(crate) enum SessionCmd {
     /// against [`EngineConfig::model_resolver`][crate::EngineConfig] and rebuilds
     /// `Session::llm` without restarting the engine.
     SetModel(String, String),
+    /// Single out-of-band LLM op (`op`, `args`, #324) — `"compact"` today.
+    Oneshot(String, serde_json::Value),
     Stop,
     /// Evict this session from memory without tombstoning its id (#318,
     /// ADR-0077). The task emits [`OutEvent::SessionHibernated`], drops its shared
@@ -306,6 +310,13 @@ pub(crate) async fn session_loop(
                         });
                     }
                 }
+            }
+            Some(SessionCmd::Oneshot(op, args)) => {
+                if s.turn.is_some() {
+                    stash.push_back(SessionCmd::Oneshot(op, args));
+                    continue;
+                }
+                run_oneshot(&session, &mut s, &events, &cfg, op, args).await;
             }
             // A result for the parked batch (#270): fold it into context on
             // arrival — arrival order, matching replay's `ToolOutput`-order

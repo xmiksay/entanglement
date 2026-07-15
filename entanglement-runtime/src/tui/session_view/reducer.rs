@@ -328,6 +328,22 @@ impl SessionView {
                 }
             }
             OutEvent::FileChange { .. } => true,
+            // Session compaction (#324, ADR-0082): the engine context shrank,
+            // but the visible transcript stays full — render a one-line notice
+            // reusing the tool-output entry, like `record_status`'s out-of-band
+            // notices.
+            OutEvent::Compacted { seq, summary, .. } => {
+                if seq > self.last_seen_seq {
+                    self.transcript.push(TranscriptEntry::ToolOutput {
+                        tool: Some("compact".to_string()),
+                        output: format!("Compacted conversation history.\n\n{summary}"),
+                    });
+                    self.last_seen_seq = seq;
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 }

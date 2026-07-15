@@ -181,6 +181,23 @@ impl Context {
         }
         self.within_limit()
     }
+
+    /// Apply an LLM-generated compaction (#324, ADR-0082): replace the whole
+    /// history with a single summary message, preserving the last `kept`
+    /// messages verbatim after it. User role deliberately — `system` has no
+    /// in-history wire mapping, and an assistant-authored summary is trusted
+    /// less reliably by some providers than a user-authored one. Shared by the
+    /// live `compact` oneshot op and the replay fold, so both reconstruct
+    /// identical context from an `OutEvent::Compacted` record.
+    pub fn apply_compaction(&mut self, summary: &str, kept: usize) {
+        let tail_start = self.messages.len().saturating_sub(kept);
+        let tail = self.messages.split_off(tail_start);
+        self.clear();
+        self.push_user(format!(
+            "[Conversation summary — earlier history was compacted]\n\n{summary}"
+        ));
+        self.messages.extend(tail);
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +262,51 @@ mod tests {
             "no tool output to prune → still over budget"
         );
         assert!(!ctx.within_limit());
+    }
+
+    #[test]
+    fn apply_compaction_replaces_history_with_a_user_role_summary() {
+        let mut ctx = Context::new();
+        ctx.push_user("do the thing");
+        ctx.push_assistant("working on it", Vec::new());
+        ctx.push_tool("t1", "tool output");
+
+        ctx.apply_compaction("did the thing, files X and Y touched", 0);
+
+        assert_eq!(ctx.messages().len(), 1);
+        assert_eq!(ctx.messages()[0].role, MessageRole::User);
+        assert!(ctx.messages()[0].text().contains("did the thing"));
+        assert!(ctx.messages()[0]
+            .text()
+            .starts_with("[Conversation summary"));
+    }
+
+    #[test]
+    fn apply_compaction_preserves_the_trailing_kept_messages() {
+        let mut ctx = Context::new();
+        ctx.push_user("first");
+        ctx.push_assistant("second", Vec::new());
+        ctx.push_user("third");
+
+        ctx.apply_compaction("summary of the earlier turns", 1);
+
+        assert_eq!(ctx.messages().len(), 2, "summary + the 1 kept tail message");
+        assert_eq!(ctx.messages()[0].role, MessageRole::User);
+        assert!(ctx.messages()[0]
+            .text()
+            .contains("summary of the earlier turns"));
+        assert_eq!(ctx.messages()[1].text(), "third");
+    }
+
+    #[test]
+    fn apply_compaction_kept_larger_than_history_keeps_everything_after_the_summary() {
+        let mut ctx = Context::new();
+        ctx.push_user("only message");
+
+        ctx.apply_compaction("summary", 10);
+
+        assert_eq!(ctx.messages().len(), 2);
+        assert_eq!(ctx.messages()[1].text(), "only message");
     }
 
     #[test]
