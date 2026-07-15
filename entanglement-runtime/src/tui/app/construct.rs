@@ -10,7 +10,7 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::sessions::SessionRegistry;
 use crate::tui::theme::Theme;
-use entanglement_core::SessionId;
+use entanglement_core::{AgentMode, SessionId};
 use ratatui::layout::Rect;
 
 use super::{App, ProfileInfo, HISTORY_CAPACITY};
@@ -27,10 +27,12 @@ impl App {
                 ProfileInfo {
                     name: "build".to_string(),
                     description: "Coding agent".to_string(),
+                    mode: AgentMode::Primary,
                 },
                 ProfileInfo {
                     name: "plan".to_string(),
                     description: "Planning agent".to_string(),
+                    mode: AgentMode::Primary,
                 },
             ],
         )
@@ -52,13 +54,28 @@ impl App {
             vec![ProfileInfo {
                 name: "build".to_string(),
                 description: "Coding agent".to_string(),
+                mode: AgentMode::Primary,
             }]
         } else {
             entry_profiles
         };
 
-        let primary_profile_order: Vec<String> =
-            available_profiles.iter().map(|p| p.name.clone()).collect();
+        // The implicit Tab cycle ring is `mode: primary` only (#322) so
+        // cross-vendor `all`-mode agents (ADR-0074) don't flood it; they stay
+        // reachable via the `/agent` picker. Fall back to the whole entry list if
+        // no primaries exist so Tab never cycles an empty ring.
+        let primary_profile_order: Vec<String> = {
+            let primaries: Vec<String> = available_profiles
+                .iter()
+                .filter(|p| p.mode == AgentMode::Primary)
+                .map(|p| p.name.clone())
+                .collect();
+            if primaries.is_empty() {
+                available_profiles.iter().map(|p| p.name.clone()).collect()
+            } else {
+                primaries
+            }
+        };
 
         let mut profile_picker_state = ListState::default();
         profile_picker_state.select(Some(0));

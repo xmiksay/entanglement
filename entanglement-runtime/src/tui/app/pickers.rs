@@ -70,15 +70,40 @@ impl App {
         }
     }
 
+    /// Advance the active session to the next agent in the Tab cycle ring
+    /// (`mode: primary` only, #322). When the current agent is off-ring — an
+    /// `all`-mode agent picked via the Ctrl+A picker — land on the first ring
+    /// entry rather than the one after it.
     pub fn cycle_primary_profile(&mut self) -> Option<String> {
         let current = self.sessions.active_view().agent().to_string();
-        let current_index = self
+        let next_index = match self
             .primary_profile_order
             .iter()
             .position(|name| name == &current)
-            .unwrap_or(0);
-        let next_index = (current_index + 1) % self.primary_profile_order.len();
+        {
+            Some(idx) => (idx + 1) % self.primary_profile_order.len(),
+            None => 0,
+        };
         let new_agent = self.primary_profile_order[next_index].clone();
+        self.sessions.active_view_mut().set_agent(new_agent.clone());
+        self.mark_dirty();
+        Some(new_agent)
+    }
+
+    /// Reverse of [`cycle_primary_profile`][Self::cycle_primary_profile]
+    /// (Shift+Tab, #322). Off-ring current agent → the last ring entry.
+    pub fn cycle_primary_profile_back(&mut self) -> Option<String> {
+        let current = self.sessions.active_view().agent().to_string();
+        let len = self.primary_profile_order.len();
+        let prev_index = match self
+            .primary_profile_order
+            .iter()
+            .position(|name| name == &current)
+        {
+            Some(idx) => (idx + len - 1) % len,
+            None => len - 1,
+        };
+        let new_agent = self.primary_profile_order[prev_index].clone();
         self.sessions.active_view_mut().set_agent(new_agent.clone());
         self.mark_dirty();
         Some(new_agent)

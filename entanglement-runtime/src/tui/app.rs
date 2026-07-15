@@ -1,4 +1,4 @@
-use entanglement_core::{AgentState, OutEvent, SessionId};
+use entanglement_core::{AgentMode, AgentState, OutEvent, SessionId};
 use entanglement_provider::ModelInfo;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
@@ -52,6 +52,9 @@ pub enum UiEffect {
 pub struct ProfileInfo {
     pub name: String,
     pub description: String,
+    /// Governs the *implicit* Tab cycle ring (`Primary` only, #322); the
+    /// `/agent` picker still lists every entry agent (`primary | all`).
+    pub mode: AgentMode,
 }
 
 pub struct App {
