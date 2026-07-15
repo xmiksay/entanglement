@@ -114,8 +114,8 @@ Enabling *is* consent — it runs **outside** the permission ladder
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
           | SetAgent | SetModel | Spawn | ListSessions | ReplayFrom | CloseSession
-          | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionList | History | Status | AgentChanged | ModelChanged
+          | HibernateSession (trusted-only) | Resume (internal, not serialized)
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status | AgentChanged | ModelChanged
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | FileChange
 ```
@@ -209,6 +209,24 @@ re-document them here):
   TUI `/model` picker now drives it end-to-end. The former `LlmSession` placeholder
   ([ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md)) stayed
   collapsed: the switch lives on `Session` fields, not a re-introduced newtype.
+- **Session hibernation is eviction, not termination** (#318,
+  [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)): a third
+  lifecycle state between `live` and the terminal tombstone. `HibernateSession {
+  session }` (**trusted-only**, not wire-allowed — joins the
+  `ToolResult`/`Spawn`/`Resume` refused set; `Holly::hibernate` is the wrapper)
+  tears down the session task + its spawn sub-tree (cascade like `CloseSession`)
+  and drops each `Context`, but records **no** tombstone — so the id stays
+  resumable: `Holly::resume` rebuilds it from the embedder's event log exactly like
+  the restart path, re-offering a turn parked mid-approval
+  ([ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md)).
+  The task emits a distinct lifecycle `SessionHibernated { session, ts }` (no
+  `seq`); the runtime executor releases its per-session bookkeeping on it as on
+  `SessionEnded`. Mid-stream hibernate = **stop-then-hibernate** (the supervisor's
+  sender-drop cancels the round; the uncommitted text-only tail is discarded
+  exactly as `Session::replay` drops it, so resume is lossless vs the log);
+  closed ids stay terminal (`resume` still refused). Core snapshots nothing —
+  eviction + log replay reuse one seam (no DB in core). `EngineConfig.idle_ttl`
+  auto-hibernation is deferred to the embedder's policy.
 - **Definitions are data, layered** embedded < user < project, later wins; the
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
   Agents (`ENTANGLEMENT_AGENTS_DIR`), skills (`ENTANGLEMENT_SKILLS_DIR`), the

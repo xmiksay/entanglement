@@ -254,6 +254,19 @@ impl Holly {
             .await?;
         Ok(root_id)
     }
+
+    /// Hibernate a session: evict its in-memory state without tombstoning the id
+    /// (#318, ADR-0077). Tears down the session task and its sub-tree, releasing
+    /// each [`Context`][crate::context::Context], but leaves the id **resumable**
+    /// — a later [`resume`][Self::resume] rebuilds it from the embedder's event
+    /// log. The **privileged in-process** control for a long-lived embedder to cap
+    /// memory across many sessions; it is trusted-only (not wire-allowed), so a
+    /// wire head cannot evict another session. A thin wrapper over the privileged
+    /// [`send`][Self::send]. Emits [`OutEvent::SessionHibernated`]; an unknown id
+    /// is a no-op.
+    pub async fn hibernate(&self, session: SessionId) -> Result<(), mpsc::error::SendError<InMsg>> {
+        self.send(InMsg::HibernateSession { session }).await
+    }
 }
 
 /// Route inbound messages to per-session tasks, lazily spawning one per new
@@ -336,6 +349,32 @@ async fn supervisor(
                 // (ADR-0028), so a `Prompt` queued behind this `CloseSession`
                 // can't respawn it blank.
                 closed.insert(victim);
+            }
+            continue;
+        }
+
+        if let InMsg::HibernateSession { session } = &msg {
+            // Memory eviction, not termination (#318, ADR-0077). Like
+            // `CloseSession` this cascades over the spawn sub-tree — a leftover
+            // descendant would keep burning tokens with no consumer — but it
+            // records **no** tombstone, so every evicted id stays resumable via
+            // `Holly::resume`. The map entry is dropped (memory released), and the
+            // session task emits `SessionHibernated` for itself.
+            for victim in collect_subtree(session, &parent_links) {
+                if let Some(tx) = sessions.remove(&victim) {
+                    // Deliver `Hibernate`, then drop the sender: a buffered command
+                    // is received before the channel-closed `None`, so the task
+                    // tears down via `SessionHibernated`. The drop also unblocks a
+                    // turn parked mid-stream — its `rx.recv()` returns `None`
+                    // (cancel), then the stashed `Hibernate` pops when idle
+                    // (stop-then-hibernate). Awaiting is safe: the session drains
+                    // its own channel independently of this loop.
+                    let _ = tx.send(SessionCmd::Hibernate).await;
+                }
+                session_meta.remove(&victim);
+                parent_links.remove(&victim);
+                // Deliberately NOT inserted into `closed`: the id is evictable and
+                // rebuildable, never spent.
             }
             continue;
         }

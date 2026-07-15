@@ -126,14 +126,15 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
             provider, model, ..
         } => SessionCmd::SetModel(provider, model),
         // Approve/Reject/AnswerQuestion and the ListSessions/ReplayFrom/
-        // CloseSession queries are filtered out before routing (see supervisor);
-        // Resume and Spawn are handled specially. None reach here.
+        // CloseSession/HibernateSession queries are filtered out before routing
+        // (see supervisor); Resume and Spawn are handled specially. None reach here.
         InMsg::Approve { .. }
         | InMsg::Reject { .. }
         | InMsg::AnswerQuestion { .. }
         | InMsg::ListSessions { .. }
         | InMsg::ReplayFrom { .. }
         | InMsg::CloseSession { .. }
+        | InMsg::HibernateSession { .. }
         | InMsg::Resume { .. }
         | InMsg::Spawn { .. } => return None,
     })

@@ -21,11 +21,13 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
          | ReplayFrom{session,correlation_id,after_seq}   // late-subscriber history fetch → History (#160, ADR-0072)
-         | CloseSession{session}   // explicit destroy → SessionEnded (#21)
+         | CloseSession{session}   // explicit destroy → SessionEnded, tombstones the id (#21)
+         | HibernateSession{session}   // trusted-only: evict memory, NO tombstone → SessionHibernated, resumable (#318, ADR-0077)
          | Resume{session,records}   // internal, not serialized (#[serde(skip)]); replay log → session (§6b)
 
 OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle, no seq
          | SessionEnded{session,ts}           // lifecycle, no seq
+         | SessionHibernated{session,ts}      // lifecycle, no seq; memory evicted, id NOT tombstoned (#318, ADR-0077)
          | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072)
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
@@ -57,10 +59,11 @@ embedder holding a `Holly` (a head, the runtime tool executor) authors any
 frame. `Holly::send_from_wire` is the **untrusted** path a wire head (stdio
 `pipe`, the future WS `serve`) calls after deserializing a line — it enforces the
 `InMsg::wire_allowed()` allowlist and refuses (`WireError::Privileged`, not
-routed) the three runtime-authored variants: `ToolResult` (a forged one resolves
+routed) the runtime/embedder-authored variants: `ToolResult` (a forged one resolves
 a parked turn on `request_id` alone, bypassing execution *and* permission),
-`Spawn` (bypasses the tool path's `spawn_refusal` gate, #119), and `Resume`
-(internal, `#[serde(skip)]`). The executor folds a completed tool round-trip back
+`Spawn` (bypasses the tool path's `spawn_refusal` gate, #119), `Resume`
+(internal, `#[serde(skip)]`), and `HibernateSession` (an embedder memory-eviction
+control — a wire head must not evict another session's in-memory state, #318). The executor folds a completed tool round-trip back
 over the named privileged handle `Holly::submit_tool_result` (used by
 `seam::reply_content`, the single fold-back site). Under the local single-user
 `serve` scope ([ADR-0048](../adr/0048-serve-head-local-trust-model.md)) this is
@@ -98,6 +101,28 @@ to un-polled `agent`/`agent_poll` children, ADR-0026.) Session ids are single-us
 id (which would restart `seq` at 0). The supervisor routes to sessions with a
 non-blocking `try_send` + bounded retry, shedding to a saturated session rather
 than parking its single loop and stalling every other session.
+
+**Session hibernation** (#318, [ADR-0077](../adr/0077-session-hibernation-evictable-resumable.md))
+is a **third lifecycle state** between `live` and the terminal `closed`
+tombstone. `HibernateSession{session}` (trusted-only — an embedder memory-eviction
+control, not wire-allowed; `Holly::hibernate` is the wrapper) tears the session
+task + its spawn sub-tree down (the same cascade `CloseSession` uses) and drops
+each `Context`, but records **no** tombstone in the `closed` set — the map entry is
+removed (memory released, gone from `ListSessions`) yet the id stays **resumable**:
+a later `Holly::resume(id, records)` rebuilds it from the embedder's event log
+exactly like the restart path, re-offering a turn parked mid-approval
+([ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0071](../adr/0071-parked-turn-reoffer-timer.md)).
+The task emits a distinct lifecycle `SessionHibernated{session,ts}` (no `seq`) so
+heads/persistence taps tell eviction from termination; the runtime executor
+releases its per-session bookkeeping on it as on `SessionEnded`. Hibernating a
+turn **parked on approval** is safe (re-offer); a turn **mid-stream** is
+*stop-then-hibernate* — the supervisor's command-sender drop cancels the round
+(ADR-0017 cancel semantics), and its uncommitted text-only tail is discarded
+exactly as `Session::replay` drops such a tail, so resume is lossless w.r.t. the
+log. `closed` ids stay terminal (`resume` still refuses them); the embedder is
+expected to `resume` before re-prompting a hibernated id. Core snapshots nothing —
+rebuild is the embedder's log replay, keeping the no-DB-in-core boundary intact.
+Auto-hibernation on an idle TTL is left to the embedder's policy.
 
 **Late-subscriber history fetch** (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)).
 A head that connected after a turn started asks

@@ -545,6 +545,22 @@ pub enum InMsg {
     /// ids are a no-op. Session ids are single-use: mint a fresh one
     /// ([`SessionId::new_uuid`]) rather than reusing a closed id.
     CloseSession { session: SessionId },
+    /// Evict a live session from memory **without** tombstoning its id (#318,
+    /// ADR-0077). The supervisor tears down the session task and drops its
+    /// in-memory [`Context`][crate::context::Context]/history — cascading over the
+    /// spawn sub-tree like [`CloseSession`][InMsg::CloseSession] — but records no
+    /// tombstone, so the id stays **resumable**: a later
+    /// [`Holly::resume`][crate::Holly::resume] rebuilds it from the embedder's
+    /// event log exactly like the restart path, re-offering any pending
+    /// `ToolExec` for a turn parked on approval (ADR-0061/0071). Distinct from
+    /// `CloseSession` (terminal, tombstoned) and [`Stop`][InMsg::Stop] (cancels a
+    /// turn, keeps the session live). Emits [`OutEvent::SessionHibernated`].
+    /// A mid-stream turn is torn down (stop-then-hibernate): the uncommitted
+    /// round is discarded exactly as replay drops a text-only tail, so resume is
+    /// lossless w.r.t. the embedder's log. **Embedder-initiated and trusted-only**
+    /// (like [`Resume`][InMsg::Resume]): it is *not* wire-allowed — a wire head
+    /// cannot evict another session's memory. Unknown ids are a no-op.
+    HibernateSession { session: SessionId },
     /// Switch the session to a different agent profile by name (e.g. `plan`).
     SetAgent { session: SessionId, agent: String },
     /// Switch the session's live model/provider without restarting the engine
@@ -633,6 +649,7 @@ impl InMsg {
             | InMsg::Stop { session }
             | InMsg::ReplayFrom { session, .. }
             | InMsg::CloseSession { session }
+            | InMsg::HibernateSession { session }
             | InMsg::SetAgent { session, .. }
             | InMsg::SetModel { session, .. }
             | InMsg::Spawn { session, .. }
@@ -653,7 +670,10 @@ impl InMsg {
     ///   `request_id` alone — a forged one bypasses execution *and* permission;
     /// - [`Spawn`][InMsg::Spawn] mints a child session bypassing the tool path's
     ///   `spawn_refusal` gate;
-    /// - [`Resume`][InMsg::Resume] is internal (`#[serde(skip)]`, never on wire).
+    /// - [`Resume`][InMsg::Resume] is internal (`#[serde(skip)]`, never on wire);
+    /// - [`HibernateSession`][InMsg::HibernateSession] is an embedder memory-eviction
+    ///   control (#318) — a wire head must not be able to evict another session's
+    ///   in-memory state.
     ///
     /// The executor submits `ToolResult`/`Spawn` over the privileged in-process
     /// [`Holly::send`][crate::Holly::send] (it holds the handle); a wire head uses
@@ -662,7 +682,10 @@ impl InMsg {
     pub fn wire_allowed(&self) -> bool {
         !matches!(
             self,
-            InMsg::ToolResult { .. } | InMsg::Spawn { .. } | InMsg::Resume { .. }
+            InMsg::ToolResult { .. }
+                | InMsg::Spawn { .. }
+                | InMsg::Resume { .. }
+                | InMsg::HibernateSession { .. }
         )
     }
 
@@ -679,6 +702,7 @@ impl InMsg {
             InMsg::ListSessions { .. } => "list_sessions",
             InMsg::ReplayFrom { .. } => "replay_from",
             InMsg::CloseSession { .. } => "close_session",
+            InMsg::HibernateSession { .. } => "hibernate_session",
             InMsg::SetAgent { .. } => "set_agent",
             InMsg::SetModel { .. } => "set_model",
             InMsg::Spawn { .. } => "spawn",
@@ -713,6 +737,14 @@ pub enum OutEvent {
     },
     /// Session ended (lifecycle event, no `seq`). Emits when a session exits.
     SessionEnded { session: SessionId, ts: u64 },
+    /// Session evicted from memory but **not** tombstoned (lifecycle event, no
+    /// `seq`), in reply to [`InMsg::HibernateSession`] (#318, ADR-0077). The
+    /// session task tore down and released its [`Context`][crate::context::Context],
+    /// but the id stays resumable — distinct from
+    /// [`SessionEnded`][OutEvent::SessionEnded], whose `CloseSession` origin
+    /// tombstones the id. A head renders it like an end; a persistence tap can
+    /// observe the eviction. `Holly::resume` on the id rebuilds it from the log.
+    SessionHibernated { session: SessionId, ts: u64 },
     /// Snapshot of every currently-live session (lifecycle event, no `seq`),
     /// sent in reply to [`InMsg::ListSessions`] (ADR-0028). `correlation_id`
     /// echoes the requester's opaque token so a multiplexed head can pair the
@@ -923,6 +955,7 @@ impl OutEvent {
         match self {
             OutEvent::SessionStarted { session, .. }
             | OutEvent::SessionEnded { session, .. }
+            | OutEvent::SessionHibernated { session, .. }
             | OutEvent::History { session, .. }
             | OutEvent::Status { session, .. }
             | OutEvent::AgentChanged { session, .. }
@@ -956,6 +989,7 @@ impl OutEvent {
         match self {
             OutEvent::SessionStarted { .. }
             | OutEvent::SessionEnded { .. }
+            | OutEvent::SessionHibernated { .. }
             | OutEvent::SessionList { .. }
             | OutEvent::History { .. }
             | OutEvent::Status { .. }
@@ -1004,10 +1038,10 @@ mod tests {
     }
 
     #[test]
-    fn wire_allowlist_refuses_only_the_privileged_trio() {
+    fn wire_allowlist_refuses_the_privileged_frames() {
         let s = SessionId::new("s1");
-        // The runtime authors these in process; a wire head must never forward
-        // them (#155).
+        // The runtime/embedder authors these in process; a wire head must never
+        // forward them (#155, #318).
         assert!(!InMsg::tool_result(s.clone(), "r1", "x").wire_allowed());
         assert!(!InMsg::Spawn {
             session: s.clone(),
@@ -1021,6 +1055,9 @@ mod tests {
             records: Vec::new(),
         }
         .wire_allowed());
+        // Memory eviction is an embedder control, trusted-only (#318): a wire head
+        // must not be able to evict another session's in-memory state.
+        assert!(!InMsg::HibernateSession { session: s.clone() }.wire_allowed());
         // Every head-authored frame stays acceptable off the wire.
         for msg in [
             InMsg::prompt(s.clone(), "hi"),
