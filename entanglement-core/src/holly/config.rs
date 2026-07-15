@@ -25,6 +25,22 @@ use super::DEFAULT_PROFILE;
 /// from its store rather than doing I/O on the turn path.
 pub type ToolSpecResolver = Arc<dyn Fn(&SessionId) -> Vec<ToolSpec> + Send + Sync>;
 
+/// Resolves the system prompt for a specific session's turn (#310). Its output
+/// **overrides** the active profile's
+/// [`system_prompt`][AgentProfile::system_prompt] for that turn; returning
+/// `None` falls back to the profile's own prompt. Consulted fresh at every turn
+/// build, so an embedder whose prompt is user-editable content — a site serving
+/// its prompt from a CMS page — picks up an edit on the *next* turn without
+/// respawning the engine (which would also tear down live sessions). The
+/// resolver receives the running session's own [`SessionId`] + resolved profile,
+/// so per-profile prompts (researcher / page-writer sub-agents) keep working and
+/// an embedder can key off the root session for tenant context. The `Fn` is
+/// intentionally sync: an embedder keeps a snapshot cache
+/// (`Arc<RwLock<HashMap<SessionId, String>>>`) hydrated from its store rather
+/// than doing I/O on the turn path — same guidance as [`ToolSpecResolver`].
+pub type SystemPromptResolver =
+    Arc<dyn Fn(&SessionId, &AgentProfile) -> Option<String> + Send + Sync>;
+
 /// Engine configuration: how to build per-session LLMs, which host tools to
 /// advertise to the model, and the named agent profiles sessions can switch
 /// between.
@@ -57,6 +73,19 @@ pub struct EngineConfig {
     /// per user. `None` (the default) keeps the engine-global `tool_specs` for
     /// every session. See [`ToolSpecResolver`] for the snapshot-cache pattern.
     pub tool_spec_resolver: Option<ToolSpecResolver>,
+    /// Per-turn override for the active profile's system prompt (#310,
+    /// ADR-0078). When set, it is consulted at every turn build; a `Some(prompt)`
+    /// return **replaces** the profile's
+    /// [`system_prompt`][AgentProfile::system_prompt] for that turn, `None` falls
+    /// back to it. This is the seam an embedder needs when the prompt is
+    /// user-editable content — a site serving its prompt from a CMS page — so an
+    /// edit lands on the *next* turn without respawning the engine (which would
+    /// tear down every live session). The resolver sees the running session's own
+    /// [`SessionId`] + resolved profile, so per-profile sub-agent prompts keep
+    /// working and an embedder can key off the root session for tenant context.
+    /// `None` (the default) keeps the profile's static prompt for every turn. See
+    /// [`SystemPromptResolver`] for the snapshot-cache pattern.
+    pub system_prompt_resolver: Option<SystemPromptResolver>,
     /// The backend's resolved default model id — what a profile with
     /// `model: None` actually runs under (#192). Lets the engine price a turn
     /// (via [`pricing`][Self::pricing]) even when the profile doesn't pin a
@@ -122,6 +151,7 @@ impl Default for EngineConfig {
             profiles: ProfileRegistry::new(),
             profile_tool_specs: HashMap::new(),
             tool_spec_resolver: None,
+            system_prompt_resolver: None,
             default_model: None,
             context_window: None,
             generation: None,

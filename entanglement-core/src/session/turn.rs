@@ -178,8 +178,20 @@ async fn run_round(
         }
     }
 
+    // System prompt: the active profile's own, unless a per-turn
+    // `system_prompt_resolver` is wired (#310, ADR-0078). An embedder whose
+    // prompt is user-editable content (a site serving it from a CMS page)
+    // consults it here so an edit lands on this turn with no engine respawn; a
+    // `None` return falls back to the profile's static prompt. Resolved as an
+    // owned `String` up front so `stream_round` borrows nothing extra off `s`.
+    let system_prompt: String = cfg
+        .system_prompt_resolver
+        .as_ref()
+        .and_then(|resolve| resolve(session, &s.profile))
+        .unwrap_or_else(|| s.profile.system_prompt.clone());
+
     let (text_buf, tool_calls, finish) =
-        match stream_round(session, rx, s, events, stash, &specs).await {
+        match stream_round(session, rx, s, events, stash, &specs, &system_prompt).await {
             StreamedRound::Complete {
                 text,
                 tool_calls,
