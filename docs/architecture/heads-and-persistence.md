@@ -11,8 +11,9 @@ boundary — the real seam is `entanglement-core` ↔ everything else (ADR-0006,
 ADR-0010).
 
 The heads (and the `skutter` binary that carries them) need the crate's
-**default features** — `default = ["tui", "serve"]` pulls clap + the providers +
-the render stack + the axum WS server, and `[[bin]] skutter` declares
+**default features** — `default = ["tui", "serve", "mcp-http"]` pulls clap +
+the providers + the render stack + the axum WS server + the streamable-HTTP
+MCP transport (ADR-0080), and `[[bin]] skutter` declares
 `required-features = ["cli","provider","tui"]` (the `provider` feature was split
 out of `cli` in #208 so the `ws` `serve` head — added in #153 behind its own
 `serve` feature, `serve = ["cli","provider","dep:axum","dep:futures"]` — pulls

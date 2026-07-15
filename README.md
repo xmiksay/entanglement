@@ -20,12 +20,12 @@ table below.
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetAgent | SetModel | Spawn | ListSessions | ReplayFrom | CloseSession
-          | Resume (internal, not serialized)                                   (harness → engine)
-OutEvent : SessionStarted | SessionEnded | SessionList | History | Status
+          | SetAgent | SetModel | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
+          | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status
           | AgentChanged | ModelChanged | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
-          | ToolOutput | TaskList | Usage | Error | Done | FileChange           (engine → harness)
+          | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange (engine → harness)
 ```
 
 Every frame is **session-scoped** (one connection multiplexes many sessions via
@@ -87,7 +87,7 @@ is `provider (leaf) ← core ← runtime` ([ADR-0053](docs/adr/0053-invert-core-
 | --- | --- | --- |
 | `entanglement-provider` | **leaf** crate owning the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`/`ToolSpec`) + wire `Message`; z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, `Context`. Advertises tool *schemas* (`ToolSpec`) only — holds no executable tools. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest` is transitive via provider (ADR-0053). Enforced via `make tree`. |
-| `entanglement-runtime` | the head crate (binary `skutter`): the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, user sessions, all transports (stdio ✅, TUI ✅, WS ✅ #153). Selects the concrete provider + glues it to core. Feature-gated `cli`/`provider`/`tui`/`serve` (`default = ["tui", "serve"]`); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
+| `entanglement-runtime` | the head crate (binary `skutter`): the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, user sessions, all transports (stdio ✅, TUI ✅, WS ✅ #153). Selects the concrete provider + glues it to core. Feature-gated `cli`/`provider`/`tui`/`serve`/`mcp-http` (`default = ["tui", "serve", "mcp-http"]`); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
 
 ## Install
 

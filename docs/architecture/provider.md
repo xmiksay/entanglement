@@ -72,7 +72,7 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   top-level, tool results merged into one user turn, `input_json_delta`
   fragments). `anthropic_factory(key, model, rpm, web_search)`.
 - `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
-  [ADR-0078](../adr/0078-gemini-native-wire-and-opaque-provider-meta.md)): the
+  [ADR-0085](../adr/0085-gemini-native-wire-and-opaque-provider-meta.md)): the
   compat endpoint drops `thoughtSignature`, the opaque per-call token a 2.5
   thinking model must echo back verbatim or the API 4xxs on replayed history. It
   streams `candidates[].content.parts[]` (text / `thought:true` reasoning /
