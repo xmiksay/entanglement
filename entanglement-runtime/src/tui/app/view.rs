@@ -49,15 +49,16 @@ impl App {
         self.mark_dirty();
     }
 
-    /// Whether the reasoning run `id` (transcript index of its first delta) is
-    /// expanded in the active session.
-    pub fn reasoning_expanded(&self, id: usize) -> bool {
-        self.sessions.active_view().reasoning_expanded(id)
+    /// Whether the collapsible block `id` (a reasoning run's or tool op's
+    /// minting transcript index) is expanded in the active session.
+    pub fn block_expanded(&self, id: usize) -> bool {
+        self.sessions.active_view().block_expanded(id)
     }
 
-    /// Flips a reasoning run between collapsed and expanded.
-    pub fn toggle_reasoning_block(&mut self, id: usize) {
-        self.sessions.active_view_mut().toggle_reasoning(id);
+    /// Flips a collapsible block (reasoning run or tool op) between collapsed
+    /// and expanded.
+    pub fn toggle_block(&mut self, id: usize) {
+        self.sessions.active_view_mut().toggle_block(id);
         self.mark_dirty();
     }
 
@@ -74,9 +75,9 @@ impl App {
         self.chat_line_blocks = line_blocks;
     }
 
-    /// Maps a terminal click at `(col, row)` to the reasoning block under it, or
-    /// `None` when the click lands outside the chat area or on a non-block line.
-    pub fn reasoning_block_at(&self, col: u16, row: u16) -> Option<usize> {
+    /// Maps a terminal click at `(col, row)` to the collapsible block under it,
+    /// or `None` when the click lands outside the chat area or on a non-block line.
+    pub fn block_at(&self, col: u16, row: u16) -> Option<usize> {
         let area = self.chat_area;
         if area.width == 0 || area.height == 0 {
             return None;
@@ -91,25 +92,33 @@ impl App {
         self.chat_line_blocks.get(line_idx).copied().flatten()
     }
 
-    /// Keyboard fallback for the click: toggles the most recent reasoning run.
-    pub fn toggle_last_reasoning_block(&mut self) {
-        if let Some(id) = self.last_reasoning_block_id() {
-            self.toggle_reasoning_block(id);
+    /// Keyboard fallback for the click: toggles the most recent collapsible
+    /// block — a reasoning run or a tool op, whichever came last (#340).
+    pub fn toggle_last_block(&mut self) {
+        if let Some(id) = self.last_block_id() {
+            self.toggle_block(id);
         }
     }
 
-    /// Transcript index of the first delta of the last coalesced reasoning run.
-    fn last_reasoning_block_id(&self) -> Option<usize> {
+    /// Minting transcript index of the last collapsible block: the first delta
+    /// of the last coalesced reasoning run, or the last `ToolCall` — whichever
+    /// appears later in the transcript (#340).
+    fn last_block_id(&self) -> Option<usize> {
         let mut last = None;
         let mut prev_was_reasoning = false;
         for (idx, entry) in self.transcript().iter().enumerate() {
-            if matches!(entry, TranscriptEntry::ReasoningDelta { .. }) {
-                if !prev_was_reasoning {
-                    last = Some(idx);
+            match entry {
+                TranscriptEntry::ReasoningDelta { .. } => {
+                    if !prev_was_reasoning {
+                        last = Some(idx);
+                    }
+                    prev_was_reasoning = true;
                 }
-                prev_was_reasoning = true;
-            } else {
-                prev_was_reasoning = false;
+                TranscriptEntry::ToolCall { .. } => {
+                    last = Some(idx);
+                    prev_was_reasoning = false;
+                }
+                _ => prev_was_reasoning = false,
             }
         }
         last

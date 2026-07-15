@@ -147,7 +147,7 @@ fn reasoning_expands_on_toggle() {
     let mut app = App::new_for_test(sid.clone());
     feed_reasoning(&mut app, &sid, "alpha\nbeta\nSECRETBODY\n");
 
-    app.toggle_reasoning_block(0);
+    app.toggle_block(0);
     let body = render_body_lines(&app, 80);
     assert!(
         body.lines
@@ -163,12 +163,79 @@ fn reasoning_expands_on_toggle() {
     );
 
     // Toggle round-trip collapses it again.
-    app.toggle_reasoning_block(0);
+    app.toggle_block(0);
     let body = render_body_lines(&app, 80);
     assert!(!body
         .lines
         .iter()
         .any(|l| line_text(l).contains("SECRETBODY")));
+}
+
+fn feed_tool_call(app: &mut App, sid: &SessionId, seq: u64, tool: &str, input: &str) {
+    app.handle_out_event(OutEvent::ToolCall {
+        session: sid.clone(),
+        seq,
+        request_id: format!("c{seq}"),
+        tool: tool.to_string(),
+        input: input.to_string(),
+    });
+}
+
+#[test]
+fn tool_op_header_shows_primary_arg_and_collapses_by_default() {
+    // One collapsible line per op: the `read` header carries the filename and
+    // the call args (the body) stay hidden until expanded (#340).
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(&mut app, &sid, 1, "read", r#"{"path":"src/main.rs"}"#);
+
+    let body = render_body_lines(&app, 80);
+    let header_idx = line_index_of(&body, "▸ read");
+    let header = line_text(&body.lines[header_idx]);
+    assert!(
+        header.contains("src/main.rs"),
+        "collapsed read header must show the filename: {header:?}"
+    );
+    // Collapsed: the header line is tagged with the op's block id (index 0).
+    assert_eq!(body.line_blocks[header_idx], Some(0));
+}
+
+#[test]
+fn tool_op_expands_to_show_body_and_check_when_done() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(&mut app, &sid, 1, "bash", r#"{"command":"echo hi"}"#);
+    app.handle_out_event(OutEvent::ToolOutput {
+        session: sid.clone(),
+        seq: 2,
+        request_id: "c1".to_string(),
+        tool: "bash".to_string(),
+        output: "SECRETBODY".to_string(),
+        content: vec![],
+    });
+
+    // Folded but collapsed: a ✓ header, no body.
+    let body = render_body_lines(&app, 80);
+    let header_idx = line_index_of(&body, "▸ bash");
+    assert!(line_text(&body.lines[header_idx]).contains("✓"));
+    assert!(
+        !body
+            .lines
+            .iter()
+            .any(|l| line_text(l).contains("SECRETBODY")),
+        "collapsed op must hide the output body"
+    );
+
+    // Expanding the block (its transcript index is 0) reveals the body.
+    app.toggle_block(0);
+    let body = render_body_lines(&app, 80);
+    assert!(body.lines.iter().any(|l| line_text(l).contains("▾ bash")));
+    assert!(
+        body.lines
+            .iter()
+            .any(|l| line_text(l).contains("SECRETBODY")),
+        "expanded op must show the output body"
+    );
 }
 
 #[test]

@@ -10,7 +10,7 @@ use crate::tui::session_view::TranscriptEntry;
 use crate::tui::theme::{RoleColors, Theme};
 use crate::tui::tool_render;
 
-use super::render_run::{flush_reasoning, flush_text};
+use super::render_run::{flush_reasoning, flush_text, flush_tool_call};
 
 /// Append the transcript entries. Consecutive `TextDelta`s are streamed
 /// token-by-token by the engine, so they're coalesced into one string before
@@ -51,7 +51,7 @@ pub(super) fn append_transcript<'a>(
                     reasoning,
                     available_width,
                     block_id,
-                    app.reasoning_expanded(block_id),
+                    app.block_expanded(block_id),
                 );
                 pending_reasoning.clear();
             }
@@ -102,7 +102,7 @@ pub(super) fn append_transcript<'a>(
                 reasoning,
                 available_width,
                 block_id,
-                app.reasoning_expanded(block_id),
+                app.block_expanded(block_id),
             );
             pending_reasoning.clear();
         }
@@ -133,28 +133,26 @@ pub(super) fn append_transcript<'a>(
                 }
                 lines.push(padding);
             }
-            TranscriptEntry::ToolCall { tool, input, .. } => {
-                let padding = Line::from(vec![
-                    Span::styled("▌", Style::default().fg(tool_req.fg).bg(tool_req.bg)),
-                    Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
-                ]);
-                lines.push(padding.clone());
-                let request_line = Line::from(vec![
-                    Span::styled("Tool Call: ", Style::default().fg(Color::Cyan)),
-                    Span::styled(tool, Style::default().bold()),
-                ]);
-                let wrapped = wrap::wrap_line(request_line, available_width.saturating_sub(4));
-                for wline in wrapped {
-                    lines.push(theme.decorate(wline, tool_req, available_width));
-                }
-                for line in input.lines() {
-                    let content_line = Line::from(format!("  {line}"));
-                    let wrapped = wrap::wrap_line(content_line, available_width.saturating_sub(4));
-                    for wline in wrapped {
-                        lines.push(theme.decorate(wline, tool_req, available_width));
-                    }
-                }
-                lines.push(padding);
+            TranscriptEntry::ToolCall {
+                tool,
+                input,
+                output,
+                ..
+            } => {
+                // One collapsible block per op — the op's index is its stable
+                // block id, sharing the reasoning fold machinery (#340).
+                flush_tool_call(
+                    lines,
+                    regions,
+                    tool,
+                    input,
+                    output.as_deref(),
+                    theme,
+                    tool_req,
+                    available_width,
+                    idx,
+                    app.block_expanded(idx),
+                );
             }
             TranscriptEntry::ToolOutput { tool, output } => {
                 let padding = Line::from(vec![
@@ -229,7 +227,7 @@ pub(super) fn append_transcript<'a>(
             reasoning,
             available_width,
             block_id,
-            app.reasoning_expanded(block_id),
+            app.block_expanded(block_id),
         );
     }
 }

@@ -107,7 +107,7 @@ impl App {
                 false
             }
             Action::ToggleReasoning => {
-                self.toggle_last_reasoning_block();
+                self.toggle_last_block();
                 false
             }
             Action::Inspect => {

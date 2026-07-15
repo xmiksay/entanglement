@@ -234,11 +234,11 @@ fn reasoning_block_at_maps_row_plus_offset_to_block() {
     app.set_chat_hit_test(area, 3, line_blocks);
 
     // Top row of the area (row 1) + offset 3 → line index 3 → block 7.
-    assert_eq!(app.reasoning_block_at(3, 1), Some(7));
+    assert_eq!(app.block_at(3, 1), Some(7));
     // row 3 + offset 3 → line 5 → block 7.
-    assert_eq!(app.reasoning_block_at(5, 3), Some(7));
+    assert_eq!(app.block_at(5, 3), Some(7));
     // row 2 + offset 3 → line 4 → padding line, no block.
-    assert_eq!(app.reasoning_block_at(5, 2), None);
+    assert_eq!(app.block_at(5, 2), None);
 }
 
 #[test]
@@ -248,17 +248,17 @@ fn reasoning_block_at_rejects_clicks_outside_chat_rect() {
     let area = Rect::new(2, 1, 10, 4);
     app.set_chat_hit_test(area, 3, vec![None, None, None, Some(7)]);
 
-    assert_eq!(app.reasoning_block_at(1, 1), None, "left of area");
-    assert_eq!(app.reasoning_block_at(12, 1), None, "right of area");
-    assert_eq!(app.reasoning_block_at(3, 0), None, "above area");
-    assert_eq!(app.reasoning_block_at(3, 5), None, "below area");
+    assert_eq!(app.block_at(1, 1), None, "left of area");
+    assert_eq!(app.block_at(12, 1), None, "right of area");
+    assert_eq!(app.block_at(3, 0), None, "above area");
+    assert_eq!(app.block_at(3, 5), None, "below area");
 }
 
 #[test]
 fn reasoning_block_at_is_empty_before_first_draw() {
     let sid = SessionId::new("test");
     let app = App::new_for_test(sid);
-    assert_eq!(app.reasoning_block_at(0, 0), None);
+    assert_eq!(app.block_at(0, 0), None);
 }
 
 #[test]
@@ -299,18 +299,17 @@ fn accept_mention_replaces_at_token_with_path() {
 }
 
 #[test]
-fn record_bash_passthrough_appends_tool_call_and_output() {
+fn record_bash_passthrough_appends_one_folded_tool_call() {
+    // A `!bash` passthrough is one self-contained op: `request_id` is `None`
+    // (no engine round-trip) and its output folds into the call (#340).
     let mut app = App::new_for_test(SessionId::new("test"));
     app.record_bash_passthrough("echo hi".to_string(), "[exit 0]\nhi\n".to_string());
 
     let entries = app.transcript();
     assert!(matches!(
-        &entries[entries.len() - 2],
-        TranscriptEntry::ToolCall { tool, input } if tool == "!bash" && input == "echo hi"
-    ));
-    assert!(matches!(
         &entries[entries.len() - 1],
-        TranscriptEntry::ToolOutput { tool: Some(t), output } if t == "!bash" && output.contains("hi")
+        TranscriptEntry::ToolCall { request_id: None, tool, input, output: Some(o) }
+            if tool == "!bash" && input == "echo hi" && o.contains("hi")
     ));
 }
 

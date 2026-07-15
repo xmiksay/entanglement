@@ -22,8 +22,8 @@ pub(super) fn handle_mouse(app: &mut App, ev: MouseEvent) {
             }
         }
         MouseEventKind::Down(MouseButton::Left) if !any_modal_open(app) => {
-            if let Some(id) = app.reasoning_block_at(ev.column, ev.row) {
-                app.toggle_reasoning_block(id);
+            if let Some(id) = app.block_at(ev.column, ev.row) {
+                app.toggle_block(id);
             }
         }
         _ => {}

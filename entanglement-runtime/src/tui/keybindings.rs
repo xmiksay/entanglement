@@ -139,7 +139,7 @@ impl Action {
             Action::ScrollDown => "Scroll down",
             Action::ShowHelp => "Show help",
             Action::CommandPalette => "Open command palette",
-            Action::ToggleReasoning => "Toggle the most recent thinking block",
+            Action::ToggleReasoning => "Toggle the most recent thinking or tool block",
             Action::Inspect => "Inspect prompt, agents & skills",
         }
     }

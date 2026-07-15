@@ -49,7 +49,7 @@ fn tool_call_deltas_grow_one_entry_then_the_assembled_call_finalizes_it() {
     // One entry so far, args growing live.
     assert_eq!(v.transcript().len(), 1);
     match &v.transcript()[0] {
-        TranscriptEntry::ToolCall { tool, input } => {
+        TranscriptEntry::ToolCall { tool, input, .. } => {
             assert_eq!(tool, "edit");
             assert_eq!(input, r#"{"path":"a.rs"}"#);
         }
@@ -69,6 +69,76 @@ fn tool_call_deltas_grow_one_entry_then_the_assembled_call_finalizes_it() {
         TranscriptEntry::ToolCall { input, .. } => assert_eq!(input, r#"{"path":"a.rs"}"#),
         other => panic!("expected a ToolCall entry, got {other:?}"),
     }
+}
+
+fn tool_call(seq: u64, request_id: &str, tool: &str, input: &str) -> OutEvent {
+    OutEvent::ToolCall {
+        session: sid(),
+        seq,
+        request_id: request_id.into(),
+        tool: tool.into(),
+        input: input.into(),
+    }
+}
+
+fn tool_output(seq: u64, request_id: &str, tool: &str, output: &str) -> OutEvent {
+    OutEvent::ToolOutput {
+        session: sid(),
+        seq,
+        request_id: request_id.into(),
+        tool: tool.into(),
+        output: output.into(),
+        content: vec![],
+    }
+}
+
+#[test]
+fn tool_output_folds_into_matching_call() {
+    // The paired output folds into its `ToolCall.output` by `request_id` rather
+    // than becoming a second transcript entry (#340).
+    let mut v = SessionView::new();
+    v.apply_event(tool_call(1, "c1", "read", r#"{"path":"a.rs"}"#));
+    assert!(v.apply_event(tool_output(2, "c1", "read", "fn main() {}")));
+
+    assert_eq!(v.transcript().len(), 1, "output must not push a new entry");
+    match &v.transcript()[0] {
+        TranscriptEntry::ToolCall { output, .. } => {
+            assert_eq!(output.as_deref(), Some("fn main() {}"));
+        }
+        other => panic!("expected a ToolCall entry, got {other:?}"),
+    }
+}
+
+#[test]
+fn out_of_order_batch_outputs_fold_into_their_own_calls() {
+    // Batch tool calls (#270) resolve in any order — each output must fold into
+    // the call with its `request_id`, not the nearest unfilled one.
+    let mut v = SessionView::new();
+    v.apply_event(tool_call(1, "c1", "read", r#"{"path":"a.rs"}"#));
+    v.apply_event(tool_call(2, "c2", "read", r#"{"path":"b.rs"}"#));
+    // Second call resolves first.
+    v.apply_event(tool_output(3, "c2", "read", "BODY_B"));
+    v.apply_event(tool_output(4, "c1", "read", "BODY_A"));
+
+    assert_eq!(v.transcript().len(), 2);
+    let out = |i: usize| match &v.transcript()[i] {
+        TranscriptEntry::ToolCall { output, .. } => output.clone(),
+        other => panic!("expected a ToolCall entry, got {other:?}"),
+    };
+    assert_eq!(out(0).as_deref(), Some("BODY_A"));
+    assert_eq!(out(1).as_deref(), Some("BODY_B"));
+}
+
+#[test]
+fn unmatched_output_falls_back_to_standalone_entry() {
+    // An output with no matching open call keeps the standalone notice.
+    let mut v = SessionView::new();
+    assert!(v.apply_event(tool_output(1, "orphan", "read", "stray")));
+    assert_eq!(v.transcript().len(), 1);
+    assert!(matches!(
+        &v.transcript()[0],
+        TranscriptEntry::ToolOutput { output, .. } if output == "stray"
+    ));
 }
 
 #[test]
