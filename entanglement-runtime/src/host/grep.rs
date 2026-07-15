@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
+use std::borrow::Cow;
 
 pub struct GrepTool {
     root: std::path::PathBuf,
@@ -28,8 +29,8 @@ struct GrepInput {
 
 #[async_trait]
 impl Tool for GrepTool {
-    fn name(&self) -> &'static str {
-        "grep"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("grep")
     }
     fn description(&self) -> &str {
         "Search file contents for a regular expression. Returns matching lines \

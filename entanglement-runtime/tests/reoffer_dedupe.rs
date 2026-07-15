@@ -7,6 +7,7 @@
 //! land while the first (and only) run is in flight, then asserts the tool ran
 //! exactly once and the turn still completes.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -54,8 +55,8 @@ struct SlowCountingBash {
 }
 #[async_trait]
 impl Tool for SlowCountingBash {
-    fn name(&self) -> &'static str {
-        "bash"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("bash")
     }
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         self.runs.fetch_add(1, Ordering::SeqCst);
@@ -127,8 +128,8 @@ struct FastCountingBash {
 }
 #[async_trait]
 impl Tool for FastCountingBash {
-    fn name(&self) -> &'static str {
-        "bash"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("bash")
     }
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         self.runs.fetch_add(1, Ordering::SeqCst);

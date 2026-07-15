@@ -6,6 +6,7 @@
 //! scripted LLM is forced to call `edit` under the read-only `explore` profile
 //! (allowlist `read`/`glob`/`grep`), and we assert the refusal.
 
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,8 +49,8 @@ impl Llm for ScriptedLlm {
 struct EchoEdit;
 #[async_trait]
 impl Tool for EchoEdit {
-    fn name(&self) -> &'static str {
-        "edit"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("edit")
     }
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))

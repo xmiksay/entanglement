@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
 use serde::Deserialize;
+use std::borrow::Cow;
 
 type CanEditCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 
@@ -47,8 +48,8 @@ struct EditInput {
 
 #[async_trait]
 impl Tool for EditTool {
-    fn name(&self) -> &'static str {
-        "edit"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("edit")
     }
     fn description(&self) -> &str {
         "Exact-string replace within a file under the working directory. \

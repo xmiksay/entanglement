@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use entanglement_core::ContentPart;
 use serde::Deserialize;
+use std::borrow::Cow;
 
 /// Map an image file extension to its IANA media type, or `None` for a
 /// non-image. Only the formats the model providers accept inline (Anthropic's
@@ -65,8 +66,8 @@ struct ReadInput {
 
 #[async_trait]
 impl Tool for ReadTool {
-    fn name(&self) -> &'static str {
-        "read"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("read")
     }
     fn description(&self) -> &str {
         "Read a file under the working directory. A UTF-8 text file returns its \

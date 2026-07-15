@@ -30,6 +30,7 @@
 //! runtime tool-execution-record field; it lands with mask *enforcement* (#116).
 //! This handler surfaces `skill_id` in the result so the trail is already visible.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -61,8 +62,8 @@ struct LoadSkillInput {
 
 #[async_trait]
 impl Tool for LoadSkillTool {
-    fn name(&self) -> &'static str {
-        LOAD_SKILL_TOOL
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed(LOAD_SKILL_TOOL)
     }
     fn description(&self) -> &str {
         "Load a skill's full instructions by name (pick one from the skill index \

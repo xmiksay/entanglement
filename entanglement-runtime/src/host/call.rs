@@ -12,6 +12,7 @@ use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::borrow::Cow;
 
 const MAX_CALL_TIMEOUT_SECONDS: u64 = 600;
 const DEFAULT_TAIL: u32 = 30;
@@ -58,8 +59,8 @@ fn default_tail() -> u32 {
 
 #[async_trait]
 impl Tool for CallTool {
-    fn name(&self) -> &'static str {
-        "call"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("call")
     }
     fn description(&self) -> &str {
         "Execute a binary directly (argv, NO shell) rooted at the working \

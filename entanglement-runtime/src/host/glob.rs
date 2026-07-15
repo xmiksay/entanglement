@@ -6,6 +6,7 @@ use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::borrow::Cow;
 
 pub struct GlobTool {
     root: std::path::PathBuf,
@@ -24,8 +25,8 @@ struct GlobInput {
 
 #[async_trait]
 impl Tool for GlobTool {
-    fn name(&self) -> &'static str {
-        "glob"
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("glob")
     }
     fn description(&self) -> &str {
         "List files matching a glob pattern (e.g. `**/*.rs`) relative to the \

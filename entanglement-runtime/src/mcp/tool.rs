@@ -6,6 +6,7 @@
 //! entry in the [`ToolRegistry`][crate::tools::ToolRegistry], governed by the same
 //! permission profiles and the same `ToolExec` round-trip as `read`/`bash`.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -18,11 +19,10 @@ use crate::tools::Tool;
 /// A proxy for one tool on one MCP server.
 pub struct McpTool {
     client: Arc<McpClient>,
-    /// The advertised, collision-free name (`mcp__<server>__<tool>`), leaked to
-    /// `&'static str` because the [`Tool`] trait keys the registry on it. Leaking
-    /// is bounded: it happens once per tool at startup and the tool lives for the
-    /// whole process.
-    name: &'static str,
+    /// The advertised, collision-free name (`mcp__<server>__<tool>`). Owned, so a
+    /// multi-tenant embedder rebuilding registries never leaks a string per rename
+    /// (#314); [`Tool::name`] hands it back as `Cow::Owned`.
+    name: String,
     /// The bare tool name the server knows it by (what `tools/call` sends).
     remote_name: String,
     description: String,
@@ -34,8 +34,7 @@ impl McpTool {
     /// sanitized so it can never collide with a host tool (`read`) or another
     /// server's tool, and stays within providers' `^[A-Za-z0-9_-]+$` tool-name rule.
     pub fn new(client: Arc<McpClient>, server: &str, def: McpToolDef) -> Self {
-        let advertised = sanitize(&format!("mcp__{server}__{}", def.name));
-        let name: &'static str = Box::leak(advertised.into_boxed_str());
+        let name = sanitize(&format!("mcp__{server}__{}", def.name));
         Self {
             client,
             name,
@@ -48,8 +47,8 @@ impl McpTool {
 
 #[async_trait]
 impl Tool for McpTool {
-    fn name(&self) -> &'static str {
-        self.name
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Owned(self.name.clone())
     }
 
     fn description(&self) -> &str {
