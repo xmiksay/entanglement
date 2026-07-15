@@ -42,7 +42,7 @@ serve = ["cli", "provider", "dep:axum", "dep:futures"]
 # reachable through the clap CLI, and tui/ itself imports entanglement-provider
 # (ModelInfo, models_for, HttpClient in tui/app.rs + tui/mod.rs).
 tui = ["cli", "provider", "dep:ratatui", "dep:crossterm", "dep:pulldown-cmark", "dep:syntect", "dep:diffy", "dep:unicode-width"]
-# Streamable-HTTP MCP transport (#312, ADR-0078): remote MCP servers over
+# Streamable-HTTP MCP transport (#312, ADR-0080): remote MCP servers over
 # `POST /mcp` with per-server headers/auth. Pulls `reqwest` + `futures` as direct
 # deps behind this gate so the lean library / `--no-default-features` build carries
 # no HTTP-MCP transport (matching how `serve` gates axum — ADR-0025). stdio MCP
@@ -68,7 +68,7 @@ crossterm = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 # `futures` backs SSE streaming for both `serve` (WS) and the HTTP MCP transport.
 futures = { workspace = true, optional = true }
-# Streamable-HTTP MCP transport (behind the `mcp-http` feature — #312/ADR-0078).
+# Streamable-HTTP MCP transport (behind the `mcp-http` feature — #312/ADR-0080).
 reqwest = { workspace = true, optional = true }
 pulldown-cmark = { workspace = true, optional = true }
 syntect = { workspace = true, optional = true }

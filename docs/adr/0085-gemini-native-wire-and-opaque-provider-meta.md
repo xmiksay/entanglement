@@ -1,4 +1,4 @@
-# 0078. Native Gemini wire + opaque `provider_meta` on `ToolCall`
+# 0085. Native Gemini wire + opaque `provider_meta` on `ToolCall`
 
 - Status: Accepted
 - Date: 2026-07-15
