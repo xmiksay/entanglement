@@ -35,6 +35,7 @@ fn any_modal_open(app: &App) -> bool {
         || app.showing_profile_picker()
         || app.showing_model_picker()
         || app.showing_key_dialog()
+        || app.showing_tools_dialog()
         || app.showing_command_palette()
         || app.showing_resume_modal()
         || app.showing_help()
@@ -52,6 +53,8 @@ fn wheel_modal_next(app: &mut App) -> bool {
         app.model_picker_next();
     } else if app.showing_key_dialog() {
         app.key_dialog_next();
+    } else if app.showing_tools_dialog() {
+        app.tools_dialog_next();
     } else if app.showing_command_palette() {
         app.command_palette().select_next();
     } else if app.showing_resume_modal() {
@@ -81,6 +84,8 @@ fn wheel_modal_prev(app: &mut App) -> bool {
         app.model_picker_prev();
     } else if app.showing_key_dialog() {
         app.key_dialog_prev();
+    } else if app.showing_tools_dialog() {
+        app.tools_dialog_prev();
     } else if app.showing_command_palette() {
         app.command_palette().select_prev();
     } else if app.showing_resume_modal() {
@@ -122,6 +127,11 @@ pub(super) async fn handle_profile_picker_event(
         }
         KeyCode::Up | KeyCode::Char('k') => {
             app.profile_picker_prev();
+        }
+        // `e`: edit the highlighted profile's tool allowlist (#330) — opens the
+        // checklist dialog over the picker, leaving it open underneath.
+        KeyCode::Char('e') => {
+            app.open_tools_dialog();
         }
         KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
@@ -204,6 +214,27 @@ pub(super) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Res
             }
             _ => {}
         },
+    }
+    Ok(false)
+}
+
+/// Drive the `/agent` picker's `e` tools-checklist dialog (#330): `Space`
+/// toggles the highlighted row, `Enter` materializes the checked set as a
+/// user-layer override and closes, `Esc` discards. No engine traffic — the
+/// write is head-side and takes effect on the next restart.
+pub(super) async fn handle_tools_dialog_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => app.close_tools_dialog(),
+        KeyCode::Enter => {
+            let _ = app.submit_tools_dialog();
+        }
+        KeyCode::Char(' ') => app.tools_dialog_toggle(),
+        KeyCode::Down | KeyCode::Char('j') => app.tools_dialog_next(),
+        KeyCode::Up | KeyCode::Char('k') => app.tools_dialog_prev(),
+        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        _ => {}
     }
     Ok(false)
 }

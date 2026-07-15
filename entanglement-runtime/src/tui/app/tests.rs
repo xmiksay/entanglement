@@ -17,18 +17,25 @@ fn app_with_mixed_modes(sid: SessionId) -> App {
                 name: "build".to_string(),
                 description: "Coding agent".to_string(),
                 mode: AgentMode::Primary,
+                tools: None,
+                disallowed_tools: Vec::new(),
             },
             ProfileInfo {
                 name: "plan".to_string(),
                 description: "Planning agent".to_string(),
                 mode: AgentMode::Primary,
+                tools: None,
+                disallowed_tools: Vec::new(),
             },
             ProfileInfo {
                 name: "helper".to_string(),
                 description: "Cross-vendor helper".to_string(),
                 mode: AgentMode::All,
+                tools: None,
+                disallowed_tools: Vec::new(),
             },
         ],
+        vec!["read".to_string(), "edit".to_string(), "bash".to_string()],
     )
 }
 

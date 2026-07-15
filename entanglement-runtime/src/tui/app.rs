@@ -27,6 +27,7 @@ mod key;
 mod mention;
 mod pickers;
 mod state;
+mod tools;
 mod view;
 
 pub use inspect::InspectTab;
@@ -55,6 +56,11 @@ pub struct ProfileInfo {
     /// Governs the *implicit* Tab cycle ring (`Primary` only, #322); the
     /// `/agent` picker still lists every entry agent (`primary | all`).
     pub mode: AgentMode,
+    /// Current effective tool allowlist (#330): `None` inherits every advertised
+    /// tool. Seeds the `/agent` picker's `e` tools-checklist dialog.
+    pub tools: Option<Vec<String>>,
+    /// Current effective tool denylist, applied after `tools` (#330).
+    pub disallowed_tools: Vec<String>,
 }
 
 pub struct App {
@@ -90,6 +96,12 @@ pub struct App {
 
     // `/key` dialog (#304): two-stage modal to persist a provider API key.
     key_dialog: crate::tui::key_dialog::KeyDialog,
+
+    // `/agent` picker's `e` tools-checklist dialog (#330): the full advertised
+    // tool roster (host + MCP + runtime-owned specs, from
+    // `EngineConfig::tool_specs` at startup) plus the checklist's own state.
+    tool_roster: Vec<String>,
+    tools_dialog: crate::tui::tools_dialog::ToolsDialog,
 
     // Leader key state
     leader_handler: LeaderKeyHandler,

@@ -258,6 +258,23 @@ re-document them here):
   a resumed session stays compacted. The old prune-only `Context::compact`
   (#178) is unchanged and still the automatic pre-round fallback; `"compact"`
   only runs on request (`InMsg::Oneshot`, TUI `/compact [instructions]`).
+- **In-app tool-allowlist editing materializes a user-layer override** (#330,
+  [ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)):
+  no separate mask store — editing a profile's `tools:`/`disallowed_tools:`
+  writes `${config_dir}/entanglement/agents/<name>.md` (native user layer,
+  `ENTANGLEMENT_AGENTS_DIR` override), the same shadow a hand-authored file would
+  be. `agents::materialize::save_tools_override(root, name, allowed)` seeds from
+  the *currently effective* definition's raw text (`winning_raw_text`, same
+  precedence as `load_registry` — a built-in's embedded source or an existing
+  override's exact text), rewrites only the `tools:`/`disallowed_tools:`
+  frontmatter keys via a `serde_yaml::Mapping` round-trip
+  (`rewrite_tools` — order-preserving, everything else untouched), and writes
+  atomically via `config::atomic::atomic_write`. TUI: `e` on the `/agent`
+  picker's highlighted profile opens a checklist dialog
+  (`tui::tools_dialog::ToolsDialog`) over the full advertised tool roster
+  (`EngineConfig.tool_specs`, captured before `Holly::spawn` consumes it) seeded
+  from the profile's current mask; `Space` toggles, `Enter` saves, `Esc`
+  discards. Applies on next restart — no live registry reload yet.
 - **Session hibernation is eviction, not termination** (#318,
   [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)): a third
   lifecycle state between `live` and the terminal tombstone. `HibernateSession {

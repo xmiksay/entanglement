@@ -28,12 +28,24 @@ impl App {
                     name: "build".to_string(),
                     description: "Coding agent".to_string(),
                     mode: AgentMode::Primary,
+                    tools: None,
+                    disallowed_tools: Vec::new(),
                 },
                 ProfileInfo {
                     name: "plan".to_string(),
                     description: "Planning agent".to_string(),
                     mode: AgentMode::Primary,
+                    tools: None,
+                    disallowed_tools: Vec::new(),
                 },
+            ],
+            vec![
+                "read".to_string(),
+                "grep".to_string(),
+                "glob".to_string(),
+                "edit".to_string(),
+                "write".to_string(),
+                "bash".to_string(),
             ],
         )
     }
@@ -42,11 +54,13 @@ impl App {
     /// {primary, all}`, #119) the `/agent` picker and Tab-cycle offer — a
     /// `subagent` leaf like `explore` is never a manual entry agent. The caller
     /// (the runtime head) filters and orders them from the loaded
-    /// `ProfileRegistry`.
+    /// `ProfileRegistry`. `tool_roster` is the full advertised tool-name roster
+    /// (#330) the `/agent` picker's `e` tools-checklist dialog offers.
     pub fn new(
         initial_session: SessionId,
         catalog: Catalog,
         entry_profiles: Vec<ProfileInfo>,
+        tool_roster: Vec<String>,
     ) -> Self {
         // Fall back to `build` if a custom registry somehow exposed no entry
         // agent, so the picker/cycle is never empty (it indexes unconditionally).
@@ -55,6 +69,8 @@ impl App {
                 name: "build".to_string(),
                 description: "Coding agent".to_string(),
                 mode: AgentMode::Primary,
+                tools: None,
+                disallowed_tools: Vec::new(),
             }]
         } else {
             entry_profiles
@@ -133,6 +149,8 @@ impl App {
             agent_models: None,
             pending_model_persist: None,
             key_dialog: crate::tui::key_dialog::KeyDialog::new(key_providers),
+            tool_roster,
+            tools_dialog: crate::tui::tools_dialog::ToolsDialog::new(),
             model_info: ModelInfo {
                 id: "dummy".to_string(),
                 display_name: "dummy".to_string(),

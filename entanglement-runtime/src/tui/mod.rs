@@ -19,6 +19,7 @@ mod session_view;
 mod sessions;
 mod theme;
 mod tool_render;
+mod tools_dialog;
 mod transcript;
 mod ui;
 mod wrap;
@@ -57,6 +58,7 @@ pub async fn tui(
     agent_models: crate::config::agent_models::AgentModelStore,
     root: std::path::PathBuf,
     bash_enabled: bool,
+    tool_roster: Vec<String>,
 ) -> Result<()> {
     setup_panic_handler();
 
@@ -98,9 +100,11 @@ pub async fn tui(
             name: p.name.clone(),
             description: p.description.clone(),
             mode: p.mode,
+            tools: p.tools.clone(),
+            disallowed_tools: p.disallowed_tools.clone(),
         })
         .collect();
-    let mut app = App::new(initial_session, catalog, entry_profiles);
+    let mut app = App::new(initial_session, catalog, entry_profiles, tool_roster);
     app.set_model_info(model_info);
     app.set_agent_models(agent_models);
     app.init_head_context(root, bash_enabled);
