@@ -33,7 +33,7 @@
 //! per-task `broadcast` subscription that could lag and silently drop a decision,
 //! parking the request forever.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -173,6 +173,22 @@ pub fn spawn_tool_executor_with_hooks(
         // `ToolExec` from the profile name that event carries (#156). See the
         // `ToolExec` arm below.
         let mut active: HashMap<SessionId, AgentProfile> = HashMap::new();
+        // Per-session *in-flight* request_id dedupe (#274, ADR-0071): the set of
+        // `ToolExec` request ids this executor has dispatched but not yet seen
+        // resolved. Core arms a re-offer timer while a turn is parked and re-emits
+        // the pending batch after a stretch of silence (its recovery for an offer
+        // dropped under broadcast lag), so the *same* `ToolExec` can arrive twice
+        // — once as the original, once as a re-offer while the first is still
+        // running. Running it twice would double-execute a `bash`/`edit`/spawn, so
+        // an id still in flight is skipped. An id is dropped again on the
+        // `ToolOutput` core emits when the call resolves (its result was folded),
+        // so a *later* round that legitimately reuses the same id — core matches
+        // by id only within the current round's pending set — is not wrongly
+        // skipped. This loop is single-threaded (it routes before spawning the
+        // detached handler, and consumes `ToolExec`/`ToolOutput` in broadcast
+        // order), so the check is race-free without a lock. Cleared per session on
+        // `SessionEnded`.
+        let mut in_flight: HashMap<SessionId, HashSet<String>> = HashMap::new();
         // Bounds the spawn tree (#76): tracks parent links from lifecycle events
         // and per-root spawn budgets. Lives in this single-threaded loop, so the
         // spawn decision below is race-free.
@@ -268,6 +284,23 @@ pub fn spawn_tool_executor_with_hooks(
                     grants.lock().unwrap().forget_session(&session);
                     // Its in-flight tool bookkeeping is moot once the session ends.
                     cancels.forget_session(&session);
+                    // Drop the re-offer dedupe set (#274): its request ids can
+                    // never recur once the session is gone.
+                    in_flight.remove(&session);
+                }
+                // A resolved call (#274): core folded its result and emitted this
+                // `ToolOutput`, so the id is no longer in flight — drop it from the
+                // dedupe set. This frees the id for a later round to reuse (core
+                // matches by id only within a round's pending set) while keeping an
+                // *unresolved* in-flight call guarded against a double-run re-offer.
+                Ok(OutEvent::ToolOutput {
+                    session,
+                    request_id,
+                    ..
+                }) => {
+                    if let Some(set) = in_flight.get_mut(&session) {
+                        set.remove(&request_id);
+                    }
                 }
                 // The parked `ToolExec` seq is deliberately ignored (#157): every
                 // event the runtime authors around this call (an approval
@@ -282,6 +315,25 @@ pub fn spawn_tool_executor_with_hooks(
                     agent,
                     ..
                 }) => {
+                    // Idempotence for core's re-offer timer (#274, ADR-0071):
+                    // skip a request id whose call is still in flight. Core
+                    // re-offers a parked batch after silence to recover an offer
+                    // dropped under broadcast lag; a re-offer of a call this
+                    // executor is already running must not run a second time. The
+                    // first offer records the id; a re-offer while it is unresolved
+                    // is a no-op. The id is dropped on the resolving `ToolOutput`
+                    // below, so a later round reusing it still dispatches.
+                    if !in_flight
+                        .entry(session.clone())
+                        .or_default()
+                        .insert(request_id.clone())
+                    {
+                        tracing::debug!(
+                            %request_id,
+                            "skipping re-offered ToolExec (still in flight)"
+                        );
+                        continue;
+                    }
                     // Authoritative self-heal (#156): the emitting session's
                     // active profile rides on the `ToolExec` itself, so resolve it
                     // from the registry and overwrite the folded entry *before*

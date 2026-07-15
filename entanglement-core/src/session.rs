@@ -219,7 +219,29 @@ pub(crate) async fn session_loop(
                 rx.recv().await
             }
         } else {
-            rx.recv().await
+            // Parked on unresolved tool calls (#274, ADR-0071). Bound the wait:
+            // after `reoffer_interval` of silence (no `ToolResult` arriving)
+            // re-offer the pending batch — re-emit each `ToolExec` with the same
+            // `request_id` and a fresh `seq` — so an in-process offer the runtime
+            // executor dropped under outbound-broadcast lag (`RecvError::Lagged`)
+            // can't strand the turn until a restart/resume. At-least-once by
+            // design; the executor dedupes by `request_id`, so a re-offer to a
+            // still-in-flight call is a no-op there, not a double-run. `None`
+            // disables the timer (park indefinitely, the pre-#274 behavior).
+            match cfg.reoffer_interval {
+                Some(interval) => match tokio::time::timeout(interval, rx.recv()).await {
+                    Ok(cmd) => cmd,
+                    Err(_elapsed) => {
+                        if let Some(turn) = s.turn.as_ref() {
+                            for c in &turn.pending {
+                                emit_tool_exec(&events, &session, c, &s.profile.name, &s.seq);
+                            }
+                        }
+                        continue;
+                    }
+                },
+                None => rx.recv().await,
+            }
         };
         match cmd {
             Some(SessionCmd::Prompt(content)) => {

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile};
 use entanglement_provider::{
@@ -66,6 +67,18 @@ pub struct EngineConfig {
     /// [`InMsg::SetModel`][crate::protocol::InMsg::SetModel] a no-op that surfaces
     /// an [`OutEvent::Error`][crate::protocol::OutEvent::Error].
     pub model_resolver: Option<ModelResolver>,
+    /// How long a turn may sit parked on unresolved tool calls before the engine
+    /// **re-offers** the pending batch — re-emitting each pending `ToolExec` with
+    /// the same `request_id` and a fresh `seq` (#274). `OutEvent::ToolExec` rides
+    /// the lossy outbound broadcast, so an in-process executor that falls behind
+    /// (`RecvError::Lagged`) can drop an offer and strand the parked turn until a
+    /// restart/resume; after this much *silence* (no `ToolResult` arriving) the
+    /// executor gets another chance to run it. Sound only because the runtime
+    /// executor dedupes by `request_id` — a re-offer to a still-in-flight call is
+    /// a no-op there, not a double-run
+    /// ([ADR-0071](../../docs/adr/0071-parked-turn-reoffer-timer.md)). `None`
+    /// disables the timer (a turn parks indefinitely). Default: 60s.
+    pub reoffer_interval: Option<Duration>,
 }
 
 impl EngineConfig {
@@ -89,6 +102,7 @@ impl Default for EngineConfig {
             generation: None,
             pricing: HashMap::new(),
             model_resolver: None,
+            reoffer_interval: Some(Duration::from_secs(60)),
         }
     }
 }

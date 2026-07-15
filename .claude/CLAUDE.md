@@ -118,7 +118,13 @@ re-document them here):
   runtime executor or any external resolver answers), the turn re-enters on
   drain. Replay reconstructs a mid-turn tail; resume re-offers pending calls
   at-least-once — the event log + `Holly::resume` is the embedder persistence
-  seam (no DB in-repo). Core holds no executable
+  seam (no DB in-repo). In-process, a parked turn also **re-offers** its pending
+  batch after `EngineConfig::reoffer_interval` of silence (#274,
+  [ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md), default 60s) so an
+  offer dropped under `broadcast` lag self-heals without a restart; sound only
+  because the runtime executor dedupes by `request_id` (per-session in-flight
+  set, cleared on the resolving `ToolOutput` / `SessionEnded`) — a re-offer to a
+  call it is still running is a no-op. Core holds no executable
   tools and makes no policy call — only schemas (`EngineConfig.tool_specs` +
   per-profile `profile_tool_specs`, #119).
 - **Permission lives entirely in the runtime** (#59): `tool_runner` resolves
@@ -307,7 +313,9 @@ Current phase is the July 2026 audit backlog — thematic epics tracked on GitHu
 with P0/P1/P2 labels and blocked-by links:
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
-[ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)),
+[ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md); the
+in-process re-offer timer + executor `request_id` dedupe that self-heals a turn
+stranded by a `broadcast`-lag drop landed here, #274/[ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md)),
 with WebSocket `serve` (#153) deliberately last.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))

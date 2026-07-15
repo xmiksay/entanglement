@@ -397,6 +397,68 @@ async fn stop_while_parked_keeps_session_and_context() {
     );
 }
 
+/// A parked turn re-offers its pending `ToolExec` batch after `reoffer_interval`
+/// of silence (#274, ADR-0071): an in-process offer dropped under outbound
+/// broadcast lag can't strand the turn until a restart/resume. The re-offer
+/// carries the same `request_id`; the runtime executor dedupes it. Once the
+/// result arrives the turn drains and no further offer fires.
+#[tokio::test]
+async fn parked_turn_reoffers_pending_tool_exec_on_silence() {
+    let seen: Arc<Mutex<Vec<Vec<Message>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_factory = seen.clone();
+    let responses = Arc::new(vec![
+        LlmResponse {
+            text: String::new(),
+            tool_calls: vec![call("a", "t_a")],
+        },
+        LlmResponse {
+            text: "final".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(RecordingLlm::new(
+                (*responses).clone(),
+                seen_factory.clone(),
+            )) as Box<dyn Llm>
+        }),
+        // Short enough that the re-offer fires well inside the test window.
+        reoffer_interval: Some(Duration::from_millis(80)),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    let obs = holly.subscribe();
+
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    // The first offer, then — with no `ToolResult` sent — a re-offer of the same
+    // id after the interval elapses.
+    let ids = await_tool_execs(&mut sub, &sid, 2).await;
+    assert_eq!(
+        ids,
+        vec!["a", "a"],
+        "the pending call is re-offered on silence"
+    );
+
+    // Answering the re-offered call still drains the turn to exactly one `Done`.
+    holly
+        .send(InMsg::tool_result(sid.clone(), "a", "out-a"))
+        .await
+        .unwrap();
+    let events = collect_for(obs, &sid, Duration::from_millis(500)).await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, OutEvent::Done { .. }))
+            .count(),
+        1,
+        "the turn completes once the re-offered call is answered"
+    );
+}
+
 /// A `Prompt` sent while the turn is parked folds into the live turn (#182,
 /// ADR-0058): the next round's request carries it, and only one `Done` fires.
 #[tokio::test]

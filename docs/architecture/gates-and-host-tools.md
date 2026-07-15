@@ -71,7 +71,15 @@ Execution *and* permission dispatch now run in the runtime (✅ #58, #59):
 `ToolExec`'s `Allow|Ask|Deny` against the session's active profile (§3), runs the
 cleared tool against the registry, and replies with `InMsg::ToolResult`. `Ask`
 emits the `ToolRequest` prompt and waits for the head's decision on
-`Holly::subscribe_inbound()` (the engine's inbound `InMsg` fan-out). Core only
+`Holly::subscribe_inbound()` (the engine's inbound `InMsg` fan-out). The executor
+is **idempotent by `request_id`** (✅ #274,
+[ADR-0071](../adr/0071-parked-turn-reoffer-timer.md)): it keeps a per-session set
+of **in-flight** request ids — dispatched but not yet resolved — and skips a
+`ToolExec` whose id is still in flight, so core's re-offer timer (which re-emits a
+parked batch after `reoffer_interval` of silence to recover an offer dropped
+under `broadcast` lag, see [engine.md](engine.md)) never double-runs a call it is
+already executing. An id is dropped again on the resolving `ToolOutput` (and on
+`SessionEnded`), so a later round that reuses the id still dispatches. Core only
 advertises the tool *schemas* (`EngineConfig.tool_specs`) — it holds no executable
 tools and makes no policy decision:
 
