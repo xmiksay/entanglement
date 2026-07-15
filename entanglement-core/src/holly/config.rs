@@ -6,12 +6,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile};
+use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile, SessionId};
 use entanglement_provider::{
     EchoLlm, GenerationParams, Llm, LlmFactory, ModelPricing, ModelResolver, ToolSpec,
 };
 
 use super::DEFAULT_PROFILE;
+
+/// Resolves the base tool schemas advertised to the model for a specific
+/// session (#308). Its output **replaces** the engine-global
+/// [`EngineConfig::tool_specs`][EngineConfig::tool_specs] for that session (the
+/// per-profile [`profile_tool_specs`][EngineConfig::profile_tool_specs] are
+/// still appended, and the active profile's mask still filters both). Consulted
+/// fresh at every turn build, so an embedder that mutates its backing store —
+/// e.g. a per-user MCP-server set — sees the change on the *next* turn without
+/// respawning the engine. The `Fn` is intentionally sync: an embedder keeps a
+/// snapshot cache (`Arc<RwLock<HashMap<SessionId, Vec<ToolSpec>>>>`) hydrated
+/// from its store rather than doing I/O on the turn path.
+pub type ToolSpecResolver = Arc<dyn Fn(&SessionId) -> Vec<ToolSpec> + Send + Sync>;
 
 /// Engine configuration: how to build per-session LLMs, which host tools to
 /// advertise to the model, and the named agent profiles sessions can switch
@@ -33,6 +45,18 @@ pub struct EngineConfig {
     /// A generic table keyed by profile name; the embedder fills it (an entry is
     /// absent/empty when a profile advertises no profile-scoped tools).
     pub profile_tool_specs: HashMap<String, Vec<ToolSpec>>,
+    /// Per-session override for the advertised base tool schemas (#308,
+    /// ADR-0076). When set, it is consulted at every turn build and its output
+    /// **replaces** the engine-global [`tool_specs`][Self::tool_specs] for that
+    /// session; [`profile_tool_specs`][Self::profile_tool_specs] are still
+    /// appended and the active profile's mask still filters the result — the
+    /// resolver widens/varies *discovery* per session, it never bypasses
+    /// masking. This is the seam a multi-tenant embedder needs: one `Holly`
+    /// advertising a different tool surface per user (their per-user MCP-server
+    /// tools, a site's `enabled_mcp_server_ids` restriction) without one engine
+    /// per user. `None` (the default) keeps the engine-global `tool_specs` for
+    /// every session. See [`ToolSpecResolver`] for the snapshot-cache pattern.
+    pub tool_spec_resolver: Option<ToolSpecResolver>,
     /// The backend's resolved default model id — what a profile with
     /// `model: None` actually runs under (#192). Lets the engine price a turn
     /// (via [`pricing`][Self::pricing]) even when the profile doesn't pin a
@@ -97,6 +121,7 @@ impl Default for EngineConfig {
             tool_specs: Vec::new(),
             profiles: ProfileRegistry::new(),
             profile_tool_specs: HashMap::new(),
+            tool_spec_resolver: None,
             default_model: None,
             context_window: None,
             generation: None,

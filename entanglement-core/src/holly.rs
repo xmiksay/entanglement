@@ -20,7 +20,7 @@ use entanglement_provider::ContentPart;
 mod config;
 mod routing;
 
-pub use config::{ConfigError, EngineConfig, ProfileRegistry};
+pub use config::{ConfigError, EngineConfig, ProfileRegistry, ToolSpecResolver};
 use routing::{emit_supervisor_error, msg_to_cmd, resume_meta, route_to_session};
 
 /// Per-session monotonic seq counters, shared between each session task (which
