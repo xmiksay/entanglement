@@ -92,8 +92,9 @@ below realize one model:
   `InMsg::Approve` carries a `scope: Once | Session | Always` (core enum, default
   `Once`, `skip_serializing_if` so a bare approve is wire-identical to the pre-#174
   shape — older heads omit it). Approval semantics stay runtime-only: a
-  `runtime::grants::GrantStore` (shared `Arc<Mutex>` between the executor loop and
-  its per-request dispatch tasks) records the wider scopes keyed by an exact
+  `GrantStore` trait object (#311; the default `DefaultGrantStore` wraps the
+  managed-file `runtime::grants::FileGrantStore`, shared with its per-request
+  dispatch tasks) records the wider scopes keyed by an exact
   `(tool, argument)` — the same argument #173 resolves against. **After** the full
   resolution (ancestor clamp → config ceiling), a call that lands on `Ask` is
   upgraded to `Allow` when the store already grants it, so the *identical* later

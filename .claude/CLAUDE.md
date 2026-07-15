@@ -160,7 +160,14 @@ re-document them here):
   `Session`/`Always` record an exact `(tool, arg)` grant in `runtime::grants`
   that upgrades a later resolved `Ask` → `Allow` (never a `Deny`, applied *after*
   the ceiling); `Always` persists to a managed `${config_dir}/entanglement/grants.yml`
-  (sibling of `config.yml`, not its ceiling section).
+  (sibling of `config.yml`, not its ceiling section). Both policy sources are
+  **pluggable seams** (#311, `runtime::policy`): `spawn_tool_executor_with_policy`
+  drives an `Arc<dyn PermissionResolver>` (per-call `Allow|Ask|Deny`, async) + an
+  `Arc<dyn GrantStore>` (always-allow persistence), so a multi-tenant embedder
+  swaps both for its DB without forking the executor — the ancestor clamp
+  (ADR-0024) + spawn/mask gating stay in the ladder *on top of* the resolver
+  (least privilege still wins). The CLI defaults (`ProfileResolver` +
+  `DefaultGrantStore` over `grants::FileGrantStore`) are byte-identical.
 - **Trusted/untrusted frame split** (#155,
   [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)): `Holly::send`
   is the **privileged in-process** inbox (executor/head, trusted for any frame);

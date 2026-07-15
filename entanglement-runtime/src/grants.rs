@@ -94,13 +94,13 @@ struct GrantsFile {
 /// The runtime's grant set: per-session (in-memory) plus persisted "always"
 /// grants, with the file path to re-write on an `Always` grant.
 #[derive(Debug, Default)]
-pub struct GrantStore {
+pub struct FileGrantStore {
     session: HashMap<SessionId, HashSet<GrantKey>>,
     always: HashSet<GrantKey>,
     path: Option<PathBuf>,
 }
 
-impl GrantStore {
+impl FileGrantStore {
     /// Load the persisted `Always` grants from the managed file, resolving its
     /// path from `ENTANGLEMENT_GRANTS_FILE` or `${config_dir}/entanglement/`. A
     /// missing file is an empty store; a malformed one is logged and treated as
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn once_records_nothing() {
-        let mut store = GrantStore::default();
+        let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
         assert!(!store.record(&s, "bash", Some("ls"), ApprovalScope::Once));
         assert!(!store.is_granted(&s, "bash", Some("ls")));
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn session_grant_is_scoped_to_its_session() {
-        let mut store = GrantStore::default();
+        let mut store = FileGrantStore::default();
         let a = SessionId::new("a");
         let b = SessionId::new("b");
         assert!(store.record(&a, "bash", Some("git status"), ApprovalScope::Session));
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn argless_grant_covers_the_whole_tool() {
-        let mut store = GrantStore::default();
+        let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
         store.record(&s, "grep", None, ApprovalScope::Session);
         assert!(store.is_granted(&s, "grep", None));
@@ -291,12 +291,12 @@ mod tests {
         unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
 
         let s = SessionId::new("s");
-        let mut store = GrantStore::load();
+        let mut store = FileGrantStore::load();
         assert!(store.record(&s, "bash", Some("git status"), ApprovalScope::Always));
 
         // A freshly loaded store (new process) sees the persisted grant, and it is
         // global — any session skips the prompt.
-        let reloaded = GrantStore::load();
+        let reloaded = FileGrantStore::load();
         assert!(reloaded.is_granted(&SessionId::new("other"), "bash", Some("git status")));
         assert!(!reloaded.is_granted(&SessionId::new("other"), "bash", Some("git log")));
 
@@ -311,7 +311,7 @@ mod tests {
         std::fs::write(&path, "grants: [oops\n").unwrap();
         // SAFETY: single-threaded test guarded by ENV_LOCK.
         unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
-        let store = GrantStore::load();
+        let store = FileGrantStore::load();
         assert!(!store.is_granted(&SessionId::new("s"), "bash", Some("x")));
         unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
         let _ = std::fs::remove_file(&path);

@@ -240,7 +240,7 @@ pub fn clamp_to_base(
 /// before resolving, so this floor fires only for a genuinely-unknown session (an
 /// unresolved agent name, or an ancestor whose spawn was itself dropped). `arg`
 /// carries the tool-specific argument (#173) so argument-scoped rules resolve.
-fn permission_for(
+pub(crate) fn permission_for(
     active: &HashMap<SessionId, AgentProfile>,
     session: &SessionId,
     tool: &str,
@@ -250,6 +250,31 @@ fn permission_for(
         .get(session)
         .map(|p| p.permission.resolve(tool, arg))
         .unwrap_or(Permission::Deny)
+}
+
+/// The session + its ancestor chain (nearest first), walking `guard`'s parent
+/// links with a cycle guard. The runtime tool executor resolves the effective
+/// permission by taking the least-privileged [`PermissionResolver`][crate::policy::PermissionResolver]
+/// grade across exactly these sessions — the sub-agent privilege ceiling
+/// (ADR-0024) applied *on top of* whatever grade the resolver returns, so a
+/// pluggable tenant rule can never widen a child beyond its parent. The set
+/// matches the sessions [`effective_permission`] folds over, so the default
+/// profile resolver stays byte-identical.
+pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<SessionId> {
+    let mut chain = vec![session.clone()];
+    let mut visited = HashSet::new();
+    visited.insert(session.clone());
+    let mut current = session.clone();
+    loop {
+        match guard.parent_of(&current) {
+            Some(parent) if visited.insert(parent.clone()) => {
+                chain.push(parent.clone());
+                current = parent;
+            }
+            _ => break,
+        }
+    }
+    chain
 }
 
 /// The argument string an argument-scoped permission rule (#173) matches
