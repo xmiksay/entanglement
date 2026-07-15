@@ -136,10 +136,16 @@ mod tests {
     // A client is needed to build an McpTool; a dead duplex is enough for the
     // pure-name/schema assertions that never call `run`.
     fn dead_client() -> Arc<McpClient> {
+        use crate::mcp::stdio::StdioClient;
         let (client_end, server_end) = tokio::io::duplex(64);
         drop(server_end);
         let (r, w) = tokio::io::split(client_end);
-        McpClient::new("srv".to_string(), w, r, None)
+        Arc::new(McpClient::Stdio(StdioClient::new(
+            "srv".to_string(),
+            w,
+            r,
+            None,
+        )))
     }
 
     #[tokio::test]

@@ -55,20 +55,30 @@
 #  user_prompt_submit:
 #    - command: "logger -t entanglement-prompt"
 
-# MCP servers — attach external tool servers (#198). Each entry spawns a server
-# subprocess (JSON-RPC over stdio) and registers its tools into the engine, named
-# `mcp__<server>__<tool>`. They obey the same permission profiles as host tools. A
-# server that fails to connect is logged and skipped, never fatal. Fields:
-#   command   — executable to spawn (required; looked up on PATH)
-#   args      — argument list (default [])
-#   env       — extra environment variables (default {})
-#   disabled  — skip this server without deleting the block (default false)
+# MCP servers — attach external tool servers (#198, #312). Each entry registers a
+# server's tools into the engine, named `mcp__<server>__<tool>`. They obey the same
+# permission profiles as host tools. A server that fails to connect is logged and
+# skipped, never fatal. Each block picks ONE transport — `command` XOR `url`:
+#
+#   stdio (local subprocess, JSON-RPC over stdio):
+#     command   — executable to spawn (looked up on PATH)
+#     args      — argument list (default [])
+#     env       — extra environment variables (default {})
+#   http (remote, streamable-HTTP transport — needs the `mcp-http` build feature):
+#     url       — the server's endpoint (e.g. https://example.com/mcp)
+#     headers   — static request headers; values may use ${VAR} from the env
+#
+#   disabled  — skip this server without deleting the block (both transports)
 #mcp:
 #  everything:
 #    command: npx
 #    args: ["-y", "@modelcontextprotocol/server-everything"]
 #    env:
 #      EXAMPLE_TOKEN: "…"
+#  my-remote:
+#    url: https://example.com/mcp
+#    headers:
+#      Authorization: "Bearer ${MY_MCP_TOKEN}"
 
 # Web search — opt-in, provider-side (#305). When enabled, the provider runs a
 # web search MID-TURN, server-side (z.ai and Anthropic only), and cites the
