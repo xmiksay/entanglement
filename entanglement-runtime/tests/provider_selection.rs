@@ -3,12 +3,27 @@
 
 use std::process::Command;
 
+/// A managed-env-file path guaranteed not to exist, so the child `skutter`
+/// process never backfills a key this test just removed from its env with a
+/// real key from the developer's real `${config_dir}/entanglement/.env`
+/// (#220's "env file loaded at startup" behavior — without this override a
+/// real key on the host machine defeats `env_remove` and the process makes a
+/// genuine, hanging network call instead of exiting on the missing-key path).
+fn no_managed_env_file() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "entanglement-test-no-such-env-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
+
 /// Run `skutter run hi` with `ENTANGLEMENT_PROVIDER=<provider>` set and its key
 /// env var removed, returning the finished output.
 fn run_missing_key(provider: &str, key_env: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_skutter"))
         .args(["run", "hi"])
         .env("ENTANGLEMENT_PROVIDER", provider)
+        .env("ENTANGLEMENT_ENV_FILE", no_managed_env_file())
         .env_remove(key_env)
         .output()
         .expect("failed to spawn skutter")
@@ -52,6 +67,7 @@ fn unknown_provider_exits_cleanly() {
     let out = Command::new(env!("CARGO_BIN_EXE_skutter"))
         .args(["run", "hi"])
         .env("ENTANGLEMENT_PROVIDER", "nope")
+        .env("ENTANGLEMENT_ENV_FILE", no_managed_env_file())
         .output()
         .expect("failed to spawn skutter");
     assert_eq!(out.status.code(), Some(2));
@@ -82,6 +98,7 @@ fn user_defined_provider_is_looked_up() {
         .args(["run", "hi"])
         .env("ENTANGLEMENT_PROVIDERS_FILE", &path)
         .env("ENTANGLEMENT_PROVIDER", "myproxy")
+        .env("ENTANGLEMENT_ENV_FILE", no_managed_env_file())
         .env_remove("MYPROXY_KEY")
         .output()
         .expect("failed to spawn skutter");
@@ -107,6 +124,7 @@ fn malformed_user_catalog_errors() {
     let out = Command::new(env!("CARGO_BIN_EXE_skutter"))
         .args(["run", "hi"])
         .env("ENTANGLEMENT_PROVIDERS_FILE", &path)
+        .env("ENTANGLEMENT_ENV_FILE", no_managed_env_file())
         .output()
         .expect("failed to spawn skutter");
     assert_ne!(out.status.code(), Some(0), "malformed catalog must fail");
