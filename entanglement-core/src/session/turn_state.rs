@@ -55,6 +55,7 @@ mod tests {
             id: id.to_string(),
             name: format!("tool_{id}"),
             input: "{}".to_string(),
+            provider_meta: None,
         }
     }
 

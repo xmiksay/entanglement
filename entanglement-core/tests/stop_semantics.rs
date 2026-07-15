@@ -284,6 +284,7 @@ async fn stop_during_tool_exec_keeps_session_alive() {
                     id: "t1".into(),
                     name: "bash".into(),
                     input: "echo hi".into(),
+                    provider_meta: None,
                 }],
             },
             // Second turn (after Stop + new Prompt): plain text reply.

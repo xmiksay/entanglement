@@ -80,6 +80,7 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
                 id: "t1".into(),
                 name: RHAI_TOOL.into(),
                 input,
+                provider_meta: None,
             }],
         },
         LlmResponse {

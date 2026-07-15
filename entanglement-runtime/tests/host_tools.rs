@@ -97,6 +97,7 @@ async fn read_tool_runs_through_engine_under_build_profile() {
             id: "r1".into(),
             name: "read".into(),
             input: r#"{"path":"hello.txt"}"#.into(),
+            provider_meta: None,
         }],
     };
     let finish = LlmResponse {
@@ -173,6 +174,7 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
             id: "e1".into(),
             name: "edit".into(),
             input: r#"{"path":"out.txt","oldString":"","newString":"created\n"}"#.into(),
+            provider_meta: None,
         }],
     };
     let finish = LlmResponse {
@@ -264,6 +266,7 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
             id: "w1".into(),
             name: "write".into(),
             input: r#"{"path":"pkg/out.txt","content":"a\nb\n"}"#.into(),
+            provider_meta: None,
         }],
     };
     let overwrite_call = LlmResponse {
@@ -272,6 +275,7 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
             id: "w2".into(),
             name: "write".into(),
             input: r#"{"path":"pkg/out.txt","content":"only\n"}"#.into(),
+            provider_meta: None,
         }],
     };
     let finish = LlmResponse {
@@ -387,6 +391,7 @@ async fn write_tool_denied_under_explore_profile() {
             id: "w1".into(),
             name: "write".into(),
             input: r#"{"path":"blocked.txt","content":"nope\n"}"#.into(),
+            provider_meta: None,
         }],
     };
     let finish = LlmResponse {
@@ -463,6 +468,7 @@ async fn write_tool_masked_under_plan_profile() {
             id: "w1".into(),
             name: "write".into(),
             input: r#"{"path":"blocked.txt","content":"nope\n"}"#.into(),
+            provider_meta: None,
         }],
     };
     let finish = LlmResponse {
@@ -532,6 +538,7 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
             id: "b1".into(),
             name: "bash".into(),
             input: r#"{"command":"printf 'shell-ok\\n'"}"#.into(),
+            provider_meta: None,
         }],
     };
     let finish = LlmResponse {
@@ -609,6 +616,7 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
             id: "c1".into(),
             name: "call".into(),
             input: serde_json::json!({ "command": "printf", "args": ["%s", payload] }).to_string(),
+            provider_meta: None,
         }],
     };
     let finish = LlmResponse {

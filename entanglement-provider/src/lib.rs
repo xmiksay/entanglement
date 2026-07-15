@@ -29,6 +29,7 @@ impl ModelInfo {
 pub mod anthropic;
 pub mod catalog;
 pub mod client;
+pub mod gemini;
 pub mod llm;
 pub mod message;
 pub mod openai;
@@ -37,6 +38,7 @@ pub mod web_search;
 pub use anthropic::{anthropic_factory, AnthropicLlm};
 pub use catalog::{Catalog, ModelEntry, ModelPricing, ProviderEntry, Wire};
 pub use client::{HttpClient, RetryConfig};
+pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
     stream_from_response, DummyLlm, EchoLlm, GenerationParams, Llm, LlmEvent, LlmFactory,
     LlmRequest, LlmResponse, LlmStream, ModelResolver, ResolvedModel, StopReason, ToolCall,

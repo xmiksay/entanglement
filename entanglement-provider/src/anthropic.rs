@@ -519,6 +519,7 @@ fn handle_frame(
                         id: tool.id,
                         name: tool.name,
                         input,
+                        provider_meta: None,
                     }));
                 }
             }
@@ -799,6 +800,7 @@ mod tests {
                 id: "t1".into(),
                 name: "greet".into(),
                 input: r#"{"nm":"sam"}"#.into(),
+                provider_meta: None,
             })]
         );
     }
@@ -869,6 +871,7 @@ mod tests {
                 id: "t1".into(),
                 name: "greet".into(),
                 input: r#"{"nm":"sam"}"#.into(),
+                provider_meta: None,
             })]
         );
     }

@@ -270,6 +270,7 @@ impl PendingTool {
             id: self.id,
             name: self.name,
             input,
+            provider_meta: None,
         }
     }
 }
@@ -739,6 +740,7 @@ mod tests {
                 id: "c1".into(),
                 name: "greet".into(),
                 input: r#"{"nm":"sam"}"#.into(),
+                provider_meta: None,
             }],
         )];
         let out = convert_messages(&msgs);
@@ -786,6 +788,7 @@ mod tests {
                 id: "c1".into(),
                 name: "greet".into(),
                 input: r#"{"nm":"sam"}"#.into(),
+                provider_meta: None,
             })]
         );
         assert!(tools.is_empty(), "flush should drain the map");
@@ -866,7 +869,8 @@ mod tests {
             LlmEvent::ToolCall(ToolCall {
                 id: "c1".into(),
                 name: "a".into(),
-                input: "{}".into()
+                input: "{}".into(),
+                provider_meta: None,
             })
         );
         assert_eq!(
@@ -874,7 +878,8 @@ mod tests {
             LlmEvent::ToolCall(ToolCall {
                 id: "c2".into(),
                 name: "b".into(),
-                input: "{}".into()
+                input: "{}".into(),
+                provider_meta: None,
             })
         );
     }

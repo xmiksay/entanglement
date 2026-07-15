@@ -56,6 +56,7 @@ fn spawn_with_ask_user_call(input: &str) -> Holly {
                 id: "q1".into(),
                 name: ASK_USER_TOOL.into(),
                 input: input.into(),
+                provider_meta: None,
             }],
         },
         // The turn re-prompts after the tool result; the loop's default "done"

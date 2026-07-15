@@ -75,6 +75,7 @@ fn spawn_blocking_bash(started: Arc<AtomicBool>, completed: Arc<AtomicBool>) -> 
                 id: "t1".into(),
                 name: "bash".into(),
                 input: "{}".into(),
+                provider_meta: None,
             }],
         },
         LlmResponse {

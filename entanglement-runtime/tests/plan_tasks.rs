@@ -57,6 +57,7 @@ fn spawn_calling(tool: &str, input: &str, profiles: ProfileRegistry) -> Holly {
             id: "c1".into(),
             name: tool.into(),
             input: input.into(),
+            provider_meta: None,
         }],
     }]);
     let cfg = EngineConfig {

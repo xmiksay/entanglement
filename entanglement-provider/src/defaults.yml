@@ -213,6 +213,37 @@ providers:
         display_name: Mistral
         context_window: 32768
 
+  - name: gemini
+    wire: gemini
+    key_env: GEMINI_API_KEY
+    default_model: gemini-2.5-flash
+    # Native Google Gemini wire (#309): `:streamGenerateContent`, not the
+    # OpenAI-compat surface — the compat endpoint drops `thoughtSignature`, which a
+    # 2.5 thinking model must round-trip on function calls. `base_url` unset → the
+    # client's default generative-language `models` root (`GEMINI_BASE`). Pricing is
+    # USD per million tokens (docs, standard <=200k-token context tier).
+    models:
+      - id: gemini-2.5-pro
+        display_name: Gemini 2.5 Pro
+        context_window: 1048576
+        max_output_tokens: 65536
+        supports_thinking: true
+        default_temperature: 1.0
+        pricing:
+          input: 1.25
+          output: 10.0
+          cached_input: 0.31
+      - id: gemini-2.5-flash
+        display_name: Gemini 2.5 Flash
+        context_window: 1048576
+        max_output_tokens: 65536
+        supports_thinking: true
+        default_temperature: 1.0
+        pricing:
+          input: 0.3
+          output: 2.5
+          cached_input: 0.075
+
   - name: anthropic
     wire: anthropic
     key_env: ANTHROPIC_API_KEY

@@ -107,6 +107,7 @@ impl Session {
                         id: request_id.clone(),
                         name: tool.clone(),
                         input: input.clone(),
+                        provider_meta: None,
                     });
                 }
                 OutEvent::ToolOutput {

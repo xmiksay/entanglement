@@ -56,6 +56,7 @@ fn spawn_with_propose_plan_call(input: &str) -> Holly {
                 id: "p1".into(),
                 name: PROPOSE_PLAN_TOOL.into(),
                 input: input.into(),
+                provider_meta: None,
             }],
         },
         LlmResponse {

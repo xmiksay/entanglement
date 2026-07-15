@@ -342,6 +342,7 @@ async fn every_host_tool_round_trips_through_toolexec() {
             id: "t1".into(),
             name: "echo".into(),
             input: "ping".into(),
+            provider_meta: None,
         }],
     }]));
     spawn_tool_executor(&holly, |name, input| match name {
@@ -387,6 +388,7 @@ async fn update_plan_and_update_tasks_round_trip_as_tool_exec() {
             id: "t1".into(),
             name: "update_tasks".into(),
             input: r#"{"content":"- [ ] x"}"#.into(),
+            provider_meta: None,
         }],
     }]));
     let sid = SessionId::new("s1");

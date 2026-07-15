@@ -76,6 +76,10 @@ pub enum Wire {
     Openai,
     /// Anthropic `/v1/messages` wire.
     Anthropic,
+    /// Google Gemini `:streamGenerateContent` wire (#309). Native, not the
+    /// OpenAI-compat surface — it round-trips `thoughtSignature` the compat
+    /// endpoint drops.
+    Gemini,
 }
 
 /// One model plus its capability + pricing metadata.
@@ -398,6 +402,17 @@ mod tests {
         assert_eq!(c.provider("ollama").unwrap().key_env, None);
         assert_eq!(c.provider("anthropic").unwrap().wire, Wire::Anthropic);
         assert_eq!(c.provider("zai").unwrap().wire, Wire::Openai);
+        // Gemini speaks its own native wire (#309), keyed by GEMINI_API_KEY.
+        assert_eq!(c.provider("gemini").unwrap().wire, Wire::Gemini);
+        assert_eq!(
+            c.provider("gemini").unwrap().key_env.as_deref(),
+            Some("GEMINI_API_KEY")
+        );
+        assert!(
+            c.model("gemini", "gemini-2.5-flash")
+                .unwrap()
+                .supports_thinking
+        );
         // Anthropic base_url falls through to the wire client's own default.
         assert_eq!(c.provider("anthropic").unwrap().base_url, None);
         // supports_temperature defaults true, supports_thinking false.
