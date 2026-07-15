@@ -41,8 +41,10 @@ pub mod host;
 pub mod inspect;
 pub mod layers;
 // MCP client — attach external tool servers as a runtime-side tool provider
-// (#198). Lives in the lean library (tokio process + serde_json only), so an
-// embedder gets external tools without any CLI/TUI/transport dep.
+// (#198, #312). The stdio transport lives in the lean library (tokio process +
+// serde_json only), so an embedder gets external tools without any
+// CLI/TUI/transport dep; the streamable-HTTP transport rides the `mcp-http`
+// feature (reqwest), keeping the lean build transport-free (ADR-0025).
 pub mod mcp;
 pub mod pending;
 pub mod permission;

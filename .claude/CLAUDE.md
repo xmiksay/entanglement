@@ -273,12 +273,18 @@ re-document them here):
   `Prompt` fan-out (`user_prompt_submit`), each in its own process group. Scoped
   to the generic `Intercept::Permission` route (orchestration + `rhai` bypass);
   wired via `tool_runner::spawn_tool_executor_with_hooks`. The config's `mcp:`
-  section (#198, [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md))
-  declares **external MCP tool servers** (`{command, args, env, disabled}` per
-  server), each spawned over JSON-RPC/stdio by `entanglement-runtime::mcp` and its
-  `tools/list` registered into the `ToolRegistry` as `mcp__<server>__<tool>` — a
-  runtime-side tool provider, no core change, governed by the same permission
-  profiles as any host tool; a server that fails to connect is logged and skipped.
+  section (#198, [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md);
+  #312, [ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)) declares
+  **external MCP tool servers**, each per-server block choosing one transport —
+  **`command` XOR `url`**: `{command, args, env}` (stdio subprocess, #198) or
+  `{url, headers}` (streamable HTTP, #312, behind the `mcp-http` feature; static
+  headers `${VAR}`-expanded, `Mcp-Session-Id` round-trip), plus a shared
+  `disabled`. `McpClient` is an enum over both transports and `McpTool` adapts
+  whichever backs it; its `tools/list` is registered into the `ToolRegistry` as
+  `mcp__<server>__<tool>` — a runtime-side tool provider, no core change, governed
+  by the same permission profiles as any host tool; a server that fails to connect
+  is logged and skipped. `HttpClient` is public so a multi-tenant embedder can
+  assemble per-user registries with per-user tokens without the YAML path.
 
 | Topic | Module |
 | --- | --- |
@@ -409,10 +415,12 @@ the opt-in exec set `bash`/`call`/`bash_output`
 (`ENTANGLEMENT_ENABLE_BASH=1`; `bash` gains `workdir` + `run_in_background`, polled
 via `bash_output`, #170), and the sandboxed `rhai` tool. **External MCP tool
 servers** attach as a runtime-side tool provider (#198,
-[ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)): the user
-config's `mcp:` section declares servers, each spawned over JSON-RPC/stdio, its
-`tools/list` registered into the `ToolRegistry` as `mcp__<server>__<tool>` — no
-core change, same permission profiles as any host tool. `skutter serve`
+[ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md); #312,
+[ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)): the user config's
+`mcp:` section declares servers over **stdio** (`command`) **or streamable HTTP**
+(`url` + auth `headers`, behind the `mcp-http` feature), its `tools/list`
+registered into the `ToolRegistry` as `mcp__<server>__<tool>` — no core change,
+same permission profiles as any host tool. `skutter serve`
 (axum WS, local-only, loopback-bound, opt-in `--allow-origin`,
 [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md)) is the fourth head,
 a thin adapter over `holly` that relays `OutEvent`s out and routes inbound frames

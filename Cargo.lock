@@ -667,6 +667,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "regex",
+ "reqwest",
  "rhai",
  "rpassword",
  "serde",

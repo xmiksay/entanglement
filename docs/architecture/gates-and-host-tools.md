@@ -251,15 +251,32 @@ registers them into the same registry — so they ride `EngineConfig.tool_specs`
 (schemas) and the `ToolExec`/`ToolResult` round-trip (execution) unchanged, under
 the same permission profiles as `read`/`bash`.
 
-- **Transport (`mcp::client::McpClient`):** one JSON-RPC 2.0 session per server
-  over its **stdio**, newline-delimited frames (the MCP stdio transport). Handshake
-  is `initialize` + `notifications/initialized`; then `tools/list` (discovery) and
-  `tools/call` (execution). A background reader task demultiplexes responses to
-  callers by JSON-RPC `id`; notifications are dropped. A **60 s** per-request
-  timeout keeps a hung server from parking a turn, and the reader **drains all
-  pending requests with an error on EOF** so a crashed server can't hang a caller.
-  The subprocess is held for the client's lifetime (`kill_on_drop`); keeping the
-  registered tools alive keeps the server alive.
+- **Transport (`mcp::client::McpClient`):** an enum over two concrete transports,
+  chosen per server by the `command` XOR `url` config (§ADR-0080/#312). `McpTool`
+  holds an `Arc<McpClient>` and only calls `list_tools`/`call_tool`, so it adapts
+  whichever backs a server. Both share the handshake (`initialize` +
+  `notifications/initialized`) then `tools/list` (discovery) / `tools/call`
+  (execution), a **60 s** per-request timeout so a hung server can't park a turn,
+  and the JSON-RPC result/error split (`client::jsonrpc_payload`).
+  - **stdio (`mcp::stdio::StdioClient`, #198):** one JSON-RPC 2.0 session over the
+    spawned subprocess's stdio, newline-delimited frames. A background reader task
+    demultiplexes responses to callers by JSON-RPC `id`; notifications are dropped,
+    and on EOF the reader **drains all pending requests with an error** so a crashed
+    server can't hang a caller. The subprocess is held for the client's lifetime
+    (`kill_on_drop`); keeping the registered tools alive keeps the server alive.
+    Lives in the **lean library** (tokio process + `serde_json` only).
+  - **streamable HTTP (`mcp::http::HttpClient`, #312, behind the `mcp-http`
+    feature):** a remote server over `POST <url>` — the streamable-HTTP transport.
+    Each request is a discrete `POST` with `Accept: application/json,
+    text/event-stream`; the server answers with a lone JSON body **or** an SSE
+    stream (drained until the event whose JSON-RPC `id` matches). Static per-server
+    `headers` (e.g. `Authorization: Bearer …`) authenticate every request, with
+    `${VAR}` expanded from the environment so a token stays out of the config file;
+    an `Mcp-Session-Id` handed back on `initialize` is echoed on every later request
+    (and the negotiated `MCP-Protocol-Version`). `reqwest` rides the `mcp-http`
+    feature so the lean build carries no HTTP transport (§ADR-0025). `HttpClient` is
+    **public** so an embedder can build a per-tenant client with a per-user token and
+    register its tools without the YAML path.
 - **Proxy (`mcp::tool::McpTool`):** adapts one remote tool. `schema()` returns the
   server's `inputSchema` verbatim; `run()` JSON-decodes the model's input to the
   `arguments` object, calls `tools/call`, and flattens the result's text content
@@ -267,17 +284,20 @@ the same permission profiles as `read`/`bash`.
   Advertised name **`mcp__<server>__<tool>`**, sanitized to the providers'
   `^[A-Za-z0-9_-]+$` rule, so it can't collide with a host tool or another server.
 - **Config:** the `mcp:` section of the layered user config (§ADR-0047/#172), a map
-  of server name → `{command, args, env, disabled}`, `deny_unknown_fields`-validated
-  by the same loader as `permissions`/`hooks`. Empty ⇒ no servers (the norm).
-  `skutter inspect config` lists the configured servers.
+  of server name → `McpServerConfig`. A block is one transport XOR the other —
+  `{command, args, env}` (stdio) **or** `{url, headers}` (HTTP), plus a shared
+  `disabled` — resolved by `McpServerConfig::transport()`, which rejects both-set or
+  neither-set. `deny_unknown_fields`-validated by the same loader as
+  `permissions`/`hooks`. Empty ⇒ no servers (the norm). `skutter inspect config`
+  lists the configured servers and their resolved transport.
 - **Wiring:** `build_config` is `async` and calls `mcp::connect(&config.mcp, &mut
   tools)` after the host tools are registered but before `tool_specs` is derived, so
   MCP tools flow into both the advertised schemas and the executor's registry with
   the existing code. Connection is **best-effort per server**: a spawn / handshake /
   `tools/list` failure is logged and skipped — a down server degrades to "that tool
-  is absent," never a startup failure. The whole module lives in the **lean
-  library** (tokio process + `serde_json`), so an embedder gets external tool
-  servers with no CLI/TUI/transport dependency.
+  is absent," never a startup failure. The stdio path lives in the **lean library**;
+  the HTTP path rides the `mcp-http` feature, so an embedder gets stdio tool servers
+  with no CLI/TUI/transport dependency and opts into HTTP by enabling the feature.
 
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs
