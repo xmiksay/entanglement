@@ -341,6 +341,32 @@ mod tests {
         assert!(c.provider("anthropic").is_some());
         // z.ai is first — the auto-detect priority the head relies on.
         assert_eq!(c.providers[0].name, "zai");
+        // The full z.ai text palette is present, glm-5.2 leading (#303).
+        const ZAI_MODELS: [&str; 14] = [
+            "glm-5.2",
+            "glm-5.1",
+            "glm-5",
+            "glm-5-turbo",
+            "glm-4.7",
+            "glm-4.7-flashx",
+            "glm-4.7-flash",
+            "glm-4.6",
+            "glm-4.5",
+            "glm-4.5-x",
+            "glm-4.5-air",
+            "glm-4.5-airx",
+            "glm-4.5-flash",
+            "glm-4-32b-0414-128k",
+        ];
+        let zai = c.provider("zai").unwrap();
+        assert_eq!(zai.models.len(), ZAI_MODELS.len());
+        assert_eq!(zai.models.first().unwrap().id, "glm-5.2");
+        for id in ZAI_MODELS {
+            assert!(
+                c.model("zai", id).is_some(),
+                "zai model {id} missing from the embedded catalog"
+            );
+        }
         // Every provider has a default model that actually exists in its list.
         for p in &c.providers {
             assert!(
@@ -379,13 +405,48 @@ mod tests {
         assert!(glm.supports_temperature);
         assert!(glm.supports_thinking);
         assert_eq!(glm.display_name(), "GLM-5.2");
-        assert_eq!(glm.pricing.unwrap().input, Some(0.6));
+        assert_eq!(glm.pricing.unwrap().input, Some(1.4));
         // model_by_id searches across providers.
         assert_eq!(
             c.model_by_id("gpt-4o").unwrap().context_window,
             Some(128000)
         );
         assert!(c.model_by_id("does-not-exist").is_none());
+    }
+
+    #[test]
+    fn zai_palette_pricing_and_thinking() {
+        let c = Catalog::builtin();
+        // The free tiers price every usage dimension at zero (#303).
+        let usage = crate::Usage {
+            input_tokens: Some(10_000),
+            output_tokens: Some(5_000),
+            cached_input_tokens: Some(1_000),
+            cache_write_tokens: None,
+        };
+        for free in ["glm-4.7-flash", "glm-4.5-flash"] {
+            let pricing = c.model("zai", free).unwrap().pricing.unwrap();
+            assert_eq!(pricing.cost_usd(&usage), 0.0, "{free} should be free");
+        }
+        // A paid model bills something for the same usage.
+        assert!(
+            c.model("zai", "glm-5.2")
+                .unwrap()
+                .pricing
+                .unwrap()
+                .cost_usd(&usage)
+                > 0.0
+        );
+        // glm-4-32b-0414-128k is the one non-reasoning model in the palette.
+        let legacy = c.model("zai", "glm-4-32b-0414-128k").unwrap();
+        assert!(!legacy.supports_thinking);
+        assert_eq!(legacy.pricing.unwrap().cached_input, None);
+        // Every other zai model is thinking-capable.
+        for m in &c.provider("zai").unwrap().models {
+            if m.id != "glm-4-32b-0414-128k" {
+                assert!(m.supports_thinking, "{} should support thinking", m.id);
+            }
+        }
     }
 
     fn merge_str(user: &str) -> Catalog {
@@ -403,10 +464,10 @@ mod tests {
         let glm = c.model("zai", "glm-5.2").unwrap();
         assert_eq!(glm.pricing.unwrap().input, Some(0.5));
         // untouched sibling within the same pricing block survives...
-        assert_eq!(glm.pricing.unwrap().output, Some(2.2));
+        assert_eq!(glm.pricing.unwrap().output, Some(4.4));
         // ...as do sibling model fields and other models in the provider.
         assert!(glm.supports_thinking);
-        assert_eq!(glm.context_window, Some(128000));
+        assert_eq!(glm.context_window, Some(1000000));
         assert!(c.model("zai", "glm-4.7").is_some());
     }
 
@@ -475,7 +536,7 @@ mod tests {
         // is configured, so thinking stays off even though it *supports* it.
         let glm = c.model("zai", "glm-5.2").unwrap().generation_params();
         assert_eq!(glm.temperature, Some(0.7));
-        assert_eq!(glm.max_output_tokens, Some(16384));
+        assert_eq!(glm.max_output_tokens, Some(131072));
         assert_eq!(glm.thinking_budget_tokens, None);
 
         // A user file that opts a supporting model into thinking and turns another
