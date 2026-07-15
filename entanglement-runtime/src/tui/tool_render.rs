@@ -29,9 +29,7 @@ pub fn render_tool_output(
 /// and everything else → pretty-printed input followed by the output body. The
 /// filename/command lives in the block header (#340), never re-printed here.
 ///
-/// The live call site is #340's expanded branch; until it lands this runs only
-/// under test.
-#[allow(dead_code)]
+/// Wired into the live transcript by `flush_tool_call`'s expanded branch (#340).
 pub fn render_expansion(
     tool: Option<&str>,
     input: &str,

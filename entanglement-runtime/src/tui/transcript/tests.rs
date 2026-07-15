@@ -239,6 +239,43 @@ fn tool_op_expands_to_show_body_and_check_when_done() {
 }
 
 #[test]
+fn edit_op_expands_to_a_diff_not_raw_json() {
+    // The epic's payoff (#341 wired through #340): an expanded `edit` shows a
+    // real `+`/`-` diff of oldString→newString, never the raw JSON args.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(
+        &mut app,
+        &sid,
+        1,
+        "edit",
+        r#"{"path":"a.rs","oldString":"foo","newString":"bar"}"#,
+    );
+
+    app.toggle_block(0);
+    let body = render_body_lines(&mut app, 80);
+    let has_delete = body
+        .lines
+        .iter()
+        .any(|l| l.spans.iter().any(|s| s.content == "- "));
+    let has_insert = body
+        .lines
+        .iter()
+        .any(|l| l.spans.iter().any(|s| s.content == "+ "));
+    assert!(
+        has_delete && has_insert,
+        "expanded edit must render a `-`/`+` diff pair"
+    );
+    assert!(
+        !body
+            .lines
+            .iter()
+            .any(|l| line_text(l).contains("oldString")),
+        "expanded edit must not dump the raw JSON args"
+    );
+}
+
+#[test]
 fn streamed_table_renders_as_grid_after_all_deltas() {
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());

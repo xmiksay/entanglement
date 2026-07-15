@@ -10,9 +10,7 @@ impl DiffRenderer {
     /// Render an `oldString` → `newString` change as a unified diff, the way an
     /// `edit` tool block shows its edit expanded (#341). The hunks come out in
     /// the same `+`/`-` green/red style as [`render_unified`](Self::render_unified).
-    // `render_expansion` (its only caller) is wired into the live transcript by
-    // #340's expanded branch; until that lands this runs only under test.
-    #[allow(dead_code)]
+    /// Live via `render_expansion`'s `edit` arm (#341).
     pub fn render_change(old: &str, new: &str) -> Text<'static> {
         let patch = diffy::create_patch(old, new);
         Self::render_hunks(&patch)
@@ -34,7 +32,6 @@ impl DiffRenderer {
     /// Shared hunk → styled-line rendering for [`render_change`](Self::render_change)
     /// and [`render_unified`](Self::render_unified): inserts green `+`, deletes
     /// red `-`, context dimmed.
-    #[allow(dead_code)]
     fn render_hunks(patch: &Patch<'_, str>) -> Text<'static> {
         let mut lines = Vec::new();
 
