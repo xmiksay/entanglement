@@ -51,6 +51,7 @@ fn merge_user(user: &str) -> Config {
         permissions,
         hooks: raw.hooks,
         mcp: raw.mcp,
+        web_search: raw.web_search,
     }
 }
 
@@ -253,4 +254,49 @@ fn unknown_hook_event_is_a_loud_error() {
     let over: Value = serde_yaml::from_str("hooks:\n  pre_tool_yoos:\n    - command: x\n").unwrap();
     let merged = merge_value(base, over);
     assert!(serde_yaml::from_value::<RawConfig>(merged).is_err());
+}
+
+#[test]
+fn web_search_defaults_to_disabled() {
+    // No `web_search:` section ⇒ disabled with no knobs (a no-op).
+    let c = defaults();
+    assert!(!c.web_search.enabled);
+    assert_eq!(c.web_search.max_uses, None);
+    assert!(c.web_search.allowed_domains.is_empty());
+}
+
+#[test]
+fn web_search_parses_from_user_file() {
+    let c = merge_user(
+        "web_search:\n  \
+         enabled: true\n  \
+         max_uses: 5\n  \
+         allowed_domains: [docs.rs, example.com]\n",
+    );
+    assert!(c.web_search.enabled);
+    assert_eq!(c.web_search.max_uses, Some(5));
+    assert_eq!(c.web_search.allowed_domains, vec!["docs.rs", "example.com"]);
+}
+
+#[test]
+fn web_search_merges_key_wise_over_layers() {
+    // A layer enabling web search must not have to restate every knob; the
+    // mapping merges key-wise like every other section.
+    let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
+    let user: Value = serde_yaml::from_str("web_search:\n  max_uses: 3\n").unwrap();
+    let repo: Value = serde_yaml::from_str("web_search:\n  enabled: true\n").unwrap();
+    let merged = merge_value(merge_value(base, user), repo);
+    let raw: RawConfig = serde_yaml::from_value(merged).unwrap();
+    assert!(raw.web_search.enabled);
+    assert_eq!(raw.web_search.max_uses, Some(3));
+}
+
+#[test]
+fn unknown_web_search_field_is_a_loud_error() {
+    // `deny_unknown_fields` on `WebSearchConfig` rejects a typo'd knob.
+    let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
+    let over: Value = serde_yaml::from_str("web_search:\n  enabbled: true\n").unwrap();
+    let merged = merge_value(base, over);
+    let err = serde_yaml::from_value::<RawConfig>(merged).unwrap_err();
+    assert!(err.to_string().contains("enabbled"), "got: {err}");
 }
