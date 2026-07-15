@@ -137,15 +137,17 @@ fn unquote(value: &str) -> &str {
     value
 }
 
+/// `load`/`scaffold`/`set_key` all mutate the process-global environment
+/// (`ENTANGLEMENT_ENV_FILE` and the keys themselves), so every test touching it —
+/// here and in the sibling `env_key` module — serializes under this one lock.
+/// Two separate `static`s would each only serialize their own module's tests
+/// against each other, not against the other module's, defeating the point.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
-
-    /// `load`/`scaffold` mutate the process-global environment (`ENTANGLEMENT_ENV_FILE`
-    /// and the keys themselves), so the tests touching it serialize under this lock.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parse_skips_comments_blanks_and_malformed() {

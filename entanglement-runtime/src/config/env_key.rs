@@ -153,14 +153,8 @@ pub fn set_key(key_name: &str, value: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
-    use super::super::env_file::parse;
+    use super::super::env_file::{parse, ENV_LOCK};
     use super::*;
-
-    /// `set_key` reads the process-global `ENTANGLEMENT_ENV_FILE`, so tests that
-    /// touch it serialize (shared with the sibling env_file tests' concern).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn upsert_replaces_commented_placeholder_in_place() {
