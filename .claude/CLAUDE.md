@@ -261,7 +261,21 @@ streaming tool-arg deltas via `LlmEvent::ToolCallDelta`/`OutEvent::ToolCallDelta
 #194, the empty `LlmSession` placeholder collapsed to a plain `Box<dyn Llm>`
 #195/[ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md), and
 realtime model/provider switch without an engine restart
-#218/[ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md))
+#218/[ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)),
+and the extensibility epic (#196 — `Message`/`Prompt` migrated to multimodal
+content blocks (`text: String` → `content: Vec<ContentPart>`, serde back-compat
+shim for pre-migration logs) #197/[ADR-0064](../docs/adr/0064-message-content-blocks.md),
+`read` emits image files (`png`/`jpg`/`jpeg`/`gif`/`webp`) as base64 image
+content blocks through the now-multimodal `ToolResult`/`ToolOutput` path
+#221/[ADR-0065](../docs/adr/0065-read-emits-image-content-blocks.md), lifecycle
+hooks (`pre_tool_use`/`post_tool_use`/`user_prompt_submit`) as a runtime
+interceptor around tool dispatch + prompt ingress, configured in the layered
+user config's `hooks:` section
+#199/[ADR-0066](../docs/adr/0066-lifecycle-hooks-as-runtime-interceptors.md), and
+an MCP client attaching external tool servers (config `mcp:` section, JSON-RPC/
+stdio, registered as `mcp__<server>__<tool>`) as a runtime-side tool provider
+with no core change
+#198/[ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md))
 are **complete**.
 Current phase is the July 2026 audit backlog — thematic epics tracked on GitHub
 with P0/P1/P2 labels and blocked-by links:
