@@ -87,7 +87,18 @@ persistence machinery with none of the CLI/TUI/transport weight
   ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
   (ADR-0013), inline tool approval cards (ADR-0014), and rich markdown
   rendering with pulldown-cmark + syntect (ADR-0015). Event buffering and
-  multiplexed-session rendering follow ADR-0012. Mouse capture is on by default
+  multiplexed-session rendering follow ADR-0012. The transcript body is rendered
+  through a **per-block render cache** (#342, `tui::transcript::cache`): a redraw
+  fires on every keystroke, scroll, mouse move, and streaming delta, but the
+  markdown+syntect+wrap pipeline is the expensive part, so `render_body_lines`
+  segments the transcript into content-addressed blocks (coalesced text/reasoning
+  runs; each user/tool/error entry its own self-contained block) and re-renders
+  only the block whose content hash (`kind + content + expanded/padding flags`)
+  changed — an idle redraw re-parses zero markdown and just clones the owned
+  `Line<'static>` memo. A `width`/`theme-fingerprint` mismatch (resize or theme
+  swap) drops the whole memo and rebuilds once; the approval/question tail stays
+  rendered fresh per frame after the cached body. The memo lives on
+  `SessionView` beside `expanded_blocks`, so each session keeps its own. Mouse capture is on by default
   (opt out with `ENTANGLEMENT_TUI_NO_MOUSE=1`, which restores native text
   selection): the wheel scrolls the chat (or the open modal's selection), and a
   left click hit-tests the chat area to toggle a transcript block — reasoning

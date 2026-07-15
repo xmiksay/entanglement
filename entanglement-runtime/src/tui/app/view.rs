@@ -1,9 +1,37 @@
 use crate::tui::session_view::TranscriptEntry;
+use crate::tui::theme::{RoleColors, Theme};
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 
 use super::App;
 
 impl App {
+    /// Renders the active session's transcript body through its per-block render
+    /// cache (#342). Splits `self` so the shared markdown renderer and the
+    /// mutable active view are borrowed disjointly.
+    pub(crate) fn render_cached_body(
+        &mut self,
+        width: u16,
+        theme: Theme,
+        user: RoleColors,
+    ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
+        let Self {
+            markdown_renderer,
+            sessions,
+            ..
+        } = self;
+        sessions
+            .active_view_mut()
+            .render_body(markdown_renderer, theme, user, width)
+    }
+
+    /// Blocks re-rendered on the active session's last body render (a #342 test
+    /// hook; `0` when the redraw reused every cached block).
+    #[cfg(test)]
+    pub(crate) fn last_render_rebuilt(&self) -> usize {
+        self.sessions.active_view().last_render_rebuilt()
+    }
+
     pub fn scroll_offset(&self) -> usize {
         self.sessions.active_view().scroll_offset()
     }
@@ -47,12 +75,6 @@ impl App {
     pub fn scroll_to_bottom(&mut self) {
         self.sessions.active_view_mut().scroll_to_bottom();
         self.mark_dirty();
-    }
-
-    /// Whether the collapsible block `id` (a reasoning run's or tool op's
-    /// minting transcript index) is expanded in the active session.
-    pub fn block_expanded(&self, id: usize) -> bool {
-        self.sessions.active_view().block_expanded(id)
     }
 
     /// Flips a collapsible block (reasoning run or tool op) between collapsed

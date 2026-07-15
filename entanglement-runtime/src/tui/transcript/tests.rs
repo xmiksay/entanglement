@@ -42,7 +42,7 @@ fn text_then_reasoning_renders_in_arrival_order() {
         text: "afterthought\n".to_string(),
     });
 
-    let body = render_body_lines(&app, 80);
+    let body = render_body_lines(&mut app, 80);
     let text_at = line_index_of(&body, "ANSWERTEXT");
     let thinking_at = line_index_of(&body, "▸ Thinking");
     assert!(
@@ -68,7 +68,7 @@ fn reasoning_then_text_renders_thinking_first() {
         text: "ANSWERTEXT\n".to_string(),
     });
 
-    let body = render_body_lines(&app, 80);
+    let body = render_body_lines(&mut app, 80);
     let thinking_at = line_index_of(&body, "▸ Thinking");
     let text_at = line_index_of(&body, "ANSWERTEXT");
     assert!(
@@ -99,7 +99,7 @@ fn interleaved_runs_stay_ordered_and_distinct() {
         text: "SECONDTEXT\n".to_string(),
     });
 
-    let body = render_body_lines(&app, 80);
+    let body = render_body_lines(&mut app, 80);
     let first = line_index_of(&body, "FIRSTTEXT");
     let thinking = line_index_of(&body, "▸ Thinking");
     let second = line_index_of(&body, "SECONDTEXT");
@@ -118,7 +118,7 @@ fn reasoning_collapsed_by_default_shows_only_header() {
     let mut app = App::new_for_test(sid.clone());
     feed_reasoning(&mut app, &sid, "alpha\nbeta\nSECRETBODY\n");
 
-    let body = render_body_lines(&app, 80);
+    let body = render_body_lines(&mut app, 80);
     assert!(
         body.lines
             .iter()
@@ -148,7 +148,7 @@ fn reasoning_expands_on_toggle() {
     feed_reasoning(&mut app, &sid, "alpha\nbeta\nSECRETBODY\n");
 
     app.toggle_block(0);
-    let body = render_body_lines(&app, 80);
+    let body = render_body_lines(&mut app, 80);
     assert!(
         body.lines
             .iter()
@@ -164,7 +164,7 @@ fn reasoning_expands_on_toggle() {
 
     // Toggle round-trip collapses it again.
     app.toggle_block(0);
-    let body = render_body_lines(&app, 80);
+    let body = render_body_lines(&mut app, 80);
     assert!(!body
         .lines
         .iter()
@@ -189,7 +189,7 @@ fn tool_op_header_shows_primary_arg_and_collapses_by_default() {
     let mut app = App::new_for_test(sid.clone());
     feed_tool_call(&mut app, &sid, 1, "read", r#"{"path":"src/main.rs"}"#);
 
-    let body = render_body_lines(&app, 80);
+    let body = render_body_lines(&mut app, 80);
     let header_idx = line_index_of(&body, "▸ read");
     let header = line_text(&body.lines[header_idx]);
     assert!(
@@ -215,7 +215,7 @@ fn tool_op_expands_to_show_body_and_check_when_done() {
     });
 
     // Folded but collapsed: a ✓ header, no body.
-    let body = render_body_lines(&app, 80);
+    let body = render_body_lines(&mut app, 80);
     let header_idx = line_index_of(&body, "▸ bash");
     assert!(line_text(&body.lines[header_idx]).contains("✓"));
     assert!(
@@ -228,7 +228,7 @@ fn tool_op_expands_to_show_body_and_check_when_done() {
 
     // Expanding the block (its transcript index is 0) reveals the body.
     app.toggle_block(0);
-    let body = render_body_lines(&app, 80);
+    let body = render_body_lines(&mut app, 80);
     assert!(body.lines.iter().any(|l| line_text(l).contains("▾ bash")));
     assert!(
         body.lines
@@ -257,7 +257,7 @@ fn streamed_table_renders_as_grid_after_all_deltas() {
         });
     }
 
-    let lines = render_body_lines(&app, 80).lines;
+    let lines = render_body_lines(&mut app, 80).lines;
     let joined: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -316,7 +316,7 @@ fn narrow_widths_do_not_panic() {
     feed_reasoning(&mut app, &sid, "thinking hard\n");
 
     for width in [0u16, 1, 2] {
-        let body = render_body_lines(&app, width);
+        let body = render_body_lines(&mut app, width);
         assert!(
             !body.lines.is_empty(),
             "width {width} should still render lines"
@@ -330,7 +330,7 @@ fn user_messages_use_profile_colors() {
     let mut app = App::new_for_test(sid.clone());
     app.record_user_message("Hello world".to_string());
 
-    let lines = render_body_lines(&app, 80).lines;
+    let lines = render_body_lines(&mut app, 80).lines;
     let user_color = hash_profile_color("build");
     let theme = app.theme();
     let expected_user_bg = theme.user_colors(user_color).bg;
@@ -365,7 +365,7 @@ fn assistant_lines_use_theme_colors() {
         text: "Response".to_string(),
     });
 
-    let lines = render_body_lines(&app, 80).lines;
+    let lines = render_body_lines(&mut app, 80).lines;
     let theme = app.theme();
     let expected_bg = theme.assistant_colors().bg;
 
@@ -383,4 +383,112 @@ fn assistant_lines_use_theme_colors() {
             );
         }
     }
+}
+
+/// Compares two rendered bodies span-for-span (content + style), so cache reuse
+/// can't silently swap in a different-but-equal-looking line.
+fn assert_same_lines(a: &RenderedBody, b: &RenderedBody) {
+    assert_eq!(a.lines.len(), b.lines.len(), "line count differs");
+    for (i, (la, lb)) in a.lines.iter().zip(b.lines.iter()).enumerate() {
+        assert_eq!(la.style, lb.style, "line {i} style differs");
+        assert_eq!(
+            la.spans.len(),
+            lb.spans.len(),
+            "line {i} span count differs"
+        );
+        for (sa, sb) in la.spans.iter().zip(lb.spans.iter()) {
+            assert_eq!(sa.content, sb.content, "line {i} content differs");
+            assert_eq!(sa.style, sb.style, "line {i} span style differs");
+        }
+    }
+    assert_eq!(a.line_blocks, b.line_blocks, "line_blocks differ");
+}
+
+#[test]
+fn identical_renders_produce_identical_lines_and_reuse_cache() {
+    // #342: a redraw with no content change must reuse every cached block —
+    // zero markdown re-parse — and yield byte-identical lines.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.record_user_message("hello there".to_string());
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: "**bold** reply with `code`\n".to_string(),
+    });
+    feed_tool_call(&mut app, &sid, 2, "read", r#"{"path":"src/main.rs"}"#);
+    feed_reasoning(&mut app, &sid, "thinking\nmore thinking\n");
+
+    let first = render_body_lines(&mut app, 80);
+    // First pass renders every block fresh.
+    assert!(app.last_render_rebuilt() > 0);
+
+    let second = render_body_lines(&mut app, 80);
+    assert_eq!(
+        app.last_render_rebuilt(),
+        0,
+        "an unchanged redraw must rebuild no blocks"
+    );
+    assert_same_lines(&first, &second);
+}
+
+#[test]
+fn mutating_one_entry_rebuilds_only_its_block() {
+    // #342: appending a new tool call must re-render only the trailing block,
+    // reusing every earlier block's cached lines.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.record_user_message("first".to_string());
+    feed_tool_call(&mut app, &sid, 1, "read", r#"{"path":"a.rs"}"#);
+    let _ = render_body_lines(&mut app, 80);
+
+    // A brand-new tool call is one new block; the user + first tool block stay.
+    feed_tool_call(&mut app, &sid, 2, "read", r#"{"path":"b.rs"}"#);
+    let _ = render_body_lines(&mut app, 80);
+    assert_eq!(
+        app.last_render_rebuilt(),
+        1,
+        "only the newly-appended block should rebuild"
+    );
+}
+
+#[test]
+fn toggling_one_block_rebuilds_only_it() {
+    // #342: expanding a reasoning block flips only that block's key, so only it
+    // re-renders.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(&mut app, &sid, 1, "read", r#"{"path":"a.rs"}"#);
+    feed_reasoning(&mut app, &sid, "alpha\nbeta\n");
+    let _ = render_body_lines(&mut app, 80);
+
+    app.toggle_block(1); // reasoning run's block id is its first delta index (1)
+    let _ = render_body_lines(&mut app, 80);
+    assert_eq!(
+        app.last_render_rebuilt(),
+        1,
+        "only the toggled block should rebuild"
+    );
+}
+
+#[test]
+fn width_change_rebuilds_every_block() {
+    // #342: a resize invalidates the whole memo (wrap width baked into lines).
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.record_user_message("hello".to_string());
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: "some reply\n".to_string(),
+    });
+    let _ = render_body_lines(&mut app, 80);
+    let _ = render_body_lines(&mut app, 80);
+    assert_eq!(app.last_render_rebuilt(), 0, "warm cache at width 80");
+
+    let _ = render_body_lines(&mut app, 40);
+    assert!(
+        app.last_render_rebuilt() >= 2,
+        "a width change must rebuild every block"
+    );
 }
