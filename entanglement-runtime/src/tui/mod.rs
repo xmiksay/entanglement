@@ -91,8 +91,10 @@ pub async fn tui(
     // External SIGINT safety net (ADR-0087): in raw mode Ctrl+C is delivered
     // as a key event (ISIG suppressed), so this only fires for an out-of-band
     // `kill -INT` — routing it through the same two-stage quit path so the
-    // terminal is always restored instead of left "half killed".
-    spawn_sigint_task(event_tx.clone());
+    // terminal is always restored instead of left "half killed". The handle is
+    // aborted (and SIGINT reset to default) after `restore_terminal` so the
+    // post-TUI shutdown in `main` stays interruptible by a second Ctrl+C.
+    let sigint_handle = spawn_sigint_task(event_tx.clone());
 
     // Registry-driven entry-agent roster (#119): the `/agent` picker lists every
     // entry agent (`mode ∈ {primary, all}`) — a `subagent` leaf like `explore` is
@@ -177,6 +179,17 @@ pub async fn tui(
     }
 
     restore_terminal(&mut terminal)?;
+
+    // Abort the external-SIGINT task and reset SIGINT to its default disposition
+    // (terminate). `tokio::signal::ctrl_c()` installs a *process-global* handler
+    // that outlives the future it's dropped from, so without this reset a Ctrl+C
+    // during `main`'s post-TUI shutdown (engine/persistence teardown) would be
+    // swallowed by tokio's lingering handler — leaving the user no escape but
+    // `kill -9`. Resetting here makes that shutdown interruptible again, as it
+    // was before any SIGINT handler existed.
+    sigint_handle.abort();
+    reset_sigint_to_default();
+
     Ok(())
 }
 
@@ -222,7 +235,12 @@ fn spawn_crossterm_task(tx: mpsc::Sender<Event>) {
 /// through the same event channel, which routes through
 /// `App::handle_quit_key` → `restore_terminal`, so an external signal can't
 /// leave the terminal in raw mode.
-fn spawn_sigint_task(tx: mpsc::Sender<Event>) {
+///
+/// The returned handle must be aborted — and [`reset_sigint_to_default`] called
+/// — after `restore_terminal`: `tokio::signal::ctrl_c()` installs a
+/// process-global handler that outlives the future, so without the reset a
+/// Ctrl+C during `main`'s post-TUI shutdown is swallowed (forcing `kill -9`).
+fn spawn_sigint_task(tx: mpsc::Sender<Event>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             // `ctrl_c()` resolves anew each call; an error means signal
@@ -234,7 +252,34 @@ fn spawn_sigint_task(tx: mpsc::Sender<Event>) {
                 break;
             }
         }
-    });
+    })
+}
+
+/// Reset the `SIGINT` disposition to its OS default (terminate the process).
+///
+/// `tokio::signal::ctrl_c()` registers a process-global signal handler (via
+/// `signal-hook-registry`) that persists for the lifetime of the program — it is
+/// **not** removed when the `ctrl_c()` future is dropped or its task aborted.
+/// After the TUI loop exits and the terminal is restored, `main` tears down the
+/// engine + persistence; if that stalls, the user's Ctrl+C must terminate the
+/// process. Without this reset tokio's lingering handler swallows the signal,
+/// leaving `kill -9` as the only escape.
+///
+/// Direct `libc::signal` is the lean, dependency-clean way to undo the tokio
+/// registration (`signal_hook::cleanup` would re-add a dependency). Best-effort:
+/// a failure is logged, not fatal — the worst case is the pre-ADR-0087 state
+/// where a stall needs `kill -9`.
+fn reset_sigint_to_default() {
+    // SAFETY: `SIG_DFL`/`signal` are async-signal-safe; restoring the default
+    // SIGINT disposition has no preconditions. This runs single-threaded at the
+    // tail of the TUI shutdown, outside any signal handler.
+    #[cfg(unix)]
+    unsafe {
+        const SIGINT: libc::c_int = 2;
+        if libc::signal(SIGINT, libc::SIG_DFL) == libc::SIG_ERR {
+            tracing::warn!("failed to reset SIGINT to default disposition");
+        }
+    }
 }
 
 fn setup_panic_handler() {
