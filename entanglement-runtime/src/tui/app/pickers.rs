@@ -272,6 +272,11 @@ impl App {
         &self.available_sessions
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_available_sessions_for_test(&mut self, sessions: Vec<SessionMeta>) {
+        self.available_sessions = sessions;
+    }
+
     pub fn selected_resume_session(&self) -> Option<SessionMeta> {
         self.resume_state
             .selected()

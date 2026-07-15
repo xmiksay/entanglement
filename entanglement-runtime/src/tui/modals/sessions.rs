@@ -173,14 +173,22 @@ pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
             let id_string = meta.id.to_string();
             let agent_string = meta.agent.clone();
             let model_string = meta.model.as_deref().unwrap_or("default").to_string();
-            ListItem::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(id_string, Style::default().bold()),
                 Span::raw(" "),
                 Span::styled("[", Style::default().dim()),
                 Span::styled(agent_string, Style::default().fg(Color::Cyan).bold()),
                 Span::styled("]", Style::default().dim()),
                 Span::raw(format!(" {}", model_string)),
-            ]))
+            ];
+            // First-prompt snippet after id/agent/model, dimmed (#327).
+            if let Some(snippet) = meta.first_prompt.as_deref() {
+                spans.push(Span::styled(
+                    format!("  {}", snippet),
+                    Style::default().dim(),
+                ));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -195,4 +203,43 @@ pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
     let area = centered_rect(60, 40, f.area());
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.resume_state());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_store::SessionMeta;
+    use entanglement_core::SessionId;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn resume_modal_shows_first_prompt_snippet() {
+        let sid = SessionId::new("abc123");
+        let mut app = App::new_for_test(sid.clone());
+        app.set_available_sessions_for_test(vec![SessionMeta {
+            id: sid,
+            agent: "build".to_string(),
+            model: Some("glm-5.2".to_string()),
+            created: 0,
+            last_active: 0,
+            parent: None,
+            root: true,
+            first_prompt: Some("fix the login bug".to_string()),
+        }]);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| draw_resume_modal(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rendered: String = (0..10)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered.contains("fix the login bug"),
+            "resume modal should render the first-prompt snippet, got:\n{rendered}"
+        );
+        assert!(rendered.contains("abc123"), "id should still render");
+        assert!(rendered.contains("build"), "agent should still render");
+    }
 }
