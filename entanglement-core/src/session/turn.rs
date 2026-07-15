@@ -75,11 +75,21 @@ async fn run_round(
     // tools now (#231, ADR-0049): they ride `tool_specs`/`profile_tool_specs`
     // and this mask like any other host tool, with zero plan-authority special
     // casing in core.
-    let mut specs: Vec<ToolSpec> = cfg
-        .tool_specs
-        .iter()
+    // The base tool schemas are engine-global (`tool_specs`) unless a
+    // per-session `tool_spec_resolver` is wired (#308, ADR-0076): a multi-tenant
+    // embedder consults it here to vary the advertised surface per session (each
+    // user's discovered MCP-server tools, a site's restriction) on one `Holly`.
+    // Its output *replaces* the static list for this session — but the profile
+    // mask below still filters it, so the resolver widens discovery, never
+    // bypasses masking. Consulted fresh every turn, so a backing-store edit lands
+    // on the next turn with no engine respawn.
+    let base_specs = match &cfg.tool_spec_resolver {
+        Some(resolve) => resolve(session),
+        None => cfg.tool_specs.clone(),
+    };
+    let mut specs: Vec<ToolSpec> = base_specs
+        .into_iter()
         .filter(|spec| s.profile.advertises_tool(&spec.name))
-        .cloned()
         .collect();
     // Per-profile specs (#119, ADR-0040): the active profile's spawnable roster
     // (the `agent_*` family with a target enum scoped to who *this* profile may

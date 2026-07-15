@@ -187,7 +187,20 @@ below realize one model:
   the mask — a masked tool's schema never reaches the model. `update_plan`/
   `update_tasks` are ordinary runtime state tools now (✅ #231, below): they ride
   those specs and this mask like any host tool, no plan-authority special casing in
-  core. **(b) Enforcement:**
+  core. **Per-session base specs (✅ #308, [ADR-0076](../adr/0076-per-session-dynamic-tool-specs.md)):**
+  an optional `EngineConfig.tool_spec_resolver: Option<Arc<dyn Fn(&SessionId) ->
+  Vec<ToolSpec> + Send + Sync>>` (alias `ToolSpecResolver`) lets one `Holly`
+  advertise a **different base tool surface per session** — the seam multi-tenant
+  embedding needs so user A's discovered MCP-server tools never reach user B's
+  sessions and a site's per-session restriction is expressible without one engine
+  per user. `run_round` consults it *fresh every turn* (so a backing-store edit
+  lands on the next turn, no respawn); its output **replaces** the engine-global
+  `tool_specs` for that session (the embedder composes if it wants both),
+  `profile_tool_specs` still append, and the mask below still filters the result —
+  the resolver **widens discovery, it never bypasses masking** (it runs *before*
+  the mask). Sync `Fn` by design (turn hot path); the documented pattern is an
+  embedder-owned `Arc<RwLock<..>>` snapshot cache. `None` (the default) keeps the
+  engine-global specs — a no-op for single-user heads. **(b) Enforcement:**
   `runtime::permission::tool_masked` refuses a masked `ToolExec` **first** — before
   the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions and permission —
   so a hallucinated masked call is a hard boundary, and the mask **intersects down
