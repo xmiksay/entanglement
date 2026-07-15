@@ -183,6 +183,70 @@ fn malformed_project_file_aborts_load() {
     assert!(msg.contains("broken.md"), "error names the file: {msg}");
 }
 
+#[test]
+fn foreign_claude_agents_load_leniently_and_native_wins() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    // A Claude-Code-shaped agent: string `tools`, unknown `model`/`color` keys.
+    write_agent(
+        &root.join(".claude").join("agents"),
+        "backend.md",
+        "---\nname: backend\ndescription: claude backend\ntools: Read, Grep\nmodel: sonnet\ncolor: blue\n---\nbackend prompt",
+    );
+    // A malformed foreign sibling must be skipped, not abort the load.
+    write_agent(
+        &root.join(".claude").join("agents"),
+        "broken.md",
+        "---\nname: broken\n---\nno description",
+    );
+    // A same-name native project definition wins over the foreign one.
+    write_agent(
+        &root.join(".agents").join("agents"),
+        "dup.md",
+        "---\nname: dup\ndescription: from .agents\n---\na",
+    );
+    write_agent(
+        &root.join(".entanglement").join("agents"),
+        "dup.md",
+        "---\nname: dup\ndescription: native dup\n---\nn",
+    );
+
+    let reg = load_with_dirs(None, root);
+
+    let backend = reg.get("backend").expect("foreign agent discovered");
+    assert_eq!(backend.description, "claude backend");
+    assert_eq!(backend.system_prompt, "backend prompt");
+    // Foreign agents are spawnable delegation targets with no tool mask.
+    assert_eq!(backend.mode, entanglement_core::AgentMode::All);
+    assert!(backend.advertises_tool("edit"));
+    assert!(reg.get("broken").is_none(), "malformed foreign skipped");
+    assert_eq!(reg.get("dup").unwrap().description, "native dup");
+}
+
+#[test]
+fn prompt_report_tolerates_broken_foreign_file() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    write_agent(
+        &root.join(".claude").join("agents"),
+        "broken.md",
+        "not even frontmatter",
+    );
+
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
+    let report = entanglement_runtime::agents::prompt_report(
+        root,
+        "build",
+        &PromptContext::default(),
+        &entanglement_runtime::skills::SkillRegistry::default(),
+    );
+    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
+
+    let report = report.expect("broken foreign file must not abort");
+    assert!(report.is_some(), "built-in build still resolves");
+}
+
 // ── end-to-end spawn under a file-defined profile ──────────────────────────────
 
 fn finish(text: &str) -> LlmStream {

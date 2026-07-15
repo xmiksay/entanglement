@@ -29,7 +29,16 @@ below realize one model:
   an *explicit* `ENTANGLEMENT_AGENTS_DIR`/`ENTANGLEMENT_SKILLS_DIR` override that
   points at a missing directory is `warn!`ed instead of silently swallowed (the
   default `${config_dir}` path being absent stays the normal "no user layer"
-  case). Editing a built-in is dropping a same-`name` file in a higher layer. This precedence is uniform (the
+  case). **Cross-vendor dirs are scanned too**
+  ([ADR-0074](../adr/0074-cross-vendor-skill-and-agent-discovery.md)): within
+  the user layer `~/.claude/<kind>` before the native `${config_dir}` dir, and
+  within the project layer `.claude/<kind>` then `.agents/<kind>` before the
+  native `.entanglement/<kind>` — native always wins on a `name` collision, and
+  foreign dirs parse **leniently** (only `name`+`description` read, unknown keys
+  ignored, a malformed file warned and skipped rather than aborting; strict
+  `deny_unknown_fields` + abort stays for native dirs). The env override
+  replaces the *whole* user layer, doubling as the cross-vendor opt-out.
+  Editing a built-in is dropping a same-`name` file in a higher layer. This precedence is uniform (the
   user config/settings file follows it too) and the project layer is **trusted** —
   running inside a repo means the repo is trusted, with inspection (`skutter
   inspect`) as the mitigation rather than an enforced boundary
@@ -144,10 +153,15 @@ below realize one model:
   (`entanglement_runtime::agents::load_registry`) into a `ProfileRegistry`. Three
   layers, later wins on a `name` collision: embedded built-ins (`build`/`plan`/
   `explore`, shipped as `include_str!` `.md` and parsed through the *same* loader)
-  < user (`${config_dir}/entanglement/agents/*.md`) < project
-  (`<root>/.entanglement/agents/*.md`). Editing a built-in = dropping a same-`name`
+  < user (`~/.claude/agents/*.md` then `${config_dir}/entanglement/agents/*.md`)
+  < project (`.claude/agents` then `.agents/agents` then
+  `<root>/.entanglement/agents/*.md`). Editing a built-in = dropping a same-`name`
   file in a higher layer — one mechanism for all three, same defaults+override
-  shape as the provider catalog (#118). A malformed file is a loud error. The
+  shape as the provider catalog (#118). A malformed *native* file is a loud
+  error; the cross-vendor dirs parse leniently — only `name`+`description` read,
+  a malformed file warned and skipped, and a foreign agent defaults to
+  `mode: all` so it is spawnable as a delegation target
+  ([ADR-0074](../adr/0074-cross-vendor-skill-and-agent-discovery.md)). The
   frontmatter also declares `tools`/`disallowed_tools` (the tool mask, **enforced**
   ✅ #116, below) and `can_spawn`/`spawnable_agents` (fine-grained spawn control,
   **enforced** ✅ #119, below). The spawn boundary is now both spawner- and
@@ -265,11 +279,18 @@ below realize one model:
   (`entanglement_runtime::skills::load_registry`) discovers them into a
   `SkillRegistry` — three layers, later wins on a `name` collision: embedded stock
   skills (single-file, `include_str!` `SKILL.md`, parsed through the *same* loader)
-  < user (`${config_dir}/entanglement/skills/**/SKILL.md`, override
-  `ENTANGLEMENT_SKILLS_DIR`) < project (`<root>/.entanglement/skills/**/SKILL.md`).
+  < user (`~/.claude/skills/**/SKILL.md` then
+  `${config_dir}/entanglement/skills/**/SKILL.md`, override
+  `ENTANGLEMENT_SKILLS_DIR` — replaces the whole user layer) < project
+  (`.claude/skills` then `.agents/skills` then
+  `<root>/.entanglement/skills/**/SKILL.md`).
   Discovery is a recursive walk for `SKILL.md` markers; symlinked duplicates and
   directory cycles are deduped by canonical path; a malformed file is a loud
-  error. Frontmatter: `name` + `description` (required), `user_only` (only explicit
+  error in the native dirs, warned-and-skipped in the cross-vendor ones (which
+  read only `name`+`description`, mapping Claude's `disable-model-invocation` to
+  `user_only` and dropping its `allowed-tools`,
+  [ADR-0074](../adr/0074-cross-vendor-skill-and-agent-discovery.md)).
+  Frontmatter: `name` + `description` (required), `user_only` (only explicit
   user invocation — withheld from the model's disclosure list), and `allowed_tools`
   (a *skill-scoped* tool mask, enforcement deferred — it needs skill provenance,
   distinct from the #116 agent tool mask). Each `SkillMeta` resolves its

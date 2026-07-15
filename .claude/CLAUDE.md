@@ -202,7 +202,14 @@ re-document them here):
   Agents (`ENTANGLEMENT_AGENTS_DIR`), skills (`ENTANGLEMENT_SKILLS_DIR`), the
   provider catalog (`ENTANGLEMENT_PROVIDERS_FILE`), and the **user config file**
   (#172, `${config_dir}/entanglement/config.yml` < `.entanglement/config.yml`) all
-  share this loader. Provider API **keys** live in a sibling managed env file (#220,
+  share this loader. Agents/skills also discover **cross-vendor dirs**
+  ([ADR-0074](../docs/adr/0074-cross-vendor-skill-and-agent-discovery.md)):
+  user `~/.claude/<kind>` and project `.claude/<kind>` < `.agents/<kind>` scan
+  *before* the native dir of the same layer (native wins on `name`), parsed
+  leniently (`name`+`description` only; malformed foreign files warn-and-skip,
+  never abort; foreign agents default `mode: all`; skill
+  `disable-model-invocation` → `user_only`). The `ENTANGLEMENT_*_DIR` override
+  replaces the whole user layer — it is the cross-vendor opt-out. Provider API **keys** live in a sibling managed env file (#220,
   `${config_dir}/entanglement/.env`, override `ENTANGLEMENT_ENV_FILE`): scaffolded
   commented on first run, loaded at startup into the process env for vars the real
   env left unset (env > file), kept out of any repo. A **shared writer**

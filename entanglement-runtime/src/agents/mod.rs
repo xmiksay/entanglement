@@ -19,12 +19,19 @@
 //!    [`explore`]), parsed through the *same* loader. Editing a built-in is just
 //!    dropping a same-`name` file in a higher layer; there is no special
 //!    "edit built-ins" code path.
-//! 2. **user** — `${config_dir}/entanglement/agents/*.md`.
-//! 3. **project** — `<root>/.entanglement/agents/*.md`.
+//! 2. **user** — `~/.claude/agents/*.md` (cross-vendor, lenient), then
+//!    `${config_dir}/entanglement/agents/*.md` (native, strict).
+//! 3. **project** — `.claude/agents` then `.agents/agents` (both lenient), then
+//!    `<root>/.entanglement/agents/*.md` (native, strict — highest).
 //!
 //! Same defaults+override shape as the provider catalog (#118): a malformed
-//! user/project file is a loud error, never a silent fallback; the embedded
-//! built-ins are guarded by a unit test so their parse is provably infallible.
+//! *native* user/project file is a loud error, never a silent fallback; the
+//! embedded built-ins are guarded by a unit test so their parse is provably
+//! infallible. Foreign (cross-vendor) dirs are parsed leniently per ADR-0074:
+//! only `name` + `description` are read (unknown keys like Claude Code's
+//! `tools: Read, Grep` string, `model`, `color` are ignored) and a malformed
+//! file is warned and skipped — it must not abort the load. A foreign agent
+//! defaults to `mode: all` so it is spawnable as a delegation target.
 //!
 //! # Tool mask (#116) and deferred frontmatter
 //!
@@ -46,6 +53,7 @@ use anyhow::{bail, Context, Result};
 use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile, ProfileRegistry};
 use serde::Deserialize;
 
+use crate::layers::Strictness;
 use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, assemble_parts, PromptContext, PromptPart};
 
@@ -110,6 +118,76 @@ fn default_mode() -> AgentMode {
     AgentMode::Primary
 }
 
+/// Lenient frontmatter for cross-vendor agents (ADR-0074): only the identity
+/// pair is read, every other key is ignored — Claude Code agent files carry
+/// keys entanglement's strict schema rejects (`tools` as a comma-separated
+/// *string*, `model: sonnet`, `color`).
+#[derive(Debug, Deserialize)]
+struct ForeignAgentFrontmatter {
+    name: String,
+    description: String,
+}
+
+impl ForeignAgentFrontmatter {
+    /// Map onto the native definition: `mode: all` (a Claude agent is a
+    /// delegation target, so it must be spawnable; `all` keeps it selectable as
+    /// a primary too — shadow with a native definition to restrict), allow-all
+    /// permission, no tool mask, no brief/preload.
+    fn into_definition(self) -> AgentDefinition {
+        AgentDefinition {
+            name: self.name,
+            description: self.description,
+            mode: AgentMode::All,
+            model: None,
+            permission: None,
+            include_brief: false,
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+            skills: None,
+        }
+    }
+}
+
+/// Split + parse one discovered definition's frontmatter honoring its layer's
+/// strictness (ADR-0074): strict → the current loud behavior (malformed
+/// aborts); lenient → `Ok(None)` after a `warn!`, so a foreign file
+/// entanglement doesn't own is skipped instead of bricking startup. Returns the
+/// definition plus the markdown body.
+fn parse_raw(raw: &RawAgent) -> Result<Option<(AgentDefinition, String)>> {
+    match raw.strictness {
+        Strictness::Strict => {
+            let (frontmatter, body) = crate::frontmatter::split(&raw.content)
+                .with_context(|| format!("parsing agent `{}`", raw.source))?;
+            let def: AgentDefinition = serde_yaml::from_str(&frontmatter)
+                .with_context(|| format!("invalid frontmatter in agent `{}`", raw.source))?;
+            Ok(Some((def, body)))
+        }
+        Strictness::Lenient => {
+            let parsed = crate::frontmatter::split(&raw.content).and_then(|(frontmatter, body)| {
+                let fm: ForeignAgentFrontmatter =
+                    serde_yaml::from_str(&frontmatter).context("invalid agent frontmatter")?;
+                if fm.name.trim().is_empty() {
+                    bail!("agent frontmatter `name` must not be empty");
+                }
+                Ok((fm.into_definition(), body))
+            });
+            match parsed {
+                Ok(pair) => Ok(Some(pair)),
+                Err(e) => {
+                    tracing::warn!(
+                        source = %raw.source,
+                        error = %format!("{e:#}"),
+                        "skipping malformed foreign agent definition",
+                    );
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
 /// Load the agent registry for `root`: embedded built-ins, then the user dir,
 /// then the project dir — later layers replace earlier ones on a `name`
 /// collision (project > user > built-in). A malformed file in any layer aborts.
@@ -124,21 +202,26 @@ pub fn load_registry(
     skills: &SkillRegistry,
 ) -> Result<ProfileRegistry> {
     let mut reg = ProfileRegistry::default();
-    // Track the winning layer per name so a later-wins collision is no longer
-    // silent (#185): emit a `replaces=<prior layer>` debug at the overwrite,
-    // matching the provenance `inspect agents` surfaces.
-    let mut winning: std::collections::HashMap<String, AgentLayer> =
+    // Track the winning (layer, source) per name so a later-wins collision is no
+    // longer silent (#185): emit a `replaces=<prior source>` debug at the
+    // overwrite, matching the provenance `inspect agents` surfaces.
+    let mut winning: std::collections::HashMap<String, (AgentLayer, String)> =
         std::collections::HashMap::new();
     for raw in discover(root)? {
         // Later layers replace earlier ones on a `name` collision because
         // `discover` yields them in precedence order and `insert` overwrites.
-        let profile = parse_definition(&raw.content, ctx, skills)
+        let Some((def, body)) = parse_raw(&raw)? else {
+            continue;
+        };
+        let profile = build_profile(def, &body, ctx, skills)
             .with_context(|| format!("parsing agent `{}`", raw.source))?;
-        if let Some(prior) = winning.insert(profile.name.clone(), raw.layer) {
+        if let Some((prior_layer, prior_source)) =
+            winning.insert(profile.name.clone(), (raw.layer, raw.source.clone()))
+        {
             tracing::debug!(
                 agent = %profile.name,
                 layer = raw.layer.label(),
-                replaces = prior.label(),
+                replaces = %format!("{} ({})", prior_layer.label(), prior_source),
                 source = %raw.source,
                 "agent definition overrides a lower layer",
             );
@@ -189,8 +272,8 @@ pub struct AgentResolution {
 
 /// Resolve every agent for `root` with full provenance (#185), applying the same
 /// layer precedence as [`load_registry`] but keeping *which* layer won and what
-/// it shadowed. Sorted by name for a stable table. A malformed file in any layer
-/// is a loud error, exactly as at load.
+/// it shadowed. Sorted by name for a stable table. Malformed files behave
+/// exactly as at load (native aborts, foreign warns and skips).
 pub fn resolve_registry(
     root: &Path,
     ctx: &PromptContext,
@@ -203,7 +286,10 @@ pub fn resolve_registry(
     let mut by_name: std::collections::HashMap<String, Vec<(AgentLayer, String, AgentProfile)>> =
         std::collections::HashMap::new();
     for raw in discover(root)? {
-        let profile = parse_definition(&raw.content, ctx, skills)
+        let Some((def, body)) = parse_raw(&raw)? else {
+            continue;
+        };
+        let profile = build_profile(def, &body, ctx, skills)
             .with_context(|| format!("parsing agent `{}`", raw.source))?;
         let name = profile.name.clone();
         let entry = by_name.entry(name.clone()).or_default();
@@ -250,8 +336,9 @@ pub struct AgentPromptReport {
 
 /// Resolve the winning definition for `agent` (same precedence as
 /// [`load_registry`]) and report its assembled prompt plus per-part breakdown,
-/// without spawning the engine (#184). `Ok(None)` if no such agent exists; a
-/// malformed definition in any layer is a loud error, exactly as at load.
+/// without spawning the engine (#184). `Ok(None)` if no such agent exists;
+/// malformed definitions behave exactly as at load (native aborts, foreign
+/// warns and skips).
 pub fn prompt_report(
     root: &Path,
     agent: &str,
@@ -262,10 +349,9 @@ pub fn prompt_report(
     // — the same "later layer wins" rule `load_registry` gets from `insert`.
     let mut winner: Option<(String, AgentDefinition, String)> = None;
     for raw in discover(root)? {
-        let (frontmatter, body) = crate::frontmatter::split(&raw.content)
-            .with_context(|| format!("parsing agent `{}`", raw.source))?;
-        let def: AgentDefinition = serde_yaml::from_str(&frontmatter)
-            .with_context(|| format!("invalid frontmatter in agent `{}`", raw.source))?;
+        let Some((def, body)) = parse_raw(&raw)? else {
+            continue;
+        };
         if def.name == agent {
             winner = Some((raw.source, def, body));
         }
@@ -304,6 +390,7 @@ pub use crate::layers::Layer as AgentLayer;
 /// path), and the raw file content.
 struct RawAgent {
     layer: AgentLayer,
+    strictness: Strictness,
     source: String,
     content: String,
 }
@@ -318,6 +405,7 @@ fn discover(root: &Path) -> Result<Vec<RawAgent>> {
         .iter()
         .map(|(file, contents)| RawAgent {
             layer: AgentLayer::BuiltIn,
+            strictness: Strictness::Strict,
             source: format!("built-in ({file})"),
             content: (*contents).to_string(),
         })
@@ -328,7 +416,12 @@ fn discover(root: &Path) -> Result<Vec<RawAgent>> {
 /// Append every `*.md` file in `dir` (if it exists) to `raws`, tagged with
 /// `layer` and sorted for deterministic collision resolution within the
 /// directory.
-fn read_dir_raws(layer: AgentLayer, dir: &Path, raws: &mut Vec<RawAgent>) -> Result<()> {
+fn read_dir_raws(
+    layer: AgentLayer,
+    dir: &Path,
+    strictness: Strictness,
+    raws: &mut Vec<RawAgent>,
+) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -344,6 +437,7 @@ fn read_dir_raws(layer: AgentLayer, dir: &Path, raws: &mut Vec<RawAgent>) -> Res
             .with_context(|| format!("reading agent definition {}", path.display()))?;
         raws.push(RawAgent {
             layer,
+            strictness,
             source: path.display().to_string(),
             content,
         });
@@ -573,6 +667,53 @@ mod tests {
     fn missing_frontmatter_is_an_error() {
         let err = parse("no frontmatter here").unwrap_err();
         assert!(err.to_string().contains("frontmatter"), "got: {err}");
+    }
+
+    /// Wrap `content` as a lenient (foreign-dir) raw definition.
+    fn foreign_raw(content: &str) -> RawAgent {
+        RawAgent {
+            layer: AgentLayer::User,
+            strictness: Strictness::Lenient,
+            source: "~/.claude/agents/test.md".into(),
+            content: content.into(),
+        }
+    }
+
+    #[test]
+    fn foreign_frontmatter_ignores_claude_specific_keys() {
+        // Claude Code style: `tools` is a comma-separated *string* the strict
+        // schema rejects, plus `model`/`color` keys entanglement doesn't know.
+        let raw = foreign_raw(
+            "---\nname: helper\ndescription: d\ntools: Read, Grep\nmodel: sonnet\ncolor: blue\n---\nbody",
+        );
+        let (def, body) = parse_raw(&raw).unwrap().expect("foreign agent parses");
+        assert_eq!(def.name, "helper");
+        assert_eq!(def.mode, AgentMode::All, "delegation target ⇒ mode all");
+        assert_eq!(def.tools, None, "Claude tool names are dropped, no mask");
+        assert!(def.permission.is_none(), "allow-all default");
+        assert_eq!(body, "body");
+    }
+
+    #[test]
+    fn malformed_foreign_definition_is_skipped_not_fatal() {
+        assert!(parse_raw(&foreign_raw("no frontmatter")).unwrap().is_none());
+        assert!(parse_raw(&foreign_raw("---\nname: x\n---\nno description"))
+            .unwrap()
+            .is_none());
+        assert!(
+            parse_raw(&foreign_raw("---\nname: '  '\ndescription: d\n---\nb"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn malformed_strict_definition_still_aborts() {
+        let raw = RawAgent {
+            strictness: Strictness::Strict,
+            ..foreign_raw("---\nname: x\n---\nno description")
+        };
+        assert!(parse_raw(&raw).is_err());
     }
 
     #[test]
