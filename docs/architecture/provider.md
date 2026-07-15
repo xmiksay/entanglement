@@ -61,6 +61,7 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 | --- | --- | --- | --- |
 | `OpenAiLlm` (`openai.rs`) | `/chat/completions` SSE | **z.ai** (GLM, entanglement's primary), **OpenAI**, **Ollama** `/v1` | `Bearer` or none (Ollama) |
 | `AnthropicLlm` (`anthropic.rs`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
+| `GeminiLlm` (`gemini.rs`) | `:streamGenerateContent?alt=sse` | Google Gemini | `x-goog-api-key` |
 
 - `OpenAiLlm` is one generic client `{ base_url, api_key: Option, default_model }`
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
@@ -70,8 +71,29 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
   fragments). `anthropic_factory(key, model, rpm, web_search)`.
+- `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
+  [ADR-0078](../adr/0078-gemini-native-wire-and-opaque-provider-meta.md)): the
+  compat endpoint drops `thoughtSignature`, the opaque per-call token a 2.5
+  thinking model must echo back verbatim or the API 4xxs on replayed history. It
+  streams `candidates[].content.parts[]` (text / `thought:true` reasoning /
+  `functionCall`), maps history to `contents` (assistant → `role: model`, tool
+  result → a `user` `functionResponse` keyed by call **name** — Gemini matches by
+  name, so the `ToolCall.id` is the name), sanitizes the tool `parameters` schema
+  (Gemini rejects `$schema`/`additionalProperties`/union-`type`/dangling
+  `required`), and stashes/restores the signature via `ToolCall.provider_meta`
+  (below). `gemini_factory(base, key, model, rpm, http)` — no web-search knob.
+  Request-body assembly lives in the `gemini::request` submodule.
+- **Opaque `provider_meta`** (#309) — `ToolCall.provider_meta: Option<Value>` is a
+  provider-private slot that must round-trip **verbatim** through history persistence
+  + replay; core never inspects it. Gemini stashes `thoughtSignature` there; the
+  slot is generic (any future wire's reasoning/thinking state fits). Persisted with
+  the ADR-0064 back-compat shim (`#[serde(default, skip_serializing_if)]`), so
+  pre-#309 logs with no `provider_meta` still deserialize (→ `None`) and replay
+  unchanged. Carrying `serde_json::Value` (not `Eq`) means `ToolCall`/`LlmEvent`/
+  `LlmResponse` are `PartialEq` but no longer `Eq`.
 - `ToolSpec.schema` surfaces as `input_schema` (Anthropic) / `parameters`
-  (OpenAI-compat); `Message.tool_call_id` → `tool_use_id` / `tool_call_id`.
+  (OpenAI-compat, Gemini); `Message.tool_call_id` → `tool_use_id` / `tool_call_id`
+  / Gemini `functionResponse.name`.
 - A `Message`'s `content: Vec<ContentPart>` renders per wire (#197,
   [ADR-0064](../adr/0064-message-content-blocks.md)): text-only user content stays
   a plain string (OpenAI) / string content (Anthropic); an image part switches to

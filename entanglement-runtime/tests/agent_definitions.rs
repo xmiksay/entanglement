@@ -263,6 +263,7 @@ fn call(id: &str, name: &str, input: String) -> LlmStream {
             id: id.into(),
             name: name.into(),
             input,
+            provider_meta: None,
         }],
     })
 }

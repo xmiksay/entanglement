@@ -67,6 +67,7 @@ fn spawn_with_edit_call() -> Holly {
                 id: "t1".into(),
                 name: "edit".into(),
                 input: "{\"path\":\"x\"}".into(),
+                provider_meta: None,
             }],
         },
         LlmResponse {

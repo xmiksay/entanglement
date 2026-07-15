@@ -134,6 +134,7 @@ async fn load_skill_then_read_a_substituted_ref() {
             id: "l1".into(),
             name: "load_skill".into(),
             input: r#"{"skill_name":"demo"}"#.into(),
+            provider_meta: None,
         }],
     };
     // Turn 2 reads the substituted absolute path directly — no base-guessing.
@@ -143,6 +144,7 @@ async fn load_skill_then_read_a_substituted_ref() {
             id: "r1".into(),
             name: "read".into(),
             input: serde_json::json!({ "path": abs_ref.to_string_lossy() }).to_string(),
+            provider_meta: None,
         }],
     };
     let finish = LlmResponse {
@@ -228,6 +230,7 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
             id: "l1".into(),
             name: "load_skill".into(),
             input: r#"{"skill_name":"demo"}"#.into(),
+            provider_meta: None,
         }],
     };
     let finish = LlmResponse {

@@ -391,6 +391,7 @@ async fn exec(tools: &ToolRegistry, call: &BindingCall) -> String {
             id: format!("rhai:{}", call.tool),
             name: call.tool.to_string(),
             input: call.input.clone(),
+            provider_meta: None,
         })
         .await;
     entanglement_core::content_text(&content)

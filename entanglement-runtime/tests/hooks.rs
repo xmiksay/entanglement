@@ -103,6 +103,7 @@ fn read_then_finish() -> Arc<Vec<LlmResponse>> {
                 id: "r1".into(),
                 name: "read".into(),
                 input: r#"{"path":"hello.txt"}"#.into(),
+                provider_meta: None,
             }],
         },
         LlmResponse {

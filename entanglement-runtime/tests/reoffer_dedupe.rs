@@ -75,6 +75,7 @@ async fn reoffered_tool_exec_runs_only_once() {
                 id: "t1".into(),
                 name: "bash".into(),
                 input: "echo hi".into(),
+                provider_meta: None,
             }],
         },
         LlmResponse {
@@ -151,6 +152,7 @@ async fn resolved_id_can_be_reused_in_a_later_round() {
             id: "t1".into(),
             name: "bash".into(),
             input: "echo hi".into(),
+            provider_meta: None,
         }],
     };
     // Round 1 calls bash(t1); its result comes back; round 2 reuses id t1; then

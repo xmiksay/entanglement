@@ -42,6 +42,7 @@ fn call(id: &str, name: &str, input: String) -> LlmStream {
             id: id.into(),
             name: name.into(),
             input,
+            provider_meta: None,
         }],
     })
 }
@@ -244,11 +245,13 @@ impl Llm for FanOutLlm {
                         id: "s1".into(),
                         name: "agent_spawn".into(),
                         input: r#"{"agent":"explore","prompt":"task-a"}"#.into(),
+                        provider_meta: None,
                     },
                     ToolCall {
                         id: "s2".into(),
                         name: "agent_spawn".into(),
                         input: r#"{"agent":"explore","prompt":"task-b"}"#.into(),
+                        provider_meta: None,
                     },
                 ],
             }));

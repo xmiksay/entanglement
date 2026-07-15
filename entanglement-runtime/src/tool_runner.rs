@@ -730,6 +730,7 @@ async fn run_and_reply(
             id: request_id.clone(),
             name: tool.clone(),
             input: input.clone(),
+            provider_meta: None,
         }),
     )
     .await;

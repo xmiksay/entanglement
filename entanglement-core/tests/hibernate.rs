@@ -187,6 +187,7 @@ async fn hibernate_mid_approval_then_resume_reoffers_pending_call() {
                 id: "call_1".into(),
                 name: "read".into(),
                 input: "{}".into(),
+                provider_meta: None,
             }],
         },
         // After resolution the next round answers plainly and ends the turn.

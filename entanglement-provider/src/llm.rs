@@ -17,11 +17,35 @@ use futures::stream::{self, BoxStream};
 use futures::StreamExt;
 
 /// A tool the model asked to run. `input` is the raw JSON argument string.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// `provider_meta` is an opaque, provider-private slot (e.g. Gemini's
+/// `thoughtSignature` on a thinking model's function call) that must round-trip
+/// **verbatim** through history persistence + replay: the provider stashes it on
+/// the way out and restores it when rebuilding the request from history, and core
+/// never inspects it. It carries `serde_json::Value` (which is not `Eq`), so
+/// `ToolCall` is `PartialEq` but not `Eq`. Persisted with the ADR-0064 back-compat
+/// shim (`#[serde(default, skip_serializing_if = …)]`) so pre-#309 logs — which
+/// have no `provider_meta` — still deserialize and replay unchanged.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub input: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_meta: Option<serde_json::Value>,
+}
+
+impl ToolCall {
+    /// A tool call with no provider-private metadata — the common case for every
+    /// wire that has nothing to round-trip (OpenAI-compat, most Anthropic turns).
+    pub fn new(id: impl Into<String>, name: impl Into<String>, input: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            input: input.into(),
+            provider_meta: None,
+        }
+    }
 }
 
 /// One tool the engine advertises to the model (name + short description so the
@@ -101,6 +125,20 @@ impl StopReason {
             _ => StopReason::Other,
         }
     }
+
+    /// Map a Gemini `finishReason` string onto the normalized reason. Gemini has
+    /// no distinct tool-use reason — it reports `STOP` even when the turn is
+    /// function calls — so the caller upgrades `EndTurn` to [`ToolUse`] when it
+    /// actually emitted a tool call this turn.
+    ///
+    /// [`ToolUse`]: StopReason::ToolUse
+    pub fn from_gemini(reason: &str) -> Self {
+        match reason {
+            "STOP" => StopReason::EndTurn,
+            "MAX_TOKENS" => StopReason::MaxTokens,
+            _ => StopReason::Other,
+        }
+    }
 }
 
 /// Normalized token usage for one model round-trip (#192). Every field is
@@ -119,7 +157,7 @@ pub struct Usage {
 }
 
 /// One event in a streamed model response.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LlmEvent {
     /// Incremental assistant text (a chunk, not the whole reply).
     Text(String),
@@ -151,7 +189,7 @@ pub enum LlmEvent {
 /// A fully-formed model reply — text plus any tool calls. Used by scripted test
 /// backends ([`DummyLlm`] ignores it); NOT part of the [`Llm`] trait, which is
 /// streaming-only.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LlmResponse {
     pub text: String,
     pub tool_calls: Vec<ToolCall>,
@@ -397,6 +435,35 @@ mod tests {
             tools,
             generation: None,
         }
+    }
+
+    #[test]
+    fn legacy_tool_call_without_provider_meta_deserializes() {
+        // A tool call persisted before #309 has no `provider_meta` field; the
+        // `#[serde(default)]` shim must still deserialize it (→ None) so old logs
+        // replay unchanged.
+        let legacy = r#"{"id":"c1","name":"read","input":"{}"}"#;
+        let tc: ToolCall = serde_json::from_str(legacy).unwrap();
+        assert_eq!(tc.id, "c1");
+        assert_eq!(tc.provider_meta, None);
+    }
+
+    #[test]
+    fn provider_meta_roundtrips_and_is_omitted_when_none() {
+        // None → the field is skipped on the wire (byte-identical to a pre-#309 log).
+        let plain = ToolCall::new("c1", "read", "{}");
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            r#"{"id":"c1","name":"read","input":"{}"}"#
+        );
+        // Some(..) → round-trips verbatim.
+        let with_meta = ToolCall {
+            provider_meta: Some(serde_json::json!({ "sig": "abc" })),
+            ..ToolCall::new("c2", "search", "{}")
+        };
+        let json = serde_json::to_string(&with_meta).unwrap();
+        let back: ToolCall = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, with_meta);
     }
 
     #[test]

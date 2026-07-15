@@ -138,6 +138,7 @@ mod tests {
                 id: "1".into(),
                 name: "echo".into(),
                 input: "hi".into(),
+                provider_meta: None,
             })
             .await;
         assert_eq!(out, vec![ContentPart::text("hi")]);
@@ -151,6 +152,7 @@ mod tests {
                 id: "1".into(),
                 name: "nope".into(),
                 input: "".into(),
+                provider_meta: None,
             })
             .await;
         assert_eq!(out.len(), 1);

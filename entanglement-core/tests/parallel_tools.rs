@@ -18,6 +18,7 @@ fn call(id: &str, name: &str) -> ToolCall {
         id: id.into(),
         name: name.into(),
         input: "{}".into(),
+        provider_meta: None,
     }
 }
 

@@ -68,6 +68,7 @@ fn spawn_with_bash_call_using(input: &str, profiles: ProfileRegistry) -> Holly {
                 id: "t1".into(),
                 name: "bash".into(),
                 input: input.into(),
+                provider_meta: None,
             }],
         },
         LlmResponse {
@@ -429,6 +430,7 @@ fn spawn_two_ask_bash_calls(command: &str) -> Holly {
             id: id.into(),
             name: "bash".into(),
             input: serde_json::json!({ "command": command }).to_string(),
+            provider_meta: None,
         }],
     };
     let ok = || LlmResponse {

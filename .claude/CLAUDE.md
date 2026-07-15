@@ -26,7 +26,7 @@ inverting [ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)/[ADR-0007
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
-| `entanglement-provider` | **leaf** crate, owns the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`, `ToolSpec`, `Message`/`MessageRole`, `Dummy`/`EchoLlm`); all LLM I/O — generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL + API-key hash, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider. Per-session state is deliberately absent: the `llm` a session owns is a plain `Box<dyn Llm>`, the former `LlmSession` newtype collapsed since resilience is per-endpoint not per-session ([ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md), #195). Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
+| `entanglement-provider` | **leaf** crate, owns the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`, `ToolSpec`, `Message`/`MessageRole`, `Dummy`/`EchoLlm`); all LLM I/O — generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client + native Gemini client (#309), via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL + API-key hash, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider. Per-session state is deliberately absent: the `llm` a session owns is a plain `Box<dyn Llm>`, the former `LlmSession` newtype collapsed since resilience is per-endpoint not per-session ([ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md), #195). Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, `Context` (built on provider's `Message`). Advertises tool *schemas* (`ToolSpec`) only — holds no executable tools. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest`/`hyper`/`tower` are transitive via provider ([ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). `make tree` enforces. |
 | `entanglement-runtime` | the head crate (binary `skutter`): the **`Tool` trait + `ToolRegistry`** (moved from core ✅ #206, [ADR-0059](../docs/adr/0059-tool-trait-and-registry-live-in-the-runtime.md)), **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe`, `tui`, the `sessions`/`inspect` subcommands, and the local WebSocket `serve` head (axum, ✅ #153, [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md)). Selects the concrete provider via `ENTANGLEMENT_PROVIDER` or key auto-detect and glues it to core. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli` (clap + log init) / `provider` (LLM providers, split from `cli` in #208) / `tui` / `serve` (axum WS, implies `cli`+`provider`); `default = ["tui", "serve"]` builds the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). `main.rs` imports the library modules from the lib crate — only `pipe`/`run`/`tui` stay bin-local (#208; `serve` lives in the lib as `runtime::serve`). | `--no-default-features` must stay CLI/TUI/transport-free (`reqwest` rides in via core; `axum` stays behind `serve`); `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). |
 
@@ -63,6 +63,7 @@ Set `ENTANGLEMENT_PROVIDER` explicitly, or let it auto-detect by key (z.ai first
 | `openai` | OpenAI-compat | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-4o`) | `OPENAI_API_BASE` |
 | `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_BASE` |
 | `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-4-5`) | — |
+| `gemini` | Gemini `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) | `GEMINI_API_BASE` |
 
 That table is now **catalog data, not hardcode** (✅ #118): the provider/model
 list is YAML — an embedded default (`entanglement-provider/src/defaults.yml`)
@@ -70,8 +71,8 @@ deep-merged with an optional user override at
 `${config_dir}/entanglement/providers.yml` (path override:
 `ENTANGLEMENT_PROVIDERS_FILE`). Merge is by `name` (providers) / `id` (models) at
 the `serde_yaml::Value` level, `deny_unknown_fields` on the final parse. A
-`wire: openai | anthropic` tag lets a user add **any** OpenAI-compatible endpoint
-(proxy, vLLM, new vendor) with zero code change; `ENTANGLEMENT_PROVIDER=<name>`
+`wire: openai | anthropic | gemini` tag lets a user add **any** OpenAI-compatible
+endpoint (proxy, vLLM, new vendor) with zero code change; `ENTANGLEMENT_PROVIDER=<name>`
 resolves against the catalog, so custom providers are selectable. `ModelEntry`
 adds capability flags (`supports_thinking`/`supports_temperature`/
 `default_temperature`/`max_output_tokens`/`thinking_budget_tokens`) + **pricing**
@@ -85,7 +86,12 @@ runtime resolves onto `EngineConfig::generation` and core threads onto every
 YAML > embedded defaults**. See `entanglement-provider::catalog`.
 
 z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
-format). No key → `EchoLlm`. Detail in
+format); **Gemini** has a native `GeminiLlm` (✅ #309,
+[ADR-0078](../docs/adr/0078-gemini-native-wire-and-opaque-provider-meta.md)) — not
+the OpenAI-compat surface, which drops the `thoughtSignature` a 2.5 thinking model
+must round-trip; that opaque per-call token rides the new generic
+`ToolCall.provider_meta: Option<Value>` slot (persisted with the ADR-0064 shim,
+never inspected by core). No key → `EchoLlm`. Detail in
 [`../docs/architecture.md`](../docs/architecture/provider.md). **Per-endpoint**
 connection pool, retry/backoff, rate-limit (429/`Retry-After`/RPM keyed by base
 URL + API-key hash, ✅ #217, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)),

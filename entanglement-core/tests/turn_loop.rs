@@ -147,6 +147,7 @@ async fn prompt_arriving_mid_turn_folds_into_the_live_turn() {
                 id: "t1".into(),
                 name: "unknown-tool".into(),
                 input: "{}".into(),
+                provider_meta: None,
             }],
         },
         // Second round (post-fold): plain text, so the turn ends here.
@@ -220,6 +221,7 @@ impl Llm for LoopingLlm {
                 id: "loop".into(),
                 name: "unknown-tool".into(),
                 input: "{}".into(),
+                provider_meta: None,
             }],
         }))
     }
@@ -298,6 +300,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
                 id: "t1".into(),
                 name: "unknown-tool".into(),
                 input: "{}".into(),
+                provider_meta: None,
             }],
         },
         // Second turn: just text, so we can assert it lands.

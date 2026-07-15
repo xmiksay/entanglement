@@ -261,6 +261,7 @@ fn wire_config(
     match entry.wire {
         Wire::Openai => openai_wire_config(entry, http_client, catalog, user_config),
         Wire::Anthropic => anthropic_wire_config(entry, http_client, catalog, user_config),
+        Wire::Gemini => gemini_wire_config(entry, http_client, catalog, user_config),
     }
 }
 
@@ -380,6 +381,58 @@ fn anthropic_wire_config(
     ))
 }
 
+/// Gemini-wire provider (#309). Always keyed; base is the client's own default
+/// (`GEMINI_BASE`) unless overridden. Gemini has no provider-side web-search knob,
+/// so — unlike the OpenAI/Anthropic arms — none is threaded here.
+fn gemini_wire_config(
+    entry: &ProviderEntry,
+    http_client: &HttpClient,
+    catalog: &Catalog,
+    user_config: &config::Config,
+) -> Option<(EngineConfig, ModelInfo)> {
+    let model = resolve_model(entry, user_config);
+    let llm_factory = gemini_factory_for(entry, &model, http_client).ok()?;
+    eprintln!("skutter: provider={} model={model}", entry.name);
+    Some((
+        EngineConfig {
+            llm_factory,
+            default_model: Some(model.clone()),
+            generation: generation_for(entry, &model, catalog),
+            pricing: pricing_map(catalog),
+            ..EngineConfig::default()
+        },
+        model_info_for(entry, &model, catalog),
+    ))
+}
+
+/// Build a Gemini-wire [`LlmFactory`] for an explicit `(entry, model)`. Shared by
+/// startup and the live-switch resolver (#218). Always keyed; `Err(message)` when
+/// the key env is absent/unset. Base from `{NAME}_API_BASE`/`{NAME}_BASE` env else
+/// `entry.base_url` else the client's [`GEMINI_BASE`] default.
+fn gemini_factory_for(
+    entry: &ProviderEntry,
+    model: &str,
+    http_client: &HttpClient,
+) -> Result<LlmFactory, String> {
+    let key_env = entry
+        .key_env
+        .as_deref()
+        .ok_or_else(|| format!("provider `{}` has no API key env", entry.name))?;
+    let key = env_nonempty(key_env).ok_or_else(|| format!("{key_env} is not set"))?;
+    let name = entry.name.to_uppercase();
+    let base = env_nonempty(&format!("{name}_API_BASE"))
+        .or_else(|| env_nonempty(&format!("{name}_BASE")))
+        .or_else(|| entry.base_url.clone())
+        .unwrap_or_else(|| entanglement_provider::GEMINI_BASE.to_string());
+    Ok(entanglement_provider::gemini_factory(
+        base,
+        key,
+        model.to_string(),
+        resolve_rpm(entry),
+        http_client.clone(),
+    ))
+}
+
 /// Build an OpenAI-compat [`LlmFactory`] for an explicit `(entry, model)`.
 /// Shared by startup ([`openai_wire_config`]) and the live-switch resolver
 /// ([`build_model_resolver`], #218). `Err(message)` when a keyed provider's API
@@ -457,6 +510,7 @@ fn build_model_resolver(
             Wire::Anthropic => {
                 anthropic_factory_for(entry, model, &http_client, web_search.clone())?
             }
+            Wire::Gemini => gemini_factory_for(entry, model, &http_client)?,
         };
         Ok(ResolvedModel {
             provider: entry.name.clone(),

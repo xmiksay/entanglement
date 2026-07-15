@@ -90,6 +90,7 @@ async fn tool_arg_fragments_surface_as_tool_call_deltas() {
                 id: "call_1".into(),
                 name: "edit".into(),
                 input: r#"{"path":"a.rs"}"#.into(),
+                provider_meta: None,
             }),
             LlmEvent::Finish {
                 stop_reason: Some(StopReason::ToolUse),

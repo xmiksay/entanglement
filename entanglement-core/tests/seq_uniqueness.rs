@@ -71,6 +71,7 @@ async fn emit_for_session_mints_unique_seq_above_parked_toolexec() {
                 id: "c1".into(),
                 name: "read".into(),
                 input: "{}".into(),
+                provider_meta: None,
             }],
         },
         LlmResponse {
