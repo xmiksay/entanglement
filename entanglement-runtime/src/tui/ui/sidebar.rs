@@ -80,6 +80,17 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    if let Some(tasks) = app.task_list() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Tasks").bold());
+        // Render the checklist markdown through the same renderer the inline
+        // transcript used, so the `- [x]`/`- [ ]` items keep their ☑/☐ glyphs.
+        let rendered = app.markdown_renderer().render(tasks);
+        for line in rendered.lines {
+            lines.push(line);
+        }
+    }
+
     let sidebar_text = Text::from(lines);
     let theme = app.theme();
     let sidebar_colors = theme.sidebar_colors();
@@ -139,5 +150,27 @@ mod tests {
             text.contains("Plan Outline"),
             "sidebar should show the plan outline section"
         );
+    }
+
+    #[test]
+    fn sidebar_renders_task_list_section() {
+        // A stored `TaskList` must surface as a "Tasks" section with per-item
+        // status glyphs (☑/☐) matching the inline transcript renderer (#325).
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        app.handle_out_event(OutEvent::TaskList {
+            session: sid.clone(),
+            seq: 1,
+            content: "- [x] wire the sidebar\n- [ ] ship it".to_string(),
+        });
+
+        let text = render_sidebar(&app, 44, 12);
+        assert!(
+            text.contains("Tasks"),
+            "sidebar should show the tasks section header"
+        );
+        assert!(text.contains("wire the sidebar"), "should list task items");
+        assert!(text.contains("☑"), "completed item keeps its checked glyph");
+        assert!(text.contains("☐"), "open item keeps its unchecked glyph");
     }
 }

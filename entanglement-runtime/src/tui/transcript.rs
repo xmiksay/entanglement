@@ -33,24 +33,9 @@ pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Rende
     let theme = app.theme();
     let user = theme.user_colors(app.profile_color_for(app.agent()));
 
-    if let Some(plan) = app.plan() {
-        lines.push(Line::from(""));
-        lines.push(Line::from("Plan:").bold());
-        let rendered_plan = markdown_renderer.render(plan);
-        for line in rendered_plan.lines {
-            lines.push(line);
-        }
-        lines.push(Line::from(""));
-    }
-
-    if let Some(tasks) = app.task_list() {
-        lines.push(Line::from("Tasks:").bold());
-        let rendered_tasks = markdown_renderer.render(tasks);
-        for line in rendered_tasks.lines {
-            lines.push(line);
-        }
-        lines.push(Line::from(""));
-    }
+    // Plan and task-list snapshots now live in the sidebar's "Plan Outline" /
+    // "Tasks" sections (Ctrl+X s, or /plan · /tasks), not inline at the top of
+    // the chat transcript (#325).
 
     append_transcript(
         &mut lines,
