@@ -94,6 +94,18 @@ provider-owned LLM backend (a plain `Box<dyn Llm>` — the empty `LlmSession`
 placeholder was collapsed, ✅ #195/[ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md))
 all live in this crate now (✅ #52–#55, #118, #195, #217,
 [ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).
+**Opt-in provider-side web search** (✅ #305,
+[ADR-0075](../docs/adr/0075-provider-side-web-search-mvp.md)): a
+`WebSearchConfig { enabled, max_uses, allowed_domains }` (`web_search.rs`,
+re-exported through core) bound onto a client at build time — never seen by core.
+A `#[serde(default)] web_search:` `config.yml` section is threaded as
+`Option<WebSearchConfig>` into both client factories **and** the live `/model`
+resolver; when present `build_body` pushes the provider's **server-executed**
+search tool (z.ai `web_search` entry, Anthropic `web_search_20250305` server tool)
+and results surface on the `Reasoning`→`ReasoningDelta` channel (**not** persisted
+to history; Anthropic `server_tool_use` → `Reasoning`, never a `ToolCall`).
+Enabling *is* consent — it runs **outside** the permission ladder
+([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
 
 ## The contract (read before touching the engine)
 

@@ -47,7 +47,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use entanglement_core::{Permission, PermissionProfile};
+use entanglement_core::{Permission, PermissionProfile, WebSearchConfig};
 use serde::Deserialize;
 use serde_yaml::Value;
 
@@ -105,6 +105,12 @@ struct RawConfig {
     /// registry. Absent ⇒ no servers.
     #[serde(default)]
     mcp: HashMap<String, McpServerConfig>,
+    /// Provider-side web search (#305, ADR-0075): opt-in, bound onto the LLM
+    /// client at build time — never seen by core. Absent ⇒ disabled. Enabling
+    /// it is consent (the server tool runs provider-side, *outside* the runtime
+    /// permission ladder).
+    #[serde(default)]
+    web_search: WebSearchConfig,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -124,6 +130,8 @@ pub struct Config {
     pub hooks: Hooks,
     /// External MCP tool servers (#198). Empty by default (a no-op).
     pub mcp: HashMap<String, McpServerConfig>,
+    /// Provider-side web search (#305). Disabled by default (a no-op).
+    pub web_search: WebSearchConfig,
 }
 
 /// Which of the three precedence layers a value came from. Ordered low → high so
@@ -251,6 +259,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         permissions,
         hooks: raw.hooks,
         mcp: raw.mcp,
+        web_search: raw.web_search,
     };
     Ok(Resolved {
         config,
@@ -272,6 +281,7 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "permissions",
         "hooks",
         "mcp",
+        "web_search",
     ];
     KEYS.iter()
         .filter_map(|key| {

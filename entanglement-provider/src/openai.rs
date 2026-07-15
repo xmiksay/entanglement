@@ -32,6 +32,7 @@
 use std::collections::BTreeMap;
 
 use crate::client::HttpClient;
+use crate::web_search::WebSearchConfig;
 use crate::{
     ContentPart, GenerationParams, ImageSource, Llm, LlmEvent, LlmRequest, LlmStream, Message,
     MessageRole, StopReason, ToolCall, ToolSpec, Usage,
@@ -62,17 +63,22 @@ pub struct OpenAiLlm {
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
     rpm: Option<u32>,
+    /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
+    /// the z.ai `web_search` tool. Bound at construction, invisible to core.
+    web_search: Option<WebSearchConfig>,
     http: HttpClient,
 }
 
 impl OpenAiLlm {
     /// `api_key = None` sends no `Authorization` header (Ollama). A `Some` key is
     /// sent as `Bearer`. `rpm = None` uses the client's default rate-limit budget.
+    /// `web_search = Some(..)` requests provider-side web search (#305).
     pub fn new(
         base_url: impl Into<String>,
         api_key: Option<String>,
         default_model: impl Into<String>,
         rpm: Option<u32>,
+        web_search: Option<WebSearchConfig>,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -80,21 +86,24 @@ impl OpenAiLlm {
             api_key,
             default_model: default_model.into(),
             rpm,
+            web_search,
             http,
         }
     }
 }
 
 /// Factory for one per-session [`OpenAiLlm`]. Pass the provider's base URL, an
-/// optional key, the default model id, and the endpoint's rpm budget.
+/// optional key, the default model id, the endpoint's rpm budget, and the opt-in
+/// [`WebSearchConfig`] (`None` disables provider-side web search, #305).
 pub fn openai_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
+    web_search: Option<WebSearchConfig>,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = OpenAiLlm::new(base_url, api_key, default_model, rpm, http);
+    let llm = OpenAiLlm::new(base_url, api_key, default_model, rpm, web_search, http);
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -102,7 +111,14 @@ pub fn openai_factory(
 impl Llm for OpenAiLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         let model = req.model.unwrap_or(&self.default_model).to_string();
-        let body = build_body(&model, req.system, req.messages, req.tools, req.generation);
+        let body = build_body(
+            &model,
+            req.system,
+            req.messages,
+            req.tools,
+            req.generation,
+            self.web_search.as_ref(),
+        );
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         tracing::debug!(
@@ -266,6 +282,7 @@ fn build_body(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: Option<GenerationParams>,
+    web_search: Option<&WebSearchConfig>,
 ) -> Value {
     let mut msgs = Vec::with_capacity(messages.len() + 1);
     if !system.is_empty() {
@@ -278,8 +295,15 @@ fn build_body(
         "stream": true,
         "stream_options": { "include_usage": true },
     });
-    if !tools.is_empty() {
-        body["tools"] = json!(convert_tools(tools));
+    // Function tools (core-advertised) plus the opt-in provider-side `web_search`
+    // entry (#305). The z.ai server tool rides the same `tools` array, so it is
+    // requestable even when no function tools are present.
+    let mut tool_entries = convert_tools(tools);
+    if let Some(ws) = web_search {
+        tool_entries.push(web_search_tool_entry(ws));
+    }
+    if !tool_entries.is_empty() {
+        body["tools"] = Value::Array(tool_entries);
     }
     // Generation knobs the head resolved for this model (#191). The OpenAI-compat
     // wire carries temperature + `max_tokens`; it has no standard thinking-budget
@@ -402,6 +426,25 @@ fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
         .collect()
 }
 
+/// The z.ai provider-side web-search tools entry (#305):
+/// `{"type":"web_search","web_search":{...}}`. `search_result: true` asks z.ai to
+/// return the source list (so `handle_chunk` can surface citations); `count` and
+/// `search_domain_filter` map the optional config knobs when set.
+fn web_search_tool_entry(ws: &WebSearchConfig) -> Value {
+    let mut inner = json!({
+        "enable": true,
+        "search_result": true,
+    });
+    if let Some(max) = ws.max_uses {
+        inner["count"] = json!(max);
+    }
+    if !ws.allowed_domains.is_empty() {
+        // z.ai's domain filter is a single string; join the configured domains.
+        inner["search_domain_filter"] = json!(ws.allowed_domains.join(","));
+    }
+    json!({ "type": "web_search", "web_search": inner })
+}
+
 // ── SSE chunk handling ──────────────────────────────────────────────────────
 
 /// Map one parsed `data:` chunk to zero or more [`LlmEvent`]s, updating tool
@@ -431,6 +474,15 @@ fn handle_chunk(
         if let Some(c) = u.get("completion_tokens").and_then(|v| v.as_u64()) {
             usage.output_tokens = Some(c);
         }
+    }
+
+    // Provider-side web search (#305): z.ai streams the source list as a
+    // `web_search` array. Its exact placement in the streaming wire is unverified,
+    // so scan defensively at the top level and inside the delta; each source
+    // surfaces as one Reasoning line (cited answer text already flows as `Text`).
+    emit_web_search(data.get("web_search"), &mut out);
+    if let Some(arr) = data.pointer("/choices/0/delta/web_search") {
+        emit_web_search(Some(arr), &mut out);
     }
 
     let Some(choice) = data.pointer("/choices/0") else {
@@ -501,6 +553,32 @@ fn handle_chunk(
     Ok(out)
 }
 
+/// Render a z.ai `web_search` source array (#305) as one `[web_search] {title} —
+/// {url}` [`LlmEvent::Reasoning`] line per entry. A non-array (or an entry with
+/// neither title nor link) is ignored — this is a best-effort, defensive surface.
+fn emit_web_search(value: Option<&Value>, out: &mut Vec<LlmEvent>) {
+    let Some(entries) = value.and_then(|v| v.as_array()) else {
+        return;
+    };
+    for entry in entries {
+        let title = entry
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let url = entry
+            .get("link")
+            .or_else(|| entry.get("url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if title.is_empty() && url.is_empty() {
+            continue;
+        }
+        out.push(LlmEvent::Reasoning(format!("[web_search] {title} — {url}")));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +603,7 @@ mod tests {
             "be helpful",
             &[msg(MessageRole::User, "hi")],
             &[],
+            None,
             None,
         );
         assert_eq!(body["stream"], true);
@@ -599,6 +678,7 @@ mod tests {
             &[msg(MessageRole::User, "hi")],
             &[spec],
             None,
+            None,
         );
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "greet");
@@ -618,6 +698,7 @@ mod tests {
                 // No thinking channel on the OpenAI-compat wire — dropped.
                 thinking_budget_tokens: Some(4096),
             }),
+            None,
         );
         assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
         assert_eq!(body["max_tokens"], 2048);
@@ -632,6 +713,7 @@ mod tests {
             &[msg(MessageRole::User, "hi")],
             &[],
             Some(GenerationParams::default()),
+            None,
         );
         assert!(body.get("temperature").is_none());
         assert!(body.get("max_tokens").is_none());
@@ -847,5 +929,96 @@ mod tests {
         // Simulate stream ending without explicit finish_reason - this would be
         // handled by the flush-at-end logic in the streaming loop
         assert!(!tools.is_empty(), "tools should still be pending");
+    }
+
+    // ── provider-side web search (#305) ─────────────────────────────────────
+
+    #[test]
+    fn body_omits_web_search_tool_without_config() {
+        let body = build_body(
+            "glm-5.2",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            None,
+            None,
+        );
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn body_pushes_web_search_tool_when_configured() {
+        let ws = WebSearchConfig {
+            enabled: true,
+            max_uses: Some(3),
+            allowed_domains: vec!["docs.rs".into(), "example.com".into()],
+        };
+        let body = build_body(
+            "glm-5.2",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            None,
+            Some(&ws),
+        );
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "web_search");
+        assert_eq!(tools[0]["web_search"]["enable"], true);
+        assert_eq!(tools[0]["web_search"]["search_result"], true);
+        assert_eq!(tools[0]["web_search"]["count"], 3);
+        assert_eq!(
+            tools[0]["web_search"]["search_domain_filter"],
+            "docs.rs,example.com"
+        );
+    }
+
+    #[test]
+    fn web_search_tool_rides_alongside_function_tools() {
+        let ws = WebSearchConfig {
+            enabled: true,
+            max_uses: None,
+            allowed_domains: vec![],
+        };
+        let body = build_body(
+            "glm-5.2",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[ToolSpec::new("greet", "say hi")],
+            None,
+            Some(&ws),
+        );
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[1]["type"], "web_search");
+        // No knobs set ⇒ no `count` / `search_domain_filter`.
+        assert!(tools[1]["web_search"].get("count").is_none());
+        assert!(tools[1]["web_search"].get("search_domain_filter").is_none());
+    }
+
+    #[test]
+    fn web_search_array_surfaces_as_reasoning() {
+        // A chunk carrying a `web_search` source array (defensive top-level
+        // placement) yields one Reasoning line per entry, no Text/ToolCall.
+        let data = json!({ "web_search": [
+            { "title": "Rust async", "link": "https://docs.rs/async" },
+            { "title": "Tokio", "url": "https://tokio.rs" },
+        ] });
+        let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
+        assert_eq!(
+            evs,
+            vec![
+                LlmEvent::Reasoning("[web_search] Rust async — https://docs.rs/async".into()),
+                LlmEvent::Reasoning("[web_search] Tokio — https://tokio.rs".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn chunk_without_web_search_array_emits_no_reasoning() {
+        let data = json!({ "choices": [{ "delta": { "content": "hi" } }] });
+        let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
+        assert_eq!(evs, vec![LlmEvent::Text("hi".into())]);
     }
 }

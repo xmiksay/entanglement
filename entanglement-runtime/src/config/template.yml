@@ -69,3 +69,16 @@
 #    args: ["-y", "@modelcontextprotocol/server-everything"]
 #    env:
 #      EXAMPLE_TOKEN: "…"
+
+# Web search — opt-in, provider-side (#305). When enabled, the provider runs a
+# web search MID-TURN, server-side (z.ai and Anthropic only), and cites the
+# results; there is no client tool round-trip. ENABLING THIS IS YOUR CONSENT: the
+# search runs provider-side, OUTSIDE the runtime permission ladder — no per-call
+# approval prompt gates it. Results surface as reasoning lines, not persisted into
+# conversation history (ADR-0075). Disabled by default.
+#   max_uses        — cap the searches per turn (default: the provider's own).
+#   allowed_domains — restrict searches to these domains (default: no restriction).
+#web_search:
+#  enabled: true
+#  max_uses: 5
+#  allowed_domains: [docs.rs, doc.rust-lang.org]

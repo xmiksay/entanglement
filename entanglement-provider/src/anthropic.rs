@@ -19,6 +19,7 @@
 //! inverted the original trait-in-core seam of ADR-0006 / ADR-0007).
 
 use crate::client::HttpClient;
+use crate::web_search::WebSearchConfig;
 use crate::{
     ContentPart, GenerationParams, ImageSource, Llm, LlmEvent, LlmRequest, LlmStream, Message,
     MessageRole, StopReason, ToolSpec, Usage,
@@ -46,6 +47,10 @@ pub struct AnthropicLlm {
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
     rpm: Option<u32>,
+    /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
+    /// the `web_search_20250305` server tool. Bound at construction, invisible to
+    /// core.
+    web_search: Option<WebSearchConfig>,
     http: HttpClient,
 }
 
@@ -54,6 +59,7 @@ impl AnthropicLlm {
         api_key: impl Into<String>,
         default_model: impl Into<String>,
         rpm: Option<u32>,
+        web_search: Option<WebSearchConfig>,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -61,20 +67,23 @@ impl AnthropicLlm {
             default_model: default_model.into(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
             rpm,
+            web_search,
             http,
         }
     }
 }
 
 /// Build an [`LlmFactory`] wired to Anthropic. Each session gets its own cloned
-/// [`AnthropicLlm`]. `rpm = None` uses the client's default rate-limit budget.
+/// [`AnthropicLlm`]. `rpm = None` uses the client's default rate-limit budget;
+/// `web_search = Some(..)` requests provider-side web search (#305).
 pub fn anthropic_factory(
     api_key: impl Into<String>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
+    web_search: Option<WebSearchConfig>,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = AnthropicLlm::new(api_key, default_model, rpm, http);
+    let llm = AnthropicLlm::new(api_key, default_model, rpm, web_search, http);
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -89,6 +98,7 @@ impl Llm for AnthropicLlm {
             req.tools,
             self.default_max_tokens,
             req.generation,
+            self.web_search.as_ref(),
         );
 
         tracing::debug!(
@@ -178,10 +188,15 @@ struct PendingTool {
     id: String,
     name: String,
     input_buf: String,
+    /// `true` for a `server_tool_use` block (provider-side web search, #305):
+    /// the provider runs it, so on stop it surfaces as `Reasoning`, **never** a
+    /// `ToolCall`, and its arg fragments are not streamed as `ToolCallDelta`.
+    is_server: bool,
 }
 
 // ── request body ────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn build_body(
     model: &str,
     system: &str,
@@ -189,6 +204,7 @@ fn build_body(
     tools: &[ToolSpec],
     default_max_tokens: u32,
     generation: Option<GenerationParams>,
+    web_search: Option<&WebSearchConfig>,
 ) -> Value {
     let g = generation.unwrap_or_default();
     let mut max_tokens = g.max_output_tokens.unwrap_or(default_max_tokens);
@@ -199,8 +215,15 @@ fn build_body(
         "messages": convert_messages(messages),
         "stream": true,
     });
-    if !tools.is_empty() {
-        body["tools"] = json!(convert_tools(tools));
+    // Function tools (core-advertised) plus the opt-in provider-side web-search
+    // server tool (#305). The server tool rides the same `tools` array, so it is
+    // requestable even with no function tools present.
+    let mut tool_entries = convert_tools(tools);
+    if let Some(ws) = web_search {
+        tool_entries.push(web_search_tool_entry(ws));
+    }
+    if !tool_entries.is_empty() {
+        body["tools"] = Value::Array(tool_entries);
     }
     // Extended thinking (#191): enable it with the resolved budget when the head
     // set one. Anthropic requires `budget_tokens < max_tokens`, so bump the cap if
@@ -312,6 +335,24 @@ fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
         .collect()
 }
 
+/// The Anthropic provider-side web-search server tool (#305):
+/// `{"type":"web_search_20250305","name":"web_search"}` plus the optional
+/// `max_uses` / `allowed_domains` knobs. (`_20260209` needs 4.6+ models — a
+/// follow-up behind a `ModelEntry` capability flag.)
+fn web_search_tool_entry(ws: &WebSearchConfig) -> Value {
+    let mut entry = json!({
+        "type": "web_search_20250305",
+        "name": "web_search",
+    });
+    if let Some(max) = ws.max_uses {
+        entry["max_uses"] = json!(max);
+    }
+    if !ws.allowed_domains.is_empty() {
+        entry["allowed_domains"] = json!(ws.allowed_domains);
+    }
+    entry
+}
+
 // ── SSE frame parsing ───────────────────────────────────────────────────────
 
 /// Split one SSE frame into its `event:` type and parsed `data:` JSON payload.
@@ -381,22 +422,37 @@ fn handle_frame(
             }
         }
         "content_block_start" => {
-            if data.pointer("/content_block/type").and_then(|v| v.as_str()) == Some("tool_use") {
-                let id = data
-                    .pointer("/content_block/id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let name = data
-                    .pointer("/content_block/name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                *current_tool = Some(PendingTool {
-                    id,
-                    name,
-                    input_buf: String::new(),
-                });
+            let block_type = data.pointer("/content_block/type").and_then(|v| v.as_str());
+            match block_type {
+                // A client tool-call block (assembled, then flushed as `ToolCall`)
+                // or a provider-side `server_tool_use` block (#305): the latter is
+                // executed by the provider, so on stop it surfaces as `Reasoning`,
+                // never a `ToolCall`.
+                Some(kind @ ("tool_use" | "server_tool_use")) => {
+                    let id = data
+                        .pointer("/content_block/id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = data
+                        .pointer("/content_block/name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    *current_tool = Some(PendingTool {
+                        id,
+                        name,
+                        input_buf: String::new(),
+                        is_server: kind == "server_tool_use",
+                    });
+                }
+                // The provider streams the executed search's sources (or an error)
+                // as a complete `web_search_tool_result` block (#305); render each
+                // entry as a `Reasoning` line.
+                Some("web_search_tool_result") => {
+                    emit_web_search_result(data.pointer("/content_block/content"), &mut out);
+                }
+                _ => {}
             }
         }
         "content_block_delta" => {
@@ -417,12 +473,16 @@ fn handle_frame(
                                 // Surface the raw arg fragment as it streams (#194)
                                 // so heads can render file-sized `edit`/`write`
                                 // inputs before `content_block_stop` finalizes the
-                                // assembled `ToolCall`.
-                                out.push(LlmEvent::ToolCallDelta {
-                                    id: tool.id.clone(),
-                                    name: tool.name.clone(),
-                                    delta: partial.to_string(),
-                                });
+                                // assembled `ToolCall`. A `server_tool_use` block is
+                                // provider-internal (#305) — accumulate its query but
+                                // don't stream it as a client tool delta.
+                                if !tool.is_server {
+                                    out.push(LlmEvent::ToolCallDelta {
+                                        id: tool.id.clone(),
+                                        name: tool.name.clone(),
+                                        delta: partial.to_string(),
+                                    });
+                                }
                             }
                         }
                     }
@@ -440,16 +500,27 @@ fn handle_frame(
         }
         "content_block_stop" => {
             if let Some(tool) = current_tool.take() {
-                let input = if tool.input_buf.is_empty() {
-                    "{}".to_string()
+                if tool.is_server {
+                    // Provider-side web search (#305): surface the query as a
+                    // Reasoning line; the provider runs the search itself, so this
+                    // must never become a `ToolCall`.
+                    let query = serde_json::from_str::<Value>(&tool.input_buf)
+                        .ok()
+                        .and_then(|v| v.get("query").and_then(|q| q.as_str()).map(str::to_string))
+                        .unwrap_or_default();
+                    out.push(LlmEvent::Reasoning(format!("[web_search] {query}")));
                 } else {
-                    tool.input_buf
-                };
-                out.push(LlmEvent::ToolCall(crate::ToolCall {
-                    id: tool.id,
-                    name: tool.name,
-                    input,
-                }));
+                    let input = if tool.input_buf.is_empty() {
+                        "{}".to_string()
+                    } else {
+                        tool.input_buf
+                    };
+                    out.push(LlmEvent::ToolCall(crate::ToolCall {
+                        id: tool.id,
+                        name: tool.name,
+                        input,
+                    }));
+                }
             }
         }
         "error" => {
@@ -463,6 +534,39 @@ fn handle_frame(
         _ => {}
     }
     Ok(out)
+}
+
+/// Render a `web_search_tool_result` block's `content` (#305) as `Reasoning`
+/// lines: an array of `web_search_result` entries → one `[web_search] {title} —
+/// {url}` line each; an error object → a single `[web_search] error: {code}` line.
+fn emit_web_search_result(content: Option<&Value>, out: &mut Vec<LlmEvent>) {
+    let Some(content) = content else {
+        return;
+    };
+    if let Some(entries) = content.as_array() {
+        for entry in entries {
+            let title = entry
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let url = entry
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if title.is_empty() && url.is_empty() {
+                continue;
+            }
+            out.push(LlmEvent::Reasoning(format!("[web_search] {title} — {url}")));
+        }
+    } else if content.get("type").and_then(|v| v.as_str()) == Some("web_search_tool_result_error") {
+        let code = content
+            .get("error_code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        out.push(LlmEvent::Reasoning(format!("[web_search] error: {code}")));
+    }
 }
 
 #[cfg(test)]
@@ -491,6 +595,7 @@ mod tests {
             &[],
             1024,
             None,
+            None,
         );
         assert!(body.get("tools").is_none());
         assert_eq!(body["stream"], true);
@@ -510,6 +615,7 @@ mod tests {
             &[spec],
             1024,
             None,
+            None,
         );
         assert_eq!(body["tools"][0]["name"], "greet");
         assert!(body["tools"][0]["input_schema"].is_object());
@@ -528,6 +634,7 @@ mod tests {
                 max_output_tokens: Some(8000),
                 thinking_budget_tokens: None,
             }),
+            None,
         );
         assert_eq!(body["max_tokens"], 8000);
         assert!((body["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
@@ -547,6 +654,7 @@ mod tests {
                 max_output_tokens: Some(20_000),
                 thinking_budget_tokens: Some(10_000),
             }),
+            None,
         );
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["thinking"]["budget_tokens"], 10_000);
@@ -570,6 +678,7 @@ mod tests {
                 max_output_tokens: Some(4000),
                 thinking_budget_tokens: Some(4000),
             }),
+            None,
         );
         let max = body["max_tokens"].as_u64().unwrap();
         let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
@@ -801,5 +910,180 @@ mod tests {
         let (event, data) = parse_frame(frame);
         assert_eq!(event, "content_block_delta");
         assert_eq!(data.unwrap()["delta"]["text"], "x");
+    }
+
+    // ── provider-side web search (#305) ─────────────────────────────────────
+
+    #[test]
+    fn body_omits_web_search_server_tool_without_config() {
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            None,
+            None,
+        );
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn body_pushes_web_search_server_tool_when_configured() {
+        let ws = WebSearchConfig {
+            enabled: true,
+            max_uses: Some(4),
+            allowed_domains: vec!["docs.rs".into()],
+        };
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            None,
+            Some(&ws),
+        );
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "web_search_20250305");
+        assert_eq!(tools[0]["name"], "web_search");
+        assert_eq!(tools[0]["max_uses"], 4);
+        assert_eq!(tools[0]["allowed_domains"][0], "docs.rs");
+    }
+
+    #[test]
+    fn web_search_server_tool_omits_unset_knobs() {
+        let ws = WebSearchConfig {
+            enabled: true,
+            max_uses: None,
+            allowed_domains: vec![],
+        };
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            None,
+            Some(&ws),
+        );
+        let tool = &body["tools"][0];
+        assert_eq!(tool["type"], "web_search_20250305");
+        assert!(tool.get("max_uses").is_none());
+        assert!(tool.get("allowed_domains").is_none());
+    }
+
+    #[test]
+    fn server_tool_use_sequence_yields_reasoning_not_tool_call() {
+        // server_tool_use start → input_json_delta (the query) → stop must surface
+        // the query as Reasoning, never a ToolCall, and stream no ToolCallDelta.
+        let start = json!({
+            "content_block": { "type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {} }
+        });
+        let d1 = json!({ "delta": { "type": "input_json_delta", "partial_json": "{\"query\":" } });
+        let d2 =
+            json!({ "delta": { "type": "input_json_delta", "partial_json": "\"rust async\"}" } });
+
+        let mut tool = None;
+        let e0 = handle_frame(
+            "content_block_start",
+            Some(start),
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        assert!(e0.is_empty());
+        let e1 = handle_frame(
+            "content_block_delta",
+            Some(d1),
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        let e2 = handle_frame(
+            "content_block_delta",
+            Some(d2),
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        // A server tool streams no client ToolCallDelta.
+        assert!(e1.is_empty() && e2.is_empty(), "no deltas for server tool");
+        let stop = handle_frame(
+            "content_block_stop",
+            None,
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(
+            stop,
+            vec![LlmEvent::Reasoning("[web_search] rust async".into())]
+        );
+        assert!(
+            !stop.iter().any(|e| matches!(e, LlmEvent::ToolCall(_))),
+            "server tool must never yield a ToolCall"
+        );
+    }
+
+    #[test]
+    fn web_search_tool_result_block_renders_sources() {
+        let block = json!({
+            "content_block": {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": [
+                    { "type": "web_search_result", "title": "Rust async", "url": "https://docs.rs/async" },
+                    { "type": "web_search_result", "title": "Tokio", "url": "https://tokio.rs" }
+                ]
+            }
+        });
+        let mut tool = None;
+        let evs = handle_frame(
+            "content_block_start",
+            Some(block),
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(
+            evs,
+            vec![
+                LlmEvent::Reasoning("[web_search] Rust async — https://docs.rs/async".into()),
+                LlmEvent::Reasoning("[web_search] Tokio — https://tokio.rs".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn web_search_tool_result_error_renders_error_line() {
+        let block = json!({
+            "content_block": {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": { "type": "web_search_tool_result_error", "error_code": "max_uses_exceeded" }
+            }
+        });
+        let mut tool = None;
+        let evs = handle_frame(
+            "content_block_start",
+            Some(block),
+            &mut tool,
+            &mut Usage::default(),
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(
+            evs,
+            vec![LlmEvent::Reasoning(
+                "[web_search] error: max_uses_exceeded".into()
+            )]
+        );
     }
 }

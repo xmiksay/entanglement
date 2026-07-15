@@ -21,6 +21,7 @@ pub use entanglement_provider::{
     content_text, stream_from_response, ContentPart, DummyLlm, EchoLlm, GenerationParams,
     ImageSource, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream, Message,
     MessageRole, ModelPricing, ModelResolver, ResolvedModel, StopReason, ToolCall, ToolSpec, Usage,
+    WebSearchConfig,
 };
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, OutEvent,

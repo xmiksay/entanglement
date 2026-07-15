@@ -66,10 +66,10 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
   exist, but the *default* base per provider now comes from the catalog (below);
-  `openai_factory(base, key, model, rpm)` builds an `LlmFactory`.
+  `openai_factory(base, key, model, rpm, web_search)` builds an `LlmFactory`.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
-  fragments). `anthropic_factory(key, model, rpm)`.
+  fragments). `anthropic_factory(key, model, rpm, web_search)`.
 - `ToolSpec.schema` surfaces as `input_schema` (Anthropic) / `parameters`
   (OpenAI-compat); `Message.tool_call_id` → `tool_use_id` / `tool_call_id`.
 - A `Message`'s `content: Vec<ContentPart>` renders per wire (#197,
@@ -77,6 +77,28 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   a plain string (OpenAI) / string content (Anthropic); an image part switches to
   the block array — OpenAI `image_url` with a `data:` URL, Anthropic an `image`
   block with a base64 `source` (incl. image `tool_result`s, the #221 path).
+
+**Provider-side web search** (#305,
+[ADR-0075](../adr/0075-provider-side-web-search-mvp.md)) — opt-in, **client-
+construction-time** config, **no core/protocol change**. `WebSearchConfig {
+enabled, max_uses, allowed_domains }` (`web_search.rs`, `deny_unknown_fields`) is
+bound onto a client by its factory as an `Option` (the runtime hands it `Some`
+only when a `web_search:` `config.yml` section is enabled; the live `/model`
+resolver captures it too, so a switch re-binds identically). When present,
+`build_body` pushes the provider's **server-executed** search tool onto the same
+`tools` array (so it rides even with no function tools): z.ai a
+`{"type":"web_search","web_search":{…}}` entry, Anthropic a
+`{"type":"web_search_20250305","name":"web_search"}` server tool (+ optional
+`max_uses`/`allowed_domains`). The provider runs the search *mid-turn*, no client
+round-trip, so results land on the **reasoning channel** (`LlmEvent::Reasoning`,
+**not** committed to history): the Anthropic parser tracks a `server_tool_use`
+block with `is_server` and emits its query as `Reasoning` on stop — **never** a
+`ToolCall` — and renders each `web_search_tool_result` entry (or its error) as a
+`[web_search] …` line; z.ai's cited answer already flows as `Text`, the
+`web_search` source array is parsed defensively (streaming placement unverified →
+worst case = cited-text-only). Enabling *is* consent — the search runs
+provider-side, **outside** the runtime permission ladder
+([ADR-0047](../adr/0047-local-trust-boundary.md)).
 
 **Resilience the provider layer owns — per endpoint** (#217,
 [ADR-0050](../adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)): one

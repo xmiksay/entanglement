@@ -103,6 +103,26 @@ fn render_config(resolved: &Resolved) -> String {
             let _ = writeln!(out, "  {name}{state}: {} {}", s.command, s.args.join(" "));
         }
     }
+
+    let _ = writeln!(out, "\nweb search (← {}):", from("web_search"));
+    let ws = &c.web_search;
+    if !ws.enabled {
+        let _ = writeln!(out, "  disabled");
+    } else {
+        let max = ws
+            .max_uses
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "provider default".to_string());
+        let domains = if ws.allowed_domains.is_empty() {
+            "any".to_string()
+        } else {
+            ws.allowed_domains.join(", ")
+        };
+        let _ = writeln!(
+            out,
+            "  enabled (max_uses: {max}, allowed_domains: {domains})"
+        );
+    }
     out
 }
 

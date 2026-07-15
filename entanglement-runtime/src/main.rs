@@ -28,7 +28,7 @@ use clap::{Parser, Subcommand};
 use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
-    ProviderEntry, ResolvedModel, Wire,
+    ProviderEntry, ResolvedModel, WebSearchConfig, Wire,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -79,7 +79,11 @@ async fn build_config(
     // Realtime model/provider switch (#218): give the engine a resolver so a
     // session can re-bind its LLM from the catalog with no restart. Captures the
     // catalog + the warm per-endpoint HTTP client (#217).
-    cfg.model_resolver = Some(build_model_resolver(catalog.clone(), http_client.clone()));
+    cfg.model_resolver = Some(build_model_resolver(
+        catalog.clone(),
+        http_client.clone(),
+        web_search_config(user_config),
+    ));
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
     cfg.profiles = profiles;
     // Thread the resolved model's context window into the engine (#178) so each
@@ -269,6 +273,17 @@ fn resolve_model(entry: &ProviderEntry, user_config: &config::Config) -> String 
         .unwrap_or_else(|| entry.default_model.clone())
 }
 
+/// The opt-in provider-side web search settings to bind onto the LLM client
+/// (#305), or `None` when the config leaves it disabled — the disabled case makes
+/// the client request no web-search tool, exactly as before. Cloned so both
+/// startup and the live `/model` switch resolver bind identically.
+fn web_search_config(user_config: &config::Config) -> Option<WebSearchConfig> {
+    user_config
+        .web_search
+        .enabled
+        .then(|| user_config.web_search.clone())
+}
+
 /// Per-minute request budget from `{NAME}_RPM` env, else the catalog entry's
 /// `rpm` (env > catalog; `None` → the client's built-in default). Mirrors the
 /// rest of the catalog's precedence for this per-endpoint bucket size (#241).
@@ -327,7 +342,8 @@ fn openai_wire_config(
     let model = resolve_model(entry, user_config);
     // Reuse the mid-session builder so startup and a live switch resolve the
     // wire/base/key identically (#218); a keyed provider missing its key → skip.
-    let llm_factory = openai_factory_for(entry, &model, http_client).ok()?;
+    let llm_factory =
+        openai_factory_for(entry, &model, http_client, web_search_config(user_config)).ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -349,7 +365,8 @@ fn anthropic_wire_config(
     user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
     let model = resolve_model(entry, user_config);
-    let llm_factory = anthropic_factory_for(entry, &model, http_client).ok()?;
+    let llm_factory =
+        anthropic_factory_for(entry, &model, http_client, web_search_config(user_config)).ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -371,6 +388,7 @@ fn openai_factory_for(
     entry: &ProviderEntry,
     model: &str,
     http_client: &HttpClient,
+    web_search: Option<WebSearchConfig>,
 ) -> Result<LlmFactory, String> {
     let key = match &entry.key_env {
         Some(k) => Some(
@@ -389,6 +407,7 @@ fn openai_factory_for(
         key,
         model.to_string(),
         resolve_rpm(entry),
+        web_search,
         http_client.clone(),
     ))
 }
@@ -400,6 +419,7 @@ fn anthropic_factory_for(
     entry: &ProviderEntry,
     model: &str,
     http_client: &HttpClient,
+    web_search: Option<WebSearchConfig>,
 ) -> Result<LlmFactory, String> {
     let key_env = entry
         .key_env
@@ -410,6 +430,7 @@ fn anthropic_factory_for(
         key,
         model.to_string(),
         resolve_rpm(entry),
+        web_search,
         http_client.clone(),
     ))
 }
@@ -420,15 +441,22 @@ fn anthropic_factory_for(
 /// an explicit `(provider, model)` — so a mid-session switch binds exactly like a
 /// fresh launch would, minus the model-default fallback (the model is chosen by
 /// the head). An unknown provider / missing key comes back as `Err` for the head
-/// to surface.
-fn build_model_resolver(catalog: Catalog, http_client: HttpClient) -> ModelResolver {
+/// to surface. The opt-in [`WebSearchConfig`] (#305) is captured too, so a live
+/// switch binds provider-side web search exactly as startup did.
+fn build_model_resolver(
+    catalog: Catalog,
+    http_client: HttpClient,
+    web_search: Option<WebSearchConfig>,
+) -> ModelResolver {
     Arc::new(move |provider: &str, model: &str| {
         let entry = catalog
             .provider(provider)
             .ok_or_else(|| format!("unknown provider `{provider}`"))?;
         let llm_factory = match entry.wire {
-            Wire::Openai => openai_factory_for(entry, model, &http_client)?,
-            Wire::Anthropic => anthropic_factory_for(entry, model, &http_client)?,
+            Wire::Openai => openai_factory_for(entry, model, &http_client, web_search.clone())?,
+            Wire::Anthropic => {
+                anthropic_factory_for(entry, model, &http_client, web_search.clone())?
+            }
         };
         Ok(ResolvedModel {
             provider: entry.name.clone(),
