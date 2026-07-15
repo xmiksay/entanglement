@@ -131,7 +131,7 @@ impl App {
             output_tokens: 0,
             cost_usd: 0.0,
             input_multiline: false,
-            help_text: "Enter: send | Shift+Enter: newline | Ctrl+A: agent picker | Ctrl+L: sessions | Ctrl+P: command palette | ?: help".to_string(),
+            help_text: "Enter: send | Shift+Enter: newline | Ctrl+A: agent picker | Ctrl+L: sessions | Ctrl+P: command palette | Ctrl+X ?: help".to_string(),
             showing_resume_modal: false,
             resume_state,
             available_sessions,
