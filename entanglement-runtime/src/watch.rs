@@ -19,7 +19,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use entanglement_core::ProfileRegistry;
 use notify_debouncer_mini::DebounceEventResult;
@@ -66,26 +66,90 @@ pub fn spawn_watcher(
     notice: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let paths = watch_paths(&cwd);
-    spawn_debounced_watcher(paths, DEBOUNCE, move || match reload(&cwd, &live) {
-        Ok(Some(msg)) => {
-            tracing::info!("{msg}");
-            if let Some(tx) = &notice {
-                let _ = tx.send(msg);
-            }
+    // Baseline captured *before* the first debounced firing can land, so even
+    // the very first wakeup is checked against real state rather than always
+    // reloading unconditionally.
+    let mut last_fingerprint = Some(fingerprint(&cwd));
+    spawn_debounced_watcher(paths, DEBOUNCE, move || {
+        if !fingerprint_changed(&mut last_fingerprint, fingerprint(&cwd)) {
+            // On this filesystem a bare `read()` of a watched file — which
+            // `reload()` itself does on every pass — observably fires `notify`
+            // even though nothing changed, which without this check makes the
+            // watcher perpetually re-trigger itself forever (reload → reads →
+            // fires `notify` → reload → …). `fingerprint()` only `stat()`s
+            // (size + mtime), which does not itself generate a `notify` event,
+            // so an unchanged-content firing is now a cheap no-op instead of a
+            // full re-parse + user-facing notice.
+            tracing::debug!(
+                "definitions watcher fired but the watched trees are unchanged \
+                 (size/mtime) — skipping reload"
+            );
+            return;
         }
-        Ok(None) => tracing::debug!(
-            "definitions reloaded but notice suppressed: this process wrote a managed file \
-             inside the debounce window (self-triggered, not an external change)"
-        ),
-        Err(e) => tracing::warn!("definitions reload failed, keeping previous state: {e:#}"),
+        match reload(&cwd, &live) {
+            Ok(msg) => {
+                tracing::info!("{msg}");
+                if let Some(tx) = &notice {
+                    let _ = tx.send(msg);
+                }
+            }
+            Err(e) => tracing::warn!("definitions reload failed, keeping previous state: {e:#}"),
+        }
     })
 }
 
-/// How long after this process's own [`crate::config::atomic::atomic_write`]
-/// a watcher firing is treated as self-triggered rather than external —
-/// generous margin (4x [`DEBOUNCE`]) over scheduler jitter between the write
-/// and the debounced callback landing.
-const SELF_WRITE_SUPPRESS_WINDOW: Duration = Duration::from_millis(2000);
+/// A cheap snapshot of every file under the watched trees: `(path, inode,
+/// size, mtime)`, sorted so two fingerprints of identical on-disk state
+/// compare equal regardless of `read_dir` ordering. Computed via `stat()`
+/// only — deliberately never opens/reads file *contents*, since that's the
+/// operation this fingerprint exists to avoid re-triggering (see
+/// [`spawn_watcher`]). Inode is included alongside size/mtime so a
+/// delete-then-recreate-with-identical-content-and-mtime edge case still
+/// registers as a change.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Fingerprint(Vec<(PathBuf, u64, u64, Option<SystemTime>)>);
+
+fn fingerprint(cwd: &Path) -> Fingerprint {
+    let mut entries = Vec::new();
+    for root in watch_paths(cwd).into_iter().filter(|p| p.exists()) {
+        fingerprint_into(&root, &mut entries);
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Fingerprint(entries)
+}
+
+fn fingerprint_into(path: &Path, out: &mut Vec<(PathBuf, u64, u64, Option<SystemTime>)>) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            fingerprint_into(&entry.path(), out);
+        }
+    } else {
+        #[cfg(unix)]
+        let inode = {
+            use std::os::unix::fs::MetadataExt;
+            meta.ino()
+        };
+        #[cfg(not(unix))]
+        let inode = 0u64;
+        out.push((path.to_path_buf(), inode, meta.len(), meta.modified().ok()));
+    }
+}
+
+/// Whether `fresh` differs from `*last`, updating `*last` to `fresh` either
+/// way so the next call compares against the latest known state. Split out of
+/// [`spawn_watcher`]'s closure so the "did anything actually change" decision
+/// is unit-testable without a real timer or a live `notify` watcher.
+fn fingerprint_changed(last: &mut Option<Fingerprint>, fresh: Fingerprint) -> bool {
+    let changed = last.as_ref() != Some(&fresh);
+    *last = Some(fresh);
+    changed
+}
 
 /// Pure watch/debounce primitive: watches every existing path in `paths`
 /// (non-existent ones are skipped — see the module doc) and calls `on_change`
@@ -193,16 +257,10 @@ fn watch_paths(cwd: &Path) -> Vec<PathBuf> {
 /// succeeds. A malformed edit mid-save must not crash a long-running watcher
 /// or wipe out a previously-good in-memory registry (unlike startup, which
 /// fails fast) — log and keep serving the last-known-good state instead.
-///
-/// Returns `Ok(Some(notice))` on a reload worth telling the user about,
-/// `Ok(None)` when the reload succeeded but was triggered by this same
-/// process's own recent managed-file write (see
-/// [`crate::config::atomic::recent_self_write`]) — the state is refreshed
-/// either way, only the notice is suppressed, so a genuinely concurrent
-/// external write within the same window still gets picked up on the next
-/// firing.
-fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<Option<String>> {
-    let self_triggered = crate::config::atomic::recent_self_write(SELF_WRITE_SUPPRESS_WINDOW);
+/// Returns the one-line notice on success. Only called once `spawn_watcher`'s
+/// fingerprint check has already confirmed something on disk actually
+/// changed, so every call here is expected to produce a real notice.
+fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
     let new_skills = skills::load_registry(cwd)?;
     let mut prompt_ctx = system_prompt::PromptContext::load(cwd);
     prompt_ctx.skills = new_skills.disclosures();
@@ -223,13 +281,10 @@ fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<Option<String>> 
     *live.skills.write().unwrap() = Arc::new(new_skills);
     *live.profiles.write().unwrap() = new_profiles;
 
-    if self_triggered {
-        return Ok(None);
-    }
-    Ok(Some(format!(
+    Ok(format!(
         "definitions reloaded: {agent_count} agent(s), {skill_count} skill(s) — \
          new sessions and the next agent switch see the update"
-    )))
+    ))
 }
 
 #[cfg(test)]
@@ -237,33 +292,60 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn test_live_definitions() -> LiveDefinitions {
-        LiveDefinitions {
-            profiles: Arc::new(RwLock::new(ProfileRegistry::default())),
-            skills: Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-            agent_models: Arc::new(Mutex::new(AgentModelStore::default())),
-            grants: Arc::new(crate::policy::DefaultGrantStore::load()),
+    #[test]
+    fn fingerprint_is_stable_across_reads_but_changes_on_a_real_write() {
+        // The bug this guards: on this filesystem a bare `read()` of a
+        // watched file observably fires `notify` even though nothing
+        // changed — and `reload()` itself reads every watched file on every
+        // pass, so without a pre-check the watcher perpetually re-triggers
+        // itself forever (reload -> reads -> fires notify -> reload -> ...),
+        // reported as an infinite chain of reload notices. `fingerprint()`
+        // must be blind to that: unchanged after repeated reads, but must
+        // still catch a genuine content change.
+        let cwd = tempfile::tempdir().unwrap();
+        let dir = cwd.path().join(".entanglement").join("agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.md");
+        std::fs::write(&file, "v1").unwrap();
+
+        let fp1 = fingerprint(cwd.path());
+        for _ in 0..5 {
+            let _ = std::fs::read_to_string(&file).unwrap();
         }
+        let fp2 = fingerprint(cwd.path());
+        assert_eq!(
+            fp1, fp2,
+            "repeated reads of unchanged files must not perturb the fingerprint"
+        );
+
+        // Some filesystems have coarse mtime resolution; make sure the write
+        // below lands in a distinguishably later tick.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&file, "v2, different length").unwrap();
+        let fp3 = fingerprint(cwd.path());
+        assert_ne!(
+            fp2, fp3,
+            "an actual content change must be reflected in the fingerprint"
+        );
     }
 
     #[test]
-    fn reload_suppresses_notice_right_after_a_self_write() {
-        // The bug this guards: any managed-file write by this process (an
-        // "always" grant, a `/model` pin, a `/key` set, a tool-allowlist
-        // edit) lands inside the recursively-watched `${config_dir}/entanglement/`
-        // tree and fires the watcher ~500ms later. Without suppression that
-        // produces a spurious "definitions reloaded" notice for a change the
-        // process already knows about (reported as a runaway reload loop).
-        let cwd = tempfile::tempdir().unwrap();
-        let live = test_live_definitions();
+    fn fingerprint_changed_reports_true_once_then_false_until_a_real_change() {
+        let mut last = None;
+        let a = Fingerprint(vec![(PathBuf::from("a"), 1, 10, None)]);
+        let b = Fingerprint(vec![(PathBuf::from("a"), 1, 20, None)]);
 
-        let dir = tempfile::tempdir().unwrap();
-        crate::config::atomic::atomic_write(&dir.path().join("managed.yml"), "x").unwrap();
-
-        let result = reload(cwd.path(), &live).unwrap();
         assert!(
-            result.is_none(),
-            "a reload immediately after this process's own write must suppress the notice"
+            fingerprint_changed(&mut last, a.clone()),
+            "first observation always counts as a change"
+        );
+        assert!(
+            !fingerprint_changed(&mut last, a.clone()),
+            "repeating the same fingerprint must not report a change"
+        );
+        assert!(
+            fingerprint_changed(&mut last, b),
+            "a genuinely different fingerprint must report a change"
         );
     }
 
