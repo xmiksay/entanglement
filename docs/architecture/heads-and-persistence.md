@@ -207,6 +207,22 @@ assistant/tool messages and the model appears to forget the conversation.
   seam for embedders of `entanglement-core`: records are serde values storable
   anywhere (a DB, a queue); the JSONL store here is the reference
   implementation.
+- **Pluggable append target — `RecordSink`** (#313). The tap's *what to persist*
+  (route each record to its root, tombstone lag gaps) is split from its *where to
+  persist*: it appends every finished `LogRecord` through a
+  `RecordSink { fn append(&self, root: &SessionId, record: &LogRecord) }`, and an
+  embedder swaps in any target without forking the subscriber (and so tracks
+  upstream gap/lag fixes for free). The default `FileSink` is the JSONL store
+  above; `spawn_persistence_subscriber(holly, cwd)` is just
+  `spawn_persistence_subscriber_with_sink(holly, Arc::new(FileSink::new(cwd)))`.
+  `append` is **synchronous** — the file sink is one `writeln!`. A sink whose
+  store can block (DB, network) must **not** block the tap: that starves the
+  broadcast receiver and manufactures the very `Gap` tombstones the tap exists to
+  avoid. Such a sink puts a bounded channel + writer task behind `append` and
+  returns immediately, surfacing back-pressure as an `Err` (dropped past the
+  bound) rather than awaiting. `session_store::read`/`pair_records` stay the
+  file-side read helpers; resume already accepts records from anywhere
+  (`Holly::resume(root, records)`), so no read-side trait is needed.
 - **One-shot flush**: a `run` invocation ends the moment the turn does, so `main`
   aborts the tool executor and drops its `Holly` handle to close the broadcast
   channels, then awaits the persistence task so buffered events reach disk before
