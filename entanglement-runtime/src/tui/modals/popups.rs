@@ -212,3 +212,73 @@ pub fn draw_mention_popup(f: &mut Frame, app: &mut App, input_area: Rect) {
     f.render_widget(Clear, popup_area);
     f.render_stateful_widget(list, popup_area, app.mention_mut().state());
 }
+
+/// Draw the two-stage `/key` dialog (#304): the provider list, then a masked
+/// input for the chosen provider's key. The key is only ever shown as bullets —
+/// [`crate::tui::key_dialog::KeyDialog::masked`] renders the buffer, never its
+/// characters.
+pub fn draw_key_dialog(f: &mut Frame, app: &mut App) {
+    use crate::tui::key_dialog::KeyStage;
+
+    let area = centered_rect(50, 40, f.area());
+    f.render_widget(Clear, area);
+
+    match app.key_dialog_stage() {
+        KeyStage::PickProvider => {
+            let items: Vec<ListItem> = app
+                .key_dialog()
+                .providers()
+                .iter()
+                .map(|p| {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(p.name.clone(), Style::default().bold()),
+                        Span::raw("  "),
+                        Span::styled(p.key_env.clone(), Style::default().dim()),
+                    ]))
+                })
+                .collect();
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Set API Key — pick provider (Enter: next, Esc: close)"),
+                )
+                .highlight_style(Style::default().bg(Color::DarkGray));
+            f.render_stateful_widget(list, area, app.key_dialog_state());
+        }
+        KeyStage::EnterKey => {
+            let provider = app
+                .key_dialog()
+                .selected_provider()
+                .map(|p| (p.name.clone(), p.key_env.clone()))
+                .unwrap_or_default();
+            let bullets = app.key_dialog().masked();
+            let text = vec![
+                Line::from(vec![
+                    Span::raw("Provider: "),
+                    Span::styled(provider.0, Style::default().bold()),
+                ]),
+                Line::from(vec![
+                    Span::raw("Env var:  "),
+                    Span::styled(provider.1, Style::default().dim()),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("Key: "),
+                    Span::styled(bullets, Style::default().fg(Color::Cyan)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Enter: save   Esc: back",
+                    Style::default().dim(),
+                )),
+            ];
+            let para = Paragraph::new(text).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Set API Key — enter value (never shown)"),
+            );
+            f.render_widget(para, area);
+        }
+    }
+}

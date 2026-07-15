@@ -8,6 +8,7 @@ mod event_loop;
 mod export;
 mod input;
 mod input_panel;
+mod key_dialog;
 mod keybindings;
 mod markdown;
 mod mention;

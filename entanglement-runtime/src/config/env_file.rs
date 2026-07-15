@@ -22,12 +22,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 /// Env var overriding the managed env-file path (tests + non-XDG setups).
-const ENV_FILE_ENV: &str = "ENTANGLEMENT_ENV_FILE";
+pub(super) const ENV_FILE_ENV: &str = "ENTANGLEMENT_ENV_FILE";
 
 /// The managed env-file path: `${config_dir}/entanglement/.env`, overridable via
 /// `ENTANGLEMENT_ENV_FILE` (which tests point at a temp file). `None` when the
 /// platform has no config dir and no override is set.
-fn env_file_path() -> Option<PathBuf> {
+pub(super) fn env_file_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(ENV_FILE_ENV) {
         return Some(PathBuf::from(p));
     }
@@ -59,7 +59,7 @@ pub fn scaffold_if_missing(key_names: &[String]) -> Result<Option<PathBuf>> {
 }
 
 /// The commented starter template: a header plus one `#KEY=` line per known key.
-fn template(key_names: &[String]) -> String {
+pub(super) fn template(key_names: &[String]) -> String {
     let mut out = String::from(
         "# entanglement — provider API keys.\n\
          #\n\
@@ -108,7 +108,7 @@ pub fn load() -> Result<Option<(PathBuf, usize)>> {
 /// split on the first `=`, both sides trimmed, and a single layer of matching
 /// surrounding quotes stripped from the value. Lines without `=` or with an empty
 /// key are skipped (malformed, not fatal — a managed env file is not user code).
-fn parse(text: &str) -> Vec<(String, String)> {
+pub(super) fn parse(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| {
             let line = line.trim();

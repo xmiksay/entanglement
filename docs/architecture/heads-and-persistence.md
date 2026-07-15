@@ -131,7 +131,34 @@ persistence machinery with none of the CLI/TUI/transport weight
   Skills tab is the exact `disclosures()` block the model sees plus the full table
   (including `user_only`). Views resolve on open from the cwd + live agent, so
   they stay fresh across mid-session definition edits. `Tab`/`←`/`→` switch tabs,
-  arrows/`j`/`k`/`PgUp`/`PgDn` (or the wheel) scroll, `Esc` closes.
+  arrows/`j`/`k`/`PgUp`/`PgDn` (or the wheel) scroll, `Esc` closes. **`/key`
+  dialog** (✅ #304, [ADR-0073](../adr/0073-managed-env-file-writer-and-key-surfaces.md),
+  `tui::key_dialog`): a two-stage modal after the `/model` pattern — a keyed-provider
+  list, then a masked input (`masked()` renders bullets only, the key is never
+  shown). On submit it drives the shared `config::env_key::set_key` writer and
+  `std::env::set_var`, so the live model resolver (ADR-0063) binds the new key on
+  the next `/model` switch — no restart (startup auto-detect still needs one). A
+  status line (never the key) is recorded into the transcript; `Esc` wipes the
+  buffer. The CLI twin is `skutter config set-key <provider> [--key V]`
+  (`config::keys`, a pre-engine fast path like `inspect`): it resolves the catalog
+  `key_env` (keyless Ollama → clean error), sources the value from `--key`, a
+  hidden `rpassword` prompt, or piped stdin — never echoed — and warns when the
+  process env already carries a *different* value (env > file).
+
+## 6c. Managed provider-key env file — [ADR-0073](../adr/0073-managed-env-file-writer-and-key-surfaces.md) (`config::env_file` + `config::env_key`)
+
+Provider API keys live in `${config_dir}/entanglement/.env` (override
+`ENTANGLEMENT_ENV_FILE`, #220), a sibling of `config.yml`. `env_file` scaffolds a
+commented `#KEY=` template on first run and `load()`s `KEY=VALUE` lines into the
+process env for any var the real environment left unset (env > file). `env_key`
+(✅ #304) is the **writer** both key surfaces above share: a pure `upsert(text,
+key, value)` (replace the first *live* `KEY=` line — first-occurrence-wins,
+matching `load()` — else the `#KEY=`/`# KEY=` placeholder, else append; other
+lines byte-for-byte preserved; idempotent) plus `set_key(key, value) ->
+Result<PathBuf>` (loud error with no managed path; create from `template` when
+missing; atomic temp-file-in-dir + rename; `0o600` on unix; reject empty/`\n`
+values). `env_key` is pure std + `anyhow` (lean/gate-clean); only the `keys`
+handler (rpassword + catalog) is feature-gated behind `cli`+`provider`.
 
 ## 6b. Session persistence & resume — [ADR-0020](../adr/0020-event-sourced-session-persistence.md) (`persistence` + `session_store`)
 

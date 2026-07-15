@@ -23,6 +23,7 @@ mod construct;
 mod dispatch;
 mod input;
 mod inspect;
+mod key;
 mod mention;
 mod pickers;
 mod state;
@@ -74,6 +75,9 @@ pub struct App {
     model_picker_state: ListState,
     available_models: Vec<(String, Vec<String>)>,
     model_info: ModelInfo,
+
+    // `/key` dialog (#304): two-stage modal to persist a provider API key.
+    key_dialog: crate::tui::key_dialog::KeyDialog,
 
     // Leader key state
     leader_handler: LeaderKeyHandler,

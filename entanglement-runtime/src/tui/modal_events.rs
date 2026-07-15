@@ -34,6 +34,7 @@ fn any_modal_open(app: &App) -> bool {
     app.showing_sessions_modal()
         || app.showing_profile_picker()
         || app.showing_model_picker()
+        || app.showing_key_dialog()
         || app.showing_command_palette()
         || app.showing_resume_modal()
         || app.showing_help()
@@ -49,6 +50,8 @@ fn wheel_modal_next(app: &mut App) -> bool {
         app.profile_picker_next();
     } else if app.showing_model_picker() {
         app.model_picker_next();
+    } else if app.showing_key_dialog() {
+        app.key_dialog_next();
     } else if app.showing_command_palette() {
         app.command_palette().select_next();
     } else if app.showing_resume_modal() {
@@ -70,6 +73,8 @@ fn wheel_modal_prev(app: &mut App) -> bool {
         app.profile_picker_prev();
     } else if app.showing_model_picker() {
         app.model_picker_prev();
+    } else if app.showing_key_dialog() {
+        app.key_dialog_prev();
     } else if app.showing_command_palette() {
         app.command_palette().select_prev();
     } else if app.showing_resume_modal() {
@@ -148,6 +153,44 @@ pub(super) async fn handle_model_picker_event(
             return Ok(true);
         }
         _ => {}
+    }
+    Ok(false)
+}
+
+/// Drive the two-stage `/key` dialog (#304). Stage 1 picks a provider; stage 2
+/// reads the key into a masked buffer and, on Enter, persists it (writer + prime
+/// process env + transcript status). No engine traffic — the write is head-side.
+pub(super) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+    use crate::tui::key_dialog::KeyStage;
+    match app.key_dialog_stage() {
+        KeyStage::PickProvider => match key.code {
+            KeyCode::Esc => app.close_key_dialog(),
+            KeyCode::Enter => app.key_dialog_confirm_provider(),
+            KeyCode::Down | KeyCode::Char('j') => app.key_dialog_next(),
+            KeyCode::Up | KeyCode::Char('k') => app.key_dialog_prev(),
+            KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                return Ok(true);
+            }
+            _ => {}
+        },
+        KeyStage::EnterKey => match key.code {
+            // Esc wipes the buffer and returns to the provider list, never
+            // leaving a typed key lingering.
+            KeyCode::Esc => app.key_dialog_back(),
+            KeyCode::Enter => {
+                let _ = app.submit_key_dialog();
+            }
+            KeyCode::Backspace => app.key_dialog_pop_char(),
+            // Ctrl-c/q still quits; other control combos are ignored so they
+            // don't land in the key buffer.
+            KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                return Ok(true);
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.key_dialog_push_char(c);
+            }
+            _ => {}
+        },
     }
     Ok(false)
 }

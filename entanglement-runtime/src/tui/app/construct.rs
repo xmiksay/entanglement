@@ -79,6 +79,21 @@ impl App {
         let mut model_picker_state = ListState::default();
         model_picker_state.select(Some(0));
 
+        // `/key` dialog offers only *keyed* providers (a keyless Ollama has no key
+        // env to set), carrying each provider's key env var (#304).
+        let key_providers: Vec<crate::tui::key_dialog::KeyProvider> = catalog
+            .providers
+            .iter()
+            .filter_map(|p| {
+                p.key_env
+                    .clone()
+                    .map(|key_env| crate::tui::key_dialog::KeyProvider {
+                        name: p.name.clone(),
+                        key_env,
+                    })
+            })
+            .collect();
+
         let mut resume_state = ListState::default();
         resume_state.select(Some(0));
         let available_sessions = Vec::new();
@@ -98,6 +113,7 @@ impl App {
             showing_model_picker: false,
             model_picker_state,
             available_models,
+            key_dialog: crate::tui::key_dialog::KeyDialog::new(key_providers),
             model_info: ModelInfo {
                 id: "dummy".to_string(),
                 display_name: "dummy".to_string(),

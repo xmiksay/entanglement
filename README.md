@@ -88,6 +88,23 @@ is `provider (leaf) ← core ← runtime` ([ADR-0053](docs/adr/0053-invert-core-
 cargo install entanglement-runtime   # installs the `skutter` binary
 ```
 
+## Set a provider key
+
+Provider API keys live in a managed env file
+(`${config_dir}/entanglement/.env`, override `ENTANGLEMENT_ENV_FILE`), loaded at
+startup for any var the real environment left unset (env > file). Set one without
+hand-editing the file (#304, [ADR-0073](docs/adr/0073-managed-env-file-writer-and-key-surfaces.md)):
+
+```bash
+skutter config set-key zai                 # hidden prompt (never echoed)
+skutter config set-key openai --key sk-…   # or pass it directly
+echo "sk-…" | skutter config set-key zai   # or pipe it (scripting/CI)
+```
+
+Inside the TUI, `/key` opens the same dialog (provider list → masked input); a key
+set there is picked up on the next `/model` switch with no restart. No key set →
+`skutter` falls back to the `EchoLlm` debug stub.
+
 ## Build & develop
 
 Requires stable Rust (pinned via `rust-toolchain.toml`). Build jobs capped at 4
