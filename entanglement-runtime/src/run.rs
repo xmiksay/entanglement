@@ -107,6 +107,9 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
     match ev {
         OutEvent::SessionStarted { .. } => {}
         OutEvent::SessionEnded { .. } => {}
+        // Memory eviction (#318); the one-shot head never hibernates, so nothing
+        // to render.
+        OutEvent::SessionHibernated { .. } => {}
         OutEvent::SessionList { .. } => {}
         // History is a late-subscriber query reply (#160); the one-shot head
         // never issues `ReplayFrom`, so nothing to render.

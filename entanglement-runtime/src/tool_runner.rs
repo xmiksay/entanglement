@@ -278,7 +278,11 @@ pub fn spawn_tool_executor_with_hooks(
                         active.insert(session, p.clone());
                     }
                 }
-                Ok(OutEvent::SessionEnded { session, .. }) => {
+                // A hibernated session (#318) tore down just like an ended one, so
+                // its executor-side bookkeeping is equally moot — release it. Its
+                // persisted "always" grants survive; a resume rebuilds the rest.
+                Ok(OutEvent::SessionEnded { session, .. })
+                | Ok(OutEvent::SessionHibernated { session, .. }) => {
                     // Drop the closed session's in-memory grants (#174); persisted
                     // "always" grants survive.
                     grants.lock().unwrap().forget_session(&session);

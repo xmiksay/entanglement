@@ -56,6 +56,15 @@ pub(crate) enum SessionCmd {
     /// `Session::llm` without restarting the engine.
     SetModel(String, String),
     Stop,
+    /// Evict this session from memory without tombstoning its id (#318,
+    /// ADR-0077). The task emits [`OutEvent::SessionHibernated`], drops its shared
+    /// seq counter, and exits — dropping `Session` (the `Context`/history). The
+    /// supervisor has already removed the map entry, so no `Prompt` reaches a dead
+    /// task; the id stays resumable via [`Holly::resume`][crate::Holly::resume].
+    /// Routed by the supervisor on [`InMsg::HibernateSession`]; the sender is
+    /// dropped alongside so a turn parked mid-stream unwinds to this teardown
+    /// (stop-then-hibernate) rather than stranding.
+    Hibernate,
 }
 
 /// Mutable per-session loop + turn state (#61). Holds the conversation
@@ -357,6 +366,28 @@ pub(crate) async fn session_loop(
                         state: AgentState::Idle,
                     });
                 }
+            }
+            // Memory eviction without tombstoning (#318, ADR-0077). Drop `Session`
+            // (Context/history) and the shared seq counter, then emit the distinct
+            // `SessionHibernated` and exit. A parked-on-approval turn is safe: its
+            // pending `ToolExec`s live in the embedder's log and resume re-offers
+            // them (ADR-0061/0071). A mid-stream turn reaches here via the
+            // supervisor's sender-drop (stream cancels, the stashed `Hibernate`
+            // pops when idle) — stop-then-hibernate, discarding the uncommitted
+            // round exactly as replay drops a text-only tail.
+            Some(SessionCmd::Hibernate) => {
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                seqs.lock()
+                    .expect("seq registry mutex poisoned")
+                    .remove(&session);
+                let _ = events.send(OutEvent::SessionHibernated {
+                    session: session.clone(),
+                    ts,
+                });
+                return;
             }
             None => {
                 let ts = SystemTime::now()

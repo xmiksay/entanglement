@@ -59,7 +59,10 @@ impl SessionView {
                 self.started_ms = Some(ts);
                 true
             }
-            OutEvent::SessionEnded { ts, .. } => {
+            // A hibernated session (#318) tore down like an ended one — render it
+            // the same way (the span from start to teardown); the id stays
+            // resumable, but the live view has no more state to fold.
+            OutEvent::SessionEnded { ts, .. } | OutEvent::SessionHibernated { ts, .. } => {
                 self.ended_ms = Some(ts);
                 true
             }
