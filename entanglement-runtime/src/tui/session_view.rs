@@ -1,5 +1,10 @@
 use entanglement_core::{AgentState, OutEvent, QuestionOption, SessionId};
+use ratatui::text::Line;
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use crate::tui::markdown::MarkdownRenderer;
+use crate::tui::theme::{RoleColors, Theme};
+use crate::tui::transcript::cache::RenderCache;
 
 mod reducer;
 mod scroll;
@@ -122,6 +127,9 @@ pub struct SessionView {
     /// fragments arrive. The assembled `ToolCall` finalizes and removes the
     /// entry; a terminal status drops any that never finished.
     streaming_tool_calls: HashMap<String, usize>,
+    /// Per-block render memo (#342): keyed on content hash so an idle redraw
+    /// re-parses zero markdown and only the block that changed re-renders.
+    render_cache: RenderCache,
 }
 
 impl SessionView {
@@ -146,13 +154,41 @@ impl SessionView {
             ended_ms: None,
             expanded_blocks: HashSet::new(),
             streaming_tool_calls: HashMap::new(),
+            render_cache: RenderCache::new(),
         }
     }
 
-    /// Whether the collapsible block identified by `id` (a reasoning run's or a
-    /// tool op's minting transcript index) is currently expanded.
-    pub fn block_expanded(&self, id: usize) -> bool {
-        self.expanded_blocks.contains(&id)
+    /// Renders the transcript body through the per-block render cache (#342):
+    /// only blocks whose content hash changed re-render; the rest are cloned
+    /// from the memo. Returns the owned lines plus per-line block provenance.
+    pub(crate) fn render_body(
+        &mut self,
+        md: &MarkdownRenderer,
+        theme: Theme,
+        user: RoleColors,
+        width: u16,
+    ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
+        let Self {
+            transcript,
+            expanded_blocks,
+            render_cache,
+            ..
+        } = self;
+        render_cache.render(
+            transcript,
+            |id| expanded_blocks.contains(&id),
+            md,
+            theme,
+            user,
+            width,
+        )
+    }
+
+    /// Blocks re-rendered on the last [`Self::render_body`] pass (a test hook;
+    /// `0` when an unchanged redraw reused every cached block).
+    #[cfg(test)]
+    pub(crate) fn last_render_rebuilt(&self) -> usize {
+        self.render_cache.last_rebuilt()
     }
 
     /// Flips a collapsible block (reasoning run or tool op) between collapsed

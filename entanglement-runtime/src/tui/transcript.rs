@@ -6,47 +6,43 @@ use ratatui::{
 use crate::tui::app::App;
 use crate::tui::session_view::ApprovalMode;
 
-mod append;
+mod block;
+pub(crate) mod cache;
 mod question;
 mod render_run;
+mod segment;
 #[cfg(test)]
 mod tests;
 
-use append::append_transcript;
 use question::render_question;
 
 /// Rendered transcript plus per-line provenance. `line_blocks[i]` holds the
-/// reasoning-run id (transcript index of the run's first `ReasoningDelta`) that
-/// produced rendered line `i`, or `None` for lines that aren't part of a
-/// clickable block. Click hit-testing (`App::reasoning_block_at`) maps a
-/// `row + scroll_offset` back to a block through this vector.
-pub(crate) struct RenderedBody<'a> {
-    pub lines: Vec<Line<'a>>,
+/// clickable-block id (a reasoning run's first `ReasoningDelta` index or a tool
+/// op's `ToolCall` index) that produced rendered line `i`, or `None` for lines
+/// that aren't part of a clickable block. Click hit-testing (`App::block_at`)
+/// maps a `row + scroll_offset` back to a block through this vector.
+///
+/// The body is owned (`Line<'static>`) so it can be memoized in the per-session
+/// [`cache::RenderCache`] and cloned into the `Paragraph` each frame (#342).
+pub(crate) struct RenderedBody {
+    pub lines: Vec<Line<'static>>,
     pub line_blocks: Vec<Option<usize>>,
 }
 
-pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> RenderedBody<'a> {
-    let mut lines = Vec::new();
-    // (block_id, start_line, end_line_exclusive) for each rendered reasoning run.
-    let mut regions: Vec<(usize, usize, usize)> = Vec::new();
-    let markdown_renderer = app.markdown_renderer();
+pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> RenderedBody {
     let theme = app.theme();
     let user = theme.user_colors(app.profile_color_for(app.agent()));
+
+    // The transcript body is cache-aware: only the block whose content hash
+    // changed re-parses markdown; an idle redraw clones owned lines (#342).
+    let (mut lines, mut line_blocks) = app.render_cached_body(available_width, theme, user);
 
     // Plan and task-list snapshots now live in the sidebar's "Plan Outline" /
     // "Tasks" sections (Ctrl+X s, or /plan · /tasks), not inline at the top of
     // the chat transcript (#325).
 
-    append_transcript(
-        &mut lines,
-        &mut regions,
-        markdown_renderer,
-        app,
-        theme,
-        user,
-        available_width,
-    );
-
+    // The approval/question tail is small and changes every frame while parked,
+    // so it renders fresh after the cached body rather than through the cache.
     if let ApprovalMode::WaitingForApproval { .. } = app.approval_mode() {
         if let Some((_, tool, input)) = app.pending_tool_request() {
             lines.push(Line::from(""));
@@ -54,7 +50,7 @@ pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Rende
             let mut header = vec![
                 Span::styled("?", Style::default().fg(Color::Yellow).bold()),
                 Span::raw(" "),
-                Span::styled(tool, Style::default().fg(Color::Cyan).bold()),
+                Span::styled(tool.clone(), Style::default().fg(Color::Cyan).bold()),
             ];
             // Core batch-emits tool calls (#270), so more approvals may be
             // parked behind this one (#273) — show how many are waiting.
@@ -102,12 +98,8 @@ pub(crate) fn render_body_lines<'a>(app: &'a App, available_width: u16) -> Rende
         render_question(&mut lines, q, &app.input_text());
     }
 
-    let mut line_blocks = vec![None; lines.len()];
-    for (id, start, end) in regions {
-        for slot in line_blocks.iter_mut().take(end).skip(start) {
-            *slot = Some(id);
-        }
-    }
+    // The freshly-appended tail lines carry no clickable-block provenance.
+    line_blocks.resize(lines.len(), None);
 
     RenderedBody { lines, line_blocks }
 }

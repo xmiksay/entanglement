@@ -3,25 +3,47 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
+use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::{RoleColors, Theme};
 use crate::tui::tool_render;
 
-fn render_text_run<'a>(
-    lines: &mut Vec<Line<'a>>,
-    markdown_renderer: &'a MarkdownRenderer,
+/// Reforge a `Line` whose spans the markdown renderer produced under `&self`'s
+/// lifetime into an owned `Line<'static>`. Every span's content is already an
+/// owned `String` behind the `Cow` (see [`MarkdownRenderer::render`]), so
+/// `into_owned()` is a move, not a copy — this only relabels the lifetime so the
+/// assembled line can live in the render cache ([`super::cache`]).
+pub(super) fn to_static(line: Line<'_>) -> Line<'static> {
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|s| Span {
+            style: s.style,
+            content: Cow::Owned(s.content.into_owned()),
+        })
+        .collect();
+    let mut out = Line::from(spans);
+    out.style = line.style;
+    out.alignment = line.alignment;
+    out
+}
+
+fn render_text_run(
+    md: &MarkdownRenderer,
     run: &str,
     theme: Theme,
     colors: RoleColors,
     available_width: u16,
-) {
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
     if run.trim().is_empty() {
-        return;
+        return out;
     }
-    let rendered = markdown_renderer.render(run);
+    let rendered = md.render(run);
     for line in rendered.lines {
+        let line = to_static(line);
         let is_table = line
             .spans
             .first()
@@ -32,31 +54,30 @@ fn render_text_run<'a>(
             line.spans.len() > 1 && line.spans.iter().skip(1).any(|s| s.style.fg.is_some());
 
         if is_table || is_code {
-            let decorated = theme.decorate(line, colors, available_width);
-            lines.push(decorated);
+            out.push(theme.decorate(line, colors, available_width));
         } else {
-            let wrapped = wrap::wrap_line(line, available_width.saturating_sub(4));
-            for wline in wrapped {
-                let decorated = theme.decorate(wline, colors, available_width);
-                lines.push(decorated);
+            for wline in wrap::wrap_line(line, available_width.saturating_sub(4)) {
+                out.push(theme.decorate(wline, colors, available_width));
             }
         }
     }
+    out
 }
 
-fn render_reasoning_run<'a>(
-    lines: &mut Vec<Line<'a>>,
-    markdown_renderer: &'a MarkdownRenderer,
+fn render_reasoning_run(
+    md: &MarkdownRenderer,
     run: &str,
     theme: Theme,
     colors: RoleColors,
     available_width: u16,
-) {
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
     if run.trim().is_empty() {
-        return;
+        return out;
     }
-    let rendered = markdown_renderer.render(run);
+    let rendered = md.render(run);
     for line in rendered.lines {
+        let line = to_static(line);
         let is_table = line
             .spans
             .first()
@@ -69,114 +90,104 @@ fn render_reasoning_run<'a>(
         let styled_line = if is_table || is_code {
             line
         } else {
-            let styled_spans: Vec<Span> = line
+            let styled_spans: Vec<Span<'static>> = line
                 .spans
                 .iter()
-                .map(|s| Span::styled(s.content.clone(), Style::default().fg(colors.fg).italic()))
+                .map(|s| {
+                    Span::styled(
+                        s.content.clone().into_owned(),
+                        Style::default().fg(colors.fg).italic(),
+                    )
+                })
                 .collect();
             Line::from(styled_spans)
         };
 
         if is_table || is_code {
-            let decorated = theme.decorate(styled_line, colors, available_width);
-            lines.push(decorated);
+            out.push(theme.decorate(styled_line, colors, available_width));
         } else {
-            let wrapped = wrap::wrap_line(styled_line, available_width.saturating_sub(4));
-            for wline in wrapped {
-                let decorated = theme.decorate(wline, colors, available_width);
-                lines.push(decorated);
+            for wline in wrap::wrap_line(styled_line, available_width.saturating_sub(4)) {
+                out.push(theme.decorate(wline, colors, available_width));
             }
         }
     }
+    out
+}
+
+/// The owned colored left-bar padding row that brackets a message block.
+pub(super) fn padding_line(colors: RoleColors, available_width: u16) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            "▌".to_string(),
+            Style::default().fg(colors.fg).bg(colors.bg),
+        ),
+        Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
+    ])
 }
 
 /// Renders a coalesced assistant text run, optionally wrapped in the
 /// colored left-bar padding. Streaming (uncommitted) trailing text renders
 /// without padding; a run committed by a following entry gets the bar.
-pub(super) fn flush_text<'a>(
-    lines: &mut Vec<Line<'a>>,
-    markdown_renderer: &'a MarkdownRenderer,
-    run: &mut String,
-    theme: Theme,
-    colors: RoleColors,
-    available_width: u16,
-    with_padding: bool,
-) {
-    if with_padding {
-        let padding = Line::from(vec![
-            Span::styled("▌", Style::default().fg(colors.fg).bg(colors.bg)),
-            Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
-        ]);
-        lines.push(padding.clone());
-        render_text_run(
-            lines,
-            markdown_renderer,
-            run,
-            theme,
-            colors,
-            available_width,
-        );
-        lines.push(padding);
-    } else {
-        render_text_run(
-            lines,
-            markdown_renderer,
-            run,
-            theme,
-            colors,
-            available_width,
-        );
-    }
-    run.clear();
-}
-
-/// Renders a coalesced reasoning run as a collapsible block: a one-line
-/// `▸ Thinking (N lines)` header (collapsed, the default) or `▾ …` plus the
-/// italic body (expanded). Records the rendered line range under `block_id`
-/// so a click anywhere in the block toggles it.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn flush_reasoning<'a>(
-    lines: &mut Vec<Line<'a>>,
-    regions: &mut Vec<(usize, usize, usize)>,
-    markdown_renderer: &'a MarkdownRenderer,
+pub(super) fn flush_text(
+    md: &MarkdownRenderer,
     run: &str,
     theme: Theme,
     colors: RoleColors,
     available_width: u16,
-    block_id: usize,
-    expanded: bool,
-) {
-    if run.trim().is_empty() {
-        return;
+    with_padding: bool,
+) -> Vec<Line<'static>> {
+    let body = render_text_run(md, run, theme, colors, available_width);
+    if with_padding {
+        let padding = padding_line(colors, available_width);
+        let mut out = Vec::with_capacity(body.len() + 2);
+        out.push(padding.clone());
+        out.extend(body);
+        out.push(padding);
+        out
+    } else {
+        body
     }
-    let start = lines.len();
+}
+
+/// Renders a coalesced reasoning run as a collapsible block: a one-line
+/// `▸ Thinking (N lines)` header (collapsed, the default) or `▾ …` plus the
+/// italic body (expanded). The whole block maps to one clickable region; its
+/// stable id is resolved by the caller ([`super::segment`]).
+pub(super) fn flush_reasoning(
+    md: &MarkdownRenderer,
+    run: &str,
+    theme: Theme,
+    colors: RoleColors,
+    available_width: u16,
+    expanded: bool,
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    if run.trim().is_empty() {
+        return out;
+    }
     let source_lines = run.lines().filter(|l| !l.trim().is_empty()).count().max(1);
-    let padding = Line::from(vec![
-        Span::styled("▌", Style::default().fg(colors.fg).bg(colors.bg)),
-        Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
-    ]);
-    lines.push(padding.clone());
+    let padding = padding_line(colors, available_width);
+    out.push(padding.clone());
 
     let arrow = if expanded { "▾" } else { "▸" };
     let header = Line::from(vec![Span::styled(
         format!("{arrow} Thinking ({source_lines} lines)"),
         Style::default().fg(colors.fg).italic(),
     )]);
-    lines.push(theme.decorate(header, colors, available_width));
+    out.push(theme.decorate(header, colors, available_width));
 
     if expanded {
-        render_reasoning_run(
-            lines,
-            markdown_renderer,
+        out.extend(render_reasoning_run(
+            md,
             run,
             theme,
             colors,
             available_width,
-        );
+        ));
     }
 
-    lines.push(padding);
-    regions.push((block_id, start, lines.len()));
+    out.push(padding);
+    out
 }
 
 /// The primary argument shown on a tool op's collapsed header: the path for
@@ -194,27 +205,20 @@ fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
 
 /// Renders one tool op as a collapsible block, mirroring [`flush_reasoning`]:
 /// a one-line `{arrow} {tool}  {primary_arg}  {status}` header (collapsed, the
-/// default) plus — when expanded — the call args and its output. Records the
-/// rendered line range under `block_id` so a click toggles it (#340).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn flush_tool_call<'a>(
-    lines: &mut Vec<Line<'a>>,
-    regions: &mut Vec<(usize, usize, usize)>,
+/// default) plus — when expanded — the call args and its output. The whole block
+/// maps to one clickable region so a click toggles it (#340).
+pub(super) fn flush_tool_call(
     tool: &str,
     input: &str,
     output: Option<&str>,
     theme: Theme,
     colors: RoleColors,
     available_width: u16,
-    block_id: usize,
     expanded: bool,
-) {
-    let start = lines.len();
-    let padding = Line::from(vec![
-        Span::styled("▌", Style::default().fg(colors.fg).bg(colors.bg)),
-        Span::raw(" ".repeat(available_width.saturating_sub(1) as usize)),
-    ]);
-    lines.push(padding.clone());
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let padding = padding_line(colors, available_width);
+    out.push(padding.clone());
 
     let arrow = if expanded { "▾" } else { "▸" };
     let mut header = vec![
@@ -236,26 +240,26 @@ pub(super) fn flush_tool_call<'a>(
     if output.is_some() {
         header.push(Span::styled(" ✓", Style::default().fg(Color::Green)));
     }
-    lines.push(theme.decorate(Line::from(header), colors, available_width));
+    out.push(theme.decorate(Line::from(header), colors, available_width));
 
     if expanded {
         for line in input.lines() {
             let content_line = Line::from(format!("  {line}"));
             for wline in wrap::wrap_line(content_line, available_width.saturating_sub(4)) {
-                lines.push(theme.decorate(wline, colors, available_width));
+                out.push(theme.decorate(wline, colors, available_width));
             }
         }
         if let Some(output) = output {
             let rendered =
                 tool_render::render_tool_output(Some(tool), output, theme, available_width);
             for line in rendered.lines {
-                lines.push(theme.decorate(line, colors, available_width));
+                out.push(theme.decorate(line, colors, available_width));
             }
         }
     }
 
-    lines.push(padding);
-    regions.push((block_id, start, lines.len()));
+    out.push(padding);
+    out
 }
 
 /// Truncates `s` to `max` display columns, appending `…` when it had to cut.
