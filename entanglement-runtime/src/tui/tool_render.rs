@@ -3,6 +3,7 @@ use ratatui::{
     text::{Line, Span, Text},
 };
 
+use crate::tui::diff::DiffRenderer;
 use crate::tui::theme::Theme;
 
 pub fn render_tool_output(
@@ -18,6 +19,67 @@ pub fn render_tool_output(
         Some("grep") => render_grep_output(output, theme, available_width),
         Some("bash") => render_plain_output(output, theme, available_width),
         _ => render_plain_output(output, theme, available_width),
+    }
+}
+
+/// Build the expanded body of a tool block from **both** the call `input` and
+/// its `output` (#341). Each operation gets a body that means something:
+/// `read` → the file body, `edit` → a real diff, `write` → the new content,
+/// `bash`/`call` → the command output (the command is already in the header),
+/// and everything else → pretty-printed input followed by the output body. The
+/// filename/command lives in the block header (#340), never re-printed here.
+///
+/// The live call site is #340's expanded branch; until it lands this runs only
+/// under test.
+#[allow(dead_code)]
+pub fn render_expansion(
+    tool: Option<&str>,
+    input: &str,
+    output: &str,
+    theme: Theme,
+    available_width: u16,
+) -> Text<'static> {
+    match tool {
+        Some("read") => render_read_output(output, theme, available_width),
+        Some("edit") => {
+            let v: serde_json::Value =
+                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+            let old = v.get("oldString").and_then(|s| s.as_str()).unwrap_or("");
+            let new = v.get("newString").and_then(|s| s.as_str()).unwrap_or("");
+            DiffRenderer::render_change(old, new)
+        }
+        Some("write") => {
+            let v: serde_json::Value =
+                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+            let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
+            Text::from(
+                content
+                    .lines()
+                    .map(|line| Line::from(format!("  {line}")))
+                    .collect::<Vec<_>>(),
+            )
+        }
+        Some("bash") | Some("call") => render_plain_output(output, theme, available_width),
+        _ => {
+            let mut lines = Vec::new();
+            match serde_json::from_str::<serde_json::Value>(input)
+                .ok()
+                .and_then(|v| serde_json::to_string_pretty(&v).ok())
+            {
+                Some(pretty) => {
+                    for line in pretty.lines() {
+                        lines.push(Line::from(format!("  {line}")));
+                    }
+                }
+                None => {
+                    for line in input.lines() {
+                        lines.push(Line::from(format!("  {line}")));
+                    }
+                }
+            }
+            lines.extend(render_plain_output(output, theme, available_width).lines);
+            Text::from(lines)
+        }
     }
 }
 
@@ -41,12 +103,15 @@ fn render_edit_output(output: &str, _theme: Theme, _available_width: u16) -> Tex
     Text::raw(output.to_string())
 }
 
-fn render_read_output(_output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
-    let line = Line::from(vec![
-        Span::styled("✓ ", Style::default().fg(Color::Green)),
-        Span::raw("File read (body suppressed in transcript)"),
-    ]);
-    Text::from(vec![line])
+/// The file body of a `read`. The filename lives in the block header (#340), so
+/// the expanded body is just the contents — indented like other tool output.
+fn render_read_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+    Text::from(
+        output
+            .lines()
+            .map(|line| Line::from(format!("  {line}")))
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn render_glob_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
@@ -212,19 +277,78 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_read_suppresses_body() {
-        let output = "1: line 1\n2: line 2\n3: line 3\n";
-        let theme = Theme::default();
-        let result = render_read_output(output, theme, 80);
-        let text: String = result
-            .lines
+    fn flatten(text: &Text<'_>) -> String {
+        text.lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
-            .collect();
-        assert!(text.contains("✓"), "Should show checkmark");
-        assert!(text.contains("File read"), "Should show read message");
-        assert!(!text.contains("line 1"), "Should suppress body");
+            .collect()
+    }
+
+    #[test]
+    fn test_read_renders_body() {
+        let output = "1: line 1\n2: line 2\n3: line 3\n";
+        let result = render_read_output(output, Theme::default(), 80);
+        let text = flatten(&result);
+        assert!(text.contains("line 1"), "read should render the file body");
+        assert!(text.contains("line 3"), "read should render the file body");
+    }
+
+    #[test]
+    fn test_expansion_read_shows_body() {
+        let result = render_expansion(
+            Some("read"),
+            r#"{"path":"src/main.rs"}"#,
+            "fn main() {}\n",
+            Theme::default(),
+            80,
+        );
+        assert!(
+            flatten(&result).contains("fn main() {}"),
+            "read expansion should show the file body"
+        );
+    }
+
+    #[test]
+    fn test_expansion_edit_shows_diff() {
+        let result = render_expansion(
+            Some("edit"),
+            r#"{"path":"a.rs","oldString":"a","newString":"b"}"#,
+            "",
+            Theme::default(),
+            80,
+        );
+        let has_delete = result
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content == "- "));
+        let has_insert = result
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content == "+ "));
+        assert!(
+            has_delete && has_insert,
+            "edit expansion should render a `-`/`+` pair"
+        );
+    }
+
+    #[test]
+    fn test_expansion_write_shows_content() {
+        let result = render_expansion(
+            Some("write"),
+            r#"{"path":"a.rs","content":"hello\nworld"}"#,
+            "",
+            Theme::default(),
+            80,
+        );
+        let text = flatten(&result);
+        assert!(
+            text.contains("hello"),
+            "write expansion should show the content"
+        );
+        assert!(
+            text.contains("world"),
+            "write expansion should show the content"
+        );
     }
 }
