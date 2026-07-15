@@ -89,6 +89,13 @@ base64 = { workspace = true }
 # the tool lives in the lean library (runtime::script), pure Rust so lean-build
 # and cross-compile clean.
 rhai = { workspace = true }
+# Advisory cross-process file lock for the managed read-modify-write writes
+# (grants.yml / agent-models.yml / the env file, #329).
+fd-lock = { workspace = true }
+# Definitions-dir + managed-file watcher (#329). Pure-Rust/inotify, no
+# transport deps — rides in the lean library.
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

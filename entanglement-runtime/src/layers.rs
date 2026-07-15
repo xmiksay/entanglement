@@ -75,7 +75,7 @@ pub enum Strictness {
 /// - The project layer is `.claude/<kind>` (lenient) < `.agents/<kind>`
 ///   (lenient, cross-vendor beats vendor-specific — same tiebreak as the brief
 ///   chain in [`crate::system_prompt`]) < `.entanglement/<kind>` (strict).
-fn candidate_dirs(
+pub(crate) fn candidate_dirs(
     root: &Path,
     kind: &str,
     env_override: Option<PathBuf>,

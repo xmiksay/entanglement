@@ -147,9 +147,9 @@ impl FileGrantStore {
             ApprovalScope::Once => false,
             ApprovalScope::Session => self.session.entry(session.clone()).or_default().insert(key),
             ApprovalScope::Always => {
-                let inserted = self.always.insert(key);
+                let inserted = self.always.insert(key.clone());
                 if inserted {
-                    self.persist();
+                    self.persist(&key);
                 }
                 inserted
             }
@@ -162,13 +162,36 @@ impl FileGrantStore {
         self.session.remove(session);
     }
 
-    /// Re-write the managed file from the current `Always` set. Best-effort: a
-    /// write failure is logged, never propagated — a lost persisted grant only
-    /// means the user is asked again, the safe direction.
-    fn persist(&self) {
-        let Some(path) = &self.path else { return };
-        if let Err(e) = write_grants(path, &self.always) {
-            tracing::warn!("could not persist tool grants to {}: {e:#}", path.display());
+    /// Re-write the managed file from the current `Always` set, merged against
+    /// whatever is on disk under an exclusive lock (#329) — a concurrent skutter
+    /// instance's own `Always` grant, added between this store's `load()` and
+    /// now, must survive rather than being clobbered by a write from stale
+    /// in-memory state. Best-effort: a write failure is logged, never
+    /// propagated — a lost persisted grant only means the user is asked again,
+    /// the safe direction.
+    fn persist(&mut self, new_key: &GrantKey) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let result = crate::config::lock::with_locked_file(&path, || {
+            let mut merged = read_grants(&path);
+            merged.insert(new_key.clone());
+            write_grants(&path, &merged)?;
+            Ok(merged)
+        });
+        match result {
+            Ok(merged) => self.always = merged,
+            Err(e) => tracing::warn!("could not persist tool grants to {}: {e:#}", path.display()),
+        }
+    }
+
+    /// Re-read the persisted `Always` grants from disk (#329) — picks up a grant
+    /// another skutter instance recorded, without disturbing this process's
+    /// in-memory `Session`-scoped grants (those are never shared across
+    /// processes by design).
+    pub fn reload(&mut self) {
+        if let Some(path) = &self.path {
+            self.always = read_grants(path);
         }
     }
 }
@@ -217,8 +240,7 @@ fn write_grants(path: &Path, grants: &HashSet<GrantKey>) -> anyhow::Result<()> {
                   # Managed by skutter: a line is appended when you approve a tool with the\n\
                   # \"always\" scope. Each entry upgrades a matching Ask to Allow (exact match on\n\
                   # tool + argument); it never overrides a Deny. Delete a line to revoke.\n";
-    std::fs::write(path, format!("{header}{body}"))?;
-    Ok(())
+    crate::config::atomic::atomic_write(path, &format!("{header}{body}"))
 }
 
 #[cfg(test)]
@@ -299,6 +321,91 @@ mod tests {
         let reloaded = FileGrantStore::load();
         assert!(reloaded.is_granted(&SessionId::new("other"), "bash", Some("git status")));
         assert!(!reloaded.is_granted(&SessionId::new("other"), "bash", Some("git log")));
+
+        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn concurrent_always_grants_from_two_stores_both_survive() {
+        // Two "processes" (threads, each with its own `FileGrantStore::load()`)
+        // race to record *different* `Always` grants against the same on-disk
+        // file (#329). Without the lock's read-current-then-merge, the second
+        // writer's `std::fs::write` of its own stale `self.always` would clobber
+        // the first writer's grant — a lost update. A freshly loaded third store
+        // must see both.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let path = tmp_path("concurrent");
+        let _ = std::fs::remove_file(&path);
+        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
+
+        let a = std::thread::spawn(|| {
+            let mut store = FileGrantStore::load();
+            store.record(
+                &SessionId::new("a"),
+                "bash",
+                Some("git status"),
+                ApprovalScope::Always,
+            );
+        });
+        let b = std::thread::spawn(|| {
+            let mut store = FileGrantStore::load();
+            store.record(
+                &SessionId::new("b"),
+                "bash",
+                Some("git log"),
+                ApprovalScope::Always,
+            );
+        });
+        a.join().unwrap();
+        b.join().unwrap();
+
+        let reloaded = FileGrantStore::load();
+        let any = SessionId::new("other");
+        assert!(
+            reloaded.is_granted(&any, "bash", Some("git status")),
+            "grant recorded by the first store must survive a concurrent write"
+        );
+        assert!(
+            reloaded.is_granted(&any, "bash", Some("git log")),
+            "grant recorded by the second store must survive a concurrent write"
+        );
+
+        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reload_picks_up_another_process_grant() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let path = tmp_path("reload");
+        let _ = std::fs::remove_file(&path);
+        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
+
+        let mut store = FileGrantStore::load();
+        let session = SessionId::new("s");
+        store.record(&session, "bash", Some("echo hi"), ApprovalScope::Session);
+
+        // Another instance persists an `Always` grant directly on disk.
+        let mut other = FileGrantStore::load();
+        other.record(
+            &SessionId::new("other"),
+            "grep",
+            None,
+            ApprovalScope::Always,
+        );
+
+        assert!(
+            !store.is_granted(&session, "grep", None),
+            "stale before reload"
+        );
+        store.reload();
+        assert!(
+            store.is_granted(&session, "grep", None),
+            "reload must pick up the new Always grant"
+        );
+        // The session-scoped grant recorded before reload is untouched.
+        assert!(store.is_granted(&session, "bash", Some("echo hi")));
 
         unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
         let _ = std::fs::remove_file(&path);

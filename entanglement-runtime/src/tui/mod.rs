@@ -54,8 +54,9 @@ pub async fn tui(
     initial_session: SessionId,
     model_info: ModelInfo,
     catalog: Catalog,
-    profiles: ProfileRegistry,
-    agent_models: crate::config::agent_models::AgentModelStore,
+    profiles: std::sync::Arc<std::sync::RwLock<ProfileRegistry>>,
+    agent_models: std::sync::Arc<std::sync::Mutex<crate::config::agent_models::AgentModelStore>>,
+    mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     root: std::path::PathBuf,
     bash_enabled: bool,
     tool_roster: Vec<String>,
@@ -93,17 +94,7 @@ pub async fn tui(
     // a spawn target, never a manual entry agent. The mode is carried through so
     // the Tab cycle can narrow to `primary` only (#322). Ordered by the
     // registry's stable `iter` (name-sorted).
-    let entry_profiles: Vec<app::ProfileInfo> = profiles
-        .iter()
-        .filter(|p| matches!(p.mode, AgentMode::Primary | AgentMode::All))
-        .map(|p| app::ProfileInfo {
-            name: p.name.clone(),
-            description: p.description.clone(),
-            mode: p.mode,
-            tools: p.tools.clone(),
-            disallowed_tools: p.disallowed_tools.clone(),
-        })
-        .collect();
+    let entry_profiles = entry_profiles_from(&profiles.read().unwrap());
     let mut app = App::new(initial_session, catalog, entry_profiles, tool_roster);
     app.set_model_info(model_info);
     app.set_agent_models(agent_models);
@@ -144,6 +135,17 @@ pub async fn tui(
                 }
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
                 Err(_) => {}
+            },
+            // The definitions watcher (#329) reloaded: refresh the `/agent`
+            // picker + Tab-cycle roster from the fresh registry and surface a
+            // status line, matching the `/key`/`/model` status pattern.
+            msg = reload_rx.recv() => {
+                if let Some(notice) = msg {
+                    let fresh = entry_profiles_from(&profiles.read().unwrap());
+                    app.refresh_profiles(fresh);
+                    app.record_reload_status(notice);
+                    app.mark_dirty();
+                }
             }
         }
 
@@ -165,6 +167,25 @@ pub async fn tui(
 
     restore_terminal(&mut terminal)?;
     Ok(())
+}
+
+/// The `/agent` picker + Tab-cycle roster derived from a [`ProfileRegistry`]
+/// snapshot: every entry agent (`mode ∈ {primary, all}`) — a `subagent` leaf
+/// like `explore` is a spawn target, never a manual entry agent. Shared by the
+/// startup build and the definitions-watcher reload arm (#329) so both derive
+/// the roster identically.
+fn entry_profiles_from(registry: &ProfileRegistry) -> Vec<app::ProfileInfo> {
+    registry
+        .iter()
+        .filter(|p| matches!(p.mode, AgentMode::Primary | AgentMode::All))
+        .map(|p| app::ProfileInfo {
+            name: p.name.clone(),
+            description: p.description.clone(),
+            mode: p.mode,
+            tools: p.tools.clone(),
+            disallowed_tools: p.disallowed_tools.clone(),
+        })
+        .collect()
 }
 
 fn spawn_crossterm_task(tx: mpsc::Sender<Event>) {

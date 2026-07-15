@@ -119,6 +119,66 @@ fn apply_overlays_pins_and_wins_over_frontmatter() {
 }
 
 #[test]
+fn concurrent_set_from_two_stores_both_survive() {
+    // Two "processes" (threads, each with its own `AgentModelStore::load()`)
+    // race to pin *different* agents against the same on-disk file (#329).
+    // Without the lock's read-current-then-merge, the second writer's stale
+    // in-memory `self.agents` would clobber the first writer's pin on write.
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let path = tmp_path("concurrent");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var(ENV, &path);
+
+    let a = std::thread::spawn(|| {
+        let mut store = AgentModelStore::load();
+        store.set("build", "zai", "glm-5.2").unwrap();
+    });
+    let b = std::thread::spawn(|| {
+        let mut store = AgentModelStore::load();
+        store.set("plan", "anthropic", "claude").unwrap();
+    });
+    a.join().unwrap();
+    b.join().unwrap();
+
+    let reloaded = AgentModelStore::load();
+    assert_eq!(
+        reloaded.get("build"),
+        Some(("zai", "glm-5.2")),
+        "pin recorded by the first store must survive a concurrent write"
+    );
+    assert_eq!(
+        reloaded.get("plan"),
+        Some(("anthropic", "claude")),
+        "pin recorded by the second store must survive a concurrent write"
+    );
+
+    std::env::remove_var(ENV);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn reload_picks_up_another_process_pin() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let path = tmp_path("reload");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var(ENV, &path);
+
+    let mut store = AgentModelStore::load();
+    assert!(store.get("build").is_none());
+
+    // Another instance persists a pin directly.
+    let mut other = AgentModelStore::load();
+    other.set("build", "zai", "glm-5.2").unwrap();
+
+    assert!(store.get("build").is_none(), "stale before reload");
+    store.reload();
+    assert_eq!(store.get("build"), Some(("zai", "glm-5.2")));
+
+    std::env::remove_var(ENV);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn rewrite_is_stable_and_ordered() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let path = tmp_path("stable");

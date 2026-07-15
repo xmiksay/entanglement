@@ -35,7 +35,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{
     AgentProfile, AgentState, ApprovalScope, Holly, InMsg, OutEvent, Permission, PermissionProfile,
@@ -174,6 +174,15 @@ pub fn spawn_tool_executor(
     spawn_tool_executor_with_hooks(holly, tools, profiles, base, Hooks::default())
 }
 
+/// Wrap a caller's owned [`ProfileRegistry`] for [`spawn_tool_executor_with_policy`],
+/// which reads it through an `Arc<RwLock<..>>` so a live definitions watcher
+/// (#329) can swap it for a fresher one without restarting the executor. The
+/// convenience wrappers here keep their historical owned-registry signature for
+/// existing callers (and tests) that need no live reload.
+fn wrap_profiles(profiles: ProfileRegistry) -> Arc<RwLock<ProfileRegistry>> {
+    Arc::new(RwLock::new(profiles))
+}
+
 /// Like [`spawn_tool_executor`] but with user-configured lifecycle hooks (#199,
 /// ADR-0066): `pre_tool_use` can veto a generic tool dispatch, `post_tool_use`
 /// runs as a side-effect after it, and `user_prompt_submit` fires on every
@@ -195,7 +204,14 @@ pub fn spawn_tool_executor_with_hooks(
         Arc::new(ProfileResolver::new(active.clone(), base.clone()));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     spawn_tool_executor_with_policy(
-        holly, tools, profiles, base, active, resolver, grants, hooks,
+        holly,
+        tools,
+        wrap_profiles(profiles),
+        base,
+        active,
+        resolver,
+        grants,
+        hooks,
     )
 }
 
@@ -208,11 +224,20 @@ pub fn spawn_tool_executor_with_hooks(
 /// ladder on top of the resolver — and which the default [`ProfileResolver`]
 /// reads. The two default wrappers above plug in [`ProfileResolver`] +
 /// [`DefaultGrantStore`] for the CLI, byte-identical to the pre-seam behavior.
+///
+/// `profiles` is behind an `Arc<RwLock<..>>` (#329, not a plain owned
+/// [`ProfileRegistry`]) so a runtime definitions watcher can swap in a
+/// freshly-reloaded registry without restarting this executor — every lookup
+/// below takes a brief read lock and clones the hit into the (already-cloning)
+/// `active`/mask/spawn-refusal call sites, so a reload mid-flight is invisible
+/// to an in-progress dispatch. Core's own copy is untouched either way
+/// (ADR-0084): it is baked into `EngineConfig` once at startup and has no
+/// live-swap seam.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_tool_executor_with_policy(
     holly: &Holly,
     tools: ToolRegistry,
-    profiles: ProfileRegistry,
+    profiles: Arc<RwLock<ProfileRegistry>>,
     base: PermissionProfile,
     active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
     resolver: Arc<dyn PermissionResolver>,
@@ -330,13 +355,13 @@ pub fn spawn_tool_executor_with_policy(
                     ..
                 }) => {
                     spawn_guard.record_start(session.clone(), parent);
-                    if let Some(p) = profiles.get(&profile) {
-                        active.lock().unwrap().insert(session, p.clone());
+                    if let Some(p) = profiles.read().unwrap().get(&profile).cloned() {
+                        active.lock().unwrap().insert(session, p);
                     }
                 }
                 Ok(OutEvent::AgentChanged { session, agent, .. }) => {
-                    if let Some(p) = profiles.get(&agent) {
-                        active.lock().unwrap().insert(session, p.clone());
+                    if let Some(p) = profiles.read().unwrap().get(&agent).cloned() {
+                        active.lock().unwrap().insert(session, p);
                     }
                 }
                 // A hibernated session (#318) tore down just like an ended one, so
@@ -409,8 +434,8 @@ pub fn spawn_tool_executor_with_policy(
                     // leaf's gate authoritative regardless of that drop; the
                     // fail-closed `permission_for`/`tool_masked` defaults cover
                     // only the residual unknown case (empty/unresolved `agent`).
-                    if let Some(p) = profiles.get(&agent) {
-                        active.lock().unwrap().insert(session.clone(), p.clone());
+                    if let Some(p) = profiles.read().unwrap().get(&agent).cloned() {
+                        active.lock().unwrap().insert(session.clone(), p);
                     }
                     // Physical tool restriction (#116, ADR-0038): a tool outside
                     // the session's effective advertised set — its profile's
@@ -458,6 +483,7 @@ pub fn spawn_tool_executor_with_policy(
                             let target = crate::subagent::target_agent(&input);
                             let refusal = {
                                 let active = active.lock().unwrap();
+                                let profiles = profiles.read().unwrap();
                                 spawn_refusal(active.get(&session), &target, &profiles)
                             };
                             if let Some(refusal) = refusal {

@@ -79,19 +79,9 @@ impl App {
         // The implicit Tab cycle ring is `mode: primary` only (#322) so
         // cross-vendor `all`-mode agents (ADR-0074) don't flood it; they stay
         // reachable via the `/agent` picker. Fall back to the whole entry list if
-        // no primaries exist so Tab never cycles an empty ring.
-        let primary_profile_order: Vec<String> = {
-            let primaries: Vec<String> = available_profiles
-                .iter()
-                .filter(|p| p.mode == AgentMode::Primary)
-                .map(|p| p.name.clone())
-                .collect();
-            if primaries.is_empty() {
-                available_profiles.iter().map(|p| p.name.clone()).collect()
-            } else {
-                primaries
-            }
-        };
+        // no primaries exist so Tab never cycles an empty ring. Shared with the
+        // definitions-watcher reload path (#329, `App::refresh_profiles`).
+        let primary_profile_order = super::pickers::primary_order(&available_profiles);
 
         let mut profile_picker_state = ListState::default();
         profile_picker_state.select(Some(0));

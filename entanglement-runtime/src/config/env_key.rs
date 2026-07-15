@@ -126,23 +126,28 @@ pub fn set_key(key_name: &str, value: &str) -> Result<PathBuf> {
         )
     })?;
 
-    let existing = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("creating config dir {}", parent.display()))?;
+    // Locked (#329): a concurrent `set_key` / TUI `/key` dialog call must
+    // re-read the latest on-disk text before upserting, not race on a stale
+    // read that would clobber the other writer's key.
+    super::lock::with_locked_file(&path, || {
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("creating config dir {}", parent.display()))?;
+                }
+                // A fresh file gets just the header comment; `upsert` appends the key.
+                template(&[])
             }
-            // A fresh file gets just the header comment; `upsert` appends the key.
-            template(&[])
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("reading env file {}", path.display()));
-        }
-    };
+            Err(e) => {
+                return Err(e).with_context(|| format!("reading env file {}", path.display()));
+            }
+        };
 
-    let updated = upsert(&existing, key_name, value);
-    atomic_write(&path, &updated)?;
+        let updated = upsert(&existing, key_name, value);
+        atomic_write(&path, &updated)
+    })?;
     Ok(path)
 }
 

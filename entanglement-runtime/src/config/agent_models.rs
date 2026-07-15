@@ -82,18 +82,41 @@ impl AgentModelStore {
             .map(|p| (p.provider.as_str(), p.model.as_str()))
     }
 
-    /// Record `agent`'s pin and re-write the managed file. Idempotent: re-setting
-    /// an identical pin still rewrites (a no-diff write), which keeps the call
-    /// site simple. Returns the write error for the caller to log (never fatal).
+    /// Record `agent`'s pin and re-write the managed file, merged against
+    /// whatever is on disk under an exclusive lock (#329) — a concurrent skutter
+    /// instance's own pin, recorded between this store's `load()` and now, must
+    /// survive rather than being clobbered by a write from stale in-memory
+    /// state. Idempotent: re-setting an identical pin still rewrites (a no-diff
+    /// write), which keeps the call site simple. Returns the write error for the
+    /// caller to log (never fatal).
     pub fn set(&mut self, agent: &str, provider: &str, model: &str) -> Result<()> {
-        self.agents.insert(
-            agent.to_string(),
-            AgentModelPin {
-                provider: provider.to_string(),
-                model: model.to_string(),
-            },
-        );
-        self.persist()
+        let pin = AgentModelPin {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
+        let Some(path) = self.path.clone() else {
+            bail!(
+                "no config directory for the managed agent-models file; \
+                 set {AGENT_MODELS_FILE_ENV} to a path first"
+            );
+        };
+        let agent_name = agent.to_string();
+        let merged = super::lock::with_locked_file(&path, || {
+            let mut on_disk = read_agent_models(&path);
+            on_disk.insert(agent_name.clone(), pin.clone());
+            persist_map(&path, &on_disk)?;
+            Ok(on_disk)
+        })?;
+        self.agents = merged;
+        Ok(())
+    }
+
+    /// Re-read the persisted pins from disk (#329) — picks up a pin another
+    /// skutter instance recorded via `/model`.
+    pub fn reload(&mut self) {
+        if let Some(path) = &self.path {
+            self.agents = read_agent_models(path);
+        }
     }
 
     /// Overlay the persisted pins onto `registry` (#323): for each stored agent
@@ -116,29 +139,25 @@ impl AgentModelStore {
             }
         }
     }
+}
 
-    /// Re-write the managed file from the current pins. The [`BTreeMap`] keeps
-    /// the output stable (readable diffs, no churn).
-    fn persist(&self) -> Result<()> {
-        let Some(path) = &self.path else {
-            bail!(
-                "no config directory for the managed agent-models file; \
-                 set {AGENT_MODELS_FILE_ENV} to a path first"
-            );
-        };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let doc = AgentModelsFile {
-            agents: self.agents.clone(),
-        };
-        let body = serde_yaml::to_string(&doc)?;
-        let header = "# entanglement — persisted per-agent provider/model pins (#323).\n\
-                      # Managed by skutter: a pin is recorded when you pick a model via the TUI\n\
-                      # /model picker while an agent is active. It overrides that agent's\n\
-                      # frontmatter provider/model. Delete an entry to revert to the default.\n";
-        atomic_write(path, &format!("{header}{body}"))
+/// Re-write the managed file at `path` from `agents`. The [`BTreeMap`] keeps the
+/// output stable (readable diffs, no churn). Factored out of the old `persist`
+/// method (#329) so both [`AgentModelStore::set`]'s locked read-modify-write
+/// closure and any future caller can write the file without needing `&self`.
+fn persist_map(path: &Path, agents: &BTreeMap<String, AgentModelPin>) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
+    let doc = AgentModelsFile {
+        agents: agents.clone(),
+    };
+    let body = serde_yaml::to_string(&doc)?;
+    let header = "# entanglement — persisted per-agent provider/model pins (#323).\n\
+                  # Managed by skutter: a pin is recorded when you pick a model via the TUI\n\
+                  # /model picker while an agent is active. It overrides that agent's\n\
+                  # frontmatter provider/model. Delete an entry to revert to the default.\n";
+    atomic_write(path, &format!("{header}{body}"))
 }
 
 /// Resolve the managed agent-models file path: `ENTANGLEMENT_AGENT_MODELS_FILE`

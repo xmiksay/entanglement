@@ -205,6 +205,28 @@ below realize one model:
   rewrites it, so it stays out of the hand-edited `config.yml`. Missing/malformed
   → empty + warn (fail-open); a write failure is logged, never fatal
   (`entanglement_runtime::config::agent_models`).
+- **Live reload + managed-file locking (✅ #329, [ADR-0084](../adr/0084-runtime-live-reload-and-managed-file-locking.md)):**
+  a runtime-side `watch.rs` watches every resolvable agent/skill dir plus
+  `${config_dir}/entanglement/` and `<root>/.entanglement/` (`notify`, debounced
+  500ms so a burst of edits collapses into one reload) and, on change, re-runs the
+  skill + agent loaders and swaps the result into **runtime-held mirrors**
+  (`watch::LiveDefinitions { profiles, skills, agent_models, grants }`) — never
+  core's `EngineConfig.profiles`, which stays pinned for the process lifetime (the
+  [ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)
+  "live registry mutation" rejection applies identically here). Permission
+  resolution (`tool_runner`'s `ToolExec` self-heal), `load_skill`, and the TUI's
+  `/agent` picker + Tab-cycle roster all read through these live handles, so a
+  definitions edit lands for the *next* `SetAgent`/new session/picker pick — a
+  turn already in flight keeps its already-resolved system prompt/tool mask
+  unchanged. A directory that doesn't exist at watch-start needs a restart to be
+  picked up once created (known v1 limit). Separately, the three managed files
+  (`grants.yml`, `agent-models.yml`, the provider-key `.env`) are now
+  advisory-locked across concurrent `skutter` instances via
+  `config::lock::with_locked_file` (an `fd-lock` on a sibling `.lock` file): each
+  write re-reads the current on-disk state under the lock and merges before
+  writing, so a second instance's own concurrent update survives instead of being
+  clobbered by a write from stale in-memory state; `write_grants` moved onto the
+  shared `atomic_write`.
 - **Physical tool restriction (✅ #116, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)):**
   an agent's `tools` allowlist / `disallowed_tools` denylist masks its tool set —
   `registry ∩ allowlist − denylist` — on *both* sides of the core↔runtime seam,
