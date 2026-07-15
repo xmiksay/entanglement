@@ -58,11 +58,12 @@ impl Session {
 
         for (in_msg, out_event) in records {
             // Skip any record belonging to a spawned child session (#275): the
-            // whole fold below stays scoped to the resumed root.
-            if !is_root(out_event.session()) {
+            // whole fold below stays scoped to the resumed root. A session-less
+            // query reply (SessionList/History, #160) never appears in a log.
+            if out_event.session().is_some_and(|s| !is_root(s)) {
                 continue;
             }
-            max_seq = max_seq.max(out_event.seq());
+            max_seq = max_seq.max(out_event.seq().unwrap_or(0));
 
             if let Some(InMsg::Prompt { content, .. }) = in_msg {
                 if !pending_text.is_empty() || !pending_tools.is_empty() {

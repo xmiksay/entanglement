@@ -125,7 +125,7 @@ async fn collect(
 ) -> Vec<OutEvent> {
     let mut out = Vec::new();
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() == sid {
+        if ev.session() == Some(sid) {
             let done = matches!(ev, OutEvent::Done { .. });
             out.push(ev);
             if done {

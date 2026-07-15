@@ -78,7 +78,7 @@ async fn collect_for(
     let mut events = Vec::new();
     let deadline = tokio::time::Instant::now() + dur;
     while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
-        if ev.session() == sid {
+        if ev.session() == Some(sid) {
             events.push(ev);
         }
     }

@@ -61,16 +61,16 @@ async fn failed_replay_surfaces_error_and_leaves_no_ghost_session() {
     );
 
     // The dead id must not linger in the live-session directory.
-    let corr = SessionId::new("query");
+    let corr = "query".to_string();
     holly
         .send(InMsg::ListSessions {
-            session: corr.clone(),
+            correlation_id: corr.clone(),
         })
         .await
         .unwrap();
     let ev = recv_until(
         &mut sub,
-        |e| matches!(e, OutEvent::SessionList { session, .. } if *session == corr),
+        |e| matches!(e, OutEvent::SessionList { correlation_id, .. } if *correlation_id == corr),
     )
     .await;
     let OutEvent::SessionList { sessions, .. } = ev else {
@@ -131,10 +131,10 @@ async fn closed_id_is_not_resurrected_by_a_later_prompt() {
 
     // Prove no fresh `SessionStarted` was emitted for the retired id: a
     // `ListSessions` round-trip drains the window, and the id stays absent.
-    let corr = SessionId::new("query");
+    let corr = "query".to_string();
     holly
         .send(InMsg::ListSessions {
-            session: corr.clone(),
+            correlation_id: corr.clone(),
         })
         .await
         .unwrap();
@@ -146,8 +146,10 @@ async fn closed_id_is_not_resurrected_by_a_later_prompt() {
         match recv {
             Ok(OutEvent::SessionStarted { session, .. }) if session == sid => saw_restart = true,
             Ok(OutEvent::SessionList {
-                session, sessions, ..
-            }) if session == corr => {
+                correlation_id,
+                sessions,
+                ..
+            }) if correlation_id == corr => {
                 assert!(
                     !sessions.iter().any(|i| i.session == sid),
                     "closed id must stay gone; got {sessions:?}"

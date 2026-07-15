@@ -104,8 +104,16 @@ pub(super) fn resume_meta(
     }
 }
 
-pub(super) fn msg_to_cmd(msg: InMsg) -> SessionCmd {
-    match msg {
+/// Map a session-scoped [`InMsg`] to the [`SessionCmd`] routed to its session
+/// task, or `None` for a variant that is never routed (handled specially or
+/// consumed off the inbound fan-out by the supervisor / a runtime service).
+///
+/// Returns `Option` rather than panicking on the non-routable variants (#160):
+/// the supervisor filters them out before calling this, so a `None` here is a
+/// contract slip to log-and-drop, not a reason to crash every live session (the
+/// former `unreachable!` took down the whole supervisor loop).
+pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
+    Some(match msg {
         InMsg::Prompt { content, .. } => SessionCmd::Prompt(content),
         InMsg::ToolResult {
             request_id,
@@ -117,17 +125,16 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> SessionCmd {
         InMsg::SetModel {
             provider, model, ..
         } => SessionCmd::SetModel(provider, model),
-        // Approve/Reject/AnswerQuestion and the ListSessions/CloseSession
-        // lifecycle queries are filtered out before routing (see supervisor);
+        // Approve/Reject/AnswerQuestion and the ListSessions/ReplayFrom/
+        // CloseSession queries are filtered out before routing (see supervisor);
         // Resume and Spawn are handled specially. None reach here.
         InMsg::Approve { .. }
         | InMsg::Reject { .. }
         | InMsg::AnswerQuestion { .. }
         | InMsg::ListSessions { .. }
+        | InMsg::ReplayFrom { .. }
         | InMsg::CloseSession { .. }
         | InMsg::Resume { .. }
-        | InMsg::Spawn { .. } => {
-            unreachable!("Approve/Reject/AnswerQuestion/ListSessions/CloseSession/Resume/Spawn are not routed to sessions")
-        }
-    }
+        | InMsg::Spawn { .. } => return None,
+    })
 }

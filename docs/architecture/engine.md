@@ -231,7 +231,10 @@ agents it may spawn.)
 The model calls a runtime-owned `ask_user { question, options, allow_free_form }`
 tool. The runtime executor (`ask_user.rs`) intercepts it on `ToolExec` — before
 permission resolution, like `agent_spawn` — emits a dedicated
-`OutEvent::UserQuestion` and parks at `WaitingApproval`. The head renders the labelled choices
+`OutEvent::UserQuestion` and parks at `WaitingAnswer` (#160,
+[ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md): a question is not
+a permission decision, so it is distinct from the `WaitingApproval` an `Ask` tool
+raises). The head renders the labelled choices
 Claude-style (the TUI adds a `PendingQuestion` interaction state alongside
 `ApprovalMode`, with an "Other" entry that opens free-text input) and replies
 `InMsg::AnswerQuestion { request_id, answer }`. Like `Approve`/`Reject`, the

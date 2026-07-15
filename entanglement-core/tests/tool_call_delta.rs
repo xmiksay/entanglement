@@ -56,7 +56,7 @@ async fn collect(
             break;
         };
         match recv {
-            Ok(ev) if ev.session() == sid => {
+            Ok(ev) if ev.session() == Some(sid) => {
                 let done = matches!(ev, OutEvent::Done { .. });
                 out.push(ev);
                 if done {

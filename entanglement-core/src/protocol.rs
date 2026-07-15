@@ -56,8 +56,14 @@ pub enum AgentState {
     Idle,
     /// Engine is actively reasoning / calling the model.
     Thinking,
-    /// Engine emitted a tool request and is parked waiting for approval.
+    /// Engine emitted a tool request and is parked waiting for approval
+    /// (`Approve`/`Reject`).
     WaitingApproval,
+    /// Parked on a model-driven `ask_user` question, waiting for the user to pick
+    /// an option or type a free-form answer (`AnswerQuestion`). Distinct from
+    /// [`WaitingApproval`][AgentState::WaitingApproval] (#160): a question is not
+    /// a permission decision, and heads render the two differently.
+    WaitingAnswer,
     /// Last turn finished cleanly.
     Done,
     /// Last turn ended with an error.
@@ -514,10 +520,23 @@ pub enum InMsg {
     Stop { session: SessionId },
     /// Enumerate the engine's currently-live sessions. The supervisor answers
     /// with a single [`OutEvent::SessionList`] snapshot (ADR-0028); this message
-    /// is supervisor-global, not routed to a session task. `session` is a
-    /// correlation id echoed back on the reply so a multiplexed head can match
-    /// the snapshot to its request (pass any id the head owns).
-    ListSessions { session: SessionId },
+    /// is supervisor-global, not routed to a session task. `correlation_id` is an
+    /// opaque token the head mints and the reply echoes back, so a multiplexed
+    /// head can pair the snapshot to its request without overloading a
+    /// [`SessionId`] as a correlation key (#160, ADR-0072).
+    ListSessions { correlation_id: String },
+    /// Fetch a session's persisted content history from `after_seq` onward, for a
+    /// head that subscribed late and missed the live broadcast (#160, ADR-0072).
+    /// Answered out-of-core by the runtime's history responder — which owns the
+    /// event log — with a single [`OutEvent::History`] snapshot carrying every
+    /// content event whose `seq` exceeds `after_seq`, `correlation_id` echoed so
+    /// the requester can pair the reply. `after_seq == 0` requests the whole
+    /// content history. A head-authored query, so it is wire-allowed.
+    ReplayFrom {
+        session: SessionId,
+        correlation_id: String,
+        after_seq: u64,
+    },
     /// Explicitly terminate a live session: the supervisor drops its command
     /// channel and the session task exits, emitting [`OutEvent::SessionEnded`]
     /// (ADR-0028). Distinct from [`Stop`][InMsg::Stop], which only cancels the
@@ -600,8 +619,11 @@ impl InMsg {
         }
     }
 
-    /// The session this message targets.
-    pub fn session(&self) -> &SessionId {
+    /// The session this message targets, or `None` for a supervisor-global query
+    /// that names no session — [`ListSessions`][InMsg::ListSessions] (#160). Every
+    /// other variant, including the session-scoped [`ReplayFrom`][InMsg::ReplayFrom]
+    /// query, carries one.
+    pub fn session(&self) -> Option<&SessionId> {
         match self {
             InMsg::Prompt { session, .. }
             | InMsg::Approve { session, .. }
@@ -609,12 +631,13 @@ impl InMsg {
             | InMsg::ToolResult { session, .. }
             | InMsg::AnswerQuestion { session, .. }
             | InMsg::Stop { session }
-            | InMsg::ListSessions { session }
+            | InMsg::ReplayFrom { session, .. }
             | InMsg::CloseSession { session }
             | InMsg::SetAgent { session, .. }
             | InMsg::SetModel { session, .. }
             | InMsg::Spawn { session, .. }
-            | InMsg::Resume { session, .. } => session,
+            | InMsg::Resume { session, .. } => Some(session),
+            InMsg::ListSessions { .. } => None,
         }
     }
 
@@ -623,8 +646,8 @@ impl InMsg {
     /// The trusted/untrusted frame split. A head deserializing attacker-adjacent
     /// bytes (stdio `pipe`, the future WS `serve`) forwards only the allowlisted
     /// frames — `Prompt`/`Approve`/`Reject`/`AnswerQuestion`/`Stop`/`SetAgent`/
-    /// `SetModel`/`ListSessions`/`CloseSession`. The privileged trio is
-    /// **runtime-authored in process**, never wire-forgeable:
+    /// `SetModel`/`ListSessions`/`ReplayFrom`/`CloseSession`. The privileged trio
+    /// is **runtime-authored in process**, never wire-forgeable:
     ///
     /// - [`ToolResult`][InMsg::ToolResult] resolves a parked turn matched on
     ///   `request_id` alone — a forged one bypasses execution *and* permission;
@@ -654,6 +677,7 @@ impl InMsg {
             InMsg::AnswerQuestion { .. } => "answer_question",
             InMsg::Stop { .. } => "stop",
             InMsg::ListSessions { .. } => "list_sessions",
+            InMsg::ReplayFrom { .. } => "replay_from",
             InMsg::CloseSession { .. } => "close_session",
             InMsg::SetAgent { .. } => "set_agent",
             InMsg::SetModel { .. } => "set_model",
@@ -690,12 +714,26 @@ pub enum OutEvent {
     /// Session ended (lifecycle event, no `seq`). Emits when a session exits.
     SessionEnded { session: SessionId, ts: u64 },
     /// Snapshot of every currently-live session (lifecycle event, no `seq`),
-    /// sent in reply to [`InMsg::ListSessions`] (ADR-0028). `session` echoes the
-    /// requester's correlation id from that message so a multiplexed head can
-    /// pair the reply with its request.
+    /// sent in reply to [`InMsg::ListSessions`] (ADR-0028). `correlation_id`
+    /// echoes the requester's opaque token so a multiplexed head can pair the
+    /// reply with its request (#160, ADR-0072) — no longer an overloaded
+    /// [`SessionId`], so this event names no session and [`session`][OutEvent::session]
+    /// is `None` for it.
     SessionList {
-        session: SessionId,
+        correlation_id: String,
         sessions: Vec<SessionInfo>,
+    },
+    /// A session's persisted content history from a requested `after_seq`, in
+    /// reply to [`InMsg::ReplayFrom`] (#160, ADR-0072). Answered by the runtime's
+    /// history responder — which owns the event log — not the core supervisor.
+    /// `events` holds every content [`OutEvent`] whose `seq` exceeds the requested
+    /// `after_seq`, in log order; `correlation_id` echoes the request so a
+    /// multiplexed head can pair the reply. A lifecycle query reply (no `seq`); it
+    /// is neither persisted nor folded on replay.
+    History {
+        correlation_id: String,
+        session: SessionId,
+        events: Vec<OutEvent>,
     },
     /// Lifecycle state change (point-in-time, no `seq`).
     Status {
@@ -877,11 +915,15 @@ pub enum OutEvent {
 }
 
 impl OutEvent {
-    pub fn session(&self) -> &SessionId {
+    /// The session this event belongs to, or `None` for a supervisor-global query
+    /// reply that names no single session — [`SessionList`][OutEvent::SessionList]
+    /// (#160). [`History`][OutEvent::History] does name a session (the one whose
+    /// history it carries), so it returns `Some`.
+    pub fn session(&self) -> Option<&SessionId> {
         match self {
             OutEvent::SessionStarted { session, .. }
             | OutEvent::SessionEnded { session, .. }
-            | OutEvent::SessionList { session, .. }
+            | OutEvent::History { session, .. }
             | OutEvent::Status { session, .. }
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::ModelChanged { session, .. }
@@ -898,21 +940,27 @@ impl OutEvent {
             | OutEvent::Usage { session, .. }
             | OutEvent::Error { session, .. }
             | OutEvent::Done { session, .. }
-            | OutEvent::FileChange { session, .. } => session,
+            | OutEvent::FileChange { session, .. } => Some(session),
+            OutEvent::SessionList { .. } => None,
         }
     }
 
-    /// Returns the sequence number for this event, or 0 for lifecycle events
-    /// that don't carry a seq (SessionStarted, SessionEnded, SessionList,
-    /// Status, AgentChanged).
-    pub fn seq(&self) -> u64 {
+    /// The monotonic per-session sequence number for a **content** event, or
+    /// `None` for a point-in-time lifecycle/query event that carries no `seq`
+    /// (`SessionStarted`, `SessionEnded`, `SessionList`, `History`, `Status`,
+    /// `AgentChanged`, `ModelChanged`). Returning `Option` instead of a fake `0`
+    /// (#160, ADR-0072) lets a head tell "seq 0" apart from "no seq" — the
+    /// supervisor-shed `Error` sentinel (seq `0`) is a real `Some(0)`, distinct
+    /// from a lifecycle event's `None`.
+    pub fn seq(&self) -> Option<u64> {
         match self {
             OutEvent::SessionStarted { .. }
             | OutEvent::SessionEnded { .. }
             | OutEvent::SessionList { .. }
+            | OutEvent::History { .. }
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }
-            | OutEvent::ModelChanged { .. } => 0,
+            | OutEvent::ModelChanged { .. } => None,
             OutEvent::Plan { seq, .. }
             | OutEvent::TextDelta { seq, .. }
             | OutEvent::ReasoningDelta { seq, .. }
@@ -926,7 +974,7 @@ impl OutEvent {
             | OutEvent::Usage { seq, .. }
             | OutEvent::Error { seq, .. }
             | OutEvent::Done { seq, .. }
-            | OutEvent::FileChange { seq, .. } => *seq,
+            | OutEvent::FileChange { seq, .. } => Some(*seq),
         }
     }
 }
@@ -992,7 +1040,14 @@ mod tests {
                 answer: "a".into(),
             },
             InMsg::Stop { session: s.clone() },
-            InMsg::ListSessions { session: s.clone() },
+            InMsg::ListSessions {
+                correlation_id: "c1".into(),
+            },
+            InMsg::ReplayFrom {
+                session: s.clone(),
+                correlation_id: "c1".into(),
+                after_seq: 0,
+            },
             InMsg::CloseSession { session: s.clone() },
             InMsg::SetAgent {
                 session: s.clone(),
@@ -1138,7 +1193,7 @@ mod tests {
             let json = serde_json::to_string(&ev).unwrap();
             let back: OutEvent = serde_json::from_str(&json).unwrap();
             assert_eq!(ev, back);
-            assert_eq!(back.seq(), 5);
+            assert_eq!(back.seq(), Some(5));
         }
     }
 
@@ -1155,8 +1210,8 @@ mod tests {
         assert!(json.contains(r#""kind":"tool_call_delta""#), "{json}");
         let back: OutEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
-        assert_eq!(back.seq(), 7);
-        assert_eq!(back.session(), &SessionId::new("s1"));
+        assert_eq!(back.seq(), Some(7));
+        assert_eq!(back.session(), Some(&SessionId::new("s1")));
     }
 
     #[test]
@@ -1214,16 +1269,18 @@ mod tests {
     #[test]
     fn list_and_close_session_roundtrip_as_tagged_json() {
         let list = InMsg::ListSessions {
-            session: SessionId::new("q1"),
+            correlation_id: "q1".into(),
         };
         assert_eq!(
             serde_json::to_string(&list).unwrap(),
-            r#"{"kind":"list_sessions","session":"q1"}"#
+            r#"{"kind":"list_sessions","correlation_id":"q1"}"#
         );
         assert_eq!(
             serde_json::from_str::<InMsg>(&serde_json::to_string(&list).unwrap()).unwrap(),
             list
         );
+        // The supervisor-global list query names no session.
+        assert_eq!(list.session(), None);
 
         let close = InMsg::CloseSession {
             session: SessionId::new("s1"),
@@ -1237,7 +1294,7 @@ mod tests {
     #[test]
     fn session_list_event_roundtrips() {
         let ev = OutEvent::SessionList {
-            session: SessionId::new("q1"),
+            correlation_id: "q1".into(),
             sessions: vec![
                 SessionInfo {
                     session: SessionId::new("root"),
@@ -1261,10 +1318,64 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(ev.seq(), 0, "SessionList is a lifecycle event, no seq");
+        assert_eq!(ev.seq(), None, "SessionList is a lifecycle event, no seq");
+        assert_eq!(ev.session(), None, "SessionList names no single session");
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn replay_from_roundtrips_and_is_wire_allowed() {
+        let msg = InMsg::ReplayFrom {
+            session: SessionId::new("s1"),
+            correlation_id: "c1".into(),
+            after_seq: 12,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"replay_from","session":"s1","correlation_id":"c1","after_seq":12}"#
+        );
+        assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+        // A head-authored query the wire may forward, unlike the runtime-authored trio.
+        assert!(msg.wire_allowed());
+        assert_eq!(msg.session(), Some(&SessionId::new("s1")));
+    }
+
+    #[test]
+    fn history_event_roundtrips_and_carries_no_seq() {
+        let ev = OutEvent::History {
+            correlation_id: "c1".into(),
+            session: SessionId::new("s1"),
+            events: vec![
+                OutEvent::TextDelta {
+                    session: SessionId::new("s1"),
+                    seq: 3,
+                    text: "hi".into(),
+                },
+                OutEvent::Done {
+                    session: SessionId::new("s1"),
+                    seq: 4,
+                },
+            ],
+        };
+        assert_eq!(ev.seq(), None, "History is a query reply, no seq");
+        assert_eq!(ev.session(), Some(&SessionId::new("s1")));
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: OutEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn waiting_answer_state_serializes_snake_case() {
+        let ev = OutEvent::Status {
+            session: SessionId::new("s1"),
+            state: AgentState::WaitingAnswer,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains(r#""state":"waiting_answer""#), "{json}");
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
     }
 
     #[test]

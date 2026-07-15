@@ -29,7 +29,7 @@ async fn collect(
             break;
         };
         match recv {
-            Ok(ev) if ev.session() == sid => {
+            Ok(ev) if ev.session() == Some(sid) => {
                 let done = matches!(ev, OutEvent::Done { .. });
                 out.push(ev);
                 if done {
@@ -74,17 +74,17 @@ async fn list_sessions_enumerates_live_sessions() {
     for s in [&s1, &s2] {
         holly.send(InMsg::prompt(s.clone(), "hi")).await.unwrap();
     }
-    let corr = SessionId::new("query");
+    let corr = "query".to_string();
     holly
         .send(InMsg::ListSessions {
-            session: corr.clone(),
+            correlation_id: corr.clone(),
         })
         .await
         .unwrap();
 
     let ev = recv_until(
         &mut sub,
-        |e| matches!(e, OutEvent::SessionList { session, .. } if *session == corr),
+        |e| matches!(e, OutEvent::SessionList { correlation_id, .. } if *correlation_id == corr),
     )
     .await;
     let OutEvent::SessionList { sessions, .. } = ev else {
@@ -123,16 +123,16 @@ async fn close_session_terminates_and_drops_from_list() {
     )
     .await;
 
-    let corr = SessionId::new("query");
+    let corr = "query".to_string();
     holly
         .send(InMsg::ListSessions {
-            session: corr.clone(),
+            correlation_id: corr.clone(),
         })
         .await
         .unwrap();
     let ev = recv_until(
         &mut sub,
-        |e| matches!(e, OutEvent::SessionList { session, .. } if *session == corr),
+        |e| matches!(e, OutEvent::SessionList { correlation_id, .. } if *correlation_id == corr),
     )
     .await;
     let OutEvent::SessionList { sessions, .. } = ev else {
@@ -149,7 +149,7 @@ async fn close_unknown_session_is_a_noop() {
     // Closing an id that was never live must not panic or emit `SessionEnded`.
     let holly = Holly::spawn(factory(vec![]));
     let ghost = SessionId::new("never-existed");
-    let corr = SessionId::new("query");
+    let corr = "query".to_string();
     let mut sub = holly.subscribe();
     holly
         .send(InMsg::CloseSession {
@@ -159,14 +159,14 @@ async fn close_unknown_session_is_a_noop() {
         .unwrap();
     holly
         .send(InMsg::ListSessions {
-            session: corr.clone(),
+            correlation_id: corr.clone(),
         })
         .await
         .unwrap();
     // The `SessionList` reply proves the supervisor survived the no-op close.
     let ev = recv_until(
         &mut sub,
-        |e| matches!(e, OutEvent::SessionList { session, .. } if *session == corr),
+        |e| matches!(e, OutEvent::SessionList { correlation_id, .. } if *correlation_id == corr),
     )
     .await;
     let OutEvent::SessionList { sessions, .. } = ev else {
@@ -252,16 +252,16 @@ async fn close_session_cascades_to_descendants() {
     );
 
     // None of the sub-tree may survive in a subsequent list snapshot.
-    let corr = SessionId::new("query");
+    let corr = "query".to_string();
     holly
         .send(InMsg::ListSessions {
-            session: corr.clone(),
+            correlation_id: corr.clone(),
         })
         .await
         .unwrap();
     let ev = recv_until(
         &mut sub,
-        |e| matches!(e, OutEvent::SessionList { session, .. } if *session == corr),
+        |e| matches!(e, OutEvent::SessionList { correlation_id, .. } if *correlation_id == corr),
     )
     .await;
     let OutEvent::SessionList { sessions, .. } = ev else {
@@ -402,7 +402,7 @@ async fn update_plan_and_update_tasks_round_trip_as_tool_exec() {
     while let Ok(Ok(ev)) =
         tokio::time::timeout(std::time::Duration::from_millis(500), sub.recv()).await
     {
-        if ev.session() != &sid {
+        if ev.session() != Some(&sid) {
             continue;
         }
         match ev {

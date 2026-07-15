@@ -125,7 +125,7 @@ async fn ask_user_emits_question_and_folds_answer_back() {
 
     let mut got_answer = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() != &sid {
+        if ev.session() != Some(&sid) {
             continue;
         }
         if let OutEvent::ToolOutput { tool, output, .. } = &ev {

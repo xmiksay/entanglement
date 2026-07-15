@@ -105,7 +105,12 @@ impl SessionRegistry {
     /// accumulating state even while another session is active, so nothing
     /// is dropped when the user switches away. Returns whether anything changed.
     pub fn handle_out_event(&mut self, event: OutEvent) -> bool {
-        let id = event.session().clone();
+        // A supervisor-global query reply (SessionList/History, #160) names no
+        // single session — it is not a per-session view update, so it never
+        // conjures a phantom view keyed by a correlation id.
+        let Some(id) = event.session().cloned() else {
+            return false;
+        };
         self.view_or_insert(&id).apply_event(event)
     }
 

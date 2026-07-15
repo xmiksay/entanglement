@@ -155,7 +155,9 @@ pub async fn run_ask_user(
         options,
         allow_free_form,
     });
-    holly.emit_status(&session, AgentState::WaitingApproval);
+    // A question is not a permission decision (#160): surface `WaitingAnswer`,
+    // not `WaitingApproval`, so heads render "waiting for answer" distinctly.
+    holly.emit_status(&session, AgentState::WaitingAnswer);
 
     // Only an `AnswerQuestion` for this request folds an answer back; `Stop`
     // (and a dropped registry) unwind silently — core cancels the turn on the same

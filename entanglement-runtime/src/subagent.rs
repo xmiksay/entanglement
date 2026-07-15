@@ -385,7 +385,7 @@ async fn collect_child_answer(events: &mut Receiver<OutEvent>, child: &SessionId
     let mut error: Option<String> = None;
     loop {
         match events.recv().await {
-            Ok(ev) if ev.session() != child => {}
+            Ok(ev) if ev.session() != Some(child) => {}
             Ok(OutEvent::TextDelta { text: delta, .. }) => text.push_str(&delta),
             Ok(OutEvent::Error { message, .. }) => error = Some(message),
             Ok(OutEvent::Done { .. }) => break,

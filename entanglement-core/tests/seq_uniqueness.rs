@@ -52,8 +52,8 @@ async fn seq_of(
 ) -> u64 {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
-        if ev.session() == sid && pred(&ev) {
-            return ev.seq();
+        if ev.session() == Some(sid) && pred(&ev) {
+            return ev.seq().expect("a matched content event carries a seq");
         }
     }
     panic!("timed out waiting for a matching event");
@@ -141,7 +141,7 @@ async fn supervisor_error_for_closed_id_carries_seq_zero() {
         .unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
-        if ev.session() == &sid && matches!(ev, OutEvent::SessionEnded { .. }) {
+        if ev.session() == Some(&sid) && matches!(ev, OutEvent::SessionEnded { .. }) {
             break;
         }
     }
