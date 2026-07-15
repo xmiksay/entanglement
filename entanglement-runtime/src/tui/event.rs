@@ -9,6 +9,13 @@ pub enum Event {
     FocusGained,
     FocusLost,
     Paste(String),
+    /// An external `SIGINT` (`kill -INT`, or a Ctrl+C from a terminal that
+    /// ignores crossterm's keyboard-enhancement flags). In raw mode Ctrl+C
+    /// arrives as a key event (ISIG suppressed), so this only fires for a
+    /// true out-of-band signal — routed through the same two-stage quit path
+    /// (`App::handle_quit_key`) so the terminal is always restored
+    /// (ADR-0087).
+    Interrupt,
 }
 
 pub async fn read() -> Result<Event, std::io::Error> {

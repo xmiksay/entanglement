@@ -133,7 +133,7 @@ pub(super) async fn handle_profile_picker_event(
         KeyCode::Char('e') => {
             app.open_tools_dialog();
         }
-        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
         _ => {}
@@ -172,7 +172,7 @@ pub(super) async fn handle_model_picker_event(
         KeyCode::Up | KeyCode::Char('k') => {
             app.model_picker_prev();
         }
-        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
         _ => {}
@@ -191,7 +191,7 @@ pub(super) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Res
             KeyCode::Enter => app.key_dialog_confirm_provider(),
             KeyCode::Down | KeyCode::Char('j') => app.key_dialog_next(),
             KeyCode::Up | KeyCode::Char('k') => app.key_dialog_prev(),
-            KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
                 return Ok(true);
             }
             _ => {}
@@ -204,9 +204,10 @@ pub(super) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Res
                 let _ = app.submit_key_dialog();
             }
             KeyCode::Backspace => app.key_dialog_pop_char(),
-            // Ctrl-c/q still quits; other control combos are ignored so they
-            // don't land in the key buffer.
-            KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            // Ctrl+Q still quits (immediate escape hatch); Ctrl+C is
+            // intercepted upstream (ADR-0087) before reaching here, and other
+            // control combos are ignored so they don't land in the key buffer.
+            KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
                 return Ok(true);
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -231,7 +232,7 @@ pub(super) async fn handle_tools_dialog_event(app: &mut App, key: KeyEvent) -> R
         KeyCode::Char(' ') => app.tools_dialog_toggle(),
         KeyCode::Down | KeyCode::Char('j') => app.tools_dialog_next(),
         KeyCode::Up | KeyCode::Char('k') => app.tools_dialog_prev(),
-        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
         _ => {}
@@ -257,7 +258,7 @@ pub(super) async fn handle_sessions_modal_event(app: &mut App, key: KeyEvent) ->
             app.create_session();
             app.close_sessions_modal();
         }
-        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
         _ => {}
@@ -300,7 +301,7 @@ pub(super) async fn handle_command_palette_event(
         KeyCode::Up | KeyCode::Char('k') => {
             app.command_palette().select_prev();
         }
-        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
         KeyCode::Char(c) => {
@@ -376,7 +377,7 @@ pub(super) async fn handle_inspect_event(app: &mut App, key: KeyEvent) -> Result
         KeyCode::PageUp => {
             app.inspect_scroll_up(10);
         }
-        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
         _ => {}
@@ -434,7 +435,7 @@ pub(super) async fn handle_resume_modal_event(
         KeyCode::Up | KeyCode::Char('k') => {
             app.resume_prev();
         }
-        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
         _ => {}
@@ -489,7 +490,7 @@ pub(super) async fn handle_question_event(
     }
 
     match key.code {
-        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
         KeyCode::Up | KeyCode::Char('k') => app.question_move(-1),

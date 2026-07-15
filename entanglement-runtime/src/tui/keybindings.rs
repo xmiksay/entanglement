@@ -125,7 +125,7 @@ pub enum Action {
 impl Action {
     pub fn description(&self) -> &str {
         match self {
-            Action::Quit => "Quit the application",
+            Action::Quit => "Quit (Ctrl+Q immediate; Ctrl+C clears then quits on second press)",
             Action::NewSession => "Create a new session",
             Action::ListSessions => "List and switch sessions",
             Action::PickAgent => "Pick agent profile",

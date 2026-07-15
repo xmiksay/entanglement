@@ -88,6 +88,11 @@ pub async fn tui(
 
     let (event_tx, mut event_rx) = mpsc::channel(128);
     spawn_crossterm_task(event_tx.clone());
+    // External SIGINT safety net (ADR-0087): in raw mode Ctrl+C is delivered
+    // as a key event (ISIG suppressed), so this only fires for an out-of-band
+    // `kill -INT` — routing it through the same two-stage quit path so the
+    // terminal is always restored instead of left "half killed".
+    spawn_sigint_task(event_tx.clone());
 
     // Registry-driven entry-agent roster (#119): the `/agent` picker lists every
     // entry agent (`mode ∈ {primary, all}`) — a `subagent` leaf like `explore` is
@@ -108,6 +113,12 @@ pub async fn tui(
 
     loop {
         app.tick_thinking();
+        // Disarm a pending two-stage quit once its window elapses (ADR-0087) so
+        // the "press again" hint disappears promptly, not only on the next key.
+        if app.quit_pending_expired() {
+            app.clear_quit_pending();
+            app.mark_dirty();
+        }
         if app.is_dirty() {
             let wait = FRAME_INTERVAL.saturating_sub(last_draw.elapsed());
             if !wait.is_zero() {
@@ -198,6 +209,29 @@ fn spawn_crossterm_task(tx: mpsc::Sender<Event>) {
                     }
                 }
                 Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    });
+}
+
+/// External-SIGINT safety net (ADR-0087). In raw mode crossterm suppresses
+/// ISIG, so an in-terminal Ctrl+C arrives as a `KeyEvent` handled by the
+/// centralized intercept in `handle_event`; this task therefore only wakes for
+/// a true out-of-band signal (`kill -INT`, or a terminal that ignores
+/// keyboard-enhancement flags). It forwards a synthetic [`Event::Interrupt`]
+/// through the same event channel, which routes through
+/// `App::handle_quit_key` → `restore_terminal`, so an external signal can't
+/// leave the terminal in raw mode.
+fn spawn_sigint_task(tx: mpsc::Sender<Event>) {
+    tokio::spawn(async move {
+        loop {
+            // `ctrl_c()` resolves anew each call; an error means signal
+            // handling is unavailable (exit quietly rather than spin).
+            if tokio::signal::ctrl_c().await.is_err() {
+                break;
+            }
+            if tx.send(Event::Interrupt).await.is_err() {
+                break;
             }
         }
     });

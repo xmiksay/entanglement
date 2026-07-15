@@ -26,6 +26,7 @@ mod inspect;
 mod key;
 mod mention;
 mod pickers;
+mod quit;
 mod state;
 mod tools;
 mod view;
@@ -153,6 +154,12 @@ pub struct App {
     root: PathBuf,
     bash_enabled: bool,
     mention: MentionPopup,
+
+    // Two-stage Ctrl+C (ADR-0087): first press clears transient input + arms a
+    // pending quit; a second press within `quit::QUIT_TIMEOUT` quits. Any other
+    // key — or expiry — disarms.
+    quit_pending: bool,
+    quit_pending_at: Option<Instant>,
 }
 
 impl App {
