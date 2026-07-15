@@ -120,7 +120,23 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `OutEvent` variants but only `Status` is watched, so a turn end rings once.
   Focus reporting (crossterm `EnableFocusChange`) mutes signals while the
   terminal is focused, but best-effort only — terminals that never report focus
-  always signal. **External editor + export** (✅ #13,
+  always signal. **Two-stage Ctrl+C** ([ADR-0087](../adr/0087-two-stage-ctrl-c.md)):
+  a first Ctrl+C clears the transient input (text buffer, `@file` popup,
+  multiline mode) and arms a pending quit; a second within 3s quits. It is
+  intercepted **once** at the top of `handle_event`'s key-press block (before
+  any modal/approval routing), so behaviour is identical in every context —
+  replacing the eleven duplicate `Char('c')` arms that used to quit on the first
+  press. Ctrl+Q remains an unconditional immediate quit (the escape hatch); the
+  first press does **not** close modals (`Esc` already owns that). An armed
+  state shows a "Press Ctrl+C again to quit" hint in the input info bar. An
+  **external** `SIGINT` (`kill -INT`, or a terminal that ignores crossterm's
+  keyboard-enhancement flags — in raw mode Ctrl+C arrives as a key event with
+  ISIG suppressed) is caught by a `tokio::signal::ctrl_c()` task spawned at TUI
+  startup and forwarded as a synthetic `Event::Interrupt` through the same
+  `App::handle_quit_key` path, so an out-of-band signal can never leave the
+  terminal "half killed" (raw mode / alternate screen / mouse capture left on);
+  the panic hook already covered crashes, this covers the signal path.
+  **External editor + export** (✅ #13,
   [ADR-0029](../adr/0029-external-editor-and-markdown-export.md), `tui::editor` +
   `tui::export`): `<leader>e` / `/editor` suspends the TUI and opens `$EDITOR`
   (`$VISUAL`→`$EDITOR`→`vi`) on the input draft, reading the result back into the
