@@ -125,6 +125,7 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         InMsg::SetModel {
             provider, model, ..
         } => SessionCmd::SetModel(provider, model),
+        InMsg::Oneshot { op, args, .. } => SessionCmd::Oneshot(op, args),
         // Approve/Reject/AnswerQuestion and the ListSessions/ReplayFrom/
         // CloseSession/HibernateSession queries are filtered out before routing
         // (see supervisor); Resume and Spawn are handled specially. None reach here.

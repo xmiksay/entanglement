@@ -1,11 +1,12 @@
 //! Tests for session replay fidelity.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Llm, LlmRequest, LlmResponse,
-    LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
+    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
 };
 
 /// An LLM that replays a scripted list of responses, in order.
@@ -625,6 +626,201 @@ async fn fully_resolved_tail_keeps_turn_live_for_continuation() {
         .expect("drained-but-unfinished tail keeps the turn live");
     assert!(turn.pending.is_empty(), "nothing left to re-offer");
     assert_eq!(session.ctx.messages().len(), 3);
+}
+
+// --- Session compaction (#324, ADR-0082) ---------------------------------
+
+#[tokio::test]
+async fn compacted_record_folds_via_apply_compaction() {
+    let sid = SessionId::new("test-compacted");
+    let records = vec![
+        prompt_record(&sid, "hello"),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: 1,
+                text: "hi there".to_string(),
+            },
+        ),
+        (
+            None,
+            OutEvent::Done {
+                session: sid.clone(),
+                seq: 2,
+            },
+        ),
+        (
+            None,
+            OutEvent::Compacted {
+                session: sid.clone(),
+                seq: 3,
+                summary: "user said hello, agent replied".to_string(),
+                kept: 0,
+            },
+        ),
+        (
+            Some(entanglement_core::InMsg::prompt(
+                sid.clone(),
+                "what's next?".to_string(),
+            )),
+            OutEvent::Status {
+                session: sid.clone(),
+                state: entanglement_core::AgentState::Thinking,
+            },
+        ),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: 4,
+                text: "next steps".to_string(),
+            },
+        ),
+        (
+            None,
+            OutEvent::Done {
+                session: sid.clone(),
+                seq: 5,
+            },
+        ),
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let messages = session.ctx.messages();
+
+    // The pre-compaction turn is gone; only the summary + the post-compaction
+    // turn survive.
+    assert_eq!(
+        messages.len(),
+        3,
+        "summary + user + assistant: {messages:?}"
+    );
+    assert_eq!(messages[0].role, entanglement_core::MessageRole::User);
+    assert!(messages[0]
+        .text()
+        .contains("user said hello, agent replied"));
+    assert_eq!(messages[1].text(), "what's next?");
+    assert_eq!(messages[2].text(), "next steps");
+}
+
+#[tokio::test]
+async fn compacted_record_preserves_kept_trailing_messages() {
+    let sid = SessionId::new("test-compacted-kept");
+    let records = vec![
+        prompt_record(&sid, "first"),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: 1,
+                text: "reply one".to_string(),
+            },
+        ),
+        (
+            None,
+            OutEvent::Done {
+                session: sid.clone(),
+                seq: 2,
+            },
+        ),
+        (
+            None,
+            OutEvent::Compacted {
+                session: sid.clone(),
+                seq: 3,
+                summary: "earlier summary".to_string(),
+                kept: 1,
+            },
+        ),
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let messages = session.ctx.messages();
+
+    // summary + the 1 kept trailing message (the assistant reply).
+    assert_eq!(messages.len(), 2);
+    assert!(messages[0].text().contains("earlier summary"));
+    assert_eq!(messages[1].text(), "reply one");
+}
+
+/// Live-vs-replayed fidelity: run a real session through `Holly` (prompt,
+/// `compact`, another prompt), capture the resulting `(Option<InMsg>,
+/// OutEvent)` log the way the persistence tap would (each `Out` paired with
+/// the `In` that most recently preceded it), and assert `Session::replay`
+/// reconstructs the same context the live compaction produced.
+#[tokio::test]
+async fn live_compaction_replays_to_the_same_context() {
+    let sid = SessionId::new("test-live-compact");
+    let cfg = factory(vec![]);
+    let holly = Holly::spawn(cfg.clone());
+    let mut out_sub = holly.subscribe();
+    let mut in_sub = holly.subscribe_inbound();
+
+    let records = Arc::new(std::sync::Mutex::new(
+        Vec::<(Option<InMsg>, OutEvent)>::new(),
+    ));
+    let recorder = records.clone();
+    let recorder_sid = sid.clone();
+    tokio::spawn(async move {
+        let mut pending_in: Option<InMsg> = None;
+        loop {
+            tokio::select! {
+                biased;
+                Ok(msg) = in_sub.recv() => {
+                    if msg.session() == Some(&recorder_sid) {
+                        pending_in = Some(msg);
+                    }
+                }
+                Ok(ev) = out_sub.recv() => {
+                    if ev.session() == Some(&recorder_sid) {
+                        recorder.lock().unwrap().push((pending_in.take(), ev));
+                    }
+                }
+                else => break,
+            }
+        }
+    });
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "hello"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    holly
+        .send(InMsg::Oneshot {
+            session: sid.clone(),
+            op: "compact".to_string(),
+            args: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    holly
+        .send(InMsg::prompt(sid.clone(), "what's next?"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let records = records.lock().unwrap().clone();
+    let replayed = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let messages = replayed.ctx.messages();
+
+    assert_eq!(
+        messages.len(),
+        3,
+        "summary + user + assistant: {messages:?}"
+    );
+    assert_eq!(messages[0].role, entanglement_core::MessageRole::User);
+    assert!(
+        messages[0].text().starts_with("[Conversation summary"),
+        "live compaction must fold into the same summary-user shape replay expects: {:?}",
+        messages[0]
+    );
+    assert_eq!(messages[1].text(), "what's next?");
+    assert_eq!(messages[2].text(), "ok");
 }
 
 #[tokio::test]

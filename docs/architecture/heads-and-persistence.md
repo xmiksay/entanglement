@@ -207,6 +207,16 @@ assistant/tool messages and the model appears to forget the conversation.
   seam for embedders of `entanglement-core`: records are serde values storable
   anywhere (a DB, a queue); the JSONL store here is the reference
   implementation.
+- **Compaction persists for free** (#324,
+  [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).
+  `InMsg::Oneshot`'s `"compact"` op emits `OutEvent::Compacted{summary,kept}` —
+  an ordinary seq-bearing content event — so it needed **zero** persistence-tap
+  code: the tap already appends every `OutEvent` with `session().is_some()`
+  regardless of variant, and the `ReplayFrom` history responder (§6, below)
+  already includes every event with `seq().is_some()`. `Session::replay`'s
+  `Compacted` fold calls `Context::apply_compaction`, so a resumed session
+  stays compacted instead of re-folding the full pre-compaction transcript the
+  log would otherwise still hold.
 - **Pluggable append target — `RecordSink`** (#313). The tap's *what to persist*
   (route each record to its root, tombstone lag gaps) is split from its *where to
   persist*: it appends every finished `LogRecord` through a

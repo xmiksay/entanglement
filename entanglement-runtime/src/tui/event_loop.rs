@@ -43,7 +43,7 @@ pub(super) async fn handle_event(
                     return Ok(false);
                 }
                 if app.showing_command_palette() {
-                    return handle_command_palette_event(app, key).await;
+                    return handle_command_palette_event(app, holly, key).await;
                 }
                 if app.showing_resume_modal() {
                     return handle_resume_modal_event(app, holly, key).await;
@@ -240,6 +240,16 @@ pub(super) async fn handle_event(
                                         if let Some(cmd) =
                                             crate::tui::commands::parse_command(&text)
                                         {
+                                            // `/compact` needs both the trailing
+                                            // free text (→ `args.instructions`)
+                                            // and `holly` to send the oneshot op
+                                            // — neither is available to the sync
+                                            // `execute_command` dispatch other
+                                            // commands use, so it's handled here.
+                                            if cmd == crate::tui::commands::Command::Compact {
+                                                send_compact(app, holly, &cmd, &text).await;
+                                                return Ok(false);
+                                            }
                                             if app.execute_command(cmd) {
                                                 return Ok(true);
                                             }
@@ -333,6 +343,33 @@ pub(super) async fn handle_event(
         }
     }
     Ok(false)
+}
+
+/// Send `/compact [instructions]` as an [`InMsg::Oneshot`] `"compact"` op
+/// (#324, ADR-0082): any text after the command name becomes
+/// `args.instructions`. The reducer renders the result (`Compacted`) as a
+/// transcript notice once it arrives; nothing is recorded here — unlike a
+/// prompt, a oneshot op has no user-authored message to echo locally.
+async fn send_compact(app: &App, holly: &Holly, cmd: &crate::tui::commands::Command, text: &str) {
+    let instructions = text
+        .trim()
+        .strip_prefix(&cmd.slash_name())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let mut args = serde_json::Map::new();
+    if let Some(instructions) = instructions {
+        args.insert(
+            "instructions".to_string(),
+            serde_json::Value::String(instructions.to_string()),
+        );
+    }
+    let _ = holly
+        .send(InMsg::Oneshot {
+            session: app.active_session_id().clone(),
+            op: "compact".to_string(),
+            args: serde_json::Value::Object(args),
+        })
+        .await;
 }
 
 /// Send an [`InMsg::Approve`] with the chosen [`ApprovalScope`] (#174) and clear

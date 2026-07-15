@@ -18,6 +18,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | Stop{session}
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
+         | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
          | ReplayFrom{session,correlation_id,after_seq}   // late-subscriber history fetch → History (#160, ADR-0072)
@@ -46,6 +47,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?}  // per-round-trip usage + cost (#192)
          | Error{session,seq,message}
          | Done{session,seq}
+         | Compacted{session,seq,summary,kept}   // session compaction ran; persisted, replay-folds via Context::apply_compaction (#324, ADR-0082)
          | FileChange{session,seq,path,change_kind,hash}   // file-change audit: runtime executor emits on edit/write; hash = sha256(after) (#202, ADR-0060)
 ```
 
@@ -164,6 +166,29 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
     supervisor-shed errors were invisible in the TUI). A supervisor error for a
     session that *is* still live (e.g. its channel saturated) mints a real seq
     from the live counter and takes its ordered place in that stream.
+
+**Single-shot session ops — `InMsg::Oneshot`** (#324, [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).
+A generic **wire envelope** — `{session, op: String, args: Value}` — for a single
+out-of-band LLM call outside the turn loop, not a plugin registry: the
+genericity lives in the wire shape, so a future op needs no new `InMsg`
+variant/`wire_allowed`/`SessionCmd`, just a new `match` arm in
+`session::ops::run_oneshot`. `"compact"` (session compaction via LLM
+summarization) is the first and only op today; an unknown `op` is a
+recoverable `Error`. Wire-allowed (mutates only the caller's own session) and
+deferred while a turn is live via the same stash gate as `SetAgent`/`SetModel`
+— a oneshot never runs concurrently with a turn, which is what lets it reuse
+the session's `&mut Llm` handle directly instead of racing the turn loop's
+inbox `select!`. On success it emits the **persisted, seq-bearing**
+`OutEvent::Compacted{session,seq,summary,kept}` — persistence and
+`ReplayFrom` history cover it for free (both are variant-agnostic over any
+`seq()`-bearing event) — then the ordinary `Usage`/`Done`/`Status::Done`
+sequence; on failure, the ordinary `Error`/`Done`/`Status::Error` triple with
+`Context` left untouched. `Session::replay`'s `Compacted` fold calls the same
+`Context::apply_compaction(summary, kept)` the live path does (flushing any
+pending assistant/tool buffers first, like the `Done` arm), so a resumed
+session reconstructs identical context. `kept` (trailing messages preserved
+verbatim after the summary) is always `0` in v1 — keep-tail is deferred, but
+the field is real wire surface already.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/0004-structured-plan-and-task-events.md)
 

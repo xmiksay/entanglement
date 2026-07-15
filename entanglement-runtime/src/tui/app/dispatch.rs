@@ -51,6 +51,11 @@ impl App {
                 self.toggle_resume_modal();
                 false
             }
+            // Needs `holly` + (for the typed form) the trailing input text,
+            // neither of which this sync dispatch has — both call sites
+            // (`event_loop`'s Enter handler and the command palette) intercept
+            // `Compact` before it reaches here (#324).
+            Command::Compact => false,
         }
     }
 

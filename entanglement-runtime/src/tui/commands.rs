@@ -14,6 +14,7 @@ pub enum Command {
     Editor,
     Export,
     Resume,
+    Compact,
 }
 
 impl Command {
@@ -31,6 +32,7 @@ impl Command {
             Command::Inspect => "inspect",
             Command::Editor => "editor",
             Command::Export => "export",
+            Command::Compact => "compact",
         }
     }
 
@@ -48,6 +50,7 @@ impl Command {
             Command::Editor => "Open editor",
             Command::Export => "Export conversation",
             Command::Resume => "Continue a past session",
+            Command::Compact => "Compact the conversation history (LLM summary)",
         }
     }
 
@@ -70,6 +73,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Inspect,
         Command::Editor,
         Command::Export,
+        Command::Compact,
     ]
 }
 
@@ -219,6 +223,18 @@ mod tests {
         assert_eq!(parse_command("/inspect"), Some(Command::Inspect));
         assert_eq!(parse_command("/editor"), Some(Command::Editor));
         assert_eq!(parse_command("/export"), Some(Command::Export));
+        assert_eq!(parse_command("/compact"), Some(Command::Compact));
+    }
+
+    #[test]
+    fn test_parse_command_compact_with_trailing_instructions() {
+        // The command name parses the same whether or not free text follows;
+        // the trailing text is extracted separately (`event_loop::send_compact`),
+        // not by `parse_command`.
+        assert_eq!(
+            parse_command("/compact keep the auth flow details"),
+            Some(Command::Compact)
+        );
     }
 
     #[test]
