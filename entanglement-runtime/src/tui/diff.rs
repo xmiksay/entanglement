@@ -7,8 +7,19 @@ use ratatui::{
 pub struct DiffRenderer;
 
 impl DiffRenderer {
+    /// Render an `oldString` → `newString` change as a unified diff, the way an
+    /// `edit` tool block shows its edit expanded (#341). The hunks come out in
+    /// the same `+`/`-` green/red style as [`render_unified`](Self::render_unified).
+    // `render_expansion` (its only caller) is wired into the live transcript by
+    // #340's expanded branch; until that lands this runs only under test.
     #[allow(dead_code)]
-    pub fn render_unified(diff: &str) -> Text<'_> {
+    pub fn render_change(old: &str, new: &str) -> Text<'static> {
+        let patch = diffy::create_patch(old, new);
+        Self::render_hunks(&patch)
+    }
+
+    #[allow(dead_code)]
+    pub fn render_unified(diff: &str) -> Text<'static> {
         if diff.is_empty() {
             return Text::default();
         }
@@ -17,6 +28,14 @@ impl DiffRenderer {
             Patch::from_str("").unwrap_or_else(|_| Patch::from_str("@@ -0,0 +0,0 @@\n").unwrap())
         });
 
+        Self::render_hunks(&patch)
+    }
+
+    /// Shared hunk → styled-line rendering for [`render_change`](Self::render_change)
+    /// and [`render_unified`](Self::render_unified): inserts green `+`, deletes
+    /// red `-`, context dimmed.
+    #[allow(dead_code)]
+    fn render_hunks(patch: &Patch<'_, str>) -> Text<'static> {
         let mut lines = Vec::new();
 
         for hunk in patch.hunks() {
@@ -143,5 +162,21 @@ mod tests {
         let diff = "";
         let result = DiffRenderer::render_unified(diff);
         assert!(result.lines.is_empty());
+    }
+
+    #[test]
+    fn test_render_change_produces_delete_insert_pair() {
+        let result =
+            DiffRenderer::render_change("line 1\nold line\nline 3\n", "line 1\nnew line\nline 3\n");
+        let has_delete = result
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content == "- "));
+        let has_insert = result
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content == "+ "));
+        assert!(has_delete, "one-line change should render a `-` line");
+        assert!(has_insert, "one-line change should render a `+` line");
     }
 }
