@@ -243,18 +243,19 @@ pub(super) fn flush_tool_call(
     out.push(theme.decorate(Line::from(header), colors, available_width));
 
     if expanded {
-        for line in input.lines() {
-            let content_line = Line::from(format!("  {line}"));
-            for wline in wrap::wrap_line(content_line, available_width.saturating_sub(4)) {
-                out.push(theme.decorate(wline, colors, available_width));
-            }
-        }
-        if let Some(output) = output {
-            let rendered =
-                tool_render::render_tool_output(Some(tool), output, theme, available_width);
-            for line in rendered.lines {
-                out.push(theme.decorate(line, colors, available_width));
-            }
+        // The expanded body means something per tool (#341): `read` → the file
+        // body, `edit` → a `+`/`-` diff, `write` → the new content, `bash`/`call`
+        // → the command output, everything else → pretty-printed input + output.
+        // The primary arg already lives in the header, so it is never re-dumped.
+        let rendered = tool_render::render_expansion(
+            Some(tool),
+            input,
+            output.unwrap_or(""),
+            theme,
+            available_width,
+        );
+        for line in rendered.lines {
+            out.push(theme.decorate(line, colors, available_width));
         }
     }
 
