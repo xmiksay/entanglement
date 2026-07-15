@@ -88,6 +88,29 @@ fn write_project_skill(root: &std::path::Path) {
     .unwrap();
 }
 
+#[test]
+fn cross_vendor_project_skill_resolves_root_dir() {
+    // A skill under the cross-vendor `.agents/skills/` project dir (ADR-0074)
+    // loads through the same registry with its `root_dir` resolved, so the
+    // tier-2 `load_skill` path-substitution pipeline works unchanged.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let skill_dir = root.join(".agents/skills/vendor");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: vendor\ndescription: cross-vendor skill\n---\nbody\n",
+    )
+    .unwrap();
+
+    std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
+    let registry = load_registry(root).unwrap();
+    std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
+
+    let meta = registry.get("vendor").expect("cross-vendor skill loaded");
+    assert_eq!(meta.root_dir.as_deref(), Some(skill_dir.as_path()));
+}
+
 #[tokio::test]
 async fn load_skill_then_read_a_substituted_ref() {
     let id = std::process::id();

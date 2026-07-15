@@ -16,8 +16,14 @@
 //!    the *same* loader. Stock skills are single-file (body only, no on-disk
 //!    `references/`/`scripts/` payload); anything needing supporting files lives
 //!    on disk.
-//! 2. **user** — `${config_dir}/entanglement/skills/**/SKILL.md`.
-//! 3. **project** — `<root>/.entanglement/skills/**/SKILL.md`.
+//! 2. **user** — `~/.claude/skills/**/SKILL.md` (cross-vendor, lenient), then
+//!    `${config_dir}/entanglement/skills/**/SKILL.md` (native, strict).
+//! 3. **project** — `.claude/skills` then `.agents/skills` (both lenient), then
+//!    `<root>/.entanglement/skills/**/SKILL.md` (native, strict — highest).
+//!
+//! Foreign (cross-vendor) dirs are parsed leniently per ADR-0074: unknown
+//! frontmatter keys are ignored and a malformed file is warned and skipped —
+//! a file entanglement doesn't own must not abort the load.
 //!
 //! # Disclosure
 //!
@@ -34,6 +40,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+use crate::layers::Strictness;
 use crate::system_prompt::SkillDisclosure;
 
 pub mod load_skill;
@@ -83,6 +90,20 @@ struct SkillFrontmatter {
     user_only: bool,
     #[serde(default)]
     allowed_tools: Option<Vec<String>>,
+}
+
+/// Lenient frontmatter for cross-vendor skills (ADR-0074): only the tier-1
+/// contract is read, every other key (Claude Code's `allowed-tools`, `license`,
+/// `argument-hint`, …) is ignored. Claude's `disable-model-invocation` maps to
+/// [`SkillMeta::user_only`] — same semantics, the model must not self-trigger.
+/// Claude's `allowed-tools` is deliberately dropped: its tool names don't map
+/// onto entanglement's, and `allowed_tools` enforcement is deferred anyway.
+#[derive(Debug, Deserialize)]
+struct ForeignSkillFrontmatter {
+    name: String,
+    description: String,
+    #[serde(default, rename = "disable-model-invocation")]
+    disable_model_invocation: bool,
 }
 
 /// Named set of discovered [`SkillMeta`], keyed by `name`. [`insert`][Self::insert]
@@ -153,28 +174,56 @@ pub use crate::layers::Layer as SkillLayer;
 /// pre-resolved `root_dir`, and the raw file content.
 struct RawSkill {
     layer: SkillLayer,
+    strictness: Strictness,
     source: String,
     root_dir: Option<PathBuf>,
     content: String,
 }
 
-/// Load the skill registry for `root`: embedded stock skills, then the user dir,
-/// then the project dir — later layers replace earlier ones on a `name`
-/// collision (project > user > built-in). A malformed file in any layer aborts.
+/// Parse one discovered `SKILL.md` honoring its layer's strictness (ADR-0074):
+/// strict → the current loud behavior (a malformed file aborts the load);
+/// lenient → `Ok(None)` after a `warn!`, so a foreign file entanglement doesn't
+/// own is skipped instead of bricking startup.
+fn parse_raw(raw: &RawSkill) -> Result<Option<SkillMeta>> {
+    match raw.strictness {
+        Strictness::Strict => parse_skill(&raw.content, raw.root_dir.clone())
+            .with_context(|| format!("parsing skill {}", raw.source))
+            .map(Some),
+        Strictness::Lenient => match parse_foreign_skill(&raw.content, raw.root_dir.clone()) {
+            Ok(meta) => Ok(Some(meta)),
+            Err(e) => {
+                tracing::warn!(
+                    source = %raw.source,
+                    error = %format!("{e:#}"),
+                    "skipping malformed foreign skill definition",
+                );
+                Ok(None)
+            }
+        },
+    }
+}
+
+/// Load the skill registry for `root`: embedded stock skills, then the user
+/// dirs, then the project dirs — later layers replace earlier ones on a `name`
+/// collision (project > user > built-in). A malformed file in a native layer
+/// aborts; a malformed foreign file is warned and skipped.
 pub fn load_registry(root: &Path) -> Result<SkillRegistry> {
     let mut reg = SkillRegistry::default();
-    // Track the winning layer per name so a later-wins collision is no longer
-    // silent (#186): emit a `replaces=<prior layer>` debug at the overwrite,
-    // matching the provenance `inspect skills` surfaces.
-    let mut winning: HashMap<String, SkillLayer> = HashMap::new();
+    // Track the winning (layer, source) per name so a later-wins collision is no
+    // longer silent (#186): emit a `replaces=<prior source>` debug at the
+    // overwrite, matching the provenance `inspect skills` surfaces.
+    let mut winning: HashMap<String, (SkillLayer, String)> = HashMap::new();
     for raw in discover(root)? {
-        let skill = parse_skill(&raw.content, raw.root_dir)
-            .with_context(|| format!("parsing skill {}", raw.source))?;
-        if let Some(prior) = winning.insert(skill.name.clone(), raw.layer) {
+        let Some(skill) = parse_raw(&raw)? else {
+            continue;
+        };
+        if let Some((prior_layer, prior_source)) =
+            winning.insert(skill.name.clone(), (raw.layer, raw.source.clone()))
+        {
             tracing::debug!(
                 skill = %skill.name,
                 layer = raw.layer.label(),
-                replaces = prior.label(),
+                replaces = %format!("{} ({})", prior_layer.label(), prior_source),
                 source = %raw.source,
                 "skill definition overrides a lower layer",
             );
@@ -201,14 +250,16 @@ pub struct SkillResolution {
 
 /// Resolve every skill for `root` with full provenance (#186), applying the same
 /// layer precedence as [`load_registry`] but keeping *which* layer won and what
-/// it shadowed. Sorted by name for a stable table. A malformed file in any layer
-/// is a loud error, exactly as at load — mirrors [`crate::agents::resolve_registry`].
+/// it shadowed. Sorted by name for a stable table. Malformed files behave
+/// exactly as at load (native aborts, foreign warns and skips) — mirrors
+/// [`crate::agents::resolve_registry`].
 pub fn resolve_registry(root: &Path) -> Result<Vec<SkillResolution>> {
     let mut order: Vec<String> = Vec::new();
     let mut by_name: HashMap<String, Vec<(SkillLayer, String, SkillMeta)>> = HashMap::new();
     for raw in discover(root)? {
-        let meta = parse_skill(&raw.content, raw.root_dir)
-            .with_context(|| format!("parsing skill {}", raw.source))?;
+        let Some(meta) = parse_raw(&raw)? else {
+            continue;
+        };
         let name = meta.name.clone();
         let entry = by_name.entry(name.clone()).or_default();
         if entry.is_empty() {
@@ -249,6 +300,7 @@ fn discover(root: &Path) -> Result<Vec<RawSkill>> {
             // Embedded built-ins are guarded by `built_ins_parse`, so a parse
             // failure downstream is a build-time bug, not a runtime condition.
             layer: SkillLayer::BuiltIn,
+            strictness: Strictness::Strict,
             source: format!("built-in ({file})"),
             root_dir: None,
             content: (*contents).to_string(),
@@ -261,7 +313,12 @@ fn discover(root: &Path) -> Result<Vec<RawSkill>> {
 /// `raws`. A missing dir is fine; an unreadable dir or file is an error.
 /// Symlinked duplicates (a link to an already-seen file, or a directory cycle)
 /// are deduped by canonical path.
-fn discover_dir(layer: SkillLayer, dir: &Path, raws: &mut Vec<RawSkill>) -> Result<()> {
+fn discover_dir(
+    layer: SkillLayer,
+    dir: &Path,
+    strictness: Strictness,
+    raws: &mut Vec<RawSkill>,
+) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -277,6 +334,7 @@ fn discover_dir(layer: SkillLayer, dir: &Path, raws: &mut Vec<RawSkill>) -> Resu
         let root_dir = skill_md.parent().map(Path::to_path_buf);
         raws.push(RawSkill {
             layer,
+            strictness,
             source: skill_md.display().to_string(),
             root_dir,
             content,
@@ -346,6 +404,25 @@ fn parse_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
         description: fm.description,
         user_only: fm.user_only,
         allowed_tools: fm.allowed_tools,
+        root_dir,
+        body,
+    })
+}
+
+/// Parse a cross-vendor `SKILL.md` via the lenient [`ForeignSkillFrontmatter`]
+/// (unknown keys ignored, ADR-0074).
+fn parse_foreign_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
+    let (frontmatter, body) = crate::frontmatter::split(content)?;
+    let fm: ForeignSkillFrontmatter =
+        serde_yaml::from_str(&frontmatter).context("invalid skill frontmatter")?;
+    if fm.name.trim().is_empty() {
+        bail!("skill frontmatter `name` must not be empty");
+    }
+    Ok(SkillMeta {
+        name: fm.name,
+        description: fm.description,
+        user_only: fm.disable_model_invocation,
+        allowed_tools: None,
         root_dir,
         body,
     })
@@ -570,6 +647,109 @@ mod tests {
         let err = load_registry(root).unwrap_err();
         std::env::remove_var(SKILLS_DIR_ENV);
         assert!(format!("{err:#}").contains("bad"), "got: {err:#}");
+    }
+
+    #[test]
+    fn foreign_skill_with_unknown_keys_loads_leniently() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Claude-Code-style frontmatter: keys the strict schema would reject.
+        write_skill(
+            &root.join(".claude").join("skills"),
+            "arch",
+            "---\nname: arch\ndescription: from claude\nallowed-tools: Bash(git:*), Read\nlicense: MIT\n---\nbody",
+        );
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
+        let reg = load_registry(root).unwrap();
+        std::env::remove_var(SKILLS_DIR_ENV);
+
+        let s = reg.get("arch").expect("foreign skill discovered");
+        assert_eq!(s.description, "from claude");
+        // Claude's `allowed-tools` is deliberately dropped (ADR-0074).
+        assert_eq!(s.allowed_tools, None);
+        assert!(!s.user_only);
+    }
+
+    #[test]
+    fn foreign_disable_model_invocation_maps_to_user_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_skill(
+            &root.join(".claude").join("skills"),
+            "deploy",
+            "---\nname: deploy\ndescription: d\ndisable-model-invocation: true\n---\nb",
+        );
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
+        let reg = load_registry(root).unwrap();
+        std::env::remove_var(SKILLS_DIR_ENV);
+
+        assert!(reg.get("deploy").unwrap().user_only);
+    }
+
+    #[test]
+    fn malformed_foreign_skill_is_skipped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let claude = root.join(".claude").join("skills");
+        write_skill(&claude, "bad", "no frontmatter at all");
+        write_skill(&claude, "good", "---\nname: good\ndescription: ok\n---\nb");
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
+        let reg = load_registry(root).unwrap();
+        std::env::remove_var(SKILLS_DIR_ENV);
+
+        assert!(reg.get("bad").is_none(), "malformed foreign skill skipped");
+        assert_eq!(reg.get("good").unwrap().description, "ok");
+    }
+
+    #[test]
+    fn agents_dir_skill_discovered_and_native_project_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_skill(
+            &root.join(".claude").join("skills"),
+            "dup",
+            "---\nname: dup\ndescription: from .claude\n---\nc",
+        );
+        write_skill(
+            &root.join(".agents").join("skills"),
+            "dup",
+            "---\nname: dup\ndescription: from .agents\n---\na",
+        );
+        write_skill(
+            &root.join(".agents").join("skills"),
+            "only-agents",
+            "---\nname: only-agents\ndescription: cross-vendor\n---\nb",
+        );
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
+        let reg = load_registry(root).unwrap();
+        // Native `.entanglement` beats both foreign project dirs.
+        write_skill(
+            &root.join(".entanglement").join("skills"),
+            "dup",
+            "---\nname: dup\ndescription: from native\n---\nn",
+        );
+        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
+        let reg2 = load_registry(root).unwrap();
+        std::env::remove_var(SKILLS_DIR_ENV);
+
+        assert_eq!(reg.get("only-agents").unwrap().description, "cross-vendor");
+        // `.agents` (cross-vendor) beats `.claude` (vendor-specific)…
+        assert_eq!(reg.get("dup").unwrap().description, "from .agents");
+        // …and `.entanglement` (native) beats both.
+        assert_eq!(reg2.get("dup").unwrap().description, "from native");
+        let resolved = {
+            std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
+            let r = resolve_registry(root).unwrap();
+            std::env::remove_var(SKILLS_DIR_ENV);
+            r
+        };
+        let dup = resolved.iter().find(|r| r.meta.name == "dup").unwrap();
+        assert_eq!(dup.layer, SkillLayer::Project);
+        assert_eq!(dup.shadowed.len(), 2, "both foreign defs recorded");
     }
 
     #[test]
