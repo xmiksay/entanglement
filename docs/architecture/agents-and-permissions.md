@@ -226,7 +226,20 @@ below realize one model:
   write re-reads the current on-disk state under the lock and merges before
   writing, so a second instance's own concurrent update survives instead of being
   clobbered by a write from stale in-memory state; `write_grants` moved onto the
-  shared `atomic_write`.
+  shared `atomic_write`. A debounced `notify` firing is *not* on its own proof
+  that anything actually changed — on some filesystems a bare content `read()`
+  of a watched file (which `reload()`'s own loaders do on every pass) is
+  itself observable to `notify`, which without a guard makes the watcher
+  perpetually re-trigger itself (reload → reads the watched files → fires
+  `notify` → reload → …), surfacing as an unbounded stream of "definitions
+  reloaded" notices. `watch::spawn_watcher` guards against this with a cheap
+  `fingerprint()`: `(path, inode, size, mtime)` for every file under the
+  watched trees, via `stat()` only — deliberately never opening file content,
+  since that's the operation being guarded against. A firing whose fingerprint
+  is unchanged from the last one is a no-op (skip, no reparse, no notice); one
+  that differs runs the real reload and updates the baseline. Because the
+  check is `stat()`-only, even a spurious storm of firings costs a handful of
+  metadata syscalls per tick instead of a full skill/agent reparse.
 - **Physical tool restriction (✅ #116, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)):**
   an agent's `tools` allowlist / `disallowed_tools` denylist masks its tool set —
   `registry ∩ allowlist − denylist` — on *both* sides of the core↔runtime seam,
