@@ -124,6 +124,15 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Reveals the sidebar (idempotent) — backs `/plan` and `/tasks`, which
+    /// jump to the sidebar's Plan Outline / Tasks sections (#325).
+    pub fn show_sidebar(&mut self) {
+        if !self.sidebar_visible {
+            self.sidebar_visible = true;
+            self.mark_dirty();
+        }
+    }
+
     pub fn theme(&self) -> Theme {
         self.theme
     }

@@ -27,8 +27,14 @@ impl App {
                 self.open_key_dialog();
                 false
             }
-            Command::Plan => false,
-            Command::Tasks => false,
+            Command::Plan => {
+                self.show_sidebar();
+                false
+            }
+            Command::Tasks => {
+                self.show_sidebar();
+                false
+            }
             Command::Inspect => {
                 self.toggle_inspect();
                 false
@@ -109,5 +115,28 @@ impl App {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use entanglement_core::SessionId;
+
+    #[test]
+    fn tasks_command_shows_the_sidebar() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        assert!(!app.showing_sidebar(), "sidebar starts hidden");
+
+        let quit = app.execute_command(Command::Tasks);
+        assert!(!quit, "/tasks does not quit");
+        assert!(app.showing_sidebar(), "/tasks reveals the sidebar");
+    }
+
+    #[test]
+    fn plan_command_shows_the_sidebar() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.execute_command(Command::Plan);
+        assert!(app.showing_sidebar(), "/plan reveals the sidebar");
     }
 }
