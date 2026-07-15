@@ -139,6 +139,22 @@ async fn wait_for(path: &std::path::Path, secs: u64) -> bool {
     path.exists()
 }
 
+/// Poll until `path` holds parseable JSON. A hook like `cat > file` truncates the
+/// file into existence *before* it finishes writing stdin, so a bare `exists()`
+/// check races the content: wait for non-empty, valid JSON rather than mere
+/// presence (fixes a flaky empty-file read on slow CI).
+async fn read_json_when_ready(path: &std::path::Path, secs: u64) -> serde_json::Value {
+    for _ in 0..(secs * 20) {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                return v;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("{} never became readable JSON", path.display());
+}
+
 #[tokio::test]
 async fn pre_tool_use_hook_blocks_the_tool() {
     let s = scratch("pre-block");
@@ -267,9 +283,7 @@ async fn user_prompt_submit_hook_fires_on_prompt() {
         .unwrap();
     let _ = collect(sub, &sid).await;
 
-    assert!(wait_for(&out, 3).await, "user_prompt_submit hook never ran");
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let v = read_json_when_ready(&out, 3).await;
     assert_eq!(v["event"], "user_prompt_submit");
     assert_eq!(v["prompt"], "please help");
 }

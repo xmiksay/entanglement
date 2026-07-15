@@ -54,3 +54,18 @@
 #      tools: [write, edit]
 #  user_prompt_submit:
 #    - command: "logger -t entanglement-prompt"
+
+# MCP servers — attach external tool servers (#198). Each entry spawns a server
+# subprocess (JSON-RPC over stdio) and registers its tools into the engine, named
+# `mcp__<server>__<tool>`. They obey the same permission profiles as host tools. A
+# server that fails to connect is logged and skipped, never fatal. Fields:
+#   command   — executable to spawn (required; looked up on PATH)
+#   args      — argument list (default [])
+#   env       — extra environment variables (default {})
+#   disabled  — skip this server without deleting the block (default false)
+#mcp:
+#  everything:
+#    command: npx
+#    args: ["-y", "@modelcontextprotocol/server-everything"]
+#    env:
+#      EXAMPLE_TOKEN: "…"

@@ -37,6 +37,10 @@ pub mod hooks;
 pub mod host;
 pub mod inspect;
 pub mod layers;
+// MCP client — attach external tool servers as a runtime-side tool provider
+// (#198). Lives in the lean library (tokio process + serde_json only), so an
+// embedder gets external tools without any CLI/TUI/transport dep.
+pub mod mcp;
 pub mod permission;
 pub mod persistence;
 pub mod plan_tasks;

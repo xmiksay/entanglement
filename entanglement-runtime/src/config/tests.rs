@@ -50,6 +50,7 @@ fn merge_user(user: &str) -> Config {
         verbose: raw.verbose,
         permissions,
         hooks: raw.hooks,
+        mcp: raw.mcp,
     }
 }
 
