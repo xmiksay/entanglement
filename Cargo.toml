@@ -8,10 +8,15 @@ edition = "2021"
 rust-version = "1.82"
 license = "MIT"
 repository = "https://github.com/xmiksay/entanglement"
+homepage = "https://github.com/xmiksay/entanglement"
+keywords = ["ai", "agent", "llm", "coding-assistant"]
+categories = ["development-tools"]
 
 [workspace.dependencies]
-entanglement-core = { path = "entanglement-core" }
-entanglement-provider = { path = "entanglement-provider" }
+# `version` alongside `path` so `cargo publish` resolves the registry dep
+# (path-only deps are rejected at packaging time).
+entanglement-core = { path = "entanglement-core", version = "0.1.0" }
+entanglement-provider = { path = "entanglement-provider", version = "0.1.0" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

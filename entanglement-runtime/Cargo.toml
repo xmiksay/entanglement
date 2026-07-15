@@ -6,6 +6,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+# Document the full feature surface on docs.rs (the lean no-default-features
+# library is a deliberate subset — ADR-0025).
+[package.metadata.docs.rs]
+all-features = true
 
 [lib]
 name = "entanglement_runtime"
