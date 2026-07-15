@@ -617,6 +617,50 @@ impl InMsg {
             | InMsg::Resume { session, .. } => session,
         }
     }
+
+    /// Whether this variant may originate from an **untrusted wire head** (#155).
+    ///
+    /// The trusted/untrusted frame split. A head deserializing attacker-adjacent
+    /// bytes (stdio `pipe`, the future WS `serve`) forwards only the allowlisted
+    /// frames — `Prompt`/`Approve`/`Reject`/`AnswerQuestion`/`Stop`/`SetAgent`/
+    /// `SetModel`/`ListSessions`/`CloseSession`. The privileged trio is
+    /// **runtime-authored in process**, never wire-forgeable:
+    ///
+    /// - [`ToolResult`][InMsg::ToolResult] resolves a parked turn matched on
+    ///   `request_id` alone — a forged one bypasses execution *and* permission;
+    /// - [`Spawn`][InMsg::Spawn] mints a child session bypassing the tool path's
+    ///   `spawn_refusal` gate;
+    /// - [`Resume`][InMsg::Resume] is internal (`#[serde(skip)]`, never on wire).
+    ///
+    /// The executor submits `ToolResult`/`Spawn` over the privileged in-process
+    /// [`Holly::send`][crate::Holly::send] (it holds the handle); a wire head uses
+    /// [`Holly::send_from_wire`][crate::Holly::send_from_wire], which enforces this
+    /// allowlist.
+    pub fn wire_allowed(&self) -> bool {
+        !matches!(
+            self,
+            InMsg::ToolResult { .. } | InMsg::Spawn { .. } | InMsg::Resume { .. }
+        )
+    }
+
+    /// The serde `kind` tag of this variant, for diagnostics (e.g. a rejected
+    /// wire frame). Matches the `snake_case` wire discriminant.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            InMsg::Prompt { .. } => "prompt",
+            InMsg::Approve { .. } => "approve",
+            InMsg::Reject { .. } => "reject",
+            InMsg::ToolResult { .. } => "tool_result",
+            InMsg::AnswerQuestion { .. } => "answer_question",
+            InMsg::Stop { .. } => "stop",
+            InMsg::ListSessions { .. } => "list_sessions",
+            InMsg::CloseSession { .. } => "close_session",
+            InMsg::SetAgent { .. } => "set_agent",
+            InMsg::SetModel { .. } => "set_model",
+            InMsg::Spawn { .. } => "spawn",
+            InMsg::Resume { .. } => "resume",
+        }
+    }
 }
 
 /// Outbound: engine → harness. Cloned through a `broadcast` channel, so every
@@ -899,6 +943,63 @@ mod tests {
             uuid::Uuid::parse_str(&id2.0).is_ok(),
             "SessionId should contain valid UUID string"
         );
+    }
+
+    #[test]
+    fn wire_allowlist_refuses_only_the_privileged_trio() {
+        let s = SessionId::new("s1");
+        // The runtime authors these in process; a wire head must never forward
+        // them (#155).
+        assert!(!InMsg::tool_result(s.clone(), "r1", "x").wire_allowed());
+        assert!(!InMsg::Spawn {
+            session: s.clone(),
+            parent: s.clone(),
+            agent: "build".into(),
+            prompt: "go".into(),
+        }
+        .wire_allowed());
+        assert!(!InMsg::Resume {
+            session: s.clone(),
+            records: Vec::new(),
+        }
+        .wire_allowed());
+        // Every head-authored frame stays acceptable off the wire.
+        for msg in [
+            InMsg::prompt(s.clone(), "hi"),
+            InMsg::Approve {
+                session: s.clone(),
+                request_id: "r".into(),
+                scope: ApprovalScope::Once,
+            },
+            InMsg::Reject {
+                session: s.clone(),
+                request_id: "r".into(),
+                reason: None,
+            },
+            InMsg::AnswerQuestion {
+                session: s.clone(),
+                request_id: "r".into(),
+                answer: "a".into(),
+            },
+            InMsg::Stop { session: s.clone() },
+            InMsg::ListSessions { session: s.clone() },
+            InMsg::CloseSession { session: s.clone() },
+            InMsg::SetAgent {
+                session: s.clone(),
+                agent: "plan".into(),
+            },
+            InMsg::SetModel {
+                session: s.clone(),
+                provider: "zai".into(),
+                model: "glm-5.2".into(),
+            },
+        ] {
+            assert!(
+                msg.wire_allowed(),
+                "`{}` should be wire-allowed",
+                msg.variant_name()
+            );
+        }
     }
 
     #[test]

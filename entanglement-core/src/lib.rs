@@ -14,7 +14,7 @@ pub mod protocol;
 pub mod session;
 
 pub use context::Context;
-pub use holly::{ConfigError, EngineConfig, Holly, ProfileRegistry};
+pub use holly::{ConfigError, EngineConfig, Holly, ProfileRegistry, WireError};
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
 // the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
 pub use entanglement_provider::{

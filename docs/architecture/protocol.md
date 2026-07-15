@@ -49,6 +49,23 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
 inbound fan-out (core never routes it) and the `ask_user` executor consumes it
 (§8, [ADR-0027](../adr/0027-ask-user-interactive-prompt.md)).
 
+**Trusted/untrusted frame split** (#155, [ADR-0069](../adr/0069-trusted-untrusted-wire-frame-split.md)).
+`InMsg` has two entry points. `Holly::send` is **privileged in-process**: an
+embedder holding a `Holly` (a head, the runtime tool executor) authors any
+frame. `Holly::send_from_wire` is the **untrusted** path a wire head (stdio
+`pipe`, the future WS `serve`) calls after deserializing a line — it enforces the
+`InMsg::wire_allowed()` allowlist and refuses (`WireError::Privileged`, not
+routed) the three runtime-authored variants: `ToolResult` (a forged one resolves
+a parked turn on `request_id` alone, bypassing execution *and* permission),
+`Spawn` (bypasses the tool path's `spawn_refusal` gate, #119), and `Resume`
+(internal, `#[serde(skip)]`). The executor folds a completed tool round-trip back
+over the named privileged handle `Holly::submit_tool_result` (used by
+`seam::reply_content`, the single fold-back site). Under the local single-user
+`serve` scope ([ADR-0048](../adr/0048-serve-head-local-trust-model.md)) this is
+robustness/UX — which cooperating local client owns a frame — not defence against
+a remote attacker; the WS head's `send_from_wire` call and per-connection
+`Approve` ownership are deferred to #153.
+
 **Session lifecycle** (✅ #21, [ADR-0028](../adr/0028-session-lifecycle-enumeration-and-backpressure.md)).
 `ListSessions` and `CloseSession` are **supervisor-global**: the supervisor
 answers/acts on them directly rather than routing to a session task.

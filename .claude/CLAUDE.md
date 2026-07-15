@@ -136,6 +136,19 @@ re-document them here):
   that upgrades a later resolved `Ask` → `Allow` (never a `Deny`, applied *after*
   the ceiling); `Always` persists to a managed `${config_dir}/entanglement/grants.yml`
   (sibling of `config.yml`, not its ceiling section).
+- **Trusted/untrusted frame split** (#155,
+  [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)): `Holly::send`
+  is the **privileged in-process** inbox (executor/head, trusted for any frame);
+  a wire head deserializing untrusted bytes uses `Holly::send_from_wire`, which
+  enforces the `InMsg::wire_allowed()` allowlist and refuses (`WireError`) the
+  runtime-authored trio — `ToolResult` (a forged one resolves a parked turn on
+  `request_id` alone, bypassing execution + permission), `Spawn` (bypasses
+  `spawn_refusal`), `Resume` (internal). The executor folds results back over the
+  named privileged `Holly::submit_tool_result` handle (via `seam::reply_content`);
+  `pipe` calls `send_from_wire`. Local single-user scope
+  ([ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md)) → robustness/UX,
+  not remote-attacker defence; WS `send_from_wire` + per-connection `Approve`
+  ownership deferred to #153.
 - **Session-multiplexed**: every frame carries `SessionId`; content frames carry
   monotonic `seq`. Supervisor-global vs session-scoped routing is explicit.
   `(session, seq)` is **unique across every authored content event** (#157,
