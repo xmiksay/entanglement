@@ -40,6 +40,13 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
 | **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as the future Vue SPA), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/0048-serve-head-local-trust-model.md), #153). |
 
+Building your own head — a multi-tenant server embedding the engine as a
+library, rather than one of the four above — is covered in
+[`docs/embedding.md`](docs/embedding.md): session-per-tenant namespacing, the
+`send`/`send_from_wire` trust split, pluggable persistence and tool-execution
+policy, and approval-across-restart semantics, backed by a compiling
+[`examples/embedded.rs`](entanglement-runtime/examples/embedded.rs).
+
 ## Agent profiles (opencode-style)
 
 A session runs under an **agent profile** — `{ name, description, mode, model,
