@@ -17,6 +17,9 @@
 //! changed Lagged policy) propagates to every call site instead of drifting.
 
 use entanglement_core::{ApprovalScope, ContentPart, Holly, InMsg, SessionId};
+// `ToolResult` folds back over the privileged in-process handle (#155), not the
+// untrusted wire path — a forged `ToolResult` off a wire head must never resolve
+// a parked turn.
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 /// Fold a **text** tool result back to core as the #58 `ToolResult`, completing
@@ -40,13 +43,7 @@ pub async fn reply_content(
     request_id: String,
     content: Vec<ContentPart>,
 ) {
-    let _ = holly
-        .send(InMsg::ToolResult {
-            session,
-            request_id,
-            content,
-        })
-        .await;
+    let _ = holly.submit_tool_result(session, request_id, content).await;
 }
 
 /// The head's answer to a parked tool round-trip, already filtered to the

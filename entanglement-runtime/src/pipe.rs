@@ -4,7 +4,7 @@
 //! on the default session.
 
 use anyhow::Result;
-use entanglement_core::{Holly, InMsg, SessionId};
+use entanglement_core::{Holly, InMsg, SessionId, WireError};
 use std::io::{stdout, Write};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast::error::RecvError;
@@ -27,8 +27,18 @@ pub async fn pipe(holly: &Holly, default_session: &SessionId) -> Result<()> {
             }
             match serde_json::from_str::<InMsg>(trimmed) {
                 Ok(msg) => {
-                    if holly2.send(msg).await.is_err() {
-                        break;
+                    // Untrusted wire frame: enforce the trusted/untrusted split
+                    // (#155). `send_from_wire` refuses a runtime-authored
+                    // `ToolResult`/`Spawn` — folding a tool result or minting a
+                    // sub-agent is the executor's privileged in-process job, never
+                    // a wire head's. A closed inbox ends the relay; a refused
+                    // frame is logged and skipped, not fatal.
+                    match holly2.send_from_wire(msg).await {
+                        Ok(()) => {}
+                        Err(WireError::Closed) => break,
+                        Err(e @ WireError::Privileged(_)) => {
+                            eprintln!("note: {e}");
+                        }
                     }
                 }
                 Err(e) => {

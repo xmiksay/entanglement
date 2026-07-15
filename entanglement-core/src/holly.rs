@@ -15,6 +15,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::protocol::{AgentState, InMsg, OutEvent, SessionId, SessionInfo};
 use crate::session::{session_loop, Session, SessionCmd};
+use entanglement_provider::ContentPart;
 
 mod config;
 mod routing;
@@ -43,6 +44,20 @@ pub(crate) fn next_seq_for(seqs: &SeqRegistry, session: &SessionId) -> u64 {
         .get(session)
         .map(|c| c.fetch_add(1, Ordering::Relaxed) + 1)
         .unwrap_or(0)
+}
+
+/// Why [`Holly::send_from_wire`] refused an untrusted wire frame (#155).
+#[derive(Debug, thiserror::Error)]
+pub enum WireError {
+    /// A privileged, runtime-authored variant (`tool_result`/`spawn`/`resume`)
+    /// arrived from a wire head, which may only forward the allowlist
+    /// ([`InMsg::wire_allowed`]). The variant's `kind` tag is carried for
+    /// diagnostics.
+    #[error("privileged frame `{0}` refused from wire head (runtime-authored only)")]
+    Privileged(&'static str),
+    /// The engine inbox is closed (the actor stopped).
+    #[error("engine inbox closed")]
+    Closed,
 }
 
 const INBOX_CAPACITY: usize = 256;
@@ -100,9 +115,55 @@ impl Holly {
         }
     }
 
-    /// Push an [`InMsg`] into the engine (the ABI entry point).
+    /// Push an [`InMsg`] into the engine — the **privileged in-process** entry
+    /// point. An in-process embedder (a head, the runtime tool executor) holds a
+    /// `Holly` and is trusted to author any frame, including the runtime-only
+    /// [`ToolResult`][InMsg::ToolResult]/[`Spawn`][InMsg::Spawn]. A head relaying
+    /// **untrusted wire bytes** must use [`send_from_wire`][Self::send_from_wire]
+    /// instead, which enforces the [`InMsg::wire_allowed`] allowlist (#155).
     pub async fn send(&self, msg: InMsg) -> Result<(), mpsc::error::SendError<InMsg>> {
         self.inbox.send(msg).await
+    }
+
+    /// Relay an [`InMsg`] **deserialized from an untrusted wire head** (stdio
+    /// `pipe`, the future WS `serve`), enforcing the trusted/untrusted frame
+    /// split (#155). A privileged, runtime-authored variant
+    /// ([`ToolResult`][InMsg::ToolResult]/[`Spawn`][InMsg::Spawn]/
+    /// [`Resume`][InMsg::Resume]) is **refused**, not routed — a forged
+    /// `ToolResult` would resolve a parked turn on `request_id` alone (bypassing
+    /// execution + permission) and a forged `Spawn` would bypass the tool path's
+    /// spawn-refusal gate. Head-authored frames pass through to
+    /// [`send`][Self::send]. The runtime's own executor never calls this; it holds
+    /// the privileged handle and uses [`submit_tool_result`][Self::submit_tool_result].
+    pub async fn send_from_wire(&self, msg: InMsg) -> Result<(), WireError> {
+        if !msg.wire_allowed() {
+            tracing::warn!(
+                variant = msg.variant_name(),
+                "refused privileged InMsg from wire head (runtime-authored only)"
+            );
+            return Err(WireError::Privileged(msg.variant_name()));
+        }
+        self.inbox.send(msg).await.map_err(|_| WireError::Closed)
+    }
+
+    /// Submit a tool result over the **privileged in-process handle** (#155). This
+    /// is the sanctioned path for the runtime tool executor to fold a completed
+    /// `ToolExec` round-trip back into the parked turn — kept distinct from the
+    /// untrusted [`send_from_wire`][Self::send_from_wire] path so a `ToolResult`
+    /// is never forgeable off the wire. A thin wrapper over the privileged
+    /// [`send`][Self::send]; the executor holds a `Holly`, so it is trusted.
+    pub async fn submit_tool_result(
+        &self,
+        session: SessionId,
+        request_id: String,
+        content: Vec<ContentPart>,
+    ) -> Result<(), mpsc::error::SendError<InMsg>> {
+        self.send(InMsg::ToolResult {
+            session,
+            request_id,
+            content,
+        })
+        .await
     }
 
     /// Subscribe to the outbound event stream (every session, fan-out).
