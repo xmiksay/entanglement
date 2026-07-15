@@ -14,7 +14,7 @@ Architecture & the four interfaces:
 - **Rust** (stable, `../rust-toolchain.toml`).
 - Async: **Tokio** (`mpsc` inbox, `broadcast` outbox). Errors: `anyhow` + `thiserror`.
 - Logging: `tracing`. Serde everywhere (the wire protocol).
-- No web framework in core; the runtime head's future `serve` subcommand will bring `axum`.
+- No web framework in core; the runtime head's `serve` subcommand brings `axum` (behind its own `serve` feature, ✅ #153).
 
 ## Workspace
 
@@ -28,7 +28,7 @@ inverting [ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)/[ADR-0007
 | --- | --- | --- |
 | `entanglement-provider` | **leaf** crate, owns the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`, `ToolSpec`, `Message`/`MessageRole`, `Dummy`/`EchoLlm`); all LLM I/O — generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client, via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL + API-key hash, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider. Per-session state is deliberately absent: the `llm` a session owns is a plain `Box<dyn Llm>`, the former `LlmSession` newtype collapsed since resilience is per-endpoint not per-session ([ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md), #195). Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, `Context` (built on provider's `Message`). Advertises tool *schemas* (`ToolSpec`) only — holds no executable tools. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest`/`hyper`/`tower` are transitive via provider ([ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). `make tree` enforces. |
-| `entanglement-runtime` | the head crate (binary `skutter`): the **`Tool` trait + `ToolRegistry`** (moved from core ✅ #206, [ADR-0059](../docs/adr/0059-tool-trait-and-registry-live-in-the-runtime.md)), **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe`, `tui`, and the `sessions`/`inspect` subcommands today, `serve` (WS) next. Selects the concrete provider via `ENTANGLEMENT_PROVIDER` or key auto-detect and glues it to core. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli` (clap + log init) / `provider` (LLM providers, split from `cli` in #208) / `tui` (`default = ["tui"]`) build the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). `main.rs` imports the library modules from the lib crate — only `pipe`/`run`/`tui` stay bin-local (#208). | `--no-default-features` must stay CLI/TUI-free (`reqwest` rides in via core); `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). |
+| `entanglement-runtime` | the head crate (binary `skutter`): the **`Tool` trait + `ToolRegistry`** (moved from core ✅ #206, [ADR-0059](../docs/adr/0059-tool-trait-and-registry-live-in-the-runtime.md)), **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe`, `tui`, the `sessions`/`inspect` subcommands, and the local WebSocket `serve` head (axum, ✅ #153, [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md)). Selects the concrete provider via `ENTANGLEMENT_PROVIDER` or key auto-detect and glues it to core. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli` (clap + log init) / `provider` (LLM providers, split from `cli` in #208) / `tui` / `serve` (axum WS, implies `cli`+`provider`); `default = ["tui", "serve"]` builds the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). `main.rs` imports the library modules from the lib crate — only `pipe`/`run`/`tui` stay bin-local (#208; `serve` lives in the lib as `runtime::serve`). | `--no-default-features` must stay CLI/TUI/transport-free (`reqwest` rides in via core; `axum` stays behind `serve`); `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). |
 
 `entanglement-runtime` depends on core; core depends on provider; provider
 depends on neither.
@@ -39,6 +39,7 @@ depends on neither.
 make run           # stdio head, one turn (text)
 make run-json      # one turn, NDJSON events (opencode run --format json)
 make run-tui       # launch the terminal UI
+make serve         # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
 make test          # unit + integration
 make test-unit | make test-integration
 make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
@@ -329,13 +330,17 @@ with P0/P1/P2 labels and blocked-by links:
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
 [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md); the
 in-process re-offer timer + executor `request_id` dedupe that self-heals a turn
-stranded by a `broadcast`-lag drop landed here, #274/[ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md)),
-with WebSocket `serve` (#153) deliberately last.
+stranded by a `broadcast`-lag drop landed here, #274/[ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md)).
+The pre-`serve` hardening epic #153 is **complete** — all six findings (#274,
+#155, #156, #157, #158, #160) landed, and the local WebSocket `serve` head they
+gated shipped last, per [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md).
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
 — z.ai (primary)/OpenAI/Ollama via one OpenAI-compat client + a separate
 Anthropic client; `ENTANGLEMENT_PROVIDER` or key auto-detect, else `EchoLlm`.
-Heads: stdio `run`/`pipe`, `tui`, and the `sessions`/`inspect` subcommands. Tools:
+Heads: stdio `run`/`pipe`, `tui`, the `sessions`/`inspect` subcommands, and the
+local WebSocket `serve` head (`skutter serve --port <N>`, loopback-bound axum
+HTTP+WS, ✅ #153). Tools:
 the root-contained quintet (`read` on an image file — `png`/`jpg`/`jpeg`/`gif`/
 `webp` — emits a base64 **image content block** through a now-multimodal
 `ToolResult`/`ToolOutput` path, #221/[ADR-0065](../docs/adr/0065-read-emits-image-content-blocks.md),
@@ -348,5 +353,7 @@ servers** attach as a runtime-side tool provider (#198,
 config's `mcp:` section declares servers, each spawned over JSON-RPC/stdio, its
 `tools/list` registered into the `ToolRegistry` as `mcp__<server>__<tool>` — no
 core change, same permission profiles as any host tool. `skutter serve`
-(axum WS, local-only, [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md))
-is the next head.
+(axum WS, local-only, loopback-bound, opt-in `--allow-origin`,
+[ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md)) is the fourth head,
+a thin adapter over `holly` that relays `OutEvent`s out and routes inbound frames
+through the untrusted `send_from_wire` path (✅ #153).

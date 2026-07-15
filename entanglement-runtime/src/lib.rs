@@ -8,14 +8,16 @@
 //! The binary head (`skutter`) and the reusable library live in the same crate,
 //! split by cargo features:
 //!
-//! - `default = ["tui"]` — the full `skutter` binary (stdio `run`/`pipe` + the
-//!   terminal UI), pulling clap, the LLM providers (reqwest), and the render
-//!   stack (ratatui, syntect, …).
+//! - `default = ["tui", "serve"]` — the full `skutter` binary (stdio `run`/`pipe`
+//!   plus the terminal UI and the local WebSocket server), pulling clap, the LLM
+//!   providers (reqwest), the render stack (ratatui, syntect, …), and axum.
 //! - `cli` — head plumbing: clap arg parsing + log init (tracing-subscriber).
 //! - `provider` — the LLM providers (reqwest via `entanglement-provider`), split
-//!   from `cli` (#208) so a future `serve`/`ws` head can pull providers without
-//!   dragging in clap.
+//!   from `cli` (#208) so the `serve`/`ws` head pulls providers without dragging
+//!   in clap.
 //! - `tui` — the terminal UI head; implies `cli` + `provider`.
+//! - `serve` — the local WebSocket `serve` head (axum, #153); implies
+//!   `cli` + `provider`. Keeps axum out of the lean library (ADR-0025/ADR-0048).
 //!
 //! With `--no-default-features` the crate is a **lean library**: the modules
 //! below import only `entanglement-core` + tokio + serde/serde_yaml/anyhow/
@@ -49,6 +51,10 @@ pub mod plan_tasks;
 pub mod propose_plan;
 pub mod script;
 pub mod seam;
+// WebSocket `serve` head (#153, ADR-0048). Behind the `serve` feature so axum
+// stays out of the lean library and `--no-default-features` builds (ADR-0025).
+#[cfg(feature = "serve")]
+pub mod serve;
 pub mod session_store;
 pub mod skills;
 pub mod subagent;

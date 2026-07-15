@@ -1,6 +1,6 @@
 [package]
 name = "entanglement-runtime"
-description = "Head crate for the entanglement agent engine (binary `skutter`): stdio `run`/`pipe` + TUI `tui` today; future WebSocket `serve`. With `--no-default-features` it is a lean library exposing the tool-execution loop, permission dispatch, sub-agent spawn, and persistence machinery (no CLI/TUI/transport deps — see ADR-0025)."
+description = "Head crate for the entanglement agent engine (binary `skutter`): stdio `run`/`pipe`, TUI `tui`, and the local WebSocket `serve` head (behind the `serve` feature). With `--no-default-features` it is a lean library exposing the tool-execution loop, permission dispatch, sub-agent spawn, and persistence machinery (no CLI/TUI/transport deps — see ADR-0025)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,12 +17,17 @@ path = "src/main.rs"
 required-features = ["cli", "provider", "tui"]
 
 [features]
-default = ["tui"]
+default = ["tui", "serve"]
 # Head plumbing for `skutter`: arg parsing (clap) + log init (tracing-subscriber).
 cli = ["dep:clap", "dep:tracing-subscriber"]
 # LLM providers (reqwest via entanglement-provider). Split from `cli` (#208) so a
 # future `serve`/`ws` head can pull providers without dragging in clap.
 provider = ["dep:entanglement-provider"]
+# WebSocket `serve` head (#153, ADR-0048): a loopback-bound axum HTTP+WS server,
+# the browser twin of the TUI. Implies `cli` + `provider` (reached through the
+# clap CLI, drives a real provider); `axum`/`futures` stay behind it so the lean
+# library and `--no-default-features` builds carry no transport (ADR-0025).
+serve = ["cli", "provider", "dep:axum", "dep:futures"]
 # Terminal UI head (`skutter tui`). Implies `cli` + `provider`: the TUI is only
 # reachable through the clap CLI, and tui/ itself imports entanglement-provider
 # (ModelInfo, models_for, HttpClient in tui/app.rs + tui/mod.rs).
@@ -42,6 +47,9 @@ tracing-subscriber = { workspace = true, optional = true }
 # TUI dependencies (behind the `tui` feature — ADR-0025)
 ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
+# WebSocket `serve` head (behind the `serve` feature — ADR-0025/ADR-0048)
+axum = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 pulldown-cmark = { workspace = true, optional = true }
 syntect = { workspace = true, optional = true }
 diffy = { workspace = true, optional = true }
@@ -65,3 +73,6 @@ rhai = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 async-trait = { workspace = true }
+# WS client for the `serve` head integration tests (drives a real socket).
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
