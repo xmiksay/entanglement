@@ -205,7 +205,17 @@ re-document them here):
   share this loader. Provider API **keys** live in a sibling managed env file (#220,
   `${config_dir}/entanglement/.env`, override `ENTANGLEMENT_ENV_FILE`): scaffolded
   commented on first run, loaded at startup into the process env for vars the real
-  env left unset (env > file), kept out of any repo. The config's `hooks:` section
+  env left unset (env > file), kept out of any repo. A **shared writer**
+  (#304, [ADR-0073](../docs/adr/0073-managed-env-file-writer-and-key-surfaces.md),
+  `config::env_key`) backs two key surfaces: a pure `upsert` (replace the first
+  live `KEY=` line — first-occurrence-wins, matching `load()` — else the `#KEY=`
+  placeholder, else append; other lines byte-for-byte; idempotent) + `set_key`
+  (atomic temp-file-in-dir + rename, `0o600` on unix, reject empty/`\n`). `skutter
+  config set-key <provider> [--key V]` (`config::keys`, pre-engine fast path, key
+  from `--key`/hidden `rpassword` prompt/piped stdin, never echoed) and the TUI
+  `/key` dialog (`tui::key_dialog`, two-stage modal after `/model`, masked input)
+  both drive it — the TUI additionally `set_var`s so the live model resolver
+  binds the key on the next `/model` switch with no restart. The config's `hooks:` section
   (#199, [ADR-0066](../docs/adr/0066-lifecycle-hooks-as-runtime-interceptors.md))
   wires **lifecycle hooks** — `sh -c` commands run as a **runtime interceptor**
   around the generic tool dispatch (`pre_tool_use` non-zero exit *vetoes* the

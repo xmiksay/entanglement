@@ -90,6 +90,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_model_picker(f, app);
     }
 
+    if app.showing_key_dialog() {
+        modals::draw_key_dialog(f, app);
+    }
+
     if app.showing_sessions_modal() {
         modals::draw_sessions_modal(f, app);
     }

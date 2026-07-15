@@ -526,6 +526,24 @@ enum Cmd {
         #[command(subcommand)]
         what: InspectCmd,
     },
+    /// Manage the managed user configuration (provider keys, …).
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Persist a provider's API key to the managed env file (#304). The value
+    /// comes from `--key`, a hidden prompt, or piped stdin — never echoed.
+    SetKey {
+        /// Provider name (catalog key: zai | openai | anthropic | …).
+        provider: String,
+        /// The key value. Omit to be prompted (hidden) or to read piped stdin.
+        #[arg(long)]
+        key: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -617,6 +635,17 @@ async fn main() -> Result<()> {
     // Load the provider/model catalog once (embedded defaults + user override).
     // A malformed user file is a loud error, never a silent fallback.
     let catalog = Catalog::load().context("loading provider catalog")?;
+
+    // `config set-key` writes a provider key to the managed env file (#304) — a
+    // pre-engine fast path like `inspect`/`sessions`: it needs the catalog (to
+    // map provider → key env) but no provider/engine.
+    if let Some(Cmd::Config { cmd }) = &cli.cmd {
+        return match cmd {
+            ConfigCmd::SetKey { provider, key } => {
+                config::keys::set_key(&catalog, provider, key.clone())
+            }
+        };
+    }
 
     // Managed provider-key env file (#220): scaffold a commented template listing
     // the catalog's known key vars on first run, then load `KEY=VALUE` pairs into
@@ -778,6 +807,7 @@ async fn main() -> Result<()> {
         }
         Some(Cmd::Sessions) => unreachable!("sessions is handled before engine setup"),
         Some(Cmd::Inspect { .. }) => unreachable!("inspect is handled before engine setup"),
+        Some(Cmd::Config { .. }) => unreachable!("config is handled before engine setup"),
         None => {
             let session_id = SessionId::new_uuid();
             let agent = user_config.agent.clone();

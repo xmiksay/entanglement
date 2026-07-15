@@ -27,8 +27,9 @@ required-features = ["cli", "provider", "tui"]
 
 [features]
 default = ["tui", "serve"]
-# Head plumbing for `skutter`: arg parsing (clap) + log init (tracing-subscriber).
-cli = ["dep:clap", "dep:tracing-subscriber"]
+# Head plumbing for `skutter`: arg parsing (clap) + log init (tracing-subscriber)
+# + hidden key prompt (rpassword, for `config set-key` — #304).
+cli = ["dep:clap", "dep:tracing-subscriber", "dep:rpassword"]
 # LLM providers (reqwest via entanglement-provider). Split from `cli` (#208) so a
 # future `serve`/`ws` head can pull providers without dragging in clap.
 provider = ["dep:entanglement-provider"]
@@ -48,6 +49,7 @@ entanglement-provider = { workspace = true, optional = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, optional = true }
+rpassword = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

@@ -39,6 +39,17 @@ impl SessionView {
         });
     }
 
+    /// Records a head-side status line into the transcript — e.g. the `/key`
+    /// dialog's save/failure notice (#304). Local only (never sent to the engine
+    /// or the model); it reuses the tool-output entry so it renders like other
+    /// out-of-band notices. The caller must never pass a secret here.
+    pub fn record_status(&mut self, label: &str, message: String) {
+        self.transcript.push(TranscriptEntry::ToolOutput {
+            tool: Some(label.to_string()),
+            output: message,
+        });
+    }
+
     /// Applies an `OutEvent` already routed to this session. Returns `true`
     /// if it changed anything the UI needs to redraw for.
     pub fn apply_event(&mut self, event: OutEvent) -> bool {

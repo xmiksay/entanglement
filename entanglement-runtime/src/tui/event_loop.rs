@@ -7,9 +7,9 @@ use super::app::App;
 use super::attention::Attention;
 use super::event::Event;
 use super::modal_events::{
-    handle_command_palette_event, handle_inspect_event, handle_model_picker_event, handle_mouse,
-    handle_profile_picker_event, handle_question_event, handle_resume_modal_event,
-    handle_sessions_modal_event,
+    handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
+    handle_model_picker_event, handle_mouse, handle_profile_picker_event, handle_question_event,
+    handle_resume_modal_event, handle_sessions_modal_event,
 };
 use super::session_view::ApprovalMode;
 
@@ -31,6 +31,9 @@ pub(super) async fn handle_event(
                 }
                 if app.showing_model_picker() {
                     return handle_model_picker_event(app, holly, key).await;
+                }
+                if app.showing_key_dialog() {
+                    return handle_key_dialog_event(app, key).await;
                 }
                 if app.showing_help() {
                     if key.code == KeyCode::Esc {

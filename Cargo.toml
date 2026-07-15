@@ -39,6 +39,9 @@ futures = "0.3"
 rand = "0.8"
 httpdate = "1"
 clap = { version = "4", features = ["derive"] }
+# Hidden terminal prompt for `skutter config set-key` (#304) — reads an API key
+# without echoing it. CLI-only (behind the runtime's `cli` feature).
+rpassword = "7"
 # Pure-Rust, no network deps; both hygiene-gate-clean for entanglement-core
 # (ADR-0008). `glob` drives glob + grep file enumeration; `regex` drives grep.
 glob = "0.3"

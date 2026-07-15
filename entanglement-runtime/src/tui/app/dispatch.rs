@@ -23,6 +23,10 @@ impl App {
                 self.toggle_model_picker();
                 false
             }
+            Command::Key => {
+                self.open_key_dialog();
+                false
+            }
             Command::Plan => false,
             Command::Tasks => false,
             Command::Inspect => {
