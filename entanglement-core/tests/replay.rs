@@ -427,7 +427,11 @@ async fn seq_tracking_during_replay() {
 
     assert!(result.is_ok());
     let session = result.unwrap();
-    assert_eq!(session.seq, 30, "Should track the max seq number");
+    assert_eq!(
+        session.seq.load(std::sync::atomic::Ordering::Relaxed),
+        30,
+        "Should track the max seq number"
+    );
 }
 
 // --- Mid-turn tails (#271, ADR-0061) -------------------------------------

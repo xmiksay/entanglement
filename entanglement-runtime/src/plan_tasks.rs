@@ -15,13 +15,13 @@
 //! never gets it by accident — the replacement for the old `owns_plan` flag.
 //! `update_tasks` is general bookkeeping and rides the shared `tool_specs`.
 //!
-//! Seq note: the runtime emits the `Plan`/`TaskList` snapshot reusing the
-//! `ToolExec` seq (it has no handle on core's per-session counter). That is
-//! monotonic and head-safe on the `Allow` path, since `ToolExec` itself carries
-//! no head-visible seq bump. State tools are therefore expected to resolve to
-//! `Allow` where advertised (a head dedupes an `Ask`-path snapshot against the
-//! preceding `ToolRequest` at the same seq); the built-in profiles keep them
-//! `Allow`.
+//! Seq note (#157): the runtime emits the `Plan`/`TaskList` snapshot with a
+//! **fresh** per-session seq minted from the session's shared counter via
+//! [`Holly::emit_for_session`][entanglement_core::Holly] — it no longer reuses
+//! the parked `ToolExec` seq — so the snapshot takes its own ordered place in the
+//! content stream and `(session, seq)` stays unique across authored events.
+//! [`state_event`] itself is a pure builder that stamps whatever seq the caller
+//! mints.
 
 use entanglement_core::{AgentProfile, OutEvent, SessionId, ToolSpec};
 

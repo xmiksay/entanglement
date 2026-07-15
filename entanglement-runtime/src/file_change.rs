@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::future::Future;
 
 use entanglement_core::protocol::FileChangeKind;
-use entanglement_core::{OutEvent, SessionId};
+use entanglement_core::{Holly, OutEvent, SessionId};
 use sha2::{Digest, Sha256};
 
 tokio::task_local! {
@@ -74,20 +74,16 @@ where
 }
 
 /// Convenience for the executor: run the tool via [`capture`] and broadcast the
-/// resulting [`OutEvent::FileChange`] (reusing the `ToolExec` `seq`) if the tool
-/// recorded one. Returns the tool's output for the `ToolResult` reply.
-pub async fn capture_and_emit<F>(
-    events: &tokio::sync::broadcast::Sender<OutEvent>,
-    session: &SessionId,
-    seq: u64,
-    fut: F,
-) -> F::Output
+/// resulting [`OutEvent::FileChange`] if the tool recorded one, minting a **fresh**
+/// per-session seq (#157) rather than reusing the parked `ToolExec` seq. Returns
+/// the tool's output for the `ToolResult` reply.
+pub async fn capture_and_emit<F>(holly: &Holly, session: &SessionId, fut: F) -> F::Output
 where
     F: Future,
 {
     let (out, rec) = capture(fut).await;
     if let Some(rec) = rec {
-        let _ = events.send(rec.into_event(session.clone(), seq));
+        holly.emit_for_session(session, |seq| rec.into_event(session.clone(), seq));
     }
     out
 }

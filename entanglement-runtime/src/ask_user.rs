@@ -130,24 +130,28 @@ pub async fn run_ask_user(
     holly: Holly,
     mut inbound: Receiver<InMsg>,
     session: SessionId,
-    seq: u64,
     request_id: String,
     input: String,
 ) {
     let q = parse_input(&input);
 
-    let _ = holly.events().send(OutEvent::UserQuestion {
+    // Mint a fresh per-session seq (#157) so the question takes an ordered place
+    // in the content stream rather than reusing the parked `ToolExec` seq. Moved
+    // into the closure since `emit_for_session` builds the event with the seq.
+    let Question {
+        question,
+        options,
+        allow_free_form,
+    } = q;
+    holly.emit_for_session(&session, |seq| OutEvent::UserQuestion {
         session: session.clone(),
         seq,
         request_id: request_id.clone(),
-        question: q.question,
-        options: q.options,
-        allow_free_form: q.allow_free_form,
+        question,
+        options,
+        allow_free_form,
     });
-    let _ = holly.events().send(OutEvent::Status {
-        session: session.clone(),
-        state: AgentState::WaitingApproval,
-    });
+    holly.emit_status(&session, AgentState::WaitingApproval);
 
     // Only an `AnswerQuestion` for this request folds an answer back; `Stop`
     // (and a closed inbox) unwind silently — core cancels the turn on the same
@@ -156,10 +160,7 @@ pub async fn run_ask_user(
     if let seam::Decision::Answer { answer } =
         seam::await_decision(&mut inbound, &session, &request_id).await
     {
-        let _ = holly.events().send(OutEvent::Status {
-            session: session.clone(),
-            state: AgentState::Thinking,
-        });
+        holly.emit_status(&session, AgentState::Thinking);
         seam::reply(&holly, session, request_id, answer).await;
     }
 }

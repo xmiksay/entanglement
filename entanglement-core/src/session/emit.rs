@@ -1,15 +1,22 @@
 //! Outbound-event emit helpers shared across the session loop and turn logic.
 //! Each bumps the session's monotonic `seq` and fires an [`OutEvent`].
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use tokio::sync::broadcast;
 
 use super::Session;
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use entanglement_provider::{content_has_image, ContentPart, ImageSource, Usage};
 
-pub(crate) fn next_seq(s: &mut u64) -> u64 {
-    *s += 1;
-    *s
+/// Atomically bump the session's monotonic `seq` and return the new value. The
+/// counter is shared (`Arc<AtomicU64>`, #157) so a runtime-authored event minted
+/// while the session is parked — an approval `ToolRequest`, a `Plan` snapshot —
+/// draws from the *same* sequence via [`Holly::emit_for_session`][crate::Holly],
+/// keeping `(session, seq)` unique across every authored event rather than
+/// reusing the parked `ToolExec` seq.
+pub(crate) fn next_seq(s: &AtomicU64) -> u64 {
+    s.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 /// Fold one round-trip's normalized [`Usage`] into the session total and emit
@@ -35,7 +42,7 @@ pub(crate) fn emit_usage(
 
     let _ = events.send(OutEvent::Usage {
         session: session.clone(),
-        seq: next_seq(&mut s.seq),
+        seq: next_seq(&s.seq),
         input_tokens: input,
         output_tokens: output,
         cached_input_tokens: cached_input,
@@ -48,7 +55,7 @@ pub(crate) fn emit_usage(
 /// the `Error` lifecycle state. The engine stays alive for the next prompt.
 pub(crate) fn emit_turn_error(
     session: &SessionId,
-    seq: &mut u64,
+    seq: &AtomicU64,
     events: &broadcast::Sender<OutEvent>,
     message: String,
 ) {
@@ -73,7 +80,7 @@ pub(crate) fn emit_tool_call(
     request_id: &str,
     tool: &str,
     input: &str,
-    seq: &mut u64,
+    seq: &AtomicU64,
 ) {
     let _ = events.send(OutEvent::ToolCall {
         session: session.clone(),
@@ -91,7 +98,7 @@ pub(crate) fn emit_tool_exec(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
     call: &entanglement_provider::ToolCall,
-    seq: &mut u64,
+    seq: &AtomicU64,
 ) {
     let _ = events.send(OutEvent::ToolExec {
         session: session.clone(),
@@ -108,7 +115,7 @@ pub(crate) fn emit_tool_output(
     request_id: &str,
     tool: &str,
     content: Vec<ContentPart>,
-    seq: &mut u64,
+    seq: &AtomicU64,
 ) {
     // Heads render text; an image result shows a short placeholder. The full
     // multimodal `content` rides only when it carries an image, so replay can

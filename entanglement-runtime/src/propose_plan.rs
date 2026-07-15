@@ -111,22 +111,19 @@ pub async fn run_propose_plan(
     holly: Holly,
     mut inbound: Receiver<InMsg>,
     session: SessionId,
-    seq: u64,
     request_id: String,
     input: String,
 ) {
     // A standard `ToolRequest` — the head renders the usual approve/reject prompt.
-    let _ = holly.events().send(OutEvent::ToolRequest {
+    // Mints a fresh per-session seq (#157) rather than reusing the `ToolExec` seq.
+    holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
         session: session.clone(),
         seq,
         request_id: request_id.clone(),
         tool: PROPOSE_PLAN_TOOL.to_string(),
         input,
     });
-    let _ = holly.events().send(OutEvent::Status {
-        session: session.clone(),
-        state: AgentState::WaitingApproval,
-    });
+    holly.emit_status(&session, AgentState::WaitingApproval);
 
     match seam::await_decision(&mut inbound, &session, &request_id).await {
         seam::Decision::Approve { .. } => {
@@ -158,10 +155,7 @@ pub async fn run_propose_plan(
 }
 
 fn set_thinking(holly: &Holly, session: &SessionId) {
-    let _ = holly.events().send(OutEvent::Status {
-        session: session.clone(),
-        state: AgentState::Thinking,
-    });
+    holly.emit_status(session, AgentState::Thinking);
 }
 
 #[cfg(test)]
