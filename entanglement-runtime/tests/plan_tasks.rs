@@ -113,6 +113,7 @@ fn perm_profile(name: &str, permission: PermissionProfile) -> AgentProfile {
         mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
+        provider: None,
         permission,
         tools: None,
         disallowed_tools: Vec::new(),

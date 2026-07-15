@@ -63,7 +63,24 @@ runtime-supplied `Fn(&str,&str) -> Result<ResolvedModel,_>` capturing the catalo
 per-session `model` (overrides `profile.model` on the request + in pricing) +
 `generation` + the `Context` window budget — no restart. Emits `ModelChanged`
 (unknown provider / missing key → `Error`); deferred mid-turn like `SetAgent`, and
-replay re-applies it to re-bind a resumed session. Setup errors (the initial `stream()` call)
+replay re-applies it to re-bind a resumed session. That success arm is factored
+into `Session::rebind`, shared by the live switch and the pin paths below.
+
+**Per-profile model pinning** (✅ #323,
+[ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md))
+reuses that same `rebind`: a `SetAgent` to a profile carrying a **model pin**
+(`AgentProfile::model_pin()` — both `provider` and `model` set) re-binds the
+backend to it, so switching agents can switch endpoints. The rebind lives in
+core's `SetAgent` handler (one locus for Tab cycle / `/agent` / `--agent` /
+spawn / wire) and at **session start** for a pinned starting profile (guarded on
+`Session.provider`/`model` so a child already on its pinned endpoint doesn't
+rebuild). Precedence: per-session memory (`Session.profile_models`, a `/model`
+choice recorded under a profile) **>** the static pin **>** keep the current
+binding — so a pin-less profile with no memory emits no `ModelChanged`, and a
+live override survives an agent switch. `SetAgent` emits `AgentChanged` first
+regardless; a resolver failure surfaces the same `Error` as `SetModel` and keeps
+the old binding. Replay reconstructs `profile_models`/`provider` from the folded
+`ModelChanged` records. Setup errors (the initial `stream()` call)
 surface as `Error` + `Done` with no partial to commit. A **mid-stream** failure
 is handled to keep the committed context aligned with what the user saw (#181,
 [ADR-0057](../adr/0057-mid-stream-error-partial-commit-and-retry.md)):

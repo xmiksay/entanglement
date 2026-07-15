@@ -385,6 +385,7 @@ fn all_mode_worker() -> AgentProfile {
         mode: AgentMode::All,
         system_prompt: String::new(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Allow),
         tools: None,
         disallowed_tools: Vec::new(),
@@ -450,6 +451,7 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
         mode: AgentMode::Subagent,
         system_prompt: String::new(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
         tools: Some(vec![
             "read".into(),
@@ -776,6 +778,7 @@ fn subagent_helper() -> AgentProfile {
         mode: AgentMode::Subagent,
         system_prompt: String::new(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Allow),
         tools: None,
         disallowed_tools: Vec::new(),

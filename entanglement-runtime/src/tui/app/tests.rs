@@ -42,6 +42,122 @@ fn set_agent(app: &mut App, sid: &SessionId, agent: &str) {
     });
 }
 
+/// `ENTANGLEMENT_AGENT_MODELS_FILE` is process-global; the persist tests below
+/// serialize on this so parallel runs don't clobber each other's path.
+static AGENT_MODELS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Install a store pointed at `path` (via the env override) as the app's
+/// agent-models store, so the persist-on-confirmation path writes there.
+fn app_with_store(sid: SessionId, path: &std::path::Path) -> App {
+    std::env::set_var("ENTANGLEMENT_AGENT_MODELS_FILE", path);
+    let mut app = App::new_for_test(sid);
+    app.set_agent_models(crate::config::agent_models::AgentModelStore::load());
+    app
+}
+
+#[test]
+fn pending_model_persist_writes_only_on_matching_model_changed() {
+    let _g = AGENT_MODELS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let sid = SessionId::new("s1");
+    let path = std::env::temp_dir().join(format!(
+        "entanglement-tui-persist-{}.yml",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let mut app = app_with_store(sid.clone(), &path);
+    set_agent(&mut app, &sid, "build");
+
+    // A `/model` pick records a pending persist for the active agent.
+    app.record_pending_model_persist("zai".into(), "glm-5.2".into());
+    assert!(app.pending_model_persist().is_some());
+
+    // The matching ModelChanged for the active session commits the write.
+    app.handle_out_event(OutEvent::ModelChanged {
+        session: sid.clone(),
+        provider: "zai".into(),
+        model: "glm-5.2".into(),
+        context_window: Some(128_000),
+    });
+    assert!(
+        app.pending_model_persist().is_none(),
+        "pending cleared on commit"
+    );
+    assert_eq!(
+        app.persisted_model_for("build"),
+        Some(("zai".into(), "glm-5.2".into())),
+        "pin persisted for the active agent"
+    );
+
+    std::env::remove_var("ENTANGLEMENT_AGENT_MODELS_FILE");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn error_clears_pending_without_writing() {
+    let _g = AGENT_MODELS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let sid = SessionId::new("s1");
+    let path = std::env::temp_dir().join(format!(
+        "entanglement-tui-persist-err-{}.yml",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let mut app = app_with_store(sid.clone(), &path);
+    set_agent(&mut app, &sid, "build");
+
+    app.record_pending_model_persist("zai".into(), "glm-5.2".into());
+    // A failed switch clears the pending without persisting.
+    app.handle_out_event(OutEvent::Error {
+        session: sid.clone(),
+        seq: 1,
+        message: "cannot switch model".into(),
+    });
+    assert!(
+        app.pending_model_persist().is_none(),
+        "pending cleared on error"
+    );
+    assert!(
+        app.persisted_model_for("build").is_none(),
+        "nothing persisted"
+    );
+    assert!(!path.exists(), "no file written on error");
+
+    std::env::remove_var("ENTANGLEMENT_AGENT_MODELS_FILE");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn set_agent_pin_model_changed_without_pending_does_not_write() {
+    let _g = AGENT_MODELS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let sid = SessionId::new("s1");
+    let path = std::env::temp_dir().join(format!(
+        "entanglement-tui-persist-noop-{}.yml",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let mut app = app_with_store(sid.clone(), &path);
+    set_agent(&mut app, &sid, "build");
+
+    // A ModelChanged from a SetAgent pin application (no pending recorded) never
+    // writes.
+    app.handle_out_event(OutEvent::ModelChanged {
+        session: sid.clone(),
+        provider: "zai".into(),
+        model: "glm-5.2".into(),
+        context_window: Some(128_000),
+    });
+    assert!(app.persisted_model_for("build").is_none());
+    assert!(!path.exists());
+
+    std::env::remove_var("ENTANGLEMENT_AGENT_MODELS_FILE");
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn history_up_down_navigates_and_restores_draft() {
     let mut app = App::new_for_test(SessionId::new("test"));

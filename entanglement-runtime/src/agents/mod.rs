@@ -84,6 +84,13 @@ struct AgentDefinition {
     /// Provider model override, or `inherit` / omitted for the session default.
     #[serde(default)]
     model: Option<String>,
+    /// Provider this profile pins `model` to (#323, ADR-0081). Set alongside
+    /// `model` to form a *model pin*: the session re-binds to `(provider, model)`
+    /// on `SetAgent`/session start. `inherit`/omitted ⇒ no provider pin; `model`
+    /// alone stays the legacy request-level fallback. `provider` without `model`
+    /// is a loud load error (a provider with nothing to run is meaningless).
+    #[serde(default)]
+    provider: Option<String>,
     /// Per-tool `Allow | Ask | Deny` rules. Omitted ⇒ allow-all.
     #[serde(default)]
     permission: Option<serde_yaml::Value>,
@@ -139,6 +146,7 @@ impl ForeignAgentFrontmatter {
             description: self.description,
             mode: AgentMode::All,
             model: None,
+            provider: None,
             permission: None,
             include_brief: false,
             tools: None,
@@ -481,12 +489,25 @@ fn build_profile(
     let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
     let include_brief = def.include_brief;
     let mode = def.mode;
+    // `inherit` is the "no pin" sentinel on both model and provider (matching
+    // `model`'s existing filter); drop it before it reaches the profile.
+    let model = def.model.filter(|m| m != "inherit");
+    let provider = def.provider.filter(|p| p != "inherit");
+    // A provider pin needs a model to run (#323, ADR-0081): `provider:` without
+    // `model:` is a loud load error, never a silent no-op.
+    if provider.is_some() && model.is_none() {
+        bail!(
+            "agent `{}` sets `provider` without `model`: a provider pin needs a model to run",
+            def.name
+        );
+    }
     let profile = AgentProfile {
         name: def.name,
         description: def.description,
         mode,
         system_prompt: assemble(body, include_brief, mode, ctx, &preloaded),
-        model: def.model.filter(|m| m != "inherit"),
+        model,
+        provider,
         permission,
         tools: def.tools,
         disallowed_tools: def.disallowed_tools,

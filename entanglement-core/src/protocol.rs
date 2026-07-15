@@ -317,6 +317,16 @@ pub struct AgentProfile {
     pub system_prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Provider this profile pins its [`model`][Self::model] to (#323, ADR-0081).
+    /// A profile with **both** `provider` and `model` set forms a *model pin*
+    /// ([`model_pin`][Self::model_pin]): the runtime re-binds the session's
+    /// backend to `(provider, model)` on `SetAgent` and at session start, so a
+    /// profile carries its own endpoint, not just a model id within the startup
+    /// provider. `model` without `provider` keeps today's request-level fallback
+    /// (no rebind) — the legacy behaviour. Back-compat: `#[serde(default)]`, so
+    /// logs/frames written before #323 deserialize with `provider: None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub permission: PermissionProfile,
     /// Tool allowlist (#116, ADR-0038). `Some` ⇒ only these tools are
     /// advertised to the model and accepted at dispatch (the registry is
@@ -356,6 +366,18 @@ impl AgentProfile {
     /// (#231, ADR-0049): the runtime advertises `update_plan`/`propose_plan` only
     /// to a profile that *explicitly* allowlists them, so plan authority is
     /// default-closed without a dedicated flag.
+    /// The profile's model pin (#323, ADR-0081): `Some((provider, model))` only
+    /// when **both** [`provider`][Self::provider] and [`model`][Self::model] are
+    /// set, so the runtime can re-bind the session's backend to that endpoint on
+    /// `SetAgent`/session start. A `model`-only profile returns `None` — it keeps
+    /// the legacy request-level model fallback and triggers no rebind.
+    pub fn model_pin(&self) -> Option<(&str, &str)> {
+        match (self.provider.as_deref(), self.model.as_deref()) {
+            (Some(provider), Some(model)) => Some((provider, model)),
+            _ => None,
+        }
+    }
+
     pub fn advertises_tool(&self, tool: &str) -> bool {
         if self.disallowed_tools.iter().any(|t| t == tool) {
             return false;
@@ -1423,6 +1445,7 @@ mod tests {
             mode: AgentMode::Subagent,
             system_prompt: "secret prompt body".into(),
             model: Some("glm-5.2".into()),
+            provider: None,
             permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
             tools: Some(vec!["read".into(), "grep".into()]),
             disallowed_tools: vec!["edit".into()],
@@ -1545,6 +1568,7 @@ mod tests {
             mode: AgentMode::Primary,
             system_prompt: String::new(),
             model: None,
+            provider: None,
             permission: PermissionProfile::new(Permission::Allow),
             tools: tools.map(|v| v.into_iter().map(String::from).collect()),
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),
@@ -1564,6 +1588,7 @@ mod tests {
             mode,
             system_prompt: String::new(),
             model: None,
+            provider: None,
             permission: PermissionProfile::new(Permission::Allow),
             tools: None,
             disallowed_tools: Vec::new(),

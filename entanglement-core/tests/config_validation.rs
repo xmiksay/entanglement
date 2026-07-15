@@ -19,6 +19,7 @@ fn custom_profile(name: &str) -> AgentProfile {
         mode: AgentMode::Primary,
         system_prompt: "custom".to_string(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Deny),
         tools: None,
         disallowed_tools: Vec::new(),

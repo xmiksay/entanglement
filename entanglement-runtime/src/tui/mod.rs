@@ -47,12 +47,14 @@ use entanglement_provider::Catalog;
 use event::Event;
 use event_loop::handle_event;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn tui(
     holly: &Holly,
     initial_session: SessionId,
     model_info: ModelInfo,
     catalog: Catalog,
     profiles: ProfileRegistry,
+    agent_models: crate::config::agent_models::AgentModelStore,
     root: std::path::PathBuf,
     bash_enabled: bool,
 ) -> Result<()> {
@@ -100,6 +102,7 @@ pub async fn tui(
         .collect();
     let mut app = App::new(initial_session, catalog, entry_profiles);
     app.set_model_info(model_info);
+    app.set_agent_models(agent_models);
     app.init_head_context(root, bash_enabled);
 
     let mut attention = Attention::from_env();

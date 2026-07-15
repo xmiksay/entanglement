@@ -323,6 +323,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
         mode: AgentMode::Primary,
         system_prompt: "Review the changes.".into(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Ask),
         tools: None,
         disallowed_tools: Vec::new(),

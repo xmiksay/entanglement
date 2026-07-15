@@ -761,8 +761,14 @@ async fn main() -> Result<()> {
     prompt_ctx.skills = skill_registry.disclosures();
     // The skill registry also resolves per-agent `skills:` preload bodies (#117),
     // orthogonal to the tier-1 disclosures above and to the `load_skill` mask.
-    let profiles = agents::load_registry(&cwd, &prompt_ctx, &skill_registry)
+    let mut profiles = agents::load_registry(&cwd, &prompt_ctx, &skill_registry)
         .context("loading agent definitions")?;
+    // Per-agent model pins (#323, ADR-0081): overlay the persisted
+    // `agent-models.yml` onto the freshly-loaded profiles *before* the engine
+    // builds — a persisted pin wins over frontmatter. The store is then threaded
+    // into the TUI so a `/model` choice under an active profile persists back.
+    let agent_models = config::agent_models::AgentModelStore::load();
+    agent_models.apply(&mut profiles);
 
     let http_client = HttpClient::new();
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
@@ -882,6 +888,7 @@ async fn main() -> Result<()> {
                 model_info,
                 catalog,
                 profiles,
+                agent_models,
                 cwd.clone(),
                 bash_enabled,
             )

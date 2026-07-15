@@ -16,7 +16,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          //   content: text, or an image block when `read` opens an image (#221); legacy `output:"…"` still deserializes
          | AnswerQuestion{session,request_id,answer}  // ask_user answer → runtime (#90)
          | Stop{session}
-         | SetAgent{session,agent}   // switch profile (plan/task state is a runtime tool now, #231)
+         | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
@@ -32,7 +32,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
-         | ModelChanged{session,provider,model,context_window?}   // point-in-time, no seq; reply to SetModel (#218, ADR-0063)
+         | ModelChanged{session,provider,model,context_window?}   // point-in-time, no seq; reply to SetModel, or a SetAgent model pin (#218, ADR-0063; #323, ADR-0081)
          | Plan{session,seq,content}          // markdown prose snapshot, runtime-emitted (#231)
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)

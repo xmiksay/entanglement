@@ -79,6 +79,15 @@ pub struct App {
     available_models: Vec<(String, Vec<String>)>,
     model_info: ModelInfo,
 
+    // Per-agent model pins (#323, ADR-0081): the managed `agent-models.yml` store,
+    // and the pending persist recorded when the `/model` picker confirms. The
+    // matching `ModelChanged` for the active session commits the write; an `Error`
+    // (or a `ModelChanged` with no pending, i.e. a `SetAgent` pin application)
+    // clears it without writing. `None` store in tests / when no config dir.
+    agent_models: Option<crate::config::agent_models::AgentModelStore>,
+    /// `(agent, provider, model)` awaiting its `ModelChanged` confirmation.
+    pending_model_persist: Option<(String, String, String)>,
+
     // `/key` dialog (#304): two-stage modal to persist a provider API key.
     key_dialog: crate::tui::key_dialog::KeyDialog,
 
@@ -230,9 +239,10 @@ impl App {
         // A live model switch (#218) updates the head's model display (context
         // bar) directly — model_info is app-global, not per-session-view state.
         if let OutEvent::ModelChanged {
+            session,
+            provider,
             model,
             context_window,
-            ..
         } = &event
         {
             self.set_model_info(ModelInfo {
@@ -240,6 +250,15 @@ impl App {
                 display_name: model.clone(),
                 context_window: context_window.map(|w| w as u32),
             });
+            // Persist-on-confirmation (#323): a `/model` pick recorded a pending
+            // persist; its matching `ModelChanged` commits the write. A
+            // `ModelChanged` from a `SetAgent` pin application has no pending, so
+            // it never writes.
+            self.persist_model_if_pending(session, provider, model);
+        }
+        // A failed switch clears any pending persist without writing (#323).
+        if let OutEvent::Error { session, .. } = &event {
+            self.clear_pending_model_persist_on_error(session);
         }
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();

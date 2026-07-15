@@ -167,6 +167,83 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Install the managed per-agent model store (#323), threaded in from the head
+    /// so a `/model` pick under an active profile persists back to disk.
+    pub fn set_agent_models(&mut self, store: crate::config::agent_models::AgentModelStore) {
+        self.agent_models = Some(store);
+    }
+
+    /// Record a pending persist when the `/model` picker confirms (#323): the
+    /// active agent plus the picked `(provider, model)`. The matching
+    /// `ModelChanged` for the active session commits it (see
+    /// [`persist_model_if_pending`][Self::persist_model_if_pending]); an `Error`
+    /// clears it. A `ModelChanged` from a `SetAgent` pin application has no pending
+    /// recorded here, so it never writes.
+    pub fn record_pending_model_persist(&mut self, provider: String, model: String) {
+        let agent = self.agent().to_string();
+        self.pending_model_persist = Some((agent, provider, model));
+    }
+
+    /// Commit a pending persist when its confirming `ModelChanged` arrives for the
+    /// active session (#323). Matches the pending `(provider, model)` so a
+    /// `ModelChanged` raced in by an interleaved `SetAgent` pin never commits the
+    /// wrong pin. Writes via the store, drops the pending, and records a transcript
+    /// status line. A write failure is logged and surfaced, never fatal.
+    pub(super) fn persist_model_if_pending(
+        &mut self,
+        session: &SessionId,
+        provider: &str,
+        model: &str,
+    ) {
+        if session != self.active_session_id() {
+            return;
+        }
+        let Some((agent, p, m)) = self.pending_model_persist.clone() else {
+            return;
+        };
+        if p != provider || m != model {
+            return;
+        }
+        self.pending_model_persist = None;
+        let status = match self.agent_models.as_mut() {
+            Some(store) => match store.set(&agent, &p, &m) {
+                Ok(()) => format!("model for agent '{agent}' set to {p}/{m} (persisted)"),
+                Err(e) => {
+                    tracing::warn!("could not persist model pin for agent '{agent}': {e:#}");
+                    format!("model for agent '{agent}' set to {p}/{m} (persist failed)")
+                }
+            },
+            None => return,
+        };
+        self.sessions
+            .active_view_mut()
+            .record_status("model", status);
+        self.mark_dirty();
+    }
+
+    /// Drop a pending persist on an `Error` for the active session (#323): the
+    /// switch failed, so nothing is written.
+    pub(super) fn clear_pending_model_persist_on_error(&mut self, session: &SessionId) {
+        if self.pending_model_persist.is_some() && session == self.active_session_id() {
+            self.pending_model_persist = None;
+        }
+    }
+
+    /// Test accessor: the pending `(agent, provider, model)` persist, if any.
+    #[cfg(test)]
+    pub(crate) fn pending_model_persist(&self) -> Option<&(String, String, String)> {
+        self.pending_model_persist.as_ref()
+    }
+
+    /// Test accessor: the persisted pin for `agent` in the installed store.
+    #[cfg(test)]
+    pub(crate) fn persisted_model_for(&self, agent: &str) -> Option<(String, String)> {
+        self.agent_models
+            .as_ref()
+            .and_then(|s| s.get(agent))
+            .map(|(p, m)| (p.to_string(), m.to_string()))
+    }
+
     /// Resolve the highlighted model-picker row to its `(provider, model)` pair
     /// and close the picker (#218). The selection is a flat index across the
     /// per-provider groups, so walk the groups the same way

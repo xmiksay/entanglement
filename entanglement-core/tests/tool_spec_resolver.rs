@@ -60,6 +60,7 @@ fn explore_profile() -> AgentProfile {
         mode: AgentMode::Subagent,
         system_prompt: "You are a read-only exploration agent.".into(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Deny)
             .with("read", Permission::Allow)
             .with("glob", Permission::Allow)

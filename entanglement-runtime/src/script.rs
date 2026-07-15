@@ -774,6 +774,7 @@ mod tests {
             mode: AgentMode::Primary,
             system_prompt: String::new(),
             model: None,
+            provider: None,
             permission: PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
             tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
             disallowed_tools: Vec::new(),
@@ -813,6 +814,7 @@ mod tests {
             mode: AgentMode::Primary,
             system_prompt: String::new(),
             model: None,
+            provider: None,
             permission: PermissionProfile::new(Permission::Allow),
             tools: None,
             disallowed_tools: Vec::new(),
@@ -849,6 +851,7 @@ mod tests {
             mode: AgentMode::Primary,
             system_prompt: String::new(),
             model: None,
+            provider: None,
             permission: PermissionProfile::new(Permission::Ask)
                 .with("edit(src/*)", Permission::Allow),
             tools: None,

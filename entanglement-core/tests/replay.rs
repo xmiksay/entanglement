@@ -370,6 +370,7 @@ async fn profile_changes_during_replay() {
         mode: AgentMode::Primary,
         system_prompt: "Review the changes.".into(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Ask),
         tools: None,
         disallowed_tools: Vec::new(),
