@@ -67,15 +67,25 @@ pub fn spawn_watcher(
 ) -> Option<tokio::task::JoinHandle<()>> {
     let paths = watch_paths(&cwd);
     spawn_debounced_watcher(paths, DEBOUNCE, move || match reload(&cwd, &live) {
-        Ok(msg) => {
+        Ok(Some(msg)) => {
             tracing::info!("{msg}");
             if let Some(tx) = &notice {
                 let _ = tx.send(msg);
             }
         }
+        Ok(None) => tracing::debug!(
+            "definitions reloaded but notice suppressed: this process wrote a managed file \
+             inside the debounce window (self-triggered, not an external change)"
+        ),
         Err(e) => tracing::warn!("definitions reload failed, keeping previous state: {e:#}"),
     })
 }
+
+/// How long after this process's own [`crate::config::atomic::atomic_write`]
+/// a watcher firing is treated as self-triggered rather than external —
+/// generous margin (4x [`DEBOUNCE`]) over scheduler jitter between the write
+/// and the debounced callback landing.
+const SELF_WRITE_SUPPRESS_WINDOW: Duration = Duration::from_millis(2000);
 
 /// Pure watch/debounce primitive: watches every existing path in `paths`
 /// (non-existent ones are skipped — see the module doc) and calls `on_change`
@@ -106,6 +116,7 @@ fn spawn_debounced_watcher(
         match notify_debouncer_mini::new_debouncer(debounce, move |res: DebounceEventResult| {
             match res {
                 Ok(events) if !events.is_empty() => {
+                    tracing::debug!(count = events.len(), "definitions watcher: debounced batch");
                     let _ = tx.send(());
                 }
                 Ok(_) => {}
@@ -182,8 +193,16 @@ fn watch_paths(cwd: &Path) -> Vec<PathBuf> {
 /// succeeds. A malformed edit mid-save must not crash a long-running watcher
 /// or wipe out a previously-good in-memory registry (unlike startup, which
 /// fails fast) — log and keep serving the last-known-good state instead.
-/// Returns the one-line notice on success.
-fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
+///
+/// Returns `Ok(Some(notice))` on a reload worth telling the user about,
+/// `Ok(None)` when the reload succeeded but was triggered by this same
+/// process's own recent managed-file write (see
+/// [`crate::config::atomic::recent_self_write`]) — the state is refreshed
+/// either way, only the notice is suppressed, so a genuinely concurrent
+/// external write within the same window still gets picked up on the next
+/// firing.
+fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<Option<String>> {
+    let self_triggered = crate::config::atomic::recent_self_write(SELF_WRITE_SUPPRESS_WINDOW);
     let new_skills = skills::load_registry(cwd)?;
     let mut prompt_ctx = system_prompt::PromptContext::load(cwd);
     prompt_ctx.skills = new_skills.disclosures();
@@ -204,16 +223,49 @@ fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
     *live.skills.write().unwrap() = Arc::new(new_skills);
     *live.profiles.write().unwrap() = new_profiles;
 
-    Ok(format!(
+    if self_triggered {
+        return Ok(None);
+    }
+    Ok(Some(format!(
         "definitions reloaded: {agent_count} agent(s), {skill_count} skill(s) — \
          new sessions and the next agent switch see the update"
-    ))
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_live_definitions() -> LiveDefinitions {
+        LiveDefinitions {
+            profiles: Arc::new(RwLock::new(ProfileRegistry::default())),
+            skills: Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+            agent_models: Arc::new(Mutex::new(AgentModelStore::default())),
+            grants: Arc::new(crate::policy::DefaultGrantStore::load()),
+        }
+    }
+
+    #[test]
+    fn reload_suppresses_notice_right_after_a_self_write() {
+        // The bug this guards: any managed-file write by this process (an
+        // "always" grant, a `/model` pin, a `/key` set, a tool-allowlist
+        // edit) lands inside the recursively-watched `${config_dir}/entanglement/`
+        // tree and fires the watcher ~500ms later. Without suppression that
+        // produces a spurious "definitions reloaded" notice for a change the
+        // process already knows about (reported as a runaway reload loop).
+        let cwd = tempfile::tempdir().unwrap();
+        let live = test_live_definitions();
+
+        let dir = tempfile::tempdir().unwrap();
+        crate::config::atomic::atomic_write(&dir.path().join("managed.yml"), "x").unwrap();
+
+        let result = reload(cwd.path(), &live).unwrap();
+        assert!(
+            result.is_none(),
+            "a reload immediately after this process's own write must suppress the notice"
+        );
+    }
 
     /// A debounce window generous enough that five back-to-back synchronous
     /// `fs::write` calls (each well under a millisecond in isolation) stay

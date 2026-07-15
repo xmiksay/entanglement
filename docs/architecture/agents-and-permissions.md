@@ -226,7 +226,18 @@ below realize one model:
   write re-reads the current on-disk state under the lock and merges before
   writing, so a second instance's own concurrent update survives instead of being
   clobbered by a write from stale in-memory state; `write_grants` moved onto the
-  shared `atomic_write`.
+  shared `atomic_write`. Because those three files (plus a tool-allowlist
+  override, [ADR-0083](../adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md))
+  live inside the same watched `${config_dir}/entanglement/` tree, this
+  process's *own* write to any of them also fires the watcher — redundantly,
+  since the writer already updated its in-memory state synchronously.
+  `config::atomic::atomic_write` (the shared funnel all four writers use)
+  stamps a process-local last-write timestamp; `reload()` still refreshes
+  state on every firing (so a genuinely concurrent external write is never
+  missed) but suppresses the user-facing "definitions reloaded" notice when
+  the firing landed within ~2s of this process's own stamp — closing what
+  would otherwise read as a runaway reload loop during a session with several
+  approvals/model picks.
 - **Physical tool restriction (✅ #116, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)):**
   an agent's `tools` allowlist / `disallowed_tools` denylist masks its tool set —
   `registry ∩ allowlist − denylist` — on *both* sides of the core↔runtime seam,
