@@ -133,7 +133,10 @@ pub(super) async fn handle_model_picker_event(
         KeyCode::Enter => {
             // Realtime switch (#218): send the picked `(provider, model)` to the
             // live engine; the resulting `ModelChanged` updates the context bar.
+            // Record it as a pending persist for the active agent (#323) so the
+            // confirming `ModelChanged` writes it to `agent-models.yml`.
             if let Some((provider, model)) = app.select_model_picker() {
+                app.record_pending_model_persist(provider.clone(), model.clone());
                 let _ = holly
                     .send(InMsg::SetModel {
                         session: app.active_session_id().clone(),

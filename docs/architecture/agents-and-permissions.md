@@ -5,7 +5,7 @@
 ## 3. Agent profiles + permissions (opencode-style) — [ADR-0003](../adr/0003-agent-and-permission-profiles.md)
 
 A session runs under exactly one [`AgentProfile`][profile]:
-`{ name, description, mode, system_prompt, model?, permission, tools?,
+`{ name, description, mode, system_prompt, model?, provider?, permission, tools?,
 disallowed_tools, can_spawn?, spawnable_agents? }`. `mode` is
 `primary | subagent | all`; `description` drives delegation matching (§8, the
 only field a spawning model sees). The last four fields are the physical
@@ -61,7 +61,9 @@ below realize one model:
   there. See ADR-0044 for the full principle→enforcement map and the deferred
   follow-ups (skill provenance, skill-index masking, child-root isolation).
 
-- Switch with `InMsg::SetAgent { agent }`; engine emits `AgentChanged`.
+- Switch with `InMsg::SetAgent { agent }`; engine emits `AgentChanged` — and,
+  when the target profile carries a **model pin**, a following `ModelChanged`
+  (see *Per-profile model pinning* below).
 - [`PermissionProfile`][perm] resolves `Allow | Ask | Deny` per tool call
   (last-matching-rule-wins, `*` wildcard), **in the runtime tool executor** (✅ #59).
   A rule key is a bare tool name, `*`, or an **argument-scoped** `tool(pattern)`
@@ -177,6 +179,32 @@ below realize one model:
   fallback via `ProfileRegistry::new()`; the runtime rebuilds the full trio from
   the embedded markdown (`entanglement_runtime::agents::built_in_registry`). Add
   your own with `ProfileRegistry::insert`.
+- **Per-profile model pinning (✅ #323, [ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)):**
+  a profile's frontmatter may set `provider:` beside `model:`. Both set = a
+  **model pin** (`AgentProfile::model_pin()`): switching to the profile re-binds
+  the session's whole backend to that `(provider, model)` — through the same
+  `model_resolver` seam a live `/model` (`SetModel`) switch uses
+  ([ADR-0063](../adr/0063-realtime-model-provider-switch.md)) — so a `plan`
+  profile can run a different provider from `build`, and a sub-agent (a cheap
+  `explore`) pins its own cheaper model. `model:` **without** `provider:` keeps
+  the legacy request-level fallback (`req.model` only, **no** rebind); `provider:`
+  **without** `model:` is a loud load error. The rebind lives in **core's
+  `SetAgent`** handler (one locus for Tab cycle / `/agent` / `--agent` / spawn /
+  wire; replay stays consistent), and at **session start** for a pinned starting
+  profile — core stays policy-free, the runtime injects *which* model wins into
+  the assembled profile. **Precedence:** per-session memory (a `/model` choice
+  made while a profile was active, `Session.profile_models`) **>** the static
+  frontmatter pin **>** keep the current binding (a pin-less profile with no
+  memory changes nothing — no `ModelChanged`). A resolver failure surfaces an
+  `Error` and keeps the old binding; the `AgentChanged` still succeeds.
+  **Persistence:** picking a model via the TUI `/model` picker while a profile is
+  active writes the pin to a **managed** `${config_dir}/entanglement/agent-models.yml`
+  (override `ENTANGLEMENT_AGENT_MODELS_FILE`, shape `agents: { build: { provider,
+  model } }`), overlaid onto matching profiles at startup — **persisted file >
+  frontmatter**. Managed (not layered) like the grants + env files: the runtime
+  rewrites it, so it stays out of the hand-edited `config.yml`. Missing/malformed
+  → empty + warn (fail-open); a write failure is logged, never fatal
+  (`entanglement_runtime::config::agent_models`).
 - **Physical tool restriction (✅ #116, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)):**
   an agent's `tools` allowlist / `disallowed_tools` denylist masks its tool set —
   `registry ∩ allowlist − denylist` — on *both* sides of the core↔runtime seam,

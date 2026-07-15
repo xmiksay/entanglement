@@ -222,6 +222,23 @@ re-document them here):
   TUI `/model` picker now drives it end-to-end. The former `LlmSession` placeholder
   ([ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md)) stayed
   collapsed: the switch lives on `Session` fields, not a re-introduced newtype.
+- **Per-agent-profile model pinning + rebind on `SetAgent`** (#323,
+  [ADR-0081](../docs/adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)):
+  `AgentProfile` gains `provider: Option<String>` beside `model` — both set is a
+  *model pin* (`AgentProfile::model_pin()`). Core's `SetAgent` (and session start)
+  now re-binds the backend to a profile's pin through the same `model_resolver`
+  seam as `SetModel` (the `SetModel` success arm is factored into `Session::rebind`),
+  so switching agents can switch endpoints — one locus covers Tab cycle / `/agent`
+  / `--agent` / spawn / wire, and replay stays consistent. Precedence: per-session
+  memory (`Session.profile_models`, a live `/model` choice under a profile) **>**
+  the static pin **>** keep current binding (a pin-less profile emits no
+  `ModelChanged`; a live override survives an agent switch). `model` without
+  `provider` stays the legacy request-level fallback; `provider` without `model`
+  is a loud load error. The TUI persists a `/model` pick for the active profile to
+  a **managed** `${config_dir}/entanglement/agent-models.yml`
+  (`ENTANGLEMENT_AGENT_MODELS_FILE`), overlaid onto the registry at startup
+  (persisted file > frontmatter); core stays policy-free (the runtime resolves
+  which model wins). `atomic_write` now lives in shared `config::atomic`.
 - **Session hibernation is eviction, not termination** (#318,
   [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)): a third
   lifecycle state between `live` and the terminal tombstone. `HibernateSession {

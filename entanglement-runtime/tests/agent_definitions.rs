@@ -247,6 +247,94 @@ fn prompt_report_tolerates_broken_foreign_file() {
     assert!(report.is_some(), "built-in build still resolves");
 }
 
+// ── per-agent provider/model pin frontmatter (#323, ADR-0081) ──────────────────
+
+#[test]
+fn provider_and_model_frontmatter_forms_a_model_pin() {
+    let project = tempfile::tempdir().unwrap();
+    write_agent(
+        &project.path().join(".entanglement").join("agents"),
+        "planner.md",
+        "---\nname: planner\ndescription: pinned planner\nprovider: zai\nmodel: glm-5.2\n---\nbody",
+    );
+    let reg = load_with_dirs(None, project.path());
+    let planner = reg.get("planner").expect("planner loaded");
+    assert_eq!(planner.provider.as_deref(), Some("zai"));
+    assert_eq!(planner.model.as_deref(), Some("glm-5.2"));
+    assert_eq!(planner.model_pin(), Some(("zai", "glm-5.2")));
+}
+
+#[test]
+fn model_only_frontmatter_is_not_a_pin() {
+    // `model:` without `provider:` keeps the legacy request-level fallback — no
+    // pin, so no rebind.
+    let project = tempfile::tempdir().unwrap();
+    write_agent(
+        &project.path().join(".entanglement").join("agents"),
+        "legacy.md",
+        "---\nname: legacy\ndescription: legacy model-only\nmodel: glm-5.2\n---\nbody",
+    );
+    let reg = load_with_dirs(None, project.path());
+    let legacy = reg.get("legacy").expect("legacy loaded");
+    assert_eq!(legacy.model.as_deref(), Some("glm-5.2"));
+    assert_eq!(legacy.provider, None);
+    assert_eq!(legacy.model_pin(), None);
+}
+
+#[test]
+fn provider_without_model_is_a_loud_error() {
+    let project = tempfile::tempdir().unwrap();
+    write_agent(
+        &project.path().join(".entanglement").join("agents"),
+        "broken.md",
+        "---\nname: broken\ndescription: provider only\nprovider: zai\n---\nbody",
+    );
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
+    let result = load_registry(
+        project.path(),
+        &PromptContext::default(),
+        &entanglement_runtime::skills::SkillRegistry::default(),
+    );
+    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
+    let err = result.err().expect("provider-without-model must error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("provider") && msg.contains("model"),
+        "error explains the missing model: {msg}"
+    );
+}
+
+#[test]
+fn provider_inherit_is_treated_as_no_pin() {
+    let project = tempfile::tempdir().unwrap();
+    write_agent(
+        &project.path().join(".entanglement").join("agents"),
+        "inh.md",
+        "---\nname: inh\ndescription: inherit\nprovider: inherit\nmodel: inherit\n---\nbody",
+    );
+    let reg = load_with_dirs(None, project.path());
+    let inh = reg.get("inh").expect("inh loaded");
+    assert_eq!(inh.provider, None);
+    assert_eq!(inh.model, None);
+    assert_eq!(inh.model_pin(), None);
+}
+
+#[test]
+fn foreign_agents_carry_no_provider_pin() {
+    let project = tempfile::tempdir().unwrap();
+    write_agent(
+        &project.path().join(".claude").join("agents"),
+        "helper.md",
+        "---\nname: helper\ndescription: claude helper\nmodel: sonnet\n---\nbody",
+    );
+    let reg = load_with_dirs(None, project.path());
+    let helper = reg.get("helper").expect("foreign agent discovered");
+    // Foreign frontmatter ignores `model`; a provider pin is never inferred.
+    assert_eq!(helper.provider, None);
+    assert_eq!(helper.model_pin(), None);
+}
+
 // ── end-to-end spawn under a file-defined profile ──────────────────────────────
 
 fn finish(text: &str) -> LlmStream {

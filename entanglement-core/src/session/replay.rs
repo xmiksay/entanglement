@@ -142,9 +142,20 @@ impl Session {
                 OutEvent::ModelChanged {
                     provider, model, ..
                 } => {
+                    // Reconstruct the per-profile session memory (#323, ADR-0081):
+                    // the logged `(provider, model)` is the resolved canonical pair,
+                    // keyed by the active profile the preceding `AgentChanged` folds
+                    // set. So a resumed session re-applies a `/model` choice per
+                    // profile exactly like the live one, wins over a static pin on a
+                    // later `SetAgent` switch-back.
+                    session.profile_models.insert(
+                        session.profile.name.clone(),
+                        (provider.clone(), model.clone()),
+                    );
                     if let Some(resolver) = cfg.model_resolver.as_ref() {
                         match resolver(provider, model) {
                             Ok(resolved) => {
+                                session.provider = Some(resolved.provider);
                                 session.llm = (resolved.llm_factory)();
                                 session.model = Some(resolved.model);
                                 session.generation = resolved.generation;

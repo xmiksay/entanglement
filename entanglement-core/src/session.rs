@@ -18,23 +18,23 @@
 
 mod emit;
 mod replay;
+mod state;
 mod stream;
 mod turn;
 mod turn_state;
 
+pub use state::{Session, SessionUsage};
 pub use turn_state::TurnState;
 
 use std::collections::VecDeque;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::context::Context;
 use crate::holly::SeqRegistry;
 use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::{ContentPart, GenerationParams, Llm};
+use entanglement_provider::ContentPart;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use emit::{emit_tool_exec, emit_tool_output, next_seq};
@@ -65,81 +65,6 @@ pub(crate) enum SessionCmd {
     /// dropped alongside so a turn parked mid-stream unwinds to this teardown
     /// (stop-then-hibernate) rather than stranding.
     Hibernate,
-}
-
-/// Mutable per-session loop + turn state (#61). Holds the conversation
-/// [`Context`], the provider LLM backend (`llm`, a plain `Box<dyn Llm>` — the
-/// resilience state it references is keyed per endpoint in the provider, not per
-/// session, so there is no session-scoped handle to wrap it, #195/ADR-0062), the
-/// active profile,
-/// and the emit sequence — nothing pointing at the filesystem or a fixed tool
-/// set. Plan/task snapshots are the runtime's display state, not engine state
-/// (#231, ADR-0049), so the session carries neither. The tool schemas advertised
-/// to the model are config, not session state: they come from
-/// [`EngineConfig::tool_specs`] at turn time (see [`turn`]).
-pub struct Session {
-    pub ctx: Context,
-    pub llm: Box<dyn Llm>,
-    pub profile: AgentProfile,
-    /// Effective model id when the user switched model/provider mid-session
-    /// (#218), overriding the profile's pinned [`AgentProfile::model`] on every
-    /// request and in pricing. `None` keeps the profile's model (the startup
-    /// default). Set by [`SessionCmd::SetModel`]; reset only by another switch.
-    pub model: Option<String>,
-    /// Effective generation knobs for the active model (#218). Seeded from
-    /// [`EngineConfig::generation`][crate::EngineConfig] at creation and replaced
-    /// on a model switch so temperature / max-output / thinking follow the model.
-    pub generation: Option<GenerationParams>,
-    /// Monotonic per-session emit counter, shared (`Arc<AtomicU64>`, #157) with
-    /// the supervisor's seq registry so runtime-authored events minted while this
-    /// session is parked (an approval `ToolRequest`, a `Plan`/`TaskList` snapshot,
-    /// a `FileChange`) draw a fresh seq from the *same* sequence via
-    /// [`Holly::emit_for_session`][crate::Holly] — keeping `(session, seq)` unique
-    /// instead of reusing the parked `ToolExec` seq (the pre-#157 defect).
-    pub seq: Arc<AtomicU64>,
-    pub parent: Option<SessionId>,
-    /// Cumulative token usage + cost across every model round-trip this session
-    /// has run (#192). Each `LlmEvent::Finish` folds its normalized `Usage` in
-    /// here and emits the per-round-trip delta as [`OutEvent::Usage`].
-    pub usage: SessionUsage,
-    /// The in-flight turn (#270, ADR-0061): `Some` while a turn is live —
-    /// streaming or parked on unresolved tool calls — `None` when idle.
-    /// Serde-capable so an embedder can persist a suspended-mid-turn session
-    /// (via the event log + replay) and resolve the pending calls against its
-    /// own state.
-    pub turn: Option<TurnState>,
-}
-
-/// Running per-session usage tally (#192): the sum of every round-trip's
-/// normalized token counts plus the accrued dollar cost. Kept in the engine so a
-/// session total survives across turns; heads reconstruct the same total by
-/// accumulating the per-round-trip [`OutEvent::Usage`] deltas.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SessionUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cached_input_tokens: u64,
-    pub cache_write_tokens: u64,
-    pub cost_usd: f64,
-}
-
-impl Session {
-    /// Creates a new empty session with the given configuration and profile.
-    pub fn new_empty(cfg: &EngineConfig, profile: AgentProfile) -> Self {
-        Self {
-            // Budget the history against the active model's real context window
-            // (#178), not a fixed Anthropic-shaped ceiling.
-            ctx: Context::with_window(cfg.context_window),
-            llm: (cfg.llm_factory)(),
-            profile,
-            model: None,
-            generation: cfg.generation,
-            seq: Arc::new(AtomicU64::new(0)),
-            parent: None,
-            usage: SessionUsage::default(),
-            turn: None,
-        }
-    }
 }
 
 /// Runs one session until `Stop` / inbox close. Emits `SessionStarted`, `Idle` status
@@ -193,6 +118,30 @@ pub(crate) async fn session_loop(
         agent: s.profile.name.clone(),
         profile_detail: Some(s.profile.detail()),
     });
+
+    // Session-start model pin (#323, ADR-0081): bind the starting profile's pin
+    // when no model is bound yet. A fresh `build`/spawned sub-agent (e.g. a
+    // cheap-model `explore`) lands straight on its pinned endpoint; a resumed
+    // session already re-bound from its `ModelChanged` log (so `s.model` is
+    // `Some`) is skipped. Best-effort: a resolver failure warns and keeps the
+    // startup default, matching replay's stance.
+    if s.model.is_none() {
+        if let Some((provider, model)) = s
+            .profile
+            .model_pin()
+            .map(|(p, m)| (p.to_string(), m.to_string()))
+        {
+            if let Some(resolver) = cfg.model_resolver.as_ref() {
+                match resolver(&provider, &model) {
+                    Ok(resolved) => s.rebind(&session, resolved, &events),
+                    Err(e) => tracing::warn!(
+                        provider, model, error = %e,
+                        "session start: could not apply profile model pin; keeping default"
+                    ),
+                }
+            }
+        }
+    }
 
     // A session resumed mid-turn (#271/#272, ADR-0061): re-offer every pending
     // call — same `request_id`, fresh `seq` — so the tool executor (or an
@@ -274,12 +223,42 @@ pub(crate) async fn session_loop(
                 }
                 match cfg.profiles.get(&name) {
                     Some(p) => {
+                        let p = p.clone();
                         s.profile = p.clone();
                         let _ = events.send(OutEvent::AgentChanged {
                             session: session.clone(),
                             agent: p.name.clone(),
                             profile_detail: Some(p.detail()),
                         });
+                        // Per-profile model pin (#323, ADR-0081): re-bind the
+                        // backend to this profile's model. Precedence: session
+                        // memory (a `/model` choice made under this profile) >
+                        // the profile's static `model_pin()`. A pin-less profile
+                        // with no memory keeps the current binding — no rebuild,
+                        // no `ModelChanged`. The `AgentChanged` above already
+                        // succeeded, so a resolver error here surfaces the same
+                        // `Error` as `SetModel` and keeps the old binding.
+                        let pin = s.profile_models.get(&p.name).cloned().or_else(|| {
+                            p.model_pin().map(|(pr, m)| (pr.to_string(), m.to_string()))
+                        });
+                        if let Some((provider, model)) = pin {
+                            let unchanged = s.provider.as_deref() == Some(provider.as_str())
+                                && s.model.as_deref() == Some(model.as_str());
+                            if !unchanged {
+                                if let Some(resolver) = cfg.model_resolver.as_ref() {
+                                    match resolver(&provider, &model) {
+                                        Ok(resolved) => s.rebind(&session, resolved, &events),
+                                        Err(e) => {
+                                            let _ = events.send(OutEvent::Error {
+                                                session: session.clone(),
+                                                seq: next_seq(&s.seq),
+                                                message: format!("cannot switch model: {e}"),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     None => {
                         let _ = events.send(OutEvent::Error {
@@ -309,16 +288,15 @@ pub(crate) async fn session_loop(
                 };
                 match resolver(&provider, &model) {
                     Ok(resolved) => {
-                        s.llm = (resolved.llm_factory)();
-                        s.model = Some(resolved.model.clone());
-                        s.generation = resolved.generation;
-                        s.ctx.set_window(resolved.context_window);
-                        let _ = events.send(OutEvent::ModelChanged {
-                            session: session.clone(),
-                            provider: resolved.provider,
-                            model: resolved.model,
-                            context_window: resolved.context_window,
-                        });
+                        s.rebind(&session, resolved, &events);
+                        // Record the choice as this profile's session memory (#323):
+                        // a later `SetAgent` back to it re-applies this binding,
+                        // winning over the profile's static pin. Uses the resolved
+                        // canonical `(provider, model)` so switch-back re-resolves
+                        // the same endpoint.
+                        if let (Some(p), Some(m)) = (s.provider.clone(), s.model.clone()) {
+                            s.profile_models.insert(s.profile.name.clone(), (p, m));
+                        }
                     }
                     Err(e) => {
                         let _ = events.send(OutEvent::Error {

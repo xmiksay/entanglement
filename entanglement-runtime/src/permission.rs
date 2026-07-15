@@ -341,6 +341,7 @@ mod tests {
             mode,
             system_prompt: String::new(),
             model: None,
+            provider: None,
             permission,
             tools: tools.map(|v| v.into_iter().map(String::from).collect()),
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),

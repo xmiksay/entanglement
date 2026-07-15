@@ -130,6 +130,8 @@ impl App {
             showing_model_picker: false,
             model_picker_state,
             available_models,
+            agent_models: None,
+            pending_model_persist: None,
             key_dialog: crate::tui::key_dialog::KeyDialog::new(key_providers),
             model_info: ModelInfo {
                 id: "dummy".to_string(),

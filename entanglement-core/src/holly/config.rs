@@ -253,6 +253,7 @@ fn default_profile() -> AgentProfile {
             "You are a coding agent. Implement the requested changes using the available tools."
                 .into(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Allow),
         tools: None,
         disallowed_tools: Vec::new(),

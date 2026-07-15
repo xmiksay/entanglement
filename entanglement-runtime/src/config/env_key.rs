@@ -17,11 +17,11 @@
 //!   on unix). Empty or newline-containing values are refused — they would either
 //!   set nothing or corrupt the single-line `KEY=VALUE` format.
 
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
+use super::atomic::atomic_write;
 use super::env_file::{env_file_path, template, ENV_FILE_ENV};
 
 /// Upsert `key=value` into env-file `text`, returning the new text.
@@ -144,45 +144,6 @@ pub fn set_key(key_name: &str, value: &str) -> Result<PathBuf> {
     let updated = upsert(&existing, key_name, value);
     atomic_write(&path, &updated)?;
     Ok(path)
-}
-
-/// Write `contents` to `path` atomically: a sibling temp file (same directory, so
-/// the rename stays on one filesystem), `0o600` on unix, then rename over the
-/// target. A failed write cleans the temp file up rather than leaving a stray.
-fn atomic_write(path: &std::path::Path, contents: &str) -> Result<()> {
-    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_os_string())
-        .unwrap_or_else(|| ".env".into());
-    let mut tmp_name = file_name;
-    // Process id keeps concurrent `skutter` writers from colliding on the temp
-    // name; the rename below is the atomic commit either way.
-    tmp_name.push(format!(".tmp.{}", std::process::id()));
-    let tmp_path = dir.join(tmp_name);
-
-    let result = (|| {
-        let mut file = std::fs::File::create(&tmp_path)
-            .with_context(|| format!("creating temp env file {}", tmp_path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("chmod 600 {}", tmp_path.display()))?;
-        }
-        file.write_all(contents.as_bytes())
-            .with_context(|| format!("writing temp env file {}", tmp_path.display()))?;
-        file.flush()
-            .with_context(|| format!("flushing temp env file {}", tmp_path.display()))?;
-        std::fs::rename(&tmp_path, path)
-            .with_context(|| format!("renaming {} to {}", tmp_path.display(), path.display()))
-    })();
-
-    if result.is_err() {
-        // Best-effort cleanup so a failed write never leaves a stray temp file.
-        let _ = std::fs::remove_file(&tmp_path);
-    }
-    result
 }
 
 #[cfg(test)]

@@ -115,6 +115,7 @@ fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
         mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
+        provider: None,
         permission,
         tools: None,
         disallowed_tools: Vec::new(),

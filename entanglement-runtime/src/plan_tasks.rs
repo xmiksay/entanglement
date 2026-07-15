@@ -144,6 +144,7 @@ mod tests {
             mode: AgentMode::Primary,
             system_prompt: String::new(),
             model: None,
+            provider: None,
             permission: PermissionProfile::new(Permission::Allow),
             tools: tools.map(|v| v.into_iter().map(String::from).collect()),
             disallowed_tools: Vec::new(),

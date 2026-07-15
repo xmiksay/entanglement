@@ -111,6 +111,7 @@ fn ask_bash_registry() -> ProfileRegistry {
         mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Ask),
         tools: None,
         disallowed_tools: Vec::new(),
@@ -174,6 +175,7 @@ async fn deny_refuses_without_request() {
         mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Deny),
         tools: None,
         disallowed_tools: Vec::new(),
@@ -264,6 +266,7 @@ fn scoped_bash_registry() -> ProfileRegistry {
         mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Ask)
             .with("bash(git *)", Permission::Allow)
             .with("bash(rm *)", Permission::Deny),

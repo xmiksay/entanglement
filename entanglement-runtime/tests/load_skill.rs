@@ -255,6 +255,7 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
         mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
+        provider: None,
         permission: PermissionProfile::new(Permission::Deny),
         tools: None,
         disallowed_tools: Vec::new(),

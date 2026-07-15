@@ -55,6 +55,8 @@ use crate::agents::permission_from_value;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
 
+pub mod agent_models;
+pub mod atomic;
 pub mod env_file;
 pub mod env_key;
 
