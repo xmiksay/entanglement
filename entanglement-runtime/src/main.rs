@@ -74,7 +74,7 @@ async fn build_config(
     profiles: ProfileRegistry,
     skills: std::sync::Arc<skills::SkillRegistry>,
     user_config: &config::Config,
-) -> (EngineConfig, ModelInfo, ToolRegistry) {
+) -> (EngineConfig, ModelInfo, ToolRegistry, Vec<String>) {
     let (mut cfg, model_info) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
     // session can re-bind its LLM from the catalog with no restart. Captures the
@@ -168,7 +168,15 @@ async fn build_config(
     // (registered by default; a profile masks it like any tool via its
     // allowlist). The executor intercepts it before permission resolution.
     cfg.tool_specs.push(script::rhai_spec());
-    (cfg, model_info, tools)
+    // The `/agent` picker's tools-checklist dialog (#330) offers every advertised
+    // tool name — captured here (before `cfg` is moved into `Holly::spawn`), not
+    // via the `ToolRegistry` alone, so it also includes the runtime-owned specs
+    // appended above (`update_tasks`/`ask_user`/`rhai`) that aren't registry
+    // tools but are still maskable via a profile's `tools`/`disallowed_tools`.
+    let mut tool_names: Vec<String> = cfg.tool_specs.iter().map(|s| s.name.clone()).collect();
+    tool_names.sort();
+    tool_names.dedup();
+    (cfg, model_info, tools, tool_names)
 }
 
 /// Resolve the active provider from the catalog:
@@ -773,7 +781,7 @@ async fn main() -> Result<()> {
     let http_client = HttpClient::new();
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
-    let (engine_config, model_info, tools) = build_config(
+    let (engine_config, model_info, tools, tool_names) = build_config(
         &catalog,
         &http_client,
         profiles,
@@ -891,6 +899,7 @@ async fn main() -> Result<()> {
                 agent_models,
                 cwd.clone(),
                 bash_enabled,
+                tool_names,
             )
             .await
         }

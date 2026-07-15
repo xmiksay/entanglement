@@ -25,13 +25,12 @@ pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
         })
         .collect();
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Select Agent Profile (Esc to close, Enter to select)"),
-        )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+    let list =
+        List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(
+                "Select Agent Profile (Esc to close, Enter to select, e: edit tool allowlist)",
+            ))
+            .highlight_style(Style::default().bg(Color::DarkGray));
 
     let area = centered_rect(60, 40, f.area());
     f.render_widget(Clear, area);

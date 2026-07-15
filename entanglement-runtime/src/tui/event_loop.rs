@@ -10,7 +10,7 @@ use super::keybindings::LeaderResult;
 use super::modal_events::{
     handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
     handle_model_picker_event, handle_mouse, handle_profile_picker_event, handle_question_event,
-    handle_resume_modal_event, handle_sessions_modal_event,
+    handle_resume_modal_event, handle_sessions_modal_event, handle_tools_dialog_event,
 };
 use super::session_view::ApprovalMode;
 
@@ -26,6 +26,12 @@ pub(super) async fn handle_event(
             if key.kind == KeyEventKind::Press {
                 if app.showing_sessions_modal() {
                     return handle_sessions_modal_event(app, key).await;
+                }
+                // Checked before the profile picker: `e` opens the tools dialog
+                // *over* the picker without closing it (#330), so it must win the
+                // routing while both are marked open.
+                if app.showing_tools_dialog() {
+                    return handle_tools_dialog_event(app, key).await;
                 }
                 if app.showing_profile_picker() {
                     return handle_profile_picker_event(app, holly, key).await;

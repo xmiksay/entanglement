@@ -7,7 +7,7 @@ mod sessions;
 pub use inspect::draw_inspect_overlay;
 pub use popups::{
     draw_command_palette, draw_help_dialog, draw_key_dialog, draw_mention_popup,
-    draw_slash_autocomplete, draw_which_key_popup,
+    draw_slash_autocomplete, draw_tools_dialog, draw_which_key_popup,
 };
 pub use sessions::{
     draw_model_picker, draw_profile_picker, draw_resume_modal, draw_sessions_modal,

@@ -282,3 +282,38 @@ pub fn draw_key_dialog(f: &mut Frame, app: &mut App) {
         }
     }
 }
+
+/// Draw the `/agent` picker's `e` tools-checklist dialog (#330): every
+/// advertised tool with a checkbox reflecting the profile's current effective
+/// mask. `Space` toggles, `Enter` saves a user-layer override, `Esc` discards.
+pub fn draw_tools_dialog(f: &mut Frame, app: &mut App) {
+    let agent = app.tools_dialog().agent().to_string();
+    let tools = app.tools_dialog().tools().to_vec();
+
+    let items: Vec<ListItem> = tools
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let checked = app.tools_dialog().is_checked(i);
+            let (mark, style) = if checked {
+                ("[x] ", Style::default())
+            } else {
+                ("[ ] ", Style::default().dim())
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(mark, style),
+                Span::styled(name.clone(), style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            "Tool allowlist — {agent} (Space: toggle, Enter: save, Esc: cancel)"
+        )))
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let area = centered_rect(60, 60, f.area());
+    f.render_widget(Clear, area);
+    f.render_stateful_widget(list, area, app.tools_dialog_state());
+}

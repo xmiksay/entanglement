@@ -57,6 +57,9 @@ use crate::layers::Strictness;
 use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, assemble_parts, PromptContext, PromptPart};
 
+mod materialize;
+pub use materialize::{rewrite_tools, save_tools_override, winning_raw_text};
+
 /// Embedded built-in definitions, parsed through the same loader as user/project
 /// files. `(filename, contents)` — the filename only feeds parse-error messages;
 /// the agent's identity is its frontmatter `name`.

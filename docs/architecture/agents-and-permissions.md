@@ -236,6 +236,27 @@ below realize one model:
   the ancestor chain** (a child never gains a tool an ancestor lacked, mirroring
   ADR-0024's privilege ceiling). `explore` is now the reference read-only agent:
   `tools: [read, glob, grep]` — no `edit`/`write`, no `bash`, no `agent_spawn`.
+- **In-app tool-allowlist editing (✅ #330, [ADR-0083](../adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)):**
+  editing a mask materializes a user-layer override, not a new config surface —
+  the layered loader already shadows a same-`name` definition, built-in
+  included, so there is no separate "edit built-ins" path.
+  `entanglement_runtime::agents::materialize::save_tools_override(root, name,
+  allowed)` resolves the currently effective definition's raw text
+  (`winning_raw_text`, same precedence as `load_registry`), rewrites only the
+  `tools:`/`disallowed_tools:` frontmatter keys via a `serde_yaml::Mapping`
+  round-trip (`rewrite_tools` — order-preserving, every other key and the body
+  untouched), and writes atomically via `config::atomic::atomic_write` to
+  `${config_dir}/entanglement/agents/<name>.md` (or `ENTANGLEMENT_AGENTS_DIR`).
+  In the TUI, `e` on the `/agent` picker's highlighted profile opens a
+  single-stage checklist dialog (`tui::tools_dialog::ToolsDialog`) over the full
+  advertised tool roster — captured from `EngineConfig.tool_specs` in the
+  runtime head (so it also covers runtime-owned specs like
+  `update_tasks`/`ask_user`/`rhai`, not just `ToolRegistry` names), seeded from
+  the profile's current effective mask; `Space` toggles, `Enter` saves +
+  records a transcript status line, `Esc` discards. The write applies on the
+  next restart — there is no live registry reload yet (a separate watcher
+  issue); `skutter inspect agents` still reports the winning layer and what it
+  shadowed, so provenance stays visible.
 - **Per-profile spawn control (✅ #119, [ADR-0040](../adr/0040-per-profile-spawn-control.md)):**
   spawning is a per-profile capability declared in the definition — *whether* a
   profile may spawn (`can_spawn`, default: open for primaries/`all`, closed for a
