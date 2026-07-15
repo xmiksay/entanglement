@@ -7,6 +7,7 @@ use anyhow::Result;
 use entanglement_core::{Holly, InMsg, SessionId};
 use std::io::{stdout, Write};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::oneshot;
 
 /// Continuous NDJSON relay.
@@ -50,7 +51,12 @@ pub async fn pipe(holly: &Holly, default_session: &SessionId) -> Result<()> {
                     writeln!(out, "{}", serde_json::to_string(&ev)?)?;
                     out.flush()?;
                 }
-                Err(_) => break,
+                // A broadcast lag is a dropped-events gap, not end-of-stream: log and
+                // keep relaying instead of silently killing the relay mid-conversation.
+                Err(RecvError::Lagged(n)) => {
+                    eprintln!("note: pipe relay lagged, skipped {n} events");
+                }
+                Err(RecvError::Closed) => break,
             },
             _ = &mut done_rx => {
                 while let Ok(ev) = tokio::time::timeout(std::time::Duration::from_millis(200), sub.recv()).await {
