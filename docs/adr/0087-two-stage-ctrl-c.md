@@ -100,6 +100,18 @@ synthetic `Event::Interrupt` through the existing event channel, which routes
 through the same `handle_quit_key` path → graceful `restore_terminal`. An
 out-of-band signal can no longer leave the terminal in a broken state.
 
+**Shutdown-time reset.** `tokio::signal::ctrl_c()` registers a *process-global*
+signal handler (via `signal-hook-registry`) that persists for the lifetime of
+the program — it is **not** removed when the `ctrl_c()` future is dropped or its
+task aborted. After the TUI loop exits and `restore_terminal` runs, `main`
+tears down the engine + persistence (`drop(holly)` → `persistence_handle.await`).
+Without undoing the registration, a Ctrl+C during that teardown would be
+swallowed by tokio's lingering handler — leaving the user no escape but
+`kill -9`. So immediately after `restore_terminal`, the TUI aborts the sigint
+task and resets SIGINT to its OS default disposition (`SIG_DFL`, terminate) via
+`libc::signal`. That keeps the post-TUI shutdown interruptible, exactly as it
+was before any SIGINT handler existed.
+
 ## Consequences
 
 - **(+)** A reflexive Ctrl+C no longer destroys a half-typed prompt or a
@@ -115,6 +127,10 @@ out-of-band signal can no longer leave the terminal in a broken state.
 - **(−)** The synthetic `Event::Interrupt` is a new event variant; it is handled
   only by the TUI's `handle_event` and carries no protocol meaning (never
   crosses the ABI).
+- **(−)** `tokio::signal::ctrl_c()` installs a process-global handler that must
+  be explicitly reset (`SIG_DFL`) after `restore_terminal`, or it swallows a
+  Ctrl+C during `main`'s post-TUI teardown and forces `kill -9`. Mitigated by
+  the reset in `tui()`'s shutdown path.
 
 ## Alternatives considered
 
