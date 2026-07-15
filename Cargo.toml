@@ -49,6 +49,12 @@ rhai = { version = "1", default-features = false, features = ["std", "sync", "se
 diffy = "0.5"
 # rustls (not native-tls) so builds need no system OpenSSL headers.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "charset"] }
+# WebSocket `serve` head (entanglement-runtime only, behind its `serve` feature —
+# ADR-0025/ADR-0048). Loopback-bound local HTTP+WS server; the `ws` feature adds
+# the WebSocket upgrade path. tokio-tungstenite drives the serve integration
+# tests' WS client (dev-dep only).
+axum = { version = "0.8", features = ["ws"] }
+tokio-tungstenite = "0.29"
 # TUI dependencies (entanglement-runtime only, behind its `tui` feature — ADR-0025)
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream"] }

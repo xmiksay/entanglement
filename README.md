@@ -9,11 +9,12 @@ over those two methods.
 
 ## Status
 
-Actor core + stdio head + TUI, with real LLM backends wired
-(`entanglement-provider`: z.ai/OpenAI/Ollama + Anthropic). WebSocket `serve` is
-the next head. The three-layer re-architecture (core / provider / runtime) has
-landed — see [`docs/adr/0006`](docs/adr/0006-core-dependency-hygiene-gate.md)
-and the crate table below.
+Actor core + stdio head + TUI + local WebSocket `serve` head, with real LLM
+backends wired (`entanglement-provider`: z.ai/OpenAI/Ollama + Anthropic). All
+four interfaces now ship. The three-layer re-architecture (core / provider /
+runtime) has landed — see
+[`docs/adr/0006`](docs/adr/0006-core-dependency-hygiene-gate.md) and the crate
+table below.
 
 ## The contract (one set of types, every head)
 
@@ -36,7 +37,7 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
 | **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, mode, model, layer, source, mask) or one agent's full resolved profile + what lower layers it overrode; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, user_only, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill. |
 | **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
-| **WebSocket** (`skutter serve`) | next | axum `/ws`, in-band auth first frame, `broadcast` fan-out, multiplexed by `SessionId`. Model from the `agent`/`design` references. |
+| **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as the future Vue SPA), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/0048-serve-head-local-trust-model.md), #153). |
 
 ## Agent profiles (opencode-style)
 
@@ -89,6 +90,7 @@ in `.cargo/config.toml`.
 make run          # one dummy turn, text output
 make run-json     # one dummy turn, NDJSON events
 make run-tui      # launch the terminal UI
+make serve        # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
 make test         # unit + integration
 make lint         # clippy --all-targets -D warnings
 make verify       # check-fmt + tree + check-lean + lint + test (CI-equivalent)

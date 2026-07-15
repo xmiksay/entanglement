@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build run run-json run-tui pipe sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean coverage
+.PHONY: help build run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean coverage
 
 # Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
 # amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
@@ -16,9 +16,11 @@ PKG ?=
 # this also bans the web/websocket stacks the old grep let sail through
 # (warp/actix/rocket/tungstenite/ureq — the #207 blocklist-completeness gap).
 CORE_FORBIDDEN ?= clap|axum|warp|actix-web|actix|rocket|tonic|tungstenite|crossterm|ratatui|ureq
-# LEAN_FORBIDDEN — CLI/TUI crates that must stay out of the no-default-features
-# runtime library (ADR-0025's set, amended by ADR-0053).
-LEAN_FORBIDDEN ?= clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|tracing-subscriber
+# LEAN_FORBIDDEN — CLI/TUI/transport crates that must stay out of the
+# no-default-features runtime library (ADR-0025's set, amended by ADR-0053).
+# `axum` rides the `serve` head's feature (#153, ADR-0048), so it must not leak
+# into the lean build either.
+LEAN_FORBIDDEN ?= clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|tracing-subscriber|axum
 
 # Minimum line-coverage % the release gate enforces. First measured baseline
 # (issue #107) was 65% workspace lines; floor set just under it to absorb CI
@@ -42,6 +44,9 @@ run-tui: build ## launch the terminal UI
 
 pipe: build ## stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
 	$(CARGO) run -p entanglement-runtime -- pipe
+
+serve: build ## WebSocket serve head — local loopback HTTP+WS on 127.0.0.1 (ARGS='--port 4517')
+	$(CARGO) run -p entanglement-runtime -- serve $(ARGS)
 
 sessions: build ## list past (resumable) sessions
 	$(CARGO) run -p entanglement-runtime -- sessions

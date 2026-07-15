@@ -11,10 +11,12 @@ boundary — the real seam is `entanglement-core` ↔ everything else (ADR-0006,
 ADR-0010).
 
 The heads (and the `skutter` binary that carries them) need the crate's
-**default features** — `default = ["tui"]` pulls clap + the providers + the
-render stack, and `[[bin]] skutter` declares
+**default features** — `default = ["tui", "serve"]` pulls clap + the providers +
+the render stack + the axum WS server, and `[[bin]] skutter` declares
 `required-features = ["cli","provider","tui"]` (the `provider` feature was split
-out of `cli` in #208 so a future `ws` head can pull providers without clap).
+out of `cli` in #208 so the `ws` `serve` head — added in #153 behind its own
+`serve` feature, `serve = ["cli","provider","dep:axum","dep:futures"]` — pulls
+providers without dragging in clap or the TUI stack).
 Building the crate with `default-features = false` yields an **embeddable
 library** — the tool-execution loop, permission dispatch, sub-agent spawn, and
 persistence machinery with none of the CLI/TUI/transport weight
@@ -61,15 +63,26 @@ persistence machinery with none of the CLI/TUI/transport weight
   `RUST_LOG=entanglement_core::host=trace`); absent it, `--verbose` (a **global**
   flag, so it may follow the subcommand) selects `debug`, otherwise `warn`
   (issue #187, `runtime::logging`).
-- **WebSocket** (`skutter serve`, _next_): axum HTTP server for a local Vue SPA
-  plus `GET /ws`, one `subscribe()` per socket, inbound frame → `InMsg` →
-  `send()`, 30s ping, `continue` on `broadcast::Lagged`. Scoped **local,
-  single-user, loopback-bound**; the WS is a general protocol interface (the SPA
-  is the primary but not exclusive client — raw local clients are supported), so
-  any `Origin`-check / launch-token is **opt-in, never mandatory** and the
-  browser-page surface is out of scope. Freeze the wire hygiene (`seq`
-  uniqueness, protocol warts) before a client pins the JSON
-  ([ADR-0048](../adr/0048-serve-head-local-trust-model.md)).
+- **WebSocket** (`skutter serve`, ✅ #153, `runtime::serve` behind the `serve`
+  cargo feature): an axum HTTP server exposing `GET /ws` (plus a `GET /healthz`
+  liveness probe), one `subscribe()` fan-out per socket relayed out as JSON text
+  frames, each inbound text frame parsed into an `InMsg` and routed through the
+  **untrusted** `send_from_wire` (#155) so a forged `ToolResult`/`Spawn`/`Resume`
+  is refused per-frame (a non-JSON line falls back to a `Prompt` on the socket's
+  own default session, `pipe` parity); a 30s ping keeps an idle socket alive and
+  a `broadcast::Lagged` is a dropped-events gap → `continue`, never a silent
+  relay death (#158). Scoped **local, single-user, loopback-bound**: reached via
+  `--port <N>` and **always** bound to `127.0.0.1` (no non-loopback bind is
+  offered — the loopback bind is the one required non-public control). The WS is
+  a general protocol interface (the future Vue SPA is the primary but not
+  exclusive client — raw local scripts/CLIs/plugins are supported), so the
+  `--allow-origin <ORIGIN>` check is **opt-in, never mandatory** (unset ⇒ every
+  origin, including a raw client that sends none, is accepted) and the
+  browser-page surface is out of scope. The wire hygiene it consumes (`seq`
+  uniqueness #157, protocol warts #160) was frozen first, per the pre-`serve`
+  hardening epic ([ADR-0048](../adr/0048-serve-head-local-trust-model.md)). Lives
+  behind the `serve` feature (implies `cli` + `provider`) so axum stays out of
+  the lean library / `--no-default-features` build (ADR-0025).
 - **TUI** (`skutter tui`): opencode-style terminal UI over `subscribe()`. Uses
   ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
   (ADR-0013), inline tool approval cards (ADR-0014), and rich markdown

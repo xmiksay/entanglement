@@ -508,6 +508,17 @@ enum Cmd {
         #[arg(long)]
         agent: Option<String>,
     },
+    /// Local WebSocket server head (loopback-bound; browser twin of the TUI).
+    #[cfg(feature = "serve")]
+    Serve {
+        /// Port to bind on `127.0.0.1` (loopback-only by design — ADR-0048).
+        #[arg(long, default_value_t = 4517)]
+        port: u16,
+        /// Opt-in `Origin` allowlist for browser clients. Unset accepts every
+        /// origin (raw local clients send none) — never mandatory (ADR-0048).
+        #[arg(long)]
+        allow_origin: Option<String>,
+    },
     /// List past root sessions for the current directory.
     Sessions,
     /// Inspect resolved runtime state without spawning the engine.
@@ -733,6 +744,13 @@ async fn main() -> Result<()> {
         Some(Cmd::Pipe { session }) => {
             let session_id = SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0));
             pipe(&holly, &session_id).await
+        }
+        #[cfg(feature = "serve")]
+        Some(Cmd::Serve { port, allow_origin }) => {
+            // Runs until Ctrl-C; the executor/persistence teardown below then runs
+            // as for any other head. A fresh `Holly` clone keeps the outer handle
+            // for that shutdown path.
+            entanglement_runtime::serve::serve(holly.clone(), port, allow_origin).await
         }
         Some(Cmd::Tui { session, agent }) => {
             let session_id = SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0));
