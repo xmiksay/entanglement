@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use entanglement_core::{AgentState, Holly, InMsg, OutEvent, SessionId};
+use tokio::sync::broadcast::error::RecvError;
 
 /// Send one prompt and stream events until `Done` (or timeout).
 pub async fn run_one(
@@ -36,7 +37,13 @@ pub async fn run_one(
     loop {
         let ev = match tokio::time::timeout(Duration::from_secs(60), sub.recv()).await {
             Ok(Ok(ev)) => ev,
-            Ok(Err(_)) => break,
+            // A broadcast lag is a dropped-events gap, not end-of-stream: log and
+            // keep relaying instead of silently killing the turn mid-conversation.
+            Ok(Err(RecvError::Lagged(n))) => {
+                tracing::warn!("run relay lagged, skipped {n} engine events");
+                continue;
+            }
+            Ok(Err(RecvError::Closed)) => break,
             Err(_) => anyhow::bail!("timed out waiting for engine event"),
         };
         if ev.session() != session {
