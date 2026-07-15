@@ -45,6 +45,7 @@ pub(super) async fn stream_round(
     events: &broadcast::Sender<OutEvent>,
     stash: &mut VecDeque<SessionCmd>,
     specs: &[ToolSpec],
+    system: &str,
 ) -> StreamedRound {
     const STREAM_RETRIES: usize = 1;
     // Effective generation for the model the session currently runs under — the
@@ -59,7 +60,9 @@ pub(super) async fn stream_round(
     let stream_err: Option<String>;
     loop {
         let req = LlmRequest {
-            system: &s.profile.system_prompt,
+            // The profile's prompt, or a per-turn `system_prompt_resolver`
+            // override, resolved once by the caller (#310, ADR-0078).
+            system,
             // A live model switch (#218) overrides the profile's pinned model.
             model: s.model.as_deref().or(s.profile.model.as_deref()),
             messages: s.ctx.messages(),

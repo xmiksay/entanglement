@@ -291,6 +291,20 @@ below realize one model:
   `LlmRequest.system`. The skill index is populated from the skill registry
   (✅ #114, below); filtering that skill index by a per-agent tool mask is a
   separate follow-up (the #116 tool mask covers tool *specs*, not the skill index).
+  **Per-turn prompt override (✅ #310, [ADR-0078](../adr/0078-per-turn-dynamic-system-prompt.md)):**
+  an optional `EngineConfig.system_prompt_resolver: Option<Arc<dyn Fn(&SessionId,
+  &AgentProfile) -> Option<String> + Send + Sync>>` (type alias
+  `SystemPromptResolver`) is consulted fresh at every turn build in `run_round`
+  (`session/turn.rs`), resolved once and threaded into `stream_round` where
+  `s.profile.system_prompt` was read directly. A `Some(prompt)` return **overrides**
+  the profile's assembled prompt for that turn; `None` (or no resolver, the
+  default) falls back to it — so an embedder whose prompt is user-editable content
+  (a site serving it from a CMS page) picks up an edit on the **next turn** with no
+  engine respawn. The `Fn` sees the running session's *own* id + resolved profile,
+  so sub-agent turns resolve against **that child's** profile (per-profile prompts
+  keep working) and a resolver can compose off `profile.system_prompt` rather than
+  only replace it. Sibling of the `tool_spec_resolver` seam (ADR-0076) — sync `Fn`,
+  same embedder-owned snapshot-cache pattern; no protocol/wire change.
 - **Skill discovery + registry (✅ #114, [ADR-0036](../adr/0036-skill-discovery-and-registry.md)):**
   tier 1 of progressive disclosure. A **skill** is a directory with a `SKILL.md`
   (YAML frontmatter + markdown body) plus optional supporting files
