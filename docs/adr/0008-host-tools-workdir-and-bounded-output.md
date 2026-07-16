@@ -1,6 +1,6 @@
 # 0008. Host tools: working-directory root + bounded output
 
-- Status: Accepted (lexical-only containment of point 3 superseded-by-addition by [0054](0054-canonicalizing-symlink-safe-root-containment.md))
+- Status: Accepted (lexical-only containment of point 3 superseded-by-addition by [0054](0054-canonicalizing-symlink-safe-root-containment.md); the grep clause of point 4 superseded by [0091](0091-grep-file-scan-size-cap-decoupled-from-output-cap.md))
 - Date: 2026-07-07
 
 ## Context
