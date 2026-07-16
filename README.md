@@ -128,6 +128,7 @@ make verify       # check-fmt + tree + check-lean + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI/web-server dep hygiene gate)
 make check-lean   # runtime --no-default-features stays CLI/TUI-free (ADR-0025 + ADR-0053)
 make coverage     # cargo llvm-cov --workspace, fails under COV_MIN% (release gate)
+make install      # cargo install --path entanglement-runtime → `skutter` in $CARGO_HOME/bin
 make build | check | fmt | clean
 ```
 

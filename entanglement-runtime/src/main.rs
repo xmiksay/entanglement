@@ -1,6 +1,8 @@
-//! `skutter` — stdio head for the headless agent engine.
+//! `skutter` — terminal head for the headless agent engine.
 //!
-//! Two modes, both driving [`entanglement_core::Holly`] directly (the ABI):
+//! The default invocation — bare `skutter` with no subcommand and no prompt —
+//! launches the TUI. A positional prompt (`skutter "do the thing"`) is an
+//! implicit one-shot `run`. Explicit subcommands:
 //! - `run` sends a prompt and streams events until `Done`. `--format json`
 //!   emits raw NDJSON (like `opencode run --format json`); `--format text`
 //!   renders human-friendly output.
@@ -565,13 +567,15 @@ fn echo_config() -> (EngineConfig, ModelInfo) {
 #[command(
     name = "skutter",
     version,
-    about = "Terminal head for the entanglement agent engine"
+    about = "Terminal head for the entanglement agent engine (TUI is the default)"
 )]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
-    /// Default subcommand equivalent to `run` with a prompt.
-    #[arg(default_value = "Hello, Holly!")]
+    /// Positional prompt for the implicit one-shot run. Bare `skutter` with no
+    /// prompt *and* no subcommand launches the TUI instead; a prompt runs one
+    /// turn (implicit `run`). Use an explicit `run`/`tui`/`pipe` subcommand to
+    /// disambiguate.
     prompt: Vec<String>,
     /// Log at `debug` (unless `RUST_LOG` is set, which always wins). Global, so
     /// it may follow the subcommand: `skutter run … --verbose`.
@@ -967,18 +971,49 @@ async fn main() -> Result<()> {
         Some(Cmd::Inspect { .. }) => unreachable!("inspect is handled before engine setup"),
         Some(Cmd::Config { .. }) => unreachable!("config is handled before engine setup"),
         None => {
-            let session_id = SessionId::new_uuid();
-            let agent = user_config.agent.clone();
-            if let Some(ref a) = agent {
-                holly
-                    .send(InMsg::SetAgent {
-                        session: session_id.clone(),
-                        agent: a.to_string(),
-                    })
-                    .await?;
+            // No subcommand:
+            // - bare `skutter` (no prompt) → launch the TUI (the default head);
+            // - `skutter "<prompt>"` → one implicit `run` turn, as before.
+            if cli.prompt.is_empty() {
+                let session_id = SessionId::new_uuid();
+                let agent = user_config.agent.clone();
+                if let Some(ref a) = agent {
+                    holly
+                        .send(InMsg::SetAgent {
+                            session: session_id.clone(),
+                            agent: a.to_string(),
+                        })
+                        .await?;
+                }
+                let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
+                tui(
+                    &holly,
+                    session_id,
+                    model_info,
+                    provider_name,
+                    catalog,
+                    live_profiles,
+                    live_agent_models,
+                    reload_rx,
+                    cwd.clone(),
+                    bash_enabled,
+                    tool_names,
+                )
+                .await
+            } else {
+                let session_id = SessionId::new_uuid();
+                let agent = user_config.agent.clone();
+                if let Some(ref a) = agent {
+                    holly
+                        .send(InMsg::SetAgent {
+                            session: session_id.clone(),
+                            agent: a.to_string(),
+                        })
+                        .await?;
+                }
+                let prompt = cli.prompt.join(" ");
+                run_one(&holly, &session_id, agent.as_deref(), &prompt, "text").await
             }
-            let prompt = cli.prompt.join(" ");
-            run_one(&holly, &session_id, agent.as_deref(), &prompt, "text").await
         }
     };
 
