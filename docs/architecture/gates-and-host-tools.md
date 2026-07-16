@@ -400,9 +400,32 @@ both dispatch and model-advertised schemas with no engine restart.
 - A failed live add/remove is `tracing::warn!`-logged, not a new `OutEvent` —
   matching the existing best-effort MCP philosophy (§ADR-0067): there is no
   session to attach an error to.
-- **Out of scope here:** the TUI `/mcp` surface (a head can already drive
-  these ops via raw `InMsg` over `pipe`/`serve`) and reconnect-on-external-
-  config-edit (a file watcher) are separate, unscheduled follow-ups.
+- **Out of scope here:** reconnect-on-external-config-edit (a file watcher) is
+  a separate, unscheduled follow-up. The TUI `/mcp` surface landed next —
+  §"TUI `/mcp` command" below.
+
+### TUI `/mcp` command — [ADR-0100](../adr/0100-tui-mcp-command.md) (#373)
+
+`Command::Mcp` (`tui/commands.rs`) joins `all_commands()`; its subcommand
+parsing (`McpCommand::List`/`Add`/`Remove`, `parse_mcp_args`) and the async
+`send_mcp`/`send_mcp_list` wire-dispatch helpers live in a new sibling
+`tui/mcp_command.rs` — `commands.rs` and `event_loop.rs` were already past the
+400-line cap, mirroring how `CommandPalette` was split out of `commands.rs`
+(§ADR-0095). `/mcp list` (or a bare `/mcp`, or picking `/mcp` from the command
+palette, which carries no trailing text) sends `InMsg::McpList` with a fresh
+correlation id recorded on `tui::mcp_panel::McpPanel`; the matching
+`OutEvent::McpList` opens a read-only popup (`modals::draw_mcp_panel`, `Esc`
+closes) listing each server's name, transport, connected/error status, and
+namespaced tools — a stray reply for a different correlation id (e.g. another
+head sharing the engine) is ignored, never opening the panel with the wrong
+snapshot. `/mcp add <name> -- <command> [args...]` (stdio) / `/mcp add <name>
+--url <url> [--header KEY:VALUE]...` (streamable HTTP) and `/mcp remove
+<name>` send `InMsg::McpAdd`/`McpRemove` directly; the confirming
+`OutEvent::McpChanged` (or a parse error, caught before the engine is
+touched) renders as a transcript status line via `App::handle_mcp_changed`/
+`record_mcp_error`, mirroring `/key`'s save notice. No new wire surface — this
+is entirely a head-side consumer of the `InMsg`/`OutEvent` pair #375 already
+shipped.
 
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs

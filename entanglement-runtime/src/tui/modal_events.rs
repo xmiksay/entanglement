@@ -40,6 +40,7 @@ fn any_modal_open(app: &App) -> bool {
         || app.showing_resume_modal()
         || app.showing_help()
         || app.showing_inspect()
+        || app.showing_mcp_panel()
 }
 
 /// Moves the open modal's selection forward for a wheel-down; returns whether a
@@ -67,8 +68,8 @@ fn wheel_modal_next(app: &mut App) -> bool {
         } else {
             app.inspect_scroll_down(3);
         }
-    } else if app.showing_help() {
-        // Consume without acting — the help dialog has no selection.
+    } else if app.showing_help() || app.showing_mcp_panel() {
+        // Consume without acting — neither has a selection to move.
     } else {
         return false;
     }
@@ -96,7 +97,7 @@ fn wheel_modal_prev(app: &mut App) -> bool {
         } else {
             app.inspect_scroll_up(3);
         }
-    } else if app.showing_help() {
+    } else if app.showing_help() || app.showing_mcp_panel() {
     } else {
         return false;
     }
@@ -307,6 +308,11 @@ pub(super) async fn handle_command_palette_event(
                             overrides: entanglement_core::GenerationParams::default(),
                         })
                         .await;
+                } else if cmd == crate::tui::commands::Command::Mcp {
+                    // The palette carries no trailing `add`/`remove` args
+                    // (#373), so a picked `/mcp` always runs `list` — the same
+                    // default a bare typed `/mcp` falls back to.
+                    super::mcp_command::send_mcp_list(app, holly).await;
                 } else if app.execute_command(cmd) {
                     return Ok(true);
                 }

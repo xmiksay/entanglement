@@ -61,6 +61,10 @@ impl App {
             // neither available here — both call sites intercept them before
             // reaching this dispatch.
             Command::Set | Command::Show => false,
+            // Same shape again (#373): every `/mcp` subcommand needs `holly`
+            // (plus, for `add`/`remove`, the trailing text) — both call sites
+            // intercept it before reaching this dispatch.
+            Command::Mcp => false,
         }
     }
 

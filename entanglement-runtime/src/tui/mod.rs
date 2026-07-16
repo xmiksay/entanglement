@@ -12,6 +12,8 @@ mod input_panel;
 mod key_dialog;
 mod keybindings;
 mod markdown;
+mod mcp_command;
+mod mcp_panel;
 mod mention;
 mod modal_events;
 mod modals;

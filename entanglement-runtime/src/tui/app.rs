@@ -25,6 +25,7 @@ mod generation;
 mod input;
 mod inspect;
 mod key;
+mod mcp;
 mod mention;
 mod pickers;
 mod quit;
@@ -115,6 +116,10 @@ pub struct App {
 
     // `/key` dialog (#304): two-stage modal to persist a provider API key.
     key_dialog: crate::tui::key_dialog::KeyDialog,
+
+    // `/mcp list` result panel (#373): the last snapshot + the correlation id
+    // of any outstanding query.
+    mcp_panel: crate::tui::mcp_panel::McpPanel,
 
     // `/agent` picker's `e` tools-checklist dialog (#330): the full advertised
     // tool roster (host + MCP + runtime-owned specs, from
@@ -300,6 +305,19 @@ impl App {
         if let OutEvent::Error { session, .. } = &event {
             self.clear_pending_model_persist_on_error(session);
             self.clear_pending_generation_persist_on_error(session);
+        }
+        // MCP ops (#375) are engine-global, not per-session — folded here
+        // rather than routed through `sessions.handle_out_event` below (which
+        // never sees them, since `event.session()` is `None` for both).
+        if let OutEvent::McpList {
+            correlation_id,
+            servers,
+        } = &event
+        {
+            self.handle_mcp_list(correlation_id, servers.clone());
+        }
+        if let OutEvent::McpChanged { name, action } = &event {
+            self.handle_mcp_changed(name, *action);
         }
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();

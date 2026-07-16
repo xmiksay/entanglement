@@ -321,8 +321,24 @@ re-document them here):
   agent-models/agent-generation/the env file — since MCP servers are meant to
   stay part of the primary hand-edited config; locked + atomic, but does not
   preserve comments. A failed add/remove is logged, not a new `OutEvent` (no
-  session to attach one to). TUI `/mcp` surface is a separate, unscheduled
-  follow-up (a head can already drive these ops via raw `InMsg`).
+  session to attach one to).
+- **TUI `/mcp` command** (#373,
+  [ADR-0100](../docs/adr/0100-tui-mcp-command.md), Phase 5/final of the MCP
+  umbrella): `Command::Mcp` — `/mcp list` (bare `/mcp` and the command-palette
+  pick both default to `list`), `/mcp add <name> -- <command> [args...]`
+  (stdio), `/mcp add <name> --url <url> [--header KEY:VALUE]...` (streamable
+  HTTP), `/mcp remove <name>` — the same raw-text re-parse pattern as
+  `/compact`/`/set`. Parsing (`parse_mcp_args`) and the async wire senders
+  live in a new sibling `tui/mcp_command.rs` (`commands.rs`/`event_loop.rs`
+  were already past the 400-line cap). `/mcp list` sends `InMsg::McpList`
+  with a fresh correlation id recorded on `tui::mcp_panel::McpPanel`; only
+  the matching `OutEvent::McpList` opens the read-only popup panel
+  (`modals::draw_mcp_panel`, `Esc` closes) listing each server's transport,
+  connected/error status, and namespaced tools — a stray reply is dropped,
+  never popping the panel with the wrong snapshot. `add`/`remove`
+  confirmations (`OutEvent::McpChanged`) and parse errors render as a
+  transcript status line on the active session, mirroring `/key`'s save
+  notice. No new wire surface.
 - **Single-shot session ops + persisted compaction** (#324,
   [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)):
   `InMsg::Oneshot { session, op: String, args: Value }` is a generic **wire

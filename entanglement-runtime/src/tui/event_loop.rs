@@ -111,6 +111,14 @@ pub(super) async fn handle_event(
                     }
                     return Ok(false);
                 }
+                // `/mcp list` panel (#373): read-only, `Esc` is the only key it
+                // consumes — mirrors the help dialog's shape.
+                if app.showing_mcp_panel() {
+                    if key.code == KeyCode::Esc {
+                        app.close_mcp_panel();
+                    }
+                    return Ok(false);
+                }
                 if app.showing_command_palette() {
                     return handle_command_palette_event(app, holly, key).await;
                 }
@@ -358,6 +366,13 @@ pub(super) async fn handle_event(
                                             }
                                             if cmd == crate::tui::commands::Command::Show {
                                                 send_show(app, holly).await;
+                                                return Ok(false);
+                                            }
+                                            if cmd == crate::tui::commands::Command::Mcp {
+                                                crate::tui::mcp_command::send_mcp(
+                                                    app, holly, &text,
+                                                )
+                                                .await;
                                                 return Ok(false);
                                             }
                                             if app.execute_command(cmd) {

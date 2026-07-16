@@ -130,6 +130,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         modals::draw_inspect_overlay(f, app);
     }
 
+    if app.showing_mcp_panel() {
+        modals::draw_mcp_panel(f, app);
+    }
+
     if matches!(app.leader_handler().state(), LeaderState::Pending { .. }) {
         modals::draw_which_key_popup(f, app.leader_handler().keymap());
     }
