@@ -833,7 +833,9 @@ async fn main() -> Result<()> {
     // pin above, this doesn't overlay onto `profiles` (`GenerationParams` isn't
     // `Eq`, so it can't join `AgentProfile`'s derive) — instead it's wrapped in a
     // `GenerationResolver` closure threaded onto `EngineConfig` below, resolved
-    // by profile name at session start / `SetAgent`.
+    // by profile name at session start / `SetAgent`. Also threaded straight into
+    // the TUI (#376), the only surface that writes to it (`/set`'s
+    // persist-on-confirmation).
     let live_agent_generation = Arc::new(Mutex::new(
         config::agent_generation::AgentGenerationStore::load(),
     ));
@@ -1000,6 +1002,7 @@ async fn main() -> Result<()> {
                 catalog,
                 live_profiles,
                 live_agent_models,
+                live_agent_generation,
                 reload_rx,
                 cwd.clone(),
                 bash_enabled,
@@ -1034,6 +1037,7 @@ async fn main() -> Result<()> {
                     catalog,
                     live_profiles,
                     live_agent_models,
+                    live_agent_generation,
                     reload_rx,
                     cwd.clone(),
                     bash_enabled,

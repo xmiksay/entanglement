@@ -1,5 +1,6 @@
 mod app;
 mod attention;
+mod command_palette;
 mod commands;
 mod diff;
 mod editor;
@@ -57,6 +58,9 @@ pub async fn tui(
     catalog: Catalog,
     profiles: std::sync::Arc<std::sync::RwLock<ProfileRegistry>>,
     agent_models: std::sync::Arc<std::sync::Mutex<crate::config::agent_models::AgentModelStore>>,
+    agent_generation: std::sync::Arc<
+        std::sync::Mutex<crate::config::agent_generation::AgentGenerationStore>,
+    >,
     mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     root: std::path::PathBuf,
     bash_enabled: bool,
@@ -108,6 +112,7 @@ pub async fn tui(
     app.set_model_info(model_info);
     app.set_active_provider(provider_name);
     app.set_agent_models(agent_models);
+    app.set_agent_generation(agent_generation);
     app.init_head_context(root, bash_enabled);
 
     let mut attention = Attention::from_env();

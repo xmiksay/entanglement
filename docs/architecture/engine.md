@@ -107,7 +107,10 @@ store (`AgentGenerationStore`, a managed `agent-generation.yml` sibling of
 `agent-models.yml`) is documented in the heads/persistence doc; unlike
 `AgentModelStore` it has no `apply(&mut ProfileRegistry)` — there is nothing
 on `AgentProfile` to overlay, so its `resolver(...)` builds the
-`GenerationResolver` closure directly instead.
+`GenerationResolver` closure directly instead. The TUI `/set`/`/show` surface
+and its persist-on-confirmation write to that store (#376,
+[ADR-0095](../adr/0095-tui-set-show-generation-persist-on-confirmation.md))
+mirror the `/model` picker's own persist-on-confirmation logic (`tui/app/pickers.rs`).
 
 Setup errors (the initial `stream()` call)
 surface as `Error` + `Done` with no partial to commit. A **mid-stream** failure

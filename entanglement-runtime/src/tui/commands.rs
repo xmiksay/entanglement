@@ -1,4 +1,8 @@
-use ratatui::widgets::ListState;
+use entanglement_provider::{GenerationParams, ReasoningEffort};
+
+// `CommandPalette` lives in a sibling module (#376, once this file crossed the
+// 400-line cap) but stays reachable at its historical path for every call site.
+pub use super::command_palette::CommandPalette;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -15,6 +19,8 @@ pub enum Command {
     Export,
     Resume,
     Compact,
+    Set,
+    Show,
 }
 
 impl Command {
@@ -33,6 +39,8 @@ impl Command {
             Command::Editor => "editor",
             Command::Export => "export",
             Command::Compact => "compact",
+            Command::Set => "set",
+            Command::Show => "show",
         }
     }
 
@@ -51,6 +59,10 @@ impl Command {
             Command::Export => "Export conversation",
             Command::Resume => "Continue a past session",
             Command::Compact => "Compact the conversation history (LLM summary)",
+            Command::Set => {
+                "Set a generation parameter (temperature, effort, thinking_budget, max_tokens)"
+            }
+            Command::Show => "Show the current effective generation parameters",
         }
     }
 
@@ -74,7 +86,73 @@ pub fn all_commands() -> Vec<Command> {
         Command::Editor,
         Command::Export,
         Command::Compact,
+        Command::Set,
+        Command::Show,
     ]
+}
+
+/// Parse `/set <key> <value>` into a partial [`GenerationParams`] override — only
+/// the named field is `Some`, matching [`GenerationParams::apply_overrides`]'s
+/// merge semantics. `text` is the raw input including the leading `/set` (the
+/// `/compact` raw-text re-parse pattern, since [`parse_command`] only matches the
+/// command name and drops everything after it). Recognised keys: `temperature`
+/// (f32), `effort` (`low|medium|high`), `thinking_budget`/`thinking_budget_tokens`
+/// (u32), `max_tokens`/`max_output_tokens` (u32). An unknown key or a value that
+/// fails to parse for its key is a friendly `Err` message, not a panic.
+pub fn parse_set_args(text: &str) -> Result<GenerationParams, String> {
+    let rest = text
+        .trim()
+        .strip_prefix(&Command::Set.slash_name())
+        .map(str::trim)
+        .unwrap_or("");
+    let mut parts = rest.splitn(2, char::is_whitespace);
+    let key = parts.next().unwrap_or("").trim();
+    let value = parts.next().unwrap_or("").trim();
+    if key.is_empty() || value.is_empty() {
+        return Err(
+            "usage: /set <key> <value> — keys: temperature, effort, thinking_budget, max_tokens"
+                .to_string(),
+        );
+    }
+
+    let mut overrides = GenerationParams::default();
+    match key {
+        "temperature" => {
+            overrides.temperature = Some(
+                value
+                    .parse::<f32>()
+                    .map_err(|_| format!("invalid temperature value: {value}"))?,
+            );
+        }
+        "effort" => {
+            overrides.reasoning_effort = Some(match value.to_lowercase().as_str() {
+                "low" => ReasoningEffort::Low,
+                "medium" => ReasoningEffort::Medium,
+                "high" => ReasoningEffort::High,
+                _ => {
+                    return Err(format!(
+                        "invalid effort value: {value} (expected low|medium|high)"
+                    ))
+                }
+            });
+        }
+        "thinking_budget" | "thinking_budget_tokens" => {
+            overrides.thinking_budget_tokens = Some(
+                value
+                    .parse::<u32>()
+                    .map_err(|_| format!("invalid thinking_budget value: {value}"))?,
+            );
+        }
+        "max_tokens" | "max_output_tokens" => {
+            overrides.max_output_tokens = Some(
+                value
+                    .parse::<u32>()
+                    .map_err(|_| format!("invalid max_tokens value: {value}"))?,
+            );
+        }
+        other => return Err(format!("unknown /set key: {other}")),
+    }
+    Ok(overrides)
 }
 
 pub fn parse_command(input: &str) -> Option<Command> {
@@ -101,111 +179,6 @@ pub fn filter_commands(query: &str) -> Vec<Command> {
         .collect()
 }
 
-pub struct CommandPalette {
-    commands: Vec<Command>,
-    filtered: Vec<Command>,
-    query: String,
-    state: ListState,
-    visible: bool,
-}
-
-impl CommandPalette {
-    pub fn new() -> Self {
-        let commands = all_commands();
-        let filtered = commands.clone();
-        let mut state = ListState::default();
-        state.select(Some(0));
-
-        Self {
-            commands,
-            filtered,
-            query: String::new(),
-            state,
-            visible: false,
-        }
-    }
-
-    pub fn visible(&self) -> bool {
-        self.visible
-    }
-
-    pub fn show(&mut self) {
-        self.visible = true;
-        self.reset();
-    }
-
-    pub fn hide(&mut self) {
-        self.visible = false;
-        self.reset();
-    }
-
-    pub fn reset(&mut self) {
-        self.query.clear();
-        self.filtered = self.commands.clone();
-        self.state.select(Some(0));
-    }
-
-    pub fn set_query(&mut self, query: String) {
-        self.query = query;
-        self.filtered = filter_commands(&self.query);
-        if !self.filtered.is_empty() {
-            self.state.select(Some(0));
-        } else {
-            self.state.select(None);
-        }
-    }
-
-    pub fn query(&self) -> &str {
-        &self.query
-    }
-
-    pub fn filtered_commands(&self) -> &[Command] {
-        &self.filtered
-    }
-
-    pub fn state(&mut self) -> &mut ListState {
-        &mut self.state
-    }
-
-    pub fn selected(&self) -> Option<&Command> {
-        self.state.selected().and_then(|idx| self.filtered.get(idx))
-    }
-
-    pub fn select_next(&mut self) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        let current = self.state.selected().unwrap_or(0);
-        let next = (current + 1) % self.filtered.len();
-        self.state.select(Some(next));
-    }
-
-    pub fn select_prev(&mut self) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        let current = self.state.selected().unwrap_or(0);
-        let prev = if current == 0 {
-            self.filtered.len() - 1
-        } else {
-            current - 1
-        };
-        self.state.select(Some(prev));
-    }
-
-    pub fn execute_selected(&mut self) -> Option<Command> {
-        self.selected().cloned().inspect(|_| {
-            self.hide();
-        })
-    }
-}
-
-impl Default for CommandPalette {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +197,8 @@ mod tests {
         assert_eq!(parse_command("/editor"), Some(Command::Editor));
         assert_eq!(parse_command("/export"), Some(Command::Export));
         assert_eq!(parse_command("/compact"), Some(Command::Compact));
+        assert_eq!(parse_command("/set"), Some(Command::Set));
+        assert_eq!(parse_command("/show"), Some(Command::Show));
     }
 
     #[test]
@@ -270,46 +245,83 @@ mod tests {
     }
 
     #[test]
-    fn test_command_palette_navigation() {
-        let mut palette = CommandPalette::new();
-        palette.show();
-
-        assert_eq!(palette.selected(), Some(&Command::Help));
-
-        palette.select_next();
-        assert_ne!(palette.selected(), Some(&Command::Help));
-
-        palette.select_prev();
-        assert_eq!(palette.selected(), Some(&Command::Help));
-    }
-
-    #[test]
-    fn test_command_palette_filtering() {
-        let mut palette = CommandPalette::new();
-        palette.show();
-
-        palette.set_query("hel".to_string());
-        assert_eq!(palette.selected(), Some(&Command::Help));
-        assert!(palette
-            .filtered_commands()
-            .iter()
-            .any(|c| matches!(c, Command::Help)));
-    }
-
-    #[test]
-    fn test_command_palette_execute() {
-        let mut palette = CommandPalette::new();
-        palette.show();
-
-        let cmd = palette.execute_selected();
-        assert_eq!(cmd, Some(Command::Help));
-        assert!(!palette.visible());
-    }
-
-    #[test]
     fn test_command_slash_names() {
         assert_eq!(Command::Help.slash_name(), "/help");
         assert_eq!(Command::New.slash_name(), "/new");
         assert_eq!(Command::Exit.slash_name(), "/exit");
+    }
+
+    #[test]
+    fn parse_set_args_valid_pairs() {
+        assert_eq!(
+            parse_set_args("/set temperature 0.7"),
+            Ok(GenerationParams {
+                temperature: Some(0.7),
+                ..GenerationParams::default()
+            })
+        );
+        assert_eq!(
+            parse_set_args("/set effort high"),
+            Ok(GenerationParams {
+                reasoning_effort: Some(ReasoningEffort::High),
+                ..GenerationParams::default()
+            })
+        );
+        assert_eq!(
+            parse_set_args("/set thinking_budget 4096"),
+            Ok(GenerationParams {
+                thinking_budget_tokens: Some(4096),
+                ..GenerationParams::default()
+            })
+        );
+        assert_eq!(
+            parse_set_args("/set thinking_budget_tokens 2048"),
+            Ok(GenerationParams {
+                thinking_budget_tokens: Some(2048),
+                ..GenerationParams::default()
+            })
+        );
+        assert_eq!(
+            parse_set_args("/set max_tokens 8192"),
+            Ok(GenerationParams {
+                max_output_tokens: Some(8192),
+                ..GenerationParams::default()
+            })
+        );
+        assert_eq!(
+            parse_set_args("/set max_output_tokens 1024"),
+            Ok(GenerationParams {
+                max_output_tokens: Some(1024),
+                ..GenerationParams::default()
+            })
+        );
+        // Effort is case-insensitive.
+        assert_eq!(
+            parse_set_args("/set effort MEDIUM"),
+            Ok(GenerationParams {
+                reasoning_effort: Some(ReasoningEffort::Medium),
+                ..GenerationParams::default()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_set_args_unknown_key() {
+        assert!(parse_set_args("/set bogus 1")
+            .unwrap_err()
+            .contains("unknown"));
+    }
+
+    #[test]
+    fn parse_set_args_malformed_value() {
+        assert!(parse_set_args("/set temperature nope").is_err());
+        assert!(parse_set_args("/set effort extreme").is_err());
+        assert!(parse_set_args("/set max_tokens nope").is_err());
+    }
+
+    #[test]
+    fn parse_set_args_missing_args() {
+        assert!(parse_set_args("/set").is_err());
+        assert!(parse_set_args("/set temperature").is_err());
     }
 }
