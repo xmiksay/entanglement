@@ -699,6 +699,9 @@ pub enum InMsg {
     /// `op` (`"compact"` today; an unknown op emits a recoverable `Error`).
     /// Mutates only the caller's own `Context`, so it is wire-allowed. Deferred
     /// while a turn is live (stash replay), like `SetAgent`/`SetModel`.
+    /// `"compact"`'s `args`: `instructions` (optional free-text steer) and
+    /// `kept` (optional `u64`, default `0` — a keep-tail request, #397/
+    /// ADR-0102, clamped to the nearest safe turn boundary).
     Oneshot {
         session: SessionId,
         op: String,
@@ -1107,10 +1110,11 @@ pub enum OutEvent {
     /// independently resumable. A persisted, seq-bearing content event
     /// (persistence is variant-agnostic; seq-bearing ⇒ folded into
     /// `ReplayFrom` history — but the `Session::replay` fold is a no-op, since
-    /// the source is never mutated). `kept` is how many trailing messages were
-    /// preserved verbatim after the summary; v1 always `0` (keep-tail is
-    /// deferred), and is retained only for wire compatibility with older
-    /// records written under the in-place design (ADR-0082).
+    /// the source is never mutated). `kept` is how many trailing messages —
+    /// clamped to the nearest safe turn boundary (#397, ADR-0102) — ride
+    /// verbatim inside `summary`, appended after the LLM-generated summary of
+    /// everything before them; `0` (the default) means the whole history was
+    /// summarized with no verbatim tail, matching every pre-#397 record.
     Compacted {
         session: SessionId,
         seq: u64,

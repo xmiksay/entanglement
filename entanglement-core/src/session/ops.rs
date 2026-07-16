@@ -79,7 +79,31 @@ async fn compact_op(
     }
 
     let instructions = args.get("instructions").and_then(|v| v.as_str());
-    let transcript = render_transcript(s.ctx.messages());
+
+    // Keep-tail (#397): clamp the requested count to the nearest safe turn
+    // boundary (never split a `Tool`/tool-call pair across the summary/tail
+    // line), then only the *head* gets summarized — the tail rides verbatim
+    // into the fork (ADR-0102).
+    let requested_kept = args.get("kept").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let kept = s.ctx.safe_kept(requested_kept);
+    let split = s.ctx.messages().len() - kept;
+    let (head, tail) = s.ctx.messages().split_at(split);
+
+    if head.is_empty() {
+        emit_turn_error(
+            session,
+            &s.seq,
+            events,
+            format!(
+                "cannot compact: kept ({kept}) covers the entire conversation — \
+                 nothing left to summarize; use a smaller --keep value"
+            ),
+        );
+        return;
+    }
+
+    let transcript = render_transcript(head);
+    let tail_transcript = (!tail.is_empty()).then(|| render_transcript(tail));
 
     // Guard an oversized transcript (#178, ADR-0101): if the rendered input
     // alone already blows the source session's context budget, shipping it
@@ -99,6 +123,27 @@ async fn compact_op(
             ),
         );
         return;
+    }
+
+    // The kept tail rides verbatim (unsummarized) into the fork's seed prompt,
+    // so it must fit the budget on its own too — otherwise the forked session
+    // would start life already over its context window.
+    if let Some(tail_transcript) = &tail_transcript {
+        let tail_tokens = estimate_tokens(tail_transcript);
+        if tail_tokens > s.ctx.limit() {
+            emit_turn_error(
+                session,
+                &s.seq,
+                events,
+                format!(
+                    "cannot compact: the {kept} kept trailing messages (~{tail_tokens} \
+                     tokens) alone exceed the {}-token context budget — use a smaller \
+                     --keep value",
+                    s.ctx.limit()
+                ),
+            );
+            return;
+        }
     }
 
     let mut prompt = format!(
@@ -140,13 +185,26 @@ async fn compact_op(
                 );
                 return;
             }
+            // Keep-tail (#397, ADR-0102): append the verbatim tail transcript
+            // after the LLM summary so the fork's seed prompt carries both —
+            // a dense summary of the head plus the full-fidelity recent turns
+            // — without a wire/protocol change (`summary` already carries
+            // whatever text becomes the fork's first message).
+            let summary = match &tail_transcript {
+                Some(tail_transcript) => format!(
+                    "{summary}\n\n---\nThe following {kept} most recent messages are \
+                     preserved verbatim (not summarized):\n\n{tail_transcript}"
+                ),
+                None => summary,
+            };
+
             // Copy-on-write: report the summary without mutating the source
             // (ADR-0101). The head forks it into a new session.
             let _ = events.send(OutEvent::Compacted {
                 session: session.clone(),
                 seq: next_seq(&s.seq),
                 summary,
-                kept: 0,
+                kept: kept as u64,
             });
             if let Some((_, usage)) = finish {
                 // Pricing mirrors turn.rs: model → profile.model → the

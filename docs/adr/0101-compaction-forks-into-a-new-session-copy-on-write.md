@@ -1,6 +1,11 @@
 # 0101. Compaction forks into a new session (copy-on-write)
 
-- Status: Accepted
+- Status: Accepted; its "Keep-tail under copy-on-write" rejected alternative
+  (below) is revisited by
+  [0102](0102-compact-keep-tail-verbatim-in-the-fork-prompt.md) — that
+  rejection was scoped to the *source* (which does keep everything, unchanged
+  here), not the *fork*'s fidelity, which 0102 addresses without touching
+  anything decided in this document
 - Supersedes [0082](0082-single-shot-session-ops-and-persisted-compaction.md)
   (the `InMsg::Oneshot` wire shape and `OutEvent::Compacted` variant stay; the
   in-place `apply_compaction` mutation is removed)
