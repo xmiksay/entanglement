@@ -165,6 +165,17 @@ pub struct EngineConfig {
     /// stance [ADR-0077](../../docs/adr/0077-session-hibernation-evictable-resumable.md)
     /// originally left open.
     pub idle_ttl: Option<Duration>,
+    /// Try an LLM-generated summary before falling back to placeholder pruning
+    /// when a turn's context overflows the model's budget (#398, ADR-0103).
+    /// `true` (default): `session/turn.rs` asks the model to summarize the
+    /// oldest history in place (mutating the live `Context` via
+    /// `Context::apply_compaction` — unlike the manual, copy-on-write
+    /// `/compact`, ADR-0101) and only falls through to the prune-only
+    /// `Context::compact` when the attempt's own guard trips (an oversized
+    /// transcript/tail, an LLM error, or a truncated summary) or the result
+    /// still doesn't fit. `false` restores the pre-#398 prune-only behavior
+    /// unconditionally — no extra paid round-trip on overflow.
+    pub auto_compact: bool,
 }
 
 impl EngineConfig {
@@ -194,6 +205,7 @@ impl Default for EngineConfig {
             reoffer_interval: Some(Duration::from_secs(60)),
             max_turns: 200,
             idle_ttl: None,
+            auto_compact: true,
         }
     }
 }

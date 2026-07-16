@@ -12,11 +12,19 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{emit_tool_call, emit_tool_exec, emit_turn_error, emit_usage, next_seq};
 use super::stream::{stream_round, StreamedRound};
+use super::summarize::{summarize, SummarizeOutcome};
 use super::turn_state::TurnState;
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
 use entanglement_provider::{StopReason, ToolSpec};
+
+/// How many trailing messages auto-summarize asks to keep verbatim (#398,
+/// ADR-0103), so the turn's own most recent exchange isn't paraphrased away.
+/// `Context::safe_kept` clamps this to the nearest safe turn boundary, so the
+/// exact number is a soft target, not a guarantee — a request deep in an
+/// unfinished tool round-trip can collapse to `0`.
+const AUTO_COMPACT_KEEP_TAIL: usize = 4;
 
 /// How one LLM round-trip left the turn.
 pub(crate) enum RoundOutcome {
@@ -147,13 +155,24 @@ async fn run_round(
     }
 
     // Keep the request inside the model's real context window (#178). Over
-    // budget, first compact (prune the oldest tool outputs); if that still
-    // doesn't fit, refuse the turn — sending an over-window request just
-    // burns a paid round-trip and errors at the provider. Refusing ends the
-    // turn cleanly (Error + Done + Status) so a one-shot head unblocks.
+    // budget, first try an LLM-generated summary in place (#398, ADR-0103) —
+    // far less lossy than placeholder pruning, and the natural default since a
+    // turn mid-flight has no head to fork a copy-on-write `/compact` into. If
+    // that's disabled, skipped by its own guard, or still doesn't fit, fall
+    // back to the prune-only `Context::compact`; if even that doesn't fit,
+    // refuse the turn — sending an over-window request just burns a paid
+    // round-trip and errors at the provider. Refusing ends the turn cleanly
+    // (Error + Done + Status) so a one-shot head unblocks.
     if !s.ctx.within_limit() {
         let before = s.ctx.estimated_tokens();
-        let fits = s.ctx.compact();
+        if cfg.auto_compact {
+            try_auto_compact(session, s, events, cfg).await;
+        }
+        let fits = if s.ctx.within_limit() {
+            true
+        } else {
+            s.ctx.compact()
+        };
         let after = s.ctx.estimated_tokens();
         if fits {
             tracing::info!(
@@ -264,4 +283,67 @@ async fn run_round(
         turn.begin_batch(tool_calls);
     }
     RoundOutcome::Parked
+}
+
+/// Try an LLM-generated summary of the oldest history, mutating `s.ctx` **in
+/// place** on success (#398, ADR-0103) — the fundamental split from the
+/// manual `/compact`'s copy-on-write (ADR-0101): a turn mid-flight has no head
+/// available to fork a new session into, so the only sound recovery is
+/// compacting the live context and continuing the same turn. Silent on
+/// failure: the summarize guard tripping (an oversized transcript/tail, an
+/// LLM error, a truncated summary) is expected and unremarkable here — the
+/// caller falls back to the prune-only `Context::compact`.
+async fn try_auto_compact(
+    session: &SessionId,
+    s: &mut Session,
+    events: &broadcast::Sender<OutEvent>,
+    cfg: &EngineConfig,
+) {
+    // Model resolution mirrors the request field below: a live switch (#218)
+    // overrides the profile's pinned model; `None` falls back to the backend's
+    // own default.
+    let model = s.model.as_deref().or(s.profile.model.as_deref());
+
+    match summarize(
+        &s.ctx,
+        &mut *s.llm,
+        model,
+        s.generation,
+        AUTO_COMPACT_KEEP_TAIL,
+        None,
+    )
+    .await
+    {
+        Ok(SummarizeOutcome {
+            summary,
+            kept,
+            finish,
+            // `apply_compaction` re-derives the tail structurally from
+            // `kept` against the live `ctx` — the rendered tail text is only
+            // needed by the copy-on-write manual path's flat report.
+            tail_rendered: _,
+        }) => {
+            s.ctx.apply_compaction(&summary, kept);
+            let _ = events.send(OutEvent::Compacted {
+                session: session.clone(),
+                seq: next_seq(&s.seq),
+                summary,
+                kept: kept as u64,
+                auto: true,
+            });
+            if let Some((_, usage)) = finish {
+                let priced_model = model.or(cfg.default_model.as_deref());
+                let cost = priced_model
+                    .and_then(|m| cfg.pricing.get(m))
+                    .map(|p| p.cost_usd(&usage));
+                emit_usage(session, s, events, &usage, cost);
+            }
+        }
+        Err(e) => {
+            tracing::debug!(
+                reason = %e,
+                "auto-compact summarization unavailable, falling back to pruning"
+            );
+        }
+    }
 }

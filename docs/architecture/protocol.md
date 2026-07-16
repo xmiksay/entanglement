@@ -49,7 +49,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?}  // per-round-trip usage + cost (#192)
          | Error{session,seq,message}
          | Done{session,seq}
-         | Compacted{session,seq,summary,kept}   // compaction summary ready; source untouched — head forks into a new session (#324, ADR-0082 → ADR-0101)
+         | Compacted{session,seq,summary,kept,auto}   // compaction summary ready; auto:false (default) → source untouched, head forks into a new session (#324, ADR-0082 → ADR-0101); auto:true → in-place mutation the live engine already applied (#398, ADR-0103)
          | FileChange{session,seq,path,change_kind,hash}   // file-change audit: runtime executor emits on edit/write; hash = sha256(after) (#202, ADR-0060)
 ```
 
@@ -185,17 +185,29 @@ deferred while a turn is live via the same stash gate as `SetAgent`/`SetModel`
 — a oneshot never runs concurrently with a turn, which is what lets it reuse
 the session's `&mut Llm` handle directly instead of racing the turn loop's
 inbox `select!`. On success it emits the **persisted, seq-bearing**
-`OutEvent::Compacted{session,seq,summary,kept}` — persistence and
+`OutEvent::Compacted{session,seq,summary,kept,auto}` — persistence and
 `ReplayFrom` history cover it for free (both are variant-agnostic over any
 `seq()`-bearing event). **Copy-on-write (ADR-0101):** the source session's
 `Context` is **never mutated** — the summary rides only in the event, and the
 head forks it into a new session via `InMsg::Spawn` (parent = source id, agent
 = source profile, prompt = summary). A truncated summary (`StopReason::MaxTokens`)
 is refused outright (`Error`, never forked). `Session::replay`'s `Compacted`
-fold is a **no-op** — a resumed source recovers its full pre-compaction history
-(the implicit undo). `kept` is now wire-legacy only (always `0`; the source
-keeps everything), retained for deserializing older records written under
-ADR-0082's in-place design.
+fold is a **no-op** for `auto: false` — a resumed source recovers its full
+pre-compaction history (the implicit undo). `kept` (#397, ADR-0102) is how many
+trailing messages ride verbatim inside `summary` rather than being paraphrased
+— clamped to the nearest safe turn boundary by `Context::safe_kept`; `0` (the
+default) means the whole history was summarized with no verbatim tail,
+matching every pre-#397 record.
+
+`auto` (#398, [ADR-0103](../adr/0103-auto-summarize-on-context-overflow.md))
+tells the two mutation semantics sharing this variant apart: `false` (the
+default, every pre-#398 record) is the copy-on-write report above; `true` is
+`session/turn.rs`'s automatic in-place compaction on context overflow — a turn
+mid-flight has no head to fork into, so it mutates the live `Context` via
+`Context::apply_compaction` directly instead. `Session::replay` folds `auto:
+true` by replaying that same `apply_compaction` call so a resumed session's
+history matches the live one, rather than treating it as a no-op like the
+manual path.
 
 **Live generation-parameter changes — `InMsg::SetGeneration`** (#374,
 [ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)).

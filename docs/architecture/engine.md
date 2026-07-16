@@ -203,18 +203,30 @@ budget is `INPUT_BUDGET_FRACTION` (0.85) of the active model's catalog
 `context_window` — threaded runtime → `EngineConfig.context_window` →
 `Context::with_window` — reserving the rest for the reply and estimator slack;
 an unknown model (`EchoLlm`, or an env-override id absent from the catalog) falls
-back to the flat `CONTEXT_LIMIT_TOKENS` (180k). Over budget, core **compacts**
-(`Context::compact` prunes the oldest tool outputs to a placeholder,
-newest-first-preserved) and, if that still doesn't fit, **refuses** the turn via
-`emit_turn_error` (a `"context window exceeded"` `Error` + `Done` + `Status`) —
-it no longer warns-and-sends an over-window request. This automatic prune-only
-path is unrelated to (and unchanged by) the deliberate, user-triggered LLM
-*summarization* op below — `Context::compact` never calls the model, it only
-ever discards. So both the turn-limit trip and the
-context-refusal *end* a turn — the former on an `Error` with no `Done` (the #177
-gap), the latter on the full `emit_turn_error` triple; the #192 `max_tokens`
-truncation `Error` remains a recoverable warning that runs on to its normal
-`Done`.
+back to the flat `CONTEXT_LIMIT_TOKENS` (180k). Over budget, core now tries three
+recovery steps in order (#398,
+[ADR-0103](../adr/0103-auto-summarize-on-context-overflow.md)):
+1. **Auto-summarize in place**, gated by `EngineConfig::auto_compact` (default
+   `true`): `try_auto_compact` calls the same `session/summarize.rs::summarize`
+   the manual `"compact"` op below uses, requesting a small fixed keep-tail
+   (`AUTO_COMPACT_KEEP_TAIL`, clamped to a safe turn boundary by
+   `Context::safe_kept` exactly as #397/ADR-0102 does), then applies the result
+   via `Context::apply_compaction` — **mutating the live session's `Context` in
+   place**, the fundamental split from the manual op's copy-on-write (ADR-0101):
+   a turn mid-flight has no head to fork into. On success it emits
+   `OutEvent::Compacted { auto: true, .. }`.
+2. **Fall back to `Context::compact`** (placeholder-prune the oldest tool
+   outputs, newest-first-preserved) when auto-summarize is disabled, its own
+   guard trips (an oversized transcript/tail, an LLM error, a truncated
+   summary), or the result still doesn't fit.
+3. **Refuse the turn** via `emit_turn_error` (a `"context window exceeded"`
+   `Error` + `Done` + `Status`) if pruning also doesn't fit — sending an
+   over-window request just burns a paid round-trip and errors at the provider.
+
+So both the turn-limit trip and the context-refusal *end* a turn — the former
+on an `Error` with no `Done` (the #177 gap), the latter on the full
+`emit_turn_error` triple; the #192 `max_tokens` truncation `Error` remains a
+recoverable warning that runs on to its normal `Done`.
 
 **Single-shot ops — `InMsg::Oneshot` (`session/ops.rs`, #324,
 [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).**
@@ -222,24 +234,27 @@ Separate from the turn loop above: `run_oneshot` never streams tool calls and
 never parks — it either completes in one round-trip or fails cleanly. Routed
 like `SetAgent`/`SetModel` (`SessionCmd::Oneshot`, deferred via the stash gate
 while `s.turn.is_some()`), so it only ever runs with no turn in flight — the
-invariant that lets `compact_op` call `s.llm.stream(...)` directly (via a small
-`oneshot_text` helper that drains the stream for `Text` chunks + the `Finish`
-usage) instead of going through `session/stream.rs`'s inbox-racing
-`tokio::select!`. `"compact"` renders the history as a plain-text transcript
-(each `Tool`-role message truncated head+tail past ~2k chars so one oversized
-tool output can't blow the summarizer's own context window), optionally
-appends `args.instructions`, and asks the model to summarize it with a
-tool-less `LlmRequest` (`tools: &[]`). **Copy-on-write (ADR-0101):** the source
-session's `Context` is **never mutated** — on success `compact_op` emits
-`Compacted{summary}` (a *report*; the head forks the summary into a new
-session) then `Usage`/`Done`/`Status::Done`, the ordinary terminal sequence so
-a one-shot head still unblocks on `Done`. A truncated summary
-(`StopReason::MaxTokens`) is refused outright (`Error`, never forked), and an
-oversized transcript (one that overflows `s.ctx.limit()`) is rejected before
-shipping a request the provider would 4xx. On failure, the ordinary
-`emit_turn_error` triple runs and `Context` is untouched. Model resolution and
-pricing mirror the turn loop: `s.model` → `s.profile.model` → (pricing only)
-`cfg.default_model`.
+invariant that lets `compact_op` call `s.llm.stream(...)` directly (via
+`session/summarize.rs`'s small `oneshot_text` helper that drains the stream for
+`Text` chunks + the `Finish` usage) instead of going through
+`session/stream.rs`'s inbox-racing `tokio::select!`. `"compact"` renders the
+history as a plain-text transcript (each `Tool`-role message truncated
+head+tail past ~2k chars so one oversized tool output can't blow the
+summarizer's own context window), optionally appends `args.instructions`, and
+asks the model to summarize it with a tool-less `LlmRequest` (`tools: &[]`) —
+all via the shared `session/summarize.rs::summarize`, which `session/turn.rs`'s
+auto-compact path above also calls. **Copy-on-write (ADR-0101):** the source
+session's `Context` is **never mutated** — on success `compact_op` composes the
+summary with the rendered kept-tail (`summarize::compose_report`, since the
+fork's seed is a single flat string) and emits `Compacted{summary, auto: false}`
+(a *report*; the head forks the summary into a new session) then
+`Usage`/`Done`/`Status::Done`, the ordinary terminal sequence so a one-shot head
+still unblocks on `Done`. A truncated summary (`StopReason::MaxTokens`) is
+refused outright (`Error`, never forked), and an oversized transcript (one that
+overflows `s.ctx.limit()`) is rejected before shipping a request the provider
+would 4xx. On failure, the ordinary `emit_turn_error` triple runs and `Context`
+is untouched. Model resolution and pricing mirror the turn loop: `s.model` →
+`s.profile.model` → (pricing only) `cfg.default_model`.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop *races* it via `tokio::select!` so a

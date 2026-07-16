@@ -1101,26 +1101,41 @@ pub enum OutEvent {
     },
     /// Turn finished cleanly. Heads waiting on a one-shot turn exit on this.
     Done { session: SessionId, seq: u64 },
-    /// Session compaction ran (#324, ADR-0082 → ADR-0101): the engine produced
-    /// an LLM-generated `summary` of the conversation. **Copy-on-write
-    /// (ADR-0101)**: the source session's `Context` is **not** mutated — this
-    /// is a *report* ("summary ready, source untouched"), not a confirmation of
-    /// mutation. The head that issued the compaction forks the summary into a
-    /// new session via `InMsg::Spawn`; the original stays idle, intact,
-    /// independently resumable. A persisted, seq-bearing content event
-    /// (persistence is variant-agnostic; seq-bearing ⇒ folded into
-    /// `ReplayFrom` history — but the `Session::replay` fold is a no-op, since
-    /// the source is never mutated). `kept` is how many trailing messages —
-    /// clamped to the nearest safe turn boundary (#397, ADR-0102) — ride
-    /// verbatim inside `summary`, appended after the LLM-generated summary of
-    /// everything before them; `0` (the default) means the whole history was
-    /// summarized with no verbatim tail, matching every pre-#397 record.
+    /// Session compaction ran (#324, ADR-0082 → ADR-0101/0103): the engine
+    /// produced an LLM-generated `summary` of the conversation. Two distinct
+    /// mutation semantics share this one variant, told apart by `auto`:
+    ///
+    /// - `auto: false` (the default) — **manual `/compact`, copy-on-write
+    ///   (ADR-0101)**: the source session's `Context` is **not** mutated, this
+    ///   is a *report* ("summary ready, source untouched"). The head that
+    ///   issued the compaction forks the summary into a new session via
+    ///   `InMsg::Spawn`; the original stays idle, intact, independently
+    ///   resumable. `Session::replay`'s fold is a no-op for this case — there
+    ///   is nothing to reconstruct, the source was never mutated.
+    /// - `auto: true` — **automatic in-place compaction on context overflow**
+    ///   (#398, ADR-0103): `session/turn.rs` mutated the *live* session's
+    ///   `Context` via `Context::apply_compaction` before continuing the turn,
+    ///   because a turn mid-flight has no head to fork into. `Session::replay`
+    ///   folds this case by replaying the same `apply_compaction` call, so a
+    ///   resumed session's history matches the live one.
+    ///
+    /// A persisted, seq-bearing content event either way (persistence is
+    /// variant-agnostic; seq-bearing ⇒ folded into `ReplayFrom` history).
+    /// `kept` is how many trailing messages — clamped to the nearest safe
+    /// turn boundary (#397, ADR-0102) — ride verbatim inside `summary`,
+    /// appended after the LLM-generated summary of everything before them;
+    /// `0` (the default) means the whole history was summarized with no
+    /// verbatim tail, matching every pre-#397 record. `auto` defaults to
+    /// `false` on the wire, matching every pre-#398 record (all of which were
+    /// the manual, copy-on-write path).
     Compacted {
         session: SessionId,
         seq: u64,
         summary: String,
         #[serde(default)]
         kept: u64,
+        #[serde(default)]
+        auto: bool,
     },
     /// File change record (audit log entry). Emitted by the runtime's tool
     /// executor after each successful `edit`/`write` (#202). The record carries
@@ -1684,6 +1699,7 @@ mod tests {
             seq: 6,
             summary: "user asked for X, agent did Y".into(),
             kept: 0,
+            auto: false,
         };
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
@@ -1691,7 +1707,8 @@ mod tests {
         assert_eq!(back.seq(), Some(6));
         assert_eq!(back.session(), Some(&SessionId::new("s1")));
 
-        // `kept` defaults to 0 when omitted on the wire (older writer shape).
+        // `kept`/`auto` default to `0`/`false` when omitted on the wire (older
+        // writer shape — every pre-#398 record is the manual copy-on-write path).
         let bare = r#"{"kind":"compacted","session":"s1","seq":6,"summary":"x"}"#;
         assert_eq!(
             serde_json::from_str::<OutEvent>(bare).unwrap(),
@@ -1700,8 +1717,27 @@ mod tests {
                 seq: 6,
                 summary: "x".into(),
                 kept: 0,
+                auto: false,
             }
         );
+    }
+
+    #[test]
+    fn compacted_event_auto_flag_roundtrips() {
+        let ev = OutEvent::Compacted {
+            session: SessionId::new("s1"),
+            seq: 6,
+            summary: "auto-summarized on overflow".into(),
+            kept: 2,
+            auto: true,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: OutEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
+        match back {
+            OutEvent::Compacted { auto, .. } => assert!(auto),
+            other => panic!("expected Compacted, got {other:?}"),
+        }
     }
 
     #[test]

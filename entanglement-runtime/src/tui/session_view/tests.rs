@@ -495,6 +495,7 @@ fn compacted_renders_a_fork_notice() {
         seq: 1,
         summary: "user asked for X, agent did Y".into(),
         kept: 0,
+        auto: false,
     }));
     let notice = v
         .transcript()
@@ -515,5 +516,31 @@ fn compacted_renders_a_fork_notice() {
         seq: 1,
         summary: "replay".into(),
         kept: 0,
+        auto: false,
     }));
+}
+
+#[test]
+fn auto_compacted_renders_an_in_place_notice() {
+    let mut v = SessionView::new();
+    assert!(v.apply_event(OutEvent::Compacted {
+        session: sid(),
+        seq: 1,
+        summary: "context overflowed, summarized in place".into(),
+        kept: 0,
+        auto: true,
+    }));
+    let notice = v
+        .transcript()
+        .iter()
+        .find_map(|e| match e {
+            TranscriptEntry::ToolOutput {
+                tool: Some(tool),
+                output,
+            } if tool == "compact" => Some(output.clone()),
+            _ => None,
+        })
+        .expect("Compacted renders a tool-output-style notice");
+    assert!(!notice.contains("forked"), "auto-compaction never forks");
+    assert!(notice.contains("context overflowed, summarized in place"));
 }

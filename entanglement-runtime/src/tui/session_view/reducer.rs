@@ -348,20 +348,34 @@ impl SessionView {
                 }
             }
             OutEvent::FileChange { .. } => true,
-            // Session compaction (#324, ADR-0082 → ADR-0101): copy-on-write —
-            // the source `Context` is untouched; the summary was forked into a
-            // new session by `App::handle_compacted`. Render a one-line notice
-            // on the source's transcript indicating the fork (the original is
-            // preserved). Reuses the tool-output entry, like `record_status`'s
-            // out-of-band notices.
-            OutEvent::Compacted { seq, summary, .. } => {
+            // Session compaction (#324, ADR-0082 → ADR-0101/0103): two
+            // notices share this arm, told apart by `auto`. `auto: false` —
+            // copy-on-write — the source `Context` is untouched; the summary
+            // was forked into a new session by `App::handle_compacted`, so the
+            // notice here just points at that fork. `auto: true` (#398) — the
+            // live engine already mutated this session's context in place
+            // before continuing the turn; there is no fork, so the notice
+            // reports the in-place summary instead. Reuses the tool-output
+            // entry, like `record_status`'s out-of-band notices.
+            OutEvent::Compacted {
+                seq, summary, auto, ..
+            } => {
                 if seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::ToolOutput {
-                        tool: Some("compact".to_string()),
-                        output: format!(
+                    let output = if auto {
+                        format!(
+                            "Auto-compacted: the context overflowed the model's \
+                             window, so it was summarized in place to keep the \
+                             turn going.\n\n{summary}"
+                        )
+                    } else {
+                        format!(
                             "Compacted: forked the summary into a new session. \
                              The original is preserved.\n\n{summary}"
-                        ),
+                        )
+                    };
+                    self.transcript.push(TranscriptEntry::ToolOutput {
+                        tool: Some("compact".to_string()),
+                        output,
                     });
                     self.last_seen_seq = seq;
                     true

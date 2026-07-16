@@ -116,6 +116,7 @@ mod tests {
             seq: 1,
             summary: "user asked for X, agent did Y".into(),
             kept: 0,
+            auto: false,
         });
 
         // The view switched to the fresh fork session.
@@ -202,6 +203,7 @@ mod tests {
             seq: 1,
             summary: "first".into(),
             kept: 0,
+            auto: false,
         });
         let first_fork = app.active_session_id().clone();
         // The same event replayed (seq not advancing) must not fork again.
@@ -210,11 +212,39 @@ mod tests {
             seq: 1,
             summary: "replay".into(),
             kept: 0,
+            auto: false,
         });
         assert_eq!(
             app.active_session_id(),
             &first_fork,
             "a replayed Compacted does not fork a second time"
+        );
+    }
+
+    #[test]
+    fn auto_compacted_event_does_not_fork() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let before = app.active_session_id().clone();
+
+        app.handle_out_event(OutEvent::Compacted {
+            session: SessionId::new("s1"),
+            seq: 1,
+            summary: "context overflowed, summarized in place".into(),
+            kept: 0,
+            auto: true,
+        });
+
+        // No fork: the active session is unchanged, and no fork was recorded
+        // for the main loop to send (#398, ADR-0103 — the live engine already
+        // mutated this session's context in place before the event arrived).
+        assert_eq!(
+            app.active_session_id(),
+            &before,
+            "auto-compaction must not switch the active view"
+        );
+        assert!(
+            app.take_pending_compact_fork().is_none(),
+            "auto-compaction must not record a pending fork"
         );
     }
 }

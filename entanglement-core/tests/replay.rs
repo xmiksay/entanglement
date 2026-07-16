@@ -662,6 +662,7 @@ async fn compacted_record_leaves_source_history_intact() {
                 seq: 3,
                 summary: "user said hello, agent replied".to_string(),
                 kept: 0,
+                auto: false,
             },
         ),
         (
@@ -735,6 +736,7 @@ async fn compacted_record_does_not_mutate_source_even_with_kept() {
                 seq: 3,
                 summary: "earlier summary".to_string(),
                 kept: 1,
+                auto: false,
             },
         ),
     ];
@@ -749,6 +751,126 @@ async fn compacted_record_does_not_mutate_source_even_with_kept() {
     assert_eq!(messages.len(), 2, "full history intact: {messages:?}");
     assert_eq!(messages[0].text(), "first");
     assert_eq!(messages[1].text(), "reply one");
+}
+
+// --- Automatic in-place compaction (#398, ADR-0103) -----------------------
+//
+// Unlike the manual, copy-on-write `Compacted { auto: false, .. }` above, an
+// `auto: true` record was an in-place mutation on the live engine
+// (`Context::apply_compaction`) — replay must reconstruct that same
+// mutation, not ignore it.
+
+#[tokio::test]
+async fn auto_compacted_record_mutates_source_history_in_place() {
+    let sid = SessionId::new("test-auto-compacted");
+    let records = vec![
+        prompt_record(&sid, "first"),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: 1,
+                text: "reply one".to_string(),
+            },
+        ),
+        (
+            None,
+            OutEvent::Done {
+                session: sid.clone(),
+                seq: 2,
+            },
+        ),
+        (
+            None,
+            OutEvent::Compacted {
+                session: sid.clone(),
+                seq: 3,
+                summary: "auto-summarized: user said first, agent replied".to_string(),
+                kept: 0,
+                auto: true,
+            },
+        ),
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let messages = session.ctx.messages();
+
+    // In-place mutation: the whole pre-compaction history is gone, replaced by
+    // the single summary message `Context::apply_compaction` would produce.
+    assert_eq!(
+        messages.len(),
+        1,
+        "auto-compaction replaces history with the summary: {messages:?}"
+    );
+    assert!(messages[0].text().starts_with("[Conversation summary"));
+    assert!(messages[0]
+        .text()
+        .contains("auto-summarized: user said first, agent replied"));
+}
+
+#[tokio::test]
+async fn auto_compacted_record_with_kept_preserves_the_tail() {
+    let sid = SessionId::new("test-auto-compacted-kept");
+    let records = vec![
+        prompt_record(&sid, "first"),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: 1,
+                text: "reply one".to_string(),
+            },
+        ),
+        (
+            None,
+            OutEvent::Done {
+                session: sid.clone(),
+                seq: 2,
+            },
+        ),
+        prompt_record(&sid, "second"),
+        (
+            None,
+            OutEvent::TextDelta {
+                session: sid.clone(),
+                seq: 3,
+                text: "reply two".to_string(),
+            },
+        ),
+        (
+            None,
+            OutEvent::Done {
+                session: sid.clone(),
+                seq: 4,
+            },
+        ),
+        (
+            None,
+            OutEvent::Compacted {
+                session: sid.clone(),
+                seq: 5,
+                summary: "summary of the first turn".to_string(),
+                kept: 2,
+                auto: true,
+            },
+        ),
+    ];
+
+    let cfg = factory(vec![]);
+    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let messages = session.ctx.messages();
+
+    // The second turn's user+assistant pair rides verbatim after the summary
+    // (a safe boundary: `kept=2` starts on the "second" User message).
+    assert_eq!(
+        messages.len(),
+        3,
+        "summary + the 2 kept messages: {messages:?}"
+    );
+    assert!(messages[0].text().contains("summary of the first turn"));
+    assert_eq!(messages[1].text(), "second");
+    assert_eq!(messages[2].text(), "reply two");
 }
 
 /// Live-vs-replayed fidelity: run a real session through `Holly` (prompt,
