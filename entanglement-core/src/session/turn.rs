@@ -111,15 +111,15 @@ async fn run_round(
     // that may fan out into tool calls; a model wedged in a tool loop would
     // otherwise run forever. The counter lives on `TurnState`, reset per
     // prompt — a legitimate long session (many prompts) is never capped, only
-    // a single runaway turn.
-    const MAX_TURNS: usize = 50;
+    // a single runaway turn. User-configurable via `max_turns` (default 200).
+    let max_turns = cfg.max_turns.max(1);
     let turn = s.turn.get_or_insert_with(TurnState::default);
     turn.iterations += 1;
-    if turn.iterations > MAX_TURNS {
+    if turn.iterations > max_turns {
         let _ = events.send(OutEvent::Error {
             session: session.clone(),
             seq: next_seq(&s.seq),
-            message: format!("exceeded maximum turn limit ({MAX_TURNS}) - possible infinite loop"),
+            message: format!("exceeded maximum turn limit ({max_turns}) - possible infinite loop"),
         });
         return RoundOutcome::TurnEnded;
     }

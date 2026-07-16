@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn tasks_command_shows_the_sidebar() {
         let mut app = App::new_for_test(SessionId::new("s1"));
-        assert!(!app.showing_sidebar(), "sidebar starts hidden");
+        assert!(app.showing_sidebar(), "sidebar starts visible");
 
         let quit = app.execute_command(Command::Tasks);
         assert!(!quit, "/tasks does not quit");

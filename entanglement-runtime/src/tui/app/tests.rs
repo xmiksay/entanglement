@@ -385,6 +385,25 @@ fn set_model_info_preserves_resolved_context_window() {
 }
 
 #[test]
+fn model_changed_tracks_active_provider_and_model() {
+    // The bottom bar shows `provider · model`; both must update on a live
+    // `ModelChanged` (#218). The provider name is captured alongside the model
+    // info and was previously dropped on the floor.
+    let mut app = App::new_for_test(SessionId::new("test"));
+    assert_eq!(app.active_provider(), "");
+
+    app.handle_out_event(OutEvent::ModelChanged {
+        session: SessionId::new("test"),
+        provider: "anthropic".to_string(),
+        model: "claude-sonnet-4-5".to_string(),
+        context_window: Some(200_000),
+    });
+
+    assert_eq!(app.active_provider(), "anthropic");
+    assert_eq!(app.model_info().id, "claude-sonnet-4-5");
+}
+
+#[test]
 fn tab_cycle_skips_mode_all_agents() {
     // The implicit Tab cycle ring is `mode: primary` only (#322): a cross-vendor
     // `all`-mode agent stays out of the ring, so cycling only ever visits

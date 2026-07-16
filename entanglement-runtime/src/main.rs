@@ -75,8 +75,8 @@ async fn build_config(
     profiles: ProfileRegistry,
     skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
     user_config: &config::Config,
-) -> (EngineConfig, ModelInfo, ToolRegistry, Vec<String>) {
-    let (mut cfg, model_info) = select_provider(catalog, http_client, user_config);
+) -> (EngineConfig, ModelInfo, String, ToolRegistry, Vec<String>) {
+    let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
     // session can re-bind its LLM from the catalog with no restart. Captures the
     // catalog + the warm per-endpoint HTTP client (#217).
@@ -91,6 +91,11 @@ async fn build_config(
     // session budgets its history against the real window (128k for GLM-5.2, not
     // a fixed 180k). `None` (unknown model / echo) keeps core's flat fallback.
     cfg.context_window = model_info.context_window.map(|w| w as usize);
+    // User-configurable turn cap (#177): config file → engine, falling back to
+    // the `EngineConfig::default()` (200) when unset.
+    if let Some(max) = user_config.max_turns {
+        cfg.max_turns = max;
+    }
     // Canonicalize the working root once at startup (#163, ADR-0054): host-tool
     // containment checks against this, so a symlinked cwd must resolve to its
     // real path here or every resolved target would look like an escape.
@@ -177,7 +182,7 @@ async fn build_config(
     let mut tool_names: Vec<String> = cfg.tool_specs.iter().map(|s| s.name.clone()).collect();
     tool_names.sort();
     tool_names.dedup();
-    (cfg, model_info, tools, tool_names)
+    (cfg, model_info, provider_name, tools, tool_names)
 }
 
 /// Resolve the active provider from the catalog:
@@ -194,12 +199,15 @@ fn select_provider(
     catalog: &Catalog,
     http_client: &HttpClient,
     user_config: &config::Config,
-) -> (EngineConfig, ModelInfo) {
+) -> (EngineConfig, ModelInfo, String) {
     let selected = std::env::var("ENTANGLEMENT_PROVIDER")
         .ok()
         .or_else(|| user_config.provider.clone());
     match selected.as_deref() {
-        Some("echo") => echo_config(),
+        Some("echo") => {
+            let (cfg, info) = echo_config();
+            (cfg, info, "echo".to_string())
+        }
         Some(name) => {
             let Some(entry) = catalog.provider(name) else {
                 eprintln!(
@@ -209,20 +217,23 @@ fn select_provider(
                 );
                 std::process::exit(2);
             };
-            wire_config(entry, http_client, catalog, user_config).unwrap_or_else(|| {
-                exit_missing_key(
-                    &entry.name,
-                    entry.key_env.as_deref().unwrap_or("its API key"),
-                )
-            })
+            let (cfg, info) =
+                wire_config(entry, http_client, catalog, user_config).unwrap_or_else(|| {
+                    exit_missing_key(
+                        &entry.name,
+                        entry.key_env.as_deref().unwrap_or("its API key"),
+                    )
+                });
+            (cfg, info, entry.name.clone())
         }
         None => {
             for entry in &catalog.providers {
                 // Auto-detect only over keyed providers (keyless Ollama can't be
                 // sniffed and stays opt-in), first one with a key present wins.
                 if entry.key_env.as_deref().and_then(env_nonempty).is_some() {
-                    if let Some(cfg) = wire_config(entry, http_client, catalog, user_config) {
-                        return cfg;
+                    if let Some((cfg, info)) = wire_config(entry, http_client, catalog, user_config)
+                    {
+                        return (cfg, info, entry.name.clone());
                     }
                 }
             }
@@ -230,7 +241,8 @@ fn select_provider(
                 "skutter: no provider key set — using EchoLlm \
                  (set ENTANGLEMENT_PROVIDER=ollama for local, or a *_API_KEY, or echo)"
             );
-            (EngineConfig::default(), echo_model_info())
+            let (cfg, info) = echo_config();
+            (cfg, info, "echo".to_string())
         }
     }
 }
@@ -791,7 +803,7 @@ async fn main() -> Result<()> {
     let http_client = HttpClient::new();
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
-    let (engine_config, model_info, tools, tool_names) = build_config(
+    let (engine_config, model_info, provider_name, tools, tool_names) = build_config(
         &catalog,
         &http_client,
         profiles,
@@ -940,6 +952,7 @@ async fn main() -> Result<()> {
                 &holly,
                 session_id,
                 model_info,
+                provider_name,
                 catalog,
                 live_profiles,
                 live_agent_models,

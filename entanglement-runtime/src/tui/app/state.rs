@@ -167,28 +167,16 @@ impl App {
     }
 
     pub fn input_tokens(&self) -> u64 {
-        self.input_tokens
+        self.sessions.active_view().input_tokens()
     }
 
     pub fn output_tokens(&self) -> u64 {
-        self.output_tokens
-    }
-
-    pub fn add_input_tokens(&mut self, tokens: u64) {
-        self.input_tokens += tokens;
-    }
-
-    pub fn add_output_tokens(&mut self, tokens: u64) {
-        self.output_tokens += tokens;
+        self.sessions.active_view().output_tokens()
     }
 
     /// Accumulated session cost in USD (#192), summed from `OutEvent::Usage`.
     pub fn cost_usd(&self) -> f64 {
-        self.cost_usd
-    }
-
-    pub fn add_cost(&mut self, cost: f64) {
-        self.cost_usd += cost;
+        self.sessions.active_view().cost_usd()
     }
 
     #[allow(dead_code)]
