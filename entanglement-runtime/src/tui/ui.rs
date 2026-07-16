@@ -51,13 +51,20 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         (size, None)
     };
 
+    // D2: the input row grows with the buffer's line count so a multiline draft
+    // is fully visible, capped at both 8 rows and one third of the terminal so a
+    // long entry never eats the transcript body (`Min(0)` absorbs the slack).
+    let input_rows = app.input().lines().len().max(1) as u16;
+    let cap = (size.height / 3).max(2);
+    let input_height = input_rows.clamp(2, cap.min(8));
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
-            Constraint::Length(2),
+            Constraint::Length(input_height),
             Constraint::Length(1),
         ])
         .split(main_area);

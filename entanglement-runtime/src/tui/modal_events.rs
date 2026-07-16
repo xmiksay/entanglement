@@ -468,6 +468,11 @@ pub(super) async fn handle_question_event(
     };
 
     if entering {
+        // Shared input-edit keys (Ctrl+arrows, Home/End, doc jumps, Alt+Enter
+        // newline) — Enter stays = submit below.
+        if super::event_loop::apply_input_edit_key(app, &key) {
+            return Ok(false);
+        }
         match key.code {
             KeyCode::Esc => {
                 let _ = app.take_input_text();

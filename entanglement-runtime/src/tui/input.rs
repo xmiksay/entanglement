@@ -12,7 +12,6 @@ pub struct SimpleInput {
     /// UTF-8 char boundary. All movement/edit helpers step by whole `char`s so
     /// multibyte input (`é`, emoji, CJK) never splits a code point (issue #101).
     cursor_col: usize,
-    scroll_offset: u16,
 }
 
 /// Largest char boundary `<= idx` in `s` (clamps `idx` into range first). Lets
@@ -150,7 +149,6 @@ impl SimpleInput {
         self.lines = vec![String::new()];
         self.cursor_row = 0;
         self.cursor_col = 0;
-        self.scroll_offset = 0;
     }
 
     pub fn move_cursor_up(&mut self) {
@@ -191,13 +189,78 @@ impl SimpleInput {
         self.cursor_col = self.line_str().len();
     }
 
-    #[allow(dead_code)]
-    pub fn set_scroll_offset(&mut self, offset: u16) {
-        self.scroll_offset = offset;
+    /// Word-jump left (Ctrl+Left): skip any trailing whitespace to the left of
+    /// the cursor, then skip exactly one run of non-whitespace chars. Stays on
+    /// the current line (emacs-`M-b`-style, line-local). Char-boundary-safe.
+    pub fn move_word_left(&mut self) {
+        let line = self.line_str();
+        let mut col = floor_char_boundary(line, self.cursor_col);
+        while col > 0 {
+            let Some(prev) = line[..col].chars().next_back() else {
+                break;
+            };
+            if prev.is_whitespace() {
+                col -= prev.len_utf8();
+            } else {
+                break;
+            }
+        }
+        while col > 0 {
+            let Some(prev) = line[..col].chars().next_back() else {
+                break;
+            };
+            if !prev.is_whitespace() {
+                col -= prev.len_utf8();
+            } else {
+                break;
+            }
+        }
+        self.cursor_col = col;
     }
 
-    pub fn scroll_offset(&self) -> u16 {
-        self.scroll_offset
+    /// Word-jump right (Ctrl+Right): skip the rest of the current word, then
+    /// cross the following whitespace — landing at the **start of the next
+    /// word** (the convention VS Code / most editors use). Char-boundary-safe.
+    pub fn move_word_right(&mut self) {
+        let line = self.line_str();
+        let mut col = floor_char_boundary(line, self.cursor_col);
+        // Skip the remainder of the current word (non-whitespace)…
+        while col < line.len() {
+            let Some(next) = line[col..].chars().next() else {
+                break;
+            };
+            if !next.is_whitespace() {
+                col += next.len_utf8();
+            } else {
+                break;
+            }
+        }
+        // …then the following whitespace, to reach the next word's start.
+        while col < line.len() {
+            let Some(next) = line[col..].chars().next() else {
+                break;
+            };
+            if next.is_whitespace() {
+                col += next.len_utf8();
+            } else {
+                break;
+            }
+        }
+        self.cursor_col = col;
+    }
+
+    /// Jump to the start of the document (Ctrl+Home): first row, column 0.
+    pub fn move_to_doc_home(&mut self) {
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+    }
+
+    /// Jump to the end of the document (Ctrl+End): last row, end of its line.
+    /// Floored to a char boundary so a clamped column never splits a glyph.
+    pub fn move_to_doc_end(&mut self) {
+        self.cursor_row = self.lines.len().saturating_sub(1);
+        let line = self.line_str();
+        self.cursor_col = floor_char_boundary(line, line.len());
     }
 
     /// The cursor's line, truncated to the bytes left of the cursor. Used to
@@ -223,162 +286,4 @@ impl SimpleInput {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::SimpleInput;
-
-    /// The exact repro from issue #101: a single multibyte char followed by the
-    /// mention recompute that slices the line — must not split the code point.
-    #[test]
-    fn multibyte_insert_then_before_cursor_slice() {
-        let mut input = SimpleInput::default();
-        input.insert_char('é');
-        assert_eq!(input.lines(), &["é".to_string()]);
-        assert_eq!(input.cursor(), (0, 'é'.len_utf8()));
-        // Previously panicked: byte index 1 is not a char boundary.
-        assert_eq!(input.current_line_before_cursor(), "é");
-    }
-
-    #[test]
-    fn multibyte_str_insert_advances_by_bytes() {
-        let mut input = SimpleInput::default();
-        input.insert_str("aé🚀c");
-        assert_eq!(input.lines(), &["aé🚀c".to_string()]);
-        assert_eq!(input.cursor_col(), "aé🚀c".len());
-        assert_eq!(input.current_line_before_cursor(), "aé🚀c");
-    }
-
-    #[test]
-    fn multibyte_delete_removes_whole_char() {
-        let mut input = SimpleInput::default();
-        input.insert_str("aé");
-        input.delete_char();
-        assert_eq!(input.lines(), &["a".to_string()]);
-        assert_eq!(input.cursor_col(), 1);
-        input.delete_char();
-        assert_eq!(input.lines(), &[String::new()]);
-        assert_eq!(input.cursor_col(), 0);
-    }
-
-    #[test]
-    fn multibyte_left_right_step_over_code_points() {
-        let mut input = SimpleInput::default();
-        input.insert_str("é🚀");
-        input.move_cursor_left();
-        assert_eq!(input.cursor_col(), 'é'.len_utf8());
-        input.move_cursor_left();
-        assert_eq!(input.cursor_col(), 0);
-        input.move_cursor_left(); // clamped at head
-        assert_eq!(input.cursor_col(), 0);
-        input.move_cursor_right();
-        assert_eq!(input.cursor_col(), 'é'.len_utf8());
-        input.move_cursor_right();
-        assert_eq!(input.cursor_col(), "é🚀".len());
-        input.move_cursor_right(); // clamped at end
-        assert_eq!(input.cursor_col(), "é🚀".len());
-    }
-
-    #[test]
-    fn multibyte_head_end_and_display_col() {
-        let mut input = SimpleInput::default();
-        input.insert_str("é🚀"); // é width 1, 🚀 width 2
-        assert_eq!(input.cursor_display_col(), 3);
-        input.move_cursor_to_head();
-        assert_eq!(input.cursor_col(), 0);
-        assert_eq!(input.cursor_display_col(), 0);
-        input.move_cursor_to_end();
-        assert_eq!(input.cursor_col(), "é🚀".len());
-        assert_eq!(input.cursor_display_col(), 3);
-    }
-
-    #[test]
-    fn newline_splits_on_char_boundary() {
-        let mut input = SimpleInput::default();
-        input.insert_str("aé🚀c");
-        input.move_cursor_left(); // between 🚀 and c
-        input.insert_newline();
-        assert_eq!(input.lines(), &["aé🚀".to_string(), "c".to_string()]);
-        assert_eq!(input.cursor(), (1, 0));
-    }
-
-    #[test]
-    fn move_up_down_clamps_to_char_boundary() {
-        let mut input = SimpleInput::default();
-        input.insert_str("aaaa");
-        input.insert_newline();
-        input.insert_str("é"); // row 1, cursor past the é (col 2)
-        input.move_cursor_up(); // row 0, col floored to a boundary
-        let (row, col) = input.cursor();
-        assert_eq!(row, 0);
-        assert!(input.lines()[0].is_char_boundary(col));
-        input.move_cursor_down();
-        let (row, col) = input.cursor();
-        assert_eq!(row, 1);
-        assert!(input.lines()[1].is_char_boundary(col));
-    }
-
-    #[test]
-    fn delete_word_on_multibyte_line() {
-        let mut input = SimpleInput::default();
-        input.insert_str("héllo   ");
-        input.delete_word();
-        assert_eq!(input.lines(), &["héllo".to_string()]);
-        assert_eq!(input.cursor_col(), "héllo".len());
-    }
-
-    // Issue #101 cluster 2: editing keys on a fresh (empty `lines`) buffer must
-    // not index-out-of-bounds.
-    #[test]
-    fn empty_buffer_edit_keys_do_not_panic() {
-        SimpleInput::default().insert_newline();
-        SimpleInput::default().delete_line_by_end();
-        SimpleInput::default().delete_line_by_head();
-        SimpleInput::default().delete_word();
-        SimpleInput::default().delete_char();
-        SimpleInput::default().move_cursor_left();
-        SimpleInput::default().move_cursor_right();
-        SimpleInput::default().move_cursor_up();
-        SimpleInput::default().move_cursor_down();
-        SimpleInput::default().move_cursor_to_end();
-        assert_eq!(SimpleInput::default().current_line_before_cursor(), "");
-        assert_eq!(SimpleInput::default().cursor_display_col(), 0);
-    }
-
-    #[test]
-    fn empty_buffer_newline_then_type() {
-        let mut input = SimpleInput::default();
-        input.insert_newline();
-        assert_eq!(input.cursor(), (1, 0));
-        input.insert_char('x');
-        assert_eq!(input.lines(), &[String::new(), "x".to_string()]);
-    }
-
-    #[test]
-    fn delete_char_joins_lines() {
-        let mut input = SimpleInput::default();
-        input.insert_str("aé");
-        input.insert_newline();
-        input.insert_str("bc");
-        input.move_cursor_to_head();
-        input.delete_char(); // join line 1 back onto line 0
-        assert_eq!(input.lines(), &["aébc".to_string()]);
-        assert_eq!(input.cursor(), (0, "aé".len()));
-    }
-
-    #[test]
-    fn ctrl_k_and_ctrl_u_on_multibyte() {
-        let mut input = SimpleInput::default();
-        input.insert_str("aébéc");
-        input.move_cursor_left(); // before final c
-        input.move_cursor_left(); // between é and c → after "aéb"
-        input.delete_line_by_end();
-        assert_eq!(input.lines(), &["aéb".to_string()]);
-
-        let mut input = SimpleInput::default();
-        input.insert_str("aébéc");
-        input.move_cursor_left();
-        input.move_cursor_left(); // after "aéb"
-        input.delete_line_by_head();
-        assert_eq!(input.lines(), &["éc".to_string()]);
-        assert_eq!(input.cursor_col(), 0);
-    }
-}
+mod tests;

@@ -14,6 +14,60 @@ use super::modal_events::{
 };
 use super::session_view::ApprovalMode;
 
+/// Shared input-edit keys for any `SimpleInput`-driven field: Ctrl+Left/Right
+/// word jumps, plain + Ctrl Home/End, Alt+Enter newline. Returns whether the key
+/// was consumed so callers can fall back to their own bindings (e.g. the Normal
+/// `Enter` = send). Kept free of `holly`/mention side effects; the Normal path
+/// re-runs `update_mention` after a mutation, the reject/answer paths don't need it.
+pub(super) fn apply_input_edit_key(
+    app: &mut App,
+    key: &ratatui::crossterm::event::KeyEvent,
+) -> bool {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mods = key.modifiers;
+    match key.code {
+        // Alt+Enter newline (D1): universally detected via the ESC Alt prefix.
+        KeyCode::Enter if mods.contains(KeyModifiers::ALT) => {
+            app.input().insert_newline();
+            app.update_mention();
+            true
+        }
+        // Ctrl+Left/Right word jumps.
+        KeyCode::Left if mods.contains(KeyModifiers::CONTROL) => {
+            app.input().move_word_left();
+            app.update_mention();
+            true
+        }
+        KeyCode::Right if mods.contains(KeyModifiers::CONTROL) => {
+            app.input().move_word_right();
+            app.update_mention();
+            true
+        }
+        // Ctrl+Home/End document jumps; plain Home/End line jumps.
+        KeyCode::Home if mods.contains(KeyModifiers::CONTROL) => {
+            app.input().move_to_doc_home();
+            app.update_mention();
+            true
+        }
+        KeyCode::End if mods.contains(KeyModifiers::CONTROL) => {
+            app.input().move_to_doc_end();
+            app.update_mention();
+            true
+        }
+        KeyCode::Home => {
+            app.input().move_cursor_to_head();
+            app.update_mention();
+            true
+        }
+        KeyCode::End => {
+            app.input().move_cursor_to_end();
+            app.update_mention();
+            true
+        }
+        _ => false,
+    }
+}
+
 pub(super) async fn handle_event(
     app: &mut App,
     holly: &Holly,
@@ -134,43 +188,50 @@ pub(super) async fn handle_event(
                         }
                         _ => {}
                     },
-                    ApprovalMode::EnteringRejectReason { request_id } => match key.code {
-                        KeyCode::Esc => {
-                            app.set_approval_mode(ApprovalMode::WaitingForApproval {
-                                request_id: request_id.clone(),
-                            });
-                            let text = app.take_input_text();
-                            if !text.is_empty() {
-                                app.input().insert_str(&text);
-                            }
+                    ApprovalMode::EnteringRejectReason { request_id } => {
+                        // Shared input-edit keys (Ctrl+arrows, Home/End, doc
+                        // jumps, Alt+Enter newline) — Enter stays = send.
+                        if apply_input_edit_key(app, &key) {
+                            return Ok(false);
                         }
-                        KeyCode::Enter => {
-                            let text = app.take_input_text();
-                            let _ = holly
-                                .send(InMsg::Reject {
-                                    session: app.active_session_id().clone(),
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.set_approval_mode(ApprovalMode::WaitingForApproval {
                                     request_id: request_id.clone(),
-                                    reason: if text.is_empty() { None } else { Some(text) },
-                                })
-                                .await;
-                            // Rejecting answers only this request — parked ones
-                            // still need their own decision (#273).
-                            app.advance_approval();
+                                });
+                                let text = app.take_input_text();
+                                if !text.is_empty() {
+                                    app.input().insert_str(&text);
+                                }
+                            }
+                            KeyCode::Enter => {
+                                let text = app.take_input_text();
+                                let _ = holly
+                                    .send(InMsg::Reject {
+                                        session: app.active_session_id().clone(),
+                                        request_id: request_id.clone(),
+                                        reason: if text.is_empty() { None } else { Some(text) },
+                                    })
+                                    .await;
+                                // Rejecting answers only this request — parked ones
+                                // still need their own decision (#273).
+                                app.advance_approval();
+                            }
+                            KeyCode::Char(c) => {
+                                app.input().insert_char(c);
+                            }
+                            KeyCode::Backspace => {
+                                app.input().delete_char();
+                            }
+                            KeyCode::Left => {
+                                app.input().move_cursor_left();
+                            }
+                            KeyCode::Right => {
+                                app.input().move_cursor_right();
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char(c) => {
-                            app.input().insert_char(c);
-                        }
-                        KeyCode::Backspace => {
-                            app.input().delete_char();
-                        }
-                        KeyCode::Left => {
-                            app.input().move_cursor_left();
-                        }
-                        KeyCode::Right => {
-                            app.input().move_cursor_right();
-                        }
-                        _ => {}
-                    },
+                    }
                     ApprovalMode::Normal => match key.code {
                         KeyCode::Tab if app.mention_visible() => {
                             app.accept_mention();
@@ -222,8 +283,29 @@ pub(super) async fn handle_event(
                         KeyCode::PageDown => {
                             app.scroll_down(5);
                         }
+                        KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.input().move_word_left();
+                            app.update_mention();
+                        }
+                        KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.input().move_word_right();
+                            app.update_mention();
+                        }
+                        KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.input().move_to_doc_home();
+                            app.update_mention();
+                        }
+                        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.input().move_to_doc_end();
+                            app.update_mention();
+                        }
+                        KeyCode::Home => {
+                            app.input().move_cursor_to_head();
+                            app.update_mention();
+                        }
                         KeyCode::End => {
-                            app.scroll_to_bottom();
+                            app.input().move_cursor_to_end();
+                            app.update_mention();
                         }
                         KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
                             app.scroll_left(10);
@@ -241,7 +323,14 @@ pub(super) async fn handle_event(
                             }
                         }
                         KeyCode::Enter => {
-                            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                            // Alt+Enter / Shift+Enter insert a newline (D1):
+                            // Alt prefixes an ESC on virtually all vt100+
+                            // terminals (universally detected), Shift works on
+                            // kitty-protocol terminals — both fall through to
+                            // the shared newline path.
+                            if key.modifiers.contains(KeyModifiers::ALT)
+                                || key.modifiers.contains(KeyModifiers::SHIFT)
+                            {
                                 app.input().insert_newline();
                                 app.update_mention();
                             } else if app.mention_visible() {
