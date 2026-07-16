@@ -357,7 +357,7 @@ pub(super) async fn handle_event(
                                             // `execute_command` dispatch other
                                             // commands use, so it's handled here.
                                             if cmd == crate::tui::commands::Command::Compact {
-                                                send_compact(app, holly, &cmd, &text).await;
+                                                send_compact(app, holly, &text).await;
                                                 return Ok(false);
                                             }
                                             if cmd == crate::tui::commands::Command::Set {
@@ -478,22 +478,30 @@ pub(super) async fn handle_event(
     Ok(false)
 }
 
-/// Send `/compact [instructions]` as an [`InMsg::Oneshot`] `"compact"` op
-/// (#324, ADR-0082): any text after the command name becomes
-/// `args.instructions`. The reducer renders the result (`Compacted`) as a
-/// transcript notice once it arrives; nothing is recorded here — unlike a
-/// prompt, a oneshot op has no user-authored message to echo locally.
-async fn send_compact(app: &App, holly: &Holly, cmd: &crate::tui::commands::Command, text: &str) {
-    let instructions = text
-        .trim()
-        .strip_prefix(&cmd.slash_name())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+/// Send `/compact [--keep N] [instructions]` as an [`InMsg::Oneshot`]
+/// `"compact"` op (#324, ADR-0082; `--keep`, #397/ADR-0102): an optional
+/// leading `--keep N` becomes `args.kept`, any remaining text becomes
+/// `args.instructions`. A parse error (bad `--keep` value) is rendered as a
+/// status line instead — no engine traffic. The reducer renders the result
+/// (`Compacted`) as a transcript notice once it arrives; nothing is recorded
+/// here — unlike a prompt, a oneshot op has no user-authored message to echo
+/// locally.
+async fn send_compact(app: &mut App, holly: &Holly, text: &str) {
+    let (kept, instructions) = match crate::tui::commands::parse_compact_args(text) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            app.record_compact_error(e);
+            return;
+        }
+    };
     let mut args = serde_json::Map::new();
+    if kept > 0 {
+        args.insert("kept".to_string(), serde_json::Value::from(kept));
+    }
     if let Some(instructions) = instructions {
         args.insert(
             "instructions".to_string(),
-            serde_json::Value::String(instructions.to_string()),
+            serde_json::Value::String(instructions),
         );
     }
     let _ = holly

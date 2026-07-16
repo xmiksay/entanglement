@@ -356,10 +356,22 @@ re-document them here):
   head forks it into a new session via `InMsg::Spawn`. A truncated summary
   (`StopReason::MaxTokens`) is refused outright, and an oversized transcript is
   rejected before the request. `Session::replay`'s `Compacted` fold is a no-op,
-  so a resumed source recovers its full history (the implicit undo). `kept` is
-  wire-legacy only (always `0`). The old prune-only `Context::compact` (#178) is
-  unchanged and still the automatic pre-round fallback; `"compact"` only runs on
-  request (`InMsg::Oneshot`, TUI `/compact [instructions]`).
+  so a resumed source recovers its full history (the implicit undo). The old
+  prune-only `Context::compact` (#178) is unchanged and still the automatic
+  pre-round fallback; `"compact"` only runs on request (`InMsg::Oneshot`, TUI
+  `/compact [--keep N] [instructions]`).
+  **Keep-tail (#397,
+  [ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)):**
+  `args.kept: u64` (default `0`) requests the last `kept` messages ride into
+  the fork **verbatim** instead of being paraphrased. `Context::safe_kept`
+  clamps the request to the nearest safe turn boundary — the tail must start
+  at a `User` message, or a `Tool` reply could replay without its paired
+  `Assistant` tool-call half, breaking providers' `tool_use`/`tool_result`
+  pairing (ADR-0082's deferred-to-v1 blocker). `compact_op` summarizes only
+  the *head*, then appends the tail's rendered transcript after the summary —
+  the composed text ships inside the same `summary` field, so this needed
+  **no wire change**; `kept` now reports the real (clamped) count instead of
+  a hardcoded `0`.
 - **In-app tool-allowlist editing materializes a user-layer override** (#330,
   [ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)):
   no separate mask store — editing a profile's `tools:`/`disallowed_tools:`
@@ -588,8 +600,10 @@ The pre-`serve` hardening epic #153 is **complete** — all six findings (#274,
 #155, #156, #157, #158, #160) landed, and the local WebSocket `serve` head they
 gated shipped last, per [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md).
 The generic one-shot op framework (#324, `InMsg::Oneshot`, session compaction
-as its first op, [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md))
-is **complete**; auto-summarize-on-context-threshold is a natural follow-up
+as its first op, [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)),
+copy-on-write forking ([ADR-0101](../docs/adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)),
+and keep-tail (#397, [ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md))
+are **complete**; auto-summarize-on-context-threshold is a natural follow-up
 issue, not yet scheduled.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))

@@ -261,6 +261,21 @@ assistant/tool messages and the model appears to forget the conversation.
   `Compacted` fold is a **no-op** — a resumed source recovers its full
   pre-compaction history (the implicit undo), and a truncated summary is refused
   outright (`StopReason::MaxTokens` → `Error`) so it never forks either.
+  **Keep-tail** (#397,
+  [ADR-0102](../adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)):
+  `args.kept: u64` (optional, default `0`) requests that the last `kept`
+  messages ride into the fork **verbatim** instead of being paraphrased into
+  the summary. `Context::safe_kept` clamps the request to the nearest safe
+  turn boundary — the tail must start at a `User` message, or a `Tool` reply
+  could replay without its paired `Assistant` tool-call half, breaking
+  providers' `tool_use`/`tool_result` pairing (ADR-0082's deferred-to-v1
+  blocker). `compact_op` summarizes only the *head*, then appends the tail's
+  rendered transcript after the summary — the composed text ships inside the
+  same `summary` field, so **no wire change** was needed and the TUI's
+  existing fork path (`wrap_compaction_summary`/`InMsg::Spawn { prompt, .. }`)
+  carries it unmodified. The TUI's `/compact [--keep N] [instructions]`
+  (`tui::commands::parse_compact_args`) is the head-side entry point; the
+  command-palette pick still defaults to `kept: 0`.
 - **Pluggable append target — `RecordSink`** (#313). The tap's *what to persist*
   (route each record to its root, tombstone lag gaps) is split from its *where to
   persist*: it appends every finished `LogRecord` through a

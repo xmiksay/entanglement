@@ -63,7 +63,7 @@ impl Command {
             Command::Editor => "Open editor",
             Command::Export => "Export conversation",
             Command::Resume => "Continue a past session",
-            Command::Compact => "Compact the conversation history (LLM summary)",
+            Command::Compact => "Compact the conversation history (LLM summary, --keep N to preserve trailing messages)",
             Command::Set => {
                 "Set a generation parameter (temperature, effort, thinking_budget, max_tokens)"
             }
@@ -162,6 +162,34 @@ pub fn parse_set_args(text: &str) -> Result<GenerationParams, String> {
     Ok(overrides)
 }
 
+/// Parse `/compact`'s trailing text into an optional keep-tail count plus the
+/// remaining free-text instructions (#397). `text` is the raw input including
+/// the leading `/compact` (the same raw-text re-parse pattern as
+/// [`parse_set_args`], since [`parse_command`] drops everything after the
+/// command name). A leading `--keep N` token is consumed and parsed as `u64`;
+/// anything else is passed through unchanged as instructions. No `--keep` →
+/// `kept: 0` (today's default: summarize the whole history).
+pub fn parse_compact_args(text: &str) -> Result<(u64, Option<String>), String> {
+    let rest = text
+        .trim()
+        .strip_prefix(&Command::Compact.slash_name())
+        .map(str::trim)
+        .unwrap_or("");
+    let Some(after_flag) = rest.strip_prefix("--keep") else {
+        return Ok((0, (!rest.is_empty()).then(|| rest.to_string())));
+    };
+    let mut parts = after_flag.trim_start().splitn(2, char::is_whitespace);
+    let value = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "usage: /compact [--keep N] [instructions]".to_string())?;
+    let kept = value
+        .parse::<u64>()
+        .map_err(|_| format!("invalid --keep value: {value}"))?;
+    let instructions = parts.next().map(str::trim).filter(|s| !s.is_empty());
+    Ok((kept, instructions.map(str::to_string)))
+}
+
 pub fn parse_command(input: &str) -> Option<Command> {
     let trimmed = input.trim();
     if !trimmed.starts_with('/') {
@@ -218,6 +246,42 @@ mod tests {
             parse_command("/compact keep the auth flow details"),
             Some(Command::Compact)
         );
+    }
+
+    #[test]
+    fn test_parse_compact_args_bare() {
+        assert_eq!(parse_compact_args("/compact"), Ok((0, None)));
+    }
+
+    #[test]
+    fn test_parse_compact_args_instructions_only() {
+        assert_eq!(
+            parse_compact_args("/compact keep the auth flow details"),
+            Ok((0, Some("keep the auth flow details".to_string())))
+        );
+    }
+
+    #[test]
+    fn test_parse_compact_args_keep_only() {
+        assert_eq!(parse_compact_args("/compact --keep 3"), Ok((3, None)));
+    }
+
+    #[test]
+    fn test_parse_compact_args_keep_and_instructions() {
+        assert_eq!(
+            parse_compact_args("/compact --keep 3 keep the auth flow details"),
+            Ok((3, Some("keep the auth flow details".to_string())))
+        );
+    }
+
+    #[test]
+    fn test_parse_compact_args_keep_missing_value() {
+        assert!(parse_compact_args("/compact --keep").is_err());
+    }
+
+    #[test]
+    fn test_parse_compact_args_keep_invalid_value() {
+        assert!(parse_compact_args("/compact --keep abc").is_err());
     }
 
     #[test]

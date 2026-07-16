@@ -221,6 +221,130 @@ async fn compact_happy_path_emits_compacted_and_leaves_source_intact() {
 }
 
 #[tokio::test]
+async fn compact_with_kept_preserves_the_tail_verbatim_in_the_summary() {
+    let (cfg, _seen) = scripted(vec![
+        ("hi there", Usage::default()),
+        ("ok2", Usage::default()),
+        ("summary: user said hello, agent replied", Usage::default()),
+    ]);
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "hello"))
+        .await
+        .unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+    holly
+        .send(InMsg::prompt(sid.clone(), "second"))
+        .await
+        .unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+
+    // History: [user hello, assistant "hi there", user second, assistant
+    // "ok2"] — kept=2 lands exactly on the "second" user message, a safe
+    // boundary, so no clamping happens.
+    holly
+        .send(InMsg::Oneshot {
+            session: sid.clone(),
+            op: "compact".to_string(),
+            args: serde_json::json!({ "kept": 2 }),
+        })
+        .await
+        .unwrap();
+    let events = collect_until_done(&mut sub, &sid).await;
+
+    let (summary, kept) = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::Compacted { summary, kept, .. } => Some((summary.clone(), *kept)),
+            _ => None,
+        })
+        .expect("a Compacted event was emitted");
+    assert_eq!(kept, 2, "the requested boundary was already safe");
+    assert!(
+        summary.contains("summary: user said hello"),
+        "the LLM summary of the head is present: {summary}"
+    );
+    assert!(
+        summary.contains("second") && summary.contains("ok2"),
+        "the tail rides verbatim, not resummarized: {summary}"
+    );
+}
+
+#[tokio::test]
+async fn compact_with_kept_clamps_to_a_safe_boundary() {
+    let (cfg, _seen) = scripted(vec![
+        ("hi there", Usage::default()),
+        ("summary of the first turn", Usage::default()),
+    ]);
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "hello"))
+        .await
+        .unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+
+    // History: [user hello, assistant "hi there"] (len 2). Requesting kept=1
+    // would naively split at index 1 (the `Assistant` reply) — not a `User`
+    // boundary — so it clamps forward; no later `User` message exists, so it
+    // collapses to 0.
+    holly
+        .send(InMsg::Oneshot {
+            session: sid.clone(),
+            op: "compact".to_string(),
+            args: serde_json::json!({ "kept": 1 }),
+        })
+        .await
+        .unwrap();
+    let events = collect_until_done(&mut sub, &sid).await;
+
+    let kept = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::Compacted { kept, .. } => Some(*kept),
+            _ => None,
+        })
+        .expect("a Compacted event was emitted");
+    assert_eq!(kept, 0, "clamped to the nearest safe (empty) tail");
+}
+
+#[tokio::test]
+async fn compact_with_kept_covering_everything_is_a_recoverable_error() {
+    let (cfg, _seen) = scripted(vec![("hi there", Usage::default())]);
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "hello"))
+        .await
+        .unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+
+    holly
+        .send(InMsg::Oneshot {
+            session: sid.clone(),
+            op: "compact".to_string(),
+            args: serde_json::json!({ "kept": 999 }),
+        })
+        .await
+        .unwrap();
+    let events = collect_until_done(&mut sub, &sid).await;
+
+    assert!(events.iter().any(
+        |e| matches!(e, OutEvent::Error { message, .. } if message.contains("nothing left to summarize"))
+    ));
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, OutEvent::Compacted { .. })));
+}
+
+#[tokio::test]
 async fn compact_with_empty_history_is_a_recoverable_error() {
     let (cfg, _seen) = scripted(vec![]);
     let holly = Holly::spawn(cfg);
@@ -333,6 +457,56 @@ async fn compact_with_oversized_transcript_is_rejected_before_the_llm_is_called(
     // The summarization LLM must never have been called — the op refused
     // before shipping the request. (The refused first turn didn't call it
     // either, so `seen` stays empty.)
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter().all(|req| req
+            .iter()
+            .all(|m| !m.text().contains("Summarize the conversation transcript"))),
+        "no summarization request reached the LLM: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn compact_with_an_oversized_kept_tail_is_rejected_before_the_llm_is_called() {
+    let (cfg, seen) = scripted(vec![("hi there", Usage::default())]);
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "hello"))
+        .await
+        .unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+
+    // The second prompt itself is too large to fit the context budget alone —
+    // its own turn refuses (a lone oversized message can't be pruned), but the
+    // prompt still lands in `ctx.messages()`. `kept=1` naively (and safely,
+    // since it's the tail's own `User` message) selects just that message —
+    // small head, oversized tail.
+    let huge = "x".repeat(180_000 * 4 + 1_000);
+    holly.send(InMsg::prompt(sid.clone(), huge)).await.unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+
+    holly
+        .send(InMsg::Oneshot {
+            session: sid.clone(),
+            op: "compact".to_string(),
+            args: serde_json::json!({ "kept": 1 }),
+        })
+        .await
+        .unwrap();
+    let events = collect_until_done(&mut sub, &sid).await;
+
+    assert!(events.iter().any(
+        |e| matches!(e, OutEvent::Error { message, .. } if message.contains("kept trailing messages") && message.contains("exceed"))
+    ));
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, OutEvent::Compacted { .. })));
+
+    // The summarization LLM must never have been called — the tail guard
+    // fires before the head-summarization request ships.
     let seen = seen.lock().unwrap();
     assert!(
         seen.iter().all(|req| req

@@ -13,6 +13,16 @@ use entanglement_core::{InMsg, SessionId};
 use super::{App, CompactFork};
 
 impl App {
+    /// Records a `/compact` parse error (bad `--keep` value) as a transcript
+    /// status line (#397) — no engine traffic, mirrors
+    /// `App::record_set_error`'s wrapper pattern.
+    pub fn record_compact_error(&mut self, message: String) {
+        self.sessions
+            .active_view_mut()
+            .record_status("compact", format!("error: {message}"));
+        self.mark_dirty();
+    }
+
     /// Fork a `Compacted` summary into a new session (ADR-0101): mint a fresh
     /// id, record the summary as its first user message, switch the active view
     /// to the new session, and record a pending `Spawn` for the async main loop

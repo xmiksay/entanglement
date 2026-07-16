@@ -186,10 +186,12 @@ impl Context {
     /// history with a single summary message, preserving the last `kept`
     /// messages verbatim after it. User role deliberately — `system` has no
     /// in-history wire mapping, and an assistant-authored summary is trusted
-    /// less reliably by some providers than a user-authored one. Shared by the
-    /// live `compact` oneshot op and the replay fold, so both reconstruct
-    /// identical context from an `OutEvent::Compacted` record.
+    /// less reliably by some providers than a user-authored one. `kept` is
+    /// clamped to a safe turn boundary first (see [`Self::safe_kept`]), so a
+    /// caller can never split a `Tool`/tool-call pair across the
+    /// summary/tail boundary.
     pub fn apply_compaction(&mut self, summary: &str, kept: usize) {
+        let kept = self.safe_kept(kept);
         let tail_start = self.messages.len().saturating_sub(kept);
         let tail = self.messages.split_off(tail_start);
         self.clear();
@@ -197,6 +199,34 @@ impl Context {
             "[Conversation summary — earlier history was compacted]\n\n{summary}"
         ));
         self.messages.extend(tail);
+    }
+
+    /// Clamp a requested keep-tail count to the nearest safe turn boundary
+    /// (#397): the tail must start at a `User`-role message — turns begin on a
+    /// user prompt, so starting there guarantees every `Assistant`/`Tool`
+    /// tool-call round-trip in the preceding turn stays fully inside the
+    /// summarized head. Starting mid-turn (on a `Tool` reply, or an
+    /// `Assistant` message that issued the tool call) would replay a `Tool`
+    /// message without its paired half, breaking providers' `tool_use`/
+    /// `tool_result` block-pairing requirement (ADR-0082's deferred-to-v1
+    /// blocker). Walks forward from the naive split point to the next `User`
+    /// message — preferring fewer kept messages over an unsafe boundary; no
+    /// later `User` message means the tail collapses to empty (`0`).
+    /// `requested_kept` at or beyond the whole history is returned unchanged
+    /// (nothing is split, so there's no boundary to violate).
+    pub fn safe_kept(&self, requested_kept: usize) -> usize {
+        let len = self.messages.len();
+        if requested_kept == 0 || requested_kept >= len {
+            return requested_kept.min(len);
+        }
+        let requested_start = len - requested_kept;
+        if self.messages[requested_start].role == MessageRole::User {
+            return requested_kept;
+        }
+        let safe_start = (requested_start..len)
+            .find(|&i| self.messages[i].role == MessageRole::User)
+            .unwrap_or(len);
+        len - safe_start
     }
 }
 
@@ -307,6 +337,57 @@ mod tests {
 
         assert_eq!(ctx.messages().len(), 2);
         assert_eq!(ctx.messages()[1].text(), "only message");
+    }
+
+    #[test]
+    fn safe_kept_clamps_a_mid_tool_round_split_to_the_next_user_message() {
+        let mut ctx = Context::new();
+        ctx.push_user("u1"); // 0
+        ctx.push_assistant("a1", Vec::new()); // 1 — issues no tool call here
+        ctx.push_tool("t1", "tool result"); // 2 — dangling half if split lands here
+        ctx.push_assistant("a2", Vec::new()); // 3
+        ctx.push_user("u2"); // 4
+
+        // Naive split for kept=3 would start at index 2 (the `Tool` message) —
+        // unsafe. Clamp forward to the next `User` message, index 4 (kept=1).
+        assert_eq!(ctx.safe_kept(3), 1);
+
+        ctx.apply_compaction("summary of the earlier turns", 3);
+        assert_eq!(ctx.messages().len(), 2, "summary + the 1 safe tail message");
+        assert_eq!(ctx.messages()[1].text(), "u2");
+    }
+
+    #[test]
+    fn safe_kept_leaves_an_already_safe_boundary_untouched() {
+        let mut ctx = Context::new();
+        ctx.push_user("first");
+        ctx.push_assistant("second", Vec::new());
+        ctx.push_user("third");
+
+        assert_eq!(ctx.safe_kept(1), 1, "index 2 is already a User message");
+    }
+
+    #[test]
+    fn safe_kept_collapses_to_zero_when_no_later_user_message_exists() {
+        let mut ctx = Context::new();
+        ctx.push_user("u1");
+        ctx.push_assistant("a1", Vec::new());
+        ctx.push_tool("t1", "tool result");
+
+        // Every candidate split from index 1 onward is non-User and there's no
+        // later User message — the tail collapses to empty rather than risk a
+        // dangling half.
+        assert_eq!(ctx.safe_kept(2), 0);
+    }
+
+    #[test]
+    fn safe_kept_kept_larger_than_history_is_unchanged() {
+        let ctx = {
+            let mut c = Context::new();
+            c.push_user("only message");
+            c
+        };
+        assert_eq!(ctx.safe_kept(10), 1);
     }
 
     #[test]
