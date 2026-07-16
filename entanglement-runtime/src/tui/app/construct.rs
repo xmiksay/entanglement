@@ -138,6 +138,8 @@ impl App {
             available_models,
             agent_models: None,
             pending_model_persist: None,
+            agent_generation: None,
+            pending_generation_persist: None,
             key_dialog: crate::tui::key_dialog::KeyDialog::new(key_providers),
             tool_roster,
             tools_dialog: crate::tui::tools_dialog::ToolsDialog::new(),

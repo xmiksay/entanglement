@@ -290,6 +290,23 @@ pub(super) async fn handle_command_palette_event(
                             args: serde_json::Value::Object(serde_json::Map::new()),
                         })
                         .await;
+                } else if cmd == crate::tui::commands::Command::Set {
+                    // The palette carries no trailing `key value` text (#376):
+                    // unlike typing `/set temperature 0.7` directly
+                    // (`event_loop::send_set`), there is nothing to send — surface
+                    // the usage hint instead of silently no-op'ing.
+                    app.record_set_error(
+                        "usage: /set <key> <value> — keys: temperature, effort, \
+                         thinking_budget, max_tokens"
+                            .to_string(),
+                    );
+                } else if cmd == crate::tui::commands::Command::Show {
+                    let _ = holly
+                        .send(InMsg::SetGeneration {
+                            session: app.active_session_id().clone(),
+                            overrides: entanglement_core::GenerationParams::default(),
+                        })
+                        .await;
                 } else if app.execute_command(cmd) {
                     return Ok(true);
                 }

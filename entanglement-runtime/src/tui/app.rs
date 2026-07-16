@@ -21,6 +21,7 @@ use crate::tui::theme::Theme;
 // modules reach them through their descendant visibility.
 mod construct;
 mod dispatch;
+mod generation;
 mod input;
 mod inspect;
 mod key;
@@ -98,6 +99,19 @@ pub struct App {
         Option<std::sync::Arc<std::sync::Mutex<crate::config::agent_models::AgentModelStore>>>,
     /// `(agent, provider, model)` awaiting its `ModelChanged` confirmation.
     pending_model_persist: Option<(String, String, String)>,
+
+    // Per-agent generation overrides (#376, mirroring the model-pin shape above):
+    // the managed `agent-generation.yml` store, and the pending persist recorded
+    // when `/set`'s Enter sends `InMsg::SetGeneration`. The matching
+    // `GenerationChanged` for the active session commits the write; an `Error`
+    // (or a `GenerationChanged` with no pending, i.e. a `/show` query or a
+    // `SetAgent` reapplication) clears it without writing. `None` store in tests
+    // / when no config dir.
+    agent_generation: Option<
+        std::sync::Arc<std::sync::Mutex<crate::config::agent_generation::AgentGenerationStore>>,
+    >,
+    /// `(agent, overrides)` awaiting its matching `GenerationChanged` confirmation.
+    pending_generation_persist: Option<(String, entanglement_provider::GenerationParams)>,
 
     // `/key` dialog (#304): two-stage modal to persist a provider API key.
     key_dialog: crate::tui::key_dialog::KeyDialog,
@@ -272,9 +286,20 @@ impl App {
             // it never writes.
             self.persist_model_if_pending(session, provider, model);
         }
-        // A failed switch clears any pending persist without writing (#323).
+        // A generation-knob change (#374/#376): always render a status line with
+        // the current effective params, and — if this is the confirmation of a
+        // pending `/set` — persist it to `agent-generation.yml` too.
+        if let OutEvent::GenerationChanged {
+            session,
+            generation,
+        } = &event
+        {
+            self.handle_generation_changed(session, *generation);
+        }
+        // A failed switch clears any pending persist without writing (#323/#376).
         if let OutEvent::Error { session, .. } = &event {
             self.clear_pending_model_persist_on_error(session);
+            self.clear_pending_generation_persist_on_error(session);
         }
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();

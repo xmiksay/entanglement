@@ -126,9 +126,9 @@ Enabling *is* consent — it runs **outside** the permission ladder
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetAgent | SetModel | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
+          | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
           | HibernateSession (trusted-only) | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status | AgentChanged | ModelChanged
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status | AgentChanged | ModelChanged | GenerationChanged
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
 ```
@@ -274,9 +274,22 @@ re-document them here):
   `AgentGenerationStore` (`${config_dir}/entanglement/agent-generation.yml`,
   `ENTANGLEMENT_AGENT_GENERATION_FILE`, sibling of `agent-models.yml`) has no
   `apply(&mut ProfileRegistry)` — its `resolver(...)` builds the
-  `GenerationResolver` closure directly instead. TUI `/set`/`/show` and the
-  persist-on-confirmation write are #376 (not yet built); core/runtime wiring
-  is complete.
+  `GenerationResolver` closure directly instead.
+- **TUI `/set`/`/show` + persist-on-confirmation** (#376,
+  [ADR-0095](../docs/adr/0095-tui-set-show-generation-persist-on-confirmation.md)):
+  `/set <key> <value>` (`temperature`/`effort`/`thinking_budget`/`max_tokens`,
+  the `/compact`-style raw-text re-parse, since `parse_command` drops trailing
+  args) sends `InMsg::SetGeneration` and records
+  `pending_generation_persist = (agent, overrides)`; `/show` sends a no-override
+  `SetGeneration` as a query (no pending recorded) — reusing the merge's
+  always-reply behavior rather than adding a read event. The confirming
+  `OutEvent::GenerationChanged` is matched by "does it reflect every field the
+  pending override set" (not an exact-tuple match, since only `/set`'s named
+  fields are known in advance); on a match the TUI commits the write via
+  `AgentGenerationStore::set` and renders a transcript status line; an `Error`
+  clears the pending without writing; a `GenerationChanged` with no pending
+  (a `/show` query, or a `SetAgent`/session-start generation overlay) is
+  rendered but never persisted.
 - **Single-shot session ops + persisted compaction** (#324,
   [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)):
   `InMsg::Oneshot { session, op: String, args: Value }` is a generic **wire

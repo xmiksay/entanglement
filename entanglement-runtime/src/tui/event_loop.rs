@@ -352,6 +352,14 @@ pub(super) async fn handle_event(
                                                 send_compact(app, holly, &cmd, &text).await;
                                                 return Ok(false);
                                             }
+                                            if cmd == crate::tui::commands::Command::Set {
+                                                send_set(app, holly, &text).await;
+                                                return Ok(false);
+                                            }
+                                            if cmd == crate::tui::commands::Command::Show {
+                                                send_show(app, holly).await;
+                                                return Ok(false);
+                                            }
                                             if app.execute_command(cmd) {
                                                 return Ok(true);
                                             }
@@ -478,6 +486,43 @@ async fn send_compact(app: &App, holly: &Holly, cmd: &crate::tui::commands::Comm
             session: app.active_session_id().clone(),
             op: "compact".to_string(),
             args: serde_json::Value::Object(args),
+        })
+        .await;
+}
+
+/// Send `/set <key> <value>` as an [`InMsg::SetGeneration`] (#376): parses the
+/// raw text into a partial [`entanglement_core::GenerationParams`] override
+/// (same raw-text re-parse pattern as [`send_compact`], since `parse_command`
+/// dropped the trailing args), records it as a pending persist so the
+/// confirming `GenerationChanged` writes it to `agent-generation.yml`, then
+/// sends the change. A parse error (unknown key, malformed value) is rendered
+/// as a status line instead — no engine traffic, and no pending persist.
+async fn send_set(app: &mut App, holly: &Holly, text: &str) {
+    match crate::tui::commands::parse_set_args(text) {
+        Ok(overrides) => {
+            app.record_pending_generation_persist(overrides);
+            let _ = holly
+                .send(InMsg::SetGeneration {
+                    session: app.active_session_id().clone(),
+                    overrides,
+                })
+                .await;
+        }
+        Err(message) => app.record_set_error(message),
+    }
+}
+
+/// Send `/show` as a no-override [`InMsg::SetGeneration`] query (#376): the
+/// engine's merge is a no-op for an all-`None` override but still emits
+/// [`OutEvent::GenerationChanged`][entanglement_core::OutEvent::GenerationChanged]
+/// with the current effective params, which `App::handle_generation_changed`
+/// renders as a status line — no pending persist is recorded, so this can never
+/// be mistaken for a `/set` confirmation.
+async fn send_show(app: &App, holly: &Holly) {
+    let _ = holly
+        .send(InMsg::SetGeneration {
+            session: app.active_session_id().clone(),
+            overrides: entanglement_core::GenerationParams::default(),
         })
         .await;
 }

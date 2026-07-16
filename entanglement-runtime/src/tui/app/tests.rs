@@ -2,7 +2,7 @@ use super::{App, ProfileInfo};
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::session_view::TranscriptEntry;
 use entanglement_core::{AgentMode, AgentState, OutEvent, SessionId};
-use entanglement_provider::{Catalog, ModelInfo};
+use entanglement_provider::{Catalog, GenerationParams, ModelInfo, ReasoningEffort};
 use ratatui::layout::Rect;
 
 /// Build an `App` over a custom entry-agent roster so the Tab-cycle ring
@@ -164,6 +164,137 @@ fn set_agent_pin_model_changed_without_pending_does_not_write() {
     assert!(!path.exists());
 
     std::env::remove_var("ENTANGLEMENT_AGENT_MODELS_FILE");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `ENTANGLEMENT_AGENT_GENERATION_FILE` is process-global; serialize the
+/// generation persist tests on this the same way the model ones serialize on
+/// `AGENT_MODELS_ENV_LOCK`.
+static AGENT_GENERATION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Install a store pointed at `path` (via the env override) as the app's
+/// agent-generation store, so the persist-on-confirmation path writes there.
+fn app_with_generation_store(sid: SessionId, path: &std::path::Path) -> App {
+    std::env::set_var("ENTANGLEMENT_AGENT_GENERATION_FILE", path);
+    let mut app = App::new_for_test(sid);
+    app.set_agent_generation(std::sync::Arc::new(std::sync::Mutex::new(
+        crate::config::agent_generation::AgentGenerationStore::load(),
+    )));
+    app
+}
+
+#[test]
+fn pending_generation_persist_writes_only_on_matching_generation_changed() {
+    let _g = AGENT_GENERATION_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let sid = SessionId::new("s1");
+    let path = std::env::temp_dir().join(format!(
+        "entanglement-tui-generation-persist-{}.yml",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let mut app = app_with_generation_store(sid.clone(), &path);
+    set_agent(&mut app, &sid, "build");
+
+    // A `/set temperature 0.7` records a pending persist for the active agent.
+    let overrides = GenerationParams {
+        temperature: Some(0.7),
+        ..GenerationParams::default()
+    };
+    app.record_pending_generation_persist(overrides);
+    assert!(app.pending_generation_persist().is_some());
+
+    // The matching GenerationChanged for the active session commits the write.
+    let merged = GenerationParams {
+        temperature: Some(0.7),
+        max_output_tokens: Some(2048),
+        thinking_budget_tokens: None,
+        reasoning_effort: None,
+    };
+    app.handle_out_event(OutEvent::GenerationChanged {
+        session: sid.clone(),
+        generation: merged,
+    });
+    assert!(
+        app.pending_generation_persist().is_none(),
+        "pending cleared on commit"
+    );
+    assert_eq!(
+        app.persisted_generation_for("build"),
+        Some(merged),
+        "params persisted for the active agent"
+    );
+
+    std::env::remove_var("ENTANGLEMENT_AGENT_GENERATION_FILE");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn generation_error_clears_pending_without_writing() {
+    let _g = AGENT_GENERATION_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let sid = SessionId::new("s1");
+    let path = std::env::temp_dir().join(format!(
+        "entanglement-tui-generation-persist-err-{}.yml",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let mut app = app_with_generation_store(sid.clone(), &path);
+    set_agent(&mut app, &sid, "build");
+
+    app.record_pending_generation_persist(GenerationParams {
+        temperature: Some(0.7),
+        ..GenerationParams::default()
+    });
+    // A failed SetGeneration clears the pending without persisting.
+    app.handle_out_event(OutEvent::Error {
+        session: sid.clone(),
+        seq: 1,
+        message: "cannot set generation".into(),
+    });
+    assert!(
+        app.pending_generation_persist().is_none(),
+        "pending cleared on error"
+    );
+    assert!(
+        app.persisted_generation_for("build").is_none(),
+        "nothing persisted"
+    );
+    assert!(!path.exists(), "no file written on error");
+
+    std::env::remove_var("ENTANGLEMENT_AGENT_GENERATION_FILE");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn generation_changed_without_pending_does_not_write() {
+    let _g = AGENT_GENERATION_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let sid = SessionId::new("s1");
+    let path = std::env::temp_dir().join(format!(
+        "entanglement-tui-generation-persist-noop-{}.yml",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let mut app = app_with_generation_store(sid.clone(), &path);
+    set_agent(&mut app, &sid, "build");
+
+    // A GenerationChanged with no pending recorded — a `/show` query or a
+    // `SetAgent` reapplication — never writes.
+    app.handle_out_event(OutEvent::GenerationChanged {
+        session: sid.clone(),
+        generation: GenerationParams {
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..GenerationParams::default()
+        },
+    });
+    assert!(app.persisted_generation_for("build").is_none());
+    assert!(!path.exists());
+
+    std::env::remove_var("ENTANGLEMENT_AGENT_GENERATION_FILE");
     let _ = std::fs::remove_file(&path);
 }
 

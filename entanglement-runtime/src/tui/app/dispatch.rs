@@ -56,6 +56,11 @@ impl App {
             // (`event_loop`'s Enter handler and the command palette) intercept
             // `Compact` before it reaches here (#324).
             Command::Compact => false,
+            // Same shape as `Compact` (#376): `Set` needs the trailing `key
+            // value` text and `Show` needs `holly` to query the live session,
+            // neither available here — both call sites intercept them before
+            // reaching this dispatch.
+            Command::Set | Command::Show => false,
         }
     }
 
