@@ -210,19 +210,58 @@ pub(super) fn flush_reasoning(
 /// [`permission_arg`][entanglement_runtime::permission::permission_arg]), or the
 /// `pattern` for `glob`/`grep` (a local fallback, since `permission_arg` returns
 /// `None` for those). `None` when nothing informative is available.
+///
+/// Orchestration tools (`agent`, `ask_user`, `propose_plan`, …) fall through to
+/// [`orchestration_primary_arg`], which pulls a readable hint from their JSON
+/// input so the header isn't a bare tool name while a call is in flight.
 fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
     if let Some(arg) = entanglement_runtime::permission::permission_arg(tool, input) {
         return Some(arg);
     }
     let value: serde_json::Value = serde_json::from_str(input).ok()?;
+    if let Some(arg) = orchestration_primary_arg(tool, &value) {
+        return Some(arg);
+    }
     value.get("pattern")?.as_str().map(String::from)
+}
+
+/// A readable collapsed-header hint for the orchestration tools, whose inputs
+/// carry no file path or shell command (so [`permission_arg`] ignores them). The
+/// shapes are confirmed in source (#89/#90/#120/#124/#140/#141):
+/// `agent`/`agent_spawn` → the agent target (+ a truncated prompt);
+/// `agent_poll` → the `agent_id`; `ask_user` → a truncated `question`;
+/// `propose_plan` → `"plan"`; `update_plan`/`update_tasks` → `"snapshot"`;
+/// `load_skill` → the `skill_name`. Returns `None` for every other tool or on
+/// malformed input, so the header falls back to the bare tool name.
+fn orchestration_primary_arg(tool: &str, value: &serde_json::Value) -> Option<String> {
+    match tool {
+        "agent" | "agent_spawn" => {
+            let agent = value.get("agent")?.as_str()?;
+            if let Some(prompt) = value.get("prompt").and_then(|p| p.as_str()) {
+                Some(format!("{agent}  {}", truncate_to_width(prompt, 40)))
+            } else {
+                Some(agent.to_string())
+            }
+        }
+        "agent_poll" => value.get("agent_id")?.as_str().map(String::from),
+        "ask_user" => value
+            .get("question")?
+            .as_str()
+            .map(|q| truncate_to_width(q, 40)),
+        "propose_plan" => Some("plan".to_string()),
+        "update_plan" | "update_tasks" => Some("snapshot".to_string()),
+        "load_skill" => value.get("skill_name")?.as_str().map(String::from),
+        _ => None,
+    }
 }
 
 /// Renders one tool op as a collapsible block, mirroring [`flush_reasoning`]:
 /// a one-line `{arrow} {tool}  {primary_arg}  {status}` header (collapsed, the
 /// default) plus — when expanded — the call args and its output. The whole block
 /// maps to one clickable region so a click toggles it (#340).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn flush_tool_call(
+    md: &MarkdownRenderer,
     tool: &str,
     input: &str,
     output: Option<&str>,
@@ -268,6 +307,7 @@ pub(super) fn flush_tool_call(
             output.unwrap_or(""),
             theme,
             available_width,
+            md,
         );
         for line in rendered.lines {
             out.push(theme.decorate(line, colors, available_width));
@@ -298,4 +338,110 @@ fn truncate_to_width(s: &str, max: usize) -> String {
     }
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_tools_keep_their_existing_primary_arg() {
+        // `permission_arg` still drives these; the orchestration fallback must
+        // not intercept them.
+        assert_eq!(
+            tool_primary_arg("read", r#"{"path":"src/main.rs"}"#).as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            tool_primary_arg("bash", r#"{"command":"git status"}"#).as_deref(),
+            Some("git status")
+        );
+        assert_eq!(
+            tool_primary_arg("glob", r#"{"pattern":"**/*.rs"}"#).as_deref(),
+            Some("**/*.rs")
+        );
+    }
+
+    #[test]
+    fn agent_spawn_returns_target_and_truncated_prompt() {
+        let arg = tool_primary_arg(
+            "agent_spawn",
+            r#"{"agent":"explore","prompt":"find the thing"}"#,
+        )
+        .expect("agent_spawn should yield a primary arg");
+        assert!(
+            arg.contains("explore"),
+            "agent_spawn header must name the target: {arg:?}"
+        );
+        assert!(
+            arg.contains("find the thing"),
+            "agent_spawn header should surface the prompt: {arg:?}"
+        );
+    }
+
+    #[test]
+    fn agent_spawn_long_prompt_is_truncated() {
+        let long_prompt = "x".repeat(80);
+        let input = format!(r#"{{"agent":"explore","prompt":"{long_prompt}"}}"#);
+        let arg = tool_primary_arg("agent_spawn", &input).expect("primary arg");
+        // The prompt portion is budgeted to 40 display columns + ellipsis.
+        assert!(arg.contains("explore"));
+        assert!(arg.contains('…'), "long prompt must be truncated: {arg:?}");
+    }
+
+    #[test]
+    fn agent_poll_returns_the_agent_id() {
+        assert_eq!(
+            tool_primary_arg("agent_poll", r#"{"agent_id":"abc123"}"#).as_deref(),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn ask_user_returns_truncated_question() {
+        let arg = tool_primary_arg("ask_user", r#"{"question":"Which option do you prefer?"}"#)
+            .expect("ask_user should yield a primary arg");
+        assert!(
+            arg.contains("Which option"),
+            "ask_user header should surface the question: {arg:?}"
+        );
+    }
+
+    #[test]
+    fn propose_plan_returns_label() {
+        assert_eq!(
+            tool_primary_arg("propose_plan", r##"{"plan":"# Goal"}"##).as_deref(),
+            Some("plan")
+        );
+    }
+
+    #[test]
+    fn update_plan_and_tasks_return_snapshot_label() {
+        assert_eq!(
+            tool_primary_arg("update_plan", r##"{"content":"# Step 1"}"##).as_deref(),
+            Some("snapshot")
+        );
+        assert_eq!(
+            tool_primary_arg("update_tasks", r#"{"content":"- [ ] a"}"#).as_deref(),
+            Some("snapshot")
+        );
+    }
+
+    #[test]
+    fn load_skill_returns_the_skill_name() {
+        assert_eq!(
+            tool_primary_arg("load_skill", r#"{"skill_name":"arch"}"#).as_deref(),
+            Some("arch")
+        );
+    }
+
+    #[test]
+    fn unknown_tool_with_no_arg_yields_none() {
+        assert_eq!(tool_primary_arg("mystery", r#"{"x":1}"#), None);
+    }
+
+    #[test]
+    fn malformed_input_yields_none() {
+        assert_eq!(tool_primary_arg("ask_user", "not json"), None);
+    }
 }

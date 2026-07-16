@@ -4,7 +4,9 @@ use ratatui::{
 };
 
 use crate::tui::diff::DiffRenderer;
+use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::Theme;
+use crate::tui::wrap;
 
 pub fn render_tool_output(
     tool_name: Option<&str>,
@@ -26,16 +28,21 @@ pub fn render_tool_output(
 /// its `output` (#341). Each operation gets a body that means something:
 /// `read` → the file body, `edit` → a real diff, `write` → the new content,
 /// `bash`/`call` → the command output (the command is already in the header),
-/// and everything else → pretty-printed input followed by the output body. The
-/// filename/command lives in the block header (#340), never re-printed here.
+/// the orchestration tools (`agent`/`ask_user`/`propose_plan`/…) → readable
+/// prose instead of raw JSON, and every unknown tool → pretty-printed input
+/// followed by the output body. The filename/command lives in the block header
+/// (#340), never re-printed here.
 ///
-/// Wired into the live transcript by `flush_tool_call`'s expanded branch (#340).
+/// `md` renders the plan/task markdown for `propose_plan`/`update_plan`/
+/// `update_tasks`; it is ignored by the other arms. Wired into the live
+/// transcript by `flush_tool_call`'s expanded branch (#340).
 pub fn render_expansion(
     tool: Option<&str>,
     input: &str,
     output: &str,
     theme: Theme,
     available_width: u16,
+    md: &MarkdownRenderer,
 ) -> Text<'static> {
     match tool {
         Some("read") => render_read_output(output, theme, available_width),
@@ -58,6 +65,44 @@ pub fn render_expansion(
             )
         }
         Some("bash") | Some("call") => render_plain_output(output, theme, available_width),
+        Some("agent") | Some("agent_spawn") => {
+            let v: serde_json::Value =
+                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+            render_prompt_body(
+                v.get("prompt").and_then(|p| p.as_str()).unwrap_or(""),
+                available_width,
+            )
+        }
+        Some("agent_poll") => {
+            let v: serde_json::Value =
+                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+            render_agent_poll_body(
+                v.get("agent_id").and_then(|s| s.as_str()).unwrap_or(""),
+                v.get("timeout_secs").and_then(|t| t.as_u64()),
+            )
+        }
+        Some("ask_user") => {
+            let v: serde_json::Value =
+                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+            render_ask_user_body(&v)
+        }
+        Some("propose_plan") => {
+            let v: serde_json::Value =
+                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+            let plan = v.get("plan").and_then(|s| s.as_str()).unwrap_or("");
+            render_markdown_body(md, plan, available_width)
+        }
+        Some("update_plan") | Some("update_tasks") => {
+            let v: serde_json::Value =
+                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+            let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
+            render_markdown_body(md, content, available_width)
+        }
+        Some("load_skill") => {
+            let v: serde_json::Value =
+                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+            render_skill_body(v.get("skill_name").and_then(|s| s.as_str()).unwrap_or(""))
+        }
         _ => {
             let mut lines = Vec::new();
             match serde_json::from_str::<serde_json::Value>(input)
@@ -79,6 +124,91 @@ pub fn render_expansion(
             Text::from(lines)
         }
     }
+}
+
+/// Wrap and indent a multi-line plain-text body (e.g. an `agent`/`agent_spawn`
+/// `prompt`). Word-wraps at `available_width - 4` so long prompts don't overflow
+/// horizontally, matching how assistant text runs are wrapped.
+fn render_prompt_body(prompt: &str, available_width: u16) -> Text<'static> {
+    let mut lines = Vec::new();
+    let wrap_width = available_width.saturating_sub(4);
+    for raw in prompt.lines() {
+        if raw.trim().is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+        for wline in wrap::wrap_line(Line::from(raw.to_string()), wrap_width) {
+            lines.push(Line::from(format!("  {}", collect_line(&wline))));
+        }
+    }
+    Text::from(lines)
+}
+
+/// A compact `agent_id` + `timeout_secs` summary for an `agent_poll` body.
+fn render_agent_poll_body(agent_id: &str, timeout_secs: Option<u64>) -> Text<'static> {
+    let mut lines = Vec::new();
+    lines.push(Line::from(format!("  agent_id: {agent_id}")));
+    if let Some(t) = timeout_secs {
+        lines.push(Line::from(format!("  timeout_secs: {t}")));
+    }
+    Text::from(lines)
+}
+
+/// An `ask_user` body: the question followed by its numbered option labels.
+fn render_ask_user_body(value: &serde_json::Value) -> Text<'static> {
+    let mut lines = Vec::new();
+    if let Some(q) = value.get("question").and_then(|s| s.as_str()) {
+        lines.push(Line::from(format!("  {q}")));
+    }
+    if let Some(options) = value.get("options").and_then(|o| o.as_array()) {
+        for (i, opt) in options.iter().enumerate() {
+            if let Some(label) = opt.get("label").and_then(|s| s.as_str()) {
+                lines.push(Line::from(format!("  {}. {label}", i + 1)));
+            }
+        }
+    }
+    if value
+        .get("allow_free_form")
+        .and_then(|f| f.as_bool())
+        .unwrap_or(false)
+    {
+        lines.push(Line::from("  (free-form answer allowed)"));
+    }
+    Text::from(lines)
+}
+
+/// A `load_skill` body: the skill name on its own indented line.
+fn render_skill_body(skill_name: &str) -> Text<'static> {
+    Text::from(vec![Line::from(format!("  {skill_name}"))])
+}
+
+/// Render a markdown body (a plan or task snapshot) via the shared
+/// [`MarkdownRenderer`], word-wrapping each rendered line at
+/// `available_width - 4` so long paragraphs don't overflow — mirroring how
+/// assistant text runs are wrapped (`render_text_run`).
+fn render_markdown_body(
+    md: &MarkdownRenderer,
+    markdown: &str,
+    available_width: u16,
+) -> Text<'static> {
+    if markdown.trim().is_empty() {
+        return Text::default();
+    }
+    let wrap_width = available_width.saturating_sub(4);
+    let mut lines = Vec::new();
+    for line in md.render(markdown).lines {
+        for wline in wrap::wrap_line(line, wrap_width) {
+            lines.push(Line::from(format!("  {}", collect_line(&wline))));
+        }
+    }
+    Text::from(lines)
+}
+
+/// Flatten a `Line`'s spans into a single owned `String` for the indentation
+/// helpers above (they re-wrap into a fresh `Line` with the 2-space indent
+/// applied uniformly, which is all these orchestration bodies need).
+fn collect_line(line: &Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
 fn render_edit_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
@@ -300,6 +430,7 @@ mod tests {
             "fn main() {}\n",
             Theme::default(),
             80,
+            &MarkdownRenderer::new(),
         );
         assert!(
             flatten(&result).contains("fn main() {}"),
@@ -315,6 +446,7 @@ mod tests {
             "",
             Theme::default(),
             80,
+            &MarkdownRenderer::new(),
         );
         let has_delete = result
             .lines
@@ -338,6 +470,7 @@ mod tests {
             "",
             Theme::default(),
             80,
+            &MarkdownRenderer::new(),
         );
         let text = flatten(&result);
         assert!(
@@ -347,6 +480,153 @@ mod tests {
         assert!(
             text.contains("world"),
             "write expansion should show the content"
+        );
+    }
+
+    #[test]
+    fn test_expansion_propose_plan_renders_markdown_not_json() {
+        let result = render_expansion(
+            Some("propose_plan"),
+            r##"{"plan":"# Goal\nDo X"}"##,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(
+            text.contains("Goal"),
+            "propose_plan expansion should render the plan heading"
+        );
+        assert!(
+            !text.contains('{'),
+            "propose_plan expansion must not dump raw JSON braces: {text:?}"
+        );
+        assert!(
+            !text.contains("\"plan\""),
+            "propose_plan expansion must not dump the JSON field name: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_expansion_update_plan_renders_markdown() {
+        let result = render_expansion(
+            Some("update_plan"),
+            r##"{"content":"# Step 1"}"##,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(
+            text.contains("Step 1"),
+            "update_plan expansion should render the content heading"
+        );
+        assert!(
+            !text.contains('{'),
+            "update_plan expansion must not dump raw JSON braces: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_expansion_agent_spawn_renders_prompt() {
+        let result = render_expansion(
+            Some("agent_spawn"),
+            r#"{"agent":"explore","prompt":"find X"}"#,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(
+            text.contains("find X"),
+            "agent_spawn expansion should render the prompt text"
+        );
+        assert!(
+            !text.contains('{'),
+            "agent_spawn expansion must not dump raw JSON braces: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_expansion_agent_renders_prompt() {
+        let result = render_expansion(
+            Some("agent"),
+            r#"{"agent":"backend","prompt":"wire it up"}"#,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(
+            text.contains("wire it up"),
+            "agent expansion should render the prompt text"
+        );
+    }
+
+    #[test]
+    fn test_expansion_ask_user_renders_question_and_options() {
+        let result = render_expansion(
+            Some("ask_user"),
+            r#"{"question":"Which?","options":[{"label":"A","description":"x"}]}"#,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(
+            text.contains("Which?"),
+            "ask_user expansion should render the question"
+        );
+        assert!(
+            text.contains("A"),
+            "ask_user expansion should render the option label"
+        );
+        assert!(
+            !text.contains('{'),
+            "ask_user expansion must not dump raw JSON braces: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_expansion_load_skill_renders_name() {
+        let result = render_expansion(
+            Some("load_skill"),
+            r#"{"skill_name":"arch"}"#,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(
+            text.contains("arch"),
+            "load_skill expansion should render the skill name"
+        );
+        assert!(
+            !text.contains('{'),
+            "load_skill expansion must not dump raw JSON braces: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_expansion_agent_poll_renders_id_and_timeout() {
+        let result = render_expansion(
+            Some("agent_poll"),
+            r#"{"agent_id":"abc","timeout_secs":60}"#,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(
+            text.contains("abc") && text.contains("60"),
+            "agent_poll expansion should render the agent_id and timeout_secs: {text:?}"
         );
     }
 }

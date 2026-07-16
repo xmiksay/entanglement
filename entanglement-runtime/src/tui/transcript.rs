@@ -5,6 +5,7 @@ use ratatui::{
 
 use crate::tui::app::App;
 use crate::tui::session_view::ApprovalMode;
+use crate::tui::wrap;
 
 mod block;
 pub(crate) mod cache;
@@ -63,7 +64,20 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
             }
             lines.push(Line::from(header));
 
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(input) {
+            if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
+                // `propose_plan` carries a full markdown plan as its single arg;
+                // pretty-printing it as JSON makes the approval unreadable
+                // (ADR-0042). Render the plan markdown, wrapped to the panel.
+                let plan = crate::propose_plan::parse_plan(input);
+                let wrap_width = available_width.saturating_sub(4);
+                for md_line in app.markdown_renderer().render(&plan).lines {
+                    for wline in wrap::wrap_line(md_line, wrap_width) {
+                        let joined: String =
+                            wline.spans.iter().map(|s| s.content.as_ref()).collect();
+                        lines.push(Line::from(format!("  {joined}")));
+                    }
+                }
+            } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(input) {
                 if let Ok(pretty) = serde_json::to_string_pretty(&json) {
                     for line in pretty.lines() {
                         lines.push(Line::from(format!("  {line}")));
