@@ -3,7 +3,7 @@
 
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::jobs::JobRegistry;
-use super::{resolve_under_root, truncate_head_tail};
+use super::{resolve_workdir, truncate_head_tail};
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -46,22 +46,6 @@ impl BashTool {
     pub fn with_jobs(mut self, jobs: JobRegistry) -> Self {
         self.jobs = jobs;
         self
-    }
-
-    /// Resolve the per-call working directory: the tool `root` by default, or a
-    /// model-supplied `workdir` validated to stay under root (same symlink-safe
-    /// containment as the filesystem tools, ADR-0054/#163) and to be a directory.
-    fn resolve_workdir(&self, workdir: Option<&str>) -> Result<PathBuf> {
-        match workdir {
-            None => Ok(self.root.clone()),
-            Some(w) => {
-                let p = resolve_under_root(&self.root, w)?;
-                if !p.is_dir() {
-                    anyhow::bail!("workdir is not a directory: {w}");
-                }
-                Ok(p)
-            }
-        }
     }
 
     /// Build the `sh -c` command with cwd, piped stdio, own process group, and
@@ -141,7 +125,7 @@ impl Tool for BashTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: BashInput = serde_json::from_str(input)
             .context("invalid input to bash: expected {\"command\": string, ...}")?;
-        let cwd = self.resolve_workdir(parsed.workdir.as_deref())?;
+        let cwd = resolve_workdir(&self.root, parsed.workdir.as_deref())?;
         let mut cmd = self.build_command(&parsed.command, &cwd);
 
         if parsed.run_in_background {

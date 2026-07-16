@@ -57,7 +57,7 @@ blocked on green tests with a coverage report attached. Both cache cargo
 artifacts (`Swatinem/rust-cache`) and inherit the committed `CARGO_BUILD_JOBS=4`
 cap from `.cargo/config.toml`.
 
-## 8. Host tools — [ADR-0008](../adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](../adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md) (exec opt-in), [ADR-0045](../adr/0045-call-host-tool-argv-exec-tailed-output.md) (`call`), [ADR-0092](../adr/0092-call-file-based-stdin-stdout.md) (`call` file-based stdin/stdout)
+## 8. Host tools — [ADR-0008](../adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](../adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in), [ADR-0045](../adr/0045-call-host-tool-argv-exec-tailed-output.md) (`call`), [ADR-0092](../adr/0092-call-file-based-stdin-stdout.md) (`call` file-based stdin/stdout), [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md) (`call` always-registered + `workdir`)
 
 Concrete filesystem + shell tools, dispatched under the active permission
 profile ([ADR-0003](../adr/0003-agent-and-permission-profiles.md)). The
@@ -100,7 +100,7 @@ tools and makes no policy decision:
 | `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
 | `bash` ⚠ | `{command, timeout?, workdir?, run_in_background?}` | `sh -c` rooted at root (or at `workdir`, a subdir validated under root by the same symlink-safe containment as the fs tools, #170); `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600; spawned in its **own process group** (`process_group(0)`) so an expiry SIGKILLs the whole tree — grandchildren (a launched server/pipeline) can't orphan (#168); a `Stop`-driven task abort drops the wait future, whose group-kill guard SIGKILLs the same group so cancellation matches the timeout's containment rather than orphaning under bare `kill_on_drop` (#167). Output is drained incrementally, so a timeout returns the **partial output buffered before the kill** under a `[killed: timed out after Ns]` header instead of discarding it (#169). Oversized output is capped **head + tail** (¼ head / ¾ tail, `truncate_head_tail`) so the trailing error survives — head-only truncation dropped exactly what a failing build needs (#170). `run_in_background: true` spawns the command **detached** and returns a job id instead of blocking — poll it with `bash_output` (#170) |
 | `bash_output` ⚠ | `{job_id, kill?}` | poll a background `bash` job (started with `run_in_background`) for the output produced **since the last poll**, plus status (`running` / `exited N` / `exited (killed)`). Buffers are drained per poll (`mem::take`) so memory is reclaimed and each read is incremental; between polls each stream is capped at 256 KiB dropping the **oldest** bytes (the live tip is kept) with a `[N bytes … dropped]` notice. `kill: true` SIGKILLs the job's whole process group before reading. Registered as a pair with `bash` under the same opt-in gate (#170) |
-| `call` ⚠ | `{command, args?, tail?, timeout?, input_file?, output_file?}` | **argv, no shell** — `command`+`args` exec verbatim (no `sh -c`, so no pipe/glob/`$VAR`/metachar interpretation); output tailed to the last `tail` lines per stream (default 30, `tail=0` = full, byte-cap still applies), with a `(… N earlier lines omitted, tail=30 — rerun with tail=0 …)` notice; same envelope as `bash` (`[exit N]` + stdout + `[stderr]`, 120 s/600 s, own-process-group kill on timeout #168, partial output preserved on timeout #169) — ADR-0045. `input_file`/`output_file` (ADR-0092, #381), both root-contained via `resolve_under_root` and validated **before spawn**: `input_file` is read and piped to the child's stdin (fed concurrently with the stdout/stderr drain to avoid a full-pipe deadlock); its **absence closes stdin** (`Stdio::null()`) rather than inheriting the engine's own (a leaked-by-default behavior until now). The full **untruncated raw** stdout is always persisted — to `output_file` if given (missing parent dirs created), else to an **auto-named default artifact** under `.entanglement/tmp/call-output/call-{pid}-{seq}.stdout` — with a `<output_file>.stderr` sibling always alongside; the root-relative artifact path is always named in the result header (`[output: …] [stderr: …]`). An explicit `output_file` write failure is a hard error; a default-artifact write failure is best-effort (logged + a degraded notice, never fails an otherwise-successful call) |
+| `call` ⚠ | `{command, args?, tail?, timeout?, input_file?, output_file?, workdir?}` | **argv, no shell** — `command`+`args` exec verbatim (no `sh -c`, so no pipe/glob/`$VAR`/metachar interpretation); output tailed to the last `tail` lines per stream (default 30, `tail=0` = full, byte-cap still applies), with a `(… N earlier lines omitted, tail=30 — rerun with tail=0 …)` notice; same envelope as `bash` (`[exit N]` + stdout + `[stderr]`, 120 s/600 s, own-process-group kill on timeout #168, partial output preserved on timeout #169) — ADR-0045. `input_file`/`output_file` (ADR-0092, #381), both root-contained via `resolve_under_root` and validated **before spawn** (relative to the **root**, not `workdir`): `input_file` is read and piped to the child's stdin (fed concurrently with the stdout/stderr drain to avoid a full-pipe deadlock); its **absence closes stdin** (`Stdio::null()`) rather than inheriting the engine's own (a leaked-by-default behavior until now). The full **untruncated raw** stdout is always persisted — to `output_file` if given (missing parent dirs created), else to an **auto-named default artifact** under `.entanglement/tmp/call-output/call-{pid}-{seq}.stdout` — with a `<output_file>.stderr` sibling always alongside; the root-relative artifact path is always named in the result header (`[output: …] [stderr: …]`). An explicit `output_file` write failure is a hard error; a default-artifact write failure is best-effort (logged + a degraded notice, never fails an otherwise-successful call). `workdir` (#386) sets the child's **cwd** to a subdirectory validated under root via the shared `resolve_workdir` (same containment as `bash`'s); a non-directory or escaping `workdir` errors before spawn. **Registered unconditionally** — independent of `ENTANGLEMENT_ENABLE_BASH` ([ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md)) |
 | `rhai` | `{script, timeout?}` | run a Rhai script ([rhai.rs](https://rhai.rs)) in a **capability-sandboxed** engine — no fs/network/process/env access; the only host bindings are `read`/`glob`/`grep`/`edit`/`write`, each routed through that tool's permission check; last-expression value serialized + captured `print(...)`; bounded by op/string/array/map caps + wall-clock (default 5 s, max 30) — [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md) |
 
 - **Working directory:** each tool holds a `root` (the cwd, **canonicalized once
@@ -112,11 +112,14 @@ tools and makes no policy decision:
   is canonicalized), and `glob`/`grep` (`list_files`) drop any match whose
   canonical path escapes — ADR-0008 upgraded by [ADR-0054](../adr/0054-canonicalizing-symlink-safe-root-containment.md)
   (#163). Not TOCTOU-tight (an OS sandbox via `openat2(RESOLVE_BENEATH)` is
-  deferred). `bash`/`call` set only the **cwd** — they are
+  deferred). `bash`/`call` set only the **cwd** (root, or `workdir` if given,
+  through the shared `resolve_workdir` helper both tools call) — they are
   explicitly *not* sandboxed and run with the engine's full privileges
   (ADR-0009/ADR-0045); permission profiles gate whether they run at all. `call`
   is the injection-free sibling: a fixed argv can't be shell-injected, so a
-  profile may `Allow` `call` while keeping `bash` at `Ask`/`Deny`.
+  profile may `Allow` `call` while keeping `bash` at `Ask`/`Deny` — and, since
+  [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md),
+  `call` is registered regardless of whether `bash` is even opted in.
 - **Secret scrubbing (#164):** both exec tools `env_remove` the catalog's
   provider API-key env vars (`Catalog::key_envs()` — `ZAI_API_KEY`,
   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) from the child before spawn, so a
@@ -152,26 +155,30 @@ tools and makes no policy decision:
   identical to a genuine no-match ([ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)).
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
-- **Wiring (ADR-0010):** `host_tools(root)` registers the **root-contained
-  quintet** (`read`/`glob`/`grep`/`edit`/`write`; `write` added in ADR-0031).
-  the exec set is opt-in — the `skutter`
-  binary registers `BashTool`, `CallTool`, **and** `BashOutputTool` (the
-  background-job poller, #170) only when `ENTANGLEMENT_ENABLE_BASH=1` (one gate,
-  whole set), because they run unsandboxed (ADR-0009/ADR-0045). `bash` and
-  `bash_output` share one `JobRegistry` so background jobs are pollable across the
-  pair. `EngineConfig::default()` ships an empty registry (embedders opt in via
-  `host_tools`).
+- **Wiring (ADR-0010, amended by [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md)):**
+  `host_tools(root)` registers the **root-contained quintet**
+  (`read`/`glob`/`grep`/`edit`/`write`; `write` added in ADR-0031). The
+  `skutter` binary registers `CallTool` **unconditionally**, alongside the
+  quintet — no shell means no injection surface, so its registration no
+  longer rides `bash`'s opt-in gate (#386). `BashTool` **and**
+  `BashOutputTool` (the background-job poller, #170) still register only
+  when `ENTANGLEMENT_ENABLE_BASH=1`, because `bash` runs arbitrary shell code
+  (ADR-0009). `bash` and `bash_output` share one `JobRegistry` so background
+  jobs are pollable across the pair. `EngineConfig::default()` ships an empty
+  registry (embedders opt in via `host_tools`).
 
 `edit`/`write`/`bash`/`bash_output`/`call` are advertised only to the inherit-all
 `build` profile (`tools: None`), which auto-allows them (default `Allow`). The `plan`
 and `explore` profiles set an explicit `tools` allowlist that omits them
 (#116/#140, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)), so
 the tools are **masked out** of those profiles entirely — never advertised, so
-no `Allow`/`Ask`/`Deny` default is reached for them there. The opt-in gate is
-orthogonal to both mask and profile: it controls *registration* (whether the
-tool is advertised at all), the mask controls *existence* per profile, and the
-profile controls *dispatch* (Allow/Ask/Deny when the model calls a tool that
-survives the mask).
+no `Allow`/`Ask`/`Deny` default is reached for them there. Registration is
+orthogonal to both mask and profile: it controls whether the tool is advertised
+at all (unconditional for `call`, opt-in for `bash`/`bash_output`), the mask
+controls *existence* per profile, and the profile controls *dispatch*
+(Allow/Ask/Deny when the model calls a tool that survives the mask) — so `call`
+being always-registered does not change what a non-`build` profile can do with
+it.
 
 Five **runtime-owned orchestration tools** are *not* in the registry — the
 `tool_runner` intercepts them on `ToolExec` before permission resolution (they

@@ -3,8 +3,10 @@
 //! `args` execs verbatim — no `sh -c`, so no pipes, globbing, `$VAR` expansion,
 //! or metacharacter injection. A fixed argv is auditable, which is why a profile
 //! may reasonably `Allow` `call` while keeping `bash` at `Ask`/`Deny`. Runs
-//! unsandboxed with the engine's full privileges, same opt-in gate as `bash`
-//! (ADR-0010).
+//! unsandboxed with the engine's full privileges, but — unlike `bash` — is
+//! registered unconditionally, independent of `ENTANGLEMENT_ENABLE_BASH`
+//! (ADR-0093, supersedes ADR-0010 §3/ADR-0045 §3 for `call`); per-profile
+//! permission (`Allow`/`Ask`/`Deny`) is the actual dispatch gate.
 //!
 //! `input_file`/`output_file` (ADR-0092, #381) give a call a durable trace:
 //! `input_file` is read before spawn and piped to the child's stdin (no
@@ -15,7 +17,7 @@
 //! root-relative path is named in the result header.
 
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
-use super::{resolve_under_root, truncate_output};
+use super::{resolve_under_root, resolve_workdir, truncate_output};
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -70,6 +72,9 @@ struct CallInput {
     input_file: Option<String>,
     #[serde(default)]
     output_file: Option<String>,
+    /// Optional per-call working directory, resolved under the tool root.
+    #[serde(default)]
+    workdir: Option<String>,
 }
 
 fn default_tail() -> u32 {
@@ -167,7 +172,8 @@ impl Tool for CallTool {
     }
     fn description(&self) -> &str {
         "Execute a binary directly (argv, NO shell) rooted at the working \
-         directory: `command` + `args` are passed verbatim to exec — no `sh -c`, \
+         directory (or `workdir`, if given): `command` + `args` are passed \
+         verbatim to exec — no `sh -c`, \
          so pipes, globbing, `$VAR` expansion, and metacharacters are NOT \
          interpreted. Prefer this over `bash` for a fixed command. Output is \
          tailed to the last `tail` lines per stream (default 30 — command value \
@@ -176,7 +182,9 @@ impl Tool for CallTool {
          `[stderr]` block. The full untruncated output is always persisted to a \
          file — `output_file` if given, else an auto-named default artifact — \
          named in the result header; `input_file` pipes a file to the child's \
-         stdin (omitted → stdin is closed, not inherited)."
+         stdin (omitted → stdin is closed, not inherited). Pass `workdir` to \
+         run in a subdirectory (validated under root) instead of reaching for \
+         `bash` just to `cd` first."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -206,18 +214,23 @@ impl Tool for CallTool {
                 },
                 "input_file": {
                     "type": "string",
-                    "description": "Path (relative to the working directory) of \
+                    "description": "Path (relative to the root, not `workdir`) of \
                         a file whose content is piped to the child's stdin. \
                         Omitted → stdin is closed, not inherited."
                 },
                 "output_file": {
                     "type": "string",
-                    "description": "Path (relative to the working directory) to \
+                    "description": "Path (relative to the root, not `workdir`) to \
                         write the full, untruncated raw stdout to (missing \
                         parent dirs are created); a `<output_file>.stderr` \
                         sibling is always written alongside. Omitted → an \
                         artifact is still written under \
                         `.entanglement/tmp/call-output/`, named in the result."
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": "Working directory for this call, relative to \
+                        the root (must stay under it). Defaults to the root."
                 }
             },
             "required": ["command"]
@@ -229,9 +242,9 @@ impl Tool for CallTool {
         let secs = parsed.timeout.unwrap_or(120);
         let dur = std::time::Duration::from_secs(secs.min(MAX_CALL_TIMEOUT_SECONDS));
 
-        // Validate + read input_file and resolve the output target *before*
-        // spawning — a bad path (escape, missing input_file) must never launch
-        // the child (#381).
+        // Validate + read input_file, resolve the output target, and resolve
+        // workdir *before* spawning — a bad path (escape, missing input_file,
+        // non-directory workdir) must never launch the child (#381, #386).
         let stdin_data = match &parsed.input_file {
             Some(rel) => {
                 let abs = resolve_under_root(&self.root, rel)?;
@@ -244,10 +257,11 @@ impl Tool for CallTool {
             None => None,
         };
         let output_target = resolve_output_target(&self.root, &parsed.output_file)?;
+        let cwd = resolve_workdir(&self.root, parsed.workdir.as_deref())?;
 
         let mut cmd = tokio::process::Command::new(&parsed.command);
         cmd.args(&parsed.args)
-            .current_dir(&self.root)
+            .current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             // No `input_file` → close stdin explicitly rather than inherit the
@@ -596,6 +610,48 @@ mod tests {
             out.len()
         );
         assert!(out.contains("truncated"), "byte-cap notice expected: {out}");
+    }
+
+    #[tokio::test]
+    async fn workdir_runs_in_subdirectory() {
+        let dir = TempDir::new();
+        std::fs::create_dir(dir.path.join("sub")).unwrap();
+        std::fs::write(dir.path.join("sub/inner.txt"), "x").unwrap();
+        let tool = CallTool::new(dir.path.clone());
+        let input = serde_json::json!({ "command": "ls", "workdir": "sub" }).to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert!(out.contains("inner.txt"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn workdir_escaping_root_is_rejected() {
+        let dir = TempDir::new();
+        let tool = CallTool::new(dir.path.clone());
+        let input = serde_json::json!({ "command": "ls", "workdir": ".." }).to_string();
+        let err = tool.run(&input).await.unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workdir_nonexistent_is_rejected() {
+        let dir = TempDir::new();
+        let tool = CallTool::new(dir.path.clone());
+        let input = serde_json::json!({ "command": "ls", "workdir": "nope" }).to_string();
+        let err = tool.run(&input).await.unwrap_err();
+        assert!(format!("{err}").contains("not a directory"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn no_workdir_defaults_to_root() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path.join("marker.txt"), "x").unwrap();
+        let tool = CallTool::new(dir.path.clone());
+        let input = serde_json::json!({ "command": "ls" }).to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert!(out.contains("marker.txt"), "got: {out}");
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 # 0045. Host tool `call`: argv exec (no shell) with auto-tailed output
 
-- Status: Accepted
+- Status: Accepted (§3 "same gate" registration superseded by [0093](0093-call-registration-independent-of-bash-opt-in.md); the argv-exec/tailed-output decision itself unchanged)
 - Date: 2026-07-11
 
 ## Context

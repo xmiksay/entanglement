@@ -1,6 +1,6 @@
 # 0010. `entanglement-runtime`: the head crate — tools, execution, permissions, sessions
 
-- Status: Accepted
+- Status: Accepted (§3's `call`-piggybacks-`bash`'s-gate framing superseded for `call` by [0093](0093-call-registration-independent-of-bash-opt-in.md); `bash`'s own opt-in gate unchanged)
 - Date: 2026-07-07
 
 ## Context

@@ -509,9 +509,12 @@ the root-contained quintet (`read` on an image file — `png`/`jpg`/`jpeg`/`gif`
 `webp` — emits a base64 **image content block** through a now-multimodal
 `ToolResult`/`ToolOutput` path, #221/[ADR-0065](../docs/adr/0065-read-emits-image-content-blocks.md),
 built on the `Message`/`Prompt` content-block migration #197/[ADR-0064](../docs/adr/0064-message-content-blocks.md)),
-the opt-in exec set `bash`/`call`/`bash_output`
-(`ENTANGLEMENT_ENABLE_BASH=1`; `bash` gains `workdir` + `run_in_background`, polled
-via `bash_output`, #170), and the sandboxed `rhai` tool. **External MCP tool
+the always-registered `call` (argv exec, no shell — registered independent of
+`ENTANGLEMENT_ENABLE_BASH` since #386/[ADR-0093](../docs/adr/0093-call-registration-independent-of-bash-opt-in.md);
+gains a `workdir` param, mirroring `bash`'s) and the opt-in exec pair
+`bash`/`bash_output` (`ENTANGLEMENT_ENABLE_BASH=1`; `bash` gains `workdir` +
+`run_in_background`, polled via `bash_output`, #170), and the sandboxed `rhai`
+tool. **External MCP tool
 servers** attach as a runtime-side tool provider (#198,
 [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md); #312,
 [ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)): the user config's

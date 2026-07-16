@@ -80,8 +80,9 @@ Agents (`ENTANGLEMENT_AGENTS_DIR`) and skills (`ENTANGLEMENT_SKILLS_DIR`) are
 `.md` files with YAML frontmatter — drop one in and it joins the registry with
 no code change; `skutter inspect agents|skills` shows the resolved set with
 layer provenance. Beyond the root-contained quintet (`read`/`write`/`edit`/
-`glob`/`grep`), the exec tools are the opt-in pair `bash`/`call`
-(`ENTANGLEMENT_ENABLE_BASH=1`) and the sandboxed `rhai` scripting tool.
+`glob`/`grep`), `call` (argv exec, no shell) and the sandboxed `rhai` scripting
+tool are always registered too; only `bash` stays opt-in
+(`ENTANGLEMENT_ENABLE_BASH=1`).
 
 ## Crates
 
