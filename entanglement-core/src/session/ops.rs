@@ -1,9 +1,17 @@
-//! Single-shot session ops (#324, ADR-0082): `InMsg::Oneshot`'s generic `op`
-//! string dispatched here — `run_oneshot` matches on it, no plugin registry.
-//! `"compact"` (session compaction via LLM summarization) is the first and
-//! only op; an unknown `op` is a recoverable `Error`. Separable from the turn
-//! loop (`session/turn.rs`): a oneshot never streams tool calls and never
-//! parks — it either completes in one round-trip or fails cleanly.
+//! Single-shot session ops (#324, ADR-0082 → ADR-0101): `InMsg::Oneshot`'s
+//! generic `op` string dispatched here — `run_oneshot` matches on it, no plugin
+//! registry. `"compact"` (session compaction via LLM summarization) is the
+//! first and only op; an unknown `op` is a recoverable `Error`. Separable from
+//! the turn loop (`session/turn.rs`): a oneshot never streams tool calls and
+//! never parks — it either completes in one round-trip or fails cleanly.
+//!
+//! `compact` is **copy-on-write** (ADR-0101): it never mutates the source
+//! session. It summarizes the transcript and emits `OutEvent::Compacted`
+//! carrying the summary — a *report* ("summary ready, source untouched"), not a
+//! confirmation of mutation. The head that issued the compaction forks the
+//! summary into a new session; the original stays idle, intact, independently
+//! resumable. A botched (truncated) summary is rejected outright (never forked,
+//! never mutating) — the source history is always recoverable.
 
 use tokio::sync::broadcast;
 
@@ -47,9 +55,12 @@ pub(crate) async fn run_oneshot(
     }
 }
 
-/// Summarize the whole live history with the active model and replace it via
-/// `Context::apply_compaction`, persisted as `OutEvent::Compacted`. Failure
-/// leaves `Context` untouched — a summarization error must not lose history.
+/// Summarize the whole live history with the active model and emit it via
+/// `OutEvent::Compacted` — a **report** ("summary ready, source untouched"),
+/// not a mutation (ADR-0101). The source `Context` is left **unchanged**: the
+/// head that issued the compaction forks the summary into a new session. A
+/// truncated summary (`StopReason::MaxTokens`) is rejected with `Error` and
+/// never emitted — the source history is always recoverable.
 async fn compact_op(
     session: &SessionId,
     s: &mut Session,
@@ -68,13 +79,35 @@ async fn compact_op(
     }
 
     let instructions = args.get("instructions").and_then(|v| v.as_str());
+    let transcript = render_transcript(s.ctx.messages());
+
+    // Guard an oversized transcript (#178, ADR-0101): if the rendered input
+    // alone already blows the source session's context budget, shipping it
+    // would just burn a paid round-trip and 4xx at the provider. Reject before
+    // the request — same posture as `turn.rs`'s window-overrun guard.
+    let transcript_tokens = estimate_tokens(&transcript);
+    if transcript_tokens > s.ctx.limit() {
+        emit_turn_error(
+            session,
+            &s.seq,
+            events,
+            format!(
+                "cannot compact: transcript (~{transcript_tokens} tokens) exceeds \
+                 the {}-token context budget — start a new session or shorten the \
+                 conversation",
+                s.ctx.limit()
+            ),
+        );
+        return;
+    }
+
     let mut prompt = format!(
         "Summarize the conversation transcript below so it can fully replace \
          the conversation history while a coding agent continues the work. \
          Preserve: the user's goals, decisions made, files/paths touched, \
          commands run, and outstanding next steps. Be concise but complete.\n\n\
          {}",
-        render_transcript(s.ctx.messages())
+        transcript
     );
     if let Some(extra) = instructions {
         prompt.push_str(&format!("\n\nAdditional instructions: {extra}"));
@@ -91,7 +124,24 @@ async fn compact_op(
 
     match oneshot_text(&mut *s.llm, SYSTEM, &messages, model, s.generation).await {
         Ok((summary, finish)) => {
-            s.ctx.apply_compaction(&summary, 0);
+            // Refuse a truncated summary (ADR-0101, mirrors turn.rs:221-229):
+            // a `max_tokens`-cut-off fragment would fork a useless new session
+            // (or, under the old in-place design, destroy the live history).
+            // The source `Context` is never touched either way.
+            if let Some((Some(StopReason::MaxTokens), _)) = &finish {
+                emit_turn_error(
+                    session,
+                    &s.seq,
+                    events,
+                    "compaction failed: the summary was truncated (stop reason: \
+                     max_tokens) — refusing to fork a cut-off summary; the \
+                     original session is unchanged"
+                        .to_string(),
+                );
+                return;
+            }
+            // Copy-on-write: report the summary without mutating the source
+            // (ADR-0101). The head forks it into a new session.
             let _ = events.send(OutEvent::Compacted {
                 session: session.clone(),
                 seq: next_seq(&s.seq),
@@ -151,6 +201,15 @@ async fn oneshot_text(
         }
     }
     Ok((text, finish))
+}
+
+/// Rough token estimate for an arbitrary string, mirroring
+/// `Context::estimated_tokens`'s `CHARS_PER_TOKEN` heuristic (3.5 chars/token).
+/// Used to pre-flight the compaction input against the context budget before
+/// burning a paid round-trip the provider would 4xx.
+fn estimate_tokens(text: &str) -> usize {
+    let chars = text.chars().count();
+    ((chars as f32) / 3.5).ceil() as usize
 }
 
 /// Render the history as a plain-text transcript for the summarization prompt.

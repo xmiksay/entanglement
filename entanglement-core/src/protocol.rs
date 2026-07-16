@@ -77,6 +77,9 @@ pub enum AgentState {
 #[serde(rename_all = "snake_case")]
 pub enum FileChangeKind {
     Edit,
+    /// Reserved for future diff-based file editing. ApplyDiff would allow sending
+    /// unified diffs (or similar formats) instead of full file contents, enabling
+    /// more efficient incremental updates and better change tracking.
     ApplyDiff,
     Create,
 }
@@ -792,7 +795,7 @@ impl InMsg {
     /// Whether this variant may originate from an **untrusted wire head** (#155).
     ///
     /// The trusted/untrusted frame split. A head deserializing attacker-adjacent
-    /// bytes (stdio `pipe`, the future WS `serve`) forwards only the allowlisted
+    /// bytes (stdio `pipe`, WebSocket `serve`) forwards only the allowlisted
     /// frames — `Prompt`/`Approve`/`Reject`/`AnswerQuestion`/`Stop`/`SetAgent`/
     /// `SetModel`/`SetGeneration`/`ListSessions`/`ReplayFrom`/`CloseSession`/
     /// `McpList`/`McpAdd`/`McpRemove` (#375: same local-trust tier as
@@ -1095,15 +1098,19 @@ pub enum OutEvent {
     },
     /// Turn finished cleanly. Heads waiting on a one-shot turn exit on this.
     Done { session: SessionId, seq: u64 },
-    /// Session compaction ran (#324, ADR-0082): the live history was replaced
-    /// with an LLM-generated `summary` via `Context::apply_compaction` — a
-    /// persisted, seq-bearing content event (persistence is variant-agnostic;
-    /// seq-bearing ⇒ folded into `ReplayFrom` history and the replay fold, see
-    /// [`Session::replay`][crate::session::Session::replay]). `kept` is how many
-    /// trailing messages were preserved verbatim after the summary; v1 always
-    /// `0` (keep-tail is deferred — a `Tool` message replayed without its
-    /// assistant parent breaks Anthropic's `tool_use`/`tool_result` pairing —
-    /// the field future-proofs the wire for it).
+    /// Session compaction ran (#324, ADR-0082 → ADR-0101): the engine produced
+    /// an LLM-generated `summary` of the conversation. **Copy-on-write
+    /// (ADR-0101)**: the source session's `Context` is **not** mutated — this
+    /// is a *report* ("summary ready, source untouched"), not a confirmation of
+    /// mutation. The head that issued the compaction forks the summary into a
+    /// new session via `InMsg::Spawn`; the original stays idle, intact,
+    /// independently resumable. A persisted, seq-bearing content event
+    /// (persistence is variant-agnostic; seq-bearing ⇒ folded into
+    /// `ReplayFrom` history — but the `Session::replay` fold is a no-op, since
+    /// the source is never mutated). `kept` is how many trailing messages were
+    /// preserved verbatim after the summary; v1 always `0` (keep-tail is
+    /// deferred), and is retained only for wire compatibility with older
+    /// records written under the in-place design (ADR-0082).
     Compacted {
         session: SessionId,
         seq: u64,

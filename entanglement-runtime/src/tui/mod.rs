@@ -177,6 +177,17 @@ pub async fn tui(
         }
         drain_engine_events(&mut holly_sub, &mut app, &mut attention);
 
+        // A compaction fork (ADR-0101) was recorded while draining engine
+        // events: the engine `Spawn` that actually creates the forked session
+        // needs this `Holly` handle, so it's sent here. `handle_compacted`
+        // already did the head-side view switch + summary seeding.
+        if let Some(fork) = app.take_pending_compact_fork() {
+            let spawn = App::spawn_for_fork(&fork);
+            if let Err(e) = holly.send(spawn).await {
+                tracing::error!("compaction fork Spawn failed: {e:#}");
+            }
+        }
+
         // A command/action may have requested a terminal-owning effect (open
         // `$EDITOR`, export). Run it here — the loop owns the `Terminal` — and
         // keep the session alive on failure rather than propagating.

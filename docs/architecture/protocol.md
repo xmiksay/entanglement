@@ -49,7 +49,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?}  // per-round-trip usage + cost (#192)
          | Error{session,seq,message}
          | Done{session,seq}
-         | Compacted{session,seq,summary,kept}   // session compaction ran; persisted, replay-folds via Context::apply_compaction (#324, ADR-0082)
+         | Compacted{session,seq,summary,kept}   // compaction summary ready; source untouched — head forks into a new session (#324, ADR-0082 → ADR-0101)
          | FileChange{session,seq,path,change_kind,hash}   // file-change audit: runtime executor emits on edit/write; hash = sha256(after) (#202, ADR-0060)
 ```
 
@@ -61,7 +61,7 @@ inbound fan-out (core never routes it) and the `ask_user` executor consumes it
 `InMsg` has two entry points. `Holly::send` is **privileged in-process**: an
 embedder holding a `Holly` (a head, the runtime tool executor) authors any
 frame. `Holly::send_from_wire` is the **untrusted** path a wire head (stdio
-`pipe`, the future WS `serve`) calls after deserializing a line — it enforces the
+`pipe`, WebSocket `serve`) calls after deserializing a line — it enforces the
 `InMsg::wire_allowed()` allowlist and refuses (`WireError::Privileged`, not
 routed) the runtime/embedder-authored variants: `ToolResult` (a forged one resolves
 a parked turn on `request_id` alone, bypassing execution *and* permission),
@@ -187,14 +187,15 @@ the session's `&mut Llm` handle directly instead of racing the turn loop's
 inbox `select!`. On success it emits the **persisted, seq-bearing**
 `OutEvent::Compacted{session,seq,summary,kept}` — persistence and
 `ReplayFrom` history cover it for free (both are variant-agnostic over any
-`seq()`-bearing event) — then the ordinary `Usage`/`Done`/`Status::Done`
-sequence; on failure, the ordinary `Error`/`Done`/`Status::Error` triple with
-`Context` left untouched. `Session::replay`'s `Compacted` fold calls the same
-`Context::apply_compaction(summary, kept)` the live path does (flushing any
-pending assistant/tool buffers first, like the `Done` arm), so a resumed
-session reconstructs identical context. `kept` (trailing messages preserved
-verbatim after the summary) is always `0` in v1 — keep-tail is deferred, but
-the field is real wire surface already.
+`seq()`-bearing event). **Copy-on-write (ADR-0101):** the source session's
+`Context` is **never mutated** — the summary rides only in the event, and the
+head forks it into a new session via `InMsg::Spawn` (parent = source id, agent
+= source profile, prompt = summary). A truncated summary (`StopReason::MaxTokens`)
+is refused outright (`Error`, never forked). `Session::replay`'s `Compacted`
+fold is a **no-op** — a resumed source recovers its full pre-compaction history
+(the implicit undo). `kept` is now wire-legacy only (always `0`; the source
+keeps everything), retained for deserializing older records written under
+ADR-0082's in-place design.
 
 **Live generation-parameter changes — `InMsg::SetGeneration`** (#374,
 [ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)).

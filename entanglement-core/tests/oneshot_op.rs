@@ -1,6 +1,8 @@
 //! Integration tests for `InMsg::Oneshot` and the `"compact"` op (#324,
-//! ADR-0082): a single out-of-band LLM call outside the turn loop, replacing
-//! the live history with a summary via `Context::apply_compaction`.
+//! ADR-0082 → ADR-0101): a single out-of-band LLM call outside the turn loop.
+//! **Copy-on-write (ADR-0101):** `compact` never mutates the source session —
+//! it emits `OutEvent::Compacted` carrying the summary, which a head forks into
+//! a new session. The source `Context` is always left intact.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -38,6 +40,28 @@ impl Llm for ScriptedLlm {
     }
 }
 
+/// A `ScriptedLlm` whose first reply carries a `StopReason::MaxTokens`, so a
+/// compaction summary is truncated — the op must reject it and leave the
+/// source `Context` untouched.
+struct TruncatingLlm {
+    seen: Arc<Mutex<Vec<Vec<Message>>>>,
+}
+
+#[async_trait]
+impl Llm for TruncatingLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        self.seen.lock().unwrap().push(req.messages.to_vec());
+        let events = vec![
+            Ok(LlmEvent::Text("a cut-off fragment".to_string())),
+            Ok(LlmEvent::Finish {
+                stop_reason: Some(StopReason::MaxTokens),
+                usage: Usage::default(),
+            }),
+        ];
+        Ok(stream::iter(events).boxed())
+    }
+}
+
 fn scripted(replies: Vec<(&str, Usage)>) -> (EngineConfig, Arc<Mutex<Vec<Vec<Message>>>>) {
     let replies: VecDeque<(String, Usage)> = replies
         .into_iter()
@@ -50,6 +74,20 @@ fn scripted(replies: Vec<(&str, Usage)>) -> (EngineConfig, Arc<Mutex<Vec<Vec<Mes
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm {
                 replies: replies.clone(),
+                seen: seen2.clone(),
+            }) as Box<dyn Llm>
+        }),
+        ..EngineConfig::default()
+    };
+    (cfg, seen)
+}
+
+fn truncating() -> (EngineConfig, Arc<Mutex<Vec<Vec<Message>>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(TruncatingLlm {
                 seen: seen2.clone(),
             }) as Box<dyn Llm>
         }),
@@ -110,7 +148,7 @@ fn kinds(events: &[OutEvent]) -> Vec<&'static str> {
 }
 
 #[tokio::test]
-async fn compact_happy_path_emits_the_expected_event_order_and_replaces_context() {
+async fn compact_happy_path_emits_compacted_and_leaves_source_intact() {
     let (cfg, seen) = scripted(vec![
         ("hi there", Usage::default()),
         (
@@ -161,9 +199,9 @@ async fn compact_happy_path_emits_the_expected_event_order_and_replaces_context(
     };
     assert!(summary.contains("summary: user said hello"));
 
-    // Run a further turn: its request must see exactly the compacted summary
-    // (as a user message) plus the new prompt — the pre-compaction history is
-    // gone.
+    // Copy-on-write (ADR-0101): the source `Context` is untouched — a further
+    // turn sees the full pre-compaction history plus the new prompt, not the
+    // summary.
     holly
         .send(InMsg::prompt(sid.clone(), "what's next?"))
         .await
@@ -172,14 +210,14 @@ async fn compact_happy_path_emits_the_expected_event_order_and_replaces_context(
 
     let seen = seen.lock().unwrap();
     let last_request = seen.last().expect("a third request was recorded");
-    assert_eq!(
-        last_request.len(),
-        2,
-        "summary + the new prompt: {last_request:?}"
+    assert!(
+        last_request.len() >= 2,
+        "source keeps its full history + the new prompt: {last_request:?}"
     );
     assert_eq!(last_request[0].role, entanglement_core::MessageRole::User);
-    assert!(last_request[0].text().contains("summary: user said hello"));
-    assert_eq!(last_request[1].text(), "what's next?");
+    assert_eq!(last_request[0].text(), "hello");
+    let tail = last_request.last().expect("a final user message");
+    assert_eq!(tail.text(), "what's next?");
 }
 
 #[tokio::test]
@@ -206,6 +244,102 @@ async fn compact_with_empty_history_is_a_recoverable_error() {
     assert!(!events
         .iter()
         .any(|e| matches!(e, OutEvent::Compacted { .. })));
+}
+
+#[tokio::test]
+async fn compact_with_truncated_summary_is_rejected_and_source_is_unchanged() {
+    let (cfg, seen) = truncating();
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "hello"))
+        .await
+        .unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+
+    holly
+        .send(InMsg::Oneshot {
+            session: sid.clone(),
+            op: "compact".to_string(),
+            args: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+    let events = collect_until_done(&mut sub, &sid).await;
+
+    // A truncated summary (StopReason::MaxTokens) is rejected — Error + Done,
+    // no Compacted.
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, OutEvent::Error { message, .. } if message.contains("truncated"))));
+    assert!(events.iter().any(|e| matches!(e, OutEvent::Done { .. })));
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, OutEvent::Compacted { .. })));
+
+    // Copy-on-write + early refusal: a follow-up turn must see the full
+    // pre-compaction history — the truncated fragment never landed anywhere.
+    holly
+        .send(InMsg::prompt(sid.clone(), "again"))
+        .await
+        .unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+    let seen = seen.lock().unwrap();
+    let last = seen.last().expect("a follow-up request was recorded");
+    let first = last
+        .first()
+        .expect("the original user message is still present");
+    assert_eq!(first.text(), "hello");
+}
+
+#[tokio::test]
+async fn compact_with_oversized_transcript_is_rejected_before_the_llm_is_called() {
+    let (cfg, seen) = scripted(vec![
+        ("hi", Usage::default()),
+        ("summary", Usage::default()),
+    ]);
+    // Feed a transcript so large that compaction's input guard fires. (The first
+    // turn with this message refuses for the same reason — that's fine; the
+    // point is the compaction op's own guard catches the oversize *before*
+    // shipping a summarization request the provider would 4xx.)
+    let huge = "x".repeat(180_000 * 4 + 1_000); // ~4x chars/token → well over 180k tokens
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly.send(InMsg::prompt(sid.clone(), huge)).await.unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+
+    holly
+        .send(InMsg::Oneshot {
+            session: sid.clone(),
+            op: "compact".to_string(),
+            args: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+    let events = collect_until_done(&mut sub, &sid).await;
+
+    assert!(events.iter().any(
+        |e| matches!(e, OutEvent::Error { message, .. } if message.contains("exceeds") && message.contains("context budget"))
+    ));
+    assert!(events.iter().any(|e| matches!(e, OutEvent::Done { .. })));
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, OutEvent::Compacted { .. })));
+
+    // The summarization LLM must never have been called — the op refused
+    // before shipping the request. (The refused first turn didn't call it
+    // either, so `seen` stays empty.)
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter().all(|req| req
+            .iter()
+            .all(|m| !m.text().contains("Summarize the conversation transcript"))),
+        "no summarization request reached the LLM: {seen:?}"
+    );
 }
 
 #[tokio::test]

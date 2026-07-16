@@ -229,13 +229,17 @@ usage) instead of going through `session/stream.rs`'s inbox-racing
 (each `Tool`-role message truncated head+tail past ~2k chars so one oversized
 tool output can't blow the summarizer's own context window), optionally
 appends `args.instructions`, and asks the model to summarize it with a
-tool-less `LlmRequest` (`tools: &[]`). On success, `Context::apply_compaction`
-replaces the whole history with one summary message (`Message::user`, plus any
-preserved tail) and the session emits `Compacted`/`Usage`/`Done`/
-`Status::Done` — the ordinary terminal sequence, so a one-shot head still
-unblocks on `Done`. On failure, the ordinary `emit_turn_error` triple runs and
-`Context` is untouched. Model resolution and pricing mirror the turn loop:
-`s.model` → `s.profile.model` → (pricing only) `cfg.default_model`.
+tool-less `LlmRequest` (`tools: &[]`). **Copy-on-write (ADR-0101):** the source
+session's `Context` is **never mutated** — on success `compact_op` emits
+`Compacted{summary}` (a *report*; the head forks the summary into a new
+session) then `Usage`/`Done`/`Status::Done`, the ordinary terminal sequence so
+a one-shot head still unblocks on `Done`. A truncated summary
+(`StopReason::MaxTokens`) is refused outright (`Error`, never forked), and an
+oversized transcript (one that overflows `s.ctx.limit()`) is rejected before
+shipping a request the provider would 4xx. On failure, the ordinary
+`emit_turn_error` triple runs and `Context` is untouched. Model resolution and
+pricing mirror the turn loop: `s.model` → `s.profile.model` → (pricing only)
+`cfg.default_model`.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop *races* it via `tokio::select!` so a

@@ -348,15 +348,20 @@ impl SessionView {
                 }
             }
             OutEvent::FileChange { .. } => true,
-            // Session compaction (#324, ADR-0082): the engine context shrank,
-            // but the visible transcript stays full — render a one-line notice
-            // reusing the tool-output entry, like `record_status`'s out-of-band
-            // notices.
+            // Session compaction (#324, ADR-0082 → ADR-0101): copy-on-write —
+            // the source `Context` is untouched; the summary was forked into a
+            // new session by `App::handle_compacted`. Render a one-line notice
+            // on the source's transcript indicating the fork (the original is
+            // preserved). Reuses the tool-output entry, like `record_status`'s
+            // out-of-band notices.
             OutEvent::Compacted { seq, summary, .. } => {
                 if seq > self.last_seen_seq {
                     self.transcript.push(TranscriptEntry::ToolOutput {
                         tool: Some("compact".to_string()),
-                        output: format!("Compacted conversation history.\n\n{summary}"),
+                        output: format!(
+                            "Compacted: forked the summary into a new session. \
+                             The original is preserved.\n\n{summary}"
+                        ),
                     });
                     self.last_seen_seq = seq;
                     true

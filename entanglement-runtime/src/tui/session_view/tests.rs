@@ -488,7 +488,7 @@ fn supervisor_error_with_seq_zero_renders_even_after_seq_advances() {
 }
 
 #[test]
-fn compacted_renders_a_one_line_transcript_notice() {
+fn compacted_renders_a_fork_notice() {
     let mut v = SessionView::new();
     assert!(v.apply_event(OutEvent::Compacted {
         session: sid(),
@@ -507,6 +507,7 @@ fn compacted_renders_a_one_line_transcript_notice() {
             _ => None,
         })
         .expect("Compacted renders a tool-output-style notice");
+    assert!(notice.contains("forked"));
     assert!(notice.contains("user asked for X, agent did Y"));
     // Replayed (seq not advancing) is deduped like any other content event.
     assert!(!v.apply_event(OutEvent::Compacted {

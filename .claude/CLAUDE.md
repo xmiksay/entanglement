@@ -348,16 +348,18 @@ re-document them here):
   summarization) is the first op: routed like `SetAgent`/`SetModel`
   (`SessionCmd::Oneshot`, deferred via the same stash gate while a turn is live),
   it renders the transcript, asks the model to summarize it with a tool-less
-  request, and replaces the whole history via the new
-  `Context::apply_compaction(summary, kept)` — one **user-role** summary message
-  plus `kept` preserved trailing messages (always `0` in v1; keep-tail deferred).
-  The result is `OutEvent::Compacted { session, seq, summary, kept }`, a
-  **persisted, seq-bearing** content event — persistence and `ReplayFrom` cover
-  it for free (both are variant-agnostic over any seq-bearing event) —
-  and `Session::replay`'s `Compacted` fold calls the same `apply_compaction`, so
-  a resumed session stays compacted. The old prune-only `Context::compact`
-  (#178) is unchanged and still the automatic pre-round fallback; `"compact"`
-  only runs on request (`InMsg::Oneshot`, TUI `/compact [instructions]`).
+  request, and emits `OutEvent::Compacted { session, seq, summary, kept }` — a
+  **persisted, seq-bearing** content event (persistence and `ReplayFrom` cover
+  it for free; both are variant-agnostic over any seq-bearing event).
+  **Copy-on-write (ADR-0101, supersedes ADR-0082):** the source session's
+  `Context` is **never mutated** — the summary rides only in the event, and the
+  head forks it into a new session via `InMsg::Spawn`. A truncated summary
+  (`StopReason::MaxTokens`) is refused outright, and an oversized transcript is
+  rejected before the request. `Session::replay`'s `Compacted` fold is a no-op,
+  so a resumed source recovers its full history (the implicit undo). `kept` is
+  wire-legacy only (always `0`). The old prune-only `Context::compact` (#178) is
+  unchanged and still the automatic pre-round fallback; `"compact"` only runs on
+  request (`InMsg::Oneshot`, TUI `/compact [instructions]`).
 - **In-app tool-allowlist editing materializes a user-layer override** (#330,
   [ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)):
   no separate mask store — editing a profile's `tools:`/`disallowed_tools:`
