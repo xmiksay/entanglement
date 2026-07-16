@@ -10,7 +10,7 @@ Cargo.lock.bak
 .env
 .env.*
 !.env.example
-
+.entaglement
 # editor / os
 .DS_Store
 .idea/

@@ -292,15 +292,14 @@ pub(super) async fn handle_command_palette_event(
                         })
                         .await;
                 } else if cmd == crate::tui::commands::Command::Set {
-                    // The palette carries no trailing `key value` text (#376):
-                    // unlike typing `/set temperature 0.7` directly
-                    // (`event_loop::send_set`), there is nothing to send — surface
-                    // the usage hint instead of silently no-op'ing.
-                    app.record_set_error(
-                        "usage: /set <key> <value> — keys: temperature, effort, \
-                         thinking_budget, max_tokens"
-                            .to_string(),
-                    );
+                    // The palette carries no trailing `key value` text (#376), and
+                    // unlike `/compact` or `/mcp` a bare `/set` has no sensible
+                    // default — it needs an argument. A usage-hint status line was
+                    // a dead-end (the user could not proceed from there); instead
+                    // prefill the input with `/set ` and drop back to normal
+                    // editing. The user then types the key/value and presses Enter,
+                    // which routes through the typed path (`event_loop::send_set`).
+                    app.set_input_text("/set ".to_string());
                 } else if cmd == crate::tui::commands::Command::Show {
                     let _ = holly
                         .send(InMsg::SetGeneration {

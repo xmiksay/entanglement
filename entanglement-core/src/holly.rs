@@ -143,7 +143,7 @@ impl Holly {
     }
 
     /// Relay an [`InMsg`] **deserialized from an untrusted wire head** (stdio
-    /// `pipe`, the future WS `serve`), enforcing the trusted/untrusted frame
+    /// `pipe`, WebSocket `serve`), enforcing the trusted/untrusted frame
     /// split (#155). A privileged, runtime-authored variant
     /// ([`ToolResult`][InMsg::ToolResult]/[`Spawn`][InMsg::Spawn]/
     /// [`Resume`][InMsg::Resume]) is **refused**, not routed — a forged
