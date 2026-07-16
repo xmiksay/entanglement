@@ -297,9 +297,22 @@ impl SessionView {
                     false
                 }
             }
-            // Token totals are head-level state accumulated on `App` (see
-            // `App::handle_out_event`), not per-view transcript content (#192).
-            OutEvent::Usage { .. } => false,
+            // Token totals live per-view so a resumed session restores its
+            // accumulated counts (#192): the resume path replays persisted
+            // records through here.
+            OutEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                ..
+            } => {
+                self.input_tokens += input_tokens;
+                self.output_tokens += output_tokens;
+                if let Some(cost) = cost_usd {
+                    self.cost_usd += cost;
+                }
+                true
+            }
             OutEvent::Error { seq, message, .. } => {
                 // A supervisor lifecycle error for an id with no live session
                 // (refused resume/spawn of a closed/unknown id) carries seq `0` —

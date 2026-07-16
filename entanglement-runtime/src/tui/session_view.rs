@@ -122,6 +122,13 @@ pub struct SessionView {
     /// that mints the block's stable id: a reasoning run's first `ReasoningDelta`
     /// or a tool op's `ToolCall` (#340). Absent = collapsed (the default).
     expanded_blocks: HashSet<usize>,
+    /// Token usage accumulated from `OutEvent::Usage` deltas, per session (#192).
+    /// Held on the view (not head-global) so a resumed session restores its
+    /// totals — the resume path replays persisted records through `apply_event`,
+    /// which folds Usage here.
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_usd: f64,
     /// In-progress streamed tool calls (#194): `request_id → transcript index`
     /// of the `ToolCall` entry whose `input` is growing as `ToolCallDelta`
     /// fragments arrive. The assembled `ToolCall` finalizes and removes the
@@ -155,6 +162,9 @@ impl SessionView {
             expanded_blocks: HashSet::new(),
             streaming_tool_calls: HashMap::new(),
             render_cache: RenderCache::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
         }
     }
 
@@ -221,6 +231,20 @@ impl SessionView {
 
     pub fn task_list(&self) -> Option<&String> {
         self.task_list.as_ref()
+    }
+
+    /// Accumulated prompt/completion tokens for this session (#192).
+    pub fn input_tokens(&self) -> u64 {
+        self.input_tokens
+    }
+
+    pub fn output_tokens(&self) -> u64 {
+        self.output_tokens
+    }
+
+    /// Accumulated session cost in USD, summed from `OutEvent::Usage`.
+    pub fn cost_usd(&self) -> f64 {
+        self.cost_usd
     }
 
     pub fn scroll_offset(&self) -> usize {

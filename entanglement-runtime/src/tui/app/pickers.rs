@@ -173,8 +173,15 @@ impl App {
         &self.available_models
     }
 
+    /// The resolved active model (#218).
     pub fn model_info(&self) -> &ModelInfo {
         &self.model_info
+    }
+
+    /// Active provider name, tracked from the initial selection and every
+    /// `ModelChanged`. Shown in the bottom bar beside the model name.
+    pub fn active_provider(&self) -> &str {
+        &self.active_provider
     }
 
     /// Set the active model, carrying the resolved `ModelInfo` (id, display
@@ -184,6 +191,12 @@ impl App {
     pub fn set_model_info(&mut self, model_info: ModelInfo) {
         self.model_info = model_info;
         self.mark_dirty();
+    }
+
+    /// Seed the active provider name at head startup (the catalog's resolved
+    /// entry). `ModelChanged` keeps it current afterwards.
+    pub fn set_active_provider(&mut self, provider: String) {
+        self.active_provider = provider;
     }
 
     /// Install the managed per-agent model store (#323), threaded in from the head

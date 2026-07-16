@@ -30,6 +30,23 @@ pub(super) fn to_static(line: Line<'_>) -> Line<'static> {
     out
 }
 
+/// Whether a markdown-rendered line is output from a fenced code block (and so
+/// must not be word-wrapped). Heuristic: syntect styles *every* span it emits
+/// with a foreground color, while prose — even prose containing inline `code`,
+/// which adds one styled span — leaves most spans unstyled (`Span::raw`). A line
+/// counts as code only when all of its non-empty spans carry an `fg`. Empty
+/// spans (the raw spaces between words) are ignored so padding doesn't mislabel
+/// a prose line. Tables are detected separately by their leading `|`.
+fn is_code_block_line(line: &Line<'_>) -> bool {
+    if line.spans.len() < 2 {
+        return false;
+    }
+    line.spans
+        .iter()
+        .filter(|s| !s.content.is_empty())
+        .all(|s| s.style.fg.is_some())
+}
+
 fn render_text_run(
     md: &MarkdownRenderer,
     run: &str,
@@ -50,8 +67,7 @@ fn render_text_run(
             .map(|s| s.content.as_ref().starts_with('|'))
             .unwrap_or(false);
 
-        let is_code =
-            line.spans.len() > 1 && line.spans.iter().skip(1).any(|s| s.style.fg.is_some());
+        let is_code = is_code_block_line(&line);
 
         if is_table || is_code {
             out.push(theme.decorate(line, colors, available_width));
@@ -84,8 +100,7 @@ fn render_reasoning_run(
             .map(|s| s.content.as_ref().starts_with('|'))
             .unwrap_or(false);
 
-        let is_code =
-            line.spans.len() > 1 && line.spans.iter().skip(1).any(|s| s.style.fg.is_some());
+        let is_code = is_code_block_line(&line);
 
         let styled_line = if is_table || is_code {
             line

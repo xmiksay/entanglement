@@ -18,7 +18,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
     let (main_area, sidebar_area) = if app.showing_sidebar() {
-        let sidebar_width = app.sidebar_width();
+        // The sidebar is at least 25% of the usable width so its Plan /
+        // Tasks sections stay readable, but never below a floor so it
+        // doesn't collapse to nothing on a narrow terminal. A stored
+        // `sidebar_width` overrides up when the user has grown it.
+        let pct = size.width / 4;
+        let sidebar_width = app.sidebar_width().max(pct);
         if size.width > sidebar_width + 1 {
             let horizontal_chunks = Layout::default()
                 .direction(Direction::Horizontal)

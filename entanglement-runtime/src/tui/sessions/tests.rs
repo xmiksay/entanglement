@@ -345,3 +345,37 @@ fn acceptance_events_from_inactive_sessions_dont_pollute_active_view() {
         "Active session now has both its events"
     );
 }
+
+#[test]
+fn restore_from_records_rebuilds_token_totals() {
+    // Regression: Usage events were folded into head-global `App` state (never
+    // per-view), so a resumed session always showed 0 in / 0 out. Token totals
+    // now live per-view, and the resume path replays persisted `Usage` records
+    // through `apply_event`, so the restored session carries its real totals.
+    use crate::session_store::{LogPayload, LogRecord};
+
+    let live = SessionId::new("live");
+    let old = SessionId::new("old");
+    let mut reg = SessionRegistry::new(live.clone());
+
+    let usage = LogRecord::new(
+        old.clone(),
+        LogPayload::Out(OutEvent::Usage {
+            session: old.clone(),
+            seq: 1,
+            input_tokens: 2_500,
+            output_tokens: 900,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            cost_usd: Some(0.0123),
+        }),
+    );
+
+    reg.restore_from_records(old.clone(), &[usage]);
+
+    assert_eq!(reg.active_id(), &old);
+    let view = reg.active_view();
+    assert_eq!(view.input_tokens(), 2_500);
+    assert_eq!(view.output_tokens(), 900);
+    assert!((view.cost_usd() - 0.0123).abs() < 1e-9);
+}

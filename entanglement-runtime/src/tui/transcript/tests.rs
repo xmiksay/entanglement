@@ -529,3 +529,28 @@ fn width_change_rebuilds_every_block() {
         "a width change must rebuild every block"
     );
 }
+
+#[test]
+fn prose_with_inline_code_still_wraps() {
+    // Regression: the old code/non-code heuristic flagged ANY line containing
+    // inline `code` as a code block (because that one span carried an fg color),
+    // disabling wrapping and forcing a horizontal scroll for plain prose. A
+    // prose paragraph must wrap to the panel width even when it mentions `code`.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let long = "This is a fairly long prose paragraph that mentions an `inline_code` \
+                token somewhere in the middle and should still wrap to the panel \
+                width rather than force a horizontal scroll.";
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: format!("{long}\n"),
+    });
+
+    let body = render_body_lines(&mut app, 40);
+    let content_lines = body.lines.iter().filter(|l| !l.spans.is_empty()).count();
+    assert!(
+        content_lines > 1,
+        "prose with inline code must wrap across multiple lines, got {content_lines}"
+    );
+}

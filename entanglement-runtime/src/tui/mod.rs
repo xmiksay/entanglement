@@ -53,6 +53,7 @@ pub async fn tui(
     holly: &Holly,
     initial_session: SessionId,
     model_info: ModelInfo,
+    provider_name: String,
     catalog: Catalog,
     profiles: std::sync::Arc<std::sync::RwLock<ProfileRegistry>>,
     agent_models: std::sync::Arc<std::sync::Mutex<crate::config::agent_models::AgentModelStore>>,
@@ -104,6 +105,7 @@ pub async fn tui(
     let entry_profiles = entry_profiles_from(&profiles.read().unwrap());
     let mut app = App::new(initial_session, catalog, entry_profiles, tool_roster);
     app.set_model_info(model_info);
+    app.set_active_provider(provider_name);
     app.set_agent_models(agent_models);
     app.init_head_context(root, bash_enabled);
 

@@ -85,6 +85,9 @@ pub struct App {
     model_picker_state: ListState,
     available_models: Vec<(String, Vec<String>)>,
     model_info: ModelInfo,
+    /// Active provider name, set from the initial selection and updated on
+    /// `ModelChanged`. Shown in the bottom bar beside the model.
+    active_provider: String,
 
     // Per-agent model pins (#323, ADR-0081): the managed `agent-models.yml` store,
     // and the pending persist recorded when the `/model` picker confirms. The
@@ -120,11 +123,6 @@ pub struct App {
     theme: Theme,
     profile_colors: HashMap<String, ratatui::style::Color>,
     thinking_since: Option<Instant>,
-
-    // Token usage tracking (#192): accumulated from `OutEvent::Usage` deltas.
-    input_tokens: u64,
-    output_tokens: u64,
-    cost_usd: f64,
 
     // Input state
     input_multiline: bool,
@@ -250,22 +248,9 @@ impl App {
 
     pub fn handle_out_event(&mut self, event: OutEvent) {
         tracing::debug!("App handling OutEvent: {:?}", event);
-        // Token totals + cost are head-level (#192): accumulate the per-round-trip
-        // delta before routing the event into its session view.
-        if let OutEvent::Usage {
-            input_tokens,
-            output_tokens,
-            cost_usd,
-            ..
-        } = &event
-        {
-            self.add_input_tokens(*input_tokens);
-            self.add_output_tokens(*output_tokens);
-            if let Some(cost) = cost_usd {
-                self.add_cost(*cost);
-            }
-            self.mark_dirty();
-        }
+        // Token totals + cost are tracked per-session view (#192), so a resumed
+        // session restores its accumulated counts — the `Usage` event is folded
+        // into the active view by `sessions.handle_out_event` below.
         // A live model switch (#218) updates the head's model display (context
         // bar) directly — model_info is app-global, not per-session-view state.
         if let OutEvent::ModelChanged {
@@ -275,6 +260,7 @@ impl App {
             context_window,
         } = &event
         {
+            self.active_provider = provider.clone();
             self.set_model_info(ModelInfo {
                 id: model.clone(),
                 display_name: model.clone(),

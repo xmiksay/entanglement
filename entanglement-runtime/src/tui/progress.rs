@@ -81,7 +81,12 @@ pub(crate) fn draw_ship_cruise(
             .collect::<Vec<_>>(),
     );
 
-    let paragraph = Paragraph::new(line).alignment(ratatui::layout::Alignment::Left);
+    // Match the input panel's background so the animated indicator doesn't
+    // render as a black strip against the panel — the ship occupies the same
+    // row as the profile badge, which sits on `theme.input_bg`.
+    let paragraph = Paragraph::new(line)
+        .alignment(ratatui::layout::Alignment::Left)
+        .style(Style::default().bg(theme.input_bg));
     f.render_widget(paragraph, area);
 }
 
