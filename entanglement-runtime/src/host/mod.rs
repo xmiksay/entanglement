@@ -1,11 +1,12 @@
 //! Host tools that execute against the local filesystem and shell — `read`,
-//! `glob`, `grep`, `edit`, `write`, and the opt-in exec pair `bash`/`call`. The
+//! `glob`, `grep`, `edit`, `write`, `call`, and the opt-in `bash`. The
 //! read-only trio (`read`/`glob`/`grep`) is covered by ADR-0008; `edit`/`bash`
 //! by ADR-0009/ADR-0012; whole-file `write` by ADR-0031; the argv-exec `call`
 //! (no shell, auto-tailed output) by ADR-0045; [`host_tools`] assembles the
-//! **root-contained quintet** (`read`/`glob`/`grep`/`edit`/`write`) and a head
-//! explicitly opts into the exec pair [`BashTool`]/[`CallTool`] (gated by
-//! `ENTANGLEMENT_ENABLE_BASH`) — see ADR-0010.
+//! **root-contained quintet** (`read`/`glob`/`grep`/`edit`/`write`) — a head
+//! registers [`CallTool`] unconditionally alongside it and opts into
+//! [`BashTool`] separately (gated by `ENTANGLEMENT_ENABLE_BASH`) — see
+//! ADR-0010, amended by ADR-0093 for `call`'s registration.
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
 //! paths resolve against it and are **rejected on `..` escape** *and* on
@@ -14,10 +15,12 @@
 //! `root/link -> /etc` symlink can't be followed out of tree by `read`/`edit`/
 //! `write`, and `glob`/`grep` drop any match whose canonical path escapes.
 //! Output is byte-capped so a runaway
-//! listing or huge file can't silently consume the context window. `bash` runs
-//! the command rooted at `root` but otherwise inherits the engine process's
-//! full privileges — unsandboxed by design (ADR-0009); the opt-in gate plus
-//! permission profiles are the only controls (ADR-0010).
+//! listing or huge file can't silently consume the context window. `bash`/
+//! `call` run the command rooted at `root` (or at a validated `workdir`) but
+//! otherwise inherit the engine process's full privileges — unsandboxed by
+//! design (ADR-0009/ADR-0045); registration (opt-in for `bash`, unconditional
+//! for `call`) plus permission profiles are the only controls (ADR-0010/
+//! ADR-0093).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -124,6 +127,25 @@ pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
         resolved.push(name);
     }
     Ok(resolved)
+}
+
+/// Resolve the per-call working directory for an exec tool (`bash`/`call`):
+/// `root` by default, or a model-supplied `workdir` validated to stay under
+/// root (same symlink-safe containment as the filesystem tools, ADR-0054/#163)
+/// and to be a directory. Shared by [`crate::host::bash::BashTool`] and
+/// [`crate::host::call::CallTool`] — the containment + directory check is
+/// identical between the two (#386).
+pub fn resolve_workdir(root: &Path, workdir: Option<&str>) -> Result<PathBuf> {
+    match workdir {
+        None => Ok(root.to_path_buf()),
+        Some(w) => {
+            let p = resolve_under_root(root, w)?;
+            if !p.is_dir() {
+                anyhow::bail!("workdir is not a directory: {w}");
+            }
+            Ok(p)
+        }
+    }
 }
 
 /// Cap `s` at [`MAX_OUTPUT_BYTES`] on a UTF-8 boundary, appending a notice of

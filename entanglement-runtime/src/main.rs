@@ -60,12 +60,17 @@ use tui::tui;
 /// OpenAI-compatible client ([`entanglement_provider::openai_factory`]); Anthropic
 /// has its own client.
 ///
-/// The root-contained host quintet (`read`/`glob`/`grep`/`edit`/`write`) plus
-/// `load_skill` are always registered, rooted at the current working directory,
-/// so the `build`/`plan`/`explore` permission profiles gate something real out
-/// of the box. The exec pair is opt-in: set `ENTANGLEMENT_ENABLE_BASH=1` to register
-/// `BashTool` (shell) and `CallTool` (argv, no shell) — they run unsandboxed
-/// with the engine's full privileges (ADR-0009 / ADR-0010 / ADR-0045).
+/// The root-contained host quintet (`read`/`glob`/`grep`/`edit`/`write`), `call`
+/// (argv exec, no shell), and `load_skill` are always registered, rooted at the
+/// current working directory, so the `build`/`plan`/`explore` permission
+/// profiles gate something real out of the box. `bash` (shell) stays opt-in:
+/// set `ENTANGLEMENT_ENABLE_BASH=1` to register `BashTool` and its
+/// `BashOutputTool` poller — they run unsandboxed with the engine's full
+/// privileges (ADR-0009 / ADR-0010 / ADR-0045). `call` runs with the same
+/// full-privilege, unsandboxed execution but no shell means no injection
+/// surface, so its *registration* no longer rides `bash`'s opt-in gate
+/// (ADR-0093); per-profile permission (`Allow`/`Ask`/`Deny`) remains the actual
+/// dispatch gate, same as any other tool.
 ///
 /// Core no longer executes tools (#58): it only advertises their schemas
 /// (`cfg.tool_specs`). The returned [`ToolRegistry`] stays in the runtime and
@@ -104,26 +109,12 @@ async fn build_config(
     let root = std::env::current_dir()
         .and_then(|p| p.canonicalize())
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let mut tools = host_tools(root.clone());
-    if std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1") {
-        // The opt-in gate enables the whole exec pair (ADR-0010/ADR-0045):
-        // `bash` (shell) and `call` (argv, no shell). Profiles differentiate
-        // dispatch — e.g. a profile may `Allow` `call` while asking on `bash`.
-        // Both scrub the catalog's provider API-key env vars before spawn so a
-        // model-authored command can't exfiltrate the credentials (#164).
-        let secret_env = catalog.key_envs();
-        // One job registry shared by `bash` (spawner) and `bash_output` (poller)
-        // so background jobs are pollable across the pair (#170).
-        let jobs = host::JobRegistry::new();
-        tools.register(
-            BashTool::new(root.clone())
-                .with_secret_env(secret_env.clone())
-                .with_jobs(jobs.clone()),
-        );
-        tools.register(CallTool::new(root.clone()).with_secret_env(secret_env));
-        tools.register(host::BashOutputTool::new(jobs));
+    let secret_env = catalog.key_envs();
+    let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
+    let mut tools = register_default_tools(root.clone(), secret_env, bash_enabled);
+    if bash_enabled {
         eprintln!(
-            "skutter: bash + call enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
+            "skutter: bash enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
              run unsandboxed with full privileges"
         );
     }
@@ -185,6 +176,30 @@ async fn build_config(
     tool_names.sort();
     tool_names.dedup();
     (cfg, model_info, provider_name, tools, tool_names)
+}
+
+/// Assemble the tool registry: the root-contained quintet plus `call`
+/// (registered unconditionally — argv exec, no shell, ADR-0093) and, only when
+/// `bash_enabled`, the opt-in `bash`/`bash_output` pair sharing one job
+/// registry (ADR-0010/#170). `secret_env` (the catalog's provider API-key env
+/// vars, #164) is scrubbed from both exec tools' children.
+fn register_default_tools(
+    root: std::path::PathBuf,
+    secret_env: Vec<String>,
+    bash_enabled: bool,
+) -> ToolRegistry {
+    let mut tools = host_tools(root.clone());
+    tools.register(CallTool::new(root.clone()).with_secret_env(secret_env.clone()));
+    if bash_enabled {
+        let jobs = host::JobRegistry::new();
+        tools.register(
+            BashTool::new(root.clone())
+                .with_secret_env(secret_env.clone())
+                .with_jobs(jobs.clone()),
+        );
+        tools.register(host::BashOutputTool::new(jobs));
+    }
+    tools
 }
 
 /// Resolve the active provider from the catalog:
@@ -1090,5 +1105,40 @@ fn format_relative(ts_ms: u64) -> String {
         60..=3599 => format!("{}m ago", secs / 60),
         3600..=86399 => format!("{}h ago", secs / 3600),
         _ => format!("{}d ago", secs / 86400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::register_default_tools;
+
+    fn tool_names(bash_enabled: bool) -> Vec<String> {
+        let root = std::env::temp_dir();
+        register_default_tools(root, Vec::new(), bash_enabled)
+            .specs()
+            .into_iter()
+            .map(|s| s.name.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn call_is_registered_unconditionally() {
+        let names = tool_names(false);
+        assert!(names.contains(&"call".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn bash_and_bash_output_stay_opt_in() {
+        let names = tool_names(false);
+        assert!(!names.contains(&"bash".to_string()), "{names:?}");
+        assert!(!names.contains(&"bash_output".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn bash_enabled_registers_bash_pair_and_call() {
+        let names = tool_names(true);
+        assert!(names.contains(&"call".to_string()), "{names:?}");
+        assert!(names.contains(&"bash".to_string()), "{names:?}");
+        assert!(names.contains(&"bash_output".to_string()), "{names:?}");
     }
 }
