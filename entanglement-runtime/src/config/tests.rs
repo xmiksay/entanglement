@@ -5,13 +5,9 @@
 //! env var under a shared lock and point it at a temp file, mirroring the
 //! agents/skills discovery tests.
 
-use std::sync::Mutex;
-
 use entanglement_core::Permission;
 
 use super::*;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// The embedded defaults alone, parsed the way the loader does. Guards that the
 /// `.expect` in [`super::default_layer`] is provably unreachable.

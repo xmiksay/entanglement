@@ -27,19 +27,23 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::tools::ToolRegistry;
+use crate::tools::{Tool, ToolRegistry};
 
 pub mod client;
 #[cfg(feature = "mcp-http")]
 pub mod http;
+pub mod live;
+pub mod responder;
 pub mod stdio;
 pub mod tool;
 
 pub use client::{McpClient, McpToolDef};
 #[cfg(feature = "mcp-http")]
 pub use http::HttpClient;
+pub use live::{mcp_add, mcp_list, mcp_remove, ActiveServer, ActiveServers, ServerConfigs};
+pub use responder::spawn_mcp_responder;
 pub use stdio::StdioClient;
 pub use tool::McpTool;
 
@@ -47,8 +51,11 @@ pub use tool::McpTool;
 /// map. The transport is chosen by which of `command` (stdio subprocess) XOR
 /// `url` (streamable HTTP) is present; supplying both, or neither, is a config
 /// error caught by [`transport`][Self::transport]. `deny_unknown_fields` makes a
-/// typo'd key a loud error, matching every other config section.
-#[derive(Debug, Clone, Deserialize)]
+/// typo'd key a loud error, matching every other config section. `Serialize`
+/// (#375) lets a live `/mcp add`/`remove` write the section straight back to
+/// `config.yml` (`crate::config::save_mcp`) — the wire shape stays whatever a
+/// hand-edited file already used, field-for-field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     /// stdio transport: executable to spawn (looked up on `PATH`).
@@ -109,33 +116,112 @@ impl McpServerConfig {
     }
 }
 
+/// Mirrors `entanglement_core::McpServerSpec` (the `InMsg::McpAdd` wire DTO,
+/// #375) into the runtime's richer config type. Core carries no MCP logic
+/// (ADR-0067), so the `command`/`url` XOR check is deferred to
+/// [`McpServerConfig::transport`] — this conversion is a plain field copy.
+impl From<entanglement_core::McpServerSpec> for McpServerConfig {
+    fn from(spec: entanglement_core::McpServerSpec) -> Self {
+        Self {
+            command: spec.command,
+            args: spec.args,
+            env: spec.env,
+            url: spec.url,
+            headers: spec.headers,
+            disabled: spec.disabled,
+        }
+    }
+}
+
+/// `"stdio"` or `"http"`, for the [`McpServerStatus`][entanglement_core::McpServerStatus]
+/// wire label — meaningful only after [`McpServerConfig::transport`] has already
+/// validated the XOR, so it just reads back which field was set.
+pub(crate) fn transport_label(cfg: &McpServerConfig) -> String {
+    if cfg.command.is_some() {
+        "stdio"
+    } else {
+        "http"
+    }
+    .to_string()
+}
+
 /// Connect to every configured server and register its tools into `registry`.
 ///
 /// Best-effort per server: a connect/handshake/`tools/list` failure is logged and
 /// skipped so one broken server can't stop startup. The registered [`McpTool`]s
 /// hold an `Arc<McpClient>`, so keeping them in `registry` keeps each server
 /// connection alive for the process lifetime — no separate handle to retain.
-pub async fn connect(servers: &HashMap<String, McpServerConfig>, registry: &mut ToolRegistry) {
+/// Returns the servers that connected, seeding [`ActiveServers`] (#375) so a
+/// later live `/mcp list`/`remove` sees exactly what startup actually attached.
+pub async fn connect(
+    servers: &HashMap<String, McpServerConfig>,
+    registry: &mut ToolRegistry,
+) -> HashMap<String, ActiveServer> {
+    let mut active = HashMap::new();
     for (name, cfg) in servers {
         if cfg.disabled {
             tracing::info!("MCP server `{name}` is disabled; skipping");
             continue;
         }
-        if let Err(e) = connect_one(name, cfg, registry).await {
-            tracing::warn!("MCP server `{name}`: {e:#}");
+        match connect_one(name, cfg, registry).await {
+            Ok((client, tools)) => {
+                active.insert(
+                    name.clone(),
+                    ActiveServer {
+                        client,
+                        tools,
+                        transport: transport_label(cfg),
+                    },
+                );
+            }
+            Err(e) => tracing::warn!("MCP server `{name}`: {e:#}"),
         }
     }
+    active
 }
 
-async fn connect_one(name: &str, cfg: &McpServerConfig, registry: &mut ToolRegistry) -> Result<()> {
+/// The two network-I/O awaits (connect + `tools/list`), with no registry
+/// involved — split out of the old single-shot `connect_one` (#375) so a live
+/// `mcp_add` can run these *before* taking the registry's write lock, never
+/// holding it across an `.await`.
+async fn connect_client(
+    name: &str,
+    cfg: &McpServerConfig,
+) -> Result<(std::sync::Arc<McpClient>, Vec<McpToolDef>)> {
     let client = McpClient::connect(name, cfg).await?;
     let defs = client.list_tools().await?;
+    Ok((client, defs))
+}
+
+/// Register every discovered tool def into `registry`, synchronous (no
+/// `.await`) so it is safe to run under a held write lock. Returns the
+/// registered (already-namespaced) tool names.
+fn register_tools(
+    registry: &mut ToolRegistry,
+    client: &std::sync::Arc<McpClient>,
+    name: &str,
+    defs: Vec<McpToolDef>,
+) -> Vec<String> {
+    defs.into_iter()
+        .map(|def| {
+            let tool = McpTool::new(client.clone(), name, def);
+            let tool_name = tool.name().into_owned();
+            registry.register(tool);
+            tool_name
+        })
+        .collect()
+}
+
+async fn connect_one(
+    name: &str,
+    cfg: &McpServerConfig,
+    registry: &mut ToolRegistry,
+) -> Result<(std::sync::Arc<McpClient>, Vec<String>)> {
+    let (client, defs) = connect_client(name, cfg).await?;
     let count = defs.len();
-    for def in defs {
-        registry.register(McpTool::new(client.clone(), name, def));
-    }
+    let tools = register_tools(registry, &client, name, defs);
     tracing::info!("MCP server `{name}`: registered {count} tool(s)");
-    Ok(())
+    Ok((client, tools))
 }
 
 #[cfg(test)]

@@ -23,6 +23,8 @@
 //! from and carries `seq == 0` — a value core never mints — which a head renders
 //! unconditionally instead of dropping under a `seq > last` dedupe.
 
+use std::collections::HashMap;
+
 use entanglement_provider::{ContentPart, GenerationParams};
 use serde::{Deserialize, Serialize};
 
@@ -108,6 +110,54 @@ pub struct QuestionOption {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ┃ Live MCP server management (#375)
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Wire shape of one MCP server's spawn/connect config, carried by
+/// [`InMsg::McpAdd`]. Mirrors `entanglement_runtime::mcp::McpServerConfig`
+/// field-for-field, but lives here as a passive DTO: core holds no MCP logic
+/// (ADR-0067) — the `command` XOR `url` transport choice is validated
+/// runtime-side, on connect.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpServerSpec {
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// One server's live status, as reported in an [`OutEvent::McpList`] snapshot
+/// (#375). `connected`/`tools` reflect the runtime's `ActiveServers` map;
+/// `error` is set for a server that failed to connect (empty `tools`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpServerStatus {
+    pub name: String,
+    /// `"stdio"` or `"http"`.
+    pub transport: String,
+    pub connected: bool,
+    pub tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// What changed in reply to [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375),
+/// carried by [`OutEvent::McpChanged`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAction {
+    Added,
+    Removed,
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -547,6 +597,26 @@ pub enum InMsg {
     /// head can pair the snapshot to its request without overloading a
     /// [`SessionId`] as a correlation key (#160, ADR-0072).
     ListSessions { correlation_id: String },
+    /// Enumerate the engine's currently-attached MCP servers (#375). MCP config
+    /// is global (not per-session), so — like [`ListSessions`][InMsg::ListSessions]
+    /// — this is supervisor-global: core routes it to no session task, and it is
+    /// answered by a runtime service that owns the tool registry + live server
+    /// connections, off the inbound fan-out (mirrors how
+    /// [`ReplayFrom`][InMsg::ReplayFrom] is answered by the runtime's history
+    /// responder). `correlation_id` pairs the reply
+    /// ([`OutEvent::McpList`][crate::protocol::OutEvent::McpList]) to this query.
+    McpList { correlation_id: String },
+    /// Hot-connect an MCP server in the running process and persist it to
+    /// `config.yml` so it survives a restart (#375). Best-effort like startup
+    /// connect: a failed connect/handshake is logged, not surfaced as a session
+    /// error (there is no session to attach one to). On success emits
+    /// [`OutEvent::McpChanged`] with [`McpAction::Added`].
+    McpAdd { name: String, config: McpServerSpec },
+    /// Disconnect an MCP server (killing its subprocess / closing its HTTP
+    /// session), drop its tools from the registry, and persist the removal
+    /// (#375). Unknown name is a no-op (logged). On success emits
+    /// [`OutEvent::McpChanged`] with [`McpAction::Removed`].
+    McpRemove { name: String },
     /// Fetch a session's persisted content history from `after_seq` onward, for a
     /// head that subscribed late and missed the live broadcast (#160, ADR-0072).
     /// Answered out-of-core by the runtime's history responder — which owns the
@@ -690,9 +760,11 @@ impl InMsg {
     }
 
     /// The session this message targets, or `None` for a supervisor-global query
-    /// that names no session — [`ListSessions`][InMsg::ListSessions] (#160). Every
-    /// other variant, including the session-scoped [`ReplayFrom`][InMsg::ReplayFrom]
-    /// query, carries one.
+    /// that names no session — [`ListSessions`][InMsg::ListSessions] and the MCP
+    /// ops [`McpList`][InMsg::McpList]/[`McpAdd`][InMsg::McpAdd]/
+    /// [`McpRemove`][InMsg::McpRemove] (#375; MCP config is engine-global, not
+    /// per-session). Every other variant, including the session-scoped
+    /// [`ReplayFrom`][InMsg::ReplayFrom] query, carries one.
     pub fn session(&self) -> Option<&SessionId> {
         match self {
             InMsg::Prompt { session, .. }
@@ -710,7 +782,10 @@ impl InMsg {
             | InMsg::Oneshot { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => Some(session),
-            InMsg::ListSessions { .. } => None,
+            InMsg::ListSessions { .. }
+            | InMsg::McpList { .. }
+            | InMsg::McpAdd { .. }
+            | InMsg::McpRemove { .. } => None,
         }
     }
 
@@ -719,7 +794,9 @@ impl InMsg {
     /// The trusted/untrusted frame split. A head deserializing attacker-adjacent
     /// bytes (stdio `pipe`, the future WS `serve`) forwards only the allowlisted
     /// frames — `Prompt`/`Approve`/`Reject`/`AnswerQuestion`/`Stop`/`SetAgent`/
-    /// `SetModel`/`SetGeneration`/`ListSessions`/`ReplayFrom`/`CloseSession`. The
+    /// `SetModel`/`SetGeneration`/`ListSessions`/`ReplayFrom`/`CloseSession`/
+    /// `McpList`/`McpAdd`/`McpRemove` (#375: same local-trust tier as
+    /// `ListSessions` — enabling a server *is* consent, ADR-0047/ADR-0080). The
     /// privileged trio
     /// is **runtime-authored in process**, never wire-forgeable:
     ///
@@ -757,6 +834,9 @@ impl InMsg {
             InMsg::AnswerQuestion { .. } => "answer_question",
             InMsg::Stop { .. } => "stop",
             InMsg::ListSessions { .. } => "list_sessions",
+            InMsg::McpList { .. } => "mcp_list",
+            InMsg::McpAdd { .. } => "mcp_add",
+            InMsg::McpRemove { .. } => "mcp_remove",
             InMsg::ReplayFrom { .. } => "replay_from",
             InMsg::CloseSession { .. } => "close_session",
             InMsg::HibernateSession { .. } => "hibernate_session",
@@ -814,6 +894,17 @@ pub enum OutEvent {
         correlation_id: String,
         sessions: Vec<SessionInfo>,
     },
+    /// Snapshot of every currently-attached MCP server (lifecycle event, no
+    /// `seq`), in reply to [`InMsg::McpList`] (#375). Answered by the runtime
+    /// service that owns the live server connections — same "engine-global, not
+    /// core's business" shape as [`SessionList`][OutEvent::SessionList].
+    McpList {
+        correlation_id: String,
+        servers: Vec<McpServerStatus>,
+    },
+    /// An MCP server was hot-added or removed (lifecycle event, no `seq`), in
+    /// reply to [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375).
+    McpChanged { name: String, action: McpAction },
     /// A session's persisted content history from a requested `after_seq`, in
     /// reply to [`InMsg::ReplayFrom`] (#160, ADR-0072). Answered by the runtime's
     /// history responder — which owns the event log — not the core supervisor.
@@ -1037,7 +1128,9 @@ pub enum OutEvent {
 impl OutEvent {
     /// The session this event belongs to, or `None` for a supervisor-global query
     /// reply that names no single session — [`SessionList`][OutEvent::SessionList]
-    /// (#160). [`History`][OutEvent::History] does name a session (the one whose
+    /// (#160), [`McpList`][OutEvent::McpList] and
+    /// [`McpChanged`][OutEvent::McpChanged] (#375; MCP config is engine-global).
+    /// [`History`][OutEvent::History] does name a session (the one whose
     /// history it carries), so it returns `Some`.
     pub fn session(&self) -> Option<&SessionId> {
         match self {
@@ -1064,7 +1157,9 @@ impl OutEvent {
             | OutEvent::Done { session, .. }
             | OutEvent::Compacted { session, .. }
             | OutEvent::FileChange { session, .. } => Some(session),
-            OutEvent::SessionList { .. } => None,
+            OutEvent::SessionList { .. }
+            | OutEvent::McpList { .. }
+            | OutEvent::McpChanged { .. } => None,
         }
     }
 
@@ -1082,6 +1177,8 @@ impl OutEvent {
             | OutEvent::SessionEnded { .. }
             | OutEvent::SessionHibernated { .. }
             | OutEvent::SessionList { .. }
+            | OutEvent::McpList { .. }
+            | OutEvent::McpChanged { .. }
             | OutEvent::History { .. }
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }
@@ -1462,6 +1559,68 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn mcp_ops_are_wire_allowed_and_session_less() {
+        let list = InMsg::McpList {
+            correlation_id: "c1".into(),
+        };
+        let add = InMsg::McpAdd {
+            name: "everything".into(),
+            config: McpServerSpec {
+                command: Some("npx".into()),
+                args: vec![
+                    "-y".into(),
+                    "@modelcontextprotocol/server-everything".into(),
+                ],
+                env: HashMap::new(),
+                url: None,
+                headers: HashMap::new(),
+                disabled: false,
+            },
+        };
+        let remove = InMsg::McpRemove {
+            name: "everything".into(),
+        };
+        for msg in [&list, &add, &remove] {
+            assert!(msg.wire_allowed(), "{msg:?} should be wire-allowed");
+            assert_eq!(msg.session(), None, "{msg:?} is engine-global");
+            let json = serde_json::to_string(msg).unwrap();
+            let back: InMsg = serde_json::from_str(&json).unwrap();
+            assert_eq!(msg, &back);
+        }
+        assert_eq!(list.variant_name(), "mcp_list");
+        assert_eq!(add.variant_name(), "mcp_add");
+        assert_eq!(remove.variant_name(), "mcp_remove");
+    }
+
+    #[test]
+    fn mcp_list_and_changed_events_roundtrip() {
+        let list_ev = OutEvent::McpList {
+            correlation_id: "c1".into(),
+            servers: vec![McpServerStatus {
+                name: "everything".into(),
+                transport: "stdio".into(),
+                connected: true,
+                tools: vec!["mcp__everything__echo".into()],
+                error: None,
+            }],
+        };
+        assert_eq!(list_ev.seq(), None);
+        assert_eq!(list_ev.session(), None);
+        let json = serde_json::to_string(&list_ev).unwrap();
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), list_ev);
+
+        let changed_ev = OutEvent::McpChanged {
+            name: "everything".into(),
+            action: McpAction::Added,
+        };
+        assert_eq!(changed_ev.seq(), None);
+        assert_eq!(changed_ev.session(), None);
+        let json = serde_json::to_string(&changed_ev).unwrap();
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), changed_ev);
+        assert!(json.contains(r#""action":"added""#), "{json}");
     }
 
     #[test]
