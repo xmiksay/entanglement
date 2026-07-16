@@ -123,11 +123,17 @@ mod tests {
     use crate::system_prompt::PromptContext;
     use std::sync::Mutex;
 
-    /// `ENTANGLEMENT_AGENTS_DIR` is process-global; serialize the tests that set it.
+    /// `ENTANGLEMENT_AGENTS_DIR` is process-global; serialize every test that sets
+    /// *or* reads it — a reader left unguarded can observe a writer's in-flight
+    /// override directory under cargo's parallel test threads.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn winning_raw_text_seeds_from_built_in_source() {
+        // `discover` reads the process-global `ENTANGLEMENT_AGENTS_DIR` env var;
+        // take the same lock the mutating tests hold so this can't observe their
+        // in-flight override directory (and its written `build.md`) mid-test.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let build_src = BUILT_INS
             .iter()
@@ -140,6 +146,7 @@ mod tests {
 
     #[test]
     fn winning_raw_text_is_none_for_unknown_agent() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         assert!(winning_raw_text(dir.path(), "no-such-agent")
             .unwrap()
