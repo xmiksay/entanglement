@@ -168,6 +168,15 @@ re-document them here):
   (ADR-0024) + spawn/mask gating stay in the ladder *on top of* the resolver
   (least privilege still wins). The CLI defaults (`ProfileResolver` +
   `DefaultGrantStore` over `grants::FileGrantStore`) are byte-identical.
+  **Execution itself is session-aware too** (#360,
+  [ADR-0088](../docs/adr/0088-session-aware-tool-execution.md)):
+  `ToolRegistry::execute(&self, call: &ToolCall, session: &SessionId)` threads
+  the caller's `SessionId` through to a new default-delegating
+  `Tool::run_for_session` (falls back to `run_content`, so every in-tree tool
+  is unaffected) — the seam a multi-tenant embedder's own `Tool` needs to
+  dispatch per-tenant MCP endpoints or scope a DB-backed tool's writes to the
+  caller through one shared registry, closing the gap #311 left between
+  session-aware policy and session-blind execution.
 - **Trusted/untrusted frame split** (#155,
   [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)): `Holly::send`
   is the **privileged in-process** inbox (executor/head, trusted for any frame);

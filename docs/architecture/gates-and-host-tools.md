@@ -69,7 +69,15 @@ the implementations live in **`entanglement-runtime::host`**
 Execution *and* permission dispatch now run in the runtime (✅ #58, #59):
 `entanglement-runtime::tool_runner` subscribes to the engine, resolves each
 `ToolExec`'s `Allow|Ask|Deny` against the session's active profile (§3), runs the
-cleared tool against the registry, and replies with `InMsg::ToolResult`. `Ask`
+cleared tool against the registry, and replies with `InMsg::ToolResult`.
+`ToolRegistry::execute(&self, call: &ToolCall, session: &SessionId)` threads the
+caller's `SessionId` through to `Tool::run_for_session` (#360,
+[ADR-0088](../adr/0088-session-aware-tool-execution.md)) — a default-delegating
+method (falls back to `run_content`) so every in-tree tool is unaffected; a
+multi-tenant embedder overrides it to dispatch per-tenant MCP endpoints or scope
+a DB-backed tool's writes to the caller, since a shared `ToolRegistry` otherwise
+can't tell tenants apart at execution time even though `spawn_tool_executor_with_policy`
+(#311) already resolves *permission* per session. `Ask`
 emits the `ToolRequest` prompt and waits for the head's decision on
 `Holly::subscribe_inbound()` (the engine's inbound `InMsg` fan-out). The executor
 is **idempotent by `request_id`** (✅ #274,

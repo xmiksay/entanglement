@@ -814,12 +814,15 @@ async fn run_and_reply(
     let content = crate::file_change::capture_and_emit(
         holly,
         &session,
-        tools.execute(&ToolCall {
-            id: request_id.clone(),
-            name: tool.clone(),
-            input: input.clone(),
-            provider_meta: None,
-        }),
+        tools.execute(
+            &ToolCall {
+                id: request_id.clone(),
+                name: tool.clone(),
+                input: input.clone(),
+                provider_meta: None,
+            },
+            &session,
+        ),
     )
     .await;
     // `post_tool_use` (#199) observes the result before it is folded back — a

@@ -350,10 +350,10 @@ async fn service_binding(
             Err(format!("tool `{}` denied by permission profile", call.tool)),
             false,
         ),
-        Decision::Perm(Permission::Allow) => (Ok(exec(tools, call).await), false),
+        Decision::Perm(Permission::Allow) => (Ok(exec(tools, session, call).await), false),
         Decision::Perm(Permission::Ask) => {
             if approved.contains(call.tool) {
-                return (Ok(exec(tools, call).await), false);
+                return (Ok(exec(tools, session, call).await), false);
             }
             // Nested approval gets its own request id so the head's Approve/Reject
             // matches this binding, not the outer `rhai` call. The card shows the
@@ -365,7 +365,7 @@ async fn service_binding(
                 Approval::Approved => {
                     approved.insert(call.tool);
                     set_state(holly, session, AgentState::Thinking);
-                    (Ok(exec(tools, call).await), false)
+                    (Ok(exec(tools, session, call).await), false)
                 }
                 Approval::Rejected(reason) => {
                     set_state(holly, session, AgentState::Thinking);
@@ -385,14 +385,17 @@ async fn service_binding(
 /// the run — it surfaces the message to the script). A `rhai` script is a text
 /// context, so an image result (#221) collapses to its text parts (empty for an
 /// image-only `read`) rather than smuggling base64 into the script.
-async fn exec(tools: &ToolRegistry, call: &BindingCall) -> String {
+async fn exec(tools: &ToolRegistry, session: &SessionId, call: &BindingCall) -> String {
     let content = tools
-        .execute(&ToolCall {
-            id: format!("rhai:{}", call.tool),
-            name: call.tool.to_string(),
-            input: call.input.clone(),
-            provider_meta: None,
-        })
+        .execute(
+            &ToolCall {
+                id: format!("rhai:{}", call.tool),
+                name: call.tool.to_string(),
+                input: call.input.clone(),
+                provider_meta: None,
+            },
+            session,
+        )
         .await;
     entanglement_core::content_text(&content)
 }
