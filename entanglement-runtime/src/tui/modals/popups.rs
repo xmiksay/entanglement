@@ -283,6 +283,60 @@ pub fn draw_key_dialog(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// Draw the `/mcp list` result panel (#373): connected servers, transport,
+/// status, and tools, reusing the read-only-list shape of [`draw_help_dialog`]
+/// — `Esc` is the only key it consumes, so no `ListState`/highlight is needed.
+pub fn draw_mcp_panel(f: &mut Frame, app: &App) {
+    let servers = app.mcp_servers();
+    let mut lines: Vec<ListItem> = Vec::new();
+
+    if servers.is_empty() {
+        lines.push(ListItem::new(Line::from(Span::styled(
+            "No MCP servers connected.",
+            Style::default().dim(),
+        ))));
+    } else {
+        for s in servers {
+            let status = if s.connected {
+                Span::styled("connected", Style::default().fg(Color::Green))
+            } else {
+                Span::styled("disconnected", Style::default().fg(Color::Red))
+            };
+            lines.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("{} ", s.name), Style::default().bold()),
+                Span::styled(format!("[{}] ", s.transport), Style::default().dim()),
+                status,
+            ])));
+            if let Some(err) = &s.error {
+                lines.push(ListItem::new(Line::from(Span::styled(
+                    format!("  error: {err}"),
+                    Style::default().fg(Color::Red),
+                ))));
+            } else if s.tools.is_empty() {
+                lines.push(ListItem::new(Line::from(Span::styled(
+                    "  (no tools)",
+                    Style::default().dim(),
+                ))));
+            } else {
+                lines.push(ListItem::new(Line::from(Span::styled(
+                    format!("  tools: {}", s.tools.join(", ")),
+                    Style::default().dim(),
+                ))));
+            }
+        }
+    }
+
+    let list = List::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("MCP Servers (Esc to close)"),
+    );
+
+    let area = centered_rect(70, 60, f.area());
+    f.render_widget(Clear, area);
+    f.render_widget(list, area);
+}
+
 /// Draw the `/agent` picker's `e` tools-checklist dialog (#330): every
 /// advertised tool with a checkbox reflecting the profile's current effective
 /// mask. `Space` toggles, `Enter` saves a user-layer override, `Esc` discards.

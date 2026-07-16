@@ -3,6 +3,9 @@ use entanglement_provider::{GenerationParams, ReasoningEffort};
 // `CommandPalette` lives in a sibling module (#376, once this file crossed the
 // 400-line cap) but stays reachable at its historical path for every call site.
 pub use super::command_palette::CommandPalette;
+// `/mcp`'s subcommand parsing + wire dispatch lives in its own sibling module
+// (#373, `mcp_command.rs`, same "past the cap" reasoning as `CommandPalette`
+// above) — call sites reach it at `crate::tui::mcp_command::…` directly.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -21,6 +24,7 @@ pub enum Command {
     Compact,
     Set,
     Show,
+    Mcp,
 }
 
 impl Command {
@@ -41,6 +45,7 @@ impl Command {
             Command::Compact => "compact",
             Command::Set => "set",
             Command::Show => "show",
+            Command::Mcp => "mcp",
         }
     }
 
@@ -63,6 +68,7 @@ impl Command {
                 "Set a generation parameter (temperature, effort, thinking_budget, max_tokens)"
             }
             Command::Show => "Show the current effective generation parameters",
+            Command::Mcp => "Manage MCP servers (list, add, remove)",
         }
     }
 
@@ -88,6 +94,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Compact,
         Command::Set,
         Command::Show,
+        Command::Mcp,
     ]
 }
 
@@ -199,6 +206,7 @@ mod tests {
         assert_eq!(parse_command("/compact"), Some(Command::Compact));
         assert_eq!(parse_command("/set"), Some(Command::Set));
         assert_eq!(parse_command("/show"), Some(Command::Show));
+        assert_eq!(parse_command("/mcp"), Some(Command::Mcp));
     }
 
     #[test]
