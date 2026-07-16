@@ -114,7 +114,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         match &approval_mode {
             ApprovalMode::Normal => {
-                "Type a message... | Shift+Enter: newline | Ctrl+J: newline | Enter: send"
+                "Type a message... | Enter: send | Alt/Ctrl+J/Shift+Enter: newline | Ctrl+\u{2190}/\u{2192} word | Home/End line | Ctrl+Home/End doc"
             }
             ApprovalMode::WaitingForApproval { .. } => "",
             ApprovalMode::EnteringRejectReason { .. } => {
@@ -130,14 +130,30 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
         &input_text
     };
 
+    // The cursor (row, col) and a vertical/horizontal scroll that keep it in
+    // view when content overflows the now-dynamic input box. We compute both
+    // from `app.input()` once and freeze them before the mutable `&mut App`
+    // borrow hands off to the modals below.
+    let (cursor_row, _cursor_col) = app.input().cursor();
+    let cursor_col = app.input().cursor_display_col();
+
+    // Vertical: keep the cursor's row on a visible line by scrolling it up once
+    // it would fall past the last visible row (`height - 1`).
+    let vscroll = cursor_row.saturating_sub(area.height.saturating_sub(1) as usize) as u16;
+    // Horizontal (cursor-following): advance the left column so the cursor stays
+    // no further right than the last visible column (`width - 1`).
+    let hscroll = cursor_col.saturating_sub(area.width.saturating_sub(1) as usize) as u16;
+
     let paragraph = Paragraph::new(display_text)
         .style(Style::default().fg(Color::White).bg(theme.input_bg))
-        .scroll((app.input().scroll_offset(), 0));
+        .scroll((vscroll, hscroll));
     f.render_widget(paragraph, area);
-    let cursor_pos = app.input().cursor_display_col() as u16;
-    if cursor_pos < area.width {
-        f.set_cursor_position((area.x + cursor_pos, area.y));
-    }
+
+    // Always place the terminal cursor; the scroll math above guarantees it
+    // lands inside `area` by construction (cursor row/col are in-view).
+    let cursor_x = area.x + (cursor_col - hscroll as usize) as u16;
+    let cursor_y = area.y + (cursor_row - vscroll as usize) as u16;
+    f.set_cursor_position((cursor_x, cursor_y));
 
     if matches!(approval_mode, ApprovalMode::Normal) && !app.is_asking() {
         modals::draw_slash_autocomplete(f, app, area);
@@ -219,6 +235,9 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::app::App;
+    use entanglement_core::SessionId;
+    use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
     fn format_tokens_uses_si_multipliers() {
@@ -229,5 +248,66 @@ mod tests {
         assert_eq!(format_tokens(1_000_000), "1.0M");
         assert_eq!(format_tokens(1_500_000), "1.5M");
         assert_eq!(format_tokens(1_000_000_000), "1.0G");
+    }
+
+    /// D2 + cursor-Y fix: with a 3-line input the terminal cursor must land on
+    /// the cursor's row (here the last), not be pinned to the top row. Draw the
+    /// input box alone into a TestBackend at a known area and read back the
+    /// cursor position the backend recorded.
+    #[test]
+    fn multiline_input_places_cursor_on_cursor_row() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        // "line1\nline2\nline3" — cursor ends on row 2, col 5.
+        app.input().insert_str("line1");
+        app.input().insert_newline();
+        app.input().insert_str("line2");
+        app.input().insert_newline();
+        app.input().insert_str("line3");
+        assert_eq!(app.input().cursor(), (2, "line3".len()));
+
+        // A 1-row-tall area to prove the cursor Y is driven by `cursor_row`
+        // (with vscroll) rather than a hardcoded `area.y`.
+        let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 40, 1);
+                draw_input(f, area, &mut app);
+            })
+            .unwrap();
+
+        // The only visible row (area.y=0) shows the scrolled-to line, and the
+        // terminal cursor sits on that same row at the cursor's column.
+        let pos = terminal.backend().cursor_position();
+        assert_eq!(pos.y, 0, "cursor Y should be on the visible (scrolled) row");
+        assert_eq!(
+            pos.x as usize,
+            "line3".len(),
+            "cursor X should be at the end of line3"
+        );
+    }
+
+    /// Cursor on the middle row of a tall-enough box renders on that row, not
+    /// the first — the core of the bug from complaint #2.
+    #[test]
+    fn cursor_second_row_renders_on_second_visible_row() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.input().insert_str("aaa");
+        app.input().insert_newline();
+        app.input().insert_str("bbb");
+        // cursor on row 1, col 2 (after the first two 'b's of "bbb")
+        app.input().move_cursor_left();
+        assert_eq!(app.input().cursor(), (1, 2));
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 40, 2);
+                draw_input(f, area, &mut app);
+            })
+            .unwrap();
+
+        let pos = terminal.backend().cursor_position();
+        assert_eq!(pos.y, 1, "cursor on row 1 must render on the second row");
+        assert_eq!(pos.x, 2, "cursor X tracks its column");
     }
 }

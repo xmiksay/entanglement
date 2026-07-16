@@ -72,6 +72,7 @@ pub async fn tui(
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     );
     // Mouse capture lets the wheel scroll the chat and blocks become clickable.
