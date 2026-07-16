@@ -2,6 +2,10 @@
 # `make verify` gate PLUS a coverage job (`make coverage` → cargo-llvm-cov). The
 # coverage run fails below COV_MIN and uploads its lcov + Cobertura reports as a
 # build artifact. Drives everything through `make`.
+#
+# `publish` (issue #362) then pushes the three crates to crates.io via Trusted
+# Publishing (OIDC — no long-lived CARGO_REGISTRY_TOKEN secret in the repo):
+# see docs/releasing.md for the one-time crates.io setup this depends on.
 name: Release
 
 on:
@@ -54,3 +58,62 @@ jobs:
           path: |
             lcov.info
             cobertura.xml
+
+  publish:
+    name: cargo publish (crates.io, trusted publishing)
+    runs-on: ubuntu-latest
+    needs: [verify, coverage]
+    # Optional GitHub environment for deployment protection rules (required
+    # reviewers, branch restrictions) — see docs/releasing.md. Auto-created
+    # with no rules on first run if it doesn't already exist in repo settings.
+    environment: release
+    permissions:
+      id-token: write # required to exchange a GitHub OIDC token for a crates.io publish token
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      # Publishing the wrong version silently (workspace.package.version out of
+      # sync with the pushed tag) is unrecoverable on crates.io — fail loudly
+      # instead.
+      - name: Check tag matches workspace version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "entanglement-core") | .version')
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "FAIL: tag $GITHUB_REF_NAME does not match workspace.package.version $pkg_version" >&2
+            exit 1
+          fi
+
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      # Published leaf-first (workspace dep order: provider <- core <- runtime,
+      # see .claude/CLAUDE.md's crate table) — each publish must be visible on
+      # the sparse index before the crate that depends on it packages, or
+      # `cargo publish` fails resolving the registry dep (confirmed locally:
+      # `cargo publish --dry-run -p entanglement-core` errors with "no matching
+      # package named `entanglement-provider`" before provider is published).
+      - name: Publish entanglement-provider
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p entanglement-provider
+
+      - name: Wait for entanglement-provider on the index
+        run: sh scripts/wait-for-crate.sh entanglement-provider "${GITHUB_REF_NAME#v}"
+
+      - name: Publish entanglement-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p entanglement-core
+
+      - name: Wait for entanglement-core on the index
+        run: sh scripts/wait-for-crate.sh entanglement-core "${GITHUB_REF_NAME#v}"
+
+      - name: Publish entanglement-runtime
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p entanglement-runtime

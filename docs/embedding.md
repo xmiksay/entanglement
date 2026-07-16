@@ -329,3 +329,11 @@ entanglement-runtime = { git = "https://github.com/xmiksay/entanglement", tag = 
 Prefer `tag =` over `rev =` in a site-style consumer — it survives a
 `cargo update` re-resolve intentionally (a `rev` pin is silently frozen either
 way, but a tag documents *which* release you're on).
+
+Every tagged release also publishes to crates.io (see
+[`releasing.md`](releasing.md)), so once the crate you need has a release out,
+a plain registry dependency works too and needs no `git`/`tag` at all:
+
+```toml
+entanglement-runtime = { version = "0.1", default-features = false }
+```
