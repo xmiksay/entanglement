@@ -148,6 +148,50 @@ impl Tool for ReadTool {
     }
 }
 
+#[derive(Deserialize)]
+struct ReadRawInput {
+    path: String,
+}
+
+pub struct ReadRawTool {
+    root: std::path::PathBuf,
+}
+
+impl ReadRawTool {
+    pub fn new(root: std::path::PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+/// `read_raw` — like [`ReadTool`] but returns a file's exact UTF-8 content with
+/// no line-number prefix. Never advertised to the model: registered into the
+/// `ToolRegistry` *after* `cfg.tool_specs` is snapshotted (`main.rs`'s
+/// `build_config`), so it's present for execution but invisible to the model's
+/// tool list. The sole reason it exists is so a `rhai` script's `parse_json`/
+/// `parse_yaml` has raw source to parse — `read`'s `"{lineno}: {line}"` format
+/// isn't valid JSON/YAML.
+#[async_trait]
+impl Tool for ReadRawTool {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("read_raw")
+    }
+    fn description(&self) -> &str {
+        "Read a file's raw UTF-8 content with no line-number prefix. Internal — \
+         only reachable from a rhai script, never advertised as a standalone tool."
+    }
+    async fn run(&self, input: &str) -> Result<String> {
+        let parsed: ReadRawInput = serde_json::from_str(input)
+            .context("invalid input to read_raw: expected {\"path\": string}")?;
+        let full = resolve_under_root(&self.root, &parsed.path)?;
+        let bytes = tokio::fs::read(&full)
+            .await
+            .with_context(|| format!("reading {}", parsed.path))?;
+        let text = String::from_utf8(bytes)
+            .with_context(|| format!("{} is not valid UTF-8", parsed.path))?;
+        Ok(truncate_output(text))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +336,25 @@ mod tests {
         let tool = ReadTool::new(dir.path().to_path_buf());
         let err = tool.run("not json").await.unwrap_err();
         assert!(format!("{err}").contains("invalid input to read"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn read_raw_returns_content_with_no_line_numbers() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("cfg.json"), r#"{"a":1}"#).unwrap();
+        let tool = ReadRawTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"path":"cfg.json"}"#).await.unwrap();
+        assert_eq!(out, r#"{"a":1}"#);
+    }
+
+    #[tokio::test]
+    async fn read_raw_path_escaping_root_is_rejected() {
+        let dir = tmp();
+        let tool = ReadRawTool::new(dir.path().to_path_buf());
+        let err = tool.run(r#"{"path":"../secret"}"#).await.unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
     }
 }

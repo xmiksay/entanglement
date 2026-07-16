@@ -46,7 +46,7 @@ pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use jobs::JobRegistry;
-pub use read::ReadTool;
+pub use read::{ReadRawTool, ReadTool};
 pub use write::WriteTool;
 
 /// Hard cap on a single tool's textual output, in bytes. Larger output is
@@ -218,13 +218,25 @@ impl FileList {
 }
 
 /// Enumerate files under `root` matching `pattern` (a glob relative to root),
-/// yielding display paths relative to root. Skips directories (counted in
+/// yielding display paths relative to root. `excludes` is a caller-supplied
+/// list of glob patterns (matched against the root-relative path) additional
+/// entries are dropped for — on top of that, any path with a `.git` path
+/// component is **always** dropped, unconditionally: `.git` internals are
+/// large, mostly binary, and never something an agent needs to read or
+/// search, so the exclusion isn't tied to (and can't be defeated by) the
+/// `excludes` list (ADR-0099). Skips directories (counted in
 /// [`FileList::matched_dirs`]) and logs unreadable entries as `warn!` (counted
-/// in [`FileList::skipped_errors`]) instead of silently dropping them. Bounds
-/// the walk at [`MAX_RESULTS`] files.
-pub fn list_files(root: &Path, pattern: &str) -> Result<FileList> {
+/// in [`FileList::skipped_errors`]) instead of silently dropping them.
+/// Excluded entries are dropped before either count, so an excluded subtree
+/// looks to the caller like it was never in the walk at all. Bounds the walk
+/// at [`MAX_RESULTS`] files.
+pub fn list_files(root: &Path, pattern: &str, excludes: &[String]) -> Result<FileList> {
     let abs = root.join(pattern).to_string_lossy().into_owned();
     let entries = ::glob::glob(&abs).with_context(|| format!("invalid glob: {pattern}"))?;
+    let exclude_patterns: Vec<::glob::Pattern> = excludes
+        .iter()
+        .map(|p| ::glob::Pattern::new(p).with_context(|| format!("invalid exclude pattern: {p}")))
+        .collect::<Result<_>>()?;
     // Containment (#163): a `..` or absolute `pattern` makes the glob walk
     // outside root, and a symlink under root resolves elsewhere — route glob/
     // grep through the same boundary as read/write by dropping any entry whose
@@ -240,6 +252,15 @@ pub fn list_files(root: &Path, pattern: &str) -> Result<FileList> {
                 continue;
             }
         };
+        if p.components().any(|c| c.as_os_str() == ".git") {
+            continue;
+        }
+        if !exclude_patterns.is_empty() {
+            let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy();
+            if exclude_patterns.iter().any(|pat| pat.matches(&rel)) {
+                continue;
+            }
+        }
         let contained = p
             .canonicalize()
             .map(|c| c.starts_with(&canon_root))
@@ -404,7 +425,7 @@ mod tests {
     fn list_files_counts_matched_dirs_when_no_files() {
         let dir = TempDir::new();
         fs::write(dir.join("nested/a.rs"), "x\n").unwrap();
-        let list = list_files(&dir.path, "**").unwrap();
+        let list = list_files(&dir.path, "**", &[]).unwrap();
         assert!(list.files.is_empty(), "bare ** yields no files");
         assert!(
             list.matched_dirs > 0,
@@ -418,11 +439,74 @@ mod tests {
     fn list_files_clean_empty_when_pattern_matches_nothing() {
         let dir = TempDir::new();
         fs::write(dir.join("a.rs"), "x\n").unwrap();
-        let list = list_files(&dir.path, "does-not-exist-*").unwrap();
+        let list = list_files(&dir.path, "does-not-exist-*", &[]).unwrap();
         assert!(list.files.is_empty());
         assert_eq!(list.matched_dirs, 0);
         assert_eq!(list.skipped_errors, 0);
         assert!(!list.matched_anything());
+    }
+
+    /// `.git` is excluded unconditionally — no `excludes` entry required, and
+    /// it can't be searched even if the pattern targets it directly (ADR-0099).
+    #[test]
+    fn list_files_excludes_dot_git_by_default() {
+        let dir = TempDir::new();
+        fs::write(dir.join(".git/config"), "x\n").unwrap();
+        fs::write(dir.join(".git/objects/abc"), "x\n").unwrap();
+        fs::write(dir.join("src/main.rs"), "x\n").unwrap();
+        let list = list_files(&dir.path, "**/*", &[]).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("src/main.rs")),
+            "in-tree file should be listed: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains(".git")),
+            ".git contents leaked: {names:?}"
+        );
+
+        // Even a pattern that targets `.git` directly finds nothing.
+        let git_list = list_files(&dir.path, ".git/**/*", &[]).unwrap();
+        assert!(
+            git_list.files.is_empty(),
+            "explicit .git/** pattern should still be excluded: {:?}",
+            git_list.files
+        );
+    }
+
+    /// A caller-supplied `excludes` glob filters out matching paths, including
+    /// whole subtrees via `**`.
+    #[test]
+    fn list_files_honors_caller_excludes() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("target/debug/build.log"), "x\n").unwrap();
+        let list = list_files(&dir.path, "**/*", &["target/**".to_string()]).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with("src/a.rs")), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n.contains("target")),
+            "excluded subtree leaked: {names:?}"
+        );
+    }
+
+    /// An invalid exclude pattern errors rather than being silently ignored.
+    #[test]
+    fn list_files_rejects_invalid_exclude_pattern() {
+        let dir = TempDir::new();
+        let err = list_files(&dir.path, "**/*", &["[".to_string()]).unwrap_err();
+        assert!(
+            format!("{err}").contains("invalid exclude pattern"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -435,6 +519,56 @@ mod tests {
         assert!(out.contains("src/m.rs:1:"), "got: {out}");
         assert!(out.contains("src/other.md:1:"), "got: {out}");
         assert!(!out.contains("beta"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn glob_excludes_dot_git_by_default() {
+        let dir = TempDir::new();
+        fs::write(dir.join(".git/config"), "x\n").unwrap();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        let tool = GlobTool::new(dir.path.clone());
+        let out = tool.run(r#"{"pattern":"**/*"}"#).await.unwrap();
+        assert!(out.contains("src/a.rs"), "got: {out}");
+        assert!(!out.contains(".git"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn glob_exclude_param_filters_matching_subtree() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("target/debug/build.log"), "x\n").unwrap();
+        let tool = GlobTool::new(dir.path.clone());
+        let out = tool
+            .run(r#"{"pattern":"**/*","exclude":["target/**"]}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("src/a.rs"), "got: {out}");
+        assert!(!out.contains("target"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn grep_excludes_dot_git_by_default() {
+        let dir = TempDir::new();
+        fs::write(dir.join(".git/config"), "needle\n").unwrap();
+        fs::write(dir.join("src/a.rs"), "needle\n").unwrap();
+        let tool = GrepTool::new(dir.path.clone());
+        let out = tool.run(r#"{"pattern":"needle"}"#).await.unwrap();
+        assert!(out.contains("src/a.rs"), "got: {out}");
+        assert!(!out.contains(".git"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn grep_exclude_param_filters_matching_subtree() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/a.rs"), "needle\n").unwrap();
+        fs::write(dir.join("target/debug/build.log"), "needle\n").unwrap();
+        let tool = GrepTool::new(dir.path.clone());
+        let out = tool
+            .run(r#"{"pattern":"needle","exclude":["target/**"]}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("src/a.rs"), "got: {out}");
+        assert!(!out.contains("target"), "got: {out}");
     }
 
     #[tokio::test]
@@ -543,7 +677,7 @@ mod tests {
         std::fs::write(outside.join("leak.txt"), "x\n").unwrap();
         std::os::unix::fs::symlink(&outside.path, dir.join("escape")).unwrap();
         std::fs::write(dir.join("inside.txt"), "x\n").unwrap();
-        let list = list_files(&dir.path, "**/*").unwrap();
+        let list = list_files(&dir.path, "**/*", &[]).unwrap();
         let names: Vec<String> = list
             .files
             .iter()

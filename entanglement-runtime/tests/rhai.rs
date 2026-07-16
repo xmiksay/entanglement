@@ -15,7 +15,7 @@ use entanglement_core::{
     LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId,
     ToolCall,
 };
-use entanglement_runtime::host::host_tools;
+use entanglement_runtime::host::{host_tools, ReadRawTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 
@@ -96,9 +96,14 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    // `read_raw` mirrors main.rs's `build_config`: registered into the same
+    // registry the executor/rhai bridge use, but never advertised as a
+    // standalone tool (it isn't in any `tool_specs`/`cfg.tool_specs` here).
+    let mut tools = host_tools(root.to_path_buf());
+    tools.register(ReadRawTool::new(root.to_path_buf()));
     let _executor = spawn_tool_executor(
         &holly,
-        host_tools(root.to_path_buf()),
+        tools,
         profiles,
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
@@ -365,5 +370,88 @@ async fn ask_is_resolved_once_per_function_per_run() {
         std::fs::read_to_string(dir.path.join("b.txt")).unwrap(),
         "2\n",
         "second edit runs without a fresh prompt"
+    );
+}
+
+#[tokio::test]
+async fn parse_json_composes_with_the_read_raw_binding() {
+    let dir = TempDir::new("parse-json");
+    std::fs::write(dir.path.join("cfg.json"), r#"{"count": 41, "name": "x"}"#).unwrap();
+    // parse_json/to_json are pure (no bridge round-trip) but compose with the
+    // read_raw binding, which does — read_raw()'s exact file content (no
+    // line-number prefix, unlike read()) feeds straight into parse_json via
+    // UFCS method-call syntax.
+    let holly = spawn_with_rhai(
+        r#"let cfg = read_raw("cfg.json").parse_json(); cfg["count"] + 1"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert_eq!(
+        out, "=> 42",
+        "read_raw() -> parse_json() -> field access -> arithmetic"
+    );
+}
+
+#[tokio::test]
+async fn read_raw_is_graded_and_masked_as_an_alias_of_read() {
+    let dir = TempDir::new("read-raw-alias");
+    std::fs::write(dir.path.join("cfg.json"), r#"{"secret": true}"#).unwrap();
+    // A profile that denies `read` must also block `read_raw` — otherwise a
+    // script could bypass a `read` restriction through the unlabeled raw path.
+    let holly = spawn_with_rhai(
+        r#"let r = ""; try { read_raw("cfg.json"); r = "leaked" } catch(e) { r = "caught: " + e } r"#,
+        &dir.path,
+        one_profile(
+            "denyread",
+            PermissionProfile::new(Permission::Allow).with("read", Permission::Deny),
+        ),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "denyread").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("caught") && out.contains("denied"),
+        "read_raw must be denied alongside read; got {out}"
+    );
+}
+
+#[tokio::test]
+async fn parse_json_failure_is_catchable_without_touching_the_bridge() {
+    let dir = TempDir::new("parse-json-invalid");
+    // Every binding is denied — only `rhai` itself is allowed to run — proving
+    // parse_json needs no Allow/Ask/Deny resolution at all, unlike the
+    // host-tool bindings.
+    let holly = spawn_with_rhai(
+        r#"let r = ""; try { parse_json("{not json"); } catch(e) { r = "caught: " + e } r"#,
+        &dir.path,
+        one_profile(
+            "build",
+            PermissionProfile::new(Permission::Deny).with(RHAI_TOOL, Permission::Allow),
+        ),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "parse_json must not go through the permission/approval path"
+    );
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("caught"),
+        "invalid JSON should be catchable: {out}"
     );
 }

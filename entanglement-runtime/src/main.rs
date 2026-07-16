@@ -36,7 +36,7 @@ use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use host::{host_tools, BashTool, CallTool};
+use host::{host_tools, BashTool, CallTool, ReadRawTool};
 use pipe::pipe;
 use run::run_one;
 use session_store::{integrity_gap, list_sessions, pair_records, read};
@@ -139,6 +139,11 @@ async fn build_config(
     // logged and skipped, never fatal.
     let initial_mcp = mcp::connect(&user_config.mcp, &mut tools).await;
     cfg.tool_specs = tools.specs();
+    // `read_raw` (rhai-only, see `script.rs`'s `parse_json`/`parse_yaml`)
+    // registers *after* the specs snapshot above: present in `tools` for
+    // execution (the rhai bridge routes through the same `ToolRegistry`), but
+    // never advertised as a standalone model-callable tool.
+    tools.register(ReadRawTool::new(root.clone()));
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
     // the model. Per-profile spawn control (#119, ADR-0040) makes the family
@@ -891,7 +896,18 @@ async fn main() -> Result<()> {
             script::rhai_spec(),
         ];
         engine_config.tool_spec_resolver = Some(Arc::new(move |_session: &SessionId| {
-            let mut specs = tools.read().unwrap().specs();
+            // `read_raw` lives in the same shared registry as every other tool
+            // (rhai's bridge needs to `execute()` it) but must never reach the
+            // model directly — it's read-only for `parse_json`/`parse_yaml`
+            // (ADR-0098) and is graded/masked as an alias of `read`, which only
+            // holds if a profile author never sees it to configure separately.
+            let mut specs: Vec<_> = tools
+                .read()
+                .unwrap()
+                .specs()
+                .into_iter()
+                .filter(|s| s.name != "read_raw")
+                .collect();
             specs.extend(runtime_owned_specs.iter().cloned());
             specs
         }));

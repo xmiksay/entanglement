@@ -106,6 +106,8 @@ struct GrepInput {
     pattern: String,
     #[serde(default)]
     path: Option<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 
 #[async_trait]
@@ -116,7 +118,9 @@ impl Tool for GrepTool {
     fn description(&self) -> &str {
         "Search file contents for a regular expression. Returns matching lines \
          as `path:lineno:line`. Optional `path` glob filters which files to \
-         search (default: all files under the working directory)."
+         search (default: all files under the working directory). `.git` is \
+         always excluded; an optional `exclude` list of glob patterns filters \
+         out additional paths."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -129,6 +133,11 @@ impl Tool for GrepTool {
                 "path": {
                     "type": "string",
                     "description": "Optional glob filter limiting which files to search, e.g. `**/*.rs` (default `**/*`)."
+                },
+                "exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Glob patterns to exclude from the search, e.g. `[\"target/**\", \"node_modules/**\"]`. `.git` is always excluded regardless of this list."
                 }
             },
             "required": ["pattern"]
@@ -140,7 +149,7 @@ impl Tool for GrepTool {
         let re = Regex::new(&parsed.pattern)
             .with_context(|| format!("invalid regex: {}", parsed.pattern))?;
         let filter = parsed.path.as_deref().unwrap_or("**/*");
-        let list = list_files(&self.root, filter)?;
+        let list = list_files(&self.root, filter, &parsed.exclude)?;
         let mut out = String::new();
         let mut matches = 0usize;
         let mut skipped: Vec<(PathBuf, SkipReason)> = Vec::new();

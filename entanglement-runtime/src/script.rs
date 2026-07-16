@@ -35,6 +35,7 @@ use entanglement_core::{
 
 use crate::tools::ToolRegistry;
 use rhai::packages::{Package, StandardPackage};
+use rhai::serde::{from_dynamic, to_dynamic};
 use rhai::{Dynamic, Engine, EvalAltResult, Position};
 use serde::Deserialize;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -69,15 +70,32 @@ pub fn rhai_spec() -> ToolSpec {
         RHAI_TOOL,
         "Run a Rhai script (https://rhai.rs) in a capability-sandboxed engine — \
          the way to do multi-step logic in one call instead of shelling out to \
-         python/node. No filesystem, network, process, or env access: the only \
-         host functions bound are read(path), read(path, offset, limit), \
-         glob(pattern), grep(pattern), grep(pattern, path), edit(path, old, new), \
-         edit(path, old, new, replace_all), write(path, content) — each routed \
-         through the same permission checks as the equivalent tool call, and \
-         each returns the tool's text output (throws on denial/failure; catch \
-         with try/catch). The script's last expression is returned (serialized); \
-         print(...) output is captured. Bounded: max_operations, string/array/map \
-         size caps, and a wall-clock timeout (default 5s, max 30s).",
+         python/node. Rhai's syntax resembles Rust (fn, let) but it is NOT Rust: \
+         there is no `use`/`extern crate`, no std library, no crates — only the \
+         functions listed below exist for I/O; everything else (strings, arrays, \
+         maps, math, loops) is Rhai's own built-in stdlib, already available with \
+         no import. No filesystem, network, process, or env access beyond that: \
+         the only host functions bound are read(path), read(path, offset, limit) \
+         (returns \"{lineno}: {line}\" text — NOT parseable as JSON/YAML), \
+         read_raw(path) (exact file content, no line numbers — use this before \
+         parse_json/parse_yaml), glob(pattern), grep(pattern), grep(pattern, path), \
+         edit(path, old, new), edit(path, old, new, replace_all), write(path, \
+         content) — each routed through the same permission checks as the \
+         equivalent tool call (read_raw graded identically to read), and each \
+         returns the tool's text output (throws on denial/failure; catch with \
+         try/catch). Also bound (pure, no IO, no permission check — these \
+         transform a value already in the script, not a file): parse_json(str), \
+         to_json(value), parse_yaml(str), to_yaml(value) — parse throws on \
+         invalid input, so `try { parse_json(x) } catch(e) {...}` doubles as a \
+         syntax validator; JSON/YAML null becomes (); an integer outside i64 \
+         range silently widens to an approximate float (put large IDs in JSON as \
+         strings to avoid this, same convention as JS). Each is also callable as \
+         a method, e.g. read_raw(path).parse_json(). The script's last expression \
+         is returned (serialized); print(...) output is captured. Bounded: \
+         max_operations, string/array/map size caps, and a wall-clock timeout \
+         (default 5s, max 30s). \
+         Example: let cfg = read_raw(\"config.json\").parse_json(); let out = \"\"; \
+         for f in glob(\"*.rs\") { if f.contains(\"test\") { out += f + \"\\n\"; } } out",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -147,7 +165,13 @@ impl BindingPolicy {
 
     /// Resolve one binding call: masked tools do not exist; otherwise the grade
     /// is the least-privileged across the whole chain for this tool + argument.
+    /// `read_raw` is graded and masked as an alias of `read` — it is not in
+    /// `BINDING_TOOLS`/a profile's `tools`/`disallowed_tools` at all (never
+    /// advertised, see [`crate::host::ReadRawTool`]), so without this alias a
+    /// profile that restricts `read` would be silently bypassed by a script
+    /// reaching for the unlabeled raw path instead.
     fn decide(&self, tool: &'static str, input: &str) -> Decision {
+        let tool = if tool == "read_raw" { "read" } else { tool };
         if self.masked.contains(tool) {
             return Decision::Masked;
         }
@@ -283,6 +307,7 @@ async fn execute_script(
         let mut engine = Engine::new_raw();
         configure_engine(&mut engine, timeout, start, engine_prints, engine_stop);
         register_bindings(&mut engine, tx);
+        register_data_functions(&mut engine);
         engine.eval::<Dynamic>(&script)
     });
 
@@ -498,6 +523,14 @@ fn register_bindings(engine: &mut Engine, tx: UnboundedSender<BindingCall>) {
         )
     });
     let t = tx.clone();
+    // Raw counterpart of `read` with no line-number prefix — source for
+    // parse_json/parse_yaml, since `read`'s "{lineno}: {line}" format isn't
+    // valid JSON/YAML. Graded and masked as an alias of `read`
+    // (`BindingPolicy::decide`), not a distinct permission surface.
+    engine.register_fn("read_raw", move |path: &str| {
+        call_binding(&t, "read_raw", serde_json::json!({ "path": path }))
+    });
+    let t = tx.clone();
     engine.register_fn("glob", move |pattern: &str| {
         call_binding(&t, "glob", serde_json::json!({ "pattern": pattern }))
     });
@@ -542,6 +575,51 @@ fn register_bindings(engine: &mut Engine, tx: UnboundedSender<BindingCall>) {
             serde_json::json!({ "path": path, "content": content }),
         )
     });
+}
+
+/// Bind pure JSON/YAML (de)serialization functions. Unlike the host quintet
+/// these are *not* bindings — no IO, no permission check, no bridge round-trip
+/// — since they only transform a value already in the script's own memory
+/// (typically the output of `read()`). Built on Rhai's own `serde` bridge
+/// (`rhai::serde::{to_dynamic, from_dynamic}`, already enabled via the crate's
+/// `serde` feature), so the JSON/YAML-Value <-> Dynamic mapping is Rhai's own
+/// tested behavior, not a hand-rolled converter: `null` -> `()`; an integer
+/// outside `i64` range silently widens to an approximate `FLOAT` (Rhai's serde
+/// serializer falls back i64 -> decimal (off by default) -> float, same as
+/// JS's `JSON.parse` — well-formed JSON already encodes such values as strings
+/// to avoid exactly this, so scripts should too). Rhai's UFCS means each is
+/// also callable as a method, e.g. `read(path).parse_json()`.
+fn register_data_functions(engine: &mut Engine) {
+    engine.register_fn("parse_json", parse_json);
+    engine.register_fn("to_json", to_json);
+    engine.register_fn("parse_yaml", parse_yaml);
+    engine.register_fn("to_yaml", to_yaml);
+}
+
+fn parse_json(text: &str) -> Result<Dynamic, Box<EvalAltResult>> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| runtime_err(&format!("invalid JSON: {e}")))?;
+    to_dynamic(value)
+        .map_err(|e| runtime_err(&format!("JSON value not representable in Rhai: {e}")))
+}
+
+fn to_json(value: Dynamic) -> Result<String, Box<EvalAltResult>> {
+    let json: serde_json::Value = from_dynamic(&value)
+        .map_err(|e| runtime_err(&format!("value not JSON-serializable: {e}")))?;
+    serde_json::to_string(&json).map_err(|e| runtime_err(&format!("failed to stringify JSON: {e}")))
+}
+
+fn parse_yaml(text: &str) -> Result<Dynamic, Box<EvalAltResult>> {
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(text).map_err(|e| runtime_err(&format!("invalid YAML: {e}")))?;
+    to_dynamic(value)
+        .map_err(|e| runtime_err(&format!("YAML value not representable in Rhai: {e}")))
+}
+
+fn to_yaml(value: Dynamic) -> Result<String, Box<EvalAltResult>> {
+    let yaml: serde_yaml::Value = from_dynamic(&value)
+        .map_err(|e| runtime_err(&format!("value not YAML-serializable: {e}")))?;
+    serde_yaml::to_string(&yaml).map_err(|e| runtime_err(&format!("failed to stringify YAML: {e}")))
 }
 
 /// Send one binding call across the bridge and block for the reply. A denied or
@@ -627,6 +705,14 @@ mod tests {
             Arc::new(Mutex::new(String::new())),
             Arc::new(AtomicBool::new(false)),
         );
+        engine
+    }
+
+    /// A sandboxed engine with the pure JSON/YAML functions registered (no host
+    /// bindings — those need the async bridge, irrelevant to these tests).
+    fn data_engine(timeout: Duration) -> Engine {
+        let mut engine = sandbox_engine(timeout);
+        register_data_functions(&mut engine);
         engine
     }
 
@@ -878,5 +964,99 @@ mod tests {
             policy.decide("edit", r#"{"path":"Cargo.toml"}"#),
             Decision::Perm(Permission::Ask)
         ));
+    }
+
+    #[test]
+    fn parse_json_round_trips_object_and_array() {
+        let engine = data_engine(Duration::from_secs(5));
+        let v = engine
+            .eval::<Dynamic>(r#"let v = parse_json("{\"a\":1,\"b\":[1,2,3]}"); v["b"][1]"#)
+            .unwrap();
+        assert_eq!(v.as_int().unwrap(), 2);
+    }
+
+    #[test]
+    fn parse_json_null_becomes_unit() {
+        let engine = data_engine(Duration::from_secs(5));
+        let v = engine.eval::<Dynamic>(r#"parse_json("null")"#).unwrap();
+        assert!(v.is_unit());
+    }
+
+    #[test]
+    fn parse_json_throws_on_invalid_input_and_is_catchable() {
+        let engine = data_engine(Duration::from_secs(5));
+        // A bare `try`/`catch` always evaluates to `()` in Rhai regardless of
+        // which branch ran — assign into an outer variable to observe the
+        // catch branch actually executed.
+        let v = engine
+            .eval::<Dynamic>(
+                r#"let result = ""; try { parse_json("{not json"); } catch(e) { result = "caught"; } result"#,
+            )
+            .unwrap();
+        assert_eq!(v.into_string().unwrap(), "caught");
+    }
+
+    #[test]
+    fn parse_json_out_of_i64_range_number_widens_to_float() {
+        let engine = data_engine(Duration::from_secs(5));
+        // u64::MAX exceeds Rhai's i64 INT range. Rhai's own serde bridge
+        // (ser.rs `serialize_u64`) falls back i64 -> decimal (off by default in
+        // this build) -> float rather than erroring — same as JS's
+        // `JSON.parse`. Not a throw: verified empirically, documented on
+        // `register_data_functions` rather than assumed.
+        let v = engine
+            .eval::<Dynamic>(r#"parse_json("18446744073709551615")"#)
+            .unwrap();
+        assert!(
+            v.is_float(),
+            "expected the oversized integer to widen to FLOAT, got: {v:?}"
+        );
+    }
+
+    #[test]
+    fn parse_json_callable_as_method_via_ufcs() {
+        let engine = data_engine(Duration::from_secs(5));
+        let v = engine.eval::<Dynamic>(r#""[1,2]".parse_json()"#).unwrap();
+        assert_eq!(serialize_return(&v), "[1,2]");
+    }
+
+    #[test]
+    fn to_json_stringifies_a_rhai_value() {
+        let engine = data_engine(Duration::from_secs(5));
+        let v = engine
+            .eval::<Dynamic>(r#"#{a: 1, b: "x"}.to_json()"#)
+            .unwrap();
+        // Map key order isn't guaranteed — assert on parsed structure, not text.
+        let parsed: serde_json::Value = serde_json::from_str(&v.into_string().unwrap()).unwrap();
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], "x");
+    }
+
+    #[test]
+    fn json_round_trip_is_stable() {
+        let engine = data_engine(Duration::from_secs(5));
+        let v = engine
+            .eval::<Dynamic>(r#"parse_json(to_json(parse_json("[1,2,3]")))"#)
+            .unwrap();
+        assert_eq!(serialize_return(&v), "[1,2,3]");
+    }
+
+    #[test]
+    fn parse_yaml_round_trips_and_method_call_works() {
+        let engine = data_engine(Duration::from_secs(5));
+        let v = engine
+            .eval::<Dynamic>(
+                r#"let m = "a: 1\nb: two\n".parse_yaml(); m["a"].to_string() + "," + m["b"]"#,
+            )
+            .unwrap();
+        assert_eq!(v.into_string().unwrap(), "1,two");
+    }
+
+    #[test]
+    fn parse_yaml_throws_on_invalid_input() {
+        let engine = data_engine(Duration::from_secs(5));
+        // Unbalanced flow-mapping brace — invalid YAML.
+        let result = engine.eval::<Dynamic>(r#"parse_yaml("a: [1, 2")"#);
+        assert!(result.is_err(), "expected invalid YAML to throw");
     }
 }
