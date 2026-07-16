@@ -107,6 +107,12 @@ pub struct ModelEntry {
     pub supports_temperature: bool,
     #[serde(default)]
     pub default_temperature: Option<f32>,
+    /// Default [`ReasoningEffort`](crate::ReasoningEffort) tier for this model
+    /// (#374). Unset in the embedded defaults — the knob stays off until a user
+    /// `providers.yml` or a live `SetGeneration` opts in, mirroring how
+    /// `thinking_budget_tokens` starts unset.
+    #[serde(default)]
+    pub default_reasoning_effort: Option<crate::ReasoningEffort>,
     #[serde(default)]
     pub pricing: Option<ModelPricing>,
 }
@@ -173,6 +179,7 @@ impl ModelEntry {
             } else {
                 None
             },
+            reasoning_effort: self.default_reasoning_effort,
         }
     }
 }

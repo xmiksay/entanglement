@@ -55,6 +55,7 @@ fn switch_resolver(seen: &Seen) -> ModelResolver {
                     temperature: None,
                     max_output_tokens: Some(8192),
                     thinking_budget_tokens: Some(4096),
+                    reasoning_effort: None,
                 }),
                 context_window: Some(200_000),
             })
@@ -93,6 +94,7 @@ async fn set_model_rebinds_backend_and_retargets_requests() {
             temperature: Some(0.2),
             max_output_tokens: Some(1024),
             thinking_budget_tokens: None,
+            reasoning_effort: None,
         }),
         model_resolver: Some(switch_resolver(&switched_seen)),
         ..EngineConfig::default()

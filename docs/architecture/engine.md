@@ -80,7 +80,36 @@ binding — so a pin-less profile with no memory emits no `ModelChanged`, and a
 live override survives an agent switch. `SetAgent` emits `AgentChanged` first
 regardless; a resolver failure surfaces the same `Error` as `SetModel` and keeps
 the old binding. Replay reconstructs `profile_models`/`provider` from the folded
-`ModelChanged` records. Setup errors (the initial `stream()` call)
+`ModelChanged` records.
+
+**Live generation-parameter changes + per-profile persistence** (#374,
+[ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md))
+mirrors the model pin above, but through a **separate** seam:
+`EngineConfig.generation_resolver: Option<GenerationResolver>` (a
+runtime-supplied `Fn(&str) -> Option<GenerationParams>`, keyed by profile
+*name* rather than baked into `AgentProfile` — `GenerationParams`'s
+`temperature: Option<f32>` has no total `Eq`, so it can't join
+`AgentProfile`'s `PartialEq + Eq` derive the way the pin's `provider`/`model`
+fields do). `Session.generation` starts at the catalog default
+(`EngineConfig.generation`, resolved from the active model at session
+creation, unchanged from #191) and layers on top of it, at both `SetAgent` and
+session start, with the same three-tier precedence the pin uses: **session
+memory** (`Session.profile_generation`, populated by a live `SetGeneration`
+recorded under that profile — a **full** merged snapshot, not a diff) **>**
+**the resolver's persisted value** (also a full snapshot) **>** **the current
+binding, unchanged** (no `GenerationChanged` for a profile with neither).
+Session start applies the persisted tier when `Session.profile_generation`
+carries no entry yet for the starting profile (the generation analogue of the
+pin's `Session.model.is_none()` guard). Replay reconstructs
+`profile_generation` from folded `GenerationChanged` records exactly as it
+reconstructs `profile_models` from `ModelChanged`. The runtime's persisted
+store (`AgentGenerationStore`, a managed `agent-generation.yml` sibling of
+`agent-models.yml`) is documented in the heads/persistence doc; unlike
+`AgentModelStore` it has no `apply(&mut ProfileRegistry)` — there is nothing
+on `AgentProfile` to overlay, so its `resolver(...)` builds the
+`GenerationResolver` closure directly instead.
+
+Setup errors (the initial `stream()` call)
 surface as `Error` + `Done` with no partial to commit. A **mid-stream** failure
 is handled to keep the committed context aligned with what the user saw (#181,
 [ADR-0057](../adr/0057-mid-stream-error-partial-commit-and-retry.md)):

@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile, SessionId};
 use entanglement_provider::{
-    EchoLlm, GenerationParams, Llm, LlmFactory, ModelPricing, ModelResolver, ToolSpec,
+    EchoLlm, GenerationParams, GenerationResolver, Llm, LlmFactory, ModelPricing, ModelResolver,
+    ToolSpec,
 };
 
 use super::DEFAULT_PROFILE;
@@ -120,6 +121,16 @@ pub struct EngineConfig {
     /// [`InMsg::SetModel`][crate::protocol::InMsg::SetModel] a no-op that surfaces
     /// an [`OutEvent::Error`][crate::protocol::OutEvent::Error].
     pub model_resolver: Option<ModelResolver>,
+    /// Resolves a named agent profile's **persisted** generation override (#374,
+    /// ADR-0094), applied at session start and on `SetAgent` with the same
+    /// precedence as the model pin: per-session memory
+    /// ([`Session::profile_generation`][crate::session::Session]) wins, then this
+    /// resolver's persisted value, then the current binding (a profile with
+    /// neither leaves generation untouched — no spurious
+    /// [`OutEvent::GenerationChanged`][crate::protocol::OutEvent::GenerationChanged]).
+    /// Supplied by the runtime wrapping its `AgentGenerationStore`. `None` (the
+    /// default) means no profile carries a persisted override.
+    pub generation_resolver: Option<GenerationResolver>,
     /// How long a turn may sit parked on unresolved tool calls before the engine
     /// **re-offers** the pending batch — re-emitting each pending `ToolExec` with
     /// the same `request_id` and a fresh `seq` (#274). `OutEvent::ToolExec` rides
@@ -179,6 +190,7 @@ impl Default for EngineConfig {
             generation: None,
             pricing: HashMap::new(),
             model_resolver: None,
+            generation_resolver: None,
             reoffer_interval: Some(Duration::from_secs(60)),
             max_turns: 200,
             idle_ttl: None,

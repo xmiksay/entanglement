@@ -22,7 +22,7 @@ use crate::client::HttpClient;
 use crate::web_search::WebSearchConfig;
 use crate::{
     ContentPart, GenerationParams, ImageSource, Llm, LlmEvent, LlmRequest, LlmStream, Message,
-    MessageRole, StopReason, ToolSpec, Usage,
+    MessageRole, ReasoningEffort, StopReason, ToolSpec, Usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -34,6 +34,13 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Fallback output cap when the request carries no
 /// [`GenerationParams::max_output_tokens`] (Anthropic *requires* `max_tokens`).
 const DEFAULT_MAX_TOKENS: u32 = 16_384;
+/// Thinking-budget tokens for [`ReasoningEffort::High`] when the request sets no
+/// explicit [`GenerationParams::thinking_budget_tokens`] (#374) — Anthropic has
+/// no effort concept of its own, so `reasoning_effort` maps onto a thinking
+/// tier here instead.
+const HIGH_EFFORT_THINKING_BUDGET: u32 = 32_000;
+/// Thinking-budget tokens for [`ReasoningEffort::Medium`] (#374).
+const MEDIUM_EFFORT_THINKING_BUDGET: u32 = 8_000;
 
 /// Streaming Anthropic Messages client. Cheap to clone (the HTTP client is
 /// `Arc`-shared internally); build one per session via [`anthropic_factory`].
@@ -229,7 +236,15 @@ fn build_body(
     // set one. Anthropic requires `budget_tokens < max_tokens`, so bump the cap if
     // the budget would swallow it; and with thinking on, `temperature` may only be
     // its default, so it is omitted. Without a budget, temperature passes through.
-    if let Some(budget) = g.thinking_budget_tokens {
+    // An explicit `thinking_budget_tokens` always wins; absent one, `reasoning_effort`
+    // (#374 — Anthropic has no effort concept of its own) derives a tier default:
+    // `High`/`Medium` enable thinking at a fixed budget, `Low`/unset leave it off.
+    let budget = g.thinking_budget_tokens.or(match g.reasoning_effort {
+        Some(ReasoningEffort::High) => Some(HIGH_EFFORT_THINKING_BUDGET),
+        Some(ReasoningEffort::Medium) => Some(MEDIUM_EFFORT_THINKING_BUDGET),
+        Some(ReasoningEffort::Low) | None => None,
+    });
+    if let Some(budget) = budget {
         if budget >= max_tokens {
             max_tokens = budget.saturating_add(DEFAULT_MAX_TOKENS);
             body["max_tokens"] = json!(max_tokens);
@@ -634,6 +649,7 @@ mod tests {
                 temperature: Some(0.3),
                 max_output_tokens: Some(8000),
                 thinking_budget_tokens: None,
+                reasoning_effort: None,
             }),
             None,
         );
@@ -654,6 +670,7 @@ mod tests {
                 temperature: Some(0.7),
                 max_output_tokens: Some(20_000),
                 thinking_budget_tokens: Some(10_000),
+                reasoning_effort: None,
             }),
             None,
         );
@@ -678,12 +695,99 @@ mod tests {
                 temperature: None,
                 max_output_tokens: Some(4000),
                 thinking_budget_tokens: Some(4000),
+                reasoning_effort: None,
             }),
             None,
         );
         let max = body["max_tokens"].as_u64().unwrap();
         let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
         assert!(max > budget, "max_tokens {max} must exceed budget {budget}");
+    }
+
+    #[test]
+    fn high_reasoning_effort_enables_thinking_at_the_tier_default_budget() {
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            Some(GenerationParams {
+                temperature: Some(0.7),
+                max_output_tokens: None,
+                thinking_budget_tokens: None,
+                reasoning_effort: Some(ReasoningEffort::High),
+            }),
+            None,
+        );
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(
+            body["thinking"]["budget_tokens"],
+            HIGH_EFFORT_THINKING_BUDGET
+        );
+        // Thinking on ⇒ temperature omitted, same as an explicit budget.
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn medium_reasoning_effort_uses_a_smaller_tier_budget() {
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            Some(GenerationParams {
+                temperature: None,
+                max_output_tokens: None,
+                thinking_budget_tokens: None,
+                reasoning_effort: Some(ReasoningEffort::Medium),
+            }),
+            None,
+        );
+        assert_eq!(
+            body["thinking"]["budget_tokens"],
+            MEDIUM_EFFORT_THINKING_BUDGET
+        );
+    }
+
+    #[test]
+    fn low_reasoning_effort_leaves_thinking_off() {
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            Some(GenerationParams {
+                temperature: Some(0.4),
+                max_output_tokens: None,
+                thinking_budget_tokens: None,
+                reasoning_effort: Some(ReasoningEffort::Low),
+            }),
+            None,
+        );
+        assert!(body.get("thinking").is_none());
+        assert!((body["temperature"].as_f64().unwrap() - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn explicit_thinking_budget_wins_over_reasoning_effort() {
+        let body = build_body(
+            "claude-sonnet-4-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            1024,
+            Some(GenerationParams {
+                temperature: None,
+                max_output_tokens: Some(50_000),
+                thinking_budget_tokens: Some(1234),
+                reasoning_effort: Some(ReasoningEffort::High),
+            }),
+            None,
+        );
+        assert_eq!(body["thinking"]["budget_tokens"], 1234);
     }
 
     #[test]

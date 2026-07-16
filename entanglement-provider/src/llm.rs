@@ -204,7 +204,7 @@ pub struct LlmResponse {
 ///
 /// Every field is optional — a `None` (or a `None` [`LlmRequest::generation`])
 /// leaves that knob at the backend's own default.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GenerationParams {
     /// Sampling temperature. `None` ⇒ omit (the model's default), which the head
     /// also does for a model with `supports_temperature: false`.
@@ -217,6 +217,98 @@ pub struct GenerationParams {
     /// `None` — or a model with `supports_thinking: false` — leaves thinking off.
     /// Wires without a thinking channel (OpenAI-compat) omit it.
     pub thinking_budget_tokens: Option<u32>,
+    /// Coarse reasoning-effort knob (#374) — OpenAI's native `reasoning_effort`
+    /// wire field. Anthropic has no effort concept of its own; its client maps
+    /// this onto a thinking budget (see `anthropic.rs`'s `build_body`). Gemini
+    /// maps it onto `thinkingConfig.thinkingBudget` the same way. `None` leaves
+    /// the knob unset.
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+impl GenerationParams {
+    /// Overlay `overrides` onto `self`, field by field — each `Some` in
+    /// `overrides` replaces the corresponding field, a `None` leaves `self`'s
+    /// value untouched. The merge primitive behind a partial
+    /// `InMsg::SetGeneration { overrides, .. }` (#374): `/set temperature 0.7`
+    /// only touches `temperature`, leaving `max_output_tokens`/
+    /// `thinking_budget_tokens`/`reasoning_effort` exactly as they were.
+    pub fn apply_overrides(&mut self, overrides: GenerationParams) {
+        if overrides.temperature.is_some() {
+            self.temperature = overrides.temperature;
+        }
+        if overrides.max_output_tokens.is_some() {
+            self.max_output_tokens = overrides.max_output_tokens;
+        }
+        if overrides.thinking_budget_tokens.is_some() {
+            self.thinking_budget_tokens = overrides.thinking_budget_tokens;
+        }
+        if overrides.reasoning_effort.is_some() {
+            self.reasoning_effort = overrides.reasoning_effort;
+        }
+    }
+}
+
+/// Coarse reasoning-effort knob (#374): OpenAI's native `reasoning_effort` wire
+/// value (`low|medium|high`, hence `rename_all = "lowercase"` rather than
+/// Rust's usual `PascalCase`). Anthropic and Gemini have no such field — each
+/// client maps it onto a thinking-budget tier instead (documented at their
+/// `build_body`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+#[cfg(test)]
+mod generation_params_tests {
+    use super::*;
+
+    #[test]
+    fn apply_overrides_touches_only_present_fields() {
+        let mut base = GenerationParams {
+            temperature: Some(0.2),
+            max_output_tokens: Some(1024),
+            thinking_budget_tokens: None,
+            reasoning_effort: None,
+        };
+        base.apply_overrides(GenerationParams {
+            temperature: Some(0.7),
+            max_output_tokens: None,
+            thinking_budget_tokens: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+        });
+        assert_eq!(base.temperature, Some(0.7));
+        assert_eq!(base.max_output_tokens, Some(1024)); // untouched
+        assert_eq!(base.thinking_budget_tokens, None);
+        assert_eq!(base.reasoning_effort, Some(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn apply_overrides_of_default_is_a_no_op() {
+        let mut base = GenerationParams {
+            temperature: Some(0.2),
+            max_output_tokens: Some(1024),
+            thinking_budget_tokens: Some(4096),
+            reasoning_effort: Some(ReasoningEffort::Low),
+        };
+        let before = base;
+        base.apply_overrides(GenerationParams::default());
+        assert_eq!(base, before);
+    }
+
+    #[test]
+    fn reasoning_effort_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&ReasoningEffort::High).unwrap(),
+            "\"high\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ReasoningEffort>("\"medium\"").unwrap(),
+            ReasoningEffort::Medium
+        );
+    }
 }
 
 /// Everything the model needs for one completion, drawn from the session's
@@ -294,6 +386,20 @@ pub struct ResolvedModel {
 /// per-endpoint HTTP client (already warm, #217).
 pub type ModelResolver =
     std::sync::Arc<dyn Fn(&str, &str) -> Result<ResolvedModel, String> + Send + Sync>;
+
+/// Resolves a named agent profile's **persisted** generation override (#374,
+/// the generation-parameter analogue of the model pin ADR-0081 bakes directly
+/// into `AgentProfile.provider`/`model`). [`GenerationParams`] carries a
+/// non-`Eq` `f32` (`temperature`), so it can't join `AgentProfile`'s
+/// `PartialEq + Eq` derive the way the pin fields do — this resolver is a
+/// separate seam instead, mirroring [`ModelResolver`]'s shape but purely local
+/// (a managed-file lookup, no network/key validation), hence `Option` rather
+/// than `Result`. Held by the engine config; the runtime supplies it wrapping
+/// its `AgentGenerationStore`. `None` (the default, or a lookup miss) means the
+/// profile carries no persisted override — the session keeps its current
+/// generation binding.
+pub type GenerationResolver =
+    std::sync::Arc<dyn Fn(&str) -> Option<GenerationParams> + Send + Sync>;
 
 /// Deterministic stub backend. Emits a configured reply as a single text chunk
 /// then `Finish` — ideal for bootstrap wiring and unit tests.

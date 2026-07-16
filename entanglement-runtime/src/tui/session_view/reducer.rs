@@ -96,6 +96,9 @@ impl SessionView {
             // The model switch (#218) shows in the app-global context bar, not the
             // per-session transcript — no view state to fold here.
             OutEvent::ModelChanged { .. } => false,
+            // Generation-parameter changes (#374) have no dedicated TUI surface
+            // yet (#376 owns the `/set`/`/show` display) — no view state to fold.
+            OutEvent::GenerationChanged { .. } => false,
             OutEvent::Plan { seq, content, .. } => {
                 if seq > self.last_seen_seq {
                     self.plan = Some(content);

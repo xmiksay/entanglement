@@ -74,6 +74,7 @@ async fn resolved_generation_params_reach_the_request() {
         temperature: Some(0.4),
         max_output_tokens: Some(4096),
         thinking_budget_tokens: Some(2048),
+        reasoning_effort: None,
     };
     let (cfg, seen) = config_with(Some(params));
     run_one_turn(cfg).await;

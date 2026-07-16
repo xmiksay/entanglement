@@ -206,6 +206,32 @@ below realize one model:
   rewrites it, so it stays out of the hand-edited `config.yml`. Missing/malformed
   → empty + warn (fail-open); a write failure is logged, never fatal
   (`entanglement_runtime::config::agent_models`).
+- **Per-profile generation-parameter persistence (✅ #374, [ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)):**
+  mirrors the model pin above — same three-tier precedence (session memory >
+  persisted > current binding), applied at the same two loci (`SetAgent`,
+  session start) — but through a **separate** seam:
+  `EngineConfig.generation_resolver: Option<GenerationResolver>`, a
+  `Fn(&str) -> Option<GenerationParams>` keyed by profile *name* rather than a
+  field baked into `AgentProfile`. `GenerationParams` carries
+  `temperature: Option<f32>`, which has no total `Eq`, so it cannot join
+  `AgentProfile`'s `PartialEq + Eq` derive the way the pin's `provider`/`model`
+  fields do — the resolver indirection is the price of keeping
+  `GenerationParams` a plain `Copy` value type. `Session.profile_generation`
+  (session memory) and the resolver's return (the persisted tier) are both
+  **full** `GenerationParams` snapshots, applied by direct assignment — unlike
+  the partial-merge `GenerationParams::apply_overrides` a live
+  `InMsg::SetGeneration` itself uses. **Persistence:** the runtime's
+  `entanglement_runtime::config::agent_generation::AgentGenerationStore`
+  (`${config_dir}/entanglement/agent-generation.yml`, override
+  `ENTANGLEMENT_AGENT_GENERATION_FILE`, sibling of `agent-models.yml`) has the
+  same `load`/`get`/`set`/`reload` shape and the same fail-open/locked-write
+  behavior — but **no** `apply(&mut ProfileRegistry)`: there's nothing on
+  `AgentProfile` to overlay, so `AgentGenerationStore::resolver(store)` builds
+  the `GenerationResolver` closure directly (resolved fresh on every call, so a
+  `set`/`reload` is visible without rebuilding it). TUI `/set`/`/show` and the
+  persist-on-confirmation write are #376 — not yet built, so nothing writes
+  this file today outside tests; the engine-side resolver seam and the store
+  itself are complete.
 - **Live reload + managed-file locking (✅ #329, [ADR-0084](../adr/0084-runtime-live-reload-and-managed-file-locking.md)):**
   a runtime-side `watch.rs` watches every resolvable agent/skill dir plus
   `${config_dir}/entanglement/` and `<root>/.entanglement/` (`notify`, debounced
