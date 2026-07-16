@@ -25,6 +25,14 @@ name = "skutter"
 path = "src/main.rs"
 required-features = ["cli", "provider", "tui"]
 
+# `mcp::HttpClient` (#312) is compiled out of the lean `--no-default-features`
+# library `embedded.rs`/`embedded_lifecycle.rs` build against, so it needs its
+# own example gated on the feature that carries it (#364).
+[[example]]
+name = "mcp_http"
+path = "examples/mcp_http.rs"
+required-features = ["mcp-http"]
+
 [features]
 default = ["tui", "serve", "mcp-http"]
 # Head plumbing for `skutter`: arg parsing (clap) + log init (tracing-subscriber)
