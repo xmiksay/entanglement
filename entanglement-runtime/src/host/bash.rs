@@ -1,5 +1,8 @@
 //! `bash` — run a shell command rooted at the working directory.
-//! Runs unsandboxed with the engine's full privileges (ADR-0009).
+//! Runs unsandboxed with the engine's full privileges (ADR-0009). Stdin is
+//! always closed, not inherited from the engine (ADR-0092/ADR-0093's
+//! default-closed-stdin fix, carried over from `call` to `bash` — #389); use
+//! shell-native `< file` redirection if a command needs input.
 
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::jobs::JobRegistry;
@@ -56,6 +59,11 @@ impl BashTool {
             .current_dir(cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            // Close stdin explicitly rather than inherit the engine's real
+            // stdin — the same leak ADR-0092 closed for `call` (#389). Applies
+            // to both the foreground and `run_in_background` paths, since both
+            // share this helper.
+            .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
         // Own process group so a timeout/cancel kills the whole tree, not just
         // `sh` (a launched server/pipeline would otherwise orphan — #168).
@@ -87,7 +95,9 @@ impl Tool for BashTool {
     }
     fn description(&self) -> &str {
         "Run a shell command rooted at the working directory. The command \
-         runs with the engine's full privileges (unsandboxed). Returns \
+         runs with the engine's full privileges (unsandboxed). Stdin is \
+         closed, not inherited — use shell-native `< file` redirection if the \
+         command needs input. Returns \
          `[exit N]`, stdout, and `[stderr]`; oversized output keeps a head + \
          tail slice so the trailing error survives truncation. Pass `workdir` to \
          run in a subdirectory (validated under root). Pass \
@@ -281,6 +291,50 @@ mod tests {
         std::env::remove_var("ENTANGLEMENT_TEST_PUBLIC_BASH");
         assert!(out.contains("secret=[]"), "secret must be scrubbed: {out}");
         assert!(out.contains("public=[public]"), "unrelated env kept: {out}");
+    }
+
+    #[tokio::test]
+    async fn run_closes_stdin_not_inherited() {
+        // Regression for the unintentional inherit (#389, same class as #381's
+        // `call` fix): without stdin wired up, `cat` must see immediate EOF, not
+        // block on the engine's real stdin. If it inherited, this would time out
+        // instead of exiting clean.
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"command":"cat","timeout":3}"#).await.unwrap();
+        assert!(!out.contains("timed out"), "stdin must be closed: {out}");
+        assert!(out.contains("[exit 0]"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn run_in_background_closes_stdin_not_inherited() {
+        // The more dangerous case (#389): a detached job holding the fd open
+        // would race the engine's own stdin reader indefinitely. `cat` run in
+        // the background must still see immediate EOF and exit promptly.
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = JobRegistry::new();
+        let tool = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
+        let out = tool
+            .run(r#"{"command":"cat","run_in_background":true}"#)
+            .await
+            .unwrap();
+        let id = out
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("[background job ")
+                    .and_then(|rest| rest.strip_suffix(" started]"))
+            })
+            .expect("job id in response")
+            .to_string();
+
+        for _ in 0..50 {
+            let p = jobs.poll(&id, false).expect("job registered");
+            if p.status == crate::host::jobs::JobStatus::Exited(Some(0)) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("background cat never exited — stdin was likely inherited, not closed");
     }
 
     #[tokio::test]
