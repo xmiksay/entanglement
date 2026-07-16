@@ -146,7 +146,7 @@ fn spawn_with_policy(
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        reg,
+        reg.shared(),
         Arc::new(std::sync::RwLock::new(profiles)),
         PermissionProfile::new(Permission::Allow),
         active,
