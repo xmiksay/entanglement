@@ -33,7 +33,7 @@ impl FileIndex {
     /// entries inside [`IGNORED_DIRS`]. A read error yields an empty index
     /// rather than failing the TUI.
     pub fn build(root: &Path) -> Self {
-        let mut files: Vec<String> = match list_files(root, "**/*") {
+        let mut files: Vec<String> = match list_files(root, "**/*", &[]) {
             Ok(list) => list
                 .files
                 .iter()

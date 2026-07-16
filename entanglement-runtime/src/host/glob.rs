@@ -21,6 +21,8 @@ impl GlobTool {
 #[derive(Deserialize)]
 struct GlobInput {
     pattern: String,
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 
 #[async_trait]
@@ -30,7 +32,9 @@ impl Tool for GlobTool {
     }
     fn description(&self) -> &str {
         "List files matching a glob pattern (e.g. `**/*.rs`) relative to the \
-         working directory. Returns matching paths, one per line."
+         working directory. Returns matching paths, one per line. `.git` is \
+         always excluded; an optional `exclude` list of glob patterns filters \
+         out additional paths."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -39,6 +43,11 @@ impl Tool for GlobTool {
                 "pattern": {
                     "type": "string",
                     "description": "Glob pattern, e.g. `**/*.rs` or `src/**/*.toml`."
+                },
+                "exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Glob patterns to exclude from results, e.g. `[\"target/**\", \"node_modules/**\"]`. `.git` is always excluded regardless of this list."
                 }
             },
             "required": ["pattern"]
@@ -46,9 +55,9 @@ impl Tool for GlobTool {
     }
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: GlobInput = serde_json::from_str(input)
-            .context("invalid input to glob: expected {\"pattern\": string}")?;
+            .context("invalid input to glob: expected {\"pattern\": string, ...}")?;
         tracing::debug!(pattern = %parsed.pattern, root = %self.root.display(), "glob tool executing");
-        let list = list_files(&self.root, &parsed.pattern)?;
+        let list = list_files(&self.root, &parsed.pattern, &parsed.exclude)?;
         tracing::debug!(
             files = list.files.len(),
             matched_dirs = list.matched_dirs,
