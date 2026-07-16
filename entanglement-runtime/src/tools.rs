@@ -16,7 +16,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use entanglement_core::{ContentPart, ToolCall, ToolSpec};
+use entanglement_core::{ContentPart, SessionId, ToolCall, ToolSpec};
 
 /// A single capability the engine can execute on the host.
 #[async_trait]
@@ -51,6 +51,19 @@ pub trait Tool: Send + Sync {
     async fn run_content(&self, input: &str) -> anyhow::Result<Vec<ContentPart>> {
         let text = self.run(input).await?;
         Ok(text_parts(text))
+    }
+
+    /// Session-aware entry point (#360) — what [`ToolRegistry::execute`] actually
+    /// calls. Default delegates to [`run_content`][Tool::run_content], so an
+    /// existing single-tenant tool is unaffected; a multi-tenant embedder's tool
+    /// (e.g. one that picks a per-tenant `HttpClient`/DB scope by session) overrides
+    /// this instead.
+    async fn run_for_session(
+        &self,
+        _session: &SessionId,
+        input: &str,
+    ) -> anyhow::Result<Vec<ContentPart>> {
+        self.run_content(input).await
     }
 }
 
@@ -96,13 +109,16 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Execute a model-requested [`ToolCall`], returning the result as multimodal
-    /// [`ContentPart`]s (#221) — text for most tools, an image block for `read` on
-    /// an image. Unknown tools and failures yield a text part the engine feeds
-    /// back to the model rather than erroring the run.
-    pub async fn execute(&self, call: &ToolCall) -> Vec<ContentPart> {
+    /// Execute a model-requested [`ToolCall`] for a given session, returning the
+    /// result as multimodal [`ContentPart`]s (#221) — text for most tools, an
+    /// image block for `read` on an image. Unknown tools and failures yield a text
+    /// part the engine feeds back to the model rather than erroring the run.
+    /// `session` (#360) lets a session-aware tool (e.g. a multi-tenant embedder's
+    /// per-tenant MCP dispatch) tell callers apart; the executor already has it at
+    /// every call site (`resolve_effective` takes it too).
+    pub async fn execute(&self, call: &ToolCall, session: &SessionId) -> Vec<ContentPart> {
         match self.tools.get(call.name.as_str()) {
-            Some(tool) => match tool.run_content(&call.input).await {
+            Some(tool) => match tool.run_for_session(session, &call.input).await {
                 Ok(content) => content,
                 Err(e) => text_parts(format!("tool `{}` failed: {e}", call.name)),
             },
@@ -129,17 +145,24 @@ mod tests {
         }
     }
 
+    fn dummy_session() -> SessionId {
+        SessionId::new("test-session")
+    }
+
     #[tokio::test]
     async fn runs_registered_tool() {
         let mut reg = ToolRegistry::new();
         reg.register(Echo);
         let out = reg
-            .execute(&ToolCall {
-                id: "1".into(),
-                name: "echo".into(),
-                input: "hi".into(),
-                provider_meta: None,
-            })
+            .execute(
+                &ToolCall {
+                    id: "1".into(),
+                    name: "echo".into(),
+                    input: "hi".into(),
+                    provider_meta: None,
+                },
+                &dummy_session(),
+            )
             .await;
         assert_eq!(out, vec![ContentPart::text("hi")]);
     }
@@ -148,15 +171,57 @@ mod tests {
     async fn unknown_tool_is_reported_not_fatal() {
         let reg = ToolRegistry::new();
         let out = reg
-            .execute(&ToolCall {
-                id: "1".into(),
-                name: "nope".into(),
-                input: "".into(),
-                provider_meta: None,
-            })
+            .execute(
+                &ToolCall {
+                    id: "1".into(),
+                    name: "nope".into(),
+                    input: "".into(),
+                    provider_meta: None,
+                },
+                &dummy_session(),
+            )
             .await;
         assert_eq!(out.len(), 1);
         assert!(out[0].as_text().unwrap().contains("unknown tool"));
+    }
+
+    /// A session-aware tool overriding `run_for_session` (#360) sees the caller's
+    /// [`SessionId`] and can branch on it — the seam a multi-tenant embedder needs
+    /// to dispatch per-tenant (distinct MCP endpoints, DB-scoped writes) through one
+    /// shared registry instead of one registry per user.
+    struct WhoAmI;
+    #[async_trait]
+    impl Tool for WhoAmI {
+        fn name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("whoami")
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            unreachable!("run_for_session is overridden; run/run_content are never called")
+        }
+        async fn run_for_session(
+            &self,
+            session: &SessionId,
+            _input: &str,
+        ) -> anyhow::Result<Vec<ContentPart>> {
+            Ok(text_parts(session.0.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn session_aware_tool_sees_caller_session() {
+        let mut reg = ToolRegistry::new();
+        reg.register(WhoAmI);
+        let call = ToolCall {
+            id: "1".into(),
+            name: "whoami".into(),
+            input: "".into(),
+            provider_meta: None,
+        };
+        let alice = reg.execute(&call, &SessionId::new("alice")).await;
+        let bob = reg.execute(&call, &SessionId::new("bob")).await;
+        assert_eq!(alice[0].as_text().unwrap(), "alice");
+        assert_eq!(bob[0].as_text().unwrap(), "bob");
+        assert_ne!(alice, bob);
     }
 
     #[test]
