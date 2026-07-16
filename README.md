@@ -55,16 +55,18 @@ and [`mcp_http.rs`](entanglement-runtime/examples/mcp_http.rs).
 A session runs under an **agent profile** — `{ name, description, mode, model,
 system_prompt, permission, tools, disallowed_tools, can_spawn,
 spawnable_agents }`. Switch the *primary* profile with `SetAgent`; the cycle is
-`build ↔ plan` — `explore` is now `mode: subagent`, so it is filtered out of the
-primary cycle and only reachable via spawn. Built-ins: `build`, `plan`,
-`explore`.
+`build ↔ plan` — `explore` and `debug` are `mode: subagent`, so they are
+filtered out of the primary cycle and only reachable via spawn. Built-ins:
+`build`, `plan`, `explore`, `debug`.
 
 The permission profile (`Allow | Ask | Deny` per tool, name-or-`*` or
 argument-scoped `tool(pattern)`) drives the approval flow. `build` allows
 everything; `plan` **asks** by default and, since #140, its `tools:` allowlist
 masks `edit`/`write` out of the toolset entirely (so it plans without touching
-files) — `explore` is the deny profile (read-only). Permission resolution and
-approval live entirely in the runtime (#59).
+files) — `explore` is the deny profile (read-only), the default spawn target;
+`debug` carries `build`'s own allow-everything permission (read/write/execute)
+for a spawned sub-agent that actually needs to reproduce, fix, and verify a
+bug. Permission resolution and approval live entirely in the runtime (#59).
 
 Session snapshots (`OutEvent::Plan`, `OutEvent::TaskList` — both markdown
 `content`) are orthogonal — emitted by the runtime's `update_plan` /
@@ -131,6 +133,7 @@ make verify       # check-fmt + tree + check-lean + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI/web-server dep hygiene gate)
 make check-lean   # runtime --no-default-features stays CLI/TUI-free (ADR-0025 + ADR-0053)
 make coverage     # cargo llvm-cov --workspace, fails under COV_MIN% (release gate)
+make install      # cargo install --path entanglement-runtime → `skutter` in $CARGO_HOME/bin
 make build | check | fmt | clean
 ```
 

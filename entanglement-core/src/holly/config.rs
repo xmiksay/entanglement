@@ -198,10 +198,10 @@ pub enum ConfigError {
 
 /// Named set of [`AgentProfile`]s. Comes with only the `build` built-in — the
 /// one profile every session starts under and [`resolve`][Self::resolve] falls
-/// back to. The full `build`/`plan`/`explore` trio is defined once, as markdown,
-/// in `entanglement-runtime`'s embedded agent registry (#201): core can't parse
-/// agent frontmatter, so it carries no `plan`/`explore` copy to drift from that
-/// source. Add your own with [`insert`][Self::insert].
+/// back to. The full `build`/`plan`/`explore`/`debug` set is defined once, as
+/// markdown, in `entanglement-runtime`'s embedded agent registry (#201): core
+/// can't parse agent frontmatter, so it carries no `plan`/`explore`/`debug`
+/// copy to drift from that source. Add your own with [`insert`][Self::insert].
 #[derive(Clone, Default)]
 pub struct ProfileRegistry {
     profiles: HashMap<String, AgentProfile>,

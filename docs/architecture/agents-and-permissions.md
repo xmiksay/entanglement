@@ -155,7 +155,8 @@ below realize one model:
   (the system prompt), discovered at startup by the **runtime**
   (`entanglement_runtime::agents::load_registry`) into a `ProfileRegistry`. Three
   layers, later wins on a `name` collision: embedded built-ins (`build`/`plan`/
-  `explore`, shipped as `include_str!` `.md` and parsed through the *same* loader)
+  `explore`/`debug`, shipped as `include_str!` `.md` and parsed through the *same*
+  loader)
   < user (`~/.claude/agents/*.md` then `${config_dir}/entanglement/agents/*.md`)
   < project (`.claude/agents` then `.agents/agents` then
   `<root>/.entanglement/agents/*.md`). Editing a built-in = dropping a same-`name`
@@ -172,13 +173,13 @@ below realize one model:
   (`subagent`/`all`) and on its `spawnable_agents` allowlist — so `build`/`plan`
   (primaries) are unreachable spawn targets from mode defaults alone. Plan
   authorship (`update_plan`, ✅ #231, below) and the plan-accept handoff (#141)
-  complete the agent hierarchy. The built-in trio is defined **once**, here as
+  complete the agent hierarchy. The built-ins are defined **once**, here as
   markdown (#201): core carries only the `build` profile its `resolve()` fallback
-  needs (it can't parse frontmatter, so it holds no `plan`/`explore` copy to drift
-  from these files). Embedders using core directly get that single `build`
-  fallback via `ProfileRegistry::new()`; the runtime rebuilds the full trio from
-  the embedded markdown (`entanglement_runtime::agents::built_in_registry`). Add
-  your own with `ProfileRegistry::insert`.
+  needs (it can't parse frontmatter, so it holds no `plan`/`explore`/`debug` copy
+  to drift from these files). Embedders using core directly get that single
+  `build` fallback via `ProfileRegistry::new()`; the runtime rebuilds the full set
+  from the embedded markdown (`entanglement_runtime::agents::built_in_registry`).
+  Add your own with `ProfileRegistry::insert`.
 - **Per-profile model pinning (✅ #323, [ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)):**
   a profile's frontmatter may set `provider:` beside `model:`. Both set = a
   **model pin** (`AgentProfile::model_pin()`): switching to the profile re-binds
@@ -271,6 +272,16 @@ below realize one model:
   the ancestor chain** (a child never gains a tool an ancestor lacked, mirroring
   ADR-0024's privilege ceiling). `explore` is now the reference read-only agent:
   `tools: [read, glob, grep]` — no `edit`/`write`, no `bash`, no `agent_spawn`.
+  It is also the **default** `agent_spawn`/`agent` target (`DEFAULT_SUBAGENT` in
+  `entanglement_runtime::subagent`) when the caller omits `agent` — the safe
+  choice for an unscoped delegation. But it is also, by design, the *only*
+  built-in `mode: subagent` leaf with an empty allowlist: a spawned agent that
+  needs to reproduce, fix, and *verify* a bug (compile, run tests) has nothing
+  spawnable to reach for. `debug` closes that gap: a second `mode: subagent`
+  leaf carrying `build`'s own permission (`default: allow`, no tool mask, so it
+  inherits `build`'s allow-everything/plan-authority-closed shape exactly) —
+  full read/write/execute, still never selected unless the caller names it
+  explicitly (`{"agent": "debug", ...}`).
 - **In-app tool-allowlist editing (✅ #330, [ADR-0083](../adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)):**
   editing a mask materializes a user-layer override, not a new config surface —
   the layered loader already shadows a same-`name` definition, built-in

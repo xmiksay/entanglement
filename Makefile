@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean coverage
+.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean coverage
 
 # Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
 # amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
@@ -32,6 +32,9 @@ help: ## show this help
 
 build: ## cargo build --workspace
 	$(CARGO) build --workspace
+
+install: ## install the `skutter` binary into $CARGO_HOME/bin (cargo install --path)
+	$(CARGO) install --path entanglement-runtime --locked
 
 run: build ## build + run the stdio head once (one dummy turn)
 	$(CARGO) run -p entanglement-runtime -- run "Hello, Holly!" $(ARGS)

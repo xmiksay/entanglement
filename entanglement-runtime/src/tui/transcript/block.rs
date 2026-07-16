@@ -41,6 +41,7 @@ pub(super) fn render_block(
             expanded,
             ..
         } => flush_tool_call(
+            md,
             tool,
             input,
             output.as_deref(),
