@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
 
     let _executor = tool_runner::spawn_tool_executor_with_policy(
         &holly,
-        tools,
+        tools.shared(),
         Arc::new(RwLock::new(profiles)),
         PermissionProfile::new(Permission::Allow),
         Arc::new(Mutex::new(HashMap::new())),

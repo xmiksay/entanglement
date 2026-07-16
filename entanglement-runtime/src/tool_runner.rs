@@ -42,7 +42,7 @@ use entanglement_core::{
     ProfileRegistry, SessionId, ToolCall,
 };
 
-use crate::tools::ToolRegistry;
+use crate::tools::{SharedRegistry, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::cancel::{CancelRegistry, TaskCanceller};
@@ -205,7 +205,7 @@ pub fn spawn_tool_executor_with_hooks(
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     spawn_tool_executor_with_policy(
         holly,
-        tools,
+        tools.shared(),
         wrap_profiles(profiles),
         base,
         active,
@@ -233,10 +233,17 @@ pub fn spawn_tool_executor_with_hooks(
 /// to an in-progress dispatch. Core's own copy is untouched either way
 /// (ADR-0084): it is baked into `EngineConfig` once at startup and has no
 /// live-swap seam.
+///
+/// `tools` is likewise a [`SharedRegistry`] (#372, ADR-0096, not a plain owned
+/// [`ToolRegistry`]) so a live tool-registration change — MCP add/remove (#4) —
+/// is visible to this executor without a restart: each dispatch takes a brief
+/// read lock and clones an owned snapshot *before* spawning the detached task
+/// (never held across a tool's `.await`), mirroring the `profiles` pattern
+/// above.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_tool_executor_with_policy(
     holly: &Holly,
-    tools: ToolRegistry,
+    tools: SharedRegistry,
     profiles: Arc<RwLock<ProfileRegistry>>,
     base: PermissionProfile,
     active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
@@ -607,7 +614,11 @@ pub fn spawn_tool_executor_with_policy(
                             let self_perm =
                                 apply_grant(&*grants, &session, &tool, arg.as_deref(), base_self);
                             let pending = pending.clone();
-                            let tools = tools.clone();
+                            // Snapshot the registry *before* spawning (#372): a brief
+                            // read lock, never held across the script's `.await`, so a
+                            // concurrent tool registration/removal is invisible to a
+                            // script already in flight but picked up by the next one.
+                            let tools = tools.read().unwrap().clone();
                             let holly = holly.clone();
                             // The blocking engine can't be aborted, so pair the
                             // task abort with a cooperative stop flag its progress
@@ -639,7 +650,8 @@ pub fn spawn_tool_executor_with_policy(
                             // The DB-backed resolver runs in the task, never the loop.
                             let chain = ancestor_chain(&spawn_guard, &session);
                             let resolver = resolver.clone();
-                            let tools = tools.clone();
+                            // Snapshot before spawning (#372) — see the Rhai arm above.
+                            let tools = tools.read().unwrap().clone();
                             let holly = holly.clone();
                             let grants = grants.clone();
                             let hooks = hooks.clone();

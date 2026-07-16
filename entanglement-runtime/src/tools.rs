@@ -14,7 +14,7 @@
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use entanglement_core::{ContentPart, SessionId, ToolCall, ToolSpec};
 
@@ -85,6 +85,16 @@ pub struct ToolRegistry {
     tools: HashMap<Cow<'static, str>, Arc<dyn Tool>>,
 }
 
+/// A [`ToolRegistry`] shared mutably across the engine's lifetime (#372,
+/// ADR-0096) — the tool executor's replacement for owning a `ToolRegistry` by
+/// value. `std::sync::RwLock` (not `tokio::sync`) so it can be read
+/// synchronously from the [`entanglement_core::ToolSpecResolver`] closure,
+/// which is deliberately sync (ADR-0076) and must not block on I/O; a registry
+/// read is in-memory only, so the brief sync lock is never held across an
+/// `.await`. A writer (live MCP add/remove, #4) briefly excludes readers, which
+/// is fine — registration is rare compared to dispatch.
+pub type SharedRegistry = Arc<RwLock<ToolRegistry>>;
+
 impl ToolRegistry {
     pub fn new() -> Self {
         Self::default()
@@ -95,8 +105,40 @@ impl ToolRegistry {
         self.tools.insert(name, Arc::new(tool));
     }
 
+    /// Drop a registered tool by name, returning it if it was present. The
+    /// dynamic counterpart to [`register`][Self::register] — the seam live MCP
+    /// server removal (#4) needs to retract a server's tools without rebuilding
+    /// the whole registry.
+    pub fn unregister(&mut self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.remove(name)
+    }
+
+    /// Drop every tool whose name starts with `prefix` — e.g. `mcp__<server>__`
+    /// to retract an entire MCP server's tools in one call (#4).
+    pub fn unregister_prefix(&mut self, prefix: &str) {
+        self.tools.retain(|name, _| !name.starts_with(prefix));
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
+    }
+
+    /// Every registered tool name, for a listing surface (e.g. `/mcp list`).
+    /// Unsorted — callers that need a stable order sort it themselves.
+    pub fn names(&self) -> Vec<String> {
+        self.tools.keys().map(|n| n.to_string()).collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    /// Wrap into the shared, mutably-lockable form the tool executor dispatches
+    /// against (#372, ADR-0096): cheap to clone (an `Arc`), read-locked per
+    /// dispatch to snapshot an owned [`ToolRegistry`] without holding the lock
+    /// across a tool's `.await`.
+    pub fn shared(self) -> SharedRegistry {
+        Arc::new(RwLock::new(self))
     }
 
     /// Specs advertised to the model (for the `tools` field of an LLM request).
@@ -237,5 +279,65 @@ mod tests {
             specs[0].schema,
             serde_json::json!({"type":"object","properties":{}})
         );
+    }
+
+    #[test]
+    fn unregister_removes_and_returns_the_tool() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Echo);
+        assert!(reg.contains("echo"));
+        let removed = reg.unregister("echo");
+        assert!(removed.is_some());
+        assert!(!reg.contains("echo"));
+        assert!(reg.unregister("echo").is_none());
+    }
+
+    #[test]
+    fn contains_and_names_reflect_registered_tools() {
+        let mut reg = ToolRegistry::new();
+        assert!(!reg.contains("echo"));
+        assert_eq!(reg.names(), Vec::<String>::new());
+        reg.register(Echo);
+        assert!(reg.contains("echo"));
+        assert_eq!(reg.names(), vec!["echo".to_string()]);
+    }
+
+    struct NamedTool(&'static str);
+    #[async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> Cow<'static, str> {
+            Cow::Borrowed(self.0)
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn unregister_prefix_drops_only_matching_names() {
+        let mut reg = ToolRegistry::new();
+        reg.register(NamedTool("mcp__github__list_issues"));
+        reg.register(NamedTool("mcp__github__create_issue"));
+        reg.register(NamedTool("mcp__slack__post"));
+        reg.register(Echo);
+        reg.unregister_prefix("mcp__github__");
+        let mut names = reg.names();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["echo".to_string(), "mcp__slack__post".to_string()]
+        );
+    }
+
+    #[test]
+    fn shared_registry_reads_reflect_writes() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Echo);
+        let shared = reg.shared();
+        assert!(shared.read().unwrap().contains("echo"));
+        shared.write().unwrap().register(NamedTool("extra"));
+        assert!(shared.read().unwrap().contains("extra"));
+        shared.write().unwrap().unregister("echo");
+        assert!(!shared.read().unwrap().contains("echo"));
     }
 }

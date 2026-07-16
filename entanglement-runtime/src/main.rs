@@ -73,8 +73,10 @@ use tui::tui;
 /// dispatch gate, same as any other tool.
 ///
 /// Core no longer executes tools (#58): it only advertises their schemas
-/// (`cfg.tool_specs`). The returned [`ToolRegistry`] stays in the runtime and
-/// is handed to [`tool_runner::spawn_tool_executor`], which answers the
+/// (`cfg.tool_specs`, later kept live via `cfg.tool_spec_resolver`, #372). The
+/// returned [`ToolRegistry`] stays in the runtime — wrapped into a
+/// [`entanglement_runtime::SharedRegistry`] by the caller — and is handed to
+/// [`tool_runner::spawn_tool_executor_with_policy`], which answers the
 /// [`entanglement_core::OutEvent::ToolExec`] round-trip.
 async fn build_config(
     catalog: &Catalog,
@@ -857,6 +859,28 @@ async fn main() -> Result<()> {
     engine_config.generation_resolver = Some(
         config::agent_generation::AgentGenerationStore::resolver(live_agent_generation.clone()),
     );
+    // Dynamic `ToolRegistry` (#372, ADR-0096): shared mutably so a live
+    // registration change (MCP add/remove, #4) is visible without a restart.
+    // `engine_config.tool_specs` stays the static snapshot baked above (still
+    // useful as the tools-checklist roster below); `tool_spec_resolver` is the
+    // seam core actually consults every turn (ADR-0076) — reproducing that same
+    // snapshot (registry tools + the runtime-owned pseudo-tools that aren't
+    // registry entries) keeps this change behavior-neutral today, while making
+    // every *future* registry mutation land on the next turn for free.
+    let tools = tools.shared();
+    {
+        let tools = tools.clone();
+        let runtime_owned_specs = [
+            plan_tasks::update_tasks_spec(),
+            ask_user::ask_user_spec(),
+            script::rhai_spec(),
+        ];
+        engine_config.tool_spec_resolver = Some(Arc::new(move |_session: &SessionId| {
+            let mut specs = tools.read().unwrap().specs();
+            specs.extend(runtime_owned_specs.iter().cloned());
+            specs
+        }));
+    }
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.
     if let Err(e) = engine_config.validate() {
@@ -890,7 +914,7 @@ async fn main() -> Result<()> {
     let grants = Arc::new(DefaultGrantStore::load());
     let tool_executor = tool_runner::spawn_tool_executor_with_policy(
         &holly,
-        tools,
+        tools.clone(),
         live_profiles.clone(),
         user_config.permissions.clone(),
         active,

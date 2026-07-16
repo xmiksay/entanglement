@@ -73,7 +73,7 @@ pub mod tools;
 // core's `EngineConfig`, which stays pinned for the process lifetime.
 pub mod watch;
 
-pub use tools::{Tool, ToolRegistry};
+pub use tools::{SharedRegistry, Tool, ToolRegistry};
 
 // Tracing-subscriber setup is head plumbing, so it rides the `cli` feature and
 // stays out of the lean library (tracing-subscriber is on the `check-lean`

@@ -266,6 +266,33 @@ hooks, rhai, and plan/tasks tools.
   (`grants::FileGrantStore`). `rhai` keeps the profile/base path (its inner
   bindings are a separate sync mechanism) and is not routed through the resolver.
 
+### Dynamic `ToolRegistry` — `SharedRegistry` — [ADR-0096](../adr/0096-dynamic-toolregistry-sharedregistry.md) (#372)
+
+`spawn_tool_executor_with_policy`'s `tools` parameter is a `SharedRegistry`
+(`Arc<std::sync::RwLock<ToolRegistry>>`, `ToolRegistry::shared()`), not an owned
+`ToolRegistry` — the seam a future live MCP add/remove (#4) needs to mutate the
+dispatch table without restarting the engine. The two convenience wrappers,
+`spawn_tool_executor`/`spawn_tool_executor_with_hooks`, keep their historical
+owned-`ToolRegistry` signature and `.shared()`-wrap internally (mirroring the
+existing `profiles: Arc<RwLock<ProfileRegistry>>` pattern, §"Pluggable policy
+seams" above), so existing single-owner callers and tests are unaffected.
+`ToolRegistry` itself gains `unregister`/`unregister_prefix`/`contains`/
+`names` alongside `register`.
+
+Each `ToolExec` dispatch takes a brief **synchronous** read lock and clones an
+owned snapshot before spawning its detached task — `std::sync::RwLock`, not
+`tokio::sync`, because `EngineConfig.tool_spec_resolver`
+([ADR-0076](../adr/0076-per-session-dynamic-tool-specs.md)) is a plain sync
+`Fn` consulted on the turn's hot path and must never block on I/O; a
+`tokio::sync::RwLock` would force that closure into `blocking_read` or break
+0076's no-async contract. `main.rs` wires the resolver to read through the
+same `SharedRegistry` handle it hands the executor, reproducing
+`cfg.tool_specs`' exact original composition (registry tools plus the three
+runtime-intercepted pseudo-tool specs `update_tasks`/`ask_user`/`rhai`, which
+aren't `ToolRegistry` entries) — so today this is purely internal plumbing,
+byte-identical advertised schemas, with every *future* registry mutation
+landing on the *next* turn for free and no `EngineConfig` reload.
+
 ## 10. MCP client — external tool servers — [ADR-0067](../adr/0067-mcp-client-as-runtime-tool-provider.md) (#198)
 
 Attach any external [MCP](https://modelcontextprotocol.io) tool server as a
