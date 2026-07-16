@@ -92,3 +92,9 @@
 #  enabled: true
 #  max_uses: 5
 #  allowed_domains: [docs.rs, doc.rust-lang.org]
+
+# Cap on the inner LLM→tool loop within a single turn (#177): the max number of
+# LLM round-trips (each possibly fanning out into tool calls) before a runaway
+# turn is halted. The counter resets per prompt, so a long session of many short
+# prompts is never capped — only a single wedged turn. Default 200.
+#max_turns: 200

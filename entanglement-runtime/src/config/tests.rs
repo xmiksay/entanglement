@@ -52,6 +52,7 @@ fn merge_user(user: &str) -> Config {
         hooks: raw.hooks,
         mcp: raw.mcp,
         web_search: raw.web_search,
+        max_turns: raw.max_turns,
     }
 }
 
@@ -64,6 +65,20 @@ fn field_override_keeps_siblings() {
     assert_eq!(c.agent.as_deref(), Some("build"));
     assert!(!c.verbose);
     assert_eq!(c.permissions.default, Permission::Allow);
+}
+
+#[test]
+fn max_turns_override_parses_and_defaults_to_200() {
+    // The embedded default carries 200 (visible + editable in defaults.yml).
+    let c = defaults();
+    assert_eq!(c.max_turns, Some(200));
+
+    // A user override parses through the merge and replaces the default.
+    let c = merge_user("max_turns: 400\n");
+    assert_eq!(c.max_turns, Some(400));
+
+    // And it keeps siblings intact.
+    assert_eq!(c.agent.as_deref(), Some("build"));
 }
 
 #[test]

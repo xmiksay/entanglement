@@ -50,3 +50,9 @@ permissions:
 # `tools` (tool hooks only) scopes it to named tools (empty ⇒ all); `timeout_secs`
 # defaults to 30. Empty by default (no hooks).
 hooks: {}
+
+# Cap on the inner LLM→tool loop within a single turn (#177): the max number of
+# LLM round-trips (each possibly fanning out into tool calls) before a runaway
+# turn is halted. The counter resets per prompt, so a long session of many short
+# prompts is never capped — only a single wedged turn. Default 200.
+max_turns: 200

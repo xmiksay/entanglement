@@ -128,13 +128,15 @@ idempotent by `request_id` (a per-session in-flight set, cleared on the resolvin
 `ToolOutput`): a re-offer to a call it is still running is a no-op there, not a
 double-run. At-least-once, exactly like resume.
 
-**Loop bounds — `MAX_TURNS` and context-over-limit** (`session/turn.rs`). The
-turn is capped at `MAX_TURNS = 50` rounds (one round = one LLM round-trip that
-may fan out into tool calls), counted on `TurnState::iterations` and reset per
-prompt (#177 — a fresh `TurnState` per `Prompt`; a folded mid-turn prompt does
-not reset it), so a model wedged in a tool loop can't run forever while a
-legitimate long session (many prompts) is never capped. Resume resets the
-counter too (a runaway guard, not a quota — ADR-0061). **Beware:** the trip path emits **only** an
+**Loop bounds — `max_turns` and context-over-limit** (`session/turn.rs`). The
+turn is capped at `EngineConfig.max_turns` rounds (default 200; user-configurable
+via `config.yml`, [ADR-0089](../adr/0089-user-configurable-max-turns.md)), one
+round = one LLM round-trip that may fan out into tool calls, counted on
+`TurnState::iterations` and reset per prompt (#177 — a fresh `TurnState` per
+`Prompt`; a folded mid-turn prompt does not reset it), so a model wedged in a
+tool loop can't run forever while a legitimate long session (many prompts) is
+never capped. Resume resets the counter too (a runaway guard, not a quota —
+ADR-0061). **Beware:** the trip path emits **only** an
 `OutEvent::Error` and returns — *not* the `Error` + `Done` + `Status` triple that
 `emit_turn_error` (`session/emit.rs`) fires on a backend error — so a one-shot
 head awaiting `Done` hangs when the turn limit trips. That missing-`Done` is a

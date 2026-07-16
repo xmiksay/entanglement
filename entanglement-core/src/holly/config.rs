@@ -132,6 +132,12 @@ pub struct EngineConfig {
     /// ([ADR-0071](../../docs/adr/0071-parked-turn-reoffer-timer.md)). `None`
     /// disables the timer (a turn parks indefinitely). Default: 60s.
     pub reoffer_interval: Option<Duration>,
+    /// Cap on the inner LLM→tool loop within a single turn (#177): the maximum
+    /// number of LLM round-trips (each possibly fanning out into tool calls)
+    /// before a runaway turn is halted with an `Error`. The counter resets per
+    /// prompt, so a legitimate long session (many prompts) is never capped —
+    /// only a single wedged turn. User-configurable; default 200.
+    pub max_turns: usize,
 }
 
 impl EngineConfig {
@@ -158,6 +164,7 @@ impl Default for EngineConfig {
             pricing: HashMap::new(),
             model_resolver: None,
             reoffer_interval: Some(Duration::from_secs(60)),
+            max_turns: 200,
         }
     }
 }

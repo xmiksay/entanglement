@@ -91,6 +91,11 @@ async fn build_config(
     // session budgets its history against the real window (128k for GLM-5.2, not
     // a fixed 180k). `None` (unknown model / echo) keeps core's flat fallback.
     cfg.context_window = model_info.context_window.map(|w| w as usize);
+    // User-configurable turn cap (#177): config file → engine, falling back to
+    // the `EngineConfig::default()` (200) when unset.
+    if let Some(max) = user_config.max_turns {
+        cfg.max_turns = max;
+    }
     // Canonicalize the working root once at startup (#163, ADR-0054): host-tool
     // containment checks against this, so a symlinked cwd must resolve to its
     // real path here or every resolved target would look like an escape.

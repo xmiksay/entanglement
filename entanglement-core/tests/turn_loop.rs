@@ -228,7 +228,7 @@ impl Llm for LoopingLlm {
 }
 
 /// Regression (#177): a model wedged in a tool loop — every reply is another
-/// tool call — must be bounded by `MAX_TURNS` within a single prompt. Before
+/// tool call — must be bounded by `max_turns` within a single prompt. Before
 /// the fix the counter bounded *prompts*, not the inner loop, so this ran
 /// forever. We assert the engine emits the "maximum turn limit" Error and that
 /// the LLM was streamed a bounded number of times.
@@ -272,12 +272,64 @@ async fn runaway_tool_loop_is_bounded_within_a_single_prompt() {
         saw_limit,
         "a runaway tool loop must hit the turn-limit Error instead of spinning forever"
     );
-    // 50 iterations run; the 51st trips the cap before streaming. The exact
-    // bound isn't the contract, only that it *is* bounded well under any real
-    // conversation length.
+    // The loop runs up to `max_turns` iterations; the next one trips the cap
+    // before streaming. The exact bound isn't the contract, only that it *is*
+    // bounded well under any real conversation length. The default is 200
+    // (EngineConfig::default); this test uses that default.
     assert!(
-        calls.load(Ordering::SeqCst) <= 51,
-        "inner loop should stop near MAX_TURNS, streamed {} times",
+        calls.load(Ordering::SeqCst) <= 201,
+        "inner loop should stop near max_turns (200), streamed {} times",
+        calls.load(Ordering::SeqCst)
+    );
+}
+
+/// A custom `EngineConfig::max_turns` is honored: a runaway tool loop must stop
+/// at the configured value, not the default. Uses a small cap (3) so it stays
+/// fast and unambiguous (#177).
+#[tokio::test]
+async fn custom_max_turns_is_honored() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_factory = calls.clone();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(LoopingLlm {
+                calls: calls_for_factory.clone(),
+            }) as Box<dyn Llm>
+        }),
+        max_turns: 3,
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(&holly, unknown_tool);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "spin"))
+        .await
+        .unwrap();
+
+    let mut saw_limit = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
+        if let OutEvent::Error {
+            session, message, ..
+        } = ev
+        {
+            if session == sid && message.contains("maximum turn limit") {
+                saw_limit = true;
+                assert!(
+                    message.contains("(3)"),
+                    "the cap value in the error should reflect the config: {message}"
+                );
+                break;
+            }
+        }
+    }
+    assert!(saw_limit, "a custom max_turns=3 must still trip the cap");
+    assert!(
+        calls.load(Ordering::SeqCst) <= 4,
+        "loop must stop at the configured cap (3), streamed {} times",
         calls.load(Ordering::SeqCst)
     );
 }

@@ -114,6 +114,9 @@ struct RawConfig {
     /// permission ladder).
     #[serde(default)]
     web_search: WebSearchConfig,
+    /// Cap on the inner LLM→tool loop within a single turn (#177). Default 200.
+    #[serde(default)]
+    max_turns: Option<usize>,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -135,6 +138,10 @@ pub struct Config {
     pub mcp: HashMap<String, McpServerConfig>,
     /// Provider-side web search (#305). Disabled by default (a no-op).
     pub web_search: WebSearchConfig,
+    /// Cap on the inner LLM→tool loop within a single turn (#177). `None` ⇒
+    /// the engine default (200). User-configurable so a long autonomous run can
+    /// be loosened (or a runaway tightened) without a recompile.
+    pub max_turns: Option<usize>,
 }
 
 /// Which of the three precedence layers a value came from. Ordered low → high so
@@ -263,6 +270,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         hooks: raw.hooks,
         mcp: raw.mcp,
         web_search: raw.web_search,
+        max_turns: raw.max_turns,
     };
     Ok(Resolved {
         config,
@@ -285,6 +293,7 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "hooks",
         "mcp",
         "web_search",
+        "max_turns",
     ];
     KEYS.iter()
         .filter_map(|key| {
