@@ -462,9 +462,9 @@ mod tests {
 
     #[test]
     fn spawn_specs_scope_the_enum_to_valid_targets() {
-        // The default registry: build/plan (Primary, not targets), explore
-        // (Subagent, a target). `build` may spawn, so it gets the triple — but
-        // only `explore` is a valid target, so the enum lists it alone.
+        // The default registry: build/plan (Primary, not targets), explore +
+        // debug (Subagent, targets). `build` may spawn, so it gets the triple —
+        // and both spawnable leaves are valid targets, so the enum lists them.
         let reg = crate::agents::built_in_registry();
         let build = reg.get("build").unwrap();
         let specs = spawn_specs_for(build, &reg);
@@ -474,6 +474,7 @@ mod tests {
             .as_array()
             .unwrap();
         assert!(enum_names.iter().any(|n| n == "explore"));
+        assert!(enum_names.iter().any(|n| n == "debug"));
         assert!(!enum_names.iter().any(|n| n == "build"));
         assert!(!enum_names.iter().any(|n| n == "plan"));
     }

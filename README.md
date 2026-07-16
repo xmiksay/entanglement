@@ -52,16 +52,18 @@ policy, and approval-across-restart semantics, backed by a compiling
 A session runs under an **agent profile** — `{ name, description, mode, model,
 system_prompt, permission, tools, disallowed_tools, can_spawn,
 spawnable_agents }`. Switch the *primary* profile with `SetAgent`; the cycle is
-`build ↔ plan` — `explore` is now `mode: subagent`, so it is filtered out of the
-primary cycle and only reachable via spawn. Built-ins: `build`, `plan`,
-`explore`.
+`build ↔ plan` — `explore` and `debug` are `mode: subagent`, so they are
+filtered out of the primary cycle and only reachable via spawn. Built-ins:
+`build`, `plan`, `explore`, `debug`.
 
 The permission profile (`Allow | Ask | Deny` per tool, name-or-`*` or
 argument-scoped `tool(pattern)`) drives the approval flow. `build` allows
 everything; `plan` **asks** by default and, since #140, its `tools:` allowlist
 masks `edit`/`write` out of the toolset entirely (so it plans without touching
-files) — `explore` is the deny profile (read-only). Permission resolution and
-approval live entirely in the runtime (#59).
+files) — `explore` is the deny profile (read-only), the default spawn target;
+`debug` carries `build`'s own allow-everything permission (read/write/execute)
+for a spawned sub-agent that actually needs to reproduce, fix, and verify a
+bug. Permission resolution and approval live entirely in the runtime (#59).
 
 Session snapshots (`OutEvent::Plan`, `OutEvent::TaskList` — both markdown
 `content`) are orthogonal — emitted by the runtime's `update_plan` /

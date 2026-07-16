@@ -15,9 +15,9 @@
 //!
 //! Three layers, later wins on a `name` collision:
 //!
-//! 1. **built-in** — embedded [`include_str!`] files ([`build`], [`plan`],
-//!    [`explore`]), parsed through the *same* loader. Editing a built-in is just
-//!    dropping a same-`name` file in a higher layer; there is no special
+//! 1. **built-in** — embedded [`include_str!`] files (`build`, `plan`,
+//!    `explore`, `debug`), parsed through the *same* loader. Editing a built-in
+//!    is just dropping a same-`name` file in a higher layer; there is no special
 //!    "edit built-ins" code path.
 //! 2. **user** — `~/.claude/agents/*.md` (cross-vendor, lenient), then
 //!    `${config_dir}/entanglement/agents/*.md` (native, strict).
@@ -67,6 +67,7 @@ const BUILT_INS: &[(&str, &str)] = &[
     ("build.md", include_str!("build.md")),
     ("plan.md", include_str!("plan.md")),
     ("explore.md", include_str!("explore.md")),
+    ("debug.md", include_str!("debug.md")),
 ];
 
 /// Env var overriding the user agents directory (tests + non-XDG setups).
@@ -242,13 +243,14 @@ pub fn load_registry(
     Ok(reg)
 }
 
-/// Parse *only* the embedded built-in trio (`build`/`plan`/`explore`) into a
-/// [`ProfileRegistry`], skipping the user/project layers [`load_registry`]
-/// consults. The runtime is the single source of the built-in trio (#201): core
-/// carries only the `build` fallback [`ProfileRegistry::new`] synthesizes, so
-/// callers that need the full trio without touching the filesystem parse the
-/// embedded markdown here. Prompts are composed with an identity
-/// [`PromptContext`] (no brief/env/skills), matching the raw built-in bodies.
+/// Parse *only* the embedded built-in set (`build`/`plan`/`explore`/`debug`)
+/// into a [`ProfileRegistry`], skipping the user/project layers
+/// [`load_registry`] consults. The runtime is the single source of the
+/// built-ins (#201): core carries only the `build` fallback
+/// [`ProfileRegistry::new`] synthesizes, so callers that need the full set
+/// without touching the filesystem parse the embedded markdown here. Prompts
+/// are composed with an identity [`PromptContext`] (no brief/env/skills),
+/// matching the raw built-in bodies.
 ///
 /// The embedded definitions are compile-time constants guarded by
 /// [`tests::built_ins_parse_with_expected_shape`], so a parse failure here is a
@@ -685,6 +687,22 @@ mod tests {
         assert!(explore.advertises_tool("grep"));
         assert!(!explore.advertises_tool("edit"));
         assert!(!explore.advertises_tool("agent_spawn"));
+
+        // `debug`: a spawnable sub-agent with `build`'s own permissions (allow
+        // everything, inherit-all tool mask) so it can actually compile/run tests
+        // to verify a fix — unlike read-only `explore`, the only other spawn
+        // target, it never gets stuck unable to execute.
+        let debug = reg.get("debug").expect("debug built-in");
+        assert_eq!(debug.mode, AgentMode::Subagent);
+        assert!(debug.spawnable_as_subagent());
+        assert_eq!(debug.permission.for_tool("edit"), Permission::Allow);
+        assert_eq!(debug.permission.for_tool("bash"), Permission::Allow);
+        assert!(debug.tools.is_none(), "inherit-all, like build");
+        // Plan authorship is default-closed (#231, ADR-0049), same as `build`.
+        assert!(!crate::plan_tasks::explicitly_allowlists(
+            debug,
+            "update_plan"
+        ));
     }
 
     #[test]
