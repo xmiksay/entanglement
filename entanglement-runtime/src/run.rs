@@ -171,9 +171,10 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         },
         OutEvent::Error { message, .. } => writeln!(out, "! {message}")?,
         OutEvent::Done { .. } => writeln!(out, "✓ done")?,
-        OutEvent::Compacted { summary, kept, .. } => writeln!(
+        OutEvent::Compacted { summary, .. } => writeln!(
             out,
-            "▸ compacted (kept {kept} trailing messages):\n{summary}"
+            "▸ compacted: summary ready — fork into a new session to continue from it \
+             (the original is preserved):\n{summary}"
         )?,
         OutEvent::FileChange {
             path, change_kind, ..

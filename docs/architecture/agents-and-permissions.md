@@ -228,10 +228,16 @@ below realize one model:
   behavior — but **no** `apply(&mut ProfileRegistry)`: there's nothing on
   `AgentProfile` to overlay, so `AgentGenerationStore::resolver(store)` builds
   the `GenerationResolver` closure directly (resolved fresh on every call, so a
-  `set`/`reload` is visible without rebuilding it). TUI `/set`/`/show` and the
-  persist-on-confirmation write are #376 — not yet built, so nothing writes
-  this file today outside tests; the engine-side resolver seam and the store
-  itself are complete.
+  `set`/`reload` is visible without rebuilding it). **TUI surface (✅ #376,
+  [ADR-0095](../adr/0095-tui-set-show-generation-persist-on-confirmation.md)):**
+  `/set <key> <value>` (`temperature`/`effort`/`thinking_budget`/`max_tokens`)
+  sends `InMsg::SetGeneration` and records a pending persist; the confirming
+  `GenerationChanged` commits an atomic write to `agent-generation.yml`, an
+  `Error` clears it without writing. `/show` is a no-override `SetGeneration`
+  query that renders the current params as a status line. Both are reachable by
+  typing `/set …`/`/show` directly, or from the `Ctrl+P` palette (a palette
+  pick of `/set` prefills the input with `/set ` since the palette carries no
+  trailing args, while `/show` runs immediately).
 - **Live reload + managed-file locking (✅ #329, [ADR-0084](../adr/0084-runtime-live-reload-and-managed-file-locking.md)):**
   a runtime-side `watch.rs` watches every resolvable agent/skill dir plus
   `${config_dir}/entanglement/` and `<root>/.entanglement/` (`notify`, debounced

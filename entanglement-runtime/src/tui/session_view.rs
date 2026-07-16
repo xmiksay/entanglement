@@ -225,6 +225,13 @@ impl SessionView {
         &self.transcript
     }
 
+    /// The highest content-event seq this view has folded — the seq-dedupe
+    /// watermark. Used by the compaction-fork interceptor (ADR-0101) to tell a
+    /// live `Compacted` from a replayed duplicate.
+    pub fn last_seen_seq(&self) -> u64 {
+        self.last_seen_seq
+    }
+
     pub fn plan(&self) -> Option<&String> {
         self.plan.as_ref()
     }

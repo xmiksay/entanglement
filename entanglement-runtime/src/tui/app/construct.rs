@@ -167,6 +167,7 @@ impl App {
             chat_scroll_offset: 0,
             chat_line_blocks: Vec::new(),
             pending_effect: None,
+            pending_compact_fork: None,
             inspect: Default::default(),
             root: PathBuf::from("."),
             bash_enabled: false,

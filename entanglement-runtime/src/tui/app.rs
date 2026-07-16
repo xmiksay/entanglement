@@ -19,6 +19,7 @@ use crate::tui::theme::Theme;
 // `App` is split across sibling submodules (issue #109); each contributes a
 // cohesive slice of the `impl App` surface. Fields stay private here — child
 // modules reach them through their descendant visibility.
+mod compact;
 mod construct;
 mod dispatch;
 mod generation;
@@ -50,6 +51,21 @@ pub enum UiEffect {
     OpenEditor,
     /// Export the transcript to Markdown and open it in `$EDITOR`.
     Export,
+}
+
+/// A deferred compaction fork (ADR-0101): on `OutEvent::Compacted`, the TUI
+/// mints a fresh session id, switches the active view to it, and records the
+/// summary as its first user message — all synchronously. The engine side
+/// (`InMsg::Spawn`) needs `Holly`, which the synchronous `handle_out_event`
+/// doesn't hold, so it's recorded here for the async main loop to send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactFork {
+    pub new_session: SessionId,
+    pub source: SessionId,
+    /// The source session's agent profile name — `Spawn` inherits it so the
+    /// fork runs under the same profile/model pin.
+    pub agent: String,
+    pub summary: String,
 }
 
 #[derive(Clone)]
@@ -162,6 +178,13 @@ pub struct App {
 
     // Deferred terminal-owning effect (editor / export) for the event loop to run.
     pending_effect: Option<UiEffect>,
+
+    // Deferred session fork on compaction (ADR-0101): a `Compacted` event forks
+    // the summary into a new session via `InMsg::Spawn`. The head-side view
+    // switch + the summary-as-first-user-message record happen synchronously in
+    // `handle_out_event`; the engine `Spawn` is recorded here for the async main
+    // loop (which owns `Holly`) to send.
+    pending_compact_fork: Option<CompactFork>,
 
     // In-session inspection overlay (#214): resolved prompt / agents / skills.
     inspect: inspect::InspectState,
@@ -318,6 +341,28 @@ impl App {
         }
         if let OutEvent::McpChanged { name, action } = &event {
             self.handle_mcp_changed(name, *action);
+        }
+        // Compaction forks (ADR-0101): intercept before routing, so the source
+        // view renders a fork notice, a new view is minted + switched to, and a
+        // pending `Spawn` is recorded for the async main loop to send. Deduped
+        // by seq against the source view's watermark so a replayed/lagged
+        // duplicate doesn't fork a second time (mirrors the reducer's own
+        // seq-dedupe guard).
+        if let OutEvent::Compacted {
+            session: source,
+            seq,
+            summary,
+            ..
+        } = &event
+        {
+            let is_new = self
+                .sessions
+                .view_for(source)
+                .map(|v| *seq > v.last_seen_seq())
+                .unwrap_or(true);
+            if is_new {
+                self.handle_compacted(source.clone(), summary.clone());
+            }
         }
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();

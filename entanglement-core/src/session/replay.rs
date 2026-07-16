@@ -201,29 +201,15 @@ impl Session {
                     }
                     pending_tool_outputs.clear();
                 }
-                // Session compaction (#324, ADR-0082): flush any pending
-                // assistant/tool buffers first (a oneshot op only runs with no
-                // turn live, but a prior turn's `Done` may be absent from a
-                // truncated replay window) — same drain as the `Done` arm —
-                // then apply the compaction exactly as the live path did, so a
-                // resumed session's context matches. Records that follow fold
-                // on top normally (the summary is just the new tail start).
-                OutEvent::Compacted { summary, kept, .. } => {
-                    if !pending_text.is_empty() || !pending_tools.is_empty() {
-                        session
-                            .ctx
-                            .push_assistant(pending_text.clone(), pending_tools.clone());
-                        pending_text.clear();
-                        pending_tools.clear();
-                    }
-                    for (request_id, output) in &pending_tool_outputs {
-                        session
-                            .ctx
-                            .push_tool_content(request_id.clone(), output.clone());
-                    }
-                    pending_tool_outputs.clear();
-                    session.ctx.apply_compaction(summary, *kept as usize);
-                }
+                // Session compaction (#324, ADR-0082 → ADR-0101):
+                // **copy-on-write** — the source `Context` is never mutated, so
+                // there is nothing to fold here. The summary rides only in the
+                // event (a head forks it into a new session). A record written
+                // under the old in-place design (ADR-0082) is simply ignored:
+                // replaying it would clobber the full pre-compaction history
+                // the log still holds, which is exactly the history the source
+                // session should recover with.
+                OutEvent::Compacted { .. } => {}
                 _ => {}
             }
         }

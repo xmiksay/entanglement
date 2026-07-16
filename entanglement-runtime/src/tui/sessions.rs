@@ -55,6 +55,18 @@ impl SessionRegistry {
             .expect("active session always has a view")
     }
 
+    /// Read-only access to a session's view by id, if it exists. Used by the
+    /// compaction fork (ADR-0101) to read the source's agent name.
+    pub fn view_for(&self, id: &SessionId) -> Option<&SessionView> {
+        self.views.get(id)
+    }
+
+    /// Mutable access to a session's view by id, if it exists. Used by the
+    /// compaction fork (ADR-0101) to record a notice on the source view.
+    pub fn view_for_mut(&mut self, id: &SessionId) -> Option<&mut SessionView> {
+        self.views.get_mut(id)
+    }
+
     fn view_or_insert(&mut self, id: &SessionId) -> &mut SessionView {
         if !self.views.contains_key(id) {
             self.views.insert(id.clone(), SessionView::new());

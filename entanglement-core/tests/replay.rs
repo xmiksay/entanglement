@@ -628,10 +628,15 @@ async fn fully_resolved_tail_keeps_turn_live_for_continuation() {
     assert_eq!(session.ctx.messages().len(), 3);
 }
 
-// --- Session compaction (#324, ADR-0082) ---------------------------------
+// --- Session compaction (#324, ADR-0082 → ADR-0101) ----------------------
+//
+// Copy-on-write (ADR-0101): `Compacted` no longer mutates the source. A replayed
+// source session keeps its full pre-compaction history; the summary rides only
+// in the event (a head forks it into a new session). So these tests now assert
+// the source is *unchanged* by a `Compacted` record in the log.
 
 #[tokio::test]
-async fn compacted_record_folds_via_apply_compaction() {
+async fn compacted_record_leaves_source_history_intact() {
     let sid = SessionId::new("test-compacted");
     let records = vec![
         prompt_record(&sid, "hello"),
@@ -690,23 +695,21 @@ async fn compacted_record_folds_via_apply_compaction() {
     let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
     let messages = session.ctx.messages();
 
-    // The pre-compaction turn is gone; only the summary + the post-compaction
-    // turn survive.
+    // Copy-on-write (ADR-0101): the source is never mutated, so the full
+    // history survives — both turns, untouched by the Compacted record.
     assert_eq!(
         messages.len(),
-        3,
-        "summary + user + assistant: {messages:?}"
+        4,
+        "both turns intact, the summary did not replace anything: {messages:?}"
     );
-    assert_eq!(messages[0].role, entanglement_core::MessageRole::User);
-    assert!(messages[0]
-        .text()
-        .contains("user said hello, agent replied"));
-    assert_eq!(messages[1].text(), "what's next?");
-    assert_eq!(messages[2].text(), "next steps");
+    assert_eq!(messages[0].text(), "hello");
+    assert_eq!(messages[1].text(), "hi there");
+    assert_eq!(messages[2].text(), "what's next?");
+    assert_eq!(messages[3].text(), "next steps");
 }
 
 #[tokio::test]
-async fn compacted_record_preserves_kept_trailing_messages() {
+async fn compacted_record_does_not_mutate_source_even_with_kept() {
     let sid = SessionId::new("test-compacted-kept");
     let records = vec![
         prompt_record(&sid, "first"),
@@ -740,9 +743,11 @@ async fn compacted_record_preserves_kept_trailing_messages() {
     let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
     let messages = session.ctx.messages();
 
-    // summary + the 1 kept trailing message (the assistant reply).
-    assert_eq!(messages.len(), 2);
-    assert!(messages[0].text().contains("earlier summary"));
+    // Copy-on-write (ADR-0101): `kept` is now wire-legacy only; the source is
+    // never mutated, so the full history (the user prompt + the reply) is
+    // intact — not summary + tail.
+    assert_eq!(messages.len(), 2, "full history intact: {messages:?}");
+    assert_eq!(messages[0].text(), "first");
     assert_eq!(messages[1].text(), "reply one");
 }
 
@@ -750,7 +755,8 @@ async fn compacted_record_preserves_kept_trailing_messages() {
 /// `compact`, another prompt), capture the resulting `(Option<InMsg>,
 /// OutEvent)` log the way the persistence tap would (each `Out` paired with
 /// the `In` that most recently preceded it), and assert `Session::replay`
-/// reconstructs the same context the live compaction produced.
+/// reconstructs the source context the copy-on-write design leaves intact
+/// (ADR-0101): the live compaction never mutated it, so replay must not either.
 #[tokio::test]
 async fn live_compaction_replays_to_the_same_context() {
     let sid = SessionId::new("test-live-compact");
@@ -808,19 +814,18 @@ async fn live_compaction_replays_to_the_same_context() {
     let replayed = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
     let messages = replayed.ctx.messages();
 
+    // Copy-on-write (ADR-0101): the source was never mutated, so replay
+    // reconstructs the full history — both turns — untouched by the
+    // `Compacted` record in the log.
     assert_eq!(
         messages.len(),
-        3,
-        "summary + user + assistant: {messages:?}"
+        4,
+        "both turns intact, the summary forked elsewhere: {messages:?}"
     );
-    assert_eq!(messages[0].role, entanglement_core::MessageRole::User);
-    assert!(
-        messages[0].text().starts_with("[Conversation summary"),
-        "live compaction must fold into the same summary-user shape replay expects: {:?}",
-        messages[0]
-    );
-    assert_eq!(messages[1].text(), "what's next?");
-    assert_eq!(messages[2].text(), "ok");
+    assert_eq!(messages[0].text(), "hello");
+    assert_eq!(messages[1].text(), "ok");
+    assert_eq!(messages[2].text(), "what's next?");
+    assert_eq!(messages[3].text(), "ok");
 }
 
 #[tokio::test]

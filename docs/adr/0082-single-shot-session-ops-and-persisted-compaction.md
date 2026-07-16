@@ -1,6 +1,8 @@
 # 0082. Single-shot session ops (`InMsg::Oneshot`) and persisted compaction
 
-- Status: Accepted
+- Status: Superseded by [0101](0101-compaction-forks-into-a-new-session-copy-on-write.md)
+  (the wire shape and `Compacted` variant stay; the in-place `apply_compaction`
+  mutation is replaced with copy-on-write forking)
 - Date: 2026-07-15
 - Builds on the context-window compaction of
   [0055](0055-usage-cost-and-stop-reason-surfacing.md)-adjacent `Context::compact`
