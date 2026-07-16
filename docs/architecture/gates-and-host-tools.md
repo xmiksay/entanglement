@@ -95,7 +95,7 @@ tools and makes no policy decision:
 | --- | --- | --- |
 | `read` | `{path, offset?, limit?}` | text file → contents as `{lineno}: {line}`, 1-based, line-ranged; an **image file** (`.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`, by extension) → a base64 **image content block** the provider renders natively (Anthropic `image` / OpenAI `image_url`), routed through the `ToolResult` `content` path (`offset`/`limit` ignored) — #221 |
 | `glob` | `{pattern}` | matching paths (relative to root), one per line |
-| `grep` | `{pattern, path?}` | matches as `path:lineno:line` over files matched by `path` (default `**/*`) |
+| `grep` | `{pattern, path?}` | matches as `path:lineno:line` over files matched by `path` (default `**/*`); a file over the 1 MiB **scan** cap (independent of the 32 KiB output cap, [ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)) or sniffed as binary (a NUL byte in its content) is skipped and named in a labeled notice appended to the result — regardless of match count |
 | `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists → hints `write`); non-unique match errors unless `replaceAll` |
 | `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
 | `bash` ⚠ | `{command, timeout?, workdir?, run_in_background?}` | `sh -c` rooted at root (or at `workdir`, a subdir validated under root by the same symlink-safe containment as the fs tools, #170); `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600; spawned in its **own process group** (`process_group(0)`) so an expiry SIGKILLs the whole tree — grandchildren (a launched server/pipeline) can't orphan (#168); a `Stop`-driven task abort drops the wait future, whose group-kill guard SIGKILLs the same group so cancellation matches the timeout's containment rather than orphaning under bare `kill_on_drop` (#167). Output is drained incrementally, so a timeout returns the **partial output buffered before the kill** under a `[killed: timed out after Ns]` header instead of discarding it (#169). Oversized output is capped **head + tail** (¼ head / ¾ tail, `truncate_head_tail`) so the trailing error survives — head-only truncation dropped exactly what a failing build needs (#170). `run_in_background: true` spawns the command **detached** and returns a job id instead of blocking — poll it with `bash_output` (#170) |
@@ -129,7 +129,11 @@ tools and makes no policy decision:
   to 2000 lines; `glob`/`grep` cap at 1000 results. Prevents a huge file/tree
   from blowing the context window. `bash`/`bash_output` cap **head + tail**
   (`truncate_head_tail`) rather than head-only — build/test output puts the
-  load-bearing error at the end (#170).
+  load-bearing error at the end (#170). `grep`'s per-file **scan** cap (how
+  much of a candidate file it reads and searches) is a separate, grep-local 1
+  MiB bound (`MAX_SCAN_BYTES`), not the 32 KiB output cap — conflating the two
+  meant any file over 32 KiB was silently skipped regardless of the
+  match-output size ([ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md), #380).
 - **Empty-result contract (ADR-0016):** a host tool may not return a silent
   zero-output when multiple distinguishable underlying states produce it.
   `list_files` returns `FileList { files, matched_dirs, skipped_errors }`;
@@ -138,7 +142,14 @@ tools and makes no policy decision:
   bare-`**` trap, which matches only directories), it returns a hint like
   *"`**` matched 7 directories but no files — try `**/*`"* so the model can
   self-correct mechanically. `grep` consumes the same `FileList` but stays
-  silent on zero matches (a clean no-match is a single well-defined state).
+  silent on zero matches (a clean no-match is a single well-defined state);
+  it is **not** silent, however, about files it excluded from the scan — a
+  file over `MAX_SCAN_BYTES` or sniffed as binary (NUL byte in its content) is
+  tracked by skip reason (`TooLarge`/`Binary`) and, whenever that list is
+  non-empty, surfaced as a labeled notice (capped preview, `... and N more`
+  past 20 entries per reason) appended to the result regardless of match
+  count — otherwise a match that exists only in an excluded file would look
+  identical to a genuine no-match ([ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)).
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
 - **Wiring (ADR-0010):** `host_tools(root)` registers the **root-contained
