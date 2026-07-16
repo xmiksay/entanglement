@@ -129,11 +129,16 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         InMsg::Oneshot { op, args, .. } => SessionCmd::Oneshot(op, args),
         // Approve/Reject/AnswerQuestion and the ListSessions/ReplayFrom/
         // CloseSession/HibernateSession queries are filtered out before routing
-        // (see supervisor); Resume and Spawn are handled specially. None reach here.
+        // (see supervisor); Resume and Spawn are handled specially. The MCP ops
+        // (#375) are engine-global like ListSessions — a runtime service answers
+        // them off the inbound fan-out, never a session task. None reach here.
         InMsg::Approve { .. }
         | InMsg::Reject { .. }
         | InMsg::AnswerQuestion { .. }
         | InMsg::ListSessions { .. }
+        | InMsg::McpList { .. }
+        | InMsg::McpAdd { .. }
+        | InMsg::McpRemove { .. }
         | InMsg::ReplayFrom { .. }
         | InMsg::CloseSession { .. }
         | InMsg::HibernateSession { .. }

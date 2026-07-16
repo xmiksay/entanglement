@@ -61,6 +61,9 @@ pub mod atomic;
 pub mod env_file;
 pub mod env_key;
 pub mod lock;
+pub mod mcp_persist;
+
+pub use mcp_persist::save_mcp;
 
 /// The CLI `skutter config set-key` handler (rpassword prompt + catalog lookup).
 /// Behind `cli`+`provider`: it prompts (rpassword, a `cli`-feature dep) and looks
@@ -81,6 +84,15 @@ const TEMPLATE_YML: &str = include_str!("template.yml");
 
 /// Env var overriding the user config file path (tests + non-XDG setups).
 const CONFIG_FILE_ENV: &str = "ENTANGLEMENT_CONFIG_FILE";
+
+/// Guards mutation of `ENTANGLEMENT_CONFIG_FILE` — process-global env state —
+/// across every test in this crate that points the layered config loader (or
+/// [`mcp_persist::save_mcp`]'s surgical `mcp:` writer) at a temp file. Shared by
+/// `config::tests` and `config::mcp_persist::tests` (not module-local to
+/// either) so the two suites can't race on the same var when `cargo test` runs
+/// them in parallel threads.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The raw file shape. `deny_unknown_fields` makes a typo'd key a loud error
 /// rather than a silently-ignored setting, exactly like the agent/provider files.

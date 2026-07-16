@@ -70,6 +70,10 @@ impl SessionView {
             // view updates — `handle_out_event` filters them out before they
             // reach a view, so these arms only keep the match exhaustive.
             OutEvent::SessionList { .. } => false,
+            // MCP ops (#375) are engine-global — never routed to a per-session
+            // view (`handle_out_event` filters them out, same as SessionList).
+            OutEvent::McpList { .. } => false,
+            OutEvent::McpChanged { .. } => false,
             OutEvent::History { .. } => false,
             OutEvent::Status { state, .. } => {
                 // Known cosmetic flap (#273): with two parked Asks, resolving

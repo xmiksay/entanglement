@@ -352,6 +352,58 @@ the same permission profiles as `read`/`bash`.
   the HTTP path rides the `mcp-http` feature, so an embedder gets stdio tool servers
   with no CLI/TUI/transport dependency and opts into HTTP by enabling the feature.
 
+### Live add/remove/list — [ADR-0096](../adr/0096-dynamic-toolregistry-sharedregistry.md) + [ADR-0097](../adr/0097-live-mcp-server-management.md) (#372, #375)
+
+The registry `mcp::connect` populates at startup is no longer frozen:
+`entanglement_runtime::SharedRegistry` (`Arc<std::sync::RwLock<ToolRegistry>>`)
+replaces the owned `ToolRegistry` on every `tool_runner::spawn_tool_executor*`
+entry point, and `EngineConfig.tool_spec_resolver` (§ADR-0076) is wired to
+snapshot it fresh every turn — so the tools a live add/remove registers reach
+both dispatch and model-advertised schemas with no engine restart.
+
+- **`InMsg::McpList { correlation_id }` / `McpAdd { name, config }` /
+  `McpRemove { name }`** are engine-global, exactly like `ListSessions`:
+  `session()` is `None`, `msg_to_cmd` routes them to no session task, and they
+  are wire-allowed (enabling a server *is* consent, §ADR-0047/§ADR-0080).
+  `McpAdd`'s `config` is a core-owned `McpServerSpec` DTO — core cannot depend
+  on the runtime crate, so it never carries the runtime's `McpServerConfig`
+  directly; a `From<McpServerSpec>` conversion happens runtime-side. Answered
+  by `OutEvent::McpList { correlation_id, servers: Vec<McpServerStatus> }` /
+  `McpChanged { name, action: McpAction }` — no `seq`, point-in-time.
+- **`mcp::spawn_mcp_responder`** subscribes to `Holly::subscribe_inbound()` and
+  answers these three, mirroring `history::spawn_history_responder`'s answer
+  to `ReplayFrom`: the runtime, not core, owns the state involved, so a
+  runtime-side service is the sole answerer rather than the core supervisor
+  (unlike `ListSessions`, which the supervisor answers directly from its own
+  live-session directory). Two `Holly::emit_mcp_list`/`emit_mcp_changed`
+  helpers mirror `emit_history`.
+- **`mcp::live`** holds the runtime state: `ActiveServers` (what is currently
+  connected — `name → { client: Arc<McpClient>, tools, transport }`) and the
+  wider `ServerConfigs` (every *configured* server, including a `disabled` or
+  failed-to-connect one — the full set a persist write must round-trip).
+  `mcp_add` upserts (drops any prior tools/connection under the same name
+  first, so re-adding cleanly replaces a broken server) and never holds the
+  registry's write lock across the connect/`tools/list` awaits. `mcp_remove`
+  drops the tracked `Arc<McpClient>`, which is what actually kills the
+  subprocess/closes the HTTP session (`StdioClient`'s `kill_on_drop`) — there
+  is no separate teardown call. `mcp_list` enumerates `ActiveServers`, sorted
+  by name.
+- **`config::save_mcp`** (`config/mcp_persist.rs`) persists a live add/remove
+  back to `config.yml`: a **surgical `serde_yaml::Value` edit** of just the
+  top-level `mcp` key (not the typed `Config`, which would drop unknown keys
+  under `deny_unknown_fields`), locked (§ADR-0084) and atomic. Unlike the
+  managed sibling files (grants/agent-models/agent-generation/the provider-key
+  env file), MCP servers stay part of the primary hand-edited `config.yml` —
+  the surgical edit exists precisely to avoid disturbing whatever else
+  (`permissions`, `hooks`, …) a user set alongside `mcp:`. Does not preserve
+  comments (no layer in this config loader does).
+- A failed live add/remove is `tracing::warn!`-logged, not a new `OutEvent` —
+  matching the existing best-effort MCP philosophy (§ADR-0067): there is no
+  session to attach an error to.
+- **Out of scope here:** the TUI `/mcp` surface (a head can already drive
+  these ops via raw `InMsg` over `pipe`/`serve`) and reconnect-on-external-
+  config-edit (a file watcher) are separate, unscheduled follow-ups.
+
 [holly]: ../entanglement-core/src/holly.rs
 [profile]: ../entanglement-core/src/protocol.rs
 [perm]: ../entanglement-core/src/protocol.rs

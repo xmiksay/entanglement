@@ -127,8 +127,10 @@ Enabling *is* consent — it runs **outside** the permission ladder
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
           | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
+          | McpList | McpAdd | McpRemove
           | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status | AgentChanged | ModelChanged | GenerationChanged
+          | McpList | McpChanged
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
 ```
@@ -290,6 +292,37 @@ re-document them here):
   clears the pending without writing; a `GenerationChanged` with no pending
   (a `/show` query, or a `SetAgent`/session-start generation overlay) is
   rendered but never persisted.
+- **Dynamic tool registry + live MCP server management** (#372/#375,
+  [ADR-0096](../docs/adr/0096-dynamic-toolregistry-sharedregistry.md)/
+  [ADR-0097](../docs/adr/0097-live-mcp-server-management.md)):
+  `entanglement_runtime::SharedRegistry` (`Arc<std::sync::RwLock<ToolRegistry>>`)
+  replaces the owned-by-value `ToolRegistry` the tool executor used to freeze at
+  startup — every dispatch snapshots it fresh (`registry.read().unwrap().clone()`,
+  cheap: values are `Arc<dyn Tool>`), and `EngineConfig.tool_spec_resolver`
+  (ADR-0076) re-snapshots it every turn, so a live add's tools reach both
+  execution and the model's advertised schemas with no restart. `InMsg::McpList
+  { correlation_id }`/`McpAdd { name, config: McpServerSpec }`/`McpRemove { name
+  }` are engine-global exactly like `ListSessions` (`session()` → `None`,
+  `msg_to_cmd` → no session task, wire-allowed), answered by
+  `OutEvent::McpList { correlation_id, servers: Vec<McpServerStatus> }`/
+  `McpChanged { name, action: McpAction }` — not by the core supervisor (which
+  answers `ListSessions` from its own live-session directory) but by a new
+  runtime-side `mcp::spawn_mcp_responder` off `Holly::subscribe_inbound()`,
+  mirroring `history::spawn_history_responder`'s answer to `ReplayFrom`, since
+  the runtime alone holds the `SharedRegistry` + `ActiveServers`/`ServerConfigs`
+  these ops read and mutate. `mcp::live::mcp_add`/`mcp_remove`/`mcp_list` do the
+  connect/register/unregister/persist work (`mcp_add` upserts — dropping any
+  prior connection under the same name first — and never holds the registry's
+  write lock across a network/subprocess `.await`; `mcp_remove` relies on
+  dropping the last `Arc<McpClient>` to kill the subprocess/close the HTTP
+  session via `StdioClient`'s `kill_on_drop`). Persistence
+  (`config::save_mcp`) is a **surgical `serde_yaml::Value` edit** of
+  `config.yml`'s `mcp:` key — not a new sibling managed file like grants/
+  agent-models/agent-generation/the env file — since MCP servers are meant to
+  stay part of the primary hand-edited config; locked + atomic, but does not
+  preserve comments. A failed add/remove is logged, not a new `OutEvent` (no
+  session to attach one to). TUI `/mcp` surface is a separate, unscheduled
+  follow-up (a head can already drive these ops via raw `InMsg`).
 - **Single-shot session ops + persisted compaction** (#324,
   [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)):
   `InMsg::Oneshot { session, op: String, args: Value }` is a generic **wire

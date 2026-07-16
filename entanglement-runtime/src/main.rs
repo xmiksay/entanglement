@@ -20,9 +20,9 @@ mod run;
 mod tui;
 
 use entanglement_runtime::{
-    agents, ask_user, config, history, host, inspect, logging, persistence, plan_tasks, policy,
-    propose_plan, script, session_store, skills, subagent, system_prompt, tool_names, tool_runner,
-    watch, ToolRegistry,
+    agents, ask_user, config, history, host, inspect, logging, mcp, persistence, plan_tasks,
+    policy, propose_plan, script, session_store, skills, subagent, system_prompt, tool_names,
+    tool_runner, watch, ToolRegistry,
 };
 
 use anyhow::{Context, Result};
@@ -84,7 +84,14 @@ async fn build_config(
     profiles: ProfileRegistry,
     skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
     user_config: &config::Config,
-) -> (EngineConfig, ModelInfo, String, ToolRegistry, Vec<String>) {
+) -> (
+    EngineConfig,
+    ModelInfo,
+    String,
+    ToolRegistry,
+    Vec<String>,
+    HashMap<String, mcp::ActiveServer>,
+) {
     let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
     // session can re-bind its LLM from the catalog with no restart. Captures the
@@ -130,7 +137,7 @@ async fn build_config(
     // `ToolExec` round-trip (execution) with no core change — governed by the same
     // permission profiles as any host tool. A server that fails to connect is
     // logged and skipped, never fatal.
-    entanglement_runtime::mcp::connect(&user_config.mcp, &mut tools).await;
+    let initial_mcp = mcp::connect(&user_config.mcp, &mut tools).await;
     cfg.tool_specs = tools.specs();
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
@@ -177,7 +184,14 @@ async fn build_config(
     let mut tool_names: Vec<String> = cfg.tool_specs.iter().map(|s| s.name.clone()).collect();
     tool_names.sort();
     tool_names.dedup();
-    (cfg, model_info, provider_name, tools, tool_names)
+    (
+        cfg,
+        model_info,
+        provider_name,
+        tools,
+        tool_names,
+        initial_mcp,
+    )
 }
 
 /// Assemble the tool registry: the root-contained quintet plus `call`
@@ -845,14 +859,15 @@ async fn main() -> Result<()> {
     let http_client = HttpClient::new();
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
-    let (mut engine_config, model_info, provider_name, tools, tool_names) = build_config(
-        &catalog,
-        &http_client,
-        profiles,
-        live_skills.clone(),
-        &user_config,
-    )
-    .await;
+    let (mut engine_config, model_info, provider_name, tools, tool_names, initial_mcp) =
+        build_config(
+            &catalog,
+            &http_client,
+            profiles,
+            live_skills.clone(),
+            &user_config,
+        )
+        .await;
     // Per-agent generation-parameter overrides (#374, ADR-0094): resolved by
     // profile name at session start / `SetAgent`, same precedence tier the model
     // pin's persisted file occupies (persisted store > profile/catalog default).
@@ -860,7 +875,7 @@ async fn main() -> Result<()> {
         config::agent_generation::AgentGenerationStore::resolver(live_agent_generation.clone()),
     );
     // Dynamic `ToolRegistry` (#372, ADR-0096): shared mutably so a live
-    // registration change (MCP add/remove, #4) is visible without a restart.
+    // registration change (MCP add/remove, #375) is visible without a restart.
     // `engine_config.tool_specs` stays the static snapshot baked above (still
     // useful as the tools-checklist roster below); `tool_spec_resolver` is the
     // seam core actually consults every turn (ADR-0076) — reproducing that same
@@ -881,6 +896,13 @@ async fn main() -> Result<()> {
             specs
         }));
     }
+    // Live MCP server management (#375): `ActiveServers` starts seeded from the
+    // servers `build_config` actually connected; `ServerConfigs` starts from
+    // the *whole* configured set (including a disabled/failed one) — the wider
+    // map `save_mcp` must round-trip so a live add/remove never drops an
+    // unrelated entry.
+    let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(initial_mcp));
+    let mcp_configs: mcp::ServerConfigs = Arc::new(Mutex::new(user_config.mcp.clone()));
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.
     if let Err(e) = engine_config.validate() {
@@ -922,6 +944,13 @@ async fn main() -> Result<()> {
         grants.clone(),
         user_config.hooks.clone(),
     );
+
+    // Live MCP server management (#375): a runtime service answering
+    // `McpList`/`McpAdd`/`McpRemove` off the inbound fan-out, since it alone
+    // holds `tools` + `mcp_active` + `mcp_configs` — mirrors
+    // `history::spawn_history_responder`'s answer to `ReplayFrom`.
+    let mcp_responder_handle =
+        mcp::spawn_mcp_responder(&holly, tools.clone(), mcp_active, mcp_configs);
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
@@ -1092,6 +1121,7 @@ async fn main() -> Result<()> {
     // so aborting them is required for the channels to actually close and the
     // persistence subscriber to drain + exit.
     tool_executor.abort();
+    mcp_responder_handle.abort();
     history_handle.abort();
     if let Some(h) = watcher_handle {
         h.abort();

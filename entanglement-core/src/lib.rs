@@ -27,6 +27,7 @@ pub use entanglement_provider::{
     ToolCall, ToolSpec, Usage, WebSearchConfig,
 };
 pub use protocol::{
-    AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, OutEvent,
-    Permission, PermissionProfile, ProfileDetail, QuestionOption, SessionId, SessionInfo,
+    AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, McpAction,
+    McpServerSpec, McpServerStatus, OutEvent, Permission, PermissionProfile, ProfileDetail,
+    QuestionOption, SessionId, SessionInfo,
 };

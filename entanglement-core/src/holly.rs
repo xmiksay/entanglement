@@ -229,6 +229,27 @@ impl Holly {
         });
     }
 
+    /// Broadcast a runtime-authored [`OutEvent::McpList`] reply to an
+    /// [`InMsg::McpList`] query (#375). Engine-global like
+    /// [`emit_history`][Self::emit_history]: no `seq`, no counter touched.
+    pub fn emit_mcp_list(
+        &self,
+        correlation_id: String,
+        servers: Vec<crate::protocol::McpServerStatus>,
+    ) {
+        let _ = self.events.send(OutEvent::McpList {
+            correlation_id,
+            servers,
+        });
+    }
+
+    /// Broadcast a runtime-authored [`OutEvent::McpChanged`] reply to
+    /// [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375). No `seq` — a point-in-time
+    /// engine-global lifecycle event, not session content.
+    pub fn emit_mcp_changed(&self, name: String, action: crate::protocol::McpAction) {
+        let _ = self.events.send(OutEvent::McpChanged { name, action });
+    }
+
     /// Mint the next seq for `session` from the shared registry, or `0` when the
     /// session has no live counter (ended / never started). Shared by
     /// [`emit_for_session`][Self::emit_for_session] and the supervisor's
@@ -367,8 +388,11 @@ async fn supervisor(
             continue;
         }
 
-        // Every remaining variant is session-scoped; `ListSessions` (the only
-        // session-less variant) is handled above.
+        // Every remaining variant is session-scoped except `ListSessions`
+        // (handled above) and the MCP ops `McpList`/`McpAdd`/`McpRemove` (#375):
+        // MCP config is engine-global, so they carry no session either — they
+        // are answered by a runtime service off the `inbound` fan-out above,
+        // never routed here, so they simply fall through to this `continue`.
         let Some(session_id) = msg.session().cloned() else {
             continue;
         };
