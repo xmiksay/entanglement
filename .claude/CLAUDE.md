@@ -300,8 +300,24 @@ re-document them here):
   sender-drop cancels the round; the uncommitted text-only tail is discarded
   exactly as `Session::replay` drops it, so resume is lossless vs the log);
   closed ids stay terminal (`resume` still refused). Core snapshots nothing —
-  eviction + log replay reuse one seam (no DB in core). `EngineConfig.idle_ttl`
-  auto-hibernation is deferred to the embedder's policy.
+  eviction + log replay reuse one seam (no DB in core). **Auto-hibernation on an
+  optional idle TTL is now built in** (#363,
+  [ADR-0090](../docs/adr/0090-idle-ttl-auto-hibernation.md)):
+  `EngineConfig.idle_ttl: Option<Duration>` (`None` by default — byte-identical
+  to before, eviction stays embedder-driven when unset) arms a supervisor-level
+  sweep (`tokio::select!` branch, only present when configured) polling at
+  `max(idle_ttl / 4, 30s)`. Settledness is `Session::turn.is_none()` alone — no
+  runtime `AgentState` needed, since both the approval-wait and `ask_user`-wait
+  are just pending `TurnState` entries — published by each session task to a
+  shared `ActivityRegistry` (mirrors `SeqRegistry`'s sharing pattern,
+  `tokio::time::Instant` so paused-clock tests stay deterministic). A sweep tick
+  judges every **root** by its whole spawn sub-tree (`collect_subtree`): every
+  member must be settled, and the idle clock starts at the *latest* member's
+  settle time, so one parked child pins the whole ancestry live. A qualifying
+  root hibernates through the same `hibernate_subtree` helper
+  `HibernateSession` uses — stricter than a manual hibernate (which
+  stop-then-hibernates on request): a background timer only ever evicts a
+  session already at rest, never one mid-stream.
 - **Definitions are data, layered** embedded < user < project, later wins; the
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
   Agents (`ENTANGLEMENT_AGENTS_DIR`), skills (`ENTANGLEMENT_SKILLS_DIR`), the

@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::holly::SeqRegistry;
+use crate::holly::{ActivityRegistry, SeqRegistry};
 use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
 use entanglement_provider::ContentPart;
@@ -86,6 +86,7 @@ pub(crate) async fn session_loop(
     initial_session: Option<Session>,
     parent: Option<SessionId>,
     seqs: SeqRegistry,
+    activity: ActivityRegistry,
 ) {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -171,6 +172,20 @@ pub(crate) async fn session_loop(
     }
 
     loop {
+        // Publish settledness for the idle-TTL sweep (#363): `Some(now)` the
+        // instant this session is genuinely at rest (about to pop a stash entry
+        // or block on `rx.recv()`), `None` while parked on unresolved tool calls
+        // (mid-turn or waiting on an approval/question result). Using tokio's
+        // clock (not `std::time::Instant`) keeps the sweep test-friendly under a
+        // paused/advanced runtime clock.
+        activity
+            .lock()
+            .expect("activity registry mutex poisoned")
+            .insert(
+                session.clone(),
+                s.turn.is_none().then(tokio::time::Instant::now),
+            );
+
         // Pop the stash only when idle: a command stashed during a live turn
         // replays after the turn ends (ADR-0018). While parked, popping a
         // stashed `Prompt` here would only re-stash it below — a busy loop.
@@ -215,6 +230,15 @@ pub(crate) async fn session_loop(
                 } else {
                     s.ctx.push_user_content(content);
                     s.turn = Some(TurnState::default());
+                    // Flip to busy *before* the round runs, not just at the next
+                    // loop top (#363): the top-of-loop publish above ran while
+                    // this session was still idle, and `drive_turn` may stream
+                    // for a long time — an idle-TTL sweep must never see a stale
+                    // "settled" timestamp for a session that just started a turn.
+                    activity
+                        .lock()
+                        .expect("activity registry mutex poisoned")
+                        .insert(session.clone(), None);
                     drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
                 }
             }
@@ -372,6 +396,10 @@ pub(crate) async fn session_loop(
                 seqs.lock()
                     .expect("seq registry mutex poisoned")
                     .remove(&session);
+                activity
+                    .lock()
+                    .expect("activity registry mutex poisoned")
+                    .remove(&session);
                 let _ = events.send(OutEvent::SessionHibernated {
                     session: session.clone(),
                     ts,
@@ -388,6 +416,10 @@ pub(crate) async fn session_loop(
                 // to seq 0, harmless — there is no live content stream to collide).
                 seqs.lock()
                     .expect("seq registry mutex poisoned")
+                    .remove(&session);
+                activity
+                    .lock()
+                    .expect("activity registry mutex poisoned")
                     .remove(&session);
                 let _ = events.send(OutEvent::SessionEnded {
                     session: session.clone(),
