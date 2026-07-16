@@ -48,6 +48,7 @@ Heads depend on core, **never the reverse.**
 - **Fast-forward only; never commit to `master`.** Work on a feature branch; rebase; push `--force-with-lease` (never `--force`) after a rebase.
 - **Hard-to-reverse decisions get an ADR** (`docs/adr/`, next number, immutable) **and** a `docs/architecture.md` update, in the same change.
 - Full issue→PR loop (branch → push → PR → address review): see the `/git` skill at `.agents/skills/git/SKILL.md`.
+- **Cutting a release**: `make tag VERSION=v0.1.x` (refuses dirty tree / red `make verify` / a version that doesn't match `workspace.package.version`), then `git push origin v0.1.x`. Full runbook, including the one-time crates.io Trusted Publishing setup: [`docs/releasing.md`](docs/releasing.md).
 
 ## Runtime env (for `make run`/`skutter`)
 

@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean coverage
+.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean coverage tag
 
 # Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
 # amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
@@ -114,3 +114,17 @@ coverage: ## cargo llvm-cov --workspace, fail under COV_MIN%
 
 clean: ## cargo clean
 	$(CARGO) clean
+
+# Release tagging (issue #362). Refuses on a dirty tree or a red `make verify`
+# so tagging stays a single trustworthy command; does NOT push — that's a
+# separate, explicit `git push origin $(VERSION)` (see docs/releasing.md).
+tag: verify ## cut a release tag (VERSION=v0.1.0 make tag): refuses dirty tree / red verify, does not push
+	@test -n "$(VERSION)" || (echo "tag: VERSION=vX.Y.Z is required, e.g. 'make tag VERSION=v0.1.0'" >&2; exit 1)
+	@git diff --quiet && git diff --cached --quiet || (echo "tag: working tree is dirty, commit or stash first" >&2; exit 1)
+	@case "$(VERSION)" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "tag: VERSION must look like vX.Y.Z, got '$(VERSION)'" >&2; exit 1 ;; esac
+	@pkg_version=$$($(CARGO) metadata --no-deps --format-version 1 | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4); \
+	if [ "$(VERSION)" != "v$$pkg_version" ]; then \
+		echo "tag: VERSION=$(VERSION) does not match workspace.package.version $$pkg_version (bump Cargo.toml first)" >&2; exit 1; \
+	fi
+	git tag -a "$(VERSION)" -m "$(VERSION)"
+	@echo "Tagged $(VERSION). Push with: git push origin $(VERSION)"
