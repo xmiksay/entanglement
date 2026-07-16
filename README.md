@@ -44,8 +44,11 @@ Building your own head — a multi-tenant server embedding the engine as a
 library, rather than one of the four above — is covered in
 [`docs/embedding.md`](docs/embedding.md): session-per-tenant namespacing, the
 `send`/`send_from_wire` trust split, pluggable persistence and tool-execution
-policy, and approval-across-restart semantics, backed by a compiling
-[`examples/embedded.rs`](entanglement-runtime/examples/embedded.rs).
+policy, dynamic per-session tool/prompt resolvers, hibernate/resume, and
+approval-across-restart semantics, backed by three compiling examples —
+[`embedded.rs`](entanglement-runtime/examples/embedded.rs),
+[`embedded_lifecycle.rs`](entanglement-runtime/examples/embedded_lifecycle.rs),
+and [`mcp_http.rs`](entanglement-runtime/examples/mcp_http.rs).
 
 ## Agent profiles (opencode-style)
 

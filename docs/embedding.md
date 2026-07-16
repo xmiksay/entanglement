@@ -5,13 +5,21 @@ users, each isolated, without forking anything. This is the path
 `entanglement-runtime --no-default-features` exists for
 ([ADR-0025](adr/0025-runtime-cargo-feature-gates.md)) — the lean library gives
 you the tool-execution loop, permission dispatch, sub-agent spawn, and
-persistence machinery with zero CLI/TUI/transport weight. Everything below is
-exercised by a compiling, runnable example:
+persistence machinery with zero CLI/TUI/transport weight. Everything below is exercised by compiling, runnable examples — the
+multi-tenant policy seam in
 [`entanglement-runtime/examples/embedded.rs`](../entanglement-runtime/examples/embedded.rs)
-(`cargo run -p entanglement-runtime --example embedded --no-default-features`,
-no provider key required — it runs against the built-in `EchoLlm`). `make
-lint`/`make check-lean` run `clippy --all-targets` over it on every change, so
-the snippets quoted here can't silently drift from the real API.
+(`cargo run -p entanglement-runtime --example embedded --no-default-features`),
+the dynamic-resolver and hibernate/resume lifecycle seams in
+[`entanglement-runtime/examples/embedded_lifecycle.rs`](../entanglement-runtime/examples/embedded_lifecycle.rs)
+(`cargo run -p entanglement-runtime --example embedded_lifecycle
+--no-default-features`), and the streamable-HTTP MCP transport in
+[`entanglement-runtime/examples/mcp_http.rs`](../entanglement-runtime/examples/mcp_http.rs)
+(`cargo run -p entanglement-runtime --example mcp_http --features mcp-http`) —
+none need a provider key, running against the built-in `EchoLlm`. `make
+lint`/`make check-lean` run `clippy --all-targets` over all three on every
+change (`mcp_http.rs` only under `lint`, since `mcp-http` is compiled out of
+the lean `--no-default-features` build the other two target — see §6 below),
+so the snippets quoted here can't silently drift from the real API.
 
 Until this guide, the only wiring reference was `main.rs`/`run.rs` — written
 for a single-user CLI. Multi-tenancy is not a separate mode the engine knows
@@ -170,6 +178,10 @@ replays it into a fresh session task — nothing is loaded until a tenant
 actually reconnects to that session id. There is no background hydration: an
 idle tenant costs nothing beyond the rows already in your store.
 
+[`examples/embedded_lifecycle.rs`](../entanglement-runtime/examples/embedded_lifecycle.rs)
+wires a `RecordSink` (an in-memory stand-in for a DB), reads its own log back
+through `pair_records`, and drives the full round-trip end to end.
+
 ## 4. Custom tool execution / policy
 
 `spawn_tool_executor_with_policy` (#311,
@@ -232,6 +244,9 @@ from your store on a slower cadence (a background refresh task, or on write),
 with the hot-path closure only ever reading the cache. Apply the same shape to
 a `PermissionResolver` if your DB round-trip is too slow to eat on every tool
 call despite `resolve` being `async`.
+[`examples/embedded_lifecycle.rs`](../entanglement-runtime/examples/embedded_lifecycle.rs)
+wires both `tool_spec_resolver` and `system_prompt_resolver` this way, over one
+shared cache keyed by `SessionId`.
 
 ## 5. Approval-across-restart semantics
 
@@ -261,6 +276,45 @@ or a deploy. Three things follow that a custom executor/resolver must honor:
   can run more than one instance against the same store, you need your own
   lock/lease per session id before calling `resume`; entanglement doesn't
   arbitrate that for you.
+
+**`Holly::hibernate` is the embedder-driven counterpart to all of this**
+([ADR-0077](adr/0077-session-hibernation-evictable-resumable.md)): it tears
+down a session's in-memory state — same as a crash, but on purpose, to cap
+memory across many idle tenants — without tombstoning the id, so a later
+`resume` rebuilds it from your log exactly like the restart path above,
+re-offering any pending call the same way. `EngineConfig.idle_ttl`
+([ADR-0090](adr/0090-idle-ttl-auto-hibernation.md)) automates the sweep if you'd
+rather not call `hibernate` yourself.
+[`examples/embedded_lifecycle.rs`](../entanglement-runtime/examples/embedded_lifecycle.rs)
+drives the whole `hibernate` → `pair_records` → `resume` → continue round-trip
+against its own `RecordSink`.
+
+## 6. Attaching MCP servers programmatically
+
+The YAML `mcp:` config section (`mcp::connect`,
+[ADR-0067](adr/0067-mcp-client-as-runtime-tool-provider.md)) is one static
+`command`/`url` per server, shared by every session — not what a multi-tenant
+embedder needs when each tenant has their own remote server or their own
+per-user auth token. `mcp::HttpClient::connect(server, url, headers)`
+([ADR-0080](adr/0080-mcp-streamable-http-transport.md), behind the `mcp-http`
+feature) is public for exactly this: build a client straight from a token you
+already looked up, wrap it in `McpClient::Http`, and register its tools with
+`McpTool::new(client, server, def)` into any `ToolRegistry` — the same runtime
+tool-provider path a YAML-configured server goes through, with zero core
+change and no config file in the middle.
+
+```rust
+let http = HttpClient::connect("acme", &url, &per_tenant_headers).await?;
+let client: Arc<McpClient> = Arc::new(McpClient::Http(http));
+for def in client.list_tools().await? {
+    registry.register(McpTool::new(client.clone(), "acme", def));
+}
+```
+
+[`examples/mcp_http.rs`](../entanglement-runtime/examples/mcp_http.rs) compiles
+this path on every `make lint` run (it needs `mcp-http`, on by default, so it
+can't ride the lean `--no-default-features` build the other two examples
+target); set `MCP_HTTP_URL` to actually connect it to a server.
 
 ## Pinning a dependency
 
