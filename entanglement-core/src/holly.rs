@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc};
 
@@ -47,6 +48,18 @@ pub(crate) fn next_seq_for(seqs: &SeqRegistry, session: &SessionId) -> u64 {
         .map(|c| c.fetch_add(1, Ordering::Relaxed) + 1)
         .unwrap_or(0)
 }
+
+/// Per-session settledness, shared between each session task (which owns the
+/// writes, mirroring [`SeqRegistry`]) and the supervisor's idle-TTL sweep
+/// (#363). `None` while the session is mid-turn or parked on a tool/approval/
+/// question result (`Session::turn.is_some()`); `Some(instant)` records the
+/// [`tokio::time::Instant`] it last became settled (`Session::turn` went back
+/// to `None`) — using tokio's own clock, not `std::time::Instant`, so the sweep
+/// stays test-friendly under a paused/advanced runtime clock. A session absent
+/// from the map (not yet reached its first idle point, or already gone) is
+/// treated as unsettled — the conservative default that never hibernates a
+/// session the sweep can't positively prove is idle.
+pub(crate) type ActivityRegistry = Arc<Mutex<HashMap<SessionId, Option<tokio::time::Instant>>>>;
 
 /// Why [`Holly::send_from_wire`] refused an untrusted wire frame (#155).
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +109,7 @@ impl Holly {
         let (events, _) = broadcast::channel::<OutEvent>(OUTBOX_CAPACITY);
         let (inbound, _) = broadcast::channel::<InMsg>(INBOX_CAPACITY);
         let seqs: SeqRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let activity: ActivityRegistry = Arc::new(Mutex::new(HashMap::new()));
         let supervisor_events = events.clone();
         let supervisor_inbound = inbound.clone();
         let supervisor_seqs = seqs.clone();
@@ -105,6 +119,7 @@ impl Holly {
                 supervisor_events,
                 supervisor_inbound,
                 supervisor_seqs,
+                activity,
                 cfg,
             )
             .await
@@ -278,6 +293,7 @@ async fn supervisor(
     events: broadcast::Sender<OutEvent>,
     inbound: broadcast::Sender<InMsg>,
     seqs: SeqRegistry,
+    activity: ActivityRegistry,
     cfg: EngineConfig,
 ) {
     let mut sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>> = HashMap::new();
@@ -295,8 +311,31 @@ async fn supervisor(
     // (and the tree-walk helpers that read it) reflect the real hierarchy;
     // previously nothing ever inserted here, so every session was a root.
     let mut parent_links: HashMap<SessionId, Option<SessionId>> = HashMap::new();
+    // Idle-TTL auto-hibernation sweep (#363). `None` (the default) makes this
+    // branch never armed, so a `select!` with no `idle_ttl` configured takes the
+    // exact same path as the old bare `rx.recv().await` — byte-identical
+    // behavior when the feature is off. A coarse interval, not a per-session
+    // timer: sweeping is O(sessions) and cheap, and a quarter of the TTL (floored
+    // at 30s) is plenty precise for an eviction policy, not a scheduler.
+    let mut sweep = cfg
+        .idle_ttl
+        .map(|ttl| (ttl, tokio::time::interval(sweep_period(ttl))));
 
-    while let Some(msg) = rx.recv().await {
+    loop {
+        let msg = match sweep.as_mut() {
+            Some((ttl, timer)) => {
+                tokio::select! {
+                    biased;
+                    m = rx.recv() => m,
+                    _ = timer.tick() => {
+                        sweep_idle_sessions(*ttl, &mut sessions, &mut session_meta, &mut parent_links, &activity).await;
+                        continue;
+                    }
+                }
+            }
+            None => rx.recv().await,
+        };
+        let Some(msg) = msg else { break };
         // Fan the message out to inbound subscribers (runtime services) before
         // routing it. A closed/lagging subscriber is not fatal to routing.
         let _ = inbound.send(msg.clone());
@@ -356,28 +395,11 @@ async fn supervisor(
         }
 
         if let InMsg::HibernateSession { session } = &msg {
-            // Memory eviction, not termination (#318, ADR-0077). Like
-            // `CloseSession` this cascades over the spawn sub-tree — a leftover
-            // descendant would keep burning tokens with no consumer — but it
-            // records **no** tombstone, so every evicted id stays resumable via
-            // `Holly::resume`. The map entry is dropped (memory released), and the
-            // session task emits `SessionHibernated` for itself.
-            for victim in collect_subtree(session, &parent_links) {
-                if let Some(tx) = sessions.remove(&victim) {
-                    // Deliver `Hibernate`, then drop the sender: a buffered command
-                    // is received before the channel-closed `None`, so the task
-                    // tears down via `SessionHibernated`. The drop also unblocks a
-                    // turn parked mid-stream — its `rx.recv()` returns `None`
-                    // (cancel), then the stashed `Hibernate` pops when idle
-                    // (stop-then-hibernate). Awaiting is safe: the session drains
-                    // its own channel independently of this loop.
-                    let _ = tx.send(SessionCmd::Hibernate).await;
-                }
-                session_meta.remove(&victim);
-                parent_links.remove(&victim);
-                // Deliberately NOT inserted into `closed`: the id is evictable and
-                // rebuildable, never spent.
-            }
+            // Memory eviction, not termination (#318, ADR-0077). Cascades over
+            // the spawn sub-tree and tombstones nothing — see `hibernate_subtree`.
+            // Shared with the idle-TTL sweep (#363), which reaches the same code
+            // when it decides a settled root has been idle past `idle_ttl`.
+            hibernate_subtree(session, &mut sessions, &mut session_meta, &mut parent_links).await;
             continue;
         }
 
@@ -434,6 +456,7 @@ async fn supervisor(
             let profile = initial_session.profile.clone();
             let parent = initial_session.parent.clone();
             let seqs2 = seqs.clone();
+            let activity2 = activity.clone();
             tokio::spawn(async move {
                 session_loop(
                     sid,
@@ -444,6 +467,7 @@ async fn supervisor(
                     Some(initial_session),
                     parent,
                     seqs2,
+                    activity2,
                 )
                 .await;
             });
@@ -509,8 +533,9 @@ async fn supervisor(
             let sid = child.clone();
             let parent = Some(parent.clone());
             let seqs2 = seqs.clone();
+            let activity2 = activity.clone();
             tokio::spawn(async move {
-                session_loop(sid, srx, ev, cfg2, profile, None, parent, seqs2).await
+                session_loop(sid, srx, ev, cfg2, profile, None, parent, seqs2, activity2).await
             });
             // Queue the initial prompt; the child drains it after its lifecycle
             // events. Spawn prompts are text-only (#197).
@@ -561,8 +586,9 @@ async fn supervisor(
             let cfg2 = cfg.clone();
             let sid = session_id.clone();
             let seqs2 = seqs.clone();
+            let activity2 = activity.clone();
             tokio::spawn(async move {
-                session_loop(sid, srx, ev, cfg2, profile, None, parent, seqs2).await
+                session_loop(sid, srx, ev, cfg2, profile, None, parent, seqs2, activity2).await
             });
             sessions.insert(session_id.clone(), stx);
         }
@@ -597,4 +623,90 @@ fn collect_subtree(
         cursor += 1;
     }
     subtree
+}
+
+/// Evict `root` plus its whole spawn sub-tree: tear down each live task, drop
+/// its meta/parent-link entries, and record **no** tombstone so every id stays
+/// resumable (#318, ADR-0077). Shared by the `HibernateSession` handler and the
+/// idle-TTL sweep (#363) — the only two paths that decide a session should be
+/// evicted.
+async fn hibernate_subtree(
+    root: &SessionId,
+    sessions: &mut HashMap<SessionId, mpsc::Sender<SessionCmd>>,
+    session_meta: &mut HashMap<SessionId, SessionInfo>,
+    parent_links: &mut HashMap<SessionId, Option<SessionId>>,
+) {
+    for victim in collect_subtree(root, parent_links) {
+        if let Some(tx) = sessions.remove(&victim) {
+            // Deliver `Hibernate`, then drop the sender: a buffered command is
+            // received before the channel-closed `None`, so the task tears down
+            // via `SessionHibernated`. The drop also unblocks a turn parked
+            // mid-stream — its `rx.recv()` returns `None` (cancel), then the
+            // stashed `Hibernate` pops when idle (stop-then-hibernate). Awaiting
+            // is safe: the session drains its own channel independently of this
+            // loop.
+            let _ = tx.send(SessionCmd::Hibernate).await;
+        }
+        session_meta.remove(&victim);
+        parent_links.remove(&victim);
+        // Deliberately NOT inserted into `closed`: the id is evictable and
+        // rebuildable, never spent.
+    }
+}
+
+/// Coarse polling period for the idle-TTL sweep (#363): a quarter of the TTL,
+/// floored at 30s so a short TTL doesn't spin the supervisor loop. This is an
+/// eviction policy, not a scheduler — a session can sit idle up to one extra
+/// sweep period past `idle_ttl` before it's noticed.
+fn sweep_period(ttl: Duration) -> Duration {
+    (ttl / 4).max(Duration::from_secs(30))
+}
+
+/// One idle-TTL sweep tick (#363): auto-hibernate every **settled** root whose
+/// whole spawn sub-tree has been continuously idle for at least `ttl`.
+/// Judged per root, strictly — a live turn or a single parked child anywhere in
+/// the sub-tree pins the whole tree live, matching manual `HibernateSession`'s
+/// stricter-than-`Stop` posture but going further: unlike a manual hibernate
+/// (stop-then-hibernate), a timer must never cancel live work, so this sweep
+/// only ever touches a session already at rest. The idle clock for a sub-tree
+/// starts at the *latest* member's settle time — a recently-active child resets
+/// the whole tree's window, not just its own.
+async fn sweep_idle_sessions(
+    ttl: Duration,
+    sessions: &mut HashMap<SessionId, mpsc::Sender<SessionCmd>>,
+    session_meta: &mut HashMap<SessionId, SessionInfo>,
+    parent_links: &mut HashMap<SessionId, Option<SessionId>>,
+    activity: &ActivityRegistry,
+) {
+    let now = tokio::time::Instant::now();
+    let roots: Vec<SessionId> = session_meta
+        .values()
+        .filter(|m| m.root)
+        .map(|m| m.session.clone())
+        .collect();
+    for root in roots {
+        if !sessions.contains_key(&root) {
+            continue;
+        }
+        let subtree = collect_subtree(&root, parent_links);
+        let settled_since = {
+            let idle = activity.lock().expect("activity registry mutex poisoned");
+            let mut latest: Option<tokio::time::Instant> = None;
+            let mut all_settled = true;
+            for member in &subtree {
+                match idle.get(member) {
+                    Some(Some(t)) => latest = Some(latest.map_or(*t, |l| l.max(*t))),
+                    _ => {
+                        all_settled = false;
+                        break;
+                    }
+                }
+            }
+            all_settled.then_some(latest).flatten()
+        };
+        let Some(since) = settled_since else { continue };
+        if now.saturating_duration_since(since) >= ttl {
+            hibernate_subtree(&root, sessions, session_meta, parent_links).await;
+        }
+    }
 }

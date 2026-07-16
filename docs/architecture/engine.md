@@ -128,6 +128,31 @@ idempotent by `request_id` (a per-session in-flight set, cleared on the resolvin
 `ToolOutput`): a re-offer to a call it is still running is a no-op there, not a
 double-run. At-least-once, exactly like resume.
 
+**Optional idle-TTL auto-hibernation sweep** (✅ #363,
+[ADR-0090](../adr/0090-idle-ttl-auto-hibernation.md)). `EngineConfig.idle_ttl:
+Option<Duration>` (`None` by default — the ADR-0077 stance that eviction stays
+embedder-driven) arms a supervisor-level sweep, not another per-session timer:
+`holly::supervisor` wraps its `rx.recv()` in a `tokio::select!` with a
+`tokio::time::interval` at `max(idle_ttl / 4, 30s)` — a coarse eviction poll, not
+a scheduler — that is simply absent from the `select!` when `idle_ttl` is `None`,
+so the feature off is byte-identical to the pre-#363 code path. Each session task
+publishes its own settledness to a shared `ActivityRegistry`
+(`Arc<Mutex<HashMap<SessionId, Option<tokio::time::Instant>>>>`, the same
+sharing pattern as `SeqRegistry`): `None` while `Session::turn.is_some()` (mid-turn
+*or* parked on a tool/approval/question result — core's single settledness
+signal, no runtime `AgentState` needed), `Some(instant)` from the moment it last
+became settled. A missing entry defaults to unsettled — the sweep only ever
+evicts a session it can positively prove is at rest. Each tick judges every
+**root** by its whole spawn sub-tree (`collect_subtree`): every member must be
+settled, and the sub-tree's idle clock starts at the *latest* member's settle
+time, so one parked child pins its whole ancestry live regardless of how long
+the root itself has sat idle. A qualifying root hibernates through the same
+`hibernate_subtree` helper `InMsg::HibernateSession` uses — the identical
+teardown, `OutEvent::SessionHibernated`, and resumability (#318, ADR-0077) as a
+manual eviction. Deliberately **stricter** than manual `HibernateSession`
+(which is stop-then-hibernate): a timer must never cancel live work, so the
+sweep only touches a session already at rest, never one mid-stream.
+
 **Loop bounds — `max_turns` and context-over-limit** (`session/turn.rs`). The
 turn is capped at `EngineConfig.max_turns` rounds (default 200; user-configurable
 via `config.yml`, [ADR-0089](../adr/0089-user-configurable-max-turns.md)), one

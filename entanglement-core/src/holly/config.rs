@@ -138,6 +138,22 @@ pub struct EngineConfig {
     /// prompt, so a legitimate long session (many prompts) is never capped —
     /// only a single wedged turn. User-configurable; default 200.
     pub max_turns: usize,
+    /// Auto-hibernate a **settled** root session (and its spawn sub-tree) after
+    /// this long with no activity (#363). Judged per root, strictly: every
+    /// member of the sub-tree must be settled — `Session::turn.is_none()`, i.e.
+    /// not mid-stream and not parked on a tool/approval/question result — a
+    /// live turn or a single parked child pins the whole tree live no matter how
+    /// long its siblings have been idle. The supervisor sweeps on a coarse
+    /// interval (`max(idle_ttl / 4, 30s)`) rather than a per-session timer, and
+    /// hibernates through the same [`InMsg::HibernateSession`][crate::protocol::InMsg::HibernateSession]
+    /// path as a manual eviction — emitting the same [`OutEvent::SessionHibernated`][crate::protocol::OutEvent::SessionHibernated],
+    /// resumable exactly like a manual hibernate
+    /// ([ADR-0090](../../docs/adr/0090-idle-ttl-auto-hibernation.md)). `None`
+    /// (the default) disables the sweep entirely — eviction stays
+    /// embedder-driven via [`Holly::hibernate`][crate::Holly::hibernate], the
+    /// stance [ADR-0077](../../docs/adr/0077-session-hibernation-evictable-resumable.md)
+    /// originally left open.
+    pub idle_ttl: Option<Duration>,
 }
 
 impl EngineConfig {
@@ -165,6 +181,7 @@ impl Default for EngineConfig {
             model_resolver: None,
             reoffer_interval: Some(Duration::from_secs(60)),
             max_turns: 200,
+            idle_ttl: None,
         }
     }
 }

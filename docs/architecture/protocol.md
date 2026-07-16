@@ -124,7 +124,11 @@ exactly as `Session::replay` drops such a tail, so resume is lossless w.r.t. the
 log. `closed` ids stay terminal (`resume` still refuses them); the embedder is
 expected to `resume` before re-prompting a hibernated id. Core snapshots nothing —
 rebuild is the embedder's log replay, keeping the no-DB-in-core boundary intact.
-Auto-hibernation on an idle TTL is left to the embedder's policy.
+An **optional idle-TTL sweep** now drives `HibernateSession` automatically
+(#363, [ADR-0090](../adr/0090-idle-ttl-auto-hibernation.md)): `EngineConfig.idle_ttl`
+(`None` by default — eviction stays embedder-driven when unset) arms a
+supervisor-level poll that auto-hibernates a **settled** root (and its whole
+spawn sub-tree) once idle past the TTL — see the engine doc for the mechanism.
 
 **Late-subscriber history fetch** (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)).
 A head that connected after a turn started asks
