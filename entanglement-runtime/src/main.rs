@@ -714,8 +714,14 @@ async fn main() -> Result<()> {
     // is a discoverable starting point rather than an empty dir (#219). The
     // template is fully commented — it changes nothing until edited — so this is
     // best-effort: a write failure (read-only home, race) is logged, never fatal.
+    // Announced via `eprintln!` (not just `tracing::info!`, which the default
+    // `warn` filter swallows — a one-time "here's your config file" notice must
+    // not require `--verbose`/`RUST_LOG` to be seen at all).
     match config::scaffold_if_missing() {
-        Ok(Some(path)) => tracing::info!("wrote starter config to {}", path.display()),
+        Ok(Some(path)) => {
+            eprintln!("skutter: wrote starter config to {}", path.display());
+            tracing::info!("wrote starter config to {}", path.display());
+        }
         Ok(None) => {}
         Err(e) => tracing::debug!("could not scaffold default user config: {e:#}"),
     }
@@ -759,8 +765,13 @@ async fn main() -> Result<()> {
     // the process env *without overriding* anything the real env already set (env
     // > file). Both are best-effort — a read-only home or malformed line is logged,
     // never fatal — and run before `select_provider` reads any API key below.
+    // Same visibility fix as the config scaffold above: `eprintln!` so the
+    // one-time notice isn't gated behind `--verbose`/`RUST_LOG`.
     match config::env_file::scaffold_if_missing(&catalog.key_envs()) {
-        Ok(Some(path)) => tracing::info!("wrote provider env file to {}", path.display()),
+        Ok(Some(path)) => {
+            eprintln!("skutter: wrote provider env file to {}", path.display());
+            tracing::info!("wrote provider env file to {}", path.display());
+        }
         Ok(None) => {}
         Err(e) => tracing::debug!("could not scaffold provider env file: {e:#}"),
     }
