@@ -309,13 +309,17 @@ fn build_body(
     // Generation knobs the head resolved for this model (#191). The OpenAI-compat
     // wire carries temperature + `max_tokens`; it has no standard thinking-budget
     // field, so `thinking_budget_tokens` is dropped here (the Anthropic wire owns
-    // that channel).
+    // that channel). `reasoning_effort` (#374) is OpenAI's own native field —
+    // passed through verbatim, the one wire that needs no mapping.
     if let Some(g) = generation {
         if let Some(temp) = g.temperature {
             body["temperature"] = json!(temp);
         }
         if let Some(max) = g.max_output_tokens {
             body["max_tokens"] = json!(max);
+        }
+        if let Some(effort) = g.reasoning_effort {
+            body["reasoning_effort"] = json!(effort);
         }
     }
     body
@@ -698,12 +702,31 @@ mod tests {
                 max_output_tokens: Some(2048),
                 // No thinking channel on the OpenAI-compat wire — dropped.
                 thinking_budget_tokens: Some(4096),
+                reasoning_effort: None,
             }),
             None,
         );
         assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
         assert_eq!(body["max_tokens"], 2048);
         assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_passes_through_verbatim_lowercase() {
+        let body = build_body(
+            "gpt-5",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            Some(GenerationParams {
+                temperature: None,
+                max_output_tokens: None,
+                thinking_budget_tokens: None,
+                reasoning_effort: Some(crate::ReasoningEffort::High),
+            }),
+            None,
+        );
+        assert_eq!(body["reasoning_effort"], "high");
     }
 
     #[test]

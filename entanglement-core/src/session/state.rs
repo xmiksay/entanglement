@@ -54,6 +54,17 @@ pub struct Session {
     /// [`EngineConfig::generation`][crate::EngineConfig] at creation and replaced
     /// on a model switch so temperature / max-output / thinking follow the model.
     pub generation: Option<GenerationParams>,
+    /// Per-profile generation choices made via
+    /// [`SetGeneration`][super::SessionCmd::SetGeneration] this session (#374,
+    /// ADR-0094) — the generation-parameter analogue of
+    /// [`profile_models`][Self::profile_models] (#323, ADR-0081). Keyed by
+    /// profile name, holding the **full** merged effective params (not a partial
+    /// override), so a `SetAgent` switch back to that profile re-applies it
+    /// verbatim, winning over the profile's persisted/catalog default.
+    /// Reconstructed on replay from
+    /// [`GenerationChanged`][crate::protocol::OutEvent::GenerationChanged]
+    /// records.
+    pub profile_generation: HashMap<String, GenerationParams>,
     /// Monotonic per-session emit counter, shared (`Arc<AtomicU64>`, #157) with
     /// the supervisor's seq registry so runtime-authored events minted while this
     /// session is parked (an approval `ToolRequest`, a `Plan`/`TaskList` snapshot,
@@ -100,6 +111,7 @@ impl Session {
             provider: None,
             profile_models: HashMap::new(),
             generation: cfg.generation,
+            profile_generation: HashMap::new(),
             seq: Arc::new(AtomicU64::new(0)),
             parent: None,
             usage: SessionUsage::default(),

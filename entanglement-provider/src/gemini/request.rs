@@ -7,7 +7,18 @@
 use serde_json::{json, Map, Value};
 
 use super::THOUGHT_SIGNATURE_KEY;
-use crate::{ContentPart, GenerationParams, ImageSource, Message, MessageRole, ToolCall, ToolSpec};
+use crate::{
+    ContentPart, GenerationParams, ImageSource, Message, MessageRole, ReasoningEffort, ToolCall,
+    ToolSpec,
+};
+
+/// `thinkingConfig.thinkingBudget` tokens for [`ReasoningEffort::High`] when the
+/// request sets no explicit [`GenerationParams::thinking_budget_tokens`] (#374).
+/// Gemini's actual per-model ceiling varies (e.g. 24576 for 2.5 Flash); this is a
+/// conservative tier default a caller can always override with an explicit budget.
+const HIGH_EFFORT_THINKING_BUDGET: u32 = 16_384;
+/// `thinkingConfig.thinkingBudget` tokens for [`ReasoningEffort::Medium`] (#374).
+const MEDIUM_EFFORT_THINKING_BUDGET: u32 = 4_096;
 
 pub(super) fn build_body(
     system: &str,
@@ -31,7 +42,10 @@ pub(super) fn build_body(
 /// Map generation knobs to Gemini's `generationConfig`. Temperature and
 /// `maxOutputTokens` map directly; a thinking budget becomes
 /// `thinkingConfig.thinkingBudget` with `includeThoughts` so reasoning parts
-/// stream back. Returns `None` when nothing is set.
+/// stream back. An explicit `thinking_budget_tokens` always wins; absent one,
+/// `reasoning_effort` (#374 — Gemini has no effort concept of its own) derives a
+/// tier default (`High`/`Medium`); `Low`/unset sends no `thinkingConfig`.
+/// Returns `None` when nothing is set.
 fn generation_config(generation: Option<GenerationParams>) -> Option<Value> {
     let g = generation?;
     let mut cfg = Map::new();
@@ -41,7 +55,12 @@ fn generation_config(generation: Option<GenerationParams>) -> Option<Value> {
     if let Some(max) = g.max_output_tokens {
         cfg.insert("maxOutputTokens".into(), json!(max));
     }
-    if let Some(budget) = g.thinking_budget_tokens {
+    let budget = g.thinking_budget_tokens.or(match g.reasoning_effort {
+        Some(ReasoningEffort::High) => Some(HIGH_EFFORT_THINKING_BUDGET),
+        Some(ReasoningEffort::Medium) => Some(MEDIUM_EFFORT_THINKING_BUDGET),
+        Some(ReasoningEffort::Low) | None => None,
+    });
+    if let Some(budget) = budget {
         cfg.insert(
             "thinkingConfig".into(),
             json!({ "thinkingBudget": budget, "includeThoughts": true }),
@@ -246,6 +265,7 @@ mod request_tests {
             temperature: Some(0.3),
             max_output_tokens: Some(2048),
             thinking_budget_tokens: Some(1024),
+            reasoning_effort: None,
         };
         let body = build_body("be nice", &[Message::user("hi")], &[spec], Some(g));
         assert_eq!(body["systemInstruction"]["parts"][0]["text"], "be nice");
@@ -259,6 +279,48 @@ mod request_tests {
         assert_eq!(
             body["generationConfig"]["thinkingConfig"]["includeThoughts"],
             true
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_derives_a_thinking_budget_tier() {
+        let g = GenerationParams {
+            temperature: None,
+            max_output_tokens: None,
+            thinking_budget_tokens: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+        };
+        let body = build_body("", &[Message::user("hi")], &[], Some(g));
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            HIGH_EFFORT_THINKING_BUDGET
+        );
+    }
+
+    #[test]
+    fn low_reasoning_effort_sends_no_thinking_config() {
+        let g = GenerationParams {
+            temperature: Some(0.5),
+            max_output_tokens: None,
+            thinking_budget_tokens: None,
+            reasoning_effort: Some(ReasoningEffort::Low),
+        };
+        let body = build_body("", &[Message::user("hi")], &[], Some(g));
+        assert!(body["generationConfig"].get("thinkingConfig").is_none());
+    }
+
+    #[test]
+    fn explicit_thinking_budget_wins_over_reasoning_effort() {
+        let g = GenerationParams {
+            temperature: None,
+            max_output_tokens: None,
+            thinking_budget_tokens: Some(777),
+            reasoning_effort: Some(ReasoningEffort::High),
+        };
+        let body = build_body("", &[Message::user("hi")], &[], Some(g));
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            777
         );
     }
 

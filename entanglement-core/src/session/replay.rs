@@ -168,6 +168,20 @@ impl Session {
                         }
                     }
                 }
+                // Re-bind a resumed session's generation knobs to whatever they
+                // were last set to (#374, ADR-0094), mirroring the `ModelChanged`
+                // fold above: the logged value is already the full effective
+                // params, so replay just overwrites `generation` and reconstructs
+                // the per-profile session memory keyed by the active profile the
+                // preceding `AgentChanged` fold set. A later `GenerationChanged`/
+                // `ModelChanged` record in the log still wins (last-write, same as
+                // the live engine).
+                OutEvent::GenerationChanged { generation, .. } => {
+                    session.generation = Some(*generation);
+                    session
+                        .profile_generation
+                        .insert(session.profile.name.clone(), *generation);
+                }
                 // `Plan`/`TaskList` are the runtime's display state now (#231,
                 // ADR-0049): they carry nothing the engine's `Context` needs, so
                 // replay ignores them. A resuming head folds them from the log

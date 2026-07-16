@@ -18,6 +18,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | Stop{session}
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
+         | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks (#374, ADR-0094)
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
@@ -34,6 +35,7 @@ OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle
          | Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
          | ModelChanged{session,provider,model,context_window?}   // point-in-time, no seq; reply to SetModel, or a SetAgent model pin (#218, ADR-0063; #323, ADR-0081)
+         | GenerationChanged{session,generation:GenerationParams}   // point-in-time, no seq; full effective params, reply to SetGeneration or a SetAgent generation overlay (#374, ADR-0094)
          | Plan{session,seq,content}          // markdown prose snapshot, runtime-emitted (#231)
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
@@ -193,6 +195,25 @@ pending assistant/tool buffers first, like the `Done` arm), so a resumed
 session reconstructs identical context. `kept` (trailing messages preserved
 verbatim after the summary) is always `0` in v1 — keep-tail is deferred, but
 the field is real wire surface already.
+
+**Live generation-parameter changes — `InMsg::SetGeneration`** (#374,
+[ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)).
+`SetGeneration{session,overrides:GenerationParams}` merges a **partial**
+`GenerationParams` (temperature / max-output / thinking-budget / the new
+`reasoning_effort`) onto the session's current one via
+`GenerationParams::apply_overrides` — a `None` field in `overrides` leaves the
+corresponding field untouched, so `/set temperature 0.7` only touches
+`temperature`. Unlike `SetModel` there is no resolver to fail against (a pure
+local merge, no network/catalog lookup), so it always succeeds and **always**
+emits `OutEvent::GenerationChanged{session,generation}` with the full merged
+result — even when nothing actually changed — so a head can rely on the reply
+alone to confirm the write landed. The merged result is also recorded into
+`Session.profile_generation` keyed by the active profile (the
+generation-parameter analogue of `Session.profile_models`, #323/ADR-0081), so a
+later `SetAgent` switch back to that profile re-applies it. Deferred (stashed)
+while a turn is live, like `SetAgent`/`SetModel`. See the engine doc for the
+`SetAgent`/session-start overlay precedence and the runtime doc for the
+per-profile persisted store.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/0004-structured-plan-and-task-events.md)
 

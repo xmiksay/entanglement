@@ -75,15 +75,22 @@ the `serde_yaml::Value` level, `deny_unknown_fields` on the final parse. A
 endpoint (proxy, vLLM, new vendor) with zero code change; `ENTANGLEMENT_PROVIDER=<name>`
 resolves against the catalog, so custom providers are selectable. `ModelEntry`
 adds capability flags (`supports_thinking`/`supports_temperature`/
-`default_temperature`/`max_output_tokens`/`thinking_budget_tokens`) + **pricing**
-(USD/M: input/output/cached_input/cache_write). Those flags are no longer
-write-only (✅ #191): `ModelEntry::generation_params()` gates them into a
-`GenerationParams { temperature, max_output_tokens, thinking_budget_tokens }` the
-runtime resolves onto `EngineConfig::generation` and core threads onto every
-`LlmRequest`; each client maps the present knobs to its wire and omits the rest
-(OpenAI: `temperature`+`max_tokens`; Anthropic: `max_output_tokens` +
-`thinking` when a budget is set, else `temperature`). Precedence: **env > user
-YAML > embedded defaults**. See `entanglement-provider::catalog`.
+`default_temperature`/`max_output_tokens`/`thinking_budget_tokens`/
+`default_reasoning_effort`) + **pricing** (USD/M: input/output/cached_input/cache_write).
+Those flags are no longer write-only (✅ #191): `ModelEntry::generation_params()`
+gates them into a `GenerationParams { temperature, max_output_tokens,
+thinking_budget_tokens, reasoning_effort }` the runtime resolves onto
+`EngineConfig::generation` and core threads onto every `LlmRequest`; each client
+maps the present knobs to its wire and omits the rest (OpenAI: `temperature`+
+`max_tokens`+`reasoning_effort` (its native field); Anthropic: `max_output_tokens`
++ `thinking` when a budget resolves, else `temperature`; Gemini:
+`generationConfig.thinkingConfig.thinkingBudget`). `reasoning_effort`
+(`Low|Medium|High`, ✅ #374,
+[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md))
+is OpenAI-native; Anthropic/Gemini have no effort concept, so each maps it onto
+a fixed thinking-budget tier when no explicit `thinking_budget_tokens` is set.
+Precedence: **env > user YAML > embedded defaults**. See
+`entanglement-provider::catalog`.
 
 z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
 format); **Gemini** has a native `GeminiLlm` (✅ #309,
@@ -248,6 +255,28 @@ re-document them here):
   (`ENTANGLEMENT_AGENT_MODELS_FILE`), overlaid onto the registry at startup
   (persisted file > frontmatter); core stays policy-free (the runtime resolves
   which model wins). `atomic_write` now lives in shared `config::atomic`.
+- **Live generation-parameter changes + per-profile persistence** (#374,
+  [ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)):
+  `InMsg::SetGeneration { session, overrides: GenerationParams }` merges a
+  **partial** `GenerationParams` onto `Session.generation` via the new
+  `GenerationParams::apply_overrides` (a `None` field leaves it untouched) —
+  unlike `SetModel` there's no resolver to fail against, so it always succeeds
+  and **always** emits `OutEvent::GenerationChanged { session, generation }`
+  with the full merged result, recorded into `Session.profile_generation`
+  (the generation analogue of `profile_models`). `GenerationParams` also
+  gains `reasoning_effort: Option<ReasoningEffort>` (`Low|Medium|High`) — see
+  above. **Per-profile persistence mirrors #323/ADR-0081's precedence**
+  (session memory > persisted > current binding) but through a **separate**
+  seam, `EngineConfig.generation_resolver: Option<GenerationResolver>` keyed
+  by profile *name*, not baked into `AgentProfile` like the model pin:
+  `GenerationParams`'s `f32` fields have no total `Eq`, so they can't join
+  `AgentProfile`'s `PartialEq + Eq` derive. The runtime's
+  `AgentGenerationStore` (`${config_dir}/entanglement/agent-generation.yml`,
+  `ENTANGLEMENT_AGENT_GENERATION_FILE`, sibling of `agent-models.yml`) has no
+  `apply(&mut ProfileRegistry)` — its `resolver(...)` builds the
+  `GenerationResolver` closure directly instead. TUI `/set`/`/show` and the
+  persist-on-confirmation write are #376 (not yet built); core/runtime wiring
+  is complete.
 - **Single-shot session ops + persisted compaction** (#324,
   [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)):
   `InMsg::Oneshot { session, op: String, args: Value }` is a generic **wire
@@ -510,7 +539,7 @@ the root-contained quintet (`read` on an image file — `png`/`jpg`/`jpeg`/`gif`
 `ToolResult`/`ToolOutput` path, #221/[ADR-0065](../docs/adr/0065-read-emits-image-content-blocks.md),
 built on the `Message`/`Prompt` content-block migration #197/[ADR-0064](../docs/adr/0064-message-content-blocks.md)),
 the always-registered `call` (argv exec, no shell — registered independent of
-`ENTANGLEMENT_ENABLE_BASH` since #386/[ADR-0093](../docs/adr/0093-call-registration-independent-of-bash-opt-in.md);
+`ENTANGLEMENT_ENABLE_BASH` since #386/[ADR-0094](../docs/adr/0093-call-registration-independent-of-bash-opt-in.md);
 gains a `workdir` param, mirroring `bash`'s) and the opt-in exec pair
 `bash`/`bash_output` (`ENTANGLEMENT_ENABLE_BASH=1`; `bash` gains `workdir` +
 `run_in_background`, polled via `bash_output`, #170), and the sandboxed `rhai`

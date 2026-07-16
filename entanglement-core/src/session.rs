@@ -57,6 +57,9 @@ pub(crate) enum SessionCmd {
     /// against [`EngineConfig::model_resolver`][crate::EngineConfig] and rebuilds
     /// `Session::llm` without restarting the engine.
     SetModel(String, String),
+    /// Live-adjust generation knobs (#374, ADR-0094): partial overrides merged
+    /// onto `Session::generation` via `GenerationParams::apply_overrides`.
+    SetGeneration(entanglement_provider::GenerationParams),
     /// Single out-of-band LLM op (`op`, `args`, #324) — `"compact"` today.
     Oneshot(String, serde_json::Value),
     Stop,
@@ -144,6 +147,28 @@ pub(crate) async fn session_loop(
                         "session start: could not apply profile model pin; keeping default"
                     ),
                 }
+            }
+        }
+    }
+
+    // Session-start persisted generation overlay (#374, ADR-0094 — mirrors the
+    // model pin above): apply the starting profile's persisted generation
+    // override via `cfg.generation_resolver` when no per-profile memory is
+    // already recorded for it. A resumed session's memory reconstructed by
+    // replay (see `Session::replay`'s `GenerationChanged` fold) skips this, same
+    // as the pin's `s.model.is_none()` guard.
+    if !s.profile_generation.contains_key(&s.profile.name) {
+        if let Some(generation) = cfg
+            .generation_resolver
+            .as_ref()
+            .and_then(|r| r(&s.profile.name))
+        {
+            if s.generation != Some(generation) {
+                s.generation = Some(generation);
+                let _ = events.send(OutEvent::GenerationChanged {
+                    session: session.clone(),
+                    generation,
+                });
             }
         }
     }
@@ -287,6 +312,26 @@ pub(crate) async fn session_loop(
                                 }
                             }
                         }
+                        // Per-profile generation overlay (#374, ADR-0094 —
+                        // mirrors the model pin's precedence exactly, #323): session
+                        // memory (a live `SetGeneration` recorded under this
+                        // profile) wins, then this profile's persisted override via
+                        // `cfg.generation_resolver`, then the current binding
+                        // unchanged (no-op — no spurious `GenerationChanged`, same
+                        // guard as the pin-less-profile case above).
+                        let overlay =
+                            s.profile_generation.get(&p.name).copied().or_else(|| {
+                                cfg.generation_resolver.as_ref().and_then(|r| r(&p.name))
+                            });
+                        if let Some(generation) = overlay {
+                            if s.generation != Some(generation) {
+                                s.generation = Some(generation);
+                                let _ = events.send(OutEvent::GenerationChanged {
+                                    session: session.clone(),
+                                    generation,
+                                });
+                            }
+                        }
                     }
                     None => {
                         let _ = events.send(OutEvent::Error {
@@ -334,6 +379,27 @@ pub(crate) async fn session_loop(
                         });
                     }
                 }
+            }
+            // Live generation-parameter adjustment (#374, ADR-0094): unlike
+            // `SetModel`, there is no resolver to fail against, so this always
+            // succeeds. Deferred during a live turn (stash replay), like
+            // `SetAgent`/`SetModel`.
+            Some(SessionCmd::SetGeneration(overrides)) => {
+                if s.turn.is_some() {
+                    stash.push_back(SessionCmd::SetGeneration(overrides));
+                    continue;
+                }
+                let mut merged = s.generation.unwrap_or_default();
+                merged.apply_overrides(overrides);
+                s.generation = Some(merged);
+                // Session memory (#323-style, mirrors `profile_models`): a later
+                // `SetAgent` switch back to this profile re-applies it, winning
+                // over the profile's persisted/catalog default.
+                s.profile_generation.insert(s.profile.name.clone(), merged);
+                let _ = events.send(OutEvent::GenerationChanged {
+                    session: session.clone(),
+                    generation: merged,
+                });
             }
             Some(SessionCmd::Oneshot(op, args)) => {
                 if s.turn.is_some() {

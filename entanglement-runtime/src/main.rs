@@ -69,7 +69,7 @@ use tui::tui;
 /// privileges (ADR-0009 / ADR-0010 / ADR-0045). `call` runs with the same
 /// full-privilege, unsandboxed execution but no shell means no injection
 /// surface, so its *registration* no longer rides `bash`'s opt-in gate
-/// (ADR-0093); per-profile permission (`Allow`/`Ask`/`Deny`) remains the actual
+/// (ADR-0094); per-profile permission (`Allow`/`Ask`/`Deny`) remains the actual
 /// dispatch gate, same as any other tool.
 ///
 /// Core no longer executes tools (#58): it only advertises their schemas
@@ -179,7 +179,7 @@ async fn build_config(
 }
 
 /// Assemble the tool registry: the root-contained quintet plus `call`
-/// (registered unconditionally — argv exec, no shell, ADR-0093) and, only when
+/// (registered unconditionally — argv exec, no shell, ADR-0094) and, only when
 /// `bash_enabled`, the opt-in `bash`/`bash_output` pair sharing one job
 /// registry (ADR-0010/#170). `secret_env` (the catalog's provider API-key env
 /// vars, #164) is scrubbed from both exec tools' children.
@@ -829,11 +829,19 @@ async fn main() -> Result<()> {
     // Shared with the definitions watcher (#329): a reload re-reads the managed
     // file and re-applies it onto the freshly-loaded profiles the same way.
     let live_agent_models = Arc::new(Mutex::new(agent_models));
+    // Per-agent generation-parameter overrides (#374, ADR-0094): unlike the model
+    // pin above, this doesn't overlay onto `profiles` (`GenerationParams` isn't
+    // `Eq`, so it can't join `AgentProfile`'s derive) — instead it's wrapped in a
+    // `GenerationResolver` closure threaded onto `EngineConfig` below, resolved
+    // by profile name at session start / `SetAgent`.
+    let live_agent_generation = Arc::new(Mutex::new(
+        config::agent_generation::AgentGenerationStore::load(),
+    ));
 
     let http_client = HttpClient::new();
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
-    let (engine_config, model_info, provider_name, tools, tool_names) = build_config(
+    let (mut engine_config, model_info, provider_name, tools, tool_names) = build_config(
         &catalog,
         &http_client,
         profiles,
@@ -841,6 +849,12 @@ async fn main() -> Result<()> {
         &user_config,
     )
     .await;
+    // Per-agent generation-parameter overrides (#374, ADR-0094): resolved by
+    // profile name at session start / `SetAgent`, same precedence tier the model
+    // pin's persisted file occupies (persisted store > profile/catalog default).
+    engine_config.generation_resolver = Some(
+        config::agent_generation::AgentGenerationStore::resolver(live_agent_generation.clone()),
+    );
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.
     if let Err(e) = engine_config.validate() {

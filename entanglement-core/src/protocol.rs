@@ -23,7 +23,7 @@
 //! from and carries `seq == 0` — a value core never mints — which a head renders
 //! unconditionally instead of dropping under a `seq > last` dedupe.
 
-use entanglement_provider::ContentPart;
+use entanglement_provider::{ContentPart, GenerationParams};
 use serde::{Deserialize, Serialize};
 
 /// Stable identifier for a conversation session. Serialized transparently as a
@@ -600,6 +600,26 @@ pub enum InMsg {
         provider: String,
         model: String,
     },
+    /// Live-adjust generation knobs (temperature / max-output / thinking budget /
+    /// reasoning effort) without restarting the engine (#374, ADR-0094). `overrides`
+    /// is **partial**: a `None` field means "leave unchanged" — only the fields the
+    /// caller sets are merged onto the session's current
+    /// [`Session::generation`][crate::session::Session] via
+    /// [`GenerationParams::apply_overrides`]. Unlike [`SetModel`][InMsg::SetModel],
+    /// there is no resolver to fail against, so this always succeeds and always
+    /// emits [`OutEvent::GenerationChanged`] with the merged, full effective
+    /// params — even when every override happens to match the current value — so a
+    /// head can rely on the reply to confirm the write landed. Applied once the
+    /// live turn ends when one is running (stash replay), like
+    /// [`SetAgent`][InMsg::SetAgent]/[`SetModel`][InMsg::SetModel]. The merged
+    /// result is also recorded as this session's per-profile memory
+    /// (`Session::profile_generation`), so a later `SetAgent` switch back to the
+    /// same profile re-applies it — the generation-parameter analogue of the model
+    /// pin's session memory (#323, ADR-0081).
+    SetGeneration {
+        session: SessionId,
+        overrides: GenerationParams,
+    },
     /// Run a single out-of-band LLM op outside the turn loop (#324, ADR-0082).
     /// The generic surface is the **wire shape** — an opaque `op` string plus
     /// `args` — not a plugin registry: `session::ops::run_oneshot` matches on
@@ -686,6 +706,7 @@ impl InMsg {
             | InMsg::HibernateSession { session }
             | InMsg::SetAgent { session, .. }
             | InMsg::SetModel { session, .. }
+            | InMsg::SetGeneration { session, .. }
             | InMsg::Oneshot { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => Some(session),
@@ -698,7 +719,8 @@ impl InMsg {
     /// The trusted/untrusted frame split. A head deserializing attacker-adjacent
     /// bytes (stdio `pipe`, the future WS `serve`) forwards only the allowlisted
     /// frames — `Prompt`/`Approve`/`Reject`/`AnswerQuestion`/`Stop`/`SetAgent`/
-    /// `SetModel`/`ListSessions`/`ReplayFrom`/`CloseSession`. The privileged trio
+    /// `SetModel`/`SetGeneration`/`ListSessions`/`ReplayFrom`/`CloseSession`. The
+    /// privileged trio
     /// is **runtime-authored in process**, never wire-forgeable:
     ///
     /// - [`ToolResult`][InMsg::ToolResult] resolves a parked turn matched on
@@ -740,6 +762,7 @@ impl InMsg {
             InMsg::HibernateSession { .. } => "hibernate_session",
             InMsg::SetAgent { .. } => "set_agent",
             InMsg::SetModel { .. } => "set_model",
+            InMsg::SetGeneration { .. } => "set_generation",
             InMsg::Oneshot { .. } => "oneshot",
             InMsg::Spawn { .. } => "spawn",
             InMsg::Resume { .. } => "resume",
@@ -829,6 +852,19 @@ pub enum OutEvent {
         model: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_window: Option<usize>,
+    },
+    /// The session's live generation knobs changed (point-in-time, no `seq`),
+    /// in reply to [`InMsg::SetGeneration`] (#374, ADR-0094) or an implicit
+    /// overlay applied on `SetAgent`/session start. Carries the **full** resolved
+    /// [`GenerationParams`] — not just what changed — so a head can render the
+    /// effective state directly and so replay can restore it verbatim by simply
+    /// overwriting [`Session::generation`][crate::session::Session]. Also folded
+    /// into `Session::profile_generation` on replay, keyed by the active profile
+    /// at the time (mirrors [`ModelChanged`][OutEvent::ModelChanged]'s
+    /// `profile_models` reconstruction).
+    GenerationChanged {
+        session: SessionId,
+        generation: GenerationParams,
     },
     /// The agent's strategy plan (markdown prose), full snapshot on every change.
     /// Emitted by the runtime when it handles an `update_plan` state tool call
@@ -1012,6 +1048,7 @@ impl OutEvent {
             | OutEvent::Status { session, .. }
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::ModelChanged { session, .. }
+            | OutEvent::GenerationChanged { session, .. }
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }
             | OutEvent::ReasoningDelta { session, .. }
@@ -1034,7 +1071,8 @@ impl OutEvent {
     /// The monotonic per-session sequence number for a **content** event, or
     /// `None` for a point-in-time lifecycle/query event that carries no `seq`
     /// (`SessionStarted`, `SessionEnded`, `SessionList`, `History`, `Status`,
-    /// `AgentChanged`, `ModelChanged`). Returning `Option` instead of a fake `0`
+    /// `AgentChanged`, `ModelChanged`, `GenerationChanged`). Returning `Option`
+    /// instead of a fake `0`
     /// (#160, ADR-0072) lets a head tell "seq 0" apart from "no seq" — the
     /// supervisor-shed `Error` sentinel (seq `0`) is a real `Some(0)`, distinct
     /// from a lifecycle event's `None`.
@@ -1047,7 +1085,8 @@ impl OutEvent {
             | OutEvent::History { .. }
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }
-            | OutEvent::ModelChanged { .. } => None,
+            | OutEvent::ModelChanged { .. }
+            | OutEvent::GenerationChanged { .. } => None,
             OutEvent::Plan { seq, .. }
             | OutEvent::TextDelta { seq, .. }
             | OutEvent::ReasoningDelta { seq, .. }
@@ -1148,6 +1187,10 @@ mod tests {
                 session: s.clone(),
                 provider: "zai".into(),
                 model: "glm-5.2".into(),
+            },
+            InMsg::SetGeneration {
+                session: s.clone(),
+                overrides: entanglement_provider::GenerationParams::default(),
             },
             InMsg::Oneshot {
                 session: s.clone(),

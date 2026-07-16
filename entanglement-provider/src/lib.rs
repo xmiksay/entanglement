@@ -40,9 +40,9 @@ pub use catalog::{Catalog, ModelEntry, ModelPricing, ProviderEntry, Wire};
 pub use client::{HttpClient, RetryConfig};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
-    stream_from_response, DummyLlm, EchoLlm, GenerationParams, Llm, LlmEvent, LlmFactory,
-    LlmRequest, LlmResponse, LlmStream, ModelResolver, ResolvedModel, StopReason, ToolCall,
-    ToolSpec, Usage,
+    stream_from_response, DummyLlm, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmEvent,
+    LlmFactory, LlmRequest, LlmResponse, LlmStream, ModelResolver, ReasoningEffort, ResolvedModel,
+    StopReason, ToolCall, ToolSpec, Usage,
 };
 pub use message::{
     content_has_image, content_text, ContentPart, ImageSource, Message, MessageRole,
