@@ -348,17 +348,16 @@ re-document them here):
   summarization) is the first op: routed like `SetAgent`/`SetModel`
   (`SessionCmd::Oneshot`, deferred via the same stash gate while a turn is live),
   it renders the transcript, asks the model to summarize it with a tool-less
-  request, and emits `OutEvent::Compacted { session, seq, summary, kept }` — a
-  **persisted, seq-bearing** content event (persistence and `ReplayFrom` cover
-  it for free; both are variant-agnostic over any seq-bearing event).
+  request, and emits `OutEvent::Compacted { session, seq, summary, kept, auto }`
+  — a **persisted, seq-bearing** content event (persistence and `ReplayFrom`
+  cover it for free; both are variant-agnostic over any seq-bearing event).
   **Copy-on-write (ADR-0101, supersedes ADR-0082):** the source session's
   `Context` is **never mutated** — the summary rides only in the event, and the
   head forks it into a new session via `InMsg::Spawn`. A truncated summary
   (`StopReason::MaxTokens`) is refused outright, and an oversized transcript is
-  rejected before the request. `Session::replay`'s `Compacted` fold is a no-op,
-  so a resumed source recovers its full history (the implicit undo). The old
-  prune-only `Context::compact` (#178) is unchanged and still the automatic
-  pre-round fallback; `"compact"` only runs on request (`InMsg::Oneshot`, TUI
+  rejected before the request. `Session::replay`'s `Compacted` fold is a no-op
+  for `auto: false`, so a resumed source recovers its full history (the
+  implicit undo); `"compact"` only runs on request (`InMsg::Oneshot`, TUI
   `/compact [--keep N] [instructions]`).
   **Keep-tail (#397,
   [ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)):**
@@ -368,10 +367,31 @@ re-document them here):
   at a `User` message, or a `Tool` reply could replay without its paired
   `Assistant` tool-call half, breaking providers' `tool_use`/`tool_result`
   pairing (ADR-0082's deferred-to-v1 blocker). `compact_op` summarizes only
-  the *head*, then appends the tail's rendered transcript after the summary —
-  the composed text ships inside the same `summary` field, so this needed
-  **no wire change**; `kept` now reports the real (clamped) count instead of
-  a hardcoded `0`.
+  the *head*, then composes the tail's rendered transcript after the summary
+  (`summarize::compose_report`) — the composed text ships inside the same
+  `summary` field, so this needed **no wire change**; `kept` now reports the
+  real (clamped) count instead of a hardcoded `0`.
+  **Auto-summarize on context overflow (#398,
+  [ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)):** the
+  turn loop's overflow guard (`session/turn.rs`, #178) no longer falls straight
+  to the lossy prune-only `Context::compact` — gated by
+  `EngineConfig::auto_compact` (default `true`), it first tries the same
+  `session/summarize.rs::summarize` core `compact_op` uses (requesting a small
+  fixed keep-tail, clamped by `safe_kept` exactly as #397 does) and, on
+  success, mutates the session's `Context` **in place** via
+  `Context::apply_compaction` — the fundamental split from `/compact`'s
+  copy-on-write: a turn mid-flight has no head to fork into, so the only sound
+  recovery is compacting the live context and continuing the same turn. Emits
+  the same wire variant marked `Compacted { auto: true, .. }`; `Session::replay`
+  folds it by replaying the identical `apply_compaction` call (flushing
+  whatever pending assistant/tool state has accumulated first), unlike the
+  manual path's no-op fold. Falls through to `Context::compact` (then refusal)
+  when auto-summarize is disabled, its own guard trips (oversized transcript/
+  tail, an LLM error, a truncated summary), or the result still doesn't fit —
+  byte-identical to the pre-#398 behavior in that case. Heads must not fork on
+  `auto: true` (the TUI renders an in-place notice on the same view instead of
+  `handle_compacted`'s new-session fork; the stdio `run` head's one-line render
+  likewise branches on `auto`).
 - **In-app tool-allowlist editing materializes a user-layer override** (#330,
   [ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)):
   no separate mask store — editing a profile's `tools:`/`disallowed_tools:`
@@ -602,9 +622,10 @@ gated shipped last, per [ADR-0048](../docs/adr/0048-serve-head-local-trust-model
 The generic one-shot op framework (#324, `InMsg::Oneshot`, session compaction
 as its first op, [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)),
 copy-on-write forking ([ADR-0101](../docs/adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)),
-and keep-tail (#397, [ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md))
-are **complete**; auto-summarize-on-context-threshold is a natural follow-up
-issue, not yet scheduled.
+keep-tail (#397, [ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)),
+and auto-summarize on context overflow (#398,
+[ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)) are
+**complete**.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
 — z.ai (primary)/OpenAI/Ollama via one OpenAI-compat client + a separate

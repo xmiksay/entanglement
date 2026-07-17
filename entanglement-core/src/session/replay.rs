@@ -201,15 +201,48 @@ impl Session {
                     }
                     pending_tool_outputs.clear();
                 }
-                // Session compaction (#324, ADR-0082 → ADR-0101):
-                // **copy-on-write** — the source `Context` is never mutated, so
-                // there is nothing to fold here. The summary rides only in the
-                // event (a head forks it into a new session). A record written
-                // under the old in-place design (ADR-0082) is simply ignored:
+                // Session compaction (#324, ADR-0082 → ADR-0101/0103): two
+                // mutation semantics share this event, told apart by `auto`.
+                // `auto: false` — manual `/compact`, **copy-on-write** — the
+                // source `Context` is never mutated, so there is nothing to
+                // fold here; the summary rides only in the event (a head forks
+                // it into a new session). A record written under the old
+                // in-place design (pre-ADR-0101) also lands here (its `auto`
+                // defaults to `false` on the wire) and is likewise ignored:
                 // replaying it would clobber the full pre-compaction history
-                // the log still holds, which is exactly the history the source
-                // session should recover with.
-                OutEvent::Compacted { .. } => {}
+                // the log still holds, which is exactly the history the
+                // source session should recover with.
+                //
+                // `auto: true` — automatic in-place compaction on context
+                // overflow (#398): the live engine mutated `Context` via
+                // `apply_compaction` before continuing the turn, so replay
+                // must reconstruct that same mutation. Flush whatever
+                // pending assistant/tool state has accumulated so far (same
+                // flush the `Done` arm above does) so `apply_compaction`
+                // operates on the messages actually pushed, not a stale tail.
+                OutEvent::Compacted {
+                    auto: true,
+                    summary,
+                    kept,
+                    ..
+                } => {
+                    if !pending_text.is_empty() || !pending_tools.is_empty() {
+                        session
+                            .ctx
+                            .push_assistant(pending_text.clone(), pending_tools.clone());
+                        pending_text.clear();
+                        pending_tools.clear();
+                    }
+                    for (request_id, output) in &pending_tool_outputs {
+                        session
+                            .ctx
+                            .push_tool_content(request_id.clone(), output.clone());
+                    }
+                    pending_tool_outputs.clear();
+
+                    session.ctx.apply_compaction(summary, *kept as usize);
+                }
+                OutEvent::Compacted { auto: false, .. } => {}
                 _ => {}
             }
         }

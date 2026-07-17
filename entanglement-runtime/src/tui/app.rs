@@ -347,11 +347,16 @@ impl App {
         // pending `Spawn` is recorded for the async main loop to send. Deduped
         // by seq against the source view's watermark so a replayed/lagged
         // duplicate doesn't fork a second time (mirrors the reducer's own
-        // seq-dedupe guard).
+        // seq-dedupe guard). Auto-compaction (`auto: true`, #398, ADR-0103) is
+        // an in-place mutation the live engine already applied — no fork: the
+        // session already continued under the reduced context, so the
+        // reducer's own `Compacted` arm renders an in-place notice on the same
+        // view via the ordinary `sessions.handle_out_event` routing below.
         if let OutEvent::Compacted {
             session: source,
             seq,
             summary,
+            auto: false,
             ..
         } = &event
         {

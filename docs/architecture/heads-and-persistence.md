@@ -276,6 +276,21 @@ assistant/tool messages and the model appears to forget the conversation.
   carries it unmodified. The TUI's `/compact [--keep N] [instructions]`
   (`tui::commands::parse_compact_args`) is the head-side entry point; the
   command-palette pick still defaults to `kept: 0`.
+- **Auto-compaction is the in-place exception to copy-on-write** (#398,
+  [ADR-0103](../adr/0103-auto-summarize-on-context-overflow.md)). A turn
+  overflowing its context window mid-flight has no head to fork into, so
+  `session/turn.rs` mutates `Context` directly via `apply_compaction` and
+  marks the same wire event `OutEvent::Compacted { auto: true, .. }` (`false`
+  is the default, matching every pre-#398 — i.e. manual, copy-on-write —
+  record). `Session::replay`'s `Compacted` fold branches on it: `auto: false`
+  stays the no-op described above; `auto: true` flushes whatever pending
+  assistant/tool state has accumulated (mirroring the `Done` fold) and then
+  calls the same `apply_compaction(summary, kept)` the live engine ran, so a
+  resumed session's history matches the live one instead of recovering a
+  pre-compaction tail that was never actually live. The summary here carries
+  *no* rendered tail text (unlike the copy-on-write report above) — `kept`
+  alone is enough for both the live mutation and its replay to re-derive the
+  same tail structurally from `Context::messages()`.
 - **Pluggable append target — `RecordSink`** (#313). The tap's *what to persist*
   (route each record to its root, tombstone lag gaps) is split from its *where to
   persist*: it appends every finished `LogRecord` through a

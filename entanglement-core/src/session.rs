@@ -14,13 +14,16 @@
 //! Split along the natural seam (#109): [`replay`] reconstructs a session from
 //! a persisted log; [`turn`] is the live reasoning turn; [`stream`] is the
 //! streamed round-trip; [`turn_state`] is the parked-turn state; [`emit`] is
-//! the outbound-event helpers; [`ops`] is single-shot ops (#324, ADR-0082).
+//! the outbound-event helpers; [`ops`] is single-shot ops (#324, ADR-0082);
+//! [`summarize`] is the LLM-summarization core `ops` (copy-on-write) and
+//! `turn` (in-place auto-compact, #398/ADR-0103) both call.
 
 mod emit;
 mod ops;
 mod replay;
 mod state;
 mod stream;
+mod summarize;
 mod turn;
 mod turn_state;
 
