@@ -1149,6 +1149,24 @@ pub enum OutEvent {
         change_kind: FileChangeKind,
         hash: String,
     },
+    /// The session's active-skill tool mask changed (#400, ADR-0106). Emitted by
+    /// the runtime's tool executor: `Some(skill_id)` when a `load_skill` call
+    /// activates a skill (`allowed_tools` is that skill's mask, `None` meaning it
+    /// imposes none), `None` when the skill's scope ends — the current turn's
+    /// `Done`, or the session ending. Wire-facing posture only: core neither
+    /// interprets nor enforces this (skills are runtime-only, ADR-0037); a head
+    /// combines it with `ProfileDetail`'s #116 agent mask to render the session's
+    /// full effective tool set. Mirrors `FileChange`: a fresh per-session seq
+    /// (#157), no core replay-fold semantics (a head just tracks the latest
+    /// value).
+    SkillActive {
+        session: SessionId,
+        seq: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skill_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_tools: Option<Vec<String>>,
+    },
 }
 
 impl OutEvent {
@@ -1182,7 +1200,8 @@ impl OutEvent {
             | OutEvent::Error { session, .. }
             | OutEvent::Done { session, .. }
             | OutEvent::Compacted { session, .. }
-            | OutEvent::FileChange { session, .. } => Some(session),
+            | OutEvent::FileChange { session, .. }
+            | OutEvent::SkillActive { session, .. } => Some(session),
             OutEvent::SessionList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. } => None,
@@ -1224,7 +1243,8 @@ impl OutEvent {
             | OutEvent::Error { seq, .. }
             | OutEvent::Done { seq, .. }
             | OutEvent::Compacted { seq, .. }
-            | OutEvent::FileChange { seq, .. } => Some(*seq),
+            | OutEvent::FileChange { seq, .. }
+            | OutEvent::SkillActive { seq, .. } => Some(*seq),
         }
     }
 }
@@ -1438,6 +1458,31 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn skill_active_roundtrips_when_set_and_when_cleared() {
+        let active = OutEvent::SkillActive {
+            session: SessionId::new("s1"),
+            seq: 3,
+            skill_id: Some("commit".into()),
+            allowed_tools: Some(vec!["bash".into(), "read".into()]),
+        };
+        let json = serde_json::to_string(&active).unwrap();
+        let back: OutEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(active, back);
+
+        let cleared = OutEvent::SkillActive {
+            session: SessionId::new("s1"),
+            seq: 4,
+            skill_id: None,
+            allowed_tools: None,
+        };
+        let json = serde_json::to_string(&cleared).unwrap();
+        let back: OutEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(cleared, back);
+        assert_eq!(cleared.session(), Some(&SessionId::new("s1")));
+        assert_eq!(cleared.seq(), Some(4));
     }
 
     #[test]

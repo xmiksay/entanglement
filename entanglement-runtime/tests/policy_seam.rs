@@ -14,6 +14,7 @@ use entanglement_core::{
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::policy::{GrantStore, PermissionResolver};
+use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
 use entanglement_runtime::{Tool, ToolRegistry};
 
@@ -148,6 +149,7 @@ fn spawn_with_policy(
         &holly,
         reg.shared(),
         Arc::new(std::sync::RwLock::new(profiles)),
+        Arc::new(std::sync::RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
         active,
         resolver,

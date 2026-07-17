@@ -49,12 +49,15 @@ use crate::cancel::{CancelRegistry, TaskCanceller};
 use crate::hooks::Hooks;
 use crate::permission::{
     ancestor_chain, clamp_to_base, effective_permission, min_permission, permission_arg,
-    spawn_refusal, tool_masked,
+    skill_masked, spawn_refusal, tool_masked, ActiveSkill,
 };
 use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver};
 use crate::seam;
+use crate::skills::load_skill::parse_skill_id;
+use crate::skills::SkillRegistry;
 use crate::tool_names::{
-    AGENT_POLL_TOOL, AGENT_SPAWN_TOOL, AGENT_TOOL, ASK_USER_TOOL, PROPOSE_PLAN_TOOL, RHAI_TOOL,
+    AGENT_POLL_TOOL, AGENT_SPAWN_TOOL, AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL,
+    PROPOSE_PLAN_TOOL, RHAI_TOOL,
 };
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
@@ -174,6 +177,15 @@ pub fn spawn_tool_executor(
     spawn_tool_executor_with_hooks(holly, tools, profiles, base, Hooks::default())
 }
 
+/// Wrap a caller's [`SkillRegistry`] for [`spawn_tool_executor_with_policy`]'s
+/// `skills` parameter, mirroring [`wrap_profiles`]. The convenience wrappers
+/// below plug in an empty registry — no `load_skill` mask ever activates for
+/// their (~30, test-only) callers, matching their historical no-skill-mask
+/// behavior byte-for-byte.
+fn wrap_skills(skills: SkillRegistry) -> Arc<RwLock<Arc<SkillRegistry>>> {
+    Arc::new(RwLock::new(Arc::new(skills)))
+}
+
 /// Wrap a caller's owned [`ProfileRegistry`] for [`spawn_tool_executor_with_policy`],
 /// which reads it through an `Arc<RwLock<..>>` so a live definitions watcher
 /// (#329) can swap it for a fresher one without restarting the executor. The
@@ -207,6 +219,7 @@ pub fn spawn_tool_executor_with_hooks(
         holly,
         tools.shared(),
         wrap_profiles(profiles),
+        wrap_skills(SkillRegistry::default()),
         base,
         active,
         resolver,
@@ -240,11 +253,18 @@ pub fn spawn_tool_executor_with_hooks(
 /// read lock and clones an owned snapshot *before* spawning the detached task
 /// (never held across a tool's `.await`), mirroring the `profiles` pattern
 /// above.
+///
+/// `skills` (#400, ADR-0106) is the same live-reloadable handle
+/// `LoadSkillTool` resolves against: after a `load_skill` call succeeds, this
+/// executor parses the `skill_id` its result carries, looks up that skill's
+/// `allowed_tools` here, and activates the session's skill mask —
+/// [`skill_masked`], layered after the #116 agent mask.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_tool_executor_with_policy(
     holly: &Holly,
     tools: SharedRegistry,
     profiles: Arc<RwLock<ProfileRegistry>>,
+    skills: Arc<RwLock<Arc<SkillRegistry>>>,
     base: PermissionProfile,
     active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
     resolver: Arc<dyn PermissionResolver>,
@@ -283,6 +303,15 @@ pub fn spawn_tool_executor_with_policy(
         // order), so the check is race-free without a lock. Cleared per session on
         // `SessionEnded`.
         let mut in_flight: HashMap<SessionId, HashSet<String>> = HashMap::new();
+        // The session's active-skill tool mask (#400, ADR-0106): set when a
+        // `load_skill` call resolves with an `allowed_tools` list, layered after
+        // the #116 agent mask below (`skill_masked`). Cleared on the turn's
+        // `Done` — a skill's scope is one conversational turn — or when the
+        // session ends. Shared with `dispatch`/`await_decision`/`run_and_reply`
+        // (the detached per-call tasks), which set it after a successful
+        // `load_skill`; this loop is the sole writer of the clear path.
+        let active_skill: Arc<Mutex<HashMap<SessionId, ActiveSkill>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         // Bounds the spawn tree (#76): tracks parent links from lifecycle events
         // and per-root spawn budgets. Lives in this single-threaded loop, so the
         // spawn decision below is race-free.
@@ -384,6 +413,16 @@ pub fn spawn_tool_executor_with_policy(
                     // Drop the re-offer dedupe set (#274): its request ids can
                     // never recur once the session is gone.
                     in_flight.remove(&session);
+                    // The active-skill mask is moot once the session is gone too
+                    // (#400) — no `Done` will follow to clear it otherwise.
+                    active_skill.lock().unwrap().remove(&session);
+                }
+                // A skill's tool mask scopes one model turn (#400, ADR-0106):
+                // clear it here so a later turn can `load_skill` a different one
+                // (or none) unmasked, and tell any listening head the combined
+                // posture reverted to just the #116 agent mask.
+                Ok(OutEvent::Done { session, .. }) => {
+                    clear_active_skill(&holly, &active_skill, &session);
                 }
                 // A resolved call (#274): core folded its result and emitted this
                 // `ToolOutput`, so the id is no longer in flight — drop it from the
@@ -461,6 +500,25 @@ pub fn spawn_tool_executor_with_policy(
                         tokio::spawn(async move {
                             let output =
                                 format!("tool `{tool}` is not available to this agent (restricted by profile)");
+                            seam::reply(&holly, session, request_id, output).await;
+                        });
+                        continue;
+                    }
+                    // Skill-scoped tool restriction (#400, ADR-0106), layered
+                    // *after* the #116 agent mask above — a tool must survive
+                    // both. A loaded skill's `allowed_tools` narrows the session's
+                    // already-unmasked set for the rest of this turn.
+                    let skill_masked_by = {
+                        let active_skill = active_skill.lock().unwrap();
+                        skill_masked(&active_skill, &session, &tool)
+                    };
+                    if let Some(skill_id) = skill_masked_by {
+                        let holly = holly.clone();
+                        tokio::spawn(async move {
+                            let output = format!(
+                                "tool `{tool}` is not available while skill `{skill_id}` is \
+                                 active (restricted by its allowed_tools)"
+                            );
                             seam::reply(&holly, session, request_id, output).await;
                         });
                         continue;
@@ -653,6 +711,8 @@ pub fn spawn_tool_executor_with_policy(
                             // Snapshot before spawning (#372) — see the Rhai arm above.
                             let tools = tools.read().unwrap().clone();
                             let holly = holly.clone();
+                            let skills = skills.clone();
+                            let active_skill = active_skill.clone();
                             let grants = grants.clone();
                             let hooks = hooks.clone();
                             let pending = pending.clone();
@@ -662,8 +722,19 @@ pub fn spawn_tool_executor_with_policy(
                             let reg_session = session.clone();
                             let handle = tokio::spawn(async move {
                                 dispatch(
-                                    &holly, &tools, &*resolver, &chain, &*grants, &hooks, &pending,
-                                    session, request_id, tool, input,
+                                    &holly,
+                                    &tools,
+                                    &skills,
+                                    &active_skill,
+                                    &*resolver,
+                                    &chain,
+                                    &*grants,
+                                    &hooks,
+                                    &pending,
+                                    session,
+                                    request_id,
+                                    tool,
+                                    input,
                                 )
                                 .await;
                             });
@@ -698,6 +769,8 @@ pub fn spawn_tool_executor_with_policy(
 async fn dispatch(
     holly: &Holly,
     tools: &ToolRegistry,
+    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
+    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
     resolver: &dyn PermissionResolver,
     chain: &[SessionId],
     grants: &dyn GrantStore,
@@ -721,7 +794,18 @@ async fn dispatch(
     }
     match perm {
         Permission::Allow => {
-            run_and_reply(holly, tools, hooks, session, request_id, tool, input).await;
+            run_and_reply(
+                holly,
+                tools,
+                skills,
+                active_skill,
+                hooks,
+                session,
+                request_id,
+                tool,
+                input,
+            )
+            .await;
         }
         Permission::Deny => {
             let output = format!("tool `{tool}` denied by permission profile");
@@ -744,7 +828,17 @@ async fn dispatch(
             });
             holly.emit_status(&session, AgentState::WaitingApproval);
             await_decision(
-                holly, tools, grants, hooks, rx, session, request_id, tool, input,
+                holly,
+                tools,
+                skills,
+                active_skill,
+                grants,
+                hooks,
+                rx,
+                session,
+                request_id,
+                tool,
+                input,
             )
             .await;
         }
@@ -759,6 +853,8 @@ async fn dispatch(
 async fn await_decision(
     holly: &Holly,
     tools: &ToolRegistry,
+    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
+    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
     grants: &dyn GrantStore,
     hooks: &Hooks,
     rx: tokio::sync::oneshot::Receiver<seam::Decision>,
@@ -778,7 +874,18 @@ async fn await_decision(
                 let arg = permission_arg(&tool, &input);
                 grants.record(&session, &tool, arg.as_deref(), scope).await;
             }
-            run_and_reply(holly, tools, hooks, session, request_id, tool, input).await;
+            run_and_reply(
+                holly,
+                tools,
+                skills,
+                active_skill,
+                hooks,
+                session,
+                request_id,
+                tool,
+                input,
+            )
+            .await;
         }
         seam::Decision::Reject { reason } => {
             set_thinking(holly, &session);
@@ -794,9 +901,12 @@ async fn await_decision(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_and_reply(
     holly: &Holly,
     tools: &ToolRegistry,
+    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
+    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
     hooks: &Hooks,
     session: SessionId,
     request_id: String,
@@ -837,17 +947,74 @@ async fn run_and_reply(
         ),
     )
     .await;
+    let output_text = entanglement_core::content_text(&content);
+    // #400, ADR-0106: a successful `load_skill` activates the session's
+    // skill-scoped tool mask for the rest of this turn — parsed from the
+    // result's `skill_id:` header (absent on a failed load: unknown/`user_only`
+    // skill, which leaves any prior active skill untouched).
+    if tool == LOAD_SKILL_TOOL {
+        activate_skill(holly, skills, active_skill, &session, &output_text);
+    }
     // `post_tool_use` (#199) observes the result before it is folded back — a
     // pure side-effect (formatter/telemetry); it cannot rewrite `content`.
     hooks
-        .run_post_tool_use(
-            &session,
-            &tool,
-            &input,
-            &entanglement_core::content_text(&content),
-        )
+        .run_post_tool_use(&session, &tool, &input, &output_text)
         .await;
     seam::reply_content(holly, session, request_id, content).await;
+}
+
+/// Activate `session`'s skill mask (#400, ADR-0106) from a `load_skill` result:
+/// parse its `skill_id:` header, look the skill up in the live registry for its
+/// `allowed_tools`, record it, and tell any listening head via
+/// [`OutEvent::SkillActive`]. A `result` with no `skill_id:` header (a failed
+/// load) is a no-op — the session keeps whatever skill was active before.
+fn activate_skill(
+    holly: &Holly,
+    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
+    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    session: &SessionId,
+    result: &str,
+) {
+    let Some(skill_id) = parse_skill_id(result) else {
+        return;
+    };
+    let allowed_tools = skills
+        .read()
+        .unwrap()
+        .get(skill_id)
+        .and_then(|s| s.allowed_tools.clone());
+    active_skill.lock().unwrap().insert(
+        session.clone(),
+        ActiveSkill {
+            skill_id: skill_id.to_string(),
+            allowed_tools: allowed_tools.clone(),
+        },
+    );
+    holly.emit_for_session(session, |seq| OutEvent::SkillActive {
+        session: session.clone(),
+        seq,
+        skill_id: Some(skill_id.to_string()),
+        allowed_tools,
+    });
+}
+
+/// Clear `session`'s active skill mask (#400, ADR-0106) — the turn's `Done`, the
+/// natural end of a skill's scope. A no-op (no wire event) when no skill was
+/// active, matching [`activate_skill`]'s "only tell a head about a real change"
+/// shape.
+fn clear_active_skill(
+    holly: &Holly,
+    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    session: &SessionId,
+) {
+    if active_skill.lock().unwrap().remove(session).is_some() {
+        holly.emit_for_session(session, |seq| OutEvent::SkillActive {
+            session: session.clone(),
+            seq,
+            skill_id: None,
+            allowed_tools: None,
+        });
+    }
 }
 
 fn set_thinking(holly: &Holly, session: &SessionId) {

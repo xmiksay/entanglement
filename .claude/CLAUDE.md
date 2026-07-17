@@ -451,6 +451,25 @@ re-document them here):
   runs once before the subcommand match) rather than a `serve`-only CLI flag —
   the sweep's own settledness guard is what makes auto-hibernation safe for any
   head. Unset (the default) stays `None`, byte-identical to before.
+- **Skill-scoped `allowed_tools` enforcement** (#400,
+  [ADR-0106](../docs/adr/0106-skill-scoped-allowed-tools-enforcement.md)): a
+  `SKILL.md`'s `allowed_tools` frontmatter (parsed since #114 but unenforced)
+  now gates tool calls while that skill is active. A resolved `load_skill`
+  result's `skill_id:` header is the provenance signal — `tool_runner` looks
+  the skill up in the live `SkillRegistry` and records
+  `ActiveSkill { skill_id, allowed_tools }` per **session**
+  (`runtime::permission::skill_masked`), never a core-protocol field on
+  `ToolCall`/`ToolExec`. Checked in `ToolExec` handling strictly *after* the
+  #116 agent mask (`tool_masked`) — a tool must survive both, with no
+  exemption for `load_skill` itself (a skill whose `allowed_tools` omits it
+  blocks switching skills mid-turn). Unlike the agent mask it does **not**
+  clamp the ancestor/spawn chain — a skill's scope is the loading session's
+  current turn, not an inheritable profile trait — and it clears on that
+  session's next `Done` (or the session ending), not an explicit unload tool.
+  `OutEvent::SkillActive { session, seq, skill_id: Option<String>,
+  allowed_tools: Option<Vec<String>> }` mirrors `FileChange`'s shape as the
+  wire-facing posture; the stdio `run --format text` head and the TUI
+  transcript both render it as a one-line notice.
 - **Definitions are data, layered** embedded < user < project, later wins; the
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
   Agents (`ENTANGLEMENT_AGENTS_DIR`), skills (`ENTANGLEMENT_SKILLS_DIR`), the
@@ -634,9 +653,11 @@ keep-tail (#397, [ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-f
 auto-summarize on context overflow (#398,
 [ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)), and the
 optional bubblewrap OS sandbox for `bash`/`call` (#399,
-[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)), and exposing
+[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)), exposing
 `idle_ttl` as a `config.yml` setting for `serve` (#401,
-[ADR-0105](../docs/adr/0105-expose-idle-ttl-via-runtime-config.md)) are
+[ADR-0105](../docs/adr/0105-expose-idle-ttl-via-runtime-config.md)), and
+skill-scoped `allowed_tools` enforcement (#400,
+[ADR-0106](../docs/adr/0106-skill-scoped-allowed-tools-enforcement.md)) are
 **complete**.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
