@@ -69,12 +69,15 @@ below realize one model:
   A rule key is a bare tool name, `*`, or an **argument-scoped** `tool(pattern)`
   (✅ #173, [ADR-0051](../adr/0051-argument-scoped-permission-rules.md)): the
   `*`/`?` glob `pattern` matches a tool-specific argument — the
-  command for `bash`/`call`, the target path for `edit`/`write`/`read` — so
-  `bash(git *): allow`, `bash(rm *): deny`, `edit(src/*): allow` all refine a
-  coarse `bash: ask`. The runtime extracts the argument from the call input
-  (`runtime::permission::permission_arg`) where the JSON is already in hand;
-  argument-less rules and name-only callers (inspect/TUI posture panels) resolve
-  exactly as before. The graded decision drives:
+  command for `bash`/`call`, the target path for `edit`/`write`/`read`, the
+  `pattern` (itself a path glob) for `glob`, and the optional file filter for
+  `grep` (a path, distinct from `grep`'s regex `pattern`; absent → `None`, #417
+  — a prerequisite for #416 phase B's arg-scoped read fan-out) — so
+  `bash(git *): allow`, `bash(rm *): deny`, `edit(src/*): allow`,
+  `grep(src/*): allow` all refine a coarse `bash: ask`/`grep: ask`. The runtime
+  extracts the argument from the call input (`runtime::permission::permission_arg`)
+  where the JSON is already in hand; argument-less rules and name-only callers
+  (inspect/TUI posture panels) resolve exactly as before. The graded decision drives:
   - `Allow` → run the tool, reply `ToolResult` → core emits `ToolOutput`.
   - `Ask` → emit `ToolRequest`, park at `WaitingApproval` until `Approve`/`Reject`;
     on approve, run the tool and reply `ToolResult`; on reject, reply

@@ -328,9 +328,12 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
 
 /// The argument string an argument-scoped permission rule (#173) matches
 /// against: the shell command for `bash`, the `command`+`args` line for `call`,
-/// and the target path for `edit`/`write`/`read`. `None` for any other tool or
-/// on malformed input — an argument-scoped rule then never matches, so
-/// resolution falls through to the tool's name-only rules.
+/// the target path for `edit`/`write`/`read`, the search pattern (itself a path
+/// glob) for `glob`, and the optional file filter for `grep` (#417 — a path,
+/// distinct from `grep`'s `pattern` which is a regex, not a path). `None` for
+/// any other tool, a `grep` call with no `path` filter, or on malformed input —
+/// an argument-scoped rule then never matches, so resolution falls through to
+/// the tool's name-only rules.
 pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(input).ok()?;
     match tool {
@@ -347,6 +350,8 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
             Some(line)
         }
         "edit" | "write" | "read" => value.get("path")?.as_str().map(String::from),
+        "glob" => value.get("pattern")?.as_str().map(String::from),
+        "grep" => value.get("path").and_then(|p| p.as_str()).map(String::from),
         _ => None,
     }
 }
@@ -728,8 +733,21 @@ mod tests {
             permission_arg("write", r#"{"path":"README.md","content":"x"}"#).as_deref(),
             Some("README.md")
         );
-        // Tools without a meaningful argument, and malformed input, yield None.
+        // glob → the pattern itself, since a glob pattern is a path.
+        assert_eq!(
+            permission_arg("glob", r#"{"pattern":"src/*.rs"}"#).as_deref(),
+            Some("src/*.rs")
+        );
+        // grep → the optional file filter, which is a path; the regex `pattern`
+        // is never returned, since it isn't one.
+        assert_eq!(
+            permission_arg("grep", r#"{"pattern":"foo","path":"src/*"}"#).as_deref(),
+            Some("src/*")
+        );
+        // grep without a `path` filter yields None — resolution falls through
+        // to grep's name-only rules.
         assert_eq!(permission_arg("grep", r#"{"pattern":"foo"}"#), None);
+        // Tools without a meaningful argument, and malformed input, yield None.
         assert_eq!(permission_arg("bash", "not json"), None);
     }
 
@@ -753,6 +771,65 @@ mod tests {
         );
         assert_eq!(
             effective_permission(&active, &guard, &root, "bash", Some("rm -rf /")),
+            Permission::Ask
+        );
+    }
+
+    #[test]
+    fn argument_scoped_rule_resolves_for_search_tools() {
+        // #417: grep/glob now yield a path-shaped arg, so a `read`-style
+        // arg-scoped rule can restrict them to a subtree.
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask)
+                .with("grep(src/*)", Permission::Allow)
+                .with("glob(src/*)", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "grep",
+                permission_arg("grep", r#"{"pattern":"foo","path":"src/*"}"#).as_deref()
+            ),
+            Permission::Allow
+        );
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "glob",
+                permission_arg("glob", r#"{"pattern":"src/*"}"#).as_deref()
+            ),
+            Permission::Allow
+        );
+        // Outside the scoped path, or with no file filter at all, falls back
+        // to the tool's name-only rule (`Ask` here).
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "grep",
+                permission_arg("grep", r#"{"pattern":"foo","path":"docs/*"}"#).as_deref()
+            ),
+            Permission::Ask
+        );
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "grep",
+                permission_arg("grep", r#"{"pattern":"foo"}"#).as_deref()
+            ),
             Permission::Ask
         );
     }

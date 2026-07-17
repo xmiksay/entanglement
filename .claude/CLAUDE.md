@@ -171,9 +171,11 @@ re-document them here):
   `Approve`/`Reject` off `Holly::subscribe_inbound()`. Core never reads
   `PermissionProfile`. Rule keys are name-or-`*` **or** argument-scoped
   `tool(pattern)` (#173: command for `bash`/`call`, path for `edit`/`write`/
-  `read`), matched against the call input the runtime extracts
-  (`permission::permission_arg`) — the `PermissionProfile::resolve(name, arg)`
-  glob is the only core surface. A user config file (#172) adds a global
+  `read`/`glob`, optional file filter for `grep` (#417 — a path, distinct from
+  its regex `pattern`; absent → no match)), matched against the call input the
+  runtime extracts (`permission::permission_arg`) — the
+  `PermissionProfile::resolve(name, arg)` glob is the only core surface. A user
+  config file (#172) adds a global
   permission **ceiling** clamped least-privilege over every grade
   (`clamp_to_base`); see `entanglement-runtime/src/config`. `Approve` carries a
   `scope` (#174, [ADR-0052](../docs/adr/0052-approval-scope-and-persisted-grants.md)):
