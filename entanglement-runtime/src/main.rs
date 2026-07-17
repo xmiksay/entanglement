@@ -130,7 +130,18 @@ async fn build_config(
     // default — `bash_enabled` alone still means unsandboxed, full-privilege
     // execution, matching every release before this.
     let sandbox = SandboxPolicy::from_env();
-    let mut tools = register_default_tools(root.clone(), secret_env, bash_enabled, sandbox);
+    // Per-project scratch dir for default `call` artifacts — outside the repo,
+    // so a routine `call` neither pollutes the workdir nor re-triggers the
+    // definitions watcher. Best-effort: if the data dir is unavailable, `call`
+    // falls back to its legacy in-repo `.entanglement/tmp` location.
+    let scratch_base = session_store::scratch_dir(&root).ok();
+    let mut tools = register_default_tools(
+        root.clone(),
+        scratch_base,
+        secret_env,
+        bash_enabled,
+        sandbox,
+    );
     if bash_enabled && !sandbox.is_sandboxed() {
         eprintln!(
             "skutter: bash enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
@@ -227,16 +238,19 @@ async fn build_config(
 /// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
 fn register_default_tools(
     root: std::path::PathBuf,
+    scratch_base: Option<std::path::PathBuf>,
     secret_env: Vec<String>,
     bash_enabled: bool,
     sandbox: SandboxPolicy,
 ) -> ToolRegistry {
     let mut tools = host_tools(root.clone());
-    tools.register(
-        CallTool::new(root.clone())
-            .with_secret_env(secret_env.clone())
-            .with_sandbox(sandbox),
-    );
+    let mut call = CallTool::new(root.clone())
+        .with_secret_env(secret_env.clone())
+        .with_sandbox(sandbox);
+    if let Some(base) = scratch_base {
+        call = call.with_scratch_base(base);
+    }
+    tools.register(call);
     if bash_enabled {
         let jobs = host::JobRegistry::new();
         tools.register(
@@ -1231,7 +1245,7 @@ mod tests {
 
     fn tool_names(bash_enabled: bool) -> Vec<String> {
         let root = std::env::temp_dir();
-        register_default_tools(root, Vec::new(), bash_enabled, SandboxPolicy::none())
+        register_default_tools(root, None, Vec::new(), bash_enabled, SandboxPolicy::none())
             .specs()
             .into_iter()
             .map(|s| s.name.to_string())
