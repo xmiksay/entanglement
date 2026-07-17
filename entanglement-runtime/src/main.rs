@@ -414,6 +414,17 @@ fn resolve_rpm(entry: &ProviderEntry) -> Option<u32> {
         .or(entry.rpm)
 }
 
+/// In-flight concurrency cap from `{NAME}_CONCURRENCY` env, else the catalog
+/// entry's `concurrency` (env > catalog; `None` → the client's built-in default,
+/// itself overridable process-wide via `ENTANGLEMENT_MAX_CONCURRENCY`). Mirrors
+/// `resolve_rpm`'s precedence for this per-endpoint storm guard (#414).
+fn resolve_concurrency(entry: &ProviderEntry) -> Option<usize> {
+    let name = entry.name.to_uppercase();
+    env_nonempty(&format!("{name}_CONCURRENCY"))
+        .and_then(|v| v.parse::<usize>().ok())
+        .or(entry.concurrency)
+}
+
 /// Summarize the chosen model against the catalog (context window, display name).
 fn model_info_for(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> ModelInfo {
     ModelInfo::from_catalog(catalog.model(&entry.name, model), model)
@@ -548,6 +559,7 @@ fn gemini_factory_for(
         key,
         model.to_string(),
         resolve_rpm(entry),
+        resolve_concurrency(entry),
         http_client.clone(),
     ))
 }
@@ -579,6 +591,7 @@ fn openai_factory_for(
         key,
         model.to_string(),
         resolve_rpm(entry),
+        resolve_concurrency(entry),
         web_search,
         http_client.clone(),
     ))
@@ -602,6 +615,7 @@ fn anthropic_factory_for(
         key,
         model.to_string(),
         resolve_rpm(entry),
+        resolve_concurrency(entry),
         web_search,
         http_client.clone(),
     ))
@@ -1275,6 +1289,37 @@ fn format_relative(ts_ms: u64) -> String {
 mod tests {
     use super::register_default_tools;
     use crate::host::SandboxPolicy;
+
+    fn test_entry(name: &str) -> entanglement_provider::ProviderEntry {
+        entanglement_provider::ProviderEntry {
+            name: name.to_string(),
+            wire: Default::default(),
+            base_url: None,
+            key_env: None,
+            rpm: None,
+            concurrency: None,
+            default_model: "test-model".to_string(),
+            models: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn resolve_concurrency_falls_back_to_catalog_then_none() {
+        let mut entry = test_entry("resolveconcurrencyfallback");
+        assert_eq!(super::resolve_concurrency(&entry), None);
+        entry.concurrency = Some(7);
+        assert_eq!(super::resolve_concurrency(&entry), Some(7));
+    }
+
+    #[test]
+    fn resolve_concurrency_env_overrides_catalog() {
+        let entry_name = "resolveconcurrencyenvoverride";
+        let mut entry = test_entry(entry_name);
+        entry.concurrency = Some(7);
+        std::env::set_var(format!("{}_CONCURRENCY", entry_name.to_uppercase()), "12");
+        assert_eq!(super::resolve_concurrency(&entry), Some(12));
+        std::env::remove_var(format!("{}_CONCURRENCY", entry_name.to_uppercase()));
+    }
 
     fn tool_names(bash_enabled: bool) -> Vec<String> {
         let root = std::env::temp_dir();

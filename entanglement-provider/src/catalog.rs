@@ -62,6 +62,12 @@ pub struct ProviderEntry {
     /// per-endpoint rate limiter so each provider gets its real budget (#241).
     #[serde(default)]
     pub rpm: Option<u32>,
+    /// Max simultaneously in-flight requests to this provider's endpoint; `None`
+    /// falls back to the client's default (`RetryConfig::concurrency`, 3).
+    /// Plumbed into the per-endpoint concurrency permit so each provider gets its
+    /// own storm guard rather than sharing one pool-global cap (#414).
+    #[serde(default)]
+    pub concurrency: Option<usize>,
     pub default_model: String,
     #[serde(default)]
     pub models: Vec<ModelEntry>,
@@ -590,6 +596,19 @@ mod tests {
         // A user file can set a per-provider rpm without touching sibling fields.
         let c = merge_str("providers:\n  - name: zai\n    rpm: 120\n");
         assert_eq!(c.provider("zai").unwrap().rpm, Some(120));
+        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
+    }
+
+    #[test]
+    fn concurrency_is_optional_and_user_overridable() {
+        // Unset in the embedded defaults → None (falls back to the client default).
+        assert_eq!(
+            Catalog::builtin().provider("zai").unwrap().concurrency,
+            None
+        );
+        // A user file can set a per-provider concurrency without touching siblings.
+        let c = merge_str("providers:\n  - name: zai\n    concurrency: 8\n");
+        assert_eq!(c.provider("zai").unwrap().concurrency, Some(8));
         assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
     }
 }

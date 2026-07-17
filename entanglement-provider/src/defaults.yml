@@ -14,6 +14,13 @@
 # each endpoint falls back to the client default (RetryConfig::rpm, 50);
 # override per provider in your user `providers.yml` or via `{NAME}_RPM`.
 #
+# `concurrency` (optional, per provider) caps simultaneously in-flight requests
+# to that provider's endpoint (the primary spawn-storm guard). Left unset here
+# so each endpoint falls back to the client default (RetryConfig::concurrency,
+# 3); override per provider in your user `providers.yml` or via
+# `{NAME}_CONCURRENCY` (falls back to the global `ENTANGLEMENT_MAX_CONCURRENCY`
+# when neither is set).
+#
 # Capability flags gate the generation-parameter channel (#191): the head sends a
 # model's `default_temperature` only when `supports_temperature`, and extended
 # thinking only when `supports_thinking` AND a `thinking_budget_tokens` is set.

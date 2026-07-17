@@ -103,9 +103,13 @@ never inspected by core). No key → `EchoLlm`. Detail in
 connection pool, retry/backoff, rate-limit (429/`Retry-After`/RPM keyed by base
 URL + API-key hash, ✅ #217, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md);
 the shared pool coordinates across sessions ([ADR-0111](../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)):
-a per-endpoint **concurrency cap** (default 3, `ENTANGLEMENT_MAX_CONCURRENCY`,
-permit held across the whole stream so spawned sub-agents queue instead of
-429-storming), an **adaptive pacing gate** (AIMD `penalize`/`relax` self-tunes RPM),
+a per-endpoint **concurrency cap** (default 3, permit held across the whole
+stream so spawned sub-agents queue instead of 429-storming) that is now
+**catalog data mirroring `rpm`** (✅ #414): the provider entry's optional
+`concurrency` (env `{NAME}_CONCURRENCY` > user `providers.yml` > embedded
+default), falling back to the client default (`RetryConfig::concurrency`, 3,
+itself still overridable process-wide via `ENTANGLEMENT_MAX_CONCURRENCY` as the
+last-resort fallback), an **adaptive pacing gate** (AIMD `penalize`/`relax` self-tunes RPM),
 and a 429 that **parks every concurrent session's window and retries** (5s→10min)
 **bounded by ≈15min then surfaces as an error** (so a saturated endpoint fails a
 sub-agent's turn rather than hanging its parent)),

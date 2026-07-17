@@ -312,12 +312,18 @@ impl HttpClient {
     }
 
     /// Resolve (creating on first use) the resilience state for pool key `key`.
-    /// `rpm` is the endpoint's catalog-provided budget; `None` falls back to the
-    /// pool's default (`RetryConfig::rpm`). Only the *first* caller for a key sets
-    /// the bucket size — an endpoint is one provider, so the value is consistent.
-    fn endpoint(&self, key: &str, rpm: Option<u32>) -> Arc<EndpointState> {
+    /// `rpm`/`concurrency` are the endpoint's catalog-provided budget/cap; `None`
+    /// falls back to the pool's defaults (`RetryConfig::rpm`/`concurrency`). Only
+    /// the *first* caller for a key sets the bucket size — an endpoint is one
+    /// provider, so the value is consistent.
+    fn endpoint(
+        &self,
+        key: &str,
+        rpm: Option<u32>,
+        concurrency: Option<usize>,
+    ) -> Arc<EndpointState> {
         let rpm = rpm.unwrap_or(self.pool.config.rpm);
-        let concurrency = self.pool.config.concurrency;
+        let concurrency = concurrency.unwrap_or(self.pool.config.concurrency);
         let mut map = self.pool.endpoints.lock().expect("endpoint pool poisoned");
         map.entry(key.to_string())
             .or_insert_with(|| Arc::new(EndpointState::new(rpm, concurrency)))
@@ -328,8 +334,8 @@ impl HttpClient {
     /// RPM budget + `Retry-After` window are keyed by `(endpoint, api_key)`: the
     /// provider's base URL **plus** the API key (if any), so multiple keys on the
     /// same endpoint each get their own budget — different keys have different
-    /// limits (#217). `rpm` is the endpoint's catalog-provided per-minute budget
-    /// (`None` → the pool default).
+    /// limits (#217). `rpm`/`concurrency` are the endpoint's catalog-provided
+    /// per-minute budget / in-flight cap (`None` → the pool defaults, #414).
     ///
     /// Returns the response **plus a [`StreamGuard`]** the caller must keep alive
     /// for the whole streamed body — it holds the per-endpoint concurrency permit
@@ -339,18 +345,20 @@ impl HttpClient {
     /// to error (so a saturated endpoint fails a turn rather than hanging its
     /// parent). Transient transport faults and 5xx retry up to `max_attempts`; a
     /// permanent 4xx or an exhausted retryable is returned as `Ok`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_with_retry<F, Fut>(
         &self,
         endpoint: &str,
         api_key: Option<&str>,
         rpm: Option<u32>,
+        concurrency: Option<usize>,
         request_fn: F,
     ) -> Result<(reqwest::Response, StreamGuard), RetryError>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     {
-        let endpoint = self.endpoint(&pool_key(endpoint, api_key), rpm);
+        let endpoint = self.endpoint(&pool_key(endpoint, api_key), rpm, concurrency);
         let config = self.pool.config;
         // `attempt` bounds only *genuine failures* (5xx / transport faults). A
         // 429 is "wait your turn": it retries until it clears (not counted here),
@@ -649,9 +657,9 @@ mod tests {
     #[test]
     fn endpoints_are_isolated_and_stable_by_key() {
         let http = HttpClient::new();
-        let a1 = http.endpoint("https://api.a/v1", None);
-        let a2 = http.endpoint("https://api.a/v1", None);
-        let b = http.endpoint("https://api.b/v1", None);
+        let a1 = http.endpoint("https://api.a/v1", None, None);
+        let a2 = http.endpoint("https://api.a/v1", None, None);
+        let b = http.endpoint("https://api.b/v1", None, None);
         // Same key → same state; different keys → isolated state.
         assert!(Arc::ptr_eq(&a1, &a2));
         assert!(!Arc::ptr_eq(&a1, &b));
@@ -662,9 +670,9 @@ mod tests {
         let http = HttpClient::new();
         // A per-provider rpm sets the pacing gate's base interval (60s / rpm);
         // `None` falls back to the pool default (RetryConfig::rpm).
-        let custom = http.endpoint("https://api.custom/v1", Some(6));
+        let custom = http.endpoint("https://api.custom/v1", Some(6), None);
         assert_eq!(custom.limiter.base, Duration::from_millis(60_000 / 6));
-        let default = http.endpoint("https://api.default/v1", None);
+        let default = http.endpoint("https://api.default/v1", None, None);
         assert_eq!(
             default.limiter.base,
             Duration::from_millis(60_000 / RPM_LIMIT as u64)
@@ -677,11 +685,24 @@ mod tests {
             concurrency: 2,
             ..RetryConfig::default()
         });
-        let ep = http.endpoint("https://api.x/v1", None);
+        let ep = http.endpoint("https://api.x/v1", None, None);
         // The in-flight cap is seeded from config; the default is DEFAULT_CONCURRENCY.
         assert_eq!(ep.concurrency.available_permits(), 2);
-        let dflt = HttpClient::new().endpoint("https://api.y/v1", None);
+        let dflt = HttpClient::new().endpoint("https://api.y/v1", None, None);
         assert_eq!(dflt.concurrency.available_permits(), DEFAULT_CONCURRENCY);
+    }
+
+    #[test]
+    fn endpoint_uses_provided_concurrency_cap_over_pool_default() {
+        let http = HttpClient::with_config(RetryConfig {
+            concurrency: 2,
+            ..RetryConfig::default()
+        });
+        // A per-provider concurrency override wins over the pool-wide default.
+        let custom = http.endpoint("https://api.custom/v1", None, Some(5));
+        assert_eq!(custom.concurrency.available_permits(), 5);
+        let default = http.endpoint("https://api.default/v1", None, None);
+        assert_eq!(default.concurrency.available_permits(), 2);
     }
 
     #[tokio::test]
