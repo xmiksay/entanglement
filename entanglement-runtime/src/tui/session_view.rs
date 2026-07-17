@@ -97,7 +97,6 @@ pub struct SessionView {
     /// Only meaningful while frozen; when `auto_follow` is set the view is
     /// pinned to the bottom at draw time and this value is ignored.
     scroll_offset: usize,
-    scroll_offset_x: usize,
     auto_follow: bool,
     /// Rendered line count and viewport height cached from the last draw so
     /// scroll math can clamp/anchor without re-deriving them — only `draw_body`
@@ -149,7 +148,6 @@ impl SessionView {
             task_list: None,
             last_seen_seq: 0,
             scroll_offset: 0,
-            scroll_offset_x: 0,
             auto_follow: true,
             last_content_height: 0,
             last_viewport_height: 0,
@@ -256,10 +254,6 @@ impl SessionView {
 
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
-    }
-
-    pub fn scroll_offset_x(&self) -> usize {
-        self.scroll_offset_x
     }
 
     pub fn auto_follow(&self) -> bool {

@@ -61,20 +61,10 @@ fn render_text_run(
     let rendered = md.render(run);
     for line in rendered.lines {
         let line = to_static(line);
-        let is_table = line
-            .spans
-            .first()
-            .map(|s| s.content.as_ref().starts_with('|'))
-            .unwrap_or(false);
-
-        let is_code = is_code_block_line(&line);
-
-        if is_table || is_code {
-            out.push(theme.decorate(line, colors, available_width));
-        } else {
-            for wline in wrap::wrap_line(line, available_width.saturating_sub(4)) {
-                out.push(theme.decorate(wline, colors, available_width));
-            }
+        // Everything wraps to the panel width — tables, fenced code blocks,
+        // and prose alike (#wrap). No horizontal scroll survives.
+        for wline in wrap::wrap_line(line, available_width.saturating_sub(4)) {
+            out.push(theme.decorate(wline, colors, available_width));
         }
     }
     out
@@ -102,6 +92,8 @@ fn render_reasoning_run(
 
         let is_code = is_code_block_line(&line);
 
+        // Italicize prose spans; code/table lines keep the syntect styling the
+        // renderer already applied.
         let styled_line = if is_table || is_code {
             line
         } else {
@@ -118,12 +110,10 @@ fn render_reasoning_run(
             Line::from(styled_spans)
         };
 
-        if is_table || is_code {
-            out.push(theme.decorate(styled_line, colors, available_width));
-        } else {
-            for wline in wrap::wrap_line(styled_line, available_width.saturating_sub(4)) {
-                out.push(theme.decorate(wline, colors, available_width));
-            }
+        // Everything wraps to the panel width — tables, fenced code blocks,
+        // and prose alike (#wrap). No horizontal scroll survives.
+        for wline in wrap::wrap_line(styled_line, available_width.saturating_sub(4)) {
+            out.push(theme.decorate(wline, colors, available_width));
         }
     }
     out

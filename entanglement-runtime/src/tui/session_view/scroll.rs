@@ -43,17 +43,8 @@ impl SessionView {
         self.auto_follow = false;
     }
 
-    pub fn scroll_right(&mut self, cols: usize) {
-        self.scroll_offset_x = self.scroll_offset_x.saturating_add(cols);
-    }
-
-    pub fn scroll_left(&mut self, cols: usize) {
-        self.scroll_offset_x = self.scroll_offset_x.saturating_sub(cols);
-    }
-
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = self.max_offset();
-        self.scroll_offset_x = 0;
         self.auto_follow = true;
     }
 }

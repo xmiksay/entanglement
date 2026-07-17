@@ -554,3 +554,140 @@ fn prose_with_inline_code_still_wraps() {
         "prose with inline code must wrap across multiple lines, got {content_lines}"
     );
 }
+
+/// Width in display columns of a rendered line, summing span contents.
+fn line_display_width(line: &Line) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    let s: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    UnicodeWidthStr::width(s.as_str())
+}
+
+#[test]
+fn fenced_code_block_with_wide_line_wraps() {
+    // A fenced code block whose line is wider than the panel must now wrap
+    // (previously it bypassed wrapping and overflowed horizontally).
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let wide = "x".repeat(120);
+    let md = format!("```rust\n{wide}\n```\n");
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: md,
+    });
+
+    let body = render_body_lines(&mut app, 30);
+    // The wrapped code content lines must each fit within the panel width
+    // (minus the bar indent). The padding rows (single ▌) are excluded.
+    for line in &body.lines {
+        let w = line_display_width(line);
+        // Decorate adds a 1-col bar + bg padding to the full width, so a
+        // content line's *text* width must stay under the panel width.
+        assert!(w <= 30, "wrapped code line exceeds panel width: {w} cols");
+    }
+    // And the wide token actually wrapped into multiple content lines.
+    let content_lines = body
+        .lines
+        .iter()
+        .filter(|l| {
+            let s: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            s.contains('x')
+        })
+        .count();
+    assert!(
+        content_lines > 1,
+        "wide code line should wrap into multiple lines, got {content_lines}"
+    );
+}
+
+#[test]
+fn markdown_table_wraps_within_panel() {
+    // A markdown table row wider than the panel must wrap, not overflow.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let cell = "a-very-long-cell-value-that-overflows-the-narrow-panel";
+    let md = format!("| col |\n| --- |\n| {cell} |\n");
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 1,
+        text: md,
+    });
+
+    let body = render_body_lines(&mut app, 25);
+    for line in &body.lines {
+        let w = line_display_width(line);
+        assert!(w <= 25, "wrapped table line exceeds panel width: {w} cols");
+    }
+}
+
+#[test]
+fn render_question_wraps_long_text_and_sized_rule() {
+    use crate::tui::session_view::PendingQuestion;
+    use entanglement_core::QuestionOption;
+    use unicode_width::UnicodeWidthStr;
+
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let long_question = "Which of these excessively verbose and long-winded options do you prefer?";
+    let long_label = "A particularly verbose and lengthy option label that cannot fit on one line";
+    let q = PendingQuestion {
+        request_id: "q1".into(),
+        question: long_question.into(),
+        options: vec![
+            QuestionOption {
+                label: long_label.into(),
+                description: None,
+            },
+            QuestionOption {
+                label: "short".into(),
+                description: Some(
+                    "a description that is also fairly long and should wrap nicely".into(),
+                ),
+            },
+        ],
+        allow_free_form: true,
+        selected: 0,
+        entering_free_form: false,
+    };
+    // Park the question on the view directly via the reducer path.
+    app.handle_out_event(OutEvent::UserQuestion {
+        session: sid.clone(),
+        seq: 1,
+        request_id: q.request_id.clone(),
+        question: q.question.clone(),
+        options: q.options.clone(),
+        allow_free_form: q.allow_free_form,
+    });
+
+    let width = 30u16;
+    let body = render_body_lines(&mut app, width);
+
+    // Rule lines must equal the available width.
+    let rules: Vec<_> = body
+        .lines
+        .iter()
+        .filter(|l| {
+            let s: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            s.chars().all(|c| c == '─') && !s.is_empty()
+        })
+        .collect();
+    assert!(!rules.is_empty(), "question box should have rule lines");
+    for rule in &rules {
+        let s: String = rule.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            UnicodeWidthStr::width(s.as_str()),
+            width as usize,
+            "rule line must equal available_width"
+        );
+    }
+
+    // No content line may exceed the panel width.
+    for line in &body.lines {
+        let s: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let w = UnicodeWidthStr::width(s.as_str());
+        assert!(
+            w <= width as usize,
+            "question line exceeds panel width: {w} cols: {s:?}"
+        );
+    }
+}
