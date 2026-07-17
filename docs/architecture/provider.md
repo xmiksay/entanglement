@@ -127,7 +127,7 @@ provider-side, **outside** the runtime permission ladder
 tuned `reqwest::Client` is shared (it already pools TCP connections per host),
 but the **rate-limit budget and retry/backoff state are keyed by `(endpoint,
 api-key)`** — the provider's base URL plus a *hash* of the API key (if any) — in
-`HttpClient`'s `EndpointPool`. Each such bucket owns a token-bucket RPM throttle
+`HttpClient`'s `EndpointPool`. Each such bucket owns an **adaptive pacing gate**
 and its own `Retry-After` cool-down window, so a throttled endpoint never starves
 another — and **multiple keys on the same endpoint each get their own budget**
 (different keys have different limits). The key is hashed, never stored raw in
@@ -137,6 +137,27 @@ optional `rpm` (env `{NAME}_RPM` > user `providers.yml` > embedded default),
 threaded through `openai_factory`/`anthropic_factory` → `execute_with_retry` →
 `EndpointState::new`; when unset it falls back to the client default
 (`RetryConfig::rpm`, 50).
+
+The concurrency cap + pacing gate + 429 policy
+([ADR-0111](../adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)) is
+what makes the pool coordinate *across sessions* — the property that "spawn many
+sub-agents" needs and ADR-0050 lacked. The **primary** guard is a per-endpoint
+`concurrency` semaphore (default 3, `ENTANGLEMENT_MAX_CONCURRENCY`): a permit is
+acquired before the request and returned as an opaque `StreamGuard` that
+`spawn_byte_stream` holds until the **streamed body** ends — so the cap counts
+*open streams* (a slow thinking generation included), the unit a provider really
+limits. Many spawned sub-agents queue and run a few at a time instead of all
+opening streams at once and 429-storming. On top of that, `RateLimiter` is a
+**spacing gate** (not a bucket that starts full): `acquire` reserves the next slot
+`interval` after the last, **adaptive (AIMD)** — each 429 doubles it (`penalize`,
+capped at `SLOWDOWN_CAP × base`), each success steps it back toward `base = 60s/rpm`
+(`relax`). Every 429 **also** parks the shared `Retry-After` window (even with no
+header) so all concurrent callers back off together, and is retried on a patient
+schedule (`rate_limit_initial_backoff` ≈5s → `rate_limit_max_backoff` ≈10 min; a
+server `Retry-After` wins) **until it clears or `rate_limit_max_elapsed` (≈15 min)
+is spent** — then it surfaces as an error, so a saturated endpoint *fails* a
+sub-agent's turn rather than hanging its parent forever. Genuine failures
+(transport faults, retryable 5xx) stay bounded by `max_attempts`.
 
 **Timeouts — connect + idle-gap, not whole-request** (#241): the shared
 `reqwest::Client` is built with `connect_timeout` only (30s to establish TCP+TLS).
@@ -148,10 +169,11 @@ SSE bytes over an mpsc channel under a `tokio::time::timeout(STREAM_IDLE_TIMEOUT
 …)` watchdog (120s idle gap), so a slow-but-alive stream runs to completion while
 a hung one dies fast. Both `OpenAiLlm` and `AnthropicLlm` use this one helper.
 **Retry** classifies the *response* status inside the loop — a 429/5xx response
-(not just a `reqwest::Error`) is retried with exponential backoff + jitter,
-honoring `Retry-After` per endpoint; before #217 those responses came back as
-`reqwest::Ok` and were never retried (#193). `RetryConfig` (`max_attempts`,
-`initial_backoff`, `max_backoff`, `rpm`) tunes it; `HttpClient::with_config` +
+(not just a `reqwest::Error`) is retried, not silently dropped; before #217 those
+responses came back as `reqwest::Ok` and were never retried (#193). A 5xx retries
+with exponential backoff + jitter up to `max_attempts`; a 429 retries until clear
+(ADR-0111, above). `RetryConfig` (`max_attempts`, `initial_backoff`,
+`max_backoff`, `rpm`) tunes the *failure* path; `HttpClient::with_config` +
 `RetryConfig::no_retry()` build variants (tests use the latter). This
 per-endpoint state is the reason a session carries **no** per-session connection
 handle: the `LlmSession` newtype was collapsed to a plain `Box<dyn Llm>` (#195,

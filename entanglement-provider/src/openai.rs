@@ -131,7 +131,7 @@ impl Llm for OpenAiLlm {
         );
         crate::client::log_request_body("openai", &body);
 
-        let response = self
+        let (response, guard) = self
             .http
             .execute_with_retry(&self.base_url, self.api_key.as_deref(), self.rpm, || {
                 let mut request = self.http.client().post(&url);
@@ -172,7 +172,7 @@ impl Llm for OpenAiLlm {
 
         // Forward the SSE body with a per-chunk idle-gap watchdog (#241): a long
         // healthy stream runs to completion, a hung one dies within the gap.
-        let rx = crate::client::spawn_byte_stream(response, "openai-compat");
+        let rx = crate::client::spawn_byte_stream(response, "openai-compat", guard);
 
         let stream = try_stream! {
             let mut buf = String::new();

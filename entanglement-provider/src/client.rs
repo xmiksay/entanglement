@@ -11,15 +11,26 @@
 //!
 //! # Retry logic (per endpoint)
 //! Retries transient failures — connect/timeout faults, dropped streams, and
-//! **retryable HTTP responses (429 / 5xx)** classified *inside* the loop — with
-//! exponential backoff + jitter, bounded by `max_attempts`. Before #217 a 429/5xx
-//! *response* came back as `reqwest::Ok` and so was never retried (#193): the
-//! classification now happens on the `Response`, not just on `reqwest::Error`.
+//! retryable 5xx — with exponential backoff + jitter, bounded by `max_attempts`.
+//! A **429 is treated as "wait your turn", not a failure**: it is retried
+//! *until it clears* on its own patient schedule (≈5s ramping to ≈10 min), never
+//! consuming the failure budget and never surfaced as an error. Before #217 a
+//! 429/5xx *response* came back as `reqwest::Ok` and so was never retried (#193):
+//! the classification happens on the `Response`, not just on `reqwest::Error`.
 //!
 //! # Rate-limit handling (per endpoint)
-//! Each endpoint owns a token-bucket RPM throttle and a `Retry-After` window: a
-//! 429/5xx with `Retry-After` parks every caller of *that* endpoint until the
-//! window elapses, leaving other endpoints untouched.
+//! Each endpoint owns a **concurrency cap**, an **adaptive pacing gate**, and a
+//! `Retry-After` window — all shared across every session/backend clone that
+//! talks to the same `(base URL, api-key)`, so throttling is a property of the
+//! endpoint, not of any one session. The concurrency cap (default 3, held for
+//! the whole request *and its streamed body*) is the primary guard: many spawned
+//! sub-agents queue and run a few at a time instead of all firing at once and
+//! 429-storming a provider's real concurrency ceiling. A 429 (with or without
+//! `Retry-After`) then parks every caller of *that* endpoint and slows the pacing
+//! gate; successes speed it back up. One throttled endpoint never blocks another.
+//! This is why spawning many sessions can't leave "one running, the rest 429" —
+//! or hang the parent: they all meter through one gate, and a 429 that never
+//! clears within the budget surfaces as an error rather than waiting forever.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -27,8 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use tokio::sync::mpsc;
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 
 const MAX_RETRY_ATTEMPTS: u32 = 5;
@@ -37,6 +47,37 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const POOL_MAX_IDLE_PER_HOST: usize = 10;
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const RPM_LIMIT: u32 = 50;
+
+/// Default cap on **simultaneously in-flight requests to one endpoint** — the
+/// primary guard against a spawn-storm (many sub-agents) overrunning a
+/// provider's concurrency ceiling and 429-storming. A permit is held for the
+/// whole request *and its streamed body*, so this counts open streams, not just
+/// POSTs. Overridable via `ENTANGLEMENT_MAX_CONCURRENCY`.
+const DEFAULT_CONCURRENCY: usize = 3;
+
+/// Total wall-clock a single 429 will keep retrying before it gives up and
+/// surfaces the response as an error. A concurrency-capped request should rarely
+/// hit this; it exists so a genuinely saturated endpoint fails a sub-agent's
+/// turn (returning a failed `ToolResult`) instead of hanging its parent forever.
+const RATE_LIMIT_MAX_ELAPSED: Duration = Duration::from_secs(900);
+
+/// Under sustained 429s the per-endpoint request spacing is slowed
+/// multiplicatively down to at most this multiple of the base interval — i.e.
+/// the effective RPM floor is `rpm / SLOWDOWN_CAP`. Bounds how far the pacing
+/// gate will back off before it stops slowing and leans on the `Retry-After`
+/// window instead.
+const SLOWDOWN_CAP: u32 = 8;
+
+/// First wait after a 429 with no server `Retry-After`. Rate-limit backoff has
+/// its own schedule (separate from [`INITIAL_BACKOFF`]): a 429 is retried until
+/// it clears, so it starts patient rather than hammering.
+const RATE_LIMIT_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Ceiling on the self-computed 429 wait. The schedule ramps geometrically from
+/// [`RATE_LIMIT_INITIAL_BACKOFF`] up to here (≈10 min), then holds — so a
+/// persistently rate-limited endpoint keeps polling at this cadence instead of
+/// giving up. A server-provided `Retry-After` overrides this cap (honored as-is).
+const RATE_LIMIT_MAX_BACKOFF: Duration = Duration::from_secs(600);
 
 /// Cap on establishing the TCP+TLS connection only — *not* the whole request.
 /// A long healthy LLM stream must be allowed to run past any fixed ceiling, so
@@ -52,7 +93,9 @@ pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Retry/rate-limit tuning applied per endpoint. Defaults match the historical
 /// shared client (5 attempts, 200ms→30s backoff, 50 RPM) — now *per endpoint*
-/// rather than global.
+/// rather than global. `max_attempts`/`initial_backoff`/`max_backoff` bound the
+/// *failure* path (5xx, transport faults); `rate_limit_*` is the separate,
+/// unbounded 429 schedule (ADR-0111).
 #[derive(Clone, Copy, Debug)]
 pub struct RetryConfig {
     pub max_attempts: u32,
@@ -60,6 +103,18 @@ pub struct RetryConfig {
     pub max_backoff: Duration,
     /// Requests per minute allowed to each endpoint before throttling.
     pub rpm: u32,
+    /// Max simultaneously in-flight requests **per endpoint** (held across the
+    /// streamed body). The primary storm guard for many spawned sub-agents.
+    pub concurrency: usize,
+    /// First wait after a 429 with no server `Retry-After` (a 429 retries until
+    /// it clears, so it starts patient).
+    pub rate_limit_initial_backoff: Duration,
+    /// Ceiling on the self-computed 429 wait; the schedule ramps to here and
+    /// holds. A server `Retry-After` overrides it (honored as-is).
+    pub rate_limit_max_backoff: Duration,
+    /// Total wall-clock a 429 retries before surfacing as an error (so a
+    /// saturated endpoint fails a turn instead of hanging its parent forever).
+    pub rate_limit_max_elapsed: Duration,
 }
 
 impl Default for RetryConfig {
@@ -69,6 +124,10 @@ impl Default for RetryConfig {
             initial_backoff: INITIAL_BACKOFF,
             max_backoff: MAX_BACKOFF,
             rpm: RPM_LIMIT,
+            concurrency: DEFAULT_CONCURRENCY,
+            rate_limit_initial_backoff: RATE_LIMIT_INITIAL_BACKOFF,
+            rate_limit_max_backoff: RATE_LIMIT_MAX_BACKOFF,
+            rate_limit_max_elapsed: RATE_LIMIT_MAX_ELAPSED,
         }
     }
 }
@@ -101,18 +160,28 @@ struct EndpointPool {
     config: RetryConfig,
 }
 
+/// A held permit bounding the number of in-flight requests to one endpoint. It
+/// is kept for the whole request **and its streamed body** (moved into the byte
+/// pump), so the concurrency cap counts open streams — the real unit a provider
+/// limits — not just POSTs. Dropping it frees a slot for a queued caller.
+pub struct StreamGuard(#[allow(dead_code)] OwnedSemaphorePermit);
+
 /// One endpoint's live rate-limit + backoff state.
 struct EndpointState {
     limiter: RateLimiter,
+    /// Bounds simultaneously in-flight requests to this endpoint. Cloned into a
+    /// [`StreamGuard`] per request; the permit lives until the stream ends.
+    concurrency: Arc<Semaphore>,
     /// Instant before which no request to this endpoint may proceed, set from a
     /// `Retry-After` header. `None` = no active cool-down.
     retry_after: Mutex<Option<Instant>>,
 }
 
 impl EndpointState {
-    fn new(rpm: u32) -> Self {
+    fn new(rpm: u32, concurrency: usize) -> Self {
         Self {
             limiter: RateLimiter::new(rpm),
+            concurrency: Arc::new(Semaphore::new(concurrency.max(1))),
             retry_after: Mutex::new(None),
         }
     }
@@ -138,37 +207,79 @@ impl EndpointState {
     }
 }
 
-/// Client-side rate limiter using a token-bucket: capacity `rpm` tokens, one
-/// refilled every `60s / rpm`. Each `acquire` **consumes** a token (the permit is
-/// forgotten, not released on drop) and schedules its return — the pre-#217 code
-/// released the permit immediately, so it never actually throttled (#193).
+/// Client-side **adaptive pacing gate**, one per endpoint. Requests are spaced
+/// at least `interval` apart (`interval = 60s / rpm` at rest). Unlike the old
+/// bursty token bucket (which started full and let `rpm` callers fire at once —
+/// the very overshoot that trips a provider's concurrency/RPM limit when many
+/// sessions spawn together), a spawn-storm is smoothed from the *first* request.
+///
+/// The spacing is **adaptive (AIMD)**: each 429 slows it ([`penalize`], doubling,
+/// multiplicative, capped at `SLOWDOWN_CAP × base`); each success speeds it back
+/// toward the base ([`relax`], additive, one base unit at a time). So a
+/// too-high default RPM self-corrects down to the endpoint's real limit and
+/// recovers once the storm clears — without any per-provider tuning.
+///
+/// [`penalize`]: RateLimiter::penalize
+/// [`relax`]: RateLimiter::relax
 struct RateLimiter {
-    semaphore: Arc<Semaphore>,
-    refill_interval: Duration,
+    /// The at-rest spacing (`60s / rpm`) and the floor `relax` recovers to.
+    base: Duration,
+    /// The most-throttled spacing `penalize` will grow to (`base × SLOWDOWN_CAP`).
+    max: Duration,
+    state: Mutex<PaceState>,
+}
+
+struct PaceState {
+    /// Current spacing between consecutive requests, in `[base, max]`.
+    interval: Duration,
+    /// Earliest instant the next request may proceed. Each `acquire` reserves
+    /// this slot and advances it, so concurrent callers get distinct, spaced
+    /// slots instead of all firing at once.
+    next_slot: Instant,
 }
 
 impl RateLimiter {
     fn new(rpm: u32) -> Self {
         let rpm = rpm.max(1);
+        let base = Duration::from_millis(60_000 / rpm as u64);
         Self {
-            semaphore: Arc::new(Semaphore::new(rpm as usize)),
-            refill_interval: Duration::from_millis(60_000 / rpm as u64),
+            base,
+            max: base * SLOWDOWN_CAP,
+            state: Mutex::new(PaceState {
+                interval: base,
+                next_slot: Instant::now(),
+            }),
         }
     }
 
+    /// Reserve the next pacing slot and wait until it arrives. The lock is held
+    /// only to reserve the slot, never across the `await`.
     async fn acquire(&self) {
-        // Take a token and keep it (forget the permit) so capacity actually
-        // drops; a spawned timer returns it after the refill interval.
-        match self.semaphore.acquire().await {
-            Ok(permit) => permit.forget(),
-            Err(_) => return, // semaphore is never closed (we hold an Arc to it)
+        let slot = {
+            let mut st = self.state.lock().expect("rate limiter poisoned");
+            let slot = st.next_slot.max(Instant::now());
+            st.next_slot = slot + st.interval;
+            slot
+        };
+        let now = Instant::now();
+        if slot > now {
+            sleep(slot - now).await;
         }
-        let semaphore = self.semaphore.clone();
-        let interval = self.refill_interval;
-        tokio::spawn(async move {
-            sleep(interval).await;
-            semaphore.add_permits(1);
-        });
+    }
+
+    /// A 429 was seen on this endpoint: double the spacing (capped at `max`), so
+    /// every caller metering through this gate slows together.
+    fn penalize(&self) {
+        let mut st = self.state.lock().expect("rate limiter poisoned");
+        st.interval = (st.interval * 2).min(self.max);
+    }
+
+    /// A request to this endpoint succeeded: step the spacing back toward `base`
+    /// by one base unit (additive increase of the effective rate). A no-op once
+    /// already at `base`.
+    fn relax(&self) {
+        let mut st = self.state.lock().expect("rate limiter poisoned");
+        st.interval = st.interval.saturating_sub(self.base).max(self.base);
     }
 }
 
@@ -205,9 +316,11 @@ impl HttpClient {
     /// pool's default (`RetryConfig::rpm`). Only the *first* caller for a key sets
     /// the bucket size — an endpoint is one provider, so the value is consistent.
     fn endpoint(&self, key: &str, rpm: Option<u32>) -> Arc<EndpointState> {
+        let rpm = rpm.unwrap_or(self.pool.config.rpm);
+        let concurrency = self.pool.config.concurrency;
         let mut map = self.pool.endpoints.lock().expect("endpoint pool poisoned");
         map.entry(key.to_string())
-            .or_insert_with(|| Arc::new(EndpointState::new(rpm.unwrap_or(self.pool.config.rpm))))
+            .or_insert_with(|| Arc::new(EndpointState::new(rpm, concurrency)))
             .clone()
     }
 
@@ -216,64 +329,126 @@ impl HttpClient {
     /// provider's base URL **plus** the API key (if any), so multiple keys on the
     /// same endpoint each get their own budget — different keys have different
     /// limits (#217). `rpm` is the endpoint's catalog-provided per-minute budget
-    /// (`None` → the pool default). Retries transient transport faults and
-    /// retryable HTTP responses (429 / 5xx); a permanent 4xx or an exhausted
-    /// retryable response is returned as `Ok` for the caller to surface.
+    /// (`None` → the pool default).
+    ///
+    /// Returns the response **plus a [`StreamGuard`]** the caller must keep alive
+    /// for the whole streamed body — it holds the per-endpoint concurrency permit
+    /// (the storm guard for many spawned sub-agents). A **429 parks the whole
+    /// endpoint and retries** on a growing wait until it clears *or*
+    /// `rate_limit_max_elapsed` is exceeded, then surfaces as `Ok` for the caller
+    /// to error (so a saturated endpoint fails a turn rather than hanging its
+    /// parent). Transient transport faults and 5xx retry up to `max_attempts`; a
+    /// permanent 4xx or an exhausted retryable is returned as `Ok`.
     pub async fn execute_with_retry<F, Fut>(
         &self,
         endpoint: &str,
         api_key: Option<&str>,
         rpm: Option<u32>,
         request_fn: F,
-    ) -> Result<reqwest::Response, RetryError>
+    ) -> Result<(reqwest::Response, StreamGuard), RetryError>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     {
         let endpoint = self.endpoint(&pool_key(endpoint, api_key), rpm);
         let config = self.pool.config;
+        // `attempt` bounds only *genuine failures* (5xx / transport faults). A
+        // 429 is "wait your turn": it retries until it clears (not counted here),
+        // bounded overall by `rate_limit_max_elapsed`.
         let mut attempt = 0;
         let mut backoff = config.initial_backoff;
+        let mut rl_backoff = config.rate_limit_initial_backoff;
+        let rl_deadline = Instant::now() + config.rate_limit_max_elapsed;
 
         loop {
-            attempt += 1;
             endpoint.wait_for_retry_after().await;
             endpoint.limiter.acquire().await;
+            // Bound in-flight requests to this endpoint. The permit is held until
+            // the returned `StreamGuard` drops (i.e. the stream is consumed);
+            // dropped here on any retry so a queued caller can take the slot.
+            let permit = endpoint
+                .concurrency
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("endpoint concurrency semaphore never closed");
 
             match request_fn().await {
                 Ok(response) => {
                     let status = response.status();
-                    // Success or a permanent 4xx: hand it straight back — the
-                    // caller inspects `!is_success()` for the permanent case.
-                    if status.is_success() || !is_retryable_status(status) {
-                        return Ok(response);
+                    // Success: recover the endpoint's pacing a notch, hand back
+                    // the response together with the held concurrency permit.
+                    if status.is_success() {
+                        endpoint.limiter.relax();
+                        return Ok((response, StreamGuard(permit)));
                     }
-                    // Retryable 429/5xx but out of attempts: surface the response.
-                    if attempt >= config.max_attempts {
-                        return Ok(response);
+                    // Permanent 4xx: hand it straight back — the caller inspects
+                    // `!is_success()`. (Permit drops as the guard is dropped by
+                    // the caller after reading the body.)
+                    if !is_retryable_status(status) {
+                        return Ok((response, StreamGuard(permit)));
                     }
-                    // Retryable: honor `Retry-After` (parking the whole endpoint)
-                    // else exponential backoff, then retry.
                     let retry_after = parse_retry_after(response.headers());
-                    if let Some(delay) = retry_after {
+
+                    // 429 "too many requests": release the in-flight slot, park
+                    // the *whole* endpoint (every concurrent caller backs off
+                    // together), slow the pacing gate, and retry on a growing wait
+                    // — until it clears or the overall `rate_limit_max_elapsed`
+                    // budget is spent, at which point surface it as an error.
+                    if status.as_u16() == 429 {
+                        endpoint.limiter.penalize();
+                        let delay = retry_after
+                            .unwrap_or_else(|| rl_backoff.min(config.rate_limit_max_backoff));
                         endpoint.set_retry_after(delay);
+                        // Give up once another wait would exceed the overall
+                        // budget: surface the 429 (permit still held) so the
+                        // caller errors instead of the parent hanging forever.
+                        if Instant::now() + delay >= rl_deadline {
+                            tracing::error!(
+                                status = %status,
+                                "rate limited (429): giving up after exhausting the retry budget"
+                            );
+                            return Ok((response, StreamGuard(permit)));
+                        }
+                        drop(permit); // free the slot while we back off
+                        tracing::warn!(
+                            status = %status,
+                            backoff = ?delay,
+                            "rate limited (429): parking endpoint, retrying until clear"
+                        );
+                        sleep(delay).await;
+                        rl_backoff = next_backoff(rl_backoff, config.rate_limit_max_backoff);
+                        continue;
                     }
+
+                    // Retryable 5xx: bounded by `max_attempts`; park only if the
+                    // server advised a `Retry-After`.
+                    attempt += 1;
+                    if let Some(server_delay) = retry_after {
+                        endpoint.set_retry_after(server_delay);
+                    }
+                    if attempt >= config.max_attempts {
+                        return Ok((response, StreamGuard(permit)));
+                    }
+                    drop(permit);
                     let delay = retry_after.unwrap_or(backoff);
                     tracing::warn!(
                         attempt,
                         max_attempts = config.max_attempts,
                         status = %status,
                         backoff = ?delay,
-                        "retryable HTTP status, retrying after backoff"
+                        "retryable server error, retrying after backoff"
                     );
                     sleep(delay).await;
                     backoff = next_backoff(backoff, config.max_backoff);
                 }
                 Err(e) if !is_transient_error(&e) => return Err(RetryError::Permanent(e)),
-                Err(e) if attempt >= config.max_attempts => {
-                    return Err(RetryError::Exhausted(attempt, e));
-                }
                 Err(e) => {
+                    drop(permit);
+                    attempt += 1;
+                    if attempt >= config.max_attempts {
+                        return Err(RetryError::Exhausted(attempt, e));
+                    }
                     tracing::warn!(
                         attempt,
                         max_attempts = config.max_attempts,
@@ -303,12 +478,19 @@ impl Default for HttpClient {
 /// `"openai-compat"`) for the error messages. The `reqwest::Client` is built
 /// with `connect_timeout` only, so this per-chunk gap is what bounds a stalled
 /// body.
+///
+/// The [`StreamGuard`] (the per-endpoint concurrency permit from
+/// [`HttpClient::execute_with_retry`]) is moved into the pump task and dropped
+/// when the body ends, so an endpoint's in-flight cap counts open streams for
+/// their full lifetime — not just until the response headers arrive.
 pub fn spawn_byte_stream(
     response: reqwest::Response,
     label: &'static str,
+    guard: StreamGuard,
 ) -> mpsc::Receiver<Result<Vec<u8>, anyhow::Error>> {
     let (tx, rx) = mpsc::channel::<Result<Vec<u8>, anyhow::Error>>(8);
     tokio::spawn(async move {
+        let _guard = guard; // release the concurrency slot when the body ends
         let mut bytes = response.bytes_stream();
         loop {
             match tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()).await {
@@ -478,14 +660,85 @@ mod tests {
     #[test]
     fn endpoint_uses_provided_rpm_budget() {
         let http = HttpClient::new();
-        // A per-provider rpm sets the token-bucket capacity for that endpoint;
+        // A per-provider rpm sets the pacing gate's base interval (60s / rpm);
         // `None` falls back to the pool default (RetryConfig::rpm).
-        let custom = http.endpoint("https://api.custom/v1", Some(7));
-        assert_eq!(custom.limiter.semaphore.available_permits(), 7);
+        let custom = http.endpoint("https://api.custom/v1", Some(6));
+        assert_eq!(custom.limiter.base, Duration::from_millis(60_000 / 6));
         let default = http.endpoint("https://api.default/v1", None);
         assert_eq!(
-            default.limiter.semaphore.available_permits(),
-            RPM_LIMIT as usize
+            default.limiter.base,
+            Duration::from_millis(60_000 / RPM_LIMIT as u64)
+        );
+    }
+
+    #[test]
+    fn endpoint_concurrency_permits_match_config() {
+        let http = HttpClient::with_config(RetryConfig {
+            concurrency: 2,
+            ..RetryConfig::default()
+        });
+        let ep = http.endpoint("https://api.x/v1", None);
+        // The in-flight cap is seeded from config; the default is DEFAULT_CONCURRENCY.
+        assert_eq!(ep.concurrency.available_permits(), 2);
+        let dflt = HttpClient::new().endpoint("https://api.y/v1", None);
+        assert_eq!(dflt.concurrency.available_permits(), DEFAULT_CONCURRENCY);
+    }
+
+    #[tokio::test]
+    async fn endpoint_concurrency_bounds_in_flight() {
+        // With a cap of 1, a second owned permit can't be taken until the first
+        // is dropped — the property that serializes a spawn-storm.
+        let ep = EndpointState::new(RPM_LIMIT, 1);
+        let first = ep.concurrency.clone().acquire_owned().await.unwrap();
+        assert!(ep.concurrency.clone().try_acquire_owned().is_err());
+        drop(first);
+        assert!(ep.concurrency.clone().try_acquire_owned().is_ok());
+    }
+
+    #[test]
+    fn rate_limiter_penalize_doubles_and_caps() {
+        let rl = RateLimiter::new(60); // base = 1s
+        assert_eq!(rl.state.lock().unwrap().interval, Duration::from_secs(1));
+        // Each penalty doubles the spacing…
+        rl.penalize();
+        assert_eq!(rl.state.lock().unwrap().interval, Duration::from_secs(2));
+        rl.penalize();
+        assert_eq!(rl.state.lock().unwrap().interval, Duration::from_secs(4));
+        // …but never past base × SLOWDOWN_CAP.
+        for _ in 0..10 {
+            rl.penalize();
+        }
+        assert_eq!(rl.state.lock().unwrap().interval, rl.max);
+        assert_eq!(rl.max, rl.base * SLOWDOWN_CAP);
+    }
+
+    #[test]
+    fn rate_limiter_relax_steps_back_to_base_and_floors() {
+        let rl = RateLimiter::new(60); // base = 1s
+        rl.penalize();
+        rl.penalize(); // interval = 4s
+        rl.relax(); // -1 base → 3s
+        assert_eq!(rl.state.lock().unwrap().interval, Duration::from_secs(3));
+        // Relaxing past base clamps at base, never below.
+        for _ in 0..10 {
+            rl.relax();
+        }
+        assert_eq!(rl.state.lock().unwrap().interval, rl.base);
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_spaces_concurrent_acquires() {
+        // A burst of acquires against one gate must be paced ≥ interval apart,
+        // not all released at once (the anti-burst property).
+        let rl = RateLimiter::new(600); // base = 100ms
+        let start = Instant::now();
+        rl.acquire().await; // first slot: immediate
+        rl.acquire().await; // second slot: ~100ms later
+        rl.acquire().await; // third slot: ~200ms later
+        assert!(
+            start.elapsed() >= Duration::from_millis(180),
+            "three acquires should span ~2 intervals, got {:?}",
+            start.elapsed()
         );
     }
 
@@ -508,7 +761,7 @@ mod tests {
 
     #[test]
     fn retry_after_window_extends_never_shrinks() {
-        let state = EndpointState::new(RPM_LIMIT);
+        let state = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY);
         state.set_retry_after(Duration::from_secs(10));
         let long = state.retry_after.lock().unwrap().unwrap();
         // A shorter window must not overwrite a longer one.

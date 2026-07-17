@@ -34,10 +34,9 @@ thread is where new items get filed and discussed.
 
 ## Open deferred items
 
-_None currently open._
-
 | Issue | Deferred item | ADR/issue it descends from |
 | --- | --- | --- |
+| [#414](https://github.com/xmiksay/entanglement/issues/414) | Per-provider endpoint **concurrency** as catalog data (`ProviderEntry.concurrency` + `{NAME}_CONCURRENCY`), instead of one global `ENTANGLEMENT_MAX_CONCURRENCY` default (3) | [ADR-0111](adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md) |
 
 ## Resolved (shipped since the 2026-07-16 audit)
 

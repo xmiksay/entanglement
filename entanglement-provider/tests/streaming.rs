@@ -6,6 +6,8 @@
 //! Covers the full path the unit tests in `src/openai.rs` can't: HTTP POST →
 //! SSE frame parse → [`LlmEvent`] assembly, over the real `reqwest` transport.
 
+use std::time::Duration;
+
 use entanglement_provider::{HttpClient, OpenAiLlm, RetryConfig};
 use entanglement_provider::{Llm, LlmEvent, LlmRequest, Message};
 use futures::StreamExt;
@@ -191,19 +193,14 @@ async fn tool_call_stream_assembles_and_emits_tool_call() {
     );
 }
 
-// ── rate-limit / retry path (per endpoint, #217) ────────────────────────────
+// ── rate-limit / retry path (per endpoint, ADR-0050 + ADR-0111) ─────────────
 //
-// Since #217 the retry loop classifies the *response* status, not just
-// `reqwest::Error` — a 429/5xx response now drives a real retry per endpoint,
-// honoring `Retry-After`. The 429-surfacing tests below therefore use a
-// `no_retry` client so a single mock response is enough to assert the surfaced
-// error; `retryable_500_then_success_retries` drives the retry path with a
-// two-response mock (500 then a good SSE stream).
-
-/// Bind an ephemeral port and serve exactly one raw HTTP response, then close.
-async fn serve_raw_once(response: Vec<u8>) -> String {
-    serve_raw_seq(vec![response]).await
-}
+// A 429 is "wait your turn", not a failure: the client parks the endpoint and
+// retries **until it clears**, never surfacing it as an error (ADR-0111). These
+// tests drive a `[429, ok]` mock and assert the client rides past the 429 to the
+// good stream. A high-`rpm`, tiny-429-backoff test config keeps the pacing gate
+// and retry wait from dominating wall-clock. `retryable_500_then_success` drives
+// the *bounded* 5xx retry path with a two-response mock (500 then a good stream).
 
 /// Bind an ephemeral port and serve `responses` in order, one per accepted
 /// connection (reqwest opens a fresh connection per attempt with `Connection:
@@ -222,17 +219,26 @@ async fn serve_raw_seq(responses: Vec<Vec<u8>>) -> String {
     format!("http://{addr}")
 }
 
-/// Start a turn and return the setup error string (the test expects `stream()`
-/// itself to fail, before any stream item). Uses a no-retry client so a single
-/// failing response is surfaced immediately.
-async fn stream_err(base_url: &str) -> String {
+/// A retry config with a tiny 429 schedule and a high RPM, so a `[429, ok]`
+/// sequence retries near-instantly instead of on the production ≈5s→10min ramp.
+fn fast_rate_limit_config() -> RetryConfig {
+    RetryConfig {
+        rpm: 60_000, // base pacing ≈1ms — pacing must not dominate the assertion
+        rate_limit_initial_backoff: Duration::from_millis(10),
+        rate_limit_max_backoff: Duration::from_millis(50),
+        ..RetryConfig::default()
+    }
+}
+
+/// Drive one turn with a custom retry `config` and collect every streamed event.
+async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEvent> {
     let mut llm = OpenAiLlm::new(
         base_url,
         Some("k".into()),
         "glm-5.2",
         None,
         None,
-        HttpClient::with_config(RetryConfig::no_retry()),
+        HttpClient::with_config(config),
     );
     let messages = vec![Message::user("hi")];
     let req = LlmRequest {
@@ -242,44 +248,66 @@ async fn stream_err(base_url: &str) -> String {
         tools: &[],
         generation: None,
     };
-    match llm.stream(req).await {
-        Ok(_) => panic!("expected stream() to fail on a 429 response"),
-        Err(e) => format!("{e:#}"),
-    }
+    let stream = llm
+        .stream(req)
+        .await
+        .expect("stream should start after retrying past the 429");
+    stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|r| r.expect("no error items expected"))
+        .collect()
+}
+
+fn streamed_text(events: &[LlmEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            LlmEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[tokio::test]
-async fn rate_limit_429_without_retry_after_surfaces_http_error() {
-    let response = b"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"slow down\"}".to_vec();
-    let base_url = serve_raw_once(response).await;
+async fn rate_limit_429_without_retry_after_retries_until_clear() {
+    // A headerless 429 must NOT surface as an error — it parks the endpoint and
+    // is retried until the next response succeeds.
+    let err429 = b"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"slow down\"}".to_vec();
+    let ok = sse_response(&sse_body(&[
+        r#"{"choices":[{"delta":{"content":"recovered"}}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+    ]));
+    let base_url = serve_raw_seq(vec![err429, ok]).await;
 
-    let err = stream_err(&base_url).await;
-    assert!(
-        err.contains("429"),
-        "error should surface the 429 status: {err}"
-    );
-    assert!(
-        err.contains("slow down"),
-        "error should surface the server body: {err}"
+    let events = collect_events_with(&base_url, fast_rate_limit_config()).await;
+    assert_eq!(
+        streamed_text(&events),
+        "recovered",
+        "a headerless 429 should be retried until the stream succeeds"
     );
 }
 
 #[tokio::test]
-async fn rate_limit_429_with_retry_after_reports_backoff() {
-    // The `Retry-After` header steers `openai.rs` into its dedicated
-    // rate-limited branch rather than the generic HTTP-status bail.
-    let response = b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"rate limited\"}".to_vec();
-    let base_url = serve_raw_once(response).await;
+async fn rate_limit_429_honors_retry_after_then_succeeds() {
+    // A server `Retry-After: 1` steers the wait (≈1s, overriding the tiny test
+    // backoff) and the client then rides past to the good stream.
+    let err429 = b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"rate limited\"}".to_vec();
+    let ok = sse_response(&sse_body(&[
+        r#"{"choices":[{"delta":{"content":"ok"}}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+    ]));
+    let base_url = serve_raw_seq(vec![err429, ok]).await;
 
-    let err = stream_err(&base_url).await;
+    let start = std::time::Instant::now();
+    let events = collect_events_with(&base_url, fast_rate_limit_config()).await;
     assert!(
-        err.contains("rate limited"),
-        "error should report rate limiting: {err}"
+        start.elapsed() >= Duration::from_millis(900),
+        "the server Retry-After: 1 wait should be honored, elapsed {:?}",
+        start.elapsed()
     );
-    assert!(
-        err.contains('7'),
-        "error should carry the Retry-After duration: {err}"
-    );
+    assert_eq!(streamed_text(&events), "ok");
 }
 
 #[tokio::test]
