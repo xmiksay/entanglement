@@ -15,8 +15,12 @@
 //! sibling always written alongside. With no `output_file` an artifact is still
 //! written, auto-named under `.entanglement/tmp/call-output/`, and its
 //! root-relative path is named in the result header.
+//!
+//! Like `bash`, an opt-in bubblewrap confinement layer is available
+//! (ADR-0104, [`SandboxPolicy`]).
 
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
+use super::sandbox::{self, SandboxPolicy};
 use super::{resolve_under_root, resolve_workdir, truncate_output};
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -42,6 +46,10 @@ pub struct CallTool {
     /// `env`/`printenv` still inherits them. Empty by default; wired from the
     /// catalog.
     secret_env: Vec<String>,
+    /// Optional bubblewrap confinement (ADR-0104). Defaults to
+    /// [`SandboxPolicy::none()`] — unsandboxed, unchanged from before this
+    /// existed.
+    sandbox: SandboxPolicy,
 }
 
 impl CallTool {
@@ -49,12 +57,19 @@ impl CallTool {
         Self {
             root,
             secret_env: Vec::new(),
+            sandbox: SandboxPolicy::none(),
         }
     }
 
     /// Scrub `vars` from the spawned command's environment (provider API keys).
     pub fn with_secret_env(mut self, vars: Vec<String>) -> Self {
         self.secret_env = vars;
+        self
+    }
+
+    /// Confine every spawned command under `policy` (ADR-0104).
+    pub fn with_sandbox(mut self, policy: SandboxPolicy) -> Self {
+        self.sandbox = policy;
         self
     }
 }
@@ -259,9 +274,8 @@ impl Tool for CallTool {
         let output_target = resolve_output_target(&self.root, &parsed.output_file)?;
         let cwd = resolve_workdir(&self.root, parsed.workdir.as_deref())?;
 
-        let mut cmd = tokio::process::Command::new(&parsed.command);
-        cmd.args(&parsed.args)
-            .current_dir(&cwd)
+        let mut cmd = sandbox::command(&self.sandbox, &self.root, &parsed.command, &parsed.args);
+        cmd.current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             // No `input_file` → close stdin explicitly rather than inherit the
@@ -847,5 +861,112 @@ mod tests {
             stderr_on_disk.contains("late"),
             "artifact must hold buffered stderr: {stderr_on_disk}"
         );
+    }
+
+    fn bwrap_policy(network: bool) -> SandboxPolicy {
+        SandboxPolicy {
+            backend: sandbox::SandboxBackend::Bubblewrap,
+            network,
+        }
+    }
+
+    /// ADR-0104: a sandboxed `call` can still write inside the bind-mounted
+    /// project root, but the rest of the filesystem is read-only. `outside` is
+    /// deliberately under `/var/tmp`, not `/tmp` — the recipe gives the latter
+    /// a fresh empty tmpfs, which would fail for the wrong reason (path
+    /// doesn't exist) rather than the read-only-bind reason under test.
+    #[tokio::test]
+    async fn sandbox_confines_writes_to_root() {
+        if !sandbox::bwrap_available() {
+            eprintln!("skipping: bwrap not installed");
+            return;
+        }
+        let dir = TempDir::new();
+        let outside = tempfile::Builder::new()
+            .prefix("entanglement-sandbox-call-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        let tool = CallTool::new(dir.path.clone()).with_sandbox(bwrap_policy(false));
+
+        let input = serde_json::json!({ "command": "touch", "args": ["inside.txt"] }).to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert!(out.contains("[exit 0]"), "{out}");
+        assert!(dir.path.join("inside.txt").exists());
+
+        let leak_path = outside.path().join("leak.txt");
+        let input = serde_json::json!({
+            "command": "touch",
+            "args": [leak_path.to_string_lossy()],
+        })
+        .to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert!(
+            !out.contains("[exit 0]"),
+            "write outside root should fail: {out}"
+        );
+        assert!(
+            !leak_path.exists(),
+            "sandbox must not allow writes outside the project root"
+        );
+    }
+
+    /// ADR-0104: sandboxed network is cut by default. `call` has no shell, so
+    /// exec `sh` directly to reuse bash's `/dev/tcp` trick — needs no external
+    /// network binary (`curl`/`nc`).
+    #[tokio::test]
+    async fn sandbox_cuts_network_by_default() {
+        if !sandbox::bwrap_available() {
+            eprintln!("skipping: bwrap not installed");
+            return;
+        }
+        let dir = TempDir::new();
+        let tool = CallTool::new(dir.path.clone()).with_sandbox(bwrap_policy(false));
+        let input = serde_json::json!({
+            "command": "sh",
+            "args": ["-c", "exec 3<>/dev/tcp/1.1.1.1/80"],
+            "timeout": 5,
+        })
+        .to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert!(
+            !out.contains("[exit 0]"),
+            "network must be unreachable when sandboxed without network:true: {out}"
+        );
+    }
+
+    /// ADR-0104 §6: the process-group timeout/kill path must still tear down a
+    /// sandboxed command's whole tree, not just the outer `bwrap` process.
+    #[tokio::test]
+    async fn sandbox_timeout_still_kills_the_whole_tree() {
+        if !sandbox::bwrap_available() {
+            eprintln!("skipping: bwrap not installed");
+            return;
+        }
+        let tool = CallTool::new(std::env::temp_dir()).with_sandbox(bwrap_policy(false));
+        let input =
+            serde_json::json!({ "command": "sleep", "args": ["30"], "timeout": 1 }).to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert!(out.contains("timed out after 1s"), "got: {out}");
+    }
+
+    /// ADR-0104: `call`'s no-shell argv-exec guarantee (a shell metacharacter
+    /// reaches the binary literally, never interpreted) must hold identically
+    /// when sandboxed — bwrap wraps the exec, it must not reintroduce a shell.
+    #[tokio::test]
+    async fn sandbox_preserves_no_shell_argv_semantics() {
+        if !sandbox::bwrap_available() {
+            eprintln!("skipping: bwrap not installed");
+            return;
+        }
+        let tool = CallTool::new(std::env::temp_dir()).with_sandbox(bwrap_policy(false));
+        let payload = "$HOME; rm -rf / && echo x | cat *.rs";
+        let input = serde_json::json!({
+            "command": "printf",
+            "args": ["%s", payload],
+        })
+        .to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert!(out.contains("[exit 0]"), "got: {out}");
+        assert!(out.contains(payload), "argv must be verbatim, got: {out}");
     }
 }

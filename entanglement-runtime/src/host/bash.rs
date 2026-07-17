@@ -1,11 +1,14 @@
 //! `bash` — run a shell command rooted at the working directory.
-//! Runs unsandboxed with the engine's full privileges (ADR-0009). Stdin is
+//! Runs unsandboxed with the engine's full privileges by default (ADR-0009);
+//! an opt-in bubblewrap confinement layer is available (ADR-0104,
+//! [`SandboxPolicy`]). Stdin is
 //! always closed, not inherited from the engine (ADR-0092/ADR-0093's
 //! default-closed-stdin fix, carried over from `call` to `bash` — #389); use
 //! shell-native `< file` redirection if a command needs input.
 
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::jobs::JobRegistry;
+use super::sandbox::{self, SandboxPolicy};
 use super::{resolve_workdir, truncate_head_tail};
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -27,6 +30,10 @@ pub struct BashTool {
     /// the shared instance via [`BashTool::with_jobs`] so polls reach the jobs
     /// this tool spawned.
     jobs: JobRegistry,
+    /// Optional bubblewrap confinement (ADR-0104). Defaults to
+    /// [`SandboxPolicy::none()`] — unsandboxed, unchanged from before this
+    /// existed.
+    sandbox: SandboxPolicy,
 }
 
 impl BashTool {
@@ -35,6 +42,7 @@ impl BashTool {
             root,
             secret_env: Vec::new(),
             jobs: JobRegistry::new(),
+            sandbox: SandboxPolicy::none(),
         }
     }
 
@@ -51,12 +59,18 @@ impl BashTool {
         self
     }
 
+    /// Confine every spawned command under `policy` (ADR-0104).
+    pub fn with_sandbox(mut self, policy: SandboxPolicy) -> Self {
+        self.sandbox = policy;
+        self
+    }
+
     /// Build the `sh -c` command with cwd, piped stdio, own process group, and
     /// scrubbed secrets — shared by the foreground and background paths.
     fn build_command(&self, command: &str, cwd: &Path) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.args(["-c", command])
-            .current_dir(cwd)
+        let args = vec!["-c".to_string(), command.to_string()];
+        let mut cmd = sandbox::command(&self.sandbox, &self.root, "sh", &args);
+        cmd.current_dir(cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             // Close stdin explicitly rather than inherit the engine's real
@@ -407,5 +421,99 @@ mod tests {
             "byte cap held: {}",
             out.len()
         );
+    }
+
+    fn bwrap_policy(network: bool) -> SandboxPolicy {
+        SandboxPolicy {
+            backend: sandbox::SandboxBackend::Bubblewrap,
+            network,
+        }
+    }
+
+    /// ADR-0104: a sandboxed command can still write inside the bind-mounted
+    /// project root, but the rest of the filesystem is read-only — writing
+    /// outside root (even to a directory the test process itself owns and can
+    /// normally write to) must fail. `outside` is deliberately placed under
+    /// `/var/tmp`, not `/tmp` — the sandbox recipe gives the latter a fresh
+    /// empty tmpfs, which would make this pass for the wrong reason (path
+    /// doesn't exist) rather than the read-only-bind reason being tested.
+    #[tokio::test]
+    async fn sandbox_confines_writes_to_root() {
+        if !sandbox::bwrap_available() {
+            eprintln!("skipping: bwrap not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::Builder::new()
+            .prefix("entanglement-sandbox-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf()).with_sandbox(bwrap_policy(false));
+
+        let inside = tool
+            .run(r#"{"command":"echo ok > inside.txt && cat inside.txt"}"#)
+            .await
+            .unwrap();
+        assert!(
+            inside.contains("[exit 0]") && inside.contains("ok"),
+            "{inside}"
+        );
+        assert!(dir.path().join("inside.txt").exists());
+
+        let leak_path = outside.path().join("leak.txt");
+        let out = tool
+            .run(&format!(
+                r#"{{"command":"echo pwned > {}"}}"#,
+                leak_path.display()
+            ))
+            .await
+            .unwrap();
+        assert!(
+            !out.contains("[exit 0]"),
+            "write outside root should fail: {out}"
+        );
+        assert!(
+            !leak_path.exists(),
+            "sandbox must not allow writes outside the project root"
+        );
+    }
+
+    /// ADR-0104: sandboxed network is cut by default (no `network: true`) —
+    /// use bash's own `/dev/tcp` so the assertion needs no external binary
+    /// (`curl`/`nc`) and can't pass just because the host has no internet.
+    #[tokio::test]
+    async fn sandbox_cuts_network_by_default() {
+        if !sandbox::bwrap_available() {
+            eprintln!("skipping: bwrap not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf()).with_sandbox(bwrap_policy(false));
+        let out = tool
+            .run(r#"{"command":"exec 3<>/dev/tcp/1.1.1.1/80","timeout":5}"#)
+            .await
+            .unwrap();
+        assert!(
+            !out.contains("[exit 0]"),
+            "network must be unreachable when sandboxed without network:true: {out}"
+        );
+    }
+
+    /// ADR-0104 §6: the process-group timeout/kill path (#167/#168/#169) must
+    /// still tear down a sandboxed command's whole tree, not just the outer
+    /// `bwrap` process.
+    #[tokio::test]
+    async fn sandbox_timeout_still_kills_the_whole_tree() {
+        if !sandbox::bwrap_available() {
+            eprintln!("skipping: bwrap not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf()).with_sandbox(bwrap_policy(false));
+        let out = tool
+            .run(r#"{"command":"sleep 30","timeout":1}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("killed") && out.contains("timed out"), "{out}");
     }
 }

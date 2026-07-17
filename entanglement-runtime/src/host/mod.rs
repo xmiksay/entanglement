@@ -17,10 +17,11 @@
 //! Output is byte-capped so a runaway
 //! listing or huge file can't silently consume the context window. `bash`/
 //! `call` run the command rooted at `root` (or at a validated `workdir`) but
-//! otherwise inherit the engine process's full privileges — unsandboxed by
-//! design (ADR-0009/ADR-0045); registration (opt-in for `bash`, unconditional
-//! for `call`) plus permission profiles are the only controls (ADR-0010/
-//! ADR-0093).
+//! otherwise inherit the engine process's full privileges by default —
+//! unsandboxed unless opted in (ADR-0009/ADR-0045); registration (opt-in for
+//! `bash`, unconditional for `call`) plus permission profiles are the default
+//! controls (ADR-0010/ADR-0093). [`sandbox`] adds an optional bubblewrap
+//! confinement layer for both (ADR-0104, `ENTANGLEMENT_SANDBOX=bwrap`).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -37,6 +38,7 @@ pub mod glob;
 pub mod grep;
 pub mod jobs;
 pub mod read;
+pub mod sandbox;
 pub mod write;
 
 pub use bash::BashTool;
@@ -47,6 +49,7 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use jobs::JobRegistry;
 pub use read::{ReadRawTool, ReadTool};
+pub use sandbox::{SandboxBackend, SandboxPolicy};
 pub use write::WriteTool;
 
 /// Hard cap on a single tool's textual output, in bytes. Larger output is

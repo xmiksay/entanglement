@@ -36,7 +36,7 @@ use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use host::{host_tools, BashTool, CallTool, ReadRawTool};
+use host::{host_tools, BashTool, CallTool, ReadRawTool, SandboxPolicy};
 use pipe::pipe;
 use run::run_one;
 use session_store::{integrity_gap, list_sessions, pair_records, read};
@@ -66,11 +66,14 @@ use tui::tui;
 /// profiles gate something real out of the box. `bash` (shell) stays opt-in:
 /// set `ENTANGLEMENT_ENABLE_BASH=1` to register `BashTool` and its
 /// `BashOutputTool` poller — they run unsandboxed with the engine's full
-/// privileges (ADR-0009 / ADR-0010 / ADR-0045). `call` runs with the same
-/// full-privilege, unsandboxed execution but no shell means no injection
-/// surface, so its *registration* no longer rides `bash`'s opt-in gate
+/// privileges by default (ADR-0009 / ADR-0010 / ADR-0045). `call` runs with the
+/// same full-privilege, unsandboxed-by-default execution but no shell means no
+/// injection surface, so its *registration* no longer rides `bash`'s opt-in gate
 /// (ADR-0094); per-profile permission (`Allow`/`Ask`/`Deny`) remains the actual
-/// dispatch gate, same as any other tool.
+/// dispatch gate, same as any other tool. Both may instead run confined under
+/// bubblewrap — set `ENTANGLEMENT_SANDBOX=bwrap` (`ENTANGLEMENT_SANDBOX_NETWORK=1`
+/// to keep network access) — fail-closed: a sandboxed spawn that can't enter
+/// the sandbox errors rather than falling back to unsandboxed (#399, ADR-0104).
 ///
 /// Core no longer executes tools (#58): it only advertises their schemas
 /// (`cfg.tool_specs`, later kept live via `cfg.tool_spec_resolver`, #372). The
@@ -120,11 +123,24 @@ async fn build_config(
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let secret_env = catalog.key_envs();
     let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
-    let mut tools = register_default_tools(root.clone(), secret_env, bash_enabled);
-    if bash_enabled {
+    // Optional bubblewrap confinement for bash/call (#399, ADR-0104). Off by
+    // default — `bash_enabled` alone still means unsandboxed, full-privilege
+    // execution, matching every release before this.
+    let sandbox = SandboxPolicy::from_env();
+    let mut tools = register_default_tools(root.clone(), secret_env, bash_enabled, sandbox);
+    if bash_enabled && !sandbox.is_sandboxed() {
         eprintln!(
             "skutter: bash enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
              run unsandboxed with full privileges"
+        );
+    }
+    // `call` is always registered (ADR-0093), so the sandbox notice fires
+    // independent of `bash_enabled`.
+    if sandbox.is_sandboxed() {
+        eprintln!(
+            "skutter: bash/call sandboxed via bubblewrap (ENTANGLEMENT_SANDBOX=bwrap, \
+             network: {})",
+            if sandbox.network { "allowed" } else { "cut" }
         );
     }
     // `load_skill` is tier-2 progressive disclosure (#115): a real host tool (it
@@ -203,20 +219,28 @@ async fn build_config(
 /// (registered unconditionally — argv exec, no shell, ADR-0094) and, only when
 /// `bash_enabled`, the opt-in `bash`/`bash_output` pair sharing one job
 /// registry (ADR-0010/#170). `secret_env` (the catalog's provider API-key env
-/// vars, #164) is scrubbed from both exec tools' children.
+/// vars, #164) is scrubbed from both exec tools' children. `sandbox` (#399,
+/// ADR-0104) optionally confines both `bash` and `call` via bubblewrap —
+/// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
 fn register_default_tools(
     root: std::path::PathBuf,
     secret_env: Vec<String>,
     bash_enabled: bool,
+    sandbox: SandboxPolicy,
 ) -> ToolRegistry {
     let mut tools = host_tools(root.clone());
-    tools.register(CallTool::new(root.clone()).with_secret_env(secret_env.clone()));
+    tools.register(
+        CallTool::new(root.clone())
+            .with_secret_env(secret_env.clone())
+            .with_sandbox(sandbox),
+    );
     if bash_enabled {
         let jobs = host::JobRegistry::new();
         tools.register(
             BashTool::new(root.clone())
                 .with_secret_env(secret_env.clone())
-                .with_jobs(jobs.clone()),
+                .with_jobs(jobs.clone())
+                .with_sandbox(sandbox),
         );
         tools.register(host::BashOutputTool::new(jobs));
     }
@@ -1199,10 +1223,11 @@ fn format_relative(ts_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::register_default_tools;
+    use crate::host::SandboxPolicy;
 
     fn tool_names(bash_enabled: bool) -> Vec<String> {
         let root = std::env::temp_dir();
-        register_default_tools(root, Vec::new(), bash_enabled)
+        register_default_tools(root, Vec::new(), bash_enabled, SandboxPolicy::none())
             .specs()
             .into_iter()
             .map(|s| s.name.to_string())
