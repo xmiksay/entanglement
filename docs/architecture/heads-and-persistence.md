@@ -87,7 +87,14 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   uniqueness #157, protocol warts #160) was frozen first, per the pre-`serve`
   hardening epic ([ADR-0048](../adr/0048-serve-head-local-trust-model.md)). Lives
   behind the `serve` feature (implies `cli` + `provider`) so axum stays out of
-  the lean library / `--no-default-features` build (ADR-0025).
+  the lean library / `--no-default-features` build (ADR-0025). **Per-connection
+  approval ownership** (#402, [ADR-0107](../adr/0107-ws-per-connection-approval-ownership.md)):
+  a `SessionOwners` map on `ServeState` claims a session for the first
+  connection to send any frame referencing it (first-writer-wins); a later
+  connection's `Approve`/`Reject`/`AnswerQuestion` for that session is refused
+  (logged, dropped, connection unaffected) — every other `InMsg` variant is
+  unaffected by ownership. Released on disconnect, so a still-parked approval
+  is reclaimable rather than deadlocked behind a client that went away.
 - **TUI** (`skutter tui`): opencode-style terminal UI over `subscribe()`. Uses
   ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
   (ADR-0013), inline tool approval cards (ADR-0014), and rich markdown

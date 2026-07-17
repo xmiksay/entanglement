@@ -3,13 +3,24 @@
 //! Drives the axum router over a real loopback socket with a tungstenite WS
 //! client: a `Prompt` frame reaches the engine and its `OutEvent`s stream back;
 //! a forged `ToolResult` (a runtime-authored frame) is refused by the untrusted
-//! `send_from_wire` path (#155) without killing the connection; `/healthz` answers.
+//! `send_from_wire` path (#155) without killing the connection; `/healthz` answers;
+//! and per-connection approval ownership (#402, ADR-0107) refuses a decision
+//! frame from a non-owning connection while the owning connection still unblocks
+//! the parked turn.
 #![cfg(feature = "serve")]
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, SessionId};
+use async_trait::async_trait;
+use entanglement_core::{
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
+};
 use entanglement_runtime::serve::router;
+use entanglement_runtime::tool_names::ASK_USER_TOOL;
+use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::ToolRegistry;
 use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -131,4 +142,158 @@ async fn healthz_answers_ok() {
         "unexpected status: {resp}"
     );
     assert!(resp.trim_end().ends_with("ok"), "unexpected body: {resp}");
+}
+
+/// Replays scripted responses in order, then plain text so the turn terminates
+/// (mirrors `tests/ask_user.rs`'s `ScriptedLlm`; not shared across test binaries).
+struct ScriptedLlm {
+    responses: Mutex<Vec<LlmResponse>>,
+}
+impl ScriptedLlm {
+    fn new(mut responses: Vec<LlmResponse>) -> Self {
+        responses.reverse();
+        Self {
+            responses: Mutex::new(responses),
+        }
+    }
+}
+#[async_trait]
+impl Llm for ScriptedLlm {
+    async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        let resp = self
+            .responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| LlmResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+            });
+        Ok(stream_from_response(resp))
+    }
+}
+
+/// A `Holly` whose scripted LLM calls `ask_user` once per prompt, driving a real
+/// parked `OutEvent::UserQuestion` that only resolves on `InMsg::AnswerQuestion`.
+fn spawn_with_ask_user_call(question: &str) -> Holly {
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "q1".into(),
+                name: ASK_USER_TOOL.into(),
+                input: format!(r#"{{"question":"{question}","allow_free_form":true}}"#),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "acknowledged".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        entanglement_runtime::agents::built_in_registry(),
+        PermissionProfile::new(Permission::Allow),
+    );
+    holly
+}
+
+#[tokio::test]
+async fn approval_from_non_owning_connection_is_refused_then_owner_unblocks() {
+    let holly = spawn_with_ask_user_call("Which DB?");
+    let port = spawn_server(holly, None).await;
+    let sid = SessionId::new("serve-ownership");
+
+    // Connection A initiates the turn — the `Prompt` is the first session-bearing
+    // frame, so A claims ownership of `sid` (#402, ADR-0107).
+    let mut ws_a = connect(port).await;
+    let frame = serde_json::to_string(&InMsg::prompt(sid.clone(), "go")).unwrap();
+    ws_a.send(Message::Text(frame.into())).await.unwrap();
+
+    // Wait for the parked question, reading off connection A's own event stream
+    // (every connection subscribes to the same broadcast, so any socket sees it).
+    let mut request_id = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while let Ok(Some(Ok(msg))) = tokio::time::timeout_at(deadline, ws_a.next()).await {
+        if let Message::Text(text) = msg {
+            if let Ok(OutEvent::UserQuestion {
+                session,
+                request_id: rid,
+                ..
+            }) = serde_json::from_str::<OutEvent>(&text)
+            {
+                if session == sid {
+                    request_id = Some(rid);
+                    break;
+                }
+            }
+        }
+    }
+    let request_id = request_id.expect("expected a UserQuestion event");
+
+    // Connection B — never having sent a frame for `sid` before — answers first.
+    // Ownership is A's, so B's answer must be refused: no `Done`/`ToolOutput`
+    // shows up on B within a short window, and B's own socket stays usable.
+    let mut ws_b = connect(port).await;
+    let bad_answer = serde_json::to_string(&InMsg::AnswerQuestion {
+        session: sid.clone(),
+        request_id: request_id.clone(),
+        answer: "from B".into(),
+    })
+    .unwrap();
+    ws_b.send(Message::Text(bad_answer.into())).await.unwrap();
+
+    let quiet_deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    let mut turn_finished = false;
+    while let Ok(Some(Ok(Message::Text(text)))) =
+        tokio::time::timeout_at(quiet_deadline, ws_b.next()).await
+    {
+        if let Ok(ev) = serde_json::from_str::<OutEvent>(&text) {
+            if ev.session() == Some(&sid) && matches!(ev, OutEvent::Done { .. }) {
+                turn_finished = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        !turn_finished,
+        "a non-owning connection's answer must not unblock the parked turn"
+    );
+
+    // The real owner (A) answers; the turn must now complete.
+    let good_answer = serde_json::to_string(&InMsg::AnswerQuestion {
+        session: sid.clone(),
+        request_id,
+        answer: "SQLite".into(),
+    })
+    .unwrap();
+    ws_a.send(Message::Text(good_answer.into())).await.unwrap();
+
+    let events = drain_until_done(&mut ws_a, &sid).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::Done { session, .. } if session == &sid)),
+        "the owning connection's answer should unblock the turn, got {events:?}"
+    );
+
+    // B's socket survived the refusal: every connection shares the same
+    // broadcast fan-out, so B still observes the completed turn it didn't own —
+    // proof the refusal was per-frame, not a dropped connection.
+    let events_b = drain_until_done(&mut ws_b, &sid).await;
+    assert!(
+        events_b
+            .iter()
+            .any(|e| matches!(e, OutEvent::Done { session, .. } if session == &sid)),
+        "connection B must survive the refusal and keep receiving broadcast events, got {events_b:?}"
+    );
 }
