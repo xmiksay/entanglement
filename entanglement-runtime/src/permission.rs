@@ -351,6 +351,20 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
     }
 }
 
+/// The **filesystem path** a call would touch, for the escape-root gate
+/// (ADR-0107) — distinct from [`permission_arg`] (which yields the *command* for
+/// `bash`/`call`). It's the `path` for `read`/`edit`/`write` and the `workdir`
+/// for `bash`/`call` (absent → the tool defaults to root, never an escape).
+/// `None` for any other tool or on malformed input, so those never trip the gate.
+pub fn escape_root_target(tool: &str, input: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(input).ok()?;
+    match tool {
+        "read" | "edit" | "write" => value.get("path")?.as_str().map(String::from),
+        "bash" | "call" => value.get("workdir")?.as_str().map(String::from),
+        _ => None,
+    }
+}
+
 /// The least-privileged of two permissions, ordered `Deny < Ask < Allow`.
 pub(crate) fn min_permission(a: Permission, b: Permission) -> Permission {
     if rank(a) <= rank(b) {

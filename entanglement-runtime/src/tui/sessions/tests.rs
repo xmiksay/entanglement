@@ -223,7 +223,9 @@ fn acceptance_new_session_created_on_first_prompt_and_appears_in_list() {
     reg.handle_out_event(event(&initial, 1, "first message"));
 
     let new_session = reg.create();
-    assert!(new_session.to_string().starts_with("initial-"));
+    // A new session is an opaque v4 UUID, distinct from the initial id.
+    assert_ne!(new_session, initial);
+    assert_eq!(new_session.to_string().len(), 36);
 
     let all = reg.all();
     assert_eq!(all.len(), 2, "New session appears in list");

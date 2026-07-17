@@ -225,6 +225,9 @@ pub fn spawn_tool_executor_with_hooks(
         resolver,
         grants,
         hooks,
+        // The default 4-arg wrapper keeps strict root containment — escape-root
+        // approval is opt-in, wired only by the full head (`main.rs`).
+        None,
     )
 }
 
@@ -259,6 +262,27 @@ pub fn spawn_tool_executor_with_hooks(
 /// executor parses the `skill_id` its result carries, looks up that skill's
 /// `allowed_tools` here, and activates the session's skill mask —
 /// [`skill_masked`], layered after the #116 agent mask.
+/// Escape-root policy for the executor (ADR-0107): the canonical project `root`
+/// against which an out-of-root `read`/`edit`/`write` path or `bash`/`call`
+/// `workdir` is detected, plus the shared [`ExtraRootStore`] approvals are
+/// recorded into and the host tools read. `None` (the wrappers below, all tests)
+/// keeps strict containment — an out-of-root path is a hard error, never a
+/// prompt.
+#[derive(Clone)]
+pub struct EscapeRoot {
+    pub root: std::path::PathBuf,
+    pub store: Arc<crate::extra_roots::ExtraRootStore>,
+}
+
+impl EscapeRoot {
+    /// The absolute out-of-root path a call to `tool` with `input` would touch,
+    /// or `None` when it stays contained (or the tool has no path argument).
+    fn escaping(&self, tool: &str, input: &str) -> Option<std::path::PathBuf> {
+        let rel = crate::permission::escape_root_target(tool, input)?;
+        crate::host::escaping_path(&self.root, &rel)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_tool_executor_with_policy(
     holly: &Holly,
@@ -270,6 +294,7 @@ pub fn spawn_tool_executor_with_policy(
     resolver: Arc<dyn PermissionResolver>,
     grants: Arc<dyn GrantStore>,
     hooks: Hooks,
+    escape_root: Option<EscapeRoot>,
 ) -> tokio::task::JoinHandle<()> {
     let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
@@ -716,6 +741,7 @@ pub fn spawn_tool_executor_with_policy(
                             let grants = grants.clone();
                             let hooks = hooks.clone();
                             let pending = pending.clone();
+                            let escape_root = escape_root.clone();
                             // Register so a `Stop` aborts this task mid-execution:
                             // aborting the future drops the exec tool's child,
                             // firing its process-group SIGKILL guard (#167/#168).
@@ -731,6 +757,7 @@ pub fn spawn_tool_executor_with_policy(
                                     &*grants,
                                     &hooks,
                                     &pending,
+                                    escape_root.as_ref(),
                                     session,
                                     request_id,
                                     tool,
@@ -776,6 +803,7 @@ async fn dispatch(
     grants: &dyn GrantStore,
     hooks: &Hooks,
     pending: &crate::pending::PendingDecisions,
+    escape_root: Option<&EscapeRoot>,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -792,8 +820,19 @@ async fn dispatch(
         seam::reply(holly, session, request_id, reason).await;
         return;
     }
+    // Escape-root gate (ADR-0107): a `read`/`edit`/`write` path or `bash`/`call`
+    // `workdir` that resolves *outside* the project root requires explicit
+    // approval — even when the profile would `Allow` — unless the user already
+    // durably granted this exact `(tool, path)`. A `Deny` floor still wins (the
+    // profile forbade the tool outright), so escaping never *lowers* the bar.
+    // `None` (no escape policy wired) is the pre-ADR-0107 strict-containment path.
+    let escape = escape_root
+        .filter(|_| perm != Permission::Deny)
+        .and_then(|er| er.escaping(&tool, &input).map(|abs| (er, abs)))
+        .filter(|(er, abs)| !er.store.is_durably_allowed(&tool, abs));
+
     match perm {
-        Permission::Allow => {
+        Permission::Allow if escape.is_none() => {
             run_and_reply(
                 holly,
                 tools,
@@ -811,7 +850,8 @@ async fn dispatch(
             let output = format!("tool `{tool}` denied by permission profile");
             seam::reply(holly, session, request_id, output).await;
         }
-        Permission::Ask => {
+        // Either the profile said `Ask`, or an out-of-root access forced one.
+        _ => {
             // Register the waiter *before* prompting (#156) so the inbound router
             // can never process the approval before this park exists — the
             // lag-proof successor to the old "subscribe before prompting"
@@ -819,12 +859,21 @@ async fn dispatch(
             // the parked session's shared counter, so `(session, seq)` stays unique
             // instead of reusing the `ToolExec` seq.
             let rx = pending.register(&session, &request_id);
+            let escape_grant = escape.map(|(er, abs)| (er.store.clone(), abs));
             holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
                 session: session.clone(),
                 seq,
                 request_id: request_id.clone(),
                 tool: tool.clone(),
-                input: input.clone(),
+                input: escape_grant
+                    .as_ref()
+                    .map(|(_, abs)| {
+                        format!(
+                            "{input}\n\n⚠ accesses a path OUTSIDE the project root: {}",
+                            abs.display()
+                        )
+                    })
+                    .unwrap_or_else(|| input.clone()),
             });
             holly.emit_status(&session, AgentState::WaitingApproval);
             await_decision(
@@ -835,6 +884,7 @@ async fn dispatch(
                 grants,
                 hooks,
                 rx,
+                escape_grant,
                 session,
                 request_id,
                 tool,
@@ -858,6 +908,7 @@ async fn await_decision(
     grants: &dyn GrantStore,
     hooks: &Hooks,
     rx: tokio::sync::oneshot::Receiver<seam::Decision>,
+    escape_grant: Option<(Arc<crate::extra_roots::ExtraRootStore>, std::path::PathBuf)>,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -866,11 +917,18 @@ async fn await_decision(
     match crate::pending::await_decision(rx).await {
         seam::Decision::Approve { scope } => {
             set_thinking(holly, &session);
-            // Record the wider scopes (#174) so an identical later call skips this
-            // prompt — through the pluggable [`GrantStore`] (#311), so an
-            // `ApprovalScope::Always` lands in the embedder's store (a file for the
-            // default, a DB row for a multi-tenant one). `Once` records nothing.
-            if scope != ApprovalScope::Once {
+            if let Some((store, abs)) = &escape_grant {
+                // The prompt was forced by an out-of-root access (ADR-0107):
+                // record the approval in the escape-root store so the host tool's
+                // containment check lets *this tool* reach *this path*. Every scope
+                // is recorded (a `Once` becomes the single-use token the tool
+                // consumes); `Session`/`Always` also relax future containment and
+                // let the executor skip re-asking. Per-tool by construction.
+                store.record(&tool, abs, scope);
+            } else if scope != ApprovalScope::Once {
+                // Ordinary (in-root) approval: record the wider scopes (#174) so an
+                // identical later call skips this prompt — through the pluggable
+                // [`GrantStore`] (#311). `Once` records nothing.
                 let arg = permission_arg(&tool, &input);
                 grants.record(&session, &tool, arg.as_deref(), scope).await;
             }

@@ -24,7 +24,7 @@
 
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::sandbox::{self, SandboxPolicy};
-use super::{resolve_under_root, resolve_workdir, truncate_output};
+use super::{resolve_under_root, truncate_output};
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -59,6 +59,8 @@ pub struct CallTool {
     /// [`SandboxPolicy::none()`] — unsandboxed, unchanged from before this
     /// existed.
     sandbox: SandboxPolicy,
+    /// Approval-gated out-of-root `workdir` (ADR-0107).
+    extra_roots: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
 }
 
 impl CallTool {
@@ -68,7 +70,17 @@ impl CallTool {
             scratch_base: None,
             secret_env: Vec::new(),
             sandbox: SandboxPolicy::none(),
+            extra_roots: None,
         }
+    }
+
+    /// Permit an approved out-of-root `workdir` (ADR-0107).
+    pub fn with_extra_roots(
+        mut self,
+        extra: std::sync::Arc<crate::extra_roots::ExtraRootStore>,
+    ) -> Self {
+        self.extra_roots = Some(extra);
+        self
     }
 
     /// Write default (no `output_file`) artifacts under `scratch_base` — the
@@ -303,7 +315,12 @@ impl Tool for CallTool {
             self.scratch_base.as_deref(),
             &parsed.output_file,
         )?;
-        let cwd = resolve_workdir(&self.root, parsed.workdir.as_deref())?;
+        let cwd = super::resolve_workdir_or_grant(
+            &self.root,
+            self.extra_roots.as_deref(),
+            "call",
+            parsed.workdir.as_deref(),
+        )?;
 
         let mut cmd = sandbox::command(&self.sandbox, &self.root, &parsed.command, &parsed.args);
         cmd.current_dir(&cwd)

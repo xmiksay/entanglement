@@ -317,7 +317,8 @@ async fn launch(
     if holly
         .send(InMsg::Spawn {
             session: child.clone(),
-            parent: parent.clone(),
+            parent: Some(parent.clone()),
+            predecessor: None,
             agent: agent.clone(),
             prompt,
         })

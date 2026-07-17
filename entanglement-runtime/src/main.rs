@@ -20,10 +20,11 @@ mod run;
 mod tui;
 
 use entanglement_runtime::{
-    agents, ask_user, config, history, host, inspect, logging, mcp, persistence, plan_tasks,
-    policy, propose_plan, script, session_store, skills, subagent, system_prompt, tool_names,
-    tool_runner, watch, ToolRegistry,
+    agents, ask_user, config, extra_roots, history, host, inspect, logging, mcp, persistence,
+    plan_tasks, policy, propose_plan, script, session_store, skills, subagent, system_prompt,
+    tool_names, tool_runner, watch, ToolRegistry,
 };
+use tool_runner::EscapeRoot;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -36,7 +37,7 @@ use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use host::{host_tools, BashTool, CallTool, ReadRawTool, SandboxPolicy};
+use host::{BashTool, CallTool, ReadRawTool, SandboxPolicy};
 use pipe::pipe;
 use run::run_one;
 use session_store::{integrity_gap, list_sessions, pair_records, read};
@@ -94,6 +95,7 @@ async fn build_config(
     ToolRegistry,
     Vec<String>,
     HashMap<String, mcp::ActiveServer>,
+    EscapeRoot,
 ) {
     let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
@@ -135,13 +137,23 @@ async fn build_config(
     // definitions watcher. Best-effort: if the data dir is unavailable, `call`
     // falls back to its legacy in-repo `.entanglement/tmp` location.
     let scratch_base = session_store::scratch_dir(&root).ok();
+    // Escape-root approval store (ADR-0107): shared by the host tools (which
+    // consult it to relax containment for an approved out-of-root path) and the
+    // tool executor (which forces an approval prompt on a first out-of-root
+    // access and records the grant here).
+    let extra_root_store = Arc::new(extra_roots::ExtraRootStore::load());
     let mut tools = register_default_tools(
         root.clone(),
         scratch_base,
+        Some(extra_root_store.clone()),
         secret_env,
         bash_enabled,
         sandbox,
     );
+    let escape_root = EscapeRoot {
+        root: root.clone(),
+        store: extra_root_store,
+    };
     if bash_enabled && !sandbox.is_sandboxed() {
         eprintln!(
             "skutter: bash enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
@@ -226,6 +238,7 @@ async fn build_config(
         tools,
         tool_names,
         initial_mcp,
+        escape_root,
     )
 }
 
@@ -239,26 +252,32 @@ async fn build_config(
 fn register_default_tools(
     root: std::path::PathBuf,
     scratch_base: Option<std::path::PathBuf>,
+    extra_roots: Option<Arc<extra_roots::ExtraRootStore>>,
     secret_env: Vec<String>,
     bash_enabled: bool,
     sandbox: SandboxPolicy,
 ) -> ToolRegistry {
-    let mut tools = host_tools(root.clone());
+    let mut tools = host::host_tools_with_extra_roots(root.clone(), extra_roots.clone());
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
         .with_sandbox(sandbox);
     if let Some(base) = scratch_base {
         call = call.with_scratch_base(base);
     }
+    if let Some(e) = &extra_roots {
+        call = call.with_extra_roots(e.clone());
+    }
     tools.register(call);
     if bash_enabled {
         let jobs = host::JobRegistry::new();
-        tools.register(
-            BashTool::new(root.clone())
-                .with_secret_env(secret_env.clone())
-                .with_jobs(jobs.clone())
-                .with_sandbox(sandbox),
-        );
+        let mut bash = BashTool::new(root.clone())
+            .with_secret_env(secret_env.clone())
+            .with_jobs(jobs.clone())
+            .with_sandbox(sandbox);
+        if let Some(e) = &extra_roots {
+            bash = bash.with_extra_roots(e.clone());
+        }
+        tools.register(bash);
         tools.register(host::BashOutputTool::new(jobs));
     }
     tools
@@ -905,7 +924,7 @@ async fn main() -> Result<()> {
     let http_client = HttpClient::new();
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
-    let (mut engine_config, model_info, provider_name, tools, tool_names, initial_mcp) =
+    let (mut engine_config, model_info, provider_name, tools, tool_names, initial_mcp, escape_root) =
         build_config(
             &catalog,
             &http_client,
@@ -1001,6 +1020,8 @@ async fn main() -> Result<()> {
         resolver,
         grants.clone(),
         user_config.hooks.clone(),
+        // Escape-root approval (ADR-0107): the same store the host tools read.
+        Some(escape_root),
     );
 
     // Live MCP server management (#375): a runtime service answering
@@ -1245,11 +1266,18 @@ mod tests {
 
     fn tool_names(bash_enabled: bool) -> Vec<String> {
         let root = std::env::temp_dir();
-        register_default_tools(root, None, Vec::new(), bash_enabled, SandboxPolicy::none())
-            .specs()
-            .into_iter()
-            .map(|s| s.name.to_string())
-            .collect()
+        register_default_tools(
+            root,
+            None,
+            None,
+            Vec::new(),
+            bash_enabled,
+            SandboxPolicy::none(),
+        )
+        .specs()
+        .into_iter()
+        .map(|s| s.name.to_string())
+        .collect()
     }
 
     #[test]
