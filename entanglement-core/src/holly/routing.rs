@@ -69,21 +69,29 @@ pub(super) fn emit_supervisor_error(
     });
 }
 
-/// Best-effort [`SessionInfo`] for a resumed session, read from the first
-/// `SessionStarted` record in its replay log. Absent (an older log), it's
-/// treated as a root under the base `build` profile.
+/// Best-effort [`SessionInfo`] for a resumed session, read from `session`'s own
+/// `SessionStarted` record in the (possibly whole-sub-tree) replay log — never
+/// another session's, since a root's log interleaves every spawned child's
+/// records too (#415, mirroring the `is_target` scoping in
+/// [`Session::replay`][crate::session::Session::replay]). Absent (an older log,
+/// or `session` never appears in it), it's treated as a root under the base
+/// `build` profile.
 pub(super) fn resume_meta(
     session: &SessionId,
     records: &[(Option<InMsg>, OutEvent)],
 ) -> SessionInfo {
     for (_, ev) in records {
         if let OutEvent::SessionStarted {
+            session: started,
             parent,
             profile,
             root,
             ..
         } = ev
         {
+            if started != session {
+                continue;
+            }
             return SessionInfo {
                 session: session.clone(),
                 parent: parent.clone(),

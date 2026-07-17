@@ -499,7 +499,8 @@ fn replay_rebinds_and_reconstructs_memory() {
         ),
     ];
 
-    let session = entanglement_core::session::Session::replay(&records, &cfg).expect("replay");
+    let session =
+        entanglement_core::session::Session::replay(&records, &cfg, &sid).expect("replay");
     // Re-bound to the switched model, tracking the resolved provider.
     assert_eq!(session.model.as_deref(), Some("glm-b"));
     assert_eq!(session.provider.as_deref(), Some("zai"));

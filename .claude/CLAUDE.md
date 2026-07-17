@@ -480,6 +480,20 @@ re-document them here):
   runs once before the subcommand match) rather than a `serve`-only CLI flag —
   the sweep's own settledness guard is what makes auto-hibernation safe for any
   head. Unset (the default) stays `None`, byte-identical to before.
+- **`Resume` cascades over the spawn sub-tree** (#415,
+  [ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)):
+  mirrors `CloseSession`/`HibernateSession`'s teardown cascade in reverse — a
+  root's log already carries every spawned child's interleaved records, so
+  resuming the root also recursively `Session::replay`s + re-spawns every
+  child still "live" in the log (a `SessionStarted` with no matching
+  `SessionEnded`/`SessionHibernated`), re-registering `parent_links` as it
+  goes, instead of leaving them to a lazy blank respawn on first touch.
+  `Session::replay` gained an explicit `target: &SessionId` param (was always
+  "the log's own root") so the same fold reconstructs any session in a shared
+  root log, root or descendant. Also fixed: the resumed session's
+  re-announced `SessionStarted` now carries the replay-resolved `predecessor`
+  instead of the always-`None` resume parameter (a persisted log could
+  otherwise regress its own lineage on a second resume).
 - **Skill-scoped `allowed_tools` enforcement** (#400,
   [ADR-0106](../docs/adr/0106-skill-scoped-allowed-tools-enforcement.md)): a
   `SKILL.md`'s `allowed_tools` frontmatter (parsed since #114 but unenforced)

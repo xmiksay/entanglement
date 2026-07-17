@@ -459,56 +459,52 @@ async fn supervisor(
                 );
                 continue;
             }
-            // Replay *before* registering the session. A failed replay used to
-            // still insert the sender while its task returned early, leaving a
-            // dead id that showed in `ListSessions` and silently swallowed every
-            // routed `Prompt` (issue #105). Register only on success; on failure
-            // surface an `Error` and leave the id unclaimed.
-            let initial_session = match Session::replay(records, &cfg) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("Failed to replay session {}: {}", session_id, e);
-                    emit_supervisor_error(
-                        &events,
-                        &seqs,
-                        &session_id,
-                        &format!("failed to resume session: {e}"),
-                    );
+            let Some(children) = spawn_resumed(
+                &session_id,
+                records,
+                &mut sessions,
+                &mut session_meta,
+                &mut parent_links,
+                &events,
+                &seqs,
+                &activity,
+                &cfg,
+            ) else {
+                // A failure already emitted an `Error`; leave the id unclaimed
+                // rather than half-registering it (issue #105).
+                continue;
+            };
+            // Cascade (#415): a root's log carries its whole spawn sub-tree
+            // (persistence folds every spawned child into the root file), so a
+            // sub-agent still "live" as of where recording stopped — a
+            // `SessionStarted` with no matching `SessionEnded`/`SessionHibernated`
+            // — is re-materialized too, the same way `CloseSession`/
+            // `HibernateSession` cascade over the sub-tree on teardown. Without
+            // this, a resumed parent's `children` mirror lists ids with no task
+            // behind them, and touching one lazily respawns it *blank*
+            // (`holly.rs`'s lazy-`Prompt` path), silently discarding its history.
+            let mut queue: Vec<SessionId> = children;
+            let mut cursor = 0;
+            while cursor < queue.len() {
+                let child = queue[cursor].clone();
+                cursor += 1;
+                if closed.contains(&child) || sessions.contains_key(&child) {
                     continue;
                 }
-            };
-            // Enrich the replay-derived meta with the resolved posture (#189): the
-            // log preserves only the profile name, but the replayed session holds
-            // the full profile, so a reconnecting head sees the live posture.
-            let mut meta = resume_meta(&session_id, records);
-            meta.profile_detail = Some(initial_session.profile.detail());
-            session_meta.insert(session_id.clone(), meta);
-            let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
-            let ev = events.clone();
-            let cfg2 = cfg.clone();
-            let sid = session_id.clone();
-            let profile = initial_session.profile.clone();
-            let parent = initial_session.parent.clone();
-            let seqs2 = seqs.clone();
-            let activity2 = activity.clone();
-            tokio::spawn(async move {
-                session_loop(
-                    sid,
-                    srx,
-                    ev,
-                    cfg2,
-                    profile,
-                    Some(initial_session),
-                    parent,
-                    // Resume reconstructs `predecessor` from the log (replay);
-                    // pass `None` so it isn't overwritten.
-                    None,
-                    seqs2,
-                    activity2,
-                )
-                .await;
-            });
-            sessions.insert(session_id.clone(), stx);
+                if let Some(grandchildren) = spawn_resumed(
+                    &child,
+                    records,
+                    &mut sessions,
+                    &mut session_meta,
+                    &mut parent_links,
+                    &events,
+                    &seqs,
+                    &activity,
+                    &cfg,
+                ) {
+                    queue.extend(grandchildren);
+                }
+            }
             continue;
         }
 
@@ -668,6 +664,87 @@ async fn supervisor(
     for (_, tx) in sessions.drain() {
         let _ = tx.send(SessionCmd::Stop).await;
     }
+}
+
+/// Replay `target` from a shared log and register it exactly like a live
+/// `Spawn`/`Resume` would — `session_meta`, `parent_links` (when it has a
+/// parent), a spawned `session_loop` task, and the `sessions` map entry.
+/// Returns `target`'s live `children` (reconstructed by
+/// [`Session::replay`]) so a caller can keep cascading over the sub-tree
+/// (#415, see the `InMsg::Resume` handler); `None` on a replay failure, after
+/// emitting a supervisor `Error` for `target`.
+///
+/// `records` is the whole root log (children fold into their root's file,
+/// [ADR-0020](../../docs/adr/0020-event-sourced-session-persistence.md)), and
+/// [`Session::replay`] scopes its fold to `target`'s own records regardless of
+/// which session in the tree `target` names (#275).
+#[allow(clippy::too_many_arguments)]
+fn spawn_resumed(
+    target: &SessionId,
+    records: &[(Option<InMsg>, OutEvent)],
+    sessions: &mut HashMap<SessionId, mpsc::Sender<SessionCmd>>,
+    session_meta: &mut HashMap<SessionId, SessionInfo>,
+    parent_links: &mut HashMap<SessionId, Option<SessionId>>,
+    events: &broadcast::Sender<OutEvent>,
+    seqs: &SeqRegistry,
+    activity: &ActivityRegistry,
+    cfg: &EngineConfig,
+) -> Option<Vec<SessionId>> {
+    // Replay *before* registering the session. A failed replay used to still
+    // insert the sender while its task returned early, leaving a dead id that
+    // showed in `ListSessions` and silently swallowed every routed `Prompt`
+    // (issue #105). Register only on success; on failure surface an `Error`
+    // and leave the id unclaimed.
+    let initial_session = match Session::replay(records, cfg, target) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to replay session {}: {}", target, e);
+            emit_supervisor_error(
+                events,
+                seqs,
+                target,
+                &format!("failed to resume session: {e}"),
+            );
+            return None;
+        }
+    };
+    // Enrich the replay-derived meta with the resolved posture (#189): the log
+    // preserves only the profile name, but the replayed session holds the full
+    // profile, so a reconnecting head sees the live posture.
+    let mut meta = resume_meta(target, records);
+    meta.profile_detail = Some(initial_session.profile.detail());
+    session_meta.insert(target.clone(), meta);
+    let parent = initial_session.parent.clone();
+    if let Some(p) = parent.as_ref() {
+        parent_links.insert(target.clone(), Some(p.clone()));
+    }
+    let children = initial_session.children.clone();
+    let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
+    let ev = events.clone();
+    let cfg2 = cfg.clone();
+    let sid = target.clone();
+    let profile = initial_session.profile.clone();
+    let seqs2 = seqs.clone();
+    let activity2 = activity.clone();
+    tokio::spawn(async move {
+        session_loop(
+            sid,
+            srx,
+            ev,
+            cfg2,
+            profile,
+            Some(initial_session),
+            parent,
+            // Resume reconstructs `predecessor` from the log (replay); pass
+            // `None` so it isn't overwritten.
+            None,
+            seqs2,
+            activity2,
+        )
+        .await;
+    });
+    sessions.insert(target.clone(), stx);
+    Some(children)
 }
 
 /// Collect `root` plus every transitive descendant from the child→parent

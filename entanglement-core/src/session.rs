@@ -112,22 +112,29 @@ pub(crate) async fn session_loop(
         .as_millis() as u64;
 
     let root = parent.is_none();
-    let _ = events.send(OutEvent::SessionStarted {
-        session: session.clone(),
-        parent,
-        predecessor: predecessor.clone(),
-        profile: profile.name.clone(),
-        model: profile.model.clone(),
-        root,
-        ts,
-    });
+    let profile_name = profile.name.clone();
+    let profile_model = profile.model.clone();
 
     let mut s = initial_session.unwrap_or_else(|| Session::new_empty(&cfg, profile));
     // A fresh (non-resumed) successor records the session it succeeds; a resumed
-    // one already reconstructed it from its `SessionStarted` log (replay).
-    if s.predecessor.is_none() {
-        s.predecessor = predecessor;
-    }
+    // one already reconstructed it from its `SessionStarted` log (replay) — that
+    // takes precedence over the raw `predecessor` param, which `Holly`'s `Resume`
+    // handling intentionally passes as `None` so it can't clobber the replayed
+    // value. The *announced* event must reflect the same resolved value, or a
+    // resumed successor's re-emitted `SessionStarted` (and its persisted copy)
+    // would wrongly blank out the lineage on the next replay.
+    let effective_predecessor = s.predecessor.clone().or_else(|| predecessor.clone());
+    s.predecessor = effective_predecessor.clone();
+
+    let _ = events.send(OutEvent::SessionStarted {
+        session: session.clone(),
+        parent,
+        predecessor: effective_predecessor,
+        profile: profile_name,
+        model: profile_model,
+        root,
+        ts,
+    });
     // Publish this session's shared seq counter so the runtime can mint a fresh
     // seq for events it authors while the session is parked (#157). Registered
     // before the first turn (hence before any `ToolExec`), so a runtime emit

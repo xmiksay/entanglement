@@ -308,7 +308,8 @@ fn replay_reconstructs_generation_and_profile_generation() {
         ),
     ];
 
-    let session = entanglement_core::session::Session::replay(&records, &cfg).expect("replay");
+    let session =
+        entanglement_core::session::Session::replay(&records, &cfg, &sid).expect("replay");
     assert_eq!(session.generation, Some(params(0.55)));
     assert_eq!(session.profile.name, "plan");
     assert_eq!(session.profile_generation.get("plan"), Some(&params(0.55)));
@@ -347,7 +348,8 @@ fn replay_a_later_model_changed_still_wins_generation_stays() {
         ),
     ];
 
-    let session = entanglement_core::session::Session::replay(&records, &cfg).expect("replay");
+    let session =
+        entanglement_core::session::Session::replay(&records, &cfg, &sid).expect("replay");
     assert_eq!(session.generation, Some(params(0.3)));
     assert_eq!(session.profile_generation.get("build"), Some(&params(0.3)));
 }

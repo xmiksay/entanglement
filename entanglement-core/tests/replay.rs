@@ -78,7 +78,7 @@ async fn text_only_turn_replay_fidelity() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg);
+    let result = entanglement_core::session::Session::replay(&records, &cfg, &sid);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -140,7 +140,7 @@ async fn single_tool_turn_replay_fidelity() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg);
+    let result = entanglement_core::session::Session::replay(&records, &cfg, &sid);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -234,7 +234,7 @@ async fn multi_tool_turn_replay_fidelity() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg);
+    let result = entanglement_core::session::Session::replay(&records, &cfg, &sid);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -310,7 +310,7 @@ async fn multi_turn_conversation_replay_fidelity() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg);
+    let result = entanglement_core::session::Session::replay(&records, &cfg, &sid);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -378,7 +378,7 @@ async fn profile_changes_during_replay() {
         can_spawn: None,
         spawnable_agents: None,
     });
-    let result = entanglement_core::session::Session::replay(&records, &cfg);
+    let result = entanglement_core::session::Session::replay(&records, &cfg, &sid);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -425,7 +425,7 @@ async fn seq_tracking_during_replay() {
     ];
 
     let cfg = factory(vec![]);
-    let result = entanglement_core::session::Session::replay(&records, &cfg);
+    let result = entanglement_core::session::Session::replay(&records, &cfg, &sid);
 
     assert!(result.is_ok());
     let session = result.unwrap();
@@ -520,7 +520,7 @@ async fn mid_turn_tail_reconstructs_pending_turn_state() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
 
     let messages = session.ctx.messages();
     assert_eq!(messages.len(), 2, "user + committed assistant tail");
@@ -548,7 +548,7 @@ async fn partially_resolved_tail_pends_only_unanswered_calls() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
 
     let messages = session.ctx.messages();
     assert_eq!(messages.len(), 3, "user + assistant + resolved tool output");
@@ -576,7 +576,7 @@ async fn text_only_tail_stays_dropped() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
 
     assert!(session.turn.is_none(), "a mid-stream tail is not resumable");
     assert_eq!(
@@ -600,7 +600,7 @@ async fn duplicate_tool_exec_records_fold_idempotently() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
 
     let turn = session.turn.expect("tail must reconstruct");
     assert_eq!(turn.pending.len(), 1, "re-offer records must not duplicate");
@@ -619,7 +619,7 @@ async fn fully_resolved_tail_keeps_turn_live_for_continuation() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
 
     let turn = session
         .turn
@@ -693,7 +693,7 @@ async fn compacted_record_leaves_source_history_intact() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
     let messages = session.ctx.messages();
 
     // Copy-on-write (ADR-0101): the source is never mutated, so the full
@@ -742,7 +742,7 @@ async fn compacted_record_does_not_mutate_source_even_with_kept() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
     let messages = session.ctx.messages();
 
     // Copy-on-write (ADR-0101): `kept` is now wire-legacy only; the source is
@@ -793,7 +793,7 @@ async fn auto_compacted_record_mutates_source_history_in_place() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
     let messages = session.ctx.messages();
 
     // In-place mutation: the whole pre-compaction history is gone, replaced by
@@ -858,7 +858,7 @@ async fn auto_compacted_record_with_kept_preserves_the_tail() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
     let messages = session.ctx.messages();
 
     // The second turn's user+assistant pair rides verbatim after the summary
@@ -933,7 +933,7 @@ async fn live_compaction_replays_to_the_same_context() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let records = records.lock().unwrap().clone();
-    let replayed = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let replayed = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
     let messages = replayed.ctx.messages();
 
     // Copy-on-write (ADR-0101): the source was never mutated, so replay
@@ -990,7 +990,7 @@ async fn child_session_tail_is_not_misattributed_to_the_root() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &root).unwrap();
 
     assert!(
         session.turn.is_none(),
@@ -1065,7 +1065,7 @@ async fn child_session_committed_events_are_not_folded_into_the_root() {
     ];
 
     let cfg = factory(vec![]);
-    let session = entanglement_core::session::Session::replay(&records, &cfg).unwrap();
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &root).unwrap();
 
     let messages = session.ctx.messages();
     assert_eq!(

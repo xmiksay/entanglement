@@ -34,7 +34,9 @@ thread is where new items get filed and discussed.
 
 ## Open deferred items
 
-_None currently open._
+| Issue | Deferred item | ADR/issue it descends from |
+| --- | --- | --- |
+| [#421](https://github.com/xmiksay/entanglement/issues/421) | A spawned child's initiating task prompt is never persisted (delivered straight to the session-command channel, bypassing the inbound broadcast the persistence tap observes) — unrecoverable on replay/resume | [ADR-0112](adr/0112-resume-cascades-over-the-spawn-subtree.md) |
 
 ## Resolved (shipped since the 2026-07-16 audit)
 

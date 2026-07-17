@@ -233,8 +233,19 @@ assistant/tool messages and the model appears to forget the conversation.
   stream, and `Holly::resume` seeds a session from `Session::replay`. The CLI
   exposes `skutter run --resume <id>` and `skutter sessions` (lists past root
   sessions for the cwd); the TUI `/resume` modal restores the full visible
-  transcript (`restore_from_records`) *and* reseeds engine context. Both
-  listings carry a **first-prompt snippet** (#327): `list_sessions` captures the
+  transcript (`restore_from_records`) *and* reseeds engine context. **Resume
+  cascades over the spawn sub-tree** (#415,
+  [ADR-0112](../adr/0112-resume-cascades-over-the-spawn-subtree.md)): since a
+  root file already carries every spawned child's interleaved records
+  (previous bullet), the supervisor doesn't stop at re-materializing the
+  requested id — it walks that session's replay-reconstructed `children` and
+  recursively `Session::replay`s + re-spawns each one still "live" in the log
+  (a `SessionStarted` with no matching `SessionEnded`/`SessionHibernated`),
+  mirroring `CloseSession`/`HibernateSession`'s teardown cascade in reverse. A
+  parent resumed after a crash/hibernation can still reach and continue its
+  sub-agents instead of them silently vanishing (a lazy-respawn under an
+  untouched child id would otherwise come back blank, with no prior history).
+  Both listings carry a **first-prompt snippet** (#327): `list_sessions` captures the
   first `InMsg::Prompt` in the same pass that finds `SessionStarted` (no extra
   I/O), truncates it to ~60 chars on a word boundary with `…`
   (`SessionMeta::first_prompt`), and both `skutter sessions` (DESCRIPTION column)
