@@ -67,10 +67,11 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
   exist, but the *default* base per provider now comes from the catalog (below);
-  `openai_factory(base, key, model, rpm, web_search)` builds an `LlmFactory`.
+  `openai_factory(base, key, model, rpm, concurrency, web_search)` builds an
+  `LlmFactory`.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
-  fragments). `anthropic_factory(key, model, rpm, web_search)`.
+  fragments). `anthropic_factory(key, model, rpm, concurrency, web_search)`.
 - `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
   [ADR-0085](../adr/0085-gemini-native-wire-and-opaque-provider-meta.md)): the
   compat endpoint drops `thoughtSignature`, the opaque per-call token a 2.5
@@ -81,7 +82,8 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   name, so the `ToolCall.id` is the name), sanitizes the tool `parameters` schema
   (Gemini rejects `$schema`/`additionalProperties`/union-`type`/dangling
   `required`), and stashes/restores the signature via `ToolCall.provider_meta`
-  (below). `gemini_factory(base, key, model, rpm, http)` — no web-search knob.
+  (below). `gemini_factory(base, key, model, rpm, concurrency, http)` — no
+  web-search knob.
   Request-body assembly lives in the `gemini::request` submodule.
 - **Opaque `provider_meta`** (#309) — `ToolCall.provider_meta: Option<Value>` is a
   provider-private slot that must round-trip **verbatim** through history persistence
@@ -142,7 +144,14 @@ The concurrency cap + pacing gate + 429 policy
 ([ADR-0111](../adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)) is
 what makes the pool coordinate *across sessions* — the property that "spawn many
 sub-agents" needs and ADR-0050 lacked. The **primary** guard is a per-endpoint
-`concurrency` semaphore (default 3, `ENTANGLEMENT_MAX_CONCURRENCY`): a permit is
+`concurrency` semaphore. **Also catalog data, mirroring `rpm`** (#414): the
+provider entry's optional `concurrency` (env `{NAME}_CONCURRENCY` > user
+`providers.yml` > embedded default), threaded through the same
+`openai_factory`/`anthropic_factory`/`gemini_factory` → `execute_with_retry` →
+`HttpClient::endpoint` → `EndpointState::new` path as `rpm`; when unset it falls
+back to the client's default (`RetryConfig::concurrency`, 3, itself overridable
+process-wide via `ENTANGLEMENT_MAX_CONCURRENCY` — the pre-#414 pool-global
+knob, now the last-resort fallback rather than the only lever). A permit is
 acquired before the request and returned as an opaque `StreamGuard` that
 `spawn_byte_stream` holds until the **streamed body** ends — so the cap counts
 *open streams* (a slow thinking generation included), the unit a provider really

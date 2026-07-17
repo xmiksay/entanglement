@@ -63,6 +63,9 @@ pub struct OpenAiLlm {
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
     rpm: Option<u32>,
+    /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
+    /// client default). Threaded into the per-endpoint concurrency permit (#414).
+    concurrency: Option<usize>,
     /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
     /// the z.ai `web_search` tool. Bound at construction, invisible to core.
     web_search: Option<WebSearchConfig>,
@@ -71,13 +74,15 @@ pub struct OpenAiLlm {
 
 impl OpenAiLlm {
     /// `api_key = None` sends no `Authorization` header (Ollama). A `Some` key is
-    /// sent as `Bearer`. `rpm = None` uses the client's default rate-limit budget.
+    /// sent as `Bearer`. `rpm`/`concurrency = None` use the client's defaults.
     /// `web_search = Some(..)` requests provider-side web search (#305).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: impl Into<String>,
         api_key: Option<String>,
         default_model: impl Into<String>,
         rpm: Option<u32>,
+        concurrency: Option<usize>,
         web_search: Option<WebSearchConfig>,
         http: HttpClient,
     ) -> Self {
@@ -86,6 +91,7 @@ impl OpenAiLlm {
             api_key,
             default_model: default_model.into(),
             rpm,
+            concurrency,
             web_search,
             http,
         }
@@ -93,17 +99,28 @@ impl OpenAiLlm {
 }
 
 /// Factory for one per-session [`OpenAiLlm`]. Pass the provider's base URL, an
-/// optional key, the default model id, the endpoint's rpm budget, and the opt-in
-/// [`WebSearchConfig`] (`None` disables provider-side web search, #305).
+/// optional key, the default model id, the endpoint's rpm budget, the endpoint's
+/// concurrency cap (#414), and the opt-in [`WebSearchConfig`] (`None` disables
+/// provider-side web search, #305).
+#[allow(clippy::too_many_arguments)]
 pub fn openai_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
+    concurrency: Option<usize>,
     web_search: Option<WebSearchConfig>,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = OpenAiLlm::new(base_url, api_key, default_model, rpm, web_search, http);
+    let llm = OpenAiLlm::new(
+        base_url,
+        api_key,
+        default_model,
+        rpm,
+        concurrency,
+        web_search,
+        http,
+    );
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -133,13 +150,19 @@ impl Llm for OpenAiLlm {
 
         let (response, guard) = self
             .http
-            .execute_with_retry(&self.base_url, self.api_key.as_deref(), self.rpm, || {
-                let mut request = self.http.client().post(&url);
-                if let Some(key) = &self.api_key {
-                    request = request.bearer_auth(key);
-                }
-                request.json(&body).send()
-            })
+            .execute_with_retry(
+                &self.base_url,
+                self.api_key.as_deref(),
+                self.rpm,
+                self.concurrency,
+                || {
+                    let mut request = self.http.client().post(&url);
+                    if let Some(key) = &self.api_key {
+                        request = request.bearer_auth(key);
+                    }
+                    request.json(&body).send()
+                },
+            )
             .await
             .map_err(|e| match e {
                 crate::client::RetryError::Permanent(e) => {

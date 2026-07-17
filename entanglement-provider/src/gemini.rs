@@ -43,6 +43,9 @@ pub struct GeminiLlm {
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
     rpm: Option<u32>,
+    /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
+    /// client default). Threaded into the per-endpoint concurrency permit (#414).
+    concurrency: Option<usize>,
     http: HttpClient,
 }
 
@@ -52,6 +55,7 @@ impl GeminiLlm {
         api_key: impl Into<String>,
         default_model: impl Into<String>,
         rpm: Option<u32>,
+        concurrency: Option<usize>,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -59,21 +63,23 @@ impl GeminiLlm {
             api_key: api_key.into(),
             default_model: default_model.into(),
             rpm,
+            concurrency,
             http,
         }
     }
 }
 
 /// Build an [`LlmFactory`] wired to Gemini. Each session gets its own cloned
-/// [`GeminiLlm`]. `rpm = None` uses the client's default rate-limit budget.
+/// [`GeminiLlm`]. `rpm`/`concurrency = None` use the client's defaults.
 pub fn gemini_factory(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
+    concurrency: Option<usize>,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = GeminiLlm::new(base_url, api_key, default_model, rpm, http);
+    let llm = GeminiLlm::new(base_url, api_key, default_model, rpm, concurrency, http);
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -97,15 +103,21 @@ impl Llm for GeminiLlm {
         // base (key-agnostic) so every model on this endpoint shares one bucket.
         let (response, guard) = self
             .http
-            .execute_with_retry(base, Some(&self.api_key), self.rpm, || {
-                self.http
-                    .client()
-                    .post(&url)
-                    .header("x-goog-api-key", &self.api_key)
-                    .header("content-type", "application/json")
-                    .json(&body)
-                    .send()
-            })
+            .execute_with_retry(
+                base,
+                Some(&self.api_key),
+                self.rpm,
+                self.concurrency,
+                || {
+                    self.http
+                        .client()
+                        .post(&url)
+                        .header("x-goog-api-key", &self.api_key)
+                        .header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                },
+            )
             .await
             .map_err(|e| match e {
                 crate::client::RetryError::Permanent(e) => {

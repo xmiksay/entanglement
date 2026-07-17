@@ -102,6 +102,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         "glm-5.2",
         None,
         None,
+        None,
         HttpClient::new(),
     );
     let messages = vec![Message::user("hello")];
@@ -236,6 +237,7 @@ async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEven
         base_url,
         Some("k".into()),
         "glm-5.2",
+        None,
         None,
         None,
         HttpClient::with_config(config),

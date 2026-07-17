@@ -54,6 +54,9 @@ pub struct AnthropicLlm {
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
     rpm: Option<u32>,
+    /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
+    /// client default). Threaded into the per-endpoint concurrency permit (#414).
+    concurrency: Option<usize>,
     /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
     /// the `web_search_20250305` server tool. Bound at construction, invisible to
     /// core.
@@ -62,10 +65,12 @@ pub struct AnthropicLlm {
 }
 
 impl AnthropicLlm {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         api_key: impl Into<String>,
         default_model: impl Into<String>,
         rpm: Option<u32>,
+        concurrency: Option<usize>,
         web_search: Option<WebSearchConfig>,
         http: HttpClient,
     ) -> Self {
@@ -74,6 +79,7 @@ impl AnthropicLlm {
             default_model: default_model.into(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
             rpm,
+            concurrency,
             web_search,
             http,
         }
@@ -81,16 +87,17 @@ impl AnthropicLlm {
 }
 
 /// Build an [`LlmFactory`] wired to Anthropic. Each session gets its own cloned
-/// [`AnthropicLlm`]. `rpm = None` uses the client's default rate-limit budget;
+/// [`AnthropicLlm`]. `rpm`/`concurrency = None` use the client's defaults;
 /// `web_search = Some(..)` requests provider-side web search (#305).
 pub fn anthropic_factory(
     api_key: impl Into<String>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
+    concurrency: Option<usize>,
     web_search: Option<WebSearchConfig>,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = AnthropicLlm::new(api_key, default_model, rpm, web_search, http);
+    let llm = AnthropicLlm::new(api_key, default_model, rpm, concurrency, web_search, http);
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -118,15 +125,21 @@ impl Llm for AnthropicLlm {
 
         let (response, guard) = self
             .http
-            .execute_with_retry(ANTHROPIC_API_URL, Some(&self.api_key), self.rpm, || {
-                self.http
-                    .client()
-                    .post(ANTHROPIC_API_URL)
-                    .header("x-api-key", &self.api_key)
-                    .header("anthropic-version", ANTHROPIC_VERSION)
-                    .json(&body)
-                    .send()
-            })
+            .execute_with_retry(
+                ANTHROPIC_API_URL,
+                Some(&self.api_key),
+                self.rpm,
+                self.concurrency,
+                || {
+                    self.http
+                        .client()
+                        .post(ANTHROPIC_API_URL)
+                        .header("x-api-key", &self.api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION)
+                        .json(&body)
+                        .send()
+                },
+            )
             .await
             .map_err(|e| match e {
                 crate::client::RetryError::Permanent(e) => {
