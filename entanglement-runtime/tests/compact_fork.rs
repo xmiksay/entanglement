@@ -183,26 +183,31 @@ async fn compact_forks_into_a_new_session_and_preserves_the_source() {
         .expect("a Compacted event was emitted");
     assert!(summary.contains("summary of the conversation"));
 
-    // 3. Fork: the head mints a new session and spawns it with the summary,
-    // as a child of the source (ADR-0101).
+    // 3. Fork: the head mints a new session and spawns it with the summary, as a
+    // fresh root that records the source as its predecessor (ADR-0108). The head
+    // would also close the source; this engine-level test leaves it live to prove
+    // the copy-on-write property in step 5.
     let fork = SessionId::new_uuid();
     holly
         .send(InMsg::Spawn {
             session: fork.clone(),
-            parent: source.clone(),
+            parent: None,
+            predecessor: Some(source.clone()),
             agent: "build".to_string(),
             prompt: format!("[Conversation summary]\n\n{summary}"),
         })
         .await
         .unwrap();
 
-    // 4. The forked session runs its first turn under the summary prompt.
+    // 4. The successor runs its first turn under the summary prompt, as a root
+    // that records its predecessor.
     let fork_events = collect_fork_events(&mut sub, &fork, 0).await;
     assert!(
-        fork_events
-            .iter()
-            .any(|e| matches!(e, OutEvent::SessionStarted { parent, .. } if *parent == Some(source.clone()))),
-        "the fork is a child of the source: {fork_events:?}"
+        fork_events.iter().any(
+            |e| matches!(e, OutEvent::SessionStarted { parent, predecessor, root, .. }
+                if parent.is_none() && *predecessor == Some(source.clone()) && *root)
+        ),
+        "the successor is a root with the source as predecessor: {fork_events:?}"
     );
     assert!(
         fork_events

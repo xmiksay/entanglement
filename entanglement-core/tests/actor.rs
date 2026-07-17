@@ -205,7 +205,8 @@ async fn close_session_cascades_to_descendants() {
     holly
         .send(InMsg::Spawn {
             session: child.clone(),
-            parent: parent.clone(),
+            parent: Some(parent.clone()),
+            predecessor: None,
             agent: "build".into(),
             prompt: "subtask".into(),
         })
@@ -219,7 +220,8 @@ async fn close_session_cascades_to_descendants() {
     holly
         .send(InMsg::Spawn {
             session: grandchild.clone(),
-            parent: child.clone(),
+            parent: Some(child.clone()),
+            predecessor: None,
             agent: "build".into(),
             prompt: "sub-subtask".into(),
         })
@@ -515,7 +517,8 @@ async fn spawn_starts_child_with_parent_link() {
     holly
         .send(InMsg::Spawn {
             session: child.clone(),
-            parent: parent.clone(),
+            parent: Some(parent.clone()),
+            predecessor: None,
             agent: "build".into(),
             prompt: "do the subtask".into(),
         })
@@ -552,7 +555,8 @@ async fn spawn_of_unknown_agent_errors_instead_of_falling_back_to_build() {
     holly
         .send(InMsg::Spawn {
             session: child.clone(),
-            parent: SessionId::new("parent"),
+            parent: Some(SessionId::new("parent")),
+            predecessor: None,
             agent: "does-not-exist".into(),
             prompt: "go".into(),
         })
@@ -599,7 +603,8 @@ async fn duplicate_spawn_is_ignored() {
         holly
             .send(InMsg::Spawn {
                 session: child.clone(),
-                parent: SessionId::new("parent"),
+                parent: Some(SessionId::new("parent")),
+                predecessor: None,
                 agent: "build".into(),
                 prompt: "go".into(),
             })

@@ -100,6 +100,7 @@ mod tests {
             out(OutEvent::SessionStarted {
                 session: SessionId::new("s1"),
                 parent: None,
+                predecessor: None,
                 profile: "build".into(),
                 model: None,
                 root: true,

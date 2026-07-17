@@ -300,7 +300,8 @@ async fn parked_child_pins_settled_root_live() {
     holly
         .send(InMsg::Spawn {
             session: child.clone(),
-            parent: root.clone(),
+            parent: Some(root.clone()),
+            predecessor: None,
             agent: "build".into(),
             prompt: "do the subtask".into(),
         })

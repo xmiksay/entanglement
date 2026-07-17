@@ -120,7 +120,8 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
         holly
             .send(InMsg::Spawn {
                 session: SessionId::new(child),
-                parent: root.clone(),
+                parent: Some(root.clone()),
+                predecessor: None,
                 agent: agent.into(),
                 prompt: "task".into(),
             })

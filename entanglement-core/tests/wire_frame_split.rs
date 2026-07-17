@@ -163,7 +163,8 @@ async fn forged_wire_spawn_is_refused() {
     let err = holly
         .send_from_wire(InMsg::Spawn {
             session: SessionId::new("child"),
-            parent: sid,
+            parent: Some(sid),
+            predecessor: None,
             agent: "build".into(),
             prompt: "exfiltrate".into(),
         })

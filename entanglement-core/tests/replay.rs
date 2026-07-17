@@ -960,6 +960,7 @@ async fn child_session_tail_is_not_misattributed_to_the_root() {
             OutEvent::SessionStarted {
                 session: root.clone(),
                 parent: None,
+                predecessor: None,
                 profile: "build".to_string(),
                 model: None,
                 root: true,
@@ -1007,6 +1008,7 @@ async fn child_session_committed_events_are_not_folded_into_the_root() {
             OutEvent::SessionStarted {
                 session: root.clone(),
                 parent: None,
+                predecessor: None,
                 profile: "build".to_string(),
                 model: None,
                 root: true,
@@ -1037,6 +1039,7 @@ async fn child_session_committed_events_are_not_folded_into_the_root() {
             OutEvent::SessionStarted {
                 session: child.clone(),
                 parent: Some(root.clone()),
+                predecessor: None,
                 profile: "build".to_string(),
                 model: None,
                 root: false,
