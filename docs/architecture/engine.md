@@ -184,6 +184,13 @@ teardown, `OutEvent::SessionHibernated`, and resumability (#318, ADR-0077) as a
 manual eviction. Deliberately **stricter** than manual `HibernateSession`
 (which is stop-then-hibernate): a timer must never cancel live work, so the
 sweep only touches a session already at rest, never one mid-stream.
+`entanglement-runtime` exposes this as the `idle_ttl_secs` `config.yml` setting
+(#401, [ADR-0105](../adr/0105-expose-idle-ttl-via-runtime-config.md)) — whole
+seconds, copied onto `EngineConfig.idle_ttl` in `build_config` alongside
+`max_turns`; one engine-global setting shared by every head (`Holly::spawn`
+runs once before the subcommand match), mainly useful for a long-lived
+multi-session `skutter serve`. Unset (the default) stays `None`, byte-identical
+to before this config surface existed.
 
 **Loop bounds — `max_turns` and context-over-limit** (`session/turn.rs`). The
 turn is capped at `EngineConfig.max_turns` rounds (default 200; user-configurable

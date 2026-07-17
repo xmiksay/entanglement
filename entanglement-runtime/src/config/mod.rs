@@ -31,9 +31,12 @@
 //! - `hooks` — lifecycle hooks (#199, ADR-0066): external commands run around
 //!   tool execution (`pre_`/`post_tool_use`) and on prompt ingress
 //!   (`user_prompt_submit`). See [`crate::hooks`]. Empty by default.
-//! - general settings — `agent` / `provider` / `model` / `verbose`. Each is a
-//!   *fallback*: an explicit CLI flag or environment variable wins over the file
-//!   (env > config > embedded default).
+//! - general settings — `agent` / `provider` / `model` / `verbose` / `max_turns`
+//!   / `idle_ttl_secs`. Each is a *fallback*: an explicit CLI flag or
+//!   environment variable wins over the file (env > config > embedded
+//!   default). `idle_ttl_secs` (#401, ADR-0090) maps onto
+//!   `EngineConfig::idle_ttl`; `None` (the default) leaves auto-hibernation
+//!   off, exactly as before this setting existed.
 //!
 //! # First-run scaffold (#219)
 //!
@@ -45,6 +48,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use entanglement_core::{Permission, PermissionProfile, WebSearchConfig};
@@ -130,6 +134,13 @@ struct RawConfig {
     /// Cap on the inner LLM→tool loop within a single turn (#177). Default 200.
     #[serde(default)]
     max_turns: Option<usize>,
+    /// Auto-hibernate a settled root session (and its spawn sub-tree) after this
+    /// many idle seconds (#401, ADR-0090/[ADR-0105]). Absent ⇒ `None` ⇒ the
+    /// engine default: no sweep, eviction stays embedder-driven.
+    ///
+    /// [ADR-0105]: ../../../docs/adr/0105-expose-idle-ttl-via-runtime-config.md
+    #[serde(default)]
+    idle_ttl_secs: Option<u64>,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -155,6 +166,14 @@ pub struct Config {
     /// the engine default (200). User-configurable so a long autonomous run can
     /// be loosened (or a runaway tightened) without a recompile.
     pub max_turns: Option<usize>,
+    /// Auto-hibernate a settled root session (and its spawn sub-tree) once idle
+    /// this long (#401, ADR-0090). `None` (the default) leaves
+    /// `EngineConfig::idle_ttl` unset — the supervisor sweep never arms and
+    /// eviction stays embedder-driven, matching every release before this. A
+    /// long-lived multi-session embedder like `skutter serve` sets this to cap
+    /// memory growth; the CLI/TUI (single session, process-bound) rarely need
+    /// it but sharing the one engine-global `EngineConfig` costs them nothing.
+    pub idle_ttl: Option<Duration>,
 }
 
 /// Which of the three precedence layers a value came from. Ordered low → high so
@@ -284,6 +303,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         mcp: raw.mcp,
         web_search: raw.web_search,
         max_turns: raw.max_turns,
+        idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
     };
     Ok(Resolved {
         config,
@@ -307,6 +327,7 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "mcp",
         "web_search",
         "max_turns",
+        "idle_ttl_secs",
     ];
     KEYS.iter()
         .filter_map(|key| {
