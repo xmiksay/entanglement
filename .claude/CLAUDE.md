@@ -684,8 +684,10 @@ stdio, registered as `mcp__<server>__<tool>`) as a runtime-side tool provider
 with no core change
 #198/[ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md))
 are **complete**.
-Current phase is the July 2026 audit backlog — thematic epics tracked on GitHub
-with P0/P1/P2 labels and blocked-by links:
+The July 2026 audit backlog — thematic epics tracked on GitHub with P0/P1/P2
+labels and blocked-by links — is now **fully closed** (no open issues), and its
+work ships in the **0.2.0** release (the project's first tagged release; see
+[`../CHANGELOG.md`](../CHANGELOG.md)). It covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
 [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md); the
