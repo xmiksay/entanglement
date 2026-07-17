@@ -46,8 +46,10 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
     // so it renders fresh after the cached body rather than through the cache.
     if let ApprovalMode::WaitingForApproval { .. } = app.approval_mode() {
         if let Some((_, tool, input)) = app.pending_tool_request() {
+            let rule = "─".repeat(available_width.max(1) as usize);
+            let wrap_width = available_width.saturating_sub(4);
             lines.push(Line::from(""));
-            lines.push(Line::from("─".repeat(60)).fg(Color::Yellow));
+            lines.push(Line::from(rule.clone()).fg(Color::Yellow));
             let mut header = vec![
                 Span::styled("?", Style::default().fg(Color::Yellow).bold()),
                 Span::raw(" "),
@@ -69,7 +71,6 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
                 // pretty-printing it as JSON makes the approval unreadable
                 // (ADR-0042). Render the plan markdown, wrapped to the panel.
                 let plan = crate::propose_plan::parse_plan(input);
-                let wrap_width = available_width.saturating_sub(4);
                 for md_line in app.markdown_renderer().render(&plan).lines {
                     for wline in wrap::wrap_line(md_line, wrap_width) {
                         let joined: String =
@@ -77,24 +78,24 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
                         lines.push(Line::from(format!("  {joined}")));
                     }
                 }
-            } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(input) {
-                if let Ok(pretty) = serde_json::to_string_pretty(&json) {
-                    for line in pretty.lines() {
-                        lines.push(Line::from(format!("  {line}")));
-                    }
-                } else {
-                    for line in input.lines() {
-                        lines.push(Line::from(format!("  {line}")));
-                    }
-                }
             } else {
-                for line in input.lines() {
-                    lines.push(Line::from(format!("  {line}")));
+                // Pretty-print the JSON if we can, else the raw input — and wrap
+                // every line to the panel so a wide value never overflows.
+                let formatted = serde_json::from_str::<serde_json::Value>(input)
+                    .ok()
+                    .and_then(|v| serde_json::to_string_pretty(&v).ok());
+                let source = formatted.as_deref().unwrap_or(input);
+                for line in source.lines() {
+                    for wline in wrap::wrap_line(Line::from(line.to_string()), wrap_width) {
+                        let joined: String =
+                            wline.spans.iter().map(|s| s.content.as_ref()).collect();
+                        lines.push(Line::from(format!("  {joined}")));
+                    }
                 }
             }
 
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![
+            let footer = vec![
                 Span::styled("[y]", Style::default().fg(Color::Green).bold()),
                 Span::raw(" approve  "),
                 Span::styled("[n]", Style::default().fg(Color::Red).bold()),
@@ -103,17 +104,30 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
                 Span::raw(" edit reason  "),
                 Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
                 Span::raw(" interrupt"),
-            ]));
-            lines.push(Line::from("─".repeat(60)).fg(Color::Yellow));
+            ];
+            // The footer is short, but wrap it too so a very narrow panel can't
+            // overflow horizontally (#wrap).
+            push_wrapped_spans(&mut lines, footer, available_width);
+            lines.push(Line::from(rule).fg(Color::Yellow));
         }
     }
 
     if let Some(q) = app.pending_question() {
-        render_question(&mut lines, q, &app.input_text());
+        render_question(&mut lines, q, &app.input_text(), available_width);
     }
 
     // The freshly-appended tail lines carry no clickable-block provenance.
     line_blocks.resize(lines.len(), None);
 
     RenderedBody { lines, line_blocks }
+}
+
+/// Wrap a footer of styled `spans` to `available_width`, pushing each wrapped
+/// line. The approval/question footers are short, but on a very narrow panel
+/// they could still overflow — wrapping keeps every box horizontal-scroll-free
+/// (#wrap).
+fn push_wrapped_spans<'a>(lines: &mut Vec<Line<'a>>, spans: Vec<Span<'a>>, available_width: u16) {
+    for wline in wrap::wrap_line(Line::from(spans), available_width) {
+        lines.push(wline);
+    }
 }

@@ -206,8 +206,7 @@ fn draw_body(f: &mut Frame, area: Rect, app: &mut App) {
     // Clamp rather than truncate: `Paragraph::scroll` takes u16, and a very
     // long transcript would otherwise wrap silently at 65 536 lines.
     let offset_y = offset.min(u16::MAX as usize) as u16;
-    let offset_x = app.scroll_offset_x().min(u16::MAX as usize) as u16;
-    let paragraph = Paragraph::new(text).scroll((offset_y, offset_x));
+    let paragraph = Paragraph::new(text).scroll((offset_y, 0));
 
     f.render_widget(paragraph, inner_area);
 

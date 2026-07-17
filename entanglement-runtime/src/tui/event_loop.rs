@@ -315,12 +315,6 @@ pub(super) async fn handle_event(
                             app.input().move_cursor_to_end();
                             app.update_mention();
                         }
-                        KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                            app.scroll_left(10);
-                        }
-                        KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                            app.scroll_right(10);
-                        }
                         KeyCode::Esc => {
                             if app.mention_visible() {
                                 app.hide_mention();

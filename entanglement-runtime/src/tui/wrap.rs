@@ -1,5 +1,5 @@
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Truncate `text` to at most `max_width` display columns, appending `...` when
 /// it overflows. Char-boundary safe: it walks whole `char`s and never slices
@@ -62,12 +62,38 @@ pub fn wrap_line(line: Line<'_>, width: u16) -> Vec<Line<'_>> {
             if word.is_empty() {
                 continue;
             }
-            let word_width = word.chars().count() as u16;
+            // Measure in display columns so CJK (width 2) and wide emoji fit
+            // the same budget as ASCII — matching `Span::width()` above.
+            let word_width = UnicodeWidthStr::width(word) as u16;
             let needs_space =
                 !(current_line_spans.is_empty() && current_width == 0 && result.is_empty());
 
             let space_width = if needs_space { 1 } else { 0 };
             let potential_width = current_width + space_width + word_width;
+
+            // A single word wider than the whole line (a long URL, a minified
+            // token, an unbroken CJK run, a wide markdown-table cell) can't be
+            // placed whole without overflowing. Hard-break it at the character
+            // boundary to fit `width`, multibyte-safe — regardless of how much
+            // room is left on the current line.
+            if word_width > width {
+                // If the current line already has content, finish it first so
+                // the broken word starts fresh on its own line(s).
+                if current_width > 0 {
+                    result.push(Line::from(std::mem::take(&mut current_line_spans)));
+                    current_width = 0;
+                }
+                for chunk in hard_break_word(word, width) {
+                    let chunk_width = UnicodeWidthStr::width(chunk.as_str()) as u16;
+                    if current_width + chunk_width > width && !current_line_spans.is_empty() {
+                        result.push(Line::from(std::mem::take(&mut current_line_spans)));
+                        current_width = 0;
+                    }
+                    current_line_spans.push(Span::styled(chunk, span_style));
+                    current_width += chunk_width;
+                }
+                continue;
+            }
 
             if potential_width <= width || current_width == 0 {
                 if needs_space {
@@ -98,6 +124,39 @@ pub fn wrap_line(line: Line<'_>, width: u16) -> Vec<Line<'_>> {
     }
 
     result
+}
+
+/// Hard-break a single unbreakable `word` (wider than `width`) into chunks each
+/// no wider than `width` display columns. Walks `char`s (never slicing
+/// mid-codepoint) and measures each via `UnicodeWidthChar`, so CJK and emoji
+/// glyphs count as they render.
+fn hard_break_word(word: &str, width: u16) -> Vec<String> {
+    if width == 0 {
+        return vec![word.to_string()];
+    }
+    let max = width as usize;
+    let mut chunks = Vec::new();
+    let mut buf = String::new();
+    let mut used: usize = 0;
+    for ch in word.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cw > max && !buf.is_empty() {
+            chunks.push(std::mem::take(&mut buf));
+            used = 0;
+        }
+        // A single glyph wider than `max` (e.g. some wide emoji at width 1)
+        // can't be split further — emit it alone on its own line.
+        buf.push(ch);
+        used += cw;
+    }
+    if !buf.is_empty() {
+        chunks.push(buf);
+    }
+    if chunks.is_empty() {
+        vec![word.to_string()]
+    } else {
+        chunks
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +232,37 @@ mod tests {
         let line = Line::from("supercalifragilisticexpialidocious");
         let wrapped = wrap_line(line, 10);
         assert!(!wrapped.is_empty());
+    }
+
+    #[test]
+    fn long_token_hard_breaks_within_width() {
+        // An 80-char unbreakable word at width 20 must wrap into multiple
+        // lines, each no wider than 20 display columns.
+        let token = "x".repeat(80);
+        let wrapped = wrap_line(Line::from(token.as_str()), 20);
+        assert!(wrapped.len() > 1, "long token should hard-break");
+        for (i, line) in wrapped.iter().enumerate() {
+            let w: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            assert!(w <= 20, "wrapped line {i} is {w} cols wide, expected ≤ 20");
+        }
+    }
+
+    #[test]
+    fn long_token_multibyte_never_panics() {
+        // CJK + emoji: hard-break must walk whole codepoints and never slice
+        // mid-glyph, and every wrapped line must stay within `width`.
+        let s = "日本語のとても長いテキストです🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀";
+        let wrapped = wrap_line(Line::from(s), 10);
+        assert!(!wrapped.is_empty());
+        for line in &wrapped {
+            let w: usize = line
+                .spans
+                .iter()
+                .flat_map(|s| s.content.chars())
+                .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+                .sum();
+            assert!(w <= 10, "multibyte wrapped line exceeds width: {w}");
+        }
     }
 
     #[test]
