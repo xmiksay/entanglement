@@ -32,3 +32,7 @@ Building a custom, multi-tenant head on top of `entanglement-runtime`'s
 embeddable library (rather than one of the four shipped interfaces) is a
 separate *how to integrate* guide, not a description of this repo's own
 heads: see [`embedding.md`](embedding.md).
+
+Intentionally-deferred work and docs/implementation drift findings are tracked
+in the standing [deferred-work ledger](deferred-work-ledger.md), not
+re-derived from scratch each audit.
