@@ -153,7 +153,8 @@ async fn spawned_explore_child_request_carries_no_edit_spec() {
     holly
         .send(InMsg::Spawn {
             session: child.clone(),
-            parent: parent.clone(),
+            parent: Some(parent.clone()),
+            predecessor: None,
             agent: "explore".into(),
             prompt: "explore the tree".into(),
         })

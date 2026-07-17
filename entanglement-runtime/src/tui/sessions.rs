@@ -13,15 +13,12 @@ pub struct SessionRegistry {
     active: SessionId,
     order: Vec<SessionId>,
     views: HashMap<SessionId, SessionView>,
-    base_name: String,
-    next_ordinal: u64,
     showing_modal: bool,
     modal_state: ListState,
 }
 
 impl SessionRegistry {
     pub fn new(initial: SessionId) -> Self {
-        let base_name = initial.to_string();
         let mut views = HashMap::new();
         views.insert(initial.clone(), SessionView::new());
 
@@ -32,8 +29,6 @@ impl SessionRegistry {
             active: initial.clone(),
             order: vec![initial],
             views,
-            base_name,
-            next_ordinal: 1,
             showing_modal: false,
             modal_state,
         }
@@ -86,8 +81,10 @@ impl SessionRegistry {
     /// sent here.
     pub fn create(&mut self) -> SessionId {
         loop {
-            self.next_ordinal += 1;
-            let candidate = SessionId::new(format!("{}-{}", self.base_name, self.next_ordinal));
+            // Each new session is an independent, opaque v4 UUID — no
+            // human-readable suffix index. A collision is astronomically
+            // unlikely; the loop is a cheap belt-and-suspenders guard.
+            let candidate = SessionId::new_uuid();
             if !self.views.contains_key(&candidate) {
                 self.views.insert(candidate.clone(), SessionView::new());
                 self.order.push(candidate.clone());

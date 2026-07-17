@@ -75,6 +75,56 @@ const MAX_RESULTS: usize = 1000;
 /// escape. This upgrades ADR-0008's lexical-only containment to a real
 /// write/read boundary without breaking the create path (ADR-0054, #163).
 pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
+    let (resolved, contained) = resolve_and_contained(root, rel)?;
+    if !contained {
+        return Err(anyhow::anyhow!("path escapes working directory: {rel}"));
+    }
+    Ok(resolved)
+}
+
+/// Like [`resolve_under_root`], but a path that escapes root is permitted when
+/// the user has granted `tool` access to it (ADR-0109). `extra == None` (the
+/// standalone/test constructors) reduces to the strict containment of
+/// [`resolve_under_root`]. A `Once` grant is **consumed** by this call.
+pub fn resolve_under_root_or_grant(
+    root: &Path,
+    extra: Option<&crate::extra_roots::ExtraRootStore>,
+    tool: &str,
+    rel: &str,
+) -> Result<PathBuf> {
+    let (resolved, contained) = resolve_and_contained(root, rel)?;
+    if contained {
+        return Ok(resolved);
+    }
+    // Escapes root — allow only if the user approved this exact `(tool, path)`.
+    // The grant is checked against the *resolved* (symlink-canonicalized) target,
+    // so a symlink under root can't smuggle access to an unapproved path.
+    if extra.is_some_and(|e| e.take_allowance(tool, &resolved)) {
+        return Ok(resolved);
+    }
+    Err(anyhow::anyhow!("path escapes working directory: {rel}"))
+}
+
+/// The absolute out-of-root target `rel` resolves to under `root`, or `None`
+/// when `rel` stays contained (or can't be resolved at all). Used by the
+/// executor's escape-root gate (ADR-0109) to decide whether a call needs
+/// approval, matching the exact resolution the host tools use so the grant key
+/// (the resolved path) is identical on both sides.
+pub fn escaping_path(root: &Path, rel: &str) -> Option<PathBuf> {
+    match resolve_and_contained(root, rel) {
+        Ok((abs, false)) => Some(abs),
+        _ => None,
+    }
+}
+
+/// Resolve `rel` against `root` — lexical `..`/`.` normalization plus symlink-safe
+/// canonicalization of the deepest existing ancestor (#163) — returning the
+/// absolute target and whether it stays contained under `root`. The containment
+/// flag is the AND of the lexical and canonical checks; a strict caller rejects
+/// `false`, an escape-root caller (ADR-0109) may still use the path after a grant
+/// check. A genuinely malformed path (a `..` popping past the filesystem root)
+/// is still a hard `Err`.
+fn resolve_and_contained(root: &Path, rel: &str) -> Result<(PathBuf, bool)> {
     // Canonicalize the root defensively so containment holds even when the head
     // (or a test) passes a non-canonical root; startup also canonicalizes cwd.
     let root = root
@@ -97,14 +147,12 @@ pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
             other => norm.push(other.as_os_str()),
         }
     }
-    if !norm.starts_with(&root) {
-        return Err(anyhow::anyhow!("path escapes working directory: {rel}"));
-    }
+    let lexically_contained = norm.starts_with(&root);
     // Symlink defense (#163): canonicalize the deepest existing ancestor so a
     // symlink under root can't redirect the real target outside it. If the whole
     // path exists (incl. a final-component symlink) it canonicalizes directly;
     // otherwise we peel not-yet-existing tail components off until an ancestor
-    // resolves, check *that* against root, then re-append the plain tail.
+    // resolves, then re-append the plain tail.
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut ancestor = norm.clone();
     let canon = loop {
@@ -122,14 +170,12 @@ pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
             }
         }
     };
-    if !canon.starts_with(&root) {
-        return Err(anyhow::anyhow!("path escapes working directory: {rel}"));
-    }
+    let canonically_contained = canon.starts_with(&root);
     let mut resolved = canon;
     for name in tail.into_iter().rev() {
         resolved.push(name);
     }
-    Ok(resolved)
+    Ok((resolved, lexically_contained && canonically_contained))
 }
 
 /// Resolve the per-call working directory for an exec tool (`bash`/`call`):
@@ -139,10 +185,22 @@ pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
 /// [`crate::host::call::CallTool`] — the containment + directory check is
 /// identical between the two (#386).
 pub fn resolve_workdir(root: &Path, workdir: Option<&str>) -> Result<PathBuf> {
+    resolve_workdir_or_grant(root, None, "", workdir)
+}
+
+/// [`resolve_workdir`] with an escape-root grant escape hatch (ADR-0109): a
+/// `workdir` outside root is allowed when the user granted `tool` access to it.
+/// `extra == None` reduces to the strict [`resolve_workdir`].
+pub fn resolve_workdir_or_grant(
+    root: &Path,
+    extra: Option<&crate::extra_roots::ExtraRootStore>,
+    tool: &str,
+    workdir: Option<&str>,
+) -> Result<PathBuf> {
     match workdir {
         None => Ok(root.to_path_buf()),
         Some(w) => {
-            let p = resolve_under_root(root, w)?;
+            let p = resolve_under_root_or_grant(root, extra, tool, w)?;
             if !p.is_dir() {
                 anyhow::bail!("workdir is not a directory: {w}");
             }
@@ -293,12 +351,32 @@ pub fn list_files(root: &Path, pattern: &str, excludes: &[String]) -> Result<Fil
 /// Bash is opt-in at the head level (ADR-0010): call [`BashTool::new`] directly and
 /// register it when `ENTANGLEMENT_ENABLE_BASH=1`.
 pub fn host_tools(root: PathBuf) -> ToolRegistry {
+    host_tools_with_extra_roots(root, None)
+}
+
+/// [`host_tools`] with an optional escape-root grant store (ADR-0109) wired into
+/// the path-touching tools (`read`/`edit`/`write`), so an approved out-of-root
+/// path is reachable. `glob`/`grep` stay strictly root-contained (their
+/// pattern-relative search has no single path to approve). `None` is byte-
+/// identical to the pre-ADR-0109 strict quintet.
+pub fn host_tools_with_extra_roots(
+    root: PathBuf,
+    extra: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
+) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
-    reg.register(ReadTool::new(root.clone()));
+    let mut read = ReadTool::new(root.clone());
+    let mut edit = EditTool::new(root.clone());
+    let mut write = WriteTool::new(root.clone());
+    if let Some(e) = &extra {
+        read = read.with_extra_roots(e.clone());
+        edit = edit.with_extra_roots(e.clone());
+        write = write.with_extra_roots(e.clone());
+    }
+    reg.register(read);
     reg.register(GlobTool::new(root.clone()));
     reg.register(GrepTool::new(root.clone()));
-    reg.register(EditTool::new(root.clone()));
-    reg.register(WriteTool::new(root.clone()));
+    reg.register(edit);
+    reg.register(write);
     reg
 }
 
@@ -668,6 +746,65 @@ mod tests {
         let resolved = resolve_under_root(&dir.path, "a/b/c.txt").unwrap();
         assert!(resolved.ends_with("a/b/c.txt"));
         assert!(resolved.starts_with(dir.path.canonicalize().unwrap()));
+    }
+
+    /// ADR-0109: an out-of-root path is refused with no grant, allowed once a
+    /// grant for that exact `(tool, path)` exists, and never satisfies a
+    /// different tool's check.
+    #[test]
+    fn escape_root_grant_permits_only_the_granted_tool_and_path() {
+        use crate::extra_roots::ExtraRootStore;
+        use std::sync::Arc;
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("f.txt"), "x\n").unwrap();
+        let target = outside.join("f.txt");
+        let target_str = target.to_string_lossy().into_owned();
+
+        let store = Arc::new(ExtraRootStore::ephemeral());
+        // No grant → still refused, even with a store present.
+        let err =
+            resolve_under_root_or_grant(&dir.path, Some(&store), "read", &target_str).unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+
+        // Grant `read` on this path (session scope) → allowed for `read`,
+        // still refused for `write` (per-tool isolation).
+        let canon = escaping_path(&dir.path, &target_str).expect("escapes root");
+        store.record("read", &canon, entanglement_core::ApprovalScope::Session);
+        let ok = resolve_under_root_or_grant(&dir.path, Some(&store), "read", &target_str).unwrap();
+        assert_eq!(ok, canon);
+        let err =
+            resolve_under_root_or_grant(&dir.path, Some(&store), "write", &target_str).unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+    }
+
+    /// ADR-0109: an in-root path is unaffected by the grant machinery.
+    #[test]
+    fn escape_root_grant_does_not_change_in_root_resolution() {
+        use crate::extra_roots::ExtraRootStore;
+        use std::sync::Arc;
+        let dir = TempDir::new();
+        let store = Arc::new(ExtraRootStore::ephemeral());
+        let resolved =
+            resolve_under_root_or_grant(&dir.path, Some(&store), "read", "a/b.txt").unwrap();
+        assert!(resolved.ends_with("a/b.txt"));
+        assert!(resolved.starts_with(dir.path.canonicalize().unwrap()));
+    }
+
+    /// `escaping_path` reports the resolved target only when it leaves root.
+    #[test]
+    fn escaping_path_detects_out_of_root_only() {
+        let dir = TempDir::new();
+        assert!(escaping_path(&dir.path, "inside.txt").is_none());
+        let out = TempDir::new();
+        let abs = out.join("x.txt").to_string_lossy().into_owned();
+        assert!(escaping_path(&dir.path, &abs).is_some());
     }
 
     /// #163: `glob` must not surface files reached through a symlink that leaves

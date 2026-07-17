@@ -402,6 +402,11 @@ async fn supervisor(
             // descendant left running has no consumer for its answers and keeps
             // burning provider tokens. Walk the tree and close every descendant
             // alongside the target.
+            // The closed sub-tree's root has a parent *outside* the closed set
+            // (descendants' parents are themselves closing) — capture it before
+            // the links are torn down so the still-live parent's `children`
+            // mirror can drop the retired child.
+            let root_parent = parent_links.get(session).cloned().flatten();
             for victim in collect_subtree(session, &parent_links) {
                 // Dropping the command channel makes the task's `rx.recv()`
                 // return `None`; it emits `SessionEnded` and exits. Unknown
@@ -414,6 +419,11 @@ async fn supervisor(
                 // (ADR-0028), so a `Prompt` queued behind this `CloseSession`
                 // can't respawn it blank.
                 closed.insert(victim);
+            }
+            if let Some(parent) = root_parent {
+                if let Some(ptx) = sessions.get(&parent) {
+                    let _ = ptx.send(SessionCmd::ChildClosed(session.clone())).await;
+                }
             }
             continue;
         }
@@ -490,6 +500,9 @@ async fn supervisor(
                     profile,
                     Some(initial_session),
                     parent,
+                    // Resume reconstructs `predecessor` from the log (replay);
+                    // pass `None` so it isn't overwritten.
+                    None,
                     seqs2,
                     activity2,
                 )
@@ -502,6 +515,7 @@ async fn supervisor(
         if let InMsg::Spawn {
             session: child,
             parent,
+            predecessor,
             agent,
             prompt,
         } = &msg
@@ -538,16 +552,21 @@ async fn supervisor(
                     continue;
                 }
             };
+            // `parent = None` is a root spawn (the `/compact` successor fork,
+            // ADR-0110): it records `predecessor` for lineage but joins no spawn
+            // sub-tree, so a `CloseSession` on the source never cascades onto it.
+            let parent = parent.clone();
+            let is_root = parent.is_none();
             // Record the parent link *before* spawning so it's in place for any
             // later lazy path, and so the child starts under the requested profile.
-            parent_links.insert(child.clone(), Some(parent.clone()));
+            parent_links.insert(child.clone(), parent.clone());
             session_meta.insert(
                 child.clone(),
                 SessionInfo {
                     session: child.clone(),
-                    parent: Some(parent.clone()),
+                    parent: parent.clone(),
                     profile: profile.name.clone(),
-                    root: false,
+                    root: is_root,
                     profile_detail: Some(profile.detail()),
                 },
             );
@@ -555,17 +574,38 @@ async fn supervisor(
             let ev = events.clone();
             let cfg2 = cfg.clone();
             let sid = child.clone();
-            let parent = Some(parent.clone());
+            let predecessor = predecessor.clone();
+            let parent_for_loop = parent.clone();
             let seqs2 = seqs.clone();
             let activity2 = activity.clone();
             tokio::spawn(async move {
-                session_loop(sid, srx, ev, cfg2, profile, None, parent, seqs2, activity2).await
+                session_loop(
+                    sid,
+                    srx,
+                    ev,
+                    cfg2,
+                    profile,
+                    None,
+                    parent_for_loop,
+                    predecessor,
+                    seqs2,
+                    activity2,
+                )
+                .await
             });
             // Queue the initial prompt; the child drains it after its lifecycle
             // events. Spawn prompts are text-only (#197).
             let content = vec![entanglement_provider::ContentPart::text(prompt.clone())];
             let _ = stx.send(SessionCmd::Prompt(content)).await;
             sessions.insert(child.clone(), stx);
+            // Mirror the child→parent edge onto the parent's live `children`
+            // list. Best-effort: if the parent task already exited, the edge
+            // still lives in `parent_links`; the mirror is a convenience view.
+            if let Some(parent_id) = parent.as_ref() {
+                if let Some(ptx) = sessions.get(parent_id) {
+                    let _ = ptx.send(SessionCmd::ChildSpawned(child.clone())).await;
+                }
+            }
             continue;
         }
 
@@ -612,7 +652,10 @@ async fn supervisor(
             let seqs2 = seqs.clone();
             let activity2 = activity.clone();
             tokio::spawn(async move {
-                session_loop(sid, srx, ev, cfg2, profile, None, parent, seqs2, activity2).await
+                session_loop(
+                    sid, srx, ev, cfg2, profile, None, parent, None, seqs2, activity2,
+                )
+                .await
             });
             sessions.insert(session_id.clone(), stx);
         }

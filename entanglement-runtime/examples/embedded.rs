@@ -110,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
         resolver,
         grants,
         Hooks::default(),
+        None,
     );
 
     let acme = SessionId::new(format!("acme:{}", SessionId::new_uuid()));

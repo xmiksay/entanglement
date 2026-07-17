@@ -32,6 +32,7 @@ pub mod agents;
 pub mod ask_user;
 pub mod cancel;
 pub mod config;
+pub mod extra_roots;
 pub mod file_change;
 pub mod frontmatter;
 pub mod grants;

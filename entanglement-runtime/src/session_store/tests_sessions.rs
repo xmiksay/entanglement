@@ -11,6 +11,7 @@ fn list_sessions_skips_one_bad_file() {
             LogPayload::Out(OutEvent::SessionStarted {
                 session: id.clone(),
                 parent: None,
+                predecessor: None,
                 profile: "build".to_string(),
                 model: None,
                 root: true,
@@ -247,6 +248,7 @@ fn list_sessions_captures_first_prompt_content_and_legacy_text() {
             LogPayload::Out(OutEvent::SessionStarted {
                 session: id.clone(),
                 parent: None,
+                predecessor: None,
                 profile: "build".to_string(),
                 model: None,
                 root: true,
@@ -307,6 +309,7 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
         LogPayload::Out(OutEvent::SessionStarted {
             session: root_id.clone(),
             parent: None,
+            predecessor: None,
             profile: "build".to_string(),
             model: None,
             root: true,
@@ -319,6 +322,7 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
         LogPayload::Out(OutEvent::SessionStarted {
             session: child1_id.clone(),
             parent: Some(root_id.clone()),
+            predecessor: None,
             profile: "build".to_string(),
             model: None,
             root: false,
@@ -331,6 +335,7 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
         LogPayload::Out(OutEvent::SessionStarted {
             session: child2_id.clone(),
             parent: Some(root_id.clone()),
+            predecessor: None,
             profile: "build".to_string(),
             model: None,
             root: false,

@@ -3,7 +3,8 @@
 //! (detected by extension) comes back as a base64 image **content block** the
 //! provider renders to its native image format (#221).
 
-use super::{resolve_under_root, truncate_output};
+use super::{resolve_under_root, resolve_under_root_or_grant, truncate_output};
+use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -11,6 +12,7 @@ use base64::Engine as _;
 use entanglement_core::ContentPart;
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::sync::Arc;
 
 /// Map an image file extension to its IANA media type, or `None` for a
 /// non-image. Only the formats the model providers accept inline (Anthropic's
@@ -35,6 +37,9 @@ type OnReadCallback = Box<dyn Fn(String, Vec<u8>) + Send + Sync>;
 pub struct ReadTool {
     root: std::path::PathBuf,
     on_read: Option<OnReadCallback>,
+    /// Approval-gated out-of-root access (ADR-0109). `None` keeps strict
+    /// containment (standalone/test constructors).
+    extra_roots: Option<Arc<ExtraRootStore>>,
 }
 
 impl ReadTool {
@@ -42,7 +47,14 @@ impl ReadTool {
         Self {
             root,
             on_read: None,
+            extra_roots: None,
         }
+    }
+
+    /// Permit approved out-of-root reads (ADR-0109) via the shared grant store.
+    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
+        self.extra_roots = Some(extra);
+        self
     }
 
     #[allow(dead_code)]
@@ -100,7 +112,12 @@ impl Tool for ReadTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: ReadInput = serde_json::from_str(input)
             .context("invalid input to read: expected {\"path\": string, ...}")?;
-        let full = resolve_under_root(&self.root, &parsed.path)?;
+        let full = resolve_under_root_or_grant(
+            &self.root,
+            self.extra_roots.as_deref(),
+            "read",
+            &parsed.path,
+        )?;
         let bytes = tokio::fs::read(&full)
             .await
             .with_context(|| format!("reading {}", parsed.path))?;
@@ -136,7 +153,12 @@ impl Tool for ReadTool {
         let Some(media_type) = image_media_type(&parsed.path) else {
             return Ok(crate::tools::text_parts(self.run(input).await?));
         };
-        let full = resolve_under_root(&self.root, &parsed.path)?;
+        let full = resolve_under_root_or_grant(
+            &self.root,
+            self.extra_roots.as_deref(),
+            "read",
+            &parsed.path,
+        )?;
         let bytes = tokio::fs::read(&full)
             .await
             .with_context(|| format!("reading {}", parsed.path))?;
@@ -182,6 +204,7 @@ impl Tool for ReadRawTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: ReadRawInput = serde_json::from_str(input)
             .context("invalid input to read_raw: expected {\"path\": string}")?;
+        // `read_raw` is rhai-internal; it stays strictly root-contained.
         let full = resolve_under_root(&self.root, &parsed.path)?;
         let bytes = tokio::fs::read(&full)
             .await

@@ -473,6 +473,7 @@ fn replay_rebinds_and_reconstructs_memory() {
             OutEvent::SessionStarted {
                 session: sid.clone(),
                 parent: None,
+                predecessor: None,
                 profile: "build".into(),
                 model: None,
                 root: true,

@@ -3,10 +3,12 @@
 //! On `OutEvent::Compacted`, the TUI forks the summary into a fresh session:
 //! the source session's `Context` was never mutated (the engine's `compact_op`
 //! emits the summary as a report, not a mutation), so the fork is the *only*
-//! place the summary lands as a prompt. The source view stays intact and the
-//! new view is switched to — mirroring the `propose_plan` handoff (#141),
-//! except here the fork is a **child** of the source (lineage: `Spawn`'s
-//! `parent` records the source id), not a fresh root.
+//! place the summary lands as a prompt. The fork is a **successor** (ADR-0110):
+//! spawned as a fresh *root* with `predecessor` = the source id (lineage only,
+//! not a spawn edge), and the source's interactive session is **closed** right
+//! after — the user moves forward into the compacted successor, the original is
+//! retired (its log persists). Root, not child, so closing the source doesn't
+//! cascade onto the successor.
 
 use entanglement_core::{InMsg, SessionId};
 
@@ -72,16 +74,28 @@ impl App {
         self.pending_compact_fork.take()
     }
 
-    /// Build the `InMsg::Spawn` for a recorded compaction fork (ADR-0101):
-    /// the summary seeds the forked session's first user message, the fork is a
-    /// child of the source (`parent` = source id) for lineage, and the source's
-    /// agent profile is inherited.
+    /// Build the `InMsg::Spawn` for a recorded compaction fork (ADR-0110): the
+    /// summary seeds the successor's first user message, the successor is a fresh
+    /// **root** (`parent = None`) with `predecessor` = the source id (lineage,
+    /// not a spawn edge), and the source's agent profile is inherited. The caller
+    /// pairs this with a [`InMsg::CloseSession`] on the source (see
+    /// [`App::close_predecessor`]).
     pub fn spawn_for_fork(fork: &CompactFork) -> InMsg {
         InMsg::Spawn {
             session: fork.new_session.clone(),
-            parent: fork.source.clone(),
+            parent: None,
+            predecessor: Some(fork.source.clone()),
             agent: fork.agent.clone(),
             prompt: fork.summary.clone(),
+        }
+    }
+
+    /// Build the `InMsg::CloseSession` that retires the compaction source once
+    /// its successor is spawned (ADR-0110): the user continues in the successor,
+    /// the original's interactive session ends (its log is preserved).
+    pub fn close_predecessor(fork: &CompactFork) -> InMsg {
+        InMsg::CloseSession {
+            session: fork.source.clone(),
         }
     }
 }
@@ -172,22 +186,30 @@ mod tests {
         assert_eq!(fork.new_session, active);
         assert_eq!(fork.agent, "build");
         assert!(fork.summary.contains("user asked for X, agent did Y"));
-        // The spawn is addressed to the fork under the source's profile, as a
-        // child of the source.
+        // The spawn is addressed to the successor under the source's profile, as
+        // a fresh root (no parent) that records the source as its predecessor
+        // (ADR-0110).
         let spawn = App::spawn_for_fork(&fork);
         match spawn {
             InMsg::Spawn {
                 session,
                 parent,
+                predecessor,
                 agent,
                 prompt,
             } => {
                 assert_eq!(session, active);
-                assert_eq!(parent, SessionId::new("s1"));
+                assert_eq!(parent, None, "successor is a root, not a child");
+                assert_eq!(predecessor, Some(SessionId::new("s1")));
                 assert_eq!(agent, "build");
                 assert!(prompt.contains("user asked for X, agent did Y"));
             }
             other => panic!("expected Spawn, got {other:?}"),
+        }
+        // And the source is retired once the successor spawns.
+        match App::close_predecessor(&fork) {
+            InMsg::CloseSession { session } => assert_eq!(session, SessionId::new("s1")),
+            other => panic!("expected CloseSession, got {other:?}"),
         }
         assert!(
             app.take_pending_compact_fork().is_none(),

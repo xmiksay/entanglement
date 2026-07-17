@@ -13,15 +13,18 @@
 //! `input_file` → stdin is explicitly closed, not inherited from the engine);
 //! `output_file` gets the full untruncated stdout, with a `<output_file>.stderr`
 //! sibling always written alongside. With no `output_file` an artifact is still
-//! written, auto-named under `.entanglement/tmp/call-output/`, and its
-//! root-relative path is named in the result header.
+//! written, auto-named under a runtime-owned per-project **scratch dir** outside
+//! the repo (`session_store::scratch_dir`, wired via [`CallTool::with_scratch_base`])
+//! so it neither pollutes the workdir nor re-triggers the definitions watcher;
+//! its absolute path is named in the result header. Standalone/test constructors
+//! with no scratch base fall back to `<root>/.entanglement/tmp/call-output/`.
 //!
 //! Like `bash`, an opt-in bubblewrap confinement layer is available
 //! (ADR-0104, [`SandboxPolicy`]).
 
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::sandbox::{self, SandboxPolicy};
-use super::{resolve_under_root, resolve_workdir, truncate_output};
+use super::{resolve_under_root, truncate_output};
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -40,6 +43,12 @@ static CALL_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub struct CallTool {
     root: std::path::PathBuf,
+    /// Where a default (no `output_file`) artifact is written: a runtime-owned
+    /// per-project scratch dir *outside* the repo (`session_store::scratch_dir`)
+    /// so a routine `call` neither pollutes the workdir nor re-triggers the
+    /// definitions watcher. `None` falls back to `<root>/.entanglement/tmp` for
+    /// the standalone/test constructors that have no session context.
+    scratch_base: Option<PathBuf>,
     /// Env vars scrubbed from the child before spawn — the provider API keys
     /// (`ZAI_API_KEY`, …) so a model-authored binary can't read the engine's
     /// credentials (#164). The no-shell design doesn't help here: a plain
@@ -50,15 +59,36 @@ pub struct CallTool {
     /// [`SandboxPolicy::none()`] — unsandboxed, unchanged from before this
     /// existed.
     sandbox: SandboxPolicy,
+    /// Approval-gated out-of-root `workdir` (ADR-0109).
+    extra_roots: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
 }
 
 impl CallTool {
     pub fn new(root: std::path::PathBuf) -> Self {
         Self {
             root,
+            scratch_base: None,
             secret_env: Vec::new(),
             sandbox: SandboxPolicy::none(),
+            extra_roots: None,
         }
+    }
+
+    /// Permit an approved out-of-root `workdir` (ADR-0109).
+    pub fn with_extra_roots(
+        mut self,
+        extra: std::sync::Arc<crate::extra_roots::ExtraRootStore>,
+    ) -> Self {
+        self.extra_roots = Some(extra);
+        self
+    }
+
+    /// Write default (no `output_file`) artifacts under `scratch_base` — the
+    /// per-project scratch dir from `session_store::scratch_dir`, outside the
+    /// repo and every watched tree.
+    pub fn with_scratch_base(mut self, scratch_base: PathBuf) -> Self {
+        self.scratch_base = Some(scratch_base);
+        self
     }
 
     /// Scrub `vars` from the spawned command's environment (provider API keys).
@@ -114,7 +144,11 @@ fn stderr_sibling(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-fn resolve_output_target(root: &Path, output_file: &Option<String>) -> Result<OutputTarget> {
+fn resolve_output_target(
+    root: &Path,
+    scratch_base: Option<&Path>,
+    output_file: &Option<String>,
+) -> Result<OutputTarget> {
     match output_file {
         Some(rel) => {
             let stdout_abs = resolve_under_root(root, rel)?;
@@ -128,12 +162,17 @@ fn resolve_output_target(root: &Path, output_file: &Option<String>) -> Result<Ou
         }
         None => {
             let seq = CALL_SEQ.fetch_add(1, Ordering::Relaxed);
-            let rel = format!(
-                ".entanglement/tmp/call-output/call-{}-{seq}.stdout",
-                std::process::id()
-            );
-            let stdout_abs = root.join(&rel);
+            let name = format!("call-output/call-{}-{seq}.stdout", std::process::id());
+            // Default artifacts go to the runtime-owned per-project scratch dir
+            // (outside the repo). The header names the absolute path since it is
+            // no longer root-relative. Standalone/test constructors with no
+            // scratch base fall back to the legacy in-repo location.
+            let stdout_abs = match scratch_base {
+                Some(base) => base.join(&name),
+                None => root.join(".entanglement/tmp").join(&name),
+            };
             let stderr_abs = stderr_sibling(&stdout_abs);
+            let rel = stdout_abs.display().to_string();
             Ok(OutputTarget {
                 stdout_abs,
                 stderr_abs,
@@ -239,8 +278,8 @@ impl Tool for CallTool {
                         write the full, untruncated raw stdout to (missing \
                         parent dirs are created); a `<output_file>.stderr` \
                         sibling is always written alongside. Omitted → an \
-                        artifact is still written under \
-                        `.entanglement/tmp/call-output/`, named in the result."
+                        artifact is still written to a runtime-owned scratch dir \
+                        outside the project, its absolute path named in the result."
                 },
                 "workdir": {
                     "type": "string",
@@ -271,8 +310,17 @@ impl Tool for CallTool {
             }
             None => None,
         };
-        let output_target = resolve_output_target(&self.root, &parsed.output_file)?;
-        let cwd = resolve_workdir(&self.root, parsed.workdir.as_deref())?;
+        let output_target = resolve_output_target(
+            &self.root,
+            self.scratch_base.as_deref(),
+            &parsed.output_file,
+        )?;
+        let cwd = super::resolve_workdir_or_grant(
+            &self.root,
+            self.extra_roots.as_deref(),
+            "call",
+            parsed.workdir.as_deref(),
+        )?;
 
         let mut cmd = sandbox::command(&self.sandbox, &self.root, &parsed.command, &parsed.args);
         cmd.current_dir(&cwd)
@@ -450,6 +498,60 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn default_artifact_goes_to_scratch_base_not_the_repo() {
+        let root = TempDir::new();
+        let scratch = TempDir::new();
+        let target = resolve_output_target(&root.path, Some(&scratch.path), &None).unwrap();
+        assert!(!target.explicit);
+        assert!(
+            target.stdout_abs.starts_with(&scratch.path),
+            "default artifact under scratch: {}",
+            target.stdout_abs.display()
+        );
+        assert!(
+            !target.stdout_abs.starts_with(&root.path),
+            "default artifact must NOT be under the project root: {}",
+            target.stdout_abs.display()
+        );
+        // The header names the absolute scratch path.
+        assert_eq!(target.rel, target.stdout_abs.display().to_string());
+    }
+
+    #[test]
+    fn default_artifact_falls_back_to_repo_without_scratch_base() {
+        let root = TempDir::new();
+        let target = resolve_output_target(&root.path, None, &None).unwrap();
+        assert!(target
+            .stdout_abs
+            .starts_with(root.path.join(".entanglement/tmp")));
+    }
+
+    #[test]
+    fn explicit_output_file_stays_contained_to_root() {
+        let root = TempDir::new();
+        let scratch = TempDir::new();
+        let target = resolve_output_target(
+            &root.path,
+            Some(&scratch.path),
+            &Some("out/log.txt".to_string()),
+        )
+        .unwrap();
+        assert!(target.explicit);
+        assert!(
+            target.stdout_abs.starts_with(&root.path),
+            "explicit output_file stays under root: {}",
+            target.stdout_abs.display()
+        );
+        // A path escaping root is still refused.
+        assert!(resolve_output_target(
+            &root.path,
+            Some(&scratch.path),
+            &Some("../escape.txt".to_string()),
+        )
+        .is_err());
     }
 
     #[test]

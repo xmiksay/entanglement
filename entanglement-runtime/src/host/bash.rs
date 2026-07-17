@@ -9,7 +9,7 @@
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::jobs::JobRegistry;
 use super::sandbox::{self, SandboxPolicy};
-use super::{resolve_workdir, truncate_head_tail};
+use super::truncate_head_tail;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -34,6 +34,8 @@ pub struct BashTool {
     /// [`SandboxPolicy::none()`] — unsandboxed, unchanged from before this
     /// existed.
     sandbox: SandboxPolicy,
+    /// Approval-gated out-of-root `workdir` (ADR-0109).
+    extra_roots: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
 }
 
 impl BashTool {
@@ -43,7 +45,17 @@ impl BashTool {
             secret_env: Vec::new(),
             jobs: JobRegistry::new(),
             sandbox: SandboxPolicy::none(),
+            extra_roots: None,
         }
+    }
+
+    /// Permit an approved out-of-root `workdir` (ADR-0109).
+    pub fn with_extra_roots(
+        mut self,
+        extra: std::sync::Arc<crate::extra_roots::ExtraRootStore>,
+    ) -> Self {
+        self.extra_roots = Some(extra);
+        self
     }
 
     /// Scrub `vars` from the spawned command's environment (provider API keys).
@@ -149,7 +161,12 @@ impl Tool for BashTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: BashInput = serde_json::from_str(input)
             .context("invalid input to bash: expected {\"command\": string, ...}")?;
-        let cwd = resolve_workdir(&self.root, parsed.workdir.as_deref())?;
+        let cwd = super::resolve_workdir_or_grant(
+            &self.root,
+            self.extra_roots.as_deref(),
+            "bash",
+            parsed.workdir.as_deref(),
+        )?;
         let mut cmd = self.build_command(&parsed.command, &cwd);
 
         if parsed.run_in_background {

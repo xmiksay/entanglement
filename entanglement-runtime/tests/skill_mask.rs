@@ -198,6 +198,7 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
         resolver,
         grants,
         Default::default(),
+        None,
     );
 
     let sid = SessionId::new("s1");

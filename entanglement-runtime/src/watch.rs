@@ -16,13 +16,14 @@
 //! created after startup (e.g. the first `~/.claude/skills` on a machine that
 //! never had one) needs a restart to be picked up.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
 use entanglement_core::ProfileRegistry;
 use notify_debouncer_mini::DebounceEventResult;
+use sha2::{Digest, Sha256};
 
 use crate::config::agent_models::AgentModelStore;
 use crate::policy::DefaultGrantStore;
@@ -69,20 +70,24 @@ pub fn spawn_watcher(
     // Baseline captured *before* the first debounced firing can land, so even
     // the very first wakeup is checked against real state rather than always
     // reloading unconditionally.
-    let mut last_fingerprint = Some(fingerprint(&cwd));
+    let mut last_fingerprint = fingerprint(&cwd, &Fingerprint::default());
     spawn_debounced_watcher(paths, DEBOUNCE, move || {
-        if !fingerprint_changed(&mut last_fingerprint, fingerprint(&cwd)) {
-            // On this filesystem a bare `read()` of a watched file — which
-            // `reload()` itself does on every pass — observably fires `notify`
-            // even though nothing changed, which without this check makes the
-            // watcher perpetually re-trigger itself forever (reload → reads →
-            // fires `notify` → reload → …). `fingerprint()` only `stat()`s
-            // (size + mtime), which does not itself generate a `notify` event,
-            // so an unchanged-content firing is now a cheap no-op instead of a
-            // full re-parse + user-facing notice.
+        let fresh = fingerprint(&cwd, &last_fingerprint);
+        let changed = definitions_changed(&last_fingerprint, &fresh);
+        last_fingerprint = fresh;
+        if !changed {
+            // Two reasons a firing lands with nothing to reload: (1) a bare
+            // `read()` of a watched file — which `reload()` itself does on every
+            // pass — observably fires `notify` on this filesystem even though
+            // nothing changed; (2) a write to a non-definition file under a
+            // watched tree (e.g. a `call`/`bash` output artifact under
+            // `.entanglement/tmp/`). The content fingerprint is blind to both:
+            // it only tracks definition/config files and compares by SHA-256, so
+            // a stray write or a same-content re-save is a cheap no-op instead
+            // of a full re-parse + user-facing notice.
             tracing::debug!(
-                "definitions watcher fired but the watched trees are unchanged \
-                 (size/mtime) — skipping reload"
+                "definitions watcher fired but no agent/skill/config content \
+                 changed — skipping reload"
             );
             return;
         }
@@ -98,27 +103,44 @@ pub fn spawn_watcher(
     })
 }
 
-/// A cheap snapshot of every file under the watched trees: `(path, inode,
-/// size, mtime)`, sorted so two fingerprints of identical on-disk state
-/// compare equal regardless of `read_dir` ordering. Computed via `stat()`
-/// only — deliberately never opens/reads file *contents*, since that's the
-/// operation this fingerprint exists to avoid re-triggering (see
-/// [`spawn_watcher`]). Inode is included alongside size/mtime so a
-/// delete-then-recreate-with-identical-content-and-mtime edge case still
-/// registers as a change.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Fingerprint(Vec<(PathBuf, u64, u64, Option<SystemTime>)>);
+/// Per-file stamp: `(mtime, size, sha256-hex)`. The stat pair is a cheap cache
+/// key to skip re-hashing an untouched file; the hash is the actual arbiter of
+/// "did the content change" (see [`definitions_changed`]).
+type FileStamp = (Option<SystemTime>, u64, String);
 
-fn fingerprint(cwd: &Path) -> Fingerprint {
-    let mut entries = Vec::new();
-    for root in watch_paths(cwd).into_iter().filter(|p| p.exists()) {
-        fingerprint_into(&root, &mut entries);
+/// A content fingerprint of the **definition/config** files under the watched
+/// trees: `path -> (mtime, size, sha256)`. Only files that actually feed a
+/// loader are included (agent/skill `*.md`, managed `*.yml`/`*.yaml`/`.env`) —
+/// a `call`/`bash` output artifact dropped under `.entanglement/tmp/` has none
+/// of those shapes, so it never enters the map and never triggers a reload.
+/// Sorted by path (a `BTreeMap`) so comparison is order-independent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Fingerprint(BTreeMap<PathBuf, FileStamp>);
+
+/// Whether a path is a definition/config file worth hashing. Agent/skill
+/// sources are `*.md`; the managed catalog/config/grants files are `*.yml`
+/// (`.yaml` tolerated); the managed key file is `.env` (no extension).
+fn is_definition_file(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("md") | Some("yml") | Some("yaml") => true,
+        _ => path.file_name().and_then(|n| n.to_str()) == Some(".env"),
     }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    Fingerprint(entries)
 }
 
-fn fingerprint_into(path: &Path, out: &mut Vec<(PathBuf, u64, u64, Option<SystemTime>)>) {
+/// Build the fingerprint, reusing `prev`'s cached hash for any file whose
+/// `(mtime, size)` is unchanged (stage 1) and only reading + SHA-256-hashing a
+/// file whose stat pair moved (stage 2). A no-op `read()` — which `reload()`
+/// itself does every pass — leaves `(mtime, size)` untouched, so it costs a
+/// `stat()`, never a re-hash.
+fn fingerprint(cwd: &Path, prev: &Fingerprint) -> Fingerprint {
+    let mut map = BTreeMap::new();
+    for root in watch_paths(cwd).into_iter().filter(|p| p.exists()) {
+        fingerprint_into(&root, prev, &mut map);
+    }
+    Fingerprint(map)
+}
+
+fn fingerprint_into(path: &Path, prev: &Fingerprint, out: &mut BTreeMap<PathBuf, FileStamp>) {
     let Ok(meta) = std::fs::metadata(path) else {
         return;
     };
@@ -127,28 +149,45 @@ fn fingerprint_into(path: &Path, out: &mut Vec<(PathBuf, u64, u64, Option<System
             return;
         };
         for entry in entries.flatten() {
-            fingerprint_into(&entry.path(), out);
+            fingerprint_into(&entry.path(), prev, out);
         }
-    } else {
-        #[cfg(unix)]
-        let inode = {
-            use std::os::unix::fs::MetadataExt;
-            meta.ino()
-        };
-        #[cfg(not(unix))]
-        let inode = 0u64;
-        out.push((path.to_path_buf(), inode, meta.len(), meta.modified().ok()));
+        return;
     }
+    if !is_definition_file(path) {
+        return;
+    }
+    let mtime = meta.modified().ok();
+    let size = meta.len();
+    // Stage 1: unchanged stat pair -> reuse the cached hash, no read.
+    if let Some((pm, ps, hash)) = prev.0.get(path) {
+        if *pm == mtime && *ps == size {
+            out.insert(path.to_path_buf(), (mtime, size, hash.clone()));
+            return;
+        }
+    }
+    // Stage 2: new file or moved stat pair -> read + hash.
+    let hash = std::fs::read(path)
+        .map(|bytes| format!("{:x}", Sha256::digest(&bytes)))
+        .unwrap_or_default();
+    out.insert(path.to_path_buf(), (mtime, size, hash));
 }
 
-/// Whether `fresh` differs from `*last`, updating `*last` to `fresh` either
-/// way so the next call compares against the latest known state. Split out of
-/// [`spawn_watcher`]'s closure so the "did anything actually change" decision
-/// is unit-testable without a real timer or a live `notify` watcher.
-fn fingerprint_changed(last: &mut Option<Fingerprint>, fresh: Fingerprint) -> bool {
-    let changed = last.as_ref() != Some(&fresh);
-    *last = Some(fresh);
-    changed
+/// Whether the definition/config **content** differs between two fingerprints —
+/// compared by the file set and each file's SHA-256, deliberately **ignoring**
+/// mtime/size. So a same-content re-save (a `touch`, an editor rewrite with no
+/// change) that bumps only mtime is *not* a change, while an add/remove of a
+/// tracked file, or any content edit, is. Split out so the decision is
+/// unit-testable without a real timer or a live `notify` watcher.
+fn definitions_changed(old: &Fingerprint, new: &Fingerprint) -> bool {
+    if old.0.len() != new.0.len() {
+        return true;
+    }
+    // Both maps are path-sorted and equal length: a mismatched key or hash at
+    // any position is a real change.
+    old.0
+        .iter()
+        .zip(new.0.iter())
+        .any(|((op, os), (np, ns))| op != np || os.2 != ns.2)
 }
 
 /// Pure watch/debounce primitive: watches every existing path in `paths`
@@ -308,44 +347,95 @@ mod tests {
         let file = dir.join("test.md");
         std::fs::write(&file, "v1").unwrap();
 
-        let fp1 = fingerprint(cwd.path());
+        let fp1 = fingerprint(cwd.path(), &Fingerprint::default());
         for _ in 0..5 {
             let _ = std::fs::read_to_string(&file).unwrap();
         }
-        let fp2 = fingerprint(cwd.path());
-        assert_eq!(
-            fp1, fp2,
-            "repeated reads of unchanged files must not perturb the fingerprint"
+        let fp2 = fingerprint(cwd.path(), &fp1);
+        assert!(
+            !definitions_changed(&fp1, &fp2),
+            "repeated reads of unchanged files must not count as a change"
         );
 
         // Some filesystems have coarse mtime resolution; make sure the write
         // below lands in a distinguishably later tick.
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&file, "v2, different length").unwrap();
-        let fp3 = fingerprint(cwd.path());
-        assert_ne!(
-            fp2, fp3,
+        let fp3 = fingerprint(cwd.path(), &fp2);
+        assert!(
+            definitions_changed(&fp2, &fp3),
             "an actual content change must be reflected in the fingerprint"
         );
     }
 
+    /// The core of #1: a write to a non-definition file under a watched tree
+    /// (a `call`/`bash` output artifact under `.entanglement/tmp/`) must not
+    /// register as a change, and neither must a same-content re-save that only
+    /// bumps a real definition file's mtime.
     #[test]
-    fn fingerprint_changed_reports_true_once_then_false_until_a_real_change() {
-        let mut last = None;
-        let a = Fingerprint(vec![(PathBuf::from("a"), 1, 10, None)]);
-        let b = Fingerprint(vec![(PathBuf::from("a"), 1, 20, None)]);
+    fn non_definition_writes_and_mtime_only_touches_are_not_changes() {
+        let cwd = tempfile::tempdir().unwrap();
+        let agents = cwd.path().join(".entanglement").join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let skill = agents.join("test.md");
+        std::fs::write(&skill, "v1").unwrap();
 
+        let fp1 = fingerprint(cwd.path(), &Fingerprint::default());
+
+        // A command dumps output under .entanglement/tmp — not a definition file.
+        let tmp = cwd
+            .path()
+            .join(".entanglement")
+            .join("tmp")
+            .join("call-output");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("call-1.stdout"), "lots of noisy output").unwrap();
+        let fp2 = fingerprint(cwd.path(), &fp1);
         assert!(
-            fingerprint_changed(&mut last, a.clone()),
-            "first observation always counts as a change"
+            !definitions_changed(&fp1, &fp2),
+            "a write to a non-definition (.stdout) file must not trigger a reload"
         );
+
+        // Re-save the definition file with identical content, later mtime.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&skill, "v1").unwrap();
+        let fp3 = fingerprint(cwd.path(), &fp2);
         assert!(
-            !fingerprint_changed(&mut last, a.clone()),
-            "repeating the same fingerprint must not report a change"
+            !definitions_changed(&fp2, &fp3),
+            "a same-content re-save (mtime bump only) must not trigger a reload"
         );
+
+        // A genuine edit still does.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&skill, "v2").unwrap();
+        let fp4 = fingerprint(cwd.path(), &fp3);
         assert!(
-            fingerprint_changed(&mut last, b),
-            "a genuinely different fingerprint must report a change"
+            definitions_changed(&fp3, &fp4),
+            "a real content edit must trigger a reload"
+        );
+    }
+
+    #[test]
+    fn adding_or_removing_a_definition_file_is_a_change() {
+        let cwd = tempfile::tempdir().unwrap();
+        let agents = cwd.path().join(".entanglement").join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let a = agents.join("a.md");
+        std::fs::write(&a, "a").unwrap();
+
+        let fp1 = fingerprint(cwd.path(), &Fingerprint::default());
+        std::fs::write(agents.join("b.md"), "b").unwrap();
+        let fp2 = fingerprint(cwd.path(), &fp1);
+        assert!(
+            definitions_changed(&fp1, &fp2),
+            "adding a definition is a change"
+        );
+
+        std::fs::remove_file(&a).unwrap();
+        let fp3 = fingerprint(cwd.path(), &fp2);
+        assert!(
+            definitions_changed(&fp2, &fp3),
+            "removing a definition is a change"
         );
     }
 

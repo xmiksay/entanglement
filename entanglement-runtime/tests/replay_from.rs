@@ -32,6 +32,7 @@ async fn replay_from_answers_with_content_after_cursor() {
             OutEvent::SessionStarted {
                 session: sid.clone(),
                 parent: None,
+                predecessor: None,
                 profile: "build".into(),
                 model: None,
                 root: true,

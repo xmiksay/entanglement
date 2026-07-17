@@ -708,16 +708,26 @@ pub enum InMsg {
         #[serde(default)]
         args: serde_json::Value,
     },
-    /// Spawn a child session (sub-agent) under `parent`, running `prompt` beneath
-    /// the named `agent` profile (#60, ADR-0021). `session` is the *child's* id.
-    /// The supervisor records the parent link (populating the session tree the
-    /// tree-walk helpers read) and starts the child. The runtime's `agent_spawn`
-    /// tool (or blocking `agent`) issues this, then relays the child's final answer
-    /// back to the parent as a tool result — core needs no notion of "child
-    /// session" in its loop.
+    /// Spawn a session running `prompt` beneath the named `agent` profile (#60,
+    /// ADR-0021). `session` is the new session's id. With `parent = Some(p)` it is
+    /// a **child** sub-agent under `p` (the common case): the supervisor records
+    /// the parent link (populating the spawn tree the tree-walk helpers read) so a
+    /// `CloseSession`/hibernate cascade and the permission ancestor clamp cover it.
+    /// With `parent = None` it is a **root** — used by the `/compact` successor
+    /// fork (ADR-0110), which sets `predecessor = Some(source)` to record the
+    /// session it succeeds *without* joining the source's spawn sub-tree (so
+    /// closing the source doesn't cascade onto the successor). The runtime's
+    /// `agent_spawn` tool (or blocking `agent`) issues the child form, then relays
+    /// the child's final answer back to the parent as a tool result — core needs
+    /// no notion of "child session" in its loop.
     Spawn {
         session: SessionId,
-        parent: SessionId,
+        #[serde(default)]
+        parent: Option<SessionId>,
+        /// The session this one succeeds (a `/compact` fork, ADR-0110). Non-live
+        /// lineage only — never a spawn edge.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        predecessor: Option<SessionId>,
         agent: String,
         prompt: String,
     },
@@ -875,6 +885,11 @@ pub enum OutEvent {
     SessionStarted {
         session: SessionId,
         parent: Option<SessionId>,
+        /// The session this one succeeds (a `/compact` fork, ADR-0110); `None`
+        /// for an ordinary session. Non-live lineage — the predecessor's
+        /// interactive session is closed once the successor starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        predecessor: Option<SessionId>,
         profile: String,
         model: Option<String>,
         root: bool,
@@ -1281,7 +1296,8 @@ mod tests {
         assert!(!InMsg::tool_result(s.clone(), "r1", "x").wire_allowed());
         assert!(!InMsg::Spawn {
             session: s.clone(),
-            parent: s.clone(),
+            parent: Some(s.clone()),
+            predecessor: None,
             agent: "build".into(),
             prompt: "go".into(),
         }

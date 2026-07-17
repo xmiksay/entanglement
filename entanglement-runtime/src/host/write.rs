@@ -4,19 +4,23 @@
 //! if present. Only writes under the working directory (path-escape rejected).
 //! See ADR-0031 (supersedes-by-addition of ADR-0008/0009).
 
-use super::resolve_under_root;
+use super::resolve_under_root_or_grant;
+use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::sync::Arc;
 
 type CanWriteCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 
 pub struct WriteTool {
     root: std::path::PathBuf,
     can_write: Option<CanWriteCallback>,
+    /// Approval-gated out-of-root access (ADR-0109).
+    extra_roots: Option<Arc<ExtraRootStore>>,
 }
 
 impl WriteTool {
@@ -24,7 +28,14 @@ impl WriteTool {
         Self {
             root,
             can_write: None,
+            extra_roots: None,
         }
+    }
+
+    /// Permit approved out-of-root writes (ADR-0109) via the shared grant store.
+    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
+        self.extra_roots = Some(extra);
+        self
     }
 
     #[allow(dead_code)]
@@ -80,7 +91,12 @@ impl Tool for WriteTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: WriteInput = serde_json::from_str(input)
             .context("invalid input to write: expected {\"path\": string, \"content\": string}")?;
-        let target_abs = resolve_under_root(&self.root, &parsed.path)?;
+        let target_abs = resolve_under_root_or_grant(
+            &self.root,
+            self.extra_roots.as_deref(),
+            "write",
+            &parsed.path,
+        )?;
 
         if let Some(ref can_write) = self.can_write {
             can_write(&parsed.path)?;

@@ -377,6 +377,7 @@ fn elapsed_tracks_running_then_freezes_on_end() {
     v.apply_event(OutEvent::SessionStarted {
         session: sid(),
         parent: Some(SessionId::new("root")),
+        predecessor: None,
         profile: "explore".into(),
         model: None,
         root: false,

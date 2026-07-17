@@ -69,6 +69,20 @@ pub fn session_dir(cwd: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Returns the per-project scratch directory (`<session_dir>/tmp`), creating it
+/// if missing. A runtime-owned, always-writable home — outside the project repo
+/// and outside every watched definition tree — for tool artifacts (e.g. the
+/// `call` tool's default stdout/stderr dumps) that would otherwise pollute the
+/// workdir and re-trigger the definitions watcher.
+pub fn scratch_dir(cwd: &Path) -> Result<PathBuf> {
+    let dir = session_dir(cwd)?.join("tmp");
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create scratch directory: {}", dir.display()))?;
+    }
+    Ok(dir)
+}
+
 /// Returns the path to a session's JSONL file.
 pub fn session_path(cwd: &Path, root_session_id: &SessionId) -> Result<PathBuf> {
     let dir = session_dir(cwd)?;

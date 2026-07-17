@@ -2,19 +2,23 @@
 //! (refused if exists); non-unique match errors unless `replaceAll` is set.
 //! Only writes under the working directory (path-escape rejected).
 
-use super::resolve_under_root;
+use super::resolve_under_root_or_grant;
+use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::sync::Arc;
 
 type CanEditCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 
 pub struct EditTool {
     root: std::path::PathBuf,
     can_edit: Option<CanEditCallback>,
+    /// Approval-gated out-of-root access (ADR-0109).
+    extra_roots: Option<Arc<ExtraRootStore>>,
 }
 
 impl EditTool {
@@ -22,7 +26,14 @@ impl EditTool {
         Self {
             root,
             can_edit: None,
+            extra_roots: None,
         }
+    }
+
+    /// Permit approved out-of-root edits (ADR-0109) via the shared grant store.
+    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
+        self.extra_roots = Some(extra);
+        self
     }
 
     #[allow(dead_code)]
@@ -84,7 +95,12 @@ impl Tool for EditTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: EditInput = serde_json::from_str(input)
             .context("invalid input to edit: expected {\"path\": string, \"oldString\": string, \"newString\": string, ...}")?;
-        let target_abs = resolve_under_root(&self.root, &parsed.path)?;
+        let target_abs = resolve_under_root_or_grant(
+            &self.root,
+            self.extra_roots.as_deref(),
+            "edit",
+            &parsed.path,
+        )?;
 
         if let Some(ref can_edit) = self.can_edit {
             can_edit(&parsed.path)?;

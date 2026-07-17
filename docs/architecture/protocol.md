@@ -20,14 +20,14 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
-         | Spawn{session,parent,agent,prompt}   // start a child session (sub-agent) (#60)
+         | Spawn{session,parent:Option,predecessor:Option,agent,prompt}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
          | ReplayFrom{session,correlation_id,after_seq}   // late-subscriber history fetch → History (#160, ADR-0072)
          | CloseSession{session}   // explicit destroy → SessionEnded, tombstones the id (#21)
          | HibernateSession{session}   // trusted-only: evict memory, NO tombstone → SessionHibernated, resumable (#318, ADR-0077)
          | Resume{session,records}   // internal, not serialized (#[serde(skip)]); replay log → session (§6b)
 
-OutEvent = SessionStarted{session,parent?,profile,model?,root,ts}   // lifecycle, no seq
+OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}   // lifecycle, no seq; predecessor = /compact source this session succeeds (ADR-0110)
          | SessionEnded{session,ts}           // lifecycle, no seq
          | SessionHibernated{session,ts}      // lifecycle, no seq; memory evicted, id NOT tombstoned (#318, ADR-0077)
          | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072)
@@ -187,13 +187,20 @@ the session's `&mut Llm` handle directly instead of racing the turn loop's
 inbox `select!`. On success it emits the **persisted, seq-bearing**
 `OutEvent::Compacted{session,seq,summary,kept,auto}` — persistence and
 `ReplayFrom` history cover it for free (both are variant-agnostic over any
-`seq()`-bearing event). **Copy-on-write (ADR-0101):** the source session's
-`Context` is **never mutated** — the summary rides only in the event, and the
-head forks it into a new session via `InMsg::Spawn` (parent = source id, agent
-= source profile, prompt = summary). A truncated summary (`StopReason::MaxTokens`)
-is refused outright (`Error`, never forked). `Session::replay`'s `Compacted`
-fold is a **no-op** for `auto: false` — a resumed source recovers its full
-pre-compaction history (the implicit undo). `kept` (#397, ADR-0102) is how many
+`seq()`-bearing event). **Copy-on-write (ADR-0101), forking a *successor*
+(ADR-0110):** the source session's `Context` is **never mutated** — the summary
+rides only in the event, and the head forks it into a **new root** session via
+`InMsg::Spawn` (`parent = None`, `predecessor = Some(source)`, agent = source
+profile, prompt = summary), then **closes the source** with `InMsg::CloseSession`
+so its interactive session is retired (the user moves forward into the compacted
+successor; the source's log is preserved). A truncated summary
+(`StopReason::MaxTokens`) is refused outright (`Error`, never forked). The
+successor is a *root*, not a child of the source, precisely so closing the source
+doesn't cascade onto it. `Session::replay`'s `Compacted` fold is a **no-op** for
+`auto: false` — a resumed *source* would recover its full pre-compaction history,
+but the head now closes the source (closed ids are single-use), so that undo is
+no longer reachable interactively (ADR-0110 amends ADR-0101's implicit undo); the
+history survives only as the persisted log. `kept` (#397, ADR-0102) is how many
 trailing messages ride verbatim inside `summary` rather than being paraphrased
 — clamped to the nearest safe turn boundary by `Context::safe_kept`; `0` (the
 default) means the whole history was summarized with no verbatim tail,

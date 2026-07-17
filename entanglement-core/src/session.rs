@@ -75,6 +75,17 @@ pub(crate) enum SessionCmd {
     /// dropped alongside so a turn parked mid-stream unwinds to this teardown
     /// (stop-then-hibernate) rather than stranding.
     Hibernate,
+    /// A sub-agent this session spawned came to life — append it to
+    /// [`Session::children`][crate::session::Session::children]. Sent by the
+    /// supervisor on [`InMsg::Spawn`] to the *parent* task, mirroring the
+    /// `parent_links` edge it records. A pure state update: applied immediately,
+    /// never stashed, so a mid-turn spawn reflects at once.
+    ChildSpawned(SessionId),
+    /// A child of this session was retired (its sub-tree closed) — remove it from
+    /// [`Session::children`][crate::session::Session::children]. Sent by the
+    /// supervisor on the [`InMsg::CloseSession`] cascade to the (still-live)
+    /// parent of the closed sub-tree root.
+    ChildClosed(SessionId),
 }
 
 /// Runs one session until `Stop` / inbox close. Emits `SessionStarted`, `Idle` status
@@ -91,6 +102,7 @@ pub(crate) async fn session_loop(
     profile: AgentProfile,
     initial_session: Option<Session>,
     parent: Option<SessionId>,
+    predecessor: Option<SessionId>,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
 ) {
@@ -103,6 +115,7 @@ pub(crate) async fn session_loop(
     let _ = events.send(OutEvent::SessionStarted {
         session: session.clone(),
         parent,
+        predecessor: predecessor.clone(),
         profile: profile.name.clone(),
         model: profile.model.clone(),
         root,
@@ -110,6 +123,11 @@ pub(crate) async fn session_loop(
     });
 
     let mut s = initial_session.unwrap_or_else(|| Session::new_empty(&cfg, profile));
+    // A fresh (non-resumed) successor records the session it succeeds; a resumed
+    // one already reconstructed it from its `SessionStarted` log (replay).
+    if s.predecessor.is_none() {
+        s.predecessor = predecessor;
+    }
     // Publish this session's shared seq counter so the runtime can mint a fresh
     // seq for events it authors while the session is parked (#157). Registered
     // before the first turn (hence before any `ToolExec`), so a runtime emit
@@ -441,6 +459,18 @@ pub(crate) async fn session_loop(
             // clearing its state — the committed assistant message and any
             // already-arrived outputs stay in Context. Idle Stop is a no-op
             // (a mid-stream Stop is caught inside the streamed round).
+            // Lineage mirror (children): a spawn/close edge the supervisor
+            // records in `parent_links` is reflected onto this session's live
+            // children list. Pure state — applied immediately even mid-turn, and
+            // idempotent (a duplicate spawn or an unknown close is a no-op).
+            Some(SessionCmd::ChildSpawned(child)) => {
+                if !s.children.contains(&child) {
+                    s.children.push(child);
+                }
+            }
+            Some(SessionCmd::ChildClosed(child)) => {
+                s.children.retain(|c| c != &child);
+            }
             Some(SessionCmd::Stop) => {
                 if s.turn.take().is_some() {
                     let _ = events.send(OutEvent::Status {

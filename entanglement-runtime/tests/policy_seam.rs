@@ -155,6 +155,7 @@ fn spawn_with_policy(
         resolver,
         grants,
         Default::default(),
+        None,
     );
     holly
 }
