@@ -85,12 +85,21 @@ fn record_gap(
 /// logged `InMsg::Prompt` records — without them `Session::replay` folds zero
 /// user messages and a resumed session appears to forget the conversation.
 ///
-/// `InMsg::Resume` is skipped (it carries the whole prior log → recursion/bloat)
-/// and `InMsg::Spawn` is skipped (it would create a stray single-line child file
-/// that lists as a bogus root; a child's turns are already captured in the root
-/// file via out events). The supervisor-global queries `InMsg::ListSessions` /
-/// `InMsg::ReplayFrom` and their session-less replies `OutEvent::SessionList` /
-/// `OutEvent::History` carry no durable state, so they are skipped too (#160).
+/// `InMsg::Resume` is skipped (it carries the whole prior log → recursion/bloat).
+/// `InMsg::Spawn` itself is never appended verbatim — persisting it the moment it
+/// arrives would create a stray single-line child file (`roots` can't resolve the
+/// child to its parent's root until the child's `SessionStarted` shows up).
+/// Instead its `prompt` is cached (`pending_spawn_prompts`) and, once that
+/// `SessionStarted` is observed and `roots` correctly resolves the child, a
+/// synthesized `InMsg::Prompt { session: child, .. }` record is appended right
+/// after it (#421) — so replay reconstructs the user-role instruction that
+/// framed the child's first turn, not just the assistant's eventual reply. The
+/// cache entry is consumed on first use, so a resumed child's re-announced
+/// `SessionStarted` (no matching cache entry — resume never re-sends `Spawn`)
+/// never re-synthesizes or duplicates the record. The supervisor-global queries
+/// `InMsg::ListSessions` / `InMsg::ReplayFrom` and their session-less replies
+/// `OutEvent::SessionList` / `OutEvent::History` carry no durable state, so they
+/// are skipped too (#160).
 ///
 /// A `roots` map, folded from `SessionStarted { root, parent }`, routes every
 /// record (root + spawned children) into the **root's** `{root_id}.jsonl`. Before
@@ -117,6 +126,10 @@ pub fn spawn_persistence_subscriber_with_sink(
     tokio::spawn(async move {
         // session id → its root session id.
         let mut roots: HashMap<SessionId, SessionId> = HashMap::new();
+        // child session id → its spawn-initiating prompt text, cached from
+        // `InMsg::Spawn` until the child's `SessionStarted` resolves its root
+        // (#421); consumed (removed) the moment it's synthesized into a record.
+        let mut pending_spawn_prompts: HashMap<SessionId, String> = HashMap::new();
         // Each side closes independently on shutdown (the supervisor drops the
         // inbound sender when it exits, then sessions drop the outbound senders).
         // Keep draining the still-open side so buffered events aren't lost — a
@@ -134,13 +147,19 @@ pub fn spawn_persistence_subscriber_with_sink(
 
                 in_msg = inbound.recv(), if in_open => match in_msg {
                     Ok(msg) => {
-                        // Resume/Spawn are skipped (recursion/bloat / stray child
-                        // file); the supervisor-global queries carry no durable
-                        // state, so ListSessions/ReplayFrom are skipped too (#160).
+                        // A `Spawn`'s prompt is cached, not appended directly —
+                        // `roots` can't resolve the child until its
+                        // `SessionStarted` arrives (see the doc comment above).
+                        if let InMsg::Spawn { session: child, prompt, .. } = &msg {
+                            pending_spawn_prompts.insert(child.clone(), prompt.clone());
+                            continue;
+                        }
+                        // Resume is skipped (recursion/bloat); the
+                        // supervisor-global queries carry no durable state, so
+                        // ListSessions/ReplayFrom are skipped too (#160).
                         if matches!(
                             msg,
                             InMsg::Resume { .. }
-                                | InMsg::Spawn { .. }
                                 | InMsg::ListSessions { .. }
                                 | InMsg::ReplayFrom { .. }
                         ) {
@@ -187,9 +206,23 @@ pub fn spawn_persistence_subscriber_with_sink(
                             .get(&session_id)
                             .cloned()
                             .unwrap_or_else(|| session_id.clone());
-                        let record = LogRecord::new(session_id, LogPayload::Out(ev));
+                        let record = LogRecord::new(session_id.clone(), LogPayload::Out(ev));
                         if let Err(e) = sink.append(&root, &record) {
                             tracing::error!("Failed to persist outbound event: {}", e);
+                        }
+                        // The child's root is now resolvable — synthesize its
+                        // spawn-initiating prompt right after `SessionStarted` so
+                        // it pairs (via `pair_records`) with the child's own next
+                        // event, not `SessionStarted` itself (#421).
+                        if let Some(prompt) = pending_spawn_prompts.remove(&session_id) {
+                            let synthesized = InMsg::prompt(session_id.clone(), prompt);
+                            let record = LogRecord::new(session_id, LogPayload::In(synthesized));
+                            if let Err(e) = sink.append(&root, &record) {
+                                tracing::error!(
+                                    "Failed to persist synthesized spawn prompt: {}",
+                                    e
+                                );
+                            }
                         }
                     }
                     Err(RecvError::Lagged(n)) => {

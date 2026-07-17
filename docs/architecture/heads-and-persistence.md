@@ -223,9 +223,19 @@ assistant/tool messages and the model appears to forget the conversation.
 
 - **Inbound is biased ahead of outbound** so a prompt lands on disk before the
   events it produces (`pair_records` pairs each `Out` with the preceding `In`).
-  `InMsg::Resume` is skipped (it carries the whole prior log → recursion/bloat)
-  and `InMsg::Spawn` is skipped (a child's turns are already captured in the
-  root's file via out events; logging the spawn would create a stray child root).
+  `InMsg::Resume` is skipped (it carries the whole prior log → recursion/bloat).
+  `InMsg::Spawn` is still never persisted verbatim (`roots` can't resolve the
+  child to its parent's root file until the child's own `SessionStarted`
+  arrives — logging it earlier would create a stray child root). Its `prompt`
+  **is** captured, though (#421,
+  [ADR-0113](../adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)):
+  the tap caches it (`pending_spawn_prompts: HashMap<SessionId, String>`, keyed
+  by child id) and, once that `SessionStarted` resolves `roots`, synthesizes an
+  `InMsg::Prompt { session: child, .. }` record right after it — so replay
+  reconstructs the task instruction that framed the child's first turn, not
+  just its eventual reply. The cache entry is consumed on first use, so a
+  resumed child's re-announced `SessionStarted` (resume never re-sends `Spawn`)
+  never re-synthesizes or duplicates the record.
 - **Spawned children fold into the root file** via a `roots` map built from
   `SessionStarted { root, parent }`, so each root file is a self-contained,
   replayable record of the whole session tree.

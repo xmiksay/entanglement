@@ -494,6 +494,19 @@ re-document them here):
   re-announced `SessionStarted` now carries the replay-resolved `predecessor`
   instead of the always-`None` resume parameter (a persisted log could
   otherwise regress its own lineage on a second resume).
+- **Persistence synthesizes a spawned child's initiating prompt** (#421,
+  [ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)):
+  `InMsg::Spawn` delivers its `prompt` straight to the child's session-command
+  channel, bypassing the inbound broadcast the persistence tap observes, so no
+  `InMsg::Prompt` record ever existed for it — replay/resume reconstructed the
+  assistant's eventual reply but not the user-role instruction that produced
+  it. The tap now caches a `Spawn`'s `prompt` (`pending_spawn_prompts`) instead
+  of dropping it, and once the child's `SessionStarted` resolves `roots` (the
+  point `InMsg::Spawn` itself still can't be persisted verbatim without
+  becoming a stray bogus-root file), synthesizes `InMsg::prompt(child, prompt)`
+  right after it so `Session::replay` folds it as the child's opening user
+  message. Consumed on first use, so a resumed child's re-announced
+  `SessionStarted` never re-synthesizes or duplicates the record.
 - **Skill-scoped `allowed_tools` enforcement** (#400,
   [ADR-0106](../docs/adr/0106-skill-scoped-allowed-tools-enforcement.md)): a
   `SKILL.md`'s `allowed_tools` frontmatter (parsed since #114 but unenforced)
