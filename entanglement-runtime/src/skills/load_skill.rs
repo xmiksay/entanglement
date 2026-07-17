@@ -97,6 +97,15 @@ impl Tool for LoadSkillTool {
     }
 }
 
+/// Parse the `skill_id: <name>\n` header a successful [`render`] result begins
+/// with. `None` for anything else — in particular the "tool `load_skill`
+/// failed: …" text [`crate::tools::ToolRegistry::execute`] synthesizes for an
+/// `Err` (unknown/`user_only` skill) — so the runtime skill-mask activation
+/// (#400, ADR-0106) only fires on an actual load, never a failed attempt.
+pub fn parse_skill_id(content: &str) -> Option<&str> {
+    content.strip_prefix("skill_id: ")?.lines().next()
+}
+
 /// Deterministic resolution of `skill_name` against `registry`. Pure over the
 /// registry + filesystem so it is unit-tested directly (unknown / user_only /
 /// path substitution). Separated from [`Tool::run`] for exactly that reason.
@@ -248,6 +257,23 @@ mod tests {
             reg.insert(s);
         }
         reg
+    }
+
+    #[test]
+    fn parse_skill_id_reads_the_header_of_a_successful_load() {
+        let reg = registry(vec![skill("commit", false, None, "run `git commit`")]);
+        let out = load(&reg, "commit").unwrap();
+        assert_eq!(parse_skill_id(&out), Some("commit"));
+    }
+
+    #[test]
+    fn parse_skill_id_is_none_for_a_failed_load() {
+        // Mirrors the `tool `load_skill` failed: …` text `ToolRegistry::execute`
+        // synthesizes for an `Err` — no `skill_id:` header to parse.
+        let reg = registry(vec![]);
+        let err = load(&reg, "nope").unwrap_err();
+        let synthesized = format!("tool `load_skill` failed: {err:#}");
+        assert_eq!(parse_skill_id(&synthesized), None);
     }
 
     #[test]

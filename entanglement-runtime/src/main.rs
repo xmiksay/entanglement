@@ -981,6 +981,7 @@ async fn main() -> Result<()> {
         &holly,
         tools.clone(),
         live_profiles.clone(),
+        live_skills.clone(),
         user_config.permissions.clone(),
         active,
         resolver,

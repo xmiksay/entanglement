@@ -453,8 +453,8 @@ below realize one model:
   [ADR-0074](../adr/0074-cross-vendor-skill-and-agent-discovery.md)).
   Frontmatter: `name` + `description` (required), `user_only` (only explicit
   user invocation — withheld from the model's disclosure list), and `allowed_tools`
-  (a *skill-scoped* tool mask, enforcement deferred — it needs skill provenance,
-  distinct from the #116 agent tool mask). Each `SkillMeta` resolves its
+  (a *skill-scoped* tool mask, **enforced** while the skill is active, #400 —
+  distinct from the #116 agent tool mask, see below). Each `SkillMeta` resolves its
   `root_dir` **once** at discovery. **Disclosure is tier-1 only**: `SkillRegistry::disclosures`
   emits one `name: description` line per non-`user_only` skill into the assembled
   system prompt (~100 tokens/skill); bodies are never preloaded. **Selection stays
@@ -482,11 +482,27 @@ below realize one model:
   author's explicit escape hatch. The result is an ordinary `tool_result` carrying
   `skill_id`, the substituted body, and `available_refs` (supporting files listed
   as absolute paths, **not** loaded) — never a spoofed user message, so the
-  authorship trail stays honest. Provenance (carrying `skill_id` onto tool calls
-  made while a skill is active, to scope its `allowed_tools` mask) is a
-  tool-execution-record field for a **separate** follow-up — distinct from the
-  #116 *agent* tool mask, which is now live; `skill_id` is surfaced in the result
-  today.
+  authorship trail stays honest.
+- **Skill-scoped `allowed_tools` enforcement (✅ #400, [ADR-0106](../adr/0106-skill-scoped-allowed-tools-enforcement.md)):**
+  a `load_skill` result's `skill_id:` header is the provenance signal — on a
+  successful load, `tool_runner` looks the skill up in the live
+  `SkillRegistry` and records `ActiveSkill { skill_id, allowed_tools }` for
+  that **session** (`entanglement_runtime::permission::skill_masked`), not a
+  core-protocol field on `ToolCall`/`ToolExec` (avoiding the "protocol change
+  with no behaviour" ADR-0037 flagged before enforcement existed). Checked in
+  `ToolExec` handling strictly *after* the #116 agent mask (`tool_masked`) — a
+  tool must survive both — with **no exemption for `load_skill` itself**: a
+  skill whose `allowed_tools` omits it blocks switching skills mid-turn.
+  Unlike the agent mask, the skill mask does **not** clamp down the
+  ancestor/spawn chain — a skill's scope is the loading session's current
+  turn, not an inheritable profile trait, so a spawned child starts unmasked
+  by a parent's loaded skill. It clears on that session's next `Done` (or the
+  session ending) — matching "for the duration" without an explicit unload
+  tool. `OutEvent::SkillActive { session, seq, skill_id: Option<String>,
+  allowed_tools: Option<Vec<String>> }` mirrors `FileChange`'s shape as the
+  wire-facing posture surface (a fresh per-session seq, no `Session::replay`
+  fold, persisted for free); the stdio `run --format text` head and the TUI
+  transcript both render it as a one-line notice.
 - **Skill preload vs access — two independent mechanisms (✅ #117, [ADR-0043](../adr/0043-skill-preload-vs-access-independent-mechanisms.md)):** an agent
   definition controls skills along two orthogonal axes, deliberately *not* merged
   (merging loses expressiveness). **Preload** is `skills: [name, …]` frontmatter:

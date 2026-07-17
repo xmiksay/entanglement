@@ -189,6 +189,12 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::FileChange {
             path, change_kind, ..
         } => writeln!(out, "✓ {change_kind:?}: {path}")?,
+        // Skill-scoped tool mask posture (#400, ADR-0106): a wire-facing audit
+        // event for a head to render, not required for the one-shot text render.
+        OutEvent::SkillActive { skill_id, .. } => match skill_id {
+            Some(id) => writeln!(out, "◆ skill active: {id}")?,
+            None => writeln!(out, "◆ skill cleared")?,
+        },
     }
     Ok(())
 }

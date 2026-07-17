@@ -383,6 +383,40 @@ impl SessionView {
                     false
                 }
             }
+            // The session's active-skill tool mask changed (#400, ADR-0106):
+            // reuses the tool-output entry, like `record_status`'s and
+            // `Compacted`'s out-of-band notices, so the combined posture (this
+            // mask layered on top of the profile's #116 agent mask) is visible
+            // in the transcript rather than only inferable from a refused call.
+            OutEvent::SkillActive {
+                seq,
+                skill_id,
+                allowed_tools,
+                ..
+            } => {
+                if seq > self.last_seen_seq {
+                    let output = match (skill_id, allowed_tools) {
+                        (Some(id), Some(tools)) => {
+                            format!(
+                                "skill `{id}` active — tools restricted to: {}",
+                                tools.join(", ")
+                            )
+                        }
+                        (Some(id), None) => {
+                            format!("skill `{id}` active — no additional restriction")
+                        }
+                        (None, _) => "skill mask cleared".to_string(),
+                    };
+                    self.transcript.push(TranscriptEntry::ToolOutput {
+                        tool: Some("skill".to_string()),
+                        output,
+                    });
+                    self.last_seen_seq = seq;
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 }

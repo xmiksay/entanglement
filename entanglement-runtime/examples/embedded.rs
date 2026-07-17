@@ -29,6 +29,7 @@ use entanglement_core::{
 use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::permission::permission_arg;
 use entanglement_runtime::policy::{GrantStore, PermissionResolver};
+use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::{host, tool_runner};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -103,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         &holly,
         tools.shared(),
         Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
         Arc::new(Mutex::new(HashMap::new())),
         resolver,
