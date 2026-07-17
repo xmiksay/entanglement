@@ -196,10 +196,12 @@ pub(super) fn flush_reasoning(
 }
 
 /// The primary argument shown on a tool op's collapsed header: the path for
-/// `read`/`edit`/`write`, the command line for `bash`/`call` (via the runtime's
-/// [`permission_arg`][entanglement_runtime::permission::permission_arg]), or the
-/// `pattern` for `glob`/`grep` (a local fallback, since `permission_arg` returns
-/// `None` for those). `None` when nothing informative is available.
+/// `read`/`edit`/`write`, the command line for `bash`/`call`, the pattern for
+/// `glob`, and the file filter (or, absent one, the search pattern — a local
+/// fallback) for `grep` — all via the runtime's
+/// [`permission_arg`][entanglement_runtime::permission::permission_arg] (#417),
+/// so the header shows the same primary arg an argument-scoped permission rule
+/// matches against. `None` when nothing informative is available.
 ///
 /// Orchestration tools (`agent`, `ask_user`, `propose_plan`, …) fall through to
 /// [`orchestration_primary_arg`], which pulls a readable hint from their JSON
