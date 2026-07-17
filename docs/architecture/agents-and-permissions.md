@@ -83,6 +83,31 @@ below realize one model:
     on approve, run the tool and reply `ToolResult`; on reject, reply
     `ToolResult("…rejected…")`.
   - `Deny` → reply `ToolResult("…denied…")` without running the tool.
+- **Capability-level permission keys (✅ #418, [ADR-0114](../adr/0114-capability-level-permission-keys.md),
+  part of the #416 epic):** a rule key may also be a **capability** —
+  `read`/`write`/`call` — instead of a literal tool name. Expanded at **parse
+  time** in the single chokepoint both surfaces share,
+  `agents::permission_from_value` (agent frontmatter *and* the user-config
+  ceiling below), into the literal per-tool rules `PermissionProfile::resolve`
+  actually matches — core stays capability-unaware (ADR-0006). The membership
+  table (`tool_names::CAPABILITIES`) is `read`⇒`read`/`grep`/`glob`,
+  `write`⇒`edit`/`write`, `call`⇒`bash`; the literal `call` tool and `rhai`
+  are `tool_names::MULTI_GROUP` — general-purpose tools that can themselves
+  read, write, or execute — so their grade isn't taken from any one
+  capability's fan-out. Instead a pre-scan takes the least-privileged (`min`)
+  of every *bare* `read`/`write`/`call` grade set (plus any bare literal
+  `rhai:` grade, which tightens the same computation) and emits it first as
+  `call`/`rhai`, regardless of the keys' order in the source map — leaving room
+  for a later arg-scoped `call(...)` rule to still refine `call` via ordinary
+  last-match-wins (nothing refines `rhai`, which has no argument). A bare
+  capability key (`read: allow`) fans out to its single-group members only; an
+  arg-scoped capability key (`read(src/*): allow`) fans out `member(pattern)`
+  per member, with `call`'s arg-scoped list additionally including the literal
+  `call` tool (`call(git *)` ⇒ both `call(git *)` and `bash(git *)`). Command
+  sets stay flat `call(pattern): grade` lines expanding to `call`+`bash`, not a
+  nested YAML shape. `plan.md`'s pre-existing `read: allow` is now a capability
+  key too, so it also flips `grep`/`glob` from the profile's `ask` default to
+  `allow` — an accepted, test-pinned behavior change, not a silent diff.
 - **Lag-proof decision delivery (✅ #156, [ADR-0070](../adr/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md)):**
   the `Ask` park (and `ask_user`/`propose_plan`/each `rhai` binding) no longer holds
   its own `broadcast` subscription of the inbound fan-out — that per-task subscriber
@@ -148,7 +173,10 @@ below realize one model:
   agent to ask but never *loosens* what an agent restricts. The embedded default is
   allow-all, so an untouched config is a no-op. The ceiling honors argument-scoped
   rule keys too (✅ #173) — `bash(rm *): deny` in the config clamps that command for
-  every agent. The `permissions` section stays a pure ceiling (it only *tightens*);
+  every agent — and capability keys (✅ #418, ADR-0114) exactly like agent
+  frontmatter, since both share `agents::permission_from_value` — a config
+  `call: deny` ceiling denies both the literal `call` tool and its `bash`
+  member. The `permissions` section stays a pure ceiling (it only *tightens*);
   the orthogonal "always allow" grants (✅ #174) that *raise* an `Ask` live in a
   separate managed file, not here (see the approval-scope bullet above). Loaded in the
   runtime only (core has neither `dirs` nor `serde_yaml`). On first run, if the

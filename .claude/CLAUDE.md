@@ -174,7 +174,16 @@ re-document them here):
   `read`/`glob`, optional file filter for `grep` (#417 — a path, distinct from
   its regex `pattern`; absent → no match)), matched against the call input the
   runtime extracts (`permission::permission_arg`) — the
-  `PermissionProfile::resolve(name, arg)` glob is the only core surface. A user
+  `PermissionProfile::resolve(name, arg)` glob is the only core surface. A rule
+  key may also be a **capability** — `read`/`write`/`call` (#418,
+  [ADR-0114](../docs/adr/0114-capability-level-permission-keys.md), part of the
+  #416 epic) — fanned out at **parse time** in the shared
+  `agents::permission_from_value` (agent frontmatter + the #172 ceiling below)
+  into the same literal per-tool rules, so core stays capability-unaware:
+  `read`⇒read/grep/glob, `write`⇒edit/write, `call`⇒bash; the literal `call`
+  tool and `rhai` are multi-group (`tool_names::MULTI_GROUP`) and graded by the
+  least-privileged bare `read`/`write`/`call`/literal-`rhai` grade instead of
+  any one capability's fan-out. A user
   config file (#172) adds a global
   permission **ceiling** clamped least-privilege over every grade
   (`clamp_to_base`); see `entanglement-runtime/src/config`. `Approve` carries a

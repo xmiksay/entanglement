@@ -40,3 +40,25 @@ pub const UPDATE_TASKS_TOOL: &str = "update_tasks";
 
 /// Tool name the model calls to load a skill's full instructions (#124).
 pub const LOAD_SKILL_TOOL: &str = "load_skill";
+
+/// Capability-level permission keys (#418, ADR-0114) and the tools each fans
+/// out to when a profile's `permission:` map uses the capability name instead
+/// of spelling out every member tool — `("read", &["read", "grep", "glob"])`
+/// means a bare `read: allow` grades all three read-only tools identically.
+/// `call`'s member list is `bash` only: the literal `call` tool is
+/// [`MULTI_GROUP`], not a single-group member — see there for why.
+pub const CAPABILITIES: &[(&str, &[&str])] = &[
+    ("read", &["read", "grep", "glob"]),
+    ("write", &["edit", "write"]),
+    ("call", &["bash"]),
+];
+
+/// Tools that belong to *every* capability at once, because they can
+/// themselves read, write, or execute regardless of which capability key
+/// graded them: the argv-exec `call` tool and the sandboxed `rhai` script
+/// (bound to the root-contained quintet, see [`BINDING_TOOLS`]). Never
+/// expanded by a bare/arg-scoped capability rule — instead, `permission_from_value`
+/// grades them by the least-privileged bare `read`/`write`/`call` (+ literal
+/// `rhai`) grade a profile sets, so restricting any one capability tightens
+/// what these general-purpose tools may do.
+pub const MULTI_GROUP: &[&str] = &["call", "rhai"];
