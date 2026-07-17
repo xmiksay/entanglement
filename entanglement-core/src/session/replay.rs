@@ -19,61 +19,61 @@ impl Session {
     ///
     /// # Parameters
     ///
-    /// - `records`: A slice of `(Option<InMsg>, OutEvent)` tuples representing the log
+    /// - `records`: A slice of `(Option<InMsg>, OutEvent)` tuples representing the
+    ///   log — a whole root file, which may interleave a spawned child's events
+    ///   with the root's own (#275)
     /// - `cfg`: Engine configuration for constructing the per-session LLM
+    /// - `target`: which session in the log to reconstruct — the root itself, or
+    ///   one of its (grand)children when a cascaded resume rebuilds the whole
+    ///   spawn sub-tree (#415)
     ///
     /// # Returns
     ///
     /// A reconstructed `Session` with all state folded from the log.
-    pub fn replay(records: &[(Option<InMsg>, OutEvent)], cfg: &EngineConfig) -> Result<Self> {
+    pub fn replay(
+        records: &[(Option<InMsg>, OutEvent)],
+        cfg: &EngineConfig,
+        target: &SessionId,
+    ) -> Result<Self> {
         let default_profile = cfg
             .profiles
             .get("build")
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("default 'build' profile not found"))?;
 
-        // A root log persists the whole spawn sub-tree, so the record stream
-        // interleaves a spawned child's events with the resumed root's. Fold
-        // only the root's own records — otherwise a child's text/tool events
-        // are misattributed to the root's `Context` (#275). Root = the first
-        // session flagged `root` in the log; a log with none (a standalone
-        // session captured on its own) folds every record.
-        let root: Option<SessionId> = records.iter().find_map(|(_, ev)| match ev {
-            OutEvent::SessionStarted {
-                session,
-                root: true,
-                ..
-            } => Some(session.clone()),
-            _ => None,
-        });
-        let is_root = |sid: &SessionId| root.as_ref().is_none_or(|r| r == sid);
+        // Fold only `target`'s own records — otherwise a sibling/child session's
+        // text/tool events are misattributed to `target`'s `Context` (#275). A log
+        // that never mentions `target` at all (a standalone session captured on
+        // its own, predating `SessionStarted`) falls back to folding everything.
+        let target_started = records.iter().any(
+            |(_, ev)| matches!(ev, OutEvent::SessionStarted { session, .. } if session == target),
+        );
+        let is_target = |sid: &SessionId| !target_started || sid == target;
 
-        // Reconstruct the resumed root's live `children` by inverting the parent
-        // edges recorded across the shared root log (#child-lineage): a child's
-        // `SessionStarted { parent: root }` adds it, its `SessionEnded` /
+        // Reconstruct `target`'s live `children` by inverting the parent edges
+        // recorded across the shared root log (#child-lineage): a child's
+        // `SessionStarted { parent: target }` adds it, its `SessionEnded` /
         // `SessionHibernated` removes it. The supervisor's `parent_links` stays
         // the authoritative tree; this only re-seeds the per-session mirror so a
-        // resumed parent still knows its live children. Only direct children of
-        // the root (grandchildren belong to their own parent).
+        // resumed session still knows its live children. Only direct children of
+        // `target` (grandchildren belong to their own parent).
         let mut children: Vec<SessionId> = Vec::new();
-        if let Some(root_id) = root.as_ref() {
-            for (_, ev) in records {
-                match ev {
-                    OutEvent::SessionStarted {
-                        session: child,
-                        parent: Some(p),
-                        ..
-                    } if p == root_id => {
-                        if !children.contains(child) {
-                            children.push(child.clone());
-                        }
+        for (_, ev) in records {
+            match ev {
+                OutEvent::SessionStarted {
+                    session: child,
+                    parent: Some(p),
+                    ..
+                } if p == target => {
+                    if !children.contains(child) {
+                        children.push(child.clone());
                     }
-                    OutEvent::SessionEnded { session: gone, .. }
-                    | OutEvent::SessionHibernated { session: gone, .. } => {
-                        children.retain(|c| c != gone);
-                    }
-                    _ => {}
                 }
+                OutEvent::SessionEnded { session: gone, .. }
+                | OutEvent::SessionHibernated { session: gone, .. } => {
+                    children.retain(|c| c != gone);
+                }
+                _ => {}
             }
         }
 
@@ -87,10 +87,10 @@ impl Session {
         let mut max_seq: u64 = 0;
 
         for (in_msg, out_event) in records {
-            // Skip any record belonging to a spawned child session (#275): the
-            // whole fold below stays scoped to the resumed root. A session-less
-            // query reply (SessionList/History, #160) never appears in a log.
-            if out_event.session().is_some_and(|s| !is_root(s)) {
+            // Skip any record belonging to a sibling/child session (#275): the
+            // whole fold below stays scoped to `target`. A session-less query
+            // reply (SessionList/History, #160) never appears in a log.
+            if out_event.session().is_some_and(|s| !is_target(s)) {
                 continue;
             }
             max_seq = max_seq.max(out_event.seq().unwrap_or(0));
@@ -363,7 +363,7 @@ mod tests {
                 },
             ),
         ];
-        let s = Session::replay(&records, &cfg).unwrap();
+        let s = Session::replay(&records, &cfg, &SessionId::new("root")).unwrap();
         assert_eq!(s.parent, None);
         assert_eq!(s.children, vec![SessionId::new("child-a")]);
     }
@@ -374,8 +374,25 @@ mod tests {
         let cfg = EngineConfig::default();
         let records: Vec<(Option<InMsg>, OutEvent)> =
             vec![(None, started("successor", None, Some("source")))];
-        let s = Session::replay(&records, &cfg).unwrap();
+        let s = Session::replay(&records, &cfg, &SessionId::new("successor")).unwrap();
         assert_eq!(s.predecessor, Some(SessionId::new("source")));
         assert_eq!(s.parent, None);
+    }
+
+    /// Replaying a *child*'s own id (not the log's flagged root) reconstructs its
+    /// own context/lineage, scoped to its own records — the seam a cascaded
+    /// resume (#415) relies on to rebuild a whole spawn sub-tree from one root
+    /// log.
+    #[test]
+    fn replay_reconstructs_a_non_root_target() {
+        let cfg = EngineConfig::default();
+        let records: Vec<(Option<InMsg>, OutEvent)> = vec![
+            (None, started("root", None, None)),
+            (None, started("child", Some("root"), None)),
+            (None, started("grand", Some("child"), None)),
+        ];
+        let s = Session::replay(&records, &cfg, &SessionId::new("child")).unwrap();
+        assert_eq!(s.parent, Some(SessionId::new("root")));
+        assert_eq!(s.children, vec![SessionId::new("grand")]);
     }
 }
