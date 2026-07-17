@@ -611,6 +611,13 @@ precedence system < user < repo) and
   ADR in place — supersede it. Drift check: `/arch check`.
 - **Keep this brief + the `docs/architecture/` modules in sync.** When a message variant,
   profile, crate, or command changes, update both in the same change.
+- **Track intentional deferrals and docs drift in the ledger.** When a design
+  explicitly defers a piece of work to a follow-up (an ADR or code comment
+  saying "deferred"/"future"), file it as a row in
+  [`../docs/deferred-work-ledger.md`](../docs/deferred-work-ledger.md) (backed
+  by issue #396) so it doesn't fall out of tracking once its originating issue
+  closes. Same ledger for docs/implementation drift findings (a doc claiming a
+  shipped feature is "not yet built").
 
 ## Open work (current phase)
 
