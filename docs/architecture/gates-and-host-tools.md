@@ -57,7 +57,7 @@ blocked on green tests with a coverage report attached. Both cache cargo
 artifacts (`Swatinem/rust-cache`) and inherit the committed `CARGO_BUILD_JOBS=4`
 cap from `.cargo/config.toml`.
 
-## 8. Host tools — [ADR-0008](../adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](../adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in), [ADR-0045](../adr/0045-call-host-tool-argv-exec-tailed-output.md) (`call`), [ADR-0092](../adr/0092-call-file-based-stdin-stdout.md) (`call` file-based stdin/stdout), [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md) (`call` always-registered + `workdir`)
+## 8. Host tools — [ADR-0008](../adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](../adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in), [ADR-0045](../adr/0045-call-host-tool-argv-exec-tailed-output.md) (`call`), [ADR-0092](../adr/0092-call-file-based-stdin-stdout.md) (`call` file-based stdin/stdout), [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md) (`call` always-registered + `workdir`), [ADR-0104](../adr/0104-bubblewrap-sandbox-for-bash-call.md) (optional bubblewrap confinement)
 
 Concrete filesystem + shell tools, dispatched under the active permission
 profile ([ADR-0003](../adr/0003-agent-and-permission-profiles.md)). The
@@ -113,13 +113,29 @@ tools and makes no policy decision:
   canonical path escapes — ADR-0008 upgraded by [ADR-0054](../adr/0054-canonicalizing-symlink-safe-root-containment.md)
   (#163). Not TOCTOU-tight (an OS sandbox via `openat2(RESOLVE_BENEATH)` is
   deferred). `bash`/`call` set only the **cwd** (root, or `workdir` if given,
-  through the shared `resolve_workdir` helper both tools call) — they are
-  explicitly *not* sandboxed and run with the engine's full privileges
+  through the shared `resolve_workdir` helper both tools call) and run with the
+  engine's full privileges **by default** — unsandboxed unless opted in
   (ADR-0009/ADR-0045); permission profiles gate whether they run at all. `call`
   is the injection-free sibling: a fixed argv can't be shell-injected, so a
   profile may `Allow` `call` while keeping `bash` at `Ask`/`Deny` — and, since
   [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md),
   `call` is registered regardless of whether `bash` is even opted in.
+- **OS sandbox, opt-in (#399, [ADR-0104](../adr/0104-bubblewrap-sandbox-for-bash-call.md)):**
+  `ENTANGLEMENT_SANDBOX=bwrap` confines every `bash`/`call` spawn under
+  bubblewrap for the process's lifetime — `--ro-bind / /` plus the project
+  root re-bound read-write at the same path (so `resolve_under_root`'s
+  containment above keeps working unmodified inside the sandbox), a fresh
+  `/tmp`/`/dev`/`/proc`, and its own pid/ipc/uts/cgroup namespaces.
+  `--unshare-net` cuts network by default; `ENTANGLEMENT_SANDBOX_NETWORK=1`
+  shares the host network namespace back in. **Fail-closed by omission**: there
+  is no fallback to unsandboxed execution when `bwrap` can't be entered (missing
+  binary, unprivileged user namespaces disabled) — the spawn simply errors, like
+  any missing binary (ADR-0016). Global for the process (not yet per-profile —
+  see the ADR's follow-up); `BashTool`/`CallTool::with_sandbox` wires it,
+  `entanglement_runtime::host::sandbox::SandboxPolicy::from_env()` reads the two
+  env vars. The existing process-group timeout/cancel kill (#167/#168/#169,
+  below) needs no change — killing the outer `bwrap` process cascades through
+  its PID-namespace death to the whole sandboxed tree.
 - **Secret scrubbing (#164):** both exec tools `env_remove` the catalog's
   provider API-key env vars (`Catalog::key_envs()` — `ZAI_API_KEY`,
   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) from the child before spawn, so a
@@ -127,7 +143,8 @@ tools and makes no policy decision:
   no-shell design doesn't help — a plain `env` still inherits them — so the scrub
   covers both. `rhai` is exempt (no env binding). The head wires the set via
   `BashTool::new(root).with_secret_env(catalog.key_envs())` (same for `CallTool`);
-  a broader env-allowlist policy can ride the future sandbox ADR.
+  a broader env-allowlist policy remains a possible follow-up to the sandbox
+  above ([ADR-0104](../adr/0104-bubblewrap-sandbox-for-bash-call.md)).
 - **Bounded output:** 32 KiB byte cap with a truncation notice; `read` defaults
   to 2000 lines; `glob`/`grep` cap at 1000 results. Prevents a huge file/tree
   from blowing the context window. `bash`/`bash_output` cap **head + tail**

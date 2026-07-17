@@ -604,8 +604,10 @@ async fn handoff_accepted_plan(app: &mut App, holly: &Holly, plan: String) {
 
 /// Runs a `!bash` passthrough command head-side and injects the output into the
 /// transcript (ADR-0030). Gated on `ENTANGLEMENT_ENABLE_BASH` — the same opt-in
-/// as the model-facing `bash` tool (ADR-0010), since it runs unsandboxed. When
-/// disabled, a hint is recorded instead of running anything.
+/// as the model-facing `bash` tool (ADR-0010), since it runs unsandboxed by
+/// default. When disabled, a hint is recorded instead of running anything.
+/// Honors the same `ENTANGLEMENT_SANDBOX` opt-in as the model-facing tool
+/// (#399, ADR-0104) so a passthrough command gets the same confinement.
 async fn run_bash_passthrough(app: &mut App, command: &str) {
     if !app.bash_enabled() {
         app.record_bash_passthrough(
@@ -616,7 +618,8 @@ async fn run_bash_passthrough(app: &mut App, command: &str) {
         return;
     }
     use entanglement_runtime::Tool;
-    let tool = crate::host::bash::BashTool::new(app.root().to_path_buf());
+    let tool = crate::host::bash::BashTool::new(app.root().to_path_buf())
+        .with_sandbox(crate::host::sandbox::SandboxPolicy::from_env());
     let input = serde_json::json!({ "command": command }).to_string();
     let output = match tool.run(&input).await {
         Ok(out) => out,

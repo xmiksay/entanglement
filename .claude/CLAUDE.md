@@ -623,8 +623,10 @@ The generic one-shot op framework (#324, `InMsg::Oneshot`, session compaction
 as its first op, [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)),
 copy-on-write forking ([ADR-0101](../docs/adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)),
 keep-tail (#397, [ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)),
-and auto-summarize on context overflow (#398,
-[ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)) are
+auto-summarize on context overflow (#398,
+[ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)), and the
+optional bubblewrap OS sandbox for `bash`/`call` (#399,
+[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)) are
 **complete**.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
@@ -641,7 +643,11 @@ the always-registered `call` (argv exec, no shell — registered independent of
 `ENTANGLEMENT_ENABLE_BASH` since #386/[ADR-0094](../docs/adr/0093-call-registration-independent-of-bash-opt-in.md);
 gains a `workdir` param, mirroring `bash`'s) and the opt-in exec pair
 `bash`/`bash_output` (`ENTANGLEMENT_ENABLE_BASH=1`; `bash` gains `workdir` +
-`run_in_background`, polled via `bash_output`, #170), and the sandboxed `rhai`
+`run_in_background`, polled via `bash_output`, #170) — both run unsandboxed by
+default but may be confined via **bubblewrap**
+(`ENTANGLEMENT_SANDBOX=bwrap`, `ENTANGLEMENT_SANDBOX_NETWORK=1` to keep network
+— fail-closed, #399/[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)),
+and the sandboxed `rhai`
 tool. **External MCP tool
 servers** attach as a runtime-side tool provider (#198,
 [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md); #312,
