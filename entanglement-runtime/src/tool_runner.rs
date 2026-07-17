@@ -262,7 +262,7 @@ pub fn spawn_tool_executor_with_hooks(
 /// executor parses the `skill_id` its result carries, looks up that skill's
 /// `allowed_tools` here, and activates the session's skill mask —
 /// [`skill_masked`], layered after the #116 agent mask.
-/// Escape-root policy for the executor (ADR-0107): the canonical project `root`
+/// Escape-root policy for the executor (ADR-0109): the canonical project `root`
 /// against which an out-of-root `read`/`edit`/`write` path or `bash`/`call`
 /// `workdir` is detected, plus the shared [`ExtraRootStore`] approvals are
 /// recorded into and the host tools read. `None` (the wrappers below, all tests)
@@ -820,12 +820,12 @@ async fn dispatch(
         seam::reply(holly, session, request_id, reason).await;
         return;
     }
-    // Escape-root gate (ADR-0107): a `read`/`edit`/`write` path or `bash`/`call`
+    // Escape-root gate (ADR-0109): a `read`/`edit`/`write` path or `bash`/`call`
     // `workdir` that resolves *outside* the project root requires explicit
     // approval — even when the profile would `Allow` — unless the user already
     // durably granted this exact `(tool, path)`. A `Deny` floor still wins (the
     // profile forbade the tool outright), so escaping never *lowers* the bar.
-    // `None` (no escape policy wired) is the pre-ADR-0107 strict-containment path.
+    // `None` (no escape policy wired) is the pre-ADR-0109 strict-containment path.
     let escape = escape_root
         .filter(|_| perm != Permission::Deny)
         .and_then(|er| er.escaping(&tool, &input).map(|abs| (er, abs)))
@@ -918,7 +918,7 @@ async fn await_decision(
         seam::Decision::Approve { scope } => {
             set_thinking(holly, &session);
             if let Some((store, abs)) = &escape_grant {
-                // The prompt was forced by an out-of-root access (ADR-0107):
+                // The prompt was forced by an out-of-root access (ADR-0109):
                 // record the approval in the escape-root store so the host tool's
                 // containment check lets *this tool* reach *this path*. Every scope
                 // is recorded (a `Once` becomes the single-use token the tool

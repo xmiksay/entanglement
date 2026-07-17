@@ -81,7 +81,7 @@ pub struct Session {
     /// authoritative tree, this is the per-session mirror. Reconstructed on
     /// replay by inverting the `parent` edges in the shared root log.
     pub children: Vec<SessionId>,
-    /// The session this one **succeeds** (#compact-successor, ADR-0108): set when
+    /// The session this one **succeeds** (#compact-successor, ADR-0110): set when
     /// this session is the copy-on-write fork of a `/compact` on `predecessor`.
     /// Unlike [`parent`][Self::parent] it is *not* a live spawn edge — the
     /// predecessor's interactive session is closed once the successor starts — so

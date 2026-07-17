@@ -1,4 +1,4 @@
-//! Escape-root access grants (ADR-0107).
+//! Escape-root access grants (ADR-0109).
 //!
 //! Root containment (`resolve_under_root`, ADR-0054) is normally a hard wall: a
 //! `read`/`edit`/`write` path or a `bash`/`call` `workdir` that resolves outside
@@ -55,7 +55,7 @@ struct Inner {
     once: HashSet<GrantKey>,
 }
 
-/// Approval-gated out-of-root access grants (ADR-0107). Cheaply cloneable behind
+/// Approval-gated out-of-root access grants (ADR-0109). Cheaply cloneable behind
 /// an `Arc` by callers; the interior is mutex-guarded.
 pub struct ExtraRootStore {
     inner: Mutex<Inner>,

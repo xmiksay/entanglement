@@ -83,7 +83,7 @@ pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
 }
 
 /// Like [`resolve_under_root`], but a path that escapes root is permitted when
-/// the user has granted `tool` access to it (ADR-0107). `extra == None` (the
+/// the user has granted `tool` access to it (ADR-0109). `extra == None` (the
 /// standalone/test constructors) reduces to the strict containment of
 /// [`resolve_under_root`]. A `Once` grant is **consumed** by this call.
 pub fn resolve_under_root_or_grant(
@@ -107,7 +107,7 @@ pub fn resolve_under_root_or_grant(
 
 /// The absolute out-of-root target `rel` resolves to under `root`, or `None`
 /// when `rel` stays contained (or can't be resolved at all). Used by the
-/// executor's escape-root gate (ADR-0107) to decide whether a call needs
+/// executor's escape-root gate (ADR-0109) to decide whether a call needs
 /// approval, matching the exact resolution the host tools use so the grant key
 /// (the resolved path) is identical on both sides.
 pub fn escaping_path(root: &Path, rel: &str) -> Option<PathBuf> {
@@ -121,7 +121,7 @@ pub fn escaping_path(root: &Path, rel: &str) -> Option<PathBuf> {
 /// canonicalization of the deepest existing ancestor (#163) — returning the
 /// absolute target and whether it stays contained under `root`. The containment
 /// flag is the AND of the lexical and canonical checks; a strict caller rejects
-/// `false`, an escape-root caller (ADR-0107) may still use the path after a grant
+/// `false`, an escape-root caller (ADR-0109) may still use the path after a grant
 /// check. A genuinely malformed path (a `..` popping past the filesystem root)
 /// is still a hard `Err`.
 fn resolve_and_contained(root: &Path, rel: &str) -> Result<(PathBuf, bool)> {
@@ -188,7 +188,7 @@ pub fn resolve_workdir(root: &Path, workdir: Option<&str>) -> Result<PathBuf> {
     resolve_workdir_or_grant(root, None, "", workdir)
 }
 
-/// [`resolve_workdir`] with an escape-root grant escape hatch (ADR-0107): a
+/// [`resolve_workdir`] with an escape-root grant escape hatch (ADR-0109): a
 /// `workdir` outside root is allowed when the user granted `tool` access to it.
 /// `extra == None` reduces to the strict [`resolve_workdir`].
 pub fn resolve_workdir_or_grant(
@@ -354,11 +354,11 @@ pub fn host_tools(root: PathBuf) -> ToolRegistry {
     host_tools_with_extra_roots(root, None)
 }
 
-/// [`host_tools`] with an optional escape-root grant store (ADR-0107) wired into
+/// [`host_tools`] with an optional escape-root grant store (ADR-0109) wired into
 /// the path-touching tools (`read`/`edit`/`write`), so an approved out-of-root
 /// path is reachable. `glob`/`grep` stay strictly root-contained (their
 /// pattern-relative search has no single path to approve). `None` is byte-
-/// identical to the pre-ADR-0107 strict quintet.
+/// identical to the pre-ADR-0109 strict quintet.
 pub fn host_tools_with_extra_roots(
     root: PathBuf,
     extra: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
@@ -748,7 +748,7 @@ mod tests {
         assert!(resolved.starts_with(dir.path.canonicalize().unwrap()));
     }
 
-    /// ADR-0107: an out-of-root path is refused with no grant, allowed once a
+    /// ADR-0109: an out-of-root path is refused with no grant, allowed once a
     /// grant for that exact `(tool, path)` exists, and never satisfies a
     /// different tool's check.
     #[test]
@@ -784,7 +784,7 @@ mod tests {
         );
     }
 
-    /// ADR-0107: an in-root path is unaffected by the grant machinery.
+    /// ADR-0109: an in-root path is unaffected by the grant machinery.
     #[test]
     fn escape_root_grant_does_not_change_in_root_resolution() {
         use crate::extra_roots::ExtraRootStore;

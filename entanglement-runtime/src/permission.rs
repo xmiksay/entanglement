@@ -352,7 +352,7 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
 }
 
 /// The **filesystem path** a call would touch, for the escape-root gate
-/// (ADR-0107) — distinct from [`permission_arg`] (which yields the *command* for
+/// (ADR-0109) — distinct from [`permission_arg`] (which yields the *command* for
 /// `bash`/`call`). It's the `path` for `read`/`edit`/`write` and the `workdir`
 /// for `bash`/`call` (absent → the tool defaults to root, never an escape).
 /// `None` for any other tool or on malformed input, so those never trip the gate.

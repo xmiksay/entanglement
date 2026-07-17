@@ -184,7 +184,7 @@ async fn compact_forks_into_a_new_session_and_preserves_the_source() {
     assert!(summary.contains("summary of the conversation"));
 
     // 3. Fork: the head mints a new session and spawns it with the summary, as a
-    // fresh root that records the source as its predecessor (ADR-0108). The head
+    // fresh root that records the source as its predecessor (ADR-0110). The head
     // would also close the source; this engine-level test leaves it live to prove
     // the copy-on-write property in step 5.
     let fork = SessionId::new_uuid();

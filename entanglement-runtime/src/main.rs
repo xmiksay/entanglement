@@ -137,7 +137,7 @@ async fn build_config(
     // definitions watcher. Best-effort: if the data dir is unavailable, `call`
     // falls back to its legacy in-repo `.entanglement/tmp` location.
     let scratch_base = session_store::scratch_dir(&root).ok();
-    // Escape-root approval store (ADR-0107): shared by the host tools (which
+    // Escape-root approval store (ADR-0109): shared by the host tools (which
     // consult it to relax containment for an approved out-of-root path) and the
     // tool executor (which forces an approval prompt on a first out-of-root
     // access and records the grant here).
@@ -1020,7 +1020,7 @@ async fn main() -> Result<()> {
         resolver,
         grants.clone(),
         user_config.hooks.clone(),
-        // Escape-root approval (ADR-0107): the same store the host tools read.
+        // Escape-root approval (ADR-0109): the same store the host tools read.
         Some(escape_root),
     );
 

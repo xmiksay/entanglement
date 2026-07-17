@@ -34,7 +34,7 @@ pub struct BashTool {
     /// [`SandboxPolicy::none()`] — unsandboxed, unchanged from before this
     /// existed.
     sandbox: SandboxPolicy,
-    /// Approval-gated out-of-root `workdir` (ADR-0107).
+    /// Approval-gated out-of-root `workdir` (ADR-0109).
     extra_roots: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
 }
 
@@ -49,7 +49,7 @@ impl BashTool {
         }
     }
 
-    /// Permit an approved out-of-root `workdir` (ADR-0107).
+    /// Permit an approved out-of-root `workdir` (ADR-0109).
     pub fn with_extra_roots(
         mut self,
         extra: std::sync::Arc<crate::extra_roots::ExtraRootStore>,

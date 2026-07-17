@@ -714,7 +714,7 @@ pub enum InMsg {
     /// the parent link (populating the spawn tree the tree-walk helpers read) so a
     /// `CloseSession`/hibernate cascade and the permission ancestor clamp cover it.
     /// With `parent = None` it is a **root** — used by the `/compact` successor
-    /// fork (ADR-0108), which sets `predecessor = Some(source)` to record the
+    /// fork (ADR-0110), which sets `predecessor = Some(source)` to record the
     /// session it succeeds *without* joining the source's spawn sub-tree (so
     /// closing the source doesn't cascade onto the successor). The runtime's
     /// `agent_spawn` tool (or blocking `agent`) issues the child form, then relays
@@ -724,7 +724,7 @@ pub enum InMsg {
         session: SessionId,
         #[serde(default)]
         parent: Option<SessionId>,
-        /// The session this one succeeds (a `/compact` fork, ADR-0108). Non-live
+        /// The session this one succeeds (a `/compact` fork, ADR-0110). Non-live
         /// lineage only — never a spawn edge.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         predecessor: Option<SessionId>,
@@ -885,7 +885,7 @@ pub enum OutEvent {
     SessionStarted {
         session: SessionId,
         parent: Option<SessionId>,
-        /// The session this one succeeds (a `/compact` fork, ADR-0108); `None`
+        /// The session this one succeeds (a `/compact` fork, ADR-0110); `None`
         /// for an ordinary session. Non-live lineage — the predecessor's
         /// interactive session is closed once the successor starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]

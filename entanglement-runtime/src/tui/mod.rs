@@ -177,12 +177,12 @@ pub async fn tui(
         }
         drain_engine_events(&mut holly_sub, &mut app, &mut attention);
 
-        // A compaction fork (ADR-0101/0108) was recorded while draining engine
+        // A compaction fork (ADR-0101/0110) was recorded while draining engine
         // events: the engine `Spawn` that actually creates the successor session
         // needs this `Holly` handle, so it's sent here. `handle_compacted`
         // already did the head-side view switch + summary seeding. The successor
         // is a fresh root with a `predecessor` link; once it's spawned, close the
-        // source so its interactive session is retired (ADR-0108).
+        // source so its interactive session is retired (ADR-0110).
         if let Some(fork) = app.take_pending_compact_fork() {
             let spawn = App::spawn_for_fork(&fork);
             if let Err(e) = holly.send(spawn).await {

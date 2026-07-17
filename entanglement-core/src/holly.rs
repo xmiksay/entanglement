@@ -553,7 +553,7 @@ async fn supervisor(
                 }
             };
             // `parent = None` is a root spawn (the `/compact` successor fork,
-            // ADR-0108): it records `predecessor` for lineage but joins no spawn
+            // ADR-0110): it records `predecessor` for lineage but joins no spawn
             // sub-tree, so a `CloseSession` on the source never cascades onto it.
             let parent = parent.clone();
             let is_root = parent.is_none();

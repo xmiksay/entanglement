@@ -17,7 +17,7 @@ type CanEditCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 pub struct EditTool {
     root: std::path::PathBuf,
     can_edit: Option<CanEditCallback>,
-    /// Approval-gated out-of-root access (ADR-0107).
+    /// Approval-gated out-of-root access (ADR-0109).
     extra_roots: Option<Arc<ExtraRootStore>>,
 }
 
@@ -30,7 +30,7 @@ impl EditTool {
         }
     }
 
-    /// Permit approved out-of-root edits (ADR-0107) via the shared grant store.
+    /// Permit approved out-of-root edits (ADR-0109) via the shared grant store.
     pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
         self.extra_roots = Some(extra);
         self

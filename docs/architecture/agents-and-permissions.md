@@ -112,6 +112,23 @@ below realize one model:
   store loads empty and a write failure is logged — both fail *closed* (ask again),
   the safe direction. The TUI modal offers `y` once / `s` session / `a` always /
   `n` reject / `e` edit-reason / `Esc` interrupt.
+- **Escape-root access via approval (✅ #escape-root, [ADR-0109](../adr/0109-escape-root-access-via-approval.md)):**
+  root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`
+  path or a `bash`/`call` `workdir` that resolves **outside** root is detected in
+  the executor (`permission::escape_root_target` + `host::escaping_path`) and
+  forces an approval prompt even when the profile would `Allow` (a `Deny` floor
+  still wins). The approval is recorded in a **separate** store from the
+  permission grants above — `runtime::extra_roots::ExtraRootStore`, managed file
+  `${config_dir}/entanglement/extra-roots.yml` (override
+  `ENTANGLEMENT_EXTRA_ROOTS_FILE`) — keyed by `(tool, resolved-absolute-path)`,
+  **per tool** (a `read` grant never unlocks `write`), at `Once` (single-use) /
+  `Session` (process-lifetime) / `Always` (persisted) scope. The host tools
+  consult it via `resolve_under_root_or_grant` to relax containment for the
+  approved path (matched against the symlink-canonicalized target). Reuses the
+  `ToolRequest`/`Approve{scope}` wire (no new variant); `glob`/`grep` stay
+  strictly root-contained. The store is separate from `grants.yml` because the
+  key spaces differ — a permission grant upgrades `Ask→Allow` on a `tool(command)`
+  key, an escape grant relaxes *containment* on a `(tool, absolute-path)` key.
 - **User config file + permission ceiling (✅ #172, [ADR-0047](../adr/0047-local-trust-boundary.md)):**
   a general user settings file, same layered loader as everything else — embedded
   default (`entanglement-runtime/src/config/defaults.yml`) < user
@@ -265,14 +282,19 @@ below realize one model:
   itself observable to `notify`, which without a guard makes the watcher
   perpetually re-trigger itself (reload → reads the watched files → fires
   `notify` → reload → …), surfacing as an unbounded stream of "definitions
-  reloaded" notices. `watch::spawn_watcher` guards against this with a cheap
-  `fingerprint()`: `(path, inode, size, mtime)` for every file under the
-  watched trees, via `stat()` only — deliberately never opening file content,
-  since that's the operation being guarded against. A firing whose fingerprint
-  is unchanged from the last one is a no-op (skip, no reparse, no notice); one
-  that differs runs the real reload and updates the baseline. Because the
-  check is `stat()`-only, even a spurious storm of firings costs a handful of
-  metadata syscalls per tick instead of a full skill/agent reparse.
+  reloaded" notices. `watch::spawn_watcher` guards against this with a **content
+  fingerprint restricted to the definition/config files** (agent/skill `*.md`,
+  managed `*.yml`/`*.yaml`/`.env`): a `path → (mtime, size, sha256)` map. It is
+  **two-stage** — the mtime+size pair is a cheap gate to skip re-hashing an
+  untouched file, and the SHA-256 is the actual arbiter of "did the content
+  change". A firing reloads (and emits the "definitions reloaded" notice)
+  **only if** some tracked file's *hash* differs, so a same-content re-save (an
+  editor rewrite, a `touch` that only bumps mtime) is a no-op, and — crucially —
+  a write to a **non-definition** file under a watched tree (e.g. a `call`/`bash`
+  output artifact under `.entanglement/tmp/`) never enters the map and never
+  triggers a reload. That non-definition write was the main source of reload spam
+  before the restriction; the file-set filter plus the hash gate (not just
+  `stat()`) eliminate it.
 - **Physical tool restriction (✅ #116, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)):**
   an agent's `tools` allowlist / `disallowed_tools` denylist masks its tool set —
   `registry ∩ allowlist − denylist` — on *both* sides of the core↔runtime seam,

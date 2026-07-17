@@ -19,7 +19,7 @@ type CanWriteCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 pub struct WriteTool {
     root: std::path::PathBuf,
     can_write: Option<CanWriteCallback>,
-    /// Approval-gated out-of-root access (ADR-0107).
+    /// Approval-gated out-of-root access (ADR-0109).
     extra_roots: Option<Arc<ExtraRootStore>>,
 }
 
@@ -32,7 +32,7 @@ impl WriteTool {
         }
     }
 
-    /// Permit approved out-of-root writes (ADR-0107) via the shared grant store.
+    /// Permit approved out-of-root writes (ADR-0109) via the shared grant store.
     pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
         self.extra_roots = Some(extra);
         self

@@ -357,14 +357,26 @@ re-document them here):
   request, and emits `OutEvent::Compacted { session, seq, summary, kept, auto }`
   — a **persisted, seq-bearing** content event (persistence and `ReplayFrom`
   cover it for free; both are variant-agnostic over any seq-bearing event).
-  **Copy-on-write (ADR-0101, supersedes ADR-0082):** the source session's
-  `Context` is **never mutated** — the summary rides only in the event, and the
-  head forks it into a new session via `InMsg::Spawn`. A truncated summary
+  **Copy-on-write (ADR-0101, supersedes ADR-0082); forks a *successor* that
+  retires the source ([ADR-0110](../docs/adr/0110-compaction-successor-closes-predecessor.md),
+  amends ADR-0101):** the source session's `Context` is **never mutated** — the
+  summary rides only in the event, and the head forks it into a **new root**
+  session via `InMsg::Spawn` (now `parent: Option<SessionId>` — `None` here — plus
+  a new `predecessor: Some(source)` for lineage, mirrored onto `SessionStarted`),
+  then **closes the source** (`InMsg::CloseSession`) so its interactive session is
+  retired while its log is preserved. The successor is a root, not a child of the
+  source, so closing the source doesn't cascade onto it. A truncated summary
   (`StopReason::MaxTokens`) is refused outright, and an oversized transcript is
-  rejected before the request. `Session::replay`'s `Compacted` fold is a no-op
-  for `auto: false`, so a resumed source recovers its full history (the
-  implicit undo); `"compact"` only runs on request (`InMsg::Oneshot`, TUI
-  `/compact [--keep N] [instructions]`).
+  rejected before the request. `Session::replay`'s `Compacted` fold is still a
+  no-op for `auto: false`, but the source being closed means its implicit undo is
+  no longer reachable interactively (only via the persisted log); `"compact"` only
+  runs on request (`InMsg::Oneshot`, TUI `/compact [--keep N] [instructions]`).
+  Auto-compaction (`auto: true`, ADR-0103) is unchanged — in-place, no fork, no
+  close. Lineage is now two-way on `Session` (`parent` + a new `children:
+  Vec<SessionId>` mirror populated via internal `SessionCmd::ChildSpawned`/
+  `ChildClosed` and rebuilt on replay by inverting parent edges, + `predecessor`);
+  new session ids are always fresh v4 UUIDs, incl. the TUI new-session path (the
+  former `{root}-{ordinal}` suffix removed).
   **Keep-tail (#397,
   [ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)):**
   `args.kept: u64` (default `0`) requests the last `kept` messages ride into
@@ -533,7 +545,30 @@ re-document them here):
   now advisory-locked across concurrent `skutter` instances
   (`config::lock::with_locked_file`, an `fd-lock` on a sibling `.lock` file,
   read-current-then-merge under the lock) so two instances no longer clobber each
-  other's write.
+  other's write. **Reload is content-gated:** the debounced firing reloads (and
+  emits the "definitions reloaded" notice) **only if a definition/config file's
+  content actually changed** — the fingerprint is a `path → (mtime, size, sha256)`
+  map restricted to agent/skill `*.md` + managed `*.yml`/`*.yaml`/`.env`, checked
+  two-stage (cheap mtime gate → SHA-256 arbiter). So a same-content re-save and,
+  crucially, a write to a **non-definition** file under a watched tree (a
+  `call`/`bash` output artifact under `.entanglement/tmp/`) are no-ops instead of
+  spamming reload notices.
+- **Access outside the project root, approval-gated** ([ADR-0109](../docs/adr/0109-escape-root-access-via-approval.md)):
+  root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write` path
+  or a `bash`/`call` `workdir` resolving **outside** root is detected in the
+  executor (`permission::escape_root_target` + `host::escaping_path`), forces an
+  approval prompt even when the profile would `Allow` (a `Deny` floor still wins),
+  and — on approval — is recorded in a **separate** `runtime::extra_roots::ExtraRootStore`
+  (managed `extra-roots.yml`, override `ENTANGLEMENT_EXTRA_ROOTS_FILE`) keyed by
+  `(tool, resolved-absolute-path)`, **per tool** (a `read` grant never unlocks
+  `write`), at `Once`/`Session`/`Always` scope. The host tools consult it via
+  `resolve_under_root_or_grant` to relax containment for the approved path
+  (matched against the symlink-canonicalized target). Reuses the
+  `ToolRequest`/`Approve{scope}` wire (no new variant); `glob`/`grep` stay
+  strictly root-contained. **`call` default output** also moved out of the repo:
+  a no-`output_file` artifact now lands in a runtime-owned per-project scratch dir
+  (`session_store::scratch_dir` → `<data_dir>/entanglement/sessions/<cwd>/tmp/`,
+  via `CallTool::with_scratch_base`), not `<root>/.entanglement/tmp/`.
 
 | Topic | Module |
 | --- | --- |

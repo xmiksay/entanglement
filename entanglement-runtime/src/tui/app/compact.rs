@@ -3,7 +3,7 @@
 //! On `OutEvent::Compacted`, the TUI forks the summary into a fresh session:
 //! the source session's `Context` was never mutated (the engine's `compact_op`
 //! emits the summary as a report, not a mutation), so the fork is the *only*
-//! place the summary lands as a prompt. The fork is a **successor** (ADR-0108):
+//! place the summary lands as a prompt. The fork is a **successor** (ADR-0110):
 //! spawned as a fresh *root* with `predecessor` = the source id (lineage only,
 //! not a spawn edge), and the source's interactive session is **closed** right
 //! after — the user moves forward into the compacted successor, the original is
@@ -74,7 +74,7 @@ impl App {
         self.pending_compact_fork.take()
     }
 
-    /// Build the `InMsg::Spawn` for a recorded compaction fork (ADR-0108): the
+    /// Build the `InMsg::Spawn` for a recorded compaction fork (ADR-0110): the
     /// summary seeds the successor's first user message, the successor is a fresh
     /// **root** (`parent = None`) with `predecessor` = the source id (lineage,
     /// not a spawn edge), and the source's agent profile is inherited. The caller
@@ -91,7 +91,7 @@ impl App {
     }
 
     /// Build the `InMsg::CloseSession` that retires the compaction source once
-    /// its successor is spawned (ADR-0108): the user continues in the successor,
+    /// its successor is spawned (ADR-0110): the user continues in the successor,
     /// the original's interactive session ends (its log is preserved).
     pub fn close_predecessor(fork: &CompactFork) -> InMsg {
         InMsg::CloseSession {
@@ -188,7 +188,7 @@ mod tests {
         assert!(fork.summary.contains("user asked for X, agent did Y"));
         // The spawn is addressed to the successor under the source's profile, as
         // a fresh root (no parent) that records the source as its predecessor
-        // (ADR-0108).
+        // (ADR-0110).
         let spawn = App::spawn_for_fork(&fork);
         match spawn {
             InMsg::Spawn {

@@ -37,7 +37,7 @@ type OnReadCallback = Box<dyn Fn(String, Vec<u8>) + Send + Sync>;
 pub struct ReadTool {
     root: std::path::PathBuf,
     on_read: Option<OnReadCallback>,
-    /// Approval-gated out-of-root access (ADR-0107). `None` keeps strict
+    /// Approval-gated out-of-root access (ADR-0109). `None` keeps strict
     /// containment (standalone/test constructors).
     extra_roots: Option<Arc<ExtraRootStore>>,
 }
@@ -51,7 +51,7 @@ impl ReadTool {
         }
     }
 
-    /// Permit approved out-of-root reads (ADR-0107) via the shared grant store.
+    /// Permit approved out-of-root reads (ADR-0109) via the shared grant store.
     pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
         self.extra_roots = Some(extra);
         self
