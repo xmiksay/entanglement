@@ -56,6 +56,7 @@ use serde::Deserialize;
 use crate::layers::Strictness;
 use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, assemble_parts, PromptContext, PromptPart};
+use crate::tool_names;
 
 mod materialize;
 pub use materialize::{rewrite_tools, save_tools_override, winning_raw_text};
@@ -561,30 +562,149 @@ fn resolve_preload(names: &[String], agent: &str, skills: &SkillRegistry) -> Res
 }
 
 /// Convert a `permission` mapping into a core [`PermissionProfile`]. Keys are
-/// tool patterns — `"*"`, a tool name, or an argument-scoped `tool(pattern)`
-/// glob (e.g. `bash(git *)`, `edit(src/*)`, #173); the reserved `default` key
-/// sets the fallback permission. Rules preserve file order (last match wins, ADR-0003).
-/// An omitted `default` ⇒ allow. Shared with the user config's `permissions`
-/// section (#172), which uses the identical shape.
+/// tool patterns — `"*"`, a tool name, a **capability key** (`read`/`write`/
+/// `call`, #418, ADR-0114), or an argument-scoped `tool(pattern)` /
+/// `capability(pattern)` glob (e.g. `bash(git *)`, `edit(src/*)`, `read(src/*)`,
+/// #173); the reserved `default` key sets the fallback permission. Rules
+/// preserve file order (last match wins, ADR-0003). An omitted `default` ⇒
+/// allow. Shared with the user config's `permissions` section (#172), which
+/// uses the identical shape. Capability keys are expanded here, at parse time,
+/// into the literal per-tool rules [`PermissionProfile::resolve`] actually
+/// matches against — core stays capability-unaware (ADR-0006) — see
+/// [`expand_capabilities`].
 pub(crate) fn permission_from_value(value: &serde_yaml::Value) -> Result<PermissionProfile> {
-    let map = value
-        .as_mapping()
-        .context("`permission` must be a mapping of tool → allow|ask|deny")?;
+    let map = value.as_mapping().context(
+        "`permission` must be a mapping of tool → allow|ask|deny (a tool name, `*`, or a \
+         capability key `read`/`write`/`call`)",
+    )?;
     let mut default = Permission::Allow;
-    let mut rules = Vec::new();
+    let mut entries: Vec<(String, Permission)> = Vec::new();
     for (key, val) in map {
-        let key = key
-            .as_str()
-            .context("`permission` keys must be strings (a tool name or `*`)")?;
+        let key = key.as_str().context(
+            "`permission` keys must be strings (a tool name, `*`, or a capability key \
+             `read`/`write`/`call`)",
+        )?;
         let perm: Permission = serde_yaml::from_value(val.clone())
             .with_context(|| format!("invalid permission for `{key}` (expected allow|ask|deny)"))?;
         if key == "default" {
             default = perm;
         } else {
-            rules.push((key.to_string(), perm));
+            entries.push((key.to_string(), perm));
         }
     }
-    Ok(PermissionProfile { rules, default })
+    Ok(PermissionProfile {
+        rules: expand_capabilities(entries),
+        default,
+    })
+}
+
+/// Split a rule key into its tool/capability part and optional argument glob:
+/// `read(src/*)` ⇒ `("read", Some("src/*"))`, `read` ⇒ `("read", None)`. A
+/// runtime-local mirror of core's private `split_rule_key` — duplicated rather
+/// than exposed, since the capability-expansion logic it feeds must not leak
+/// into core (ADR-0006).
+fn split_capability_key(key: &str) -> (&str, Option<&str>) {
+    if let Some(open) = key.find('(') {
+        if key.ends_with(')') {
+            return (&key[..open], Some(&key[open + 1..key.len() - 1]));
+        }
+    }
+    (key, None)
+}
+
+/// The tools a capability expands to when the key is bare (no `(...)`), or
+/// `None` if `cap` isn't a capability name at all. `call`'s bare expansion is
+/// `bash` only — the literal `call` tool is graded separately, see
+/// [`tool_names::MULTI_GROUP`].
+fn capability_members(cap: &str) -> Option<&'static [&'static str]> {
+    tool_names::CAPABILITIES
+        .iter()
+        .find(|(name, _)| *name == cap)
+        .map(|(_, members)| *members)
+}
+
+/// The tools an argument-scoped capability key (`read(src/*)`) expands to —
+/// identical to [`capability_members`] except `call`, which additionally
+/// includes the literal `call` tool: an argument-scoped rule can meaningfully
+/// restrict it by command pattern, unlike the bare case where `call`'s grade
+/// comes only from the multi-group pre-scan below.
+fn arg_scoped_capability_members(cap: &str) -> Vec<&'static str> {
+    if cap == "call" {
+        return vec!["call", "bash"];
+    }
+    capability_members(cap)
+        .map(<[&str]>::to_vec)
+        .unwrap_or_default()
+}
+
+/// Expand capability keys (`read`/`write`/`call`, #418, ADR-0114) among
+/// already-parsed `(key, permission)` entries (file order, `default` already
+/// extracted) into the literal per-tool rules `PermissionProfile::resolve`
+/// matches against. Two passes:
+///
+/// 1. **Pre-scan**: collect the grade of every *bare* (no `(...)`) capability
+///    key that's set, plus any bare literal `rhai` grade (it tightens the
+///    same way). Their least-privileged (`min`) grade is emitted **first** as
+///    `call: mg` and `rhai: mg` ([`tool_names::MULTI_GROUP`]) — these two
+///    tools can themselves read, write, or execute, so restricting any one
+///    capability tightens what they may do, regardless of key order in the
+///    source map. Emitting them first lets a later arg-scoped `call(...)`
+///    rule still refine `call` (last-match-wins); nothing refines `rhai`,
+///    which has no argument.
+/// 2. **In order**, for each entry: a non-capability key (a literal tool name,
+///    `*`, or an arg-scoped literal like `edit(src/*)`) is pushed verbatim
+///    (today's pre-#418 behavior); a bare capability key pushes its
+///    single-group members only (`read`⇒read/grep/glob, `write`⇒edit/write,
+///    `call`⇒bash — `call`/`rhai` themselves are handled by the pre-scan, not
+///    re-emitted here); an arg-scoped capability key `cap(g)` pushes
+///    `member(g)` for each of its (possibly wider, see
+///    [`arg_scoped_capability_members`]) members.
+///
+/// Single-group members resolve through core's ordinary last-match-wins
+/// (a later literal `grep: ask` still overrides an earlier `read: allow`).
+fn expand_capabilities(entries: Vec<(String, Permission)>) -> Vec<(String, Permission)> {
+    let mg = entries
+        .iter()
+        .filter_map(|(key, perm)| {
+            let (name, arg) = split_capability_key(key);
+            if arg.is_some() {
+                return None;
+            }
+            (capability_members(name).is_some() || name == tool_names::RHAI_TOOL).then_some(*perm)
+        })
+        .reduce(crate::permission::min_permission);
+
+    let mut rules = Vec::new();
+    if let Some(mg) = mg {
+        for name in tool_names::MULTI_GROUP {
+            rules.push((name.to_string(), mg));
+        }
+    }
+
+    for (key, perm) in entries {
+        let (name, pattern) = split_capability_key(&key);
+        let name = name.to_string();
+        let pattern = pattern.map(str::to_string);
+        match pattern {
+            None => match capability_members(&name) {
+                Some(members) => rules.extend(members.iter().map(|m| (m.to_string(), perm))),
+                None => rules.push((key, perm)),
+            },
+            Some(pattern) => {
+                let members = arg_scoped_capability_members(&name);
+                if members.is_empty() {
+                    rules.push((key, perm));
+                } else {
+                    rules.extend(
+                        members
+                            .into_iter()
+                            .map(|m| (format!("{m}({pattern})"), perm)),
+                    );
+                }
+            }
+        }
+    }
+    rules
 }
 
 #[cfg(test)]
@@ -621,6 +741,113 @@ mod tests {
         reg
     }
 
+    /// Parse a YAML `permission:` mapping literal through the shared expansion
+    /// path (#418) for capability-key tests.
+    fn perm(yaml: &str) -> PermissionProfile {
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        permission_from_value(&value).unwrap()
+    }
+
+    #[test]
+    fn bare_read_capability_expands_to_read_grep_and_glob() {
+        let p = perm("default: deny\nread: allow");
+        assert_eq!(p.for_tool("read"), Permission::Allow);
+        assert_eq!(p.for_tool("grep"), Permission::Allow);
+        assert_eq!(p.for_tool("glob"), Permission::Allow);
+        // Not a member of `read` — untouched.
+        assert_eq!(p.for_tool("edit"), Permission::Deny);
+    }
+
+    #[test]
+    fn arg_scoped_write_capability_is_path_scoped_and_excludes_other_capabilities() {
+        let p = perm("default: deny\nwrite(src/*): allow");
+        assert_eq!(p.resolve("edit", Some("src/main.rs")), Permission::Allow);
+        assert_eq!(p.resolve("write", Some("src/main.rs")), Permission::Allow);
+        // Outside the scoped path, falls through to `default`.
+        assert_eq!(p.resolve("edit", Some("docs/x.md")), Permission::Deny);
+        // grep/glob/call are not members of `write` — the arg-scoped rule
+        // leaves them at `default`.
+        assert_eq!(p.for_tool("grep"), Permission::Deny);
+        assert_eq!(p.for_tool("glob"), Permission::Deny);
+        assert_eq!(p.for_tool("call"), Permission::Deny);
+    }
+
+    #[test]
+    fn arg_scoped_call_capability_expands_to_call_and_bash() {
+        let p = perm("default: deny\ncall(git *): allow");
+        assert_eq!(p.resolve("call", Some("git status")), Permission::Allow);
+        assert_eq!(p.resolve("bash", Some("git status")), Permission::Allow);
+        // Outside the command pattern, falls through to `default`.
+        assert_eq!(p.resolve("call", Some("rm -rf /")), Permission::Deny);
+        assert_eq!(p.resolve("bash", Some("rm -rf /")), Permission::Deny);
+    }
+
+    #[test]
+    fn arg_scoped_read_capability_matches_grep_and_glob_by_path() {
+        // #416 phase A: grep/glob's `permission_arg` yields a path, so a
+        // `read(...)` arg-scoped rule restricts them to a subtree exactly like
+        // `read`/`edit`/`write`.
+        let p = perm("default: ask\nread(src/*): allow");
+        assert_eq!(p.resolve("read", Some("src/main.rs")), Permission::Allow);
+        assert_eq!(p.resolve("grep", Some("src/main.rs")), Permission::Allow);
+        assert_eq!(p.resolve("glob", Some("src/lib.rs")), Permission::Allow);
+        assert_eq!(p.resolve("grep", Some("docs/x.md")), Permission::Ask);
+    }
+
+    #[test]
+    fn multi_group_call_and_rhai_take_least_privilege_regardless_of_key_order() {
+        let forward = perm("read: allow\nwrite: deny");
+        let backward = perm("write: deny\nread: allow");
+        for p in [forward, backward] {
+            assert_eq!(p.for_tool("call"), Permission::Deny);
+            assert_eq!(p.for_tool("rhai"), Permission::Deny);
+        }
+    }
+
+    #[test]
+    fn a_later_literal_rule_overrides_the_earlier_capability_fanout() {
+        let p = perm("read: allow\ngrep: ask");
+        assert_eq!(p.for_tool("read"), Permission::Allow);
+        assert_eq!(p.for_tool("glob"), Permission::Allow);
+        assert_eq!(p.for_tool("grep"), Permission::Ask);
+    }
+
+    #[test]
+    fn non_capability_keys_pass_through_verbatim() {
+        let p = perm("default: allow\nbash: ask");
+        assert_eq!(p.for_tool("bash"), Permission::Ask);
+        // `bash` is not a capability name (only read/write/call are), so it
+        // never joins the multi-group pre-scan — `call`/`rhai` stay at
+        // `default`.
+        assert_eq!(p.for_tool("call"), Permission::Allow);
+        assert_eq!(p.for_tool("rhai"), Permission::Allow);
+    }
+
+    #[test]
+    fn ceiling_style_bare_call_deny_denies_both_call_and_bash() {
+        let p = perm("call: deny");
+        assert_eq!(p.for_tool("call"), Permission::Deny);
+        assert_eq!(p.for_tool("bash"), Permission::Deny);
+    }
+
+    #[test]
+    fn a_literal_rhai_grade_tightens_the_multi_group_minimum() {
+        let p = perm("call: allow\nrhai: deny");
+        assert_eq!(p.for_tool("call"), Permission::Deny);
+        assert_eq!(p.for_tool("rhai"), Permission::Deny);
+    }
+
+    #[test]
+    fn a_looser_literal_rhai_grade_still_wins_for_rhai_itself() {
+        // mg = min(read: deny, rhai: allow) = deny, clamping `call`; but
+        // `rhai` is a plain literal key too, so its own later verbatim push
+        // (today's pre-#418 behavior for a non-capability key) restores the
+        // grade the profile actually asked for.
+        let p = perm("read: deny\nrhai: allow");
+        assert_eq!(p.for_tool("call"), Permission::Deny);
+        assert_eq!(p.for_tool("rhai"), Permission::Allow);
+    }
+
     #[test]
     fn built_ins_parse_with_expected_shape() {
         // The embedded built-ins must parse — this is what lets `load_registry`
@@ -649,6 +876,12 @@ mod tests {
         let plan = reg.get("plan").expect("plan built-in");
         assert_eq!(plan.permission.for_tool("read"), Permission::Allow);
         assert_eq!(plan.permission.for_tool("edit"), Permission::Ask);
+        // #418: `plan.md`'s `read: allow` is now a capability key, so it fans
+        // out to `grep`/`glob` too (both are read-only and already advertised)
+        // — an intentional, pinned flip from the pre-#418 `ask` default rather
+        // than a silent diff.
+        assert_eq!(plan.permission.for_tool("grep"), Permission::Allow);
+        assert_eq!(plan.permission.for_tool("glob"), Permission::Allow);
         // Plan authors the plan (#231, ADR-0049) and is physically read-only: its
         // tool mask carries the read trio + delegation/skill tools + the plan
         // tools, no `edit`/`write`/`bash`. Children spawned under it inherit the

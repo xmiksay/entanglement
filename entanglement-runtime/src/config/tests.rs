@@ -112,6 +112,16 @@ fn permissions_default_can_be_overridden() {
 }
 
 #[test]
+fn permissions_ceiling_honors_capability_keys() {
+    // #418: the shared `permission_from_value` expansion applies identically
+    // to the user-config ceiling — a bare `call: deny` denies both the `call`
+    // tool (via the multi-group pre-scan) and its single-group member `bash`.
+    let c = merge_user("permissions:\n  call: deny\n");
+    assert_eq!(c.permissions.for_tool("call"), Permission::Deny);
+    assert_eq!(c.permissions.for_tool("bash"), Permission::Deny);
+}
+
+#[test]
 fn unknown_field_is_rejected() {
     let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
     let over: Value = serde_yaml::from_str("typo_field: 1\n").unwrap();

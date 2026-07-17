@@ -34,7 +34,10 @@ thread is where new items get filed and discussed.
 
 ## Open deferred items
 
-No open items. Record entries here as they're filed against #396.
+| Issue | Deferred item | ADR/issue it descends from |
+| --- | --- | --- |
+| [#425](https://github.com/xmiksay/entanglement/issues/425) | `call` capability key has no file-path/`workdir` scoping — only command-pattern scoping, since `call`/`bash` have no fixed target path independent of their command line | [ADR-0114](adr/0114-capability-level-permission-keys.md) / #418 / #416 |
+| [#426](https://github.com/xmiksay/entanglement/issues/426) | MCP tools (`mcp__<server>__<tool>`) are not assigned to any capability — capability fan-out only covers the fixed built-in host-tool set | [ADR-0114](adr/0114-capability-level-permission-keys.md) / #418 / #416 |
 
 ## Resolved (shipped since the 2026-07-16 audit)
 
