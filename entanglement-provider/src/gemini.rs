@@ -95,7 +95,7 @@ impl Llm for GeminiLlm {
 
         // The rate-limit / retry pool is keyed by (endpoint, api_key); use the
         // base (key-agnostic) so every model on this endpoint shares one bucket.
-        let response = self
+        let (response, guard) = self
             .http
             .execute_with_retry(base, Some(&self.api_key), self.rpm, || {
                 self.http
@@ -133,7 +133,7 @@ impl Llm for GeminiLlm {
         }
 
         // Forward the SSE body with a per-chunk idle-gap watchdog (#241).
-        let rx = crate::client::spawn_byte_stream(response, "gemini");
+        let rx = crate::client::spawn_byte_stream(response, "gemini", guard);
 
         let stream = try_stream! {
             let mut buf = String::new();

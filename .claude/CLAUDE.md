@@ -101,7 +101,14 @@ must round-trip; that opaque per-call token rides the new generic
 never inspected by core). No key → `EchoLlm`. Detail in
 [`../docs/architecture.md`](../docs/architecture/provider.md). **Per-endpoint**
 connection pool, retry/backoff, rate-limit (429/`Retry-After`/RPM keyed by base
-URL + API-key hash, ✅ #217, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)),
+URL + API-key hash, ✅ #217, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md);
+the shared pool coordinates across sessions ([ADR-0111](../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)):
+a per-endpoint **concurrency cap** (default 3, `ENTANGLEMENT_MAX_CONCURRENCY`,
+permit held across the whole stream so spawned sub-agents queue instead of
+429-storming), an **adaptive pacing gate** (AIMD `penalize`/`relax` self-tunes RPM),
+and a 429 that **parks every concurrent session's window and retries** (5s→10min)
+**bounded by ≈15min then surfaces as an error** (so a saturated endpoint fails a
+sub-agent's turn rather than hanging its parent)),
 reasoning/thinking stream events, the YAML provider/model catalog, and the
 provider-owned LLM backend (a plain `Box<dyn Llm>` — the empty `LlmSession`
 placeholder was collapsed, ✅ #195/[ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md))

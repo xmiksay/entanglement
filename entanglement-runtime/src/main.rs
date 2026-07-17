@@ -921,7 +921,19 @@ async fn main() -> Result<()> {
         config::agent_generation::AgentGenerationStore::load(),
     ));
 
-    let http_client = HttpClient::new();
+    // Per-endpoint in-flight cap: env override, else the client default (3).
+    // Bounds how many requests (incl. streaming sub-agents) hit one provider at
+    // once, so a spawn-storm queues instead of 429-storming (ADR-0111).
+    let http_client = match env_nonempty("ENTANGLEMENT_MAX_CONCURRENCY")
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+    {
+        Some(concurrency) => HttpClient::with_config(entanglement_provider::RetryConfig {
+            concurrency,
+            ..Default::default()
+        }),
+        None => HttpClient::new(),
+    };
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
     let (mut engine_config, model_info, provider_name, tools, tool_names, initial_mcp, escape_root) =

@@ -116,7 +116,7 @@ impl Llm for AnthropicLlm {
         );
         crate::client::log_request_body("anthropic", &body);
 
-        let response = self
+        let (response, guard) = self
             .http
             .execute_with_retry(ANTHROPIC_API_URL, Some(&self.api_key), self.rpm, || {
                 self.http
@@ -157,7 +157,7 @@ impl Llm for AnthropicLlm {
 
         // Forward the SSE body with a per-chunk idle-gap watchdog (#241): a long
         // healthy stream runs to completion, a hung one dies within the gap.
-        let rx = crate::client::spawn_byte_stream(response, "anthropic");
+        let rx = crate::client::spawn_byte_stream(response, "anthropic", guard);
 
         let stream = try_stream! {
             let mut buf = String::new();
