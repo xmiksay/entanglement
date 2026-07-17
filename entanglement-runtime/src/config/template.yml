@@ -98,3 +98,12 @@
 # turn is halted. The counter resets per prompt, so a long session of many short
 # prompts is never capped — only a single wedged turn. Default 200.
 #max_turns: 200
+
+# Auto-hibernate a settled session (no in-flight turn, and none in its spawned
+# sub-tree) after this many idle seconds (#401, ADR-0090). Evicts the session's
+# in-memory state without tombstoning it — `Holly::resume` rebuilds it from the
+# event log on its next message. Leave commented to disable the sweep entirely
+# (the default): eviction then stays embedder-driven. Mainly useful for a
+# long-lived multi-session embedder such as `skutter serve`; a background sweep
+# never touches a session mid-turn, so this can't cancel in-flight work.
+#idle_ttl_secs: 1800

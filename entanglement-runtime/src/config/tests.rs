@@ -49,6 +49,7 @@ fn merge_user(user: &str) -> Config {
         mcp: raw.mcp,
         web_search: raw.web_search,
         max_turns: raw.max_turns,
+        idle_ttl: raw.idle_ttl_secs.map(std::time::Duration::from_secs),
     }
 }
 
@@ -72,6 +73,21 @@ fn max_turns_override_parses_and_defaults_to_200() {
     // A user override parses through the merge and replaces the default.
     let c = merge_user("max_turns: 400\n");
     assert_eq!(c.max_turns, Some(400));
+
+    // And it keeps siblings intact.
+    assert_eq!(c.agent.as_deref(), Some("build"));
+}
+
+#[test]
+fn idle_ttl_secs_defaults_to_none_and_parses_as_seconds() {
+    // The embedded default leaves auto-hibernation off (byte-identical to
+    // before this setting existed).
+    let c = defaults();
+    assert_eq!(c.idle_ttl, None);
+
+    // A user override parses through the merge as whole seconds.
+    let c = merge_user("idle_ttl_secs: 1800\n");
+    assert_eq!(c.idle_ttl, Some(std::time::Duration::from_secs(1800)));
 
     // And it keeps siblings intact.
     assert_eq!(c.agent.as_deref(), Some("build"));

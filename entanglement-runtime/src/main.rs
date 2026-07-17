@@ -115,6 +115,9 @@ async fn build_config(
     if let Some(max) = user_config.max_turns {
         cfg.max_turns = max;
     }
+    // Idle-TTL auto-hibernation (#401, ADR-0090): config file → engine, `None`
+    // (unset) keeps the sweep disabled — the pre-#401 default for every head.
+    cfg.idle_ttl = user_config.idle_ttl;
     // Canonicalize the working root once at startup (#163, ADR-0054): host-tool
     // containment checks against this, so a symlinked cwd must resolve to its
     // real path here or every resolved target would look like an escape.

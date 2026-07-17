@@ -442,7 +442,15 @@ re-document them here):
   root hibernates through the same `hibernate_subtree` helper
   `HibernateSession` uses — stricter than a manual hibernate (which
   stop-then-hibernates on request): a background timer only ever evicts a
-  session already at rest, never one mid-stream.
+  session already at rest, never one mid-stream. **Exposed as a runtime config
+  setting** (#401, [ADR-0105](../docs/adr/0105-expose-idle-ttl-via-runtime-config.md)):
+  `config.yml`'s `idle_ttl_secs: Option<u64>` (whole seconds — no
+  duration-string crate in the tree) is copied onto `EngineConfig.idle_ttl` in
+  `build_config`, the same wiring point as `max_turns`. One engine-global
+  setting shared by every head (`run`/`pipe`/`tui`/`serve`, since `Holly::spawn`
+  runs once before the subcommand match) rather than a `serve`-only CLI flag —
+  the sweep's own settledness guard is what makes auto-hibernation safe for any
+  head. Unset (the default) stays `None`, byte-identical to before.
 - **Definitions are data, layered** embedded < user < project, later wins; the
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
   Agents (`ENTANGLEMENT_AGENTS_DIR`), skills (`ENTANGLEMENT_SKILLS_DIR`), the
@@ -626,7 +634,9 @@ keep-tail (#397, [ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-f
 auto-summarize on context overflow (#398,
 [ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)), and the
 optional bubblewrap OS sandbox for `bash`/`call` (#399,
-[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)) are
+[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)), and exposing
+`idle_ttl` as a `config.yml` setting for `serve` (#401,
+[ADR-0105](../docs/adr/0105-expose-idle-ttl-via-runtime-config.md)) are
 **complete**.
 
 Shipped foundations: streaming `Llm` providers ([ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md))
