@@ -197,8 +197,14 @@ re-document them here):
   named privileged `Holly::submit_tool_result` handle (via `seam::reply_content`);
   `pipe` calls `send_from_wire`. Local single-user scope
   ([ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md)) → robustness/UX,
-  not remote-attacker defence; WS `send_from_wire` + per-connection `Approve`
-  ownership deferred to #153.
+  not remote-attacker defence; the WS `serve` head both calls `send_from_wire`
+  and implements per-connection `Approve` ownership (#402,
+  [ADR-0107](../docs/adr/0107-ws-per-connection-approval-ownership.md)):
+  session-scoped, first-writer-wins (the first connection to send any frame for
+  a session claims its `Approve`/`Reject`/`AnswerQuestion` decisions; a later
+  connection's decision frame is refused, logged, connection unaffected),
+  released on disconnect so a still-parked approval doesn't deadlock behind a
+  client that went away.
 - **Session-multiplexed**: every frame carries `SessionId`; content frames carry
   monotonic `seq`. Supervisor-global vs session-scoped routing is explicit.
   `(session, seq)` is **unique across every authored content event** (#157,

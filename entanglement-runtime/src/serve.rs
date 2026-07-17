@@ -19,11 +19,20 @@
 //!   origin is accepted ([`origin_allowed`]).
 //! - **A `broadcast` lag is a dropped-events gap, not end-of-stream** (#158): the
 //!   relay logs and keeps going rather than silently dying mid-conversation.
+//! - **Per-connection approval ownership** (#402, [ADR-0107]): the first
+//!   connection to send a frame for a session claims that session's
+//!   `Approve`/`Reject`/`AnswerQuestion` decisions; a later connection's
+//!   decision frame for the same session is refused (logged, dropped), so two
+//!   cooperating local clients (e.g. the TUI and a browser tab) don't race to
+//!   resolve the same parked approval.
 //!
 //! [ADR-0048]: ../../docs/adr/0048-serve-head-local-trust-model.md
+//! [ADR-0107]: ../../docs/adr/0107-ws-per-connection-approval-ownership.md
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -44,13 +53,54 @@ use tokio::sync::broadcast::error::RecvError;
 /// Keep an idle socket (and any NAT/proxy in front of a raw client) alive.
 const PING_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Identifies one WS connection for the lifetime of the process; minted from
+/// `ServeState::next_conn_id`.
+type ConnId = u64;
+
+/// Tracks which WS connection "owns" each session's approvals (#402,
+/// [ADR-0107]): the first connection to send any frame referencing a session
+/// claims it — first-writer-wins among cooperating local clients, per
+/// [ADR-0069]'s deferred design intent. Only `Approve`/`Reject`/
+/// `AnswerQuestion` are gated on ownership (checked in [`handle_socket`]);
+/// every other `InMsg` variant passes through regardless, so ownership never
+/// blocks a `Prompt`/`Stop`/etc. from a second client. Released wholesale when
+/// the owning connection disconnects ([`SessionOwners::release`]), so a
+/// still-parked approval doesn't deadlock behind a client that went away —
+/// robustness among cooperating clients (ADR-0048), not a security boundary.
+///
+/// [ADR-0107]: ../../docs/adr/0107-ws-per-connection-approval-ownership.md
+/// [ADR-0069]: ../../docs/adr/0069-trusted-untrusted-wire-frame-split.md
+#[derive(Default)]
+struct SessionOwners {
+    owners: Mutex<HashMap<SessionId, ConnId>>,
+}
+
+impl SessionOwners {
+    /// Claim `session` for `conn` if unowned; return whether `conn` is (now,
+    /// or already) the owner.
+    fn touch(&self, session: &SessionId, conn: ConnId) -> bool {
+        let mut owners = self.owners.lock().expect("session owners mutex poisoned");
+        *owners.entry(session.clone()).or_insert(conn) == conn
+    }
+
+    /// Release every session `conn` owned (its connection just closed).
+    fn release(&self, conn: ConnId) {
+        self.owners
+            .lock()
+            .expect("session owners mutex poisoned")
+            .retain(|_, owner| *owner != conn);
+    }
+}
+
 /// Shared handler state: the engine handle every socket subscribes to and sends
-/// into, plus the opt-in `Origin` allowlist.
+/// into, plus the opt-in `Origin` allowlist and per-session approval ownership.
 struct ServeState {
     holly: Holly,
     /// `Some` → only browsers presenting this exact `Origin` may connect; `None`
     /// → accept every origin (raw clients send none). Opt-in per ADR-0048.
     allowed_origin: Option<String>,
+    next_conn_id: AtomicU64,
+    session_owners: SessionOwners,
 }
 
 /// Bind `127.0.0.1:port` (loopback-only, ADR-0048) and serve the WS head until
@@ -77,6 +127,8 @@ pub fn router(holly: Holly, allowed_origin: Option<String>) -> Router {
     let state = Arc::new(ServeState {
         holly,
         allowed_origin,
+        next_conn_id: AtomicU64::new(0),
+        session_owners: SessionOwners::default(),
     });
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -121,6 +173,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
     // A per-connection default session lets a bare-text frame become a `Prompt`,
     // matching the stdio `pipe` head's scripting affordance.
     let default_session = SessionId::new_uuid();
+    // Identifies this connection for approval ownership (#402, ADR-0107).
+    let conn_id = state.next_conn_id.fetch_add(1, Ordering::Relaxed);
 
     // Outbound pump: fan-out events as JSON text frames; a periodic ping keeps an
     // otherwise-silent socket alive.
@@ -170,13 +224,37 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
                     continue;
                 }
                 match serde_json::from_str::<InMsg>(trimmed) {
-                    Ok(m) => match state.holly.send_from_wire(m).await {
-                        Ok(()) => {}
-                        Err(WireError::Closed) => break, // engine gone
-                        Err(e @ WireError::Privileged(_)) => {
-                            tracing::warn!("serve: {e}");
+                    Ok(m) => {
+                        // Claim/verify ownership on every session-bearing frame so a
+                        // session gets an owner as early as possible (typically the
+                        // initiating `Prompt`); only the three decision variants are
+                        // actually gated on it (#402, ADR-0107).
+                        if let Some(session) = m.session() {
+                            let owner_ok = state.session_owners.touch(session, conn_id);
+                            if !owner_ok
+                                && matches!(
+                                    m,
+                                    InMsg::Approve { .. }
+                                        | InMsg::Reject { .. }
+                                        | InMsg::AnswerQuestion { .. }
+                                )
+                            {
+                                tracing::warn!(
+                                    %session,
+                                    conn_id,
+                                    "serve: refused approval decision from a non-owning connection"
+                                );
+                                continue;
+                            }
                         }
-                    },
+                        match state.holly.send_from_wire(m).await {
+                            Ok(()) => {}
+                            Err(WireError::Closed) => break, // engine gone
+                            Err(e @ WireError::Privileged(_)) => {
+                                tracing::warn!("serve: {e}");
+                            }
+                        }
+                    }
                     Err(e) => {
                         tracing::debug!("serve: non-InMsg frame treated as prompt ({e})");
                         if state
@@ -194,12 +272,55 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
             _ => {}
         }
     }
+    // Release this connection's session ownership so a still-parked approval
+    // doesn't deadlock behind a client that just disconnected (#402, ADR-0107).
+    state.session_owners.release(conn_id);
     out.abort();
 }
 
 #[cfg(test)]
 mod tests {
-    use super::origin_allowed;
+    use super::{origin_allowed, SessionOwners};
+    use entanglement_core::SessionId;
+
+    #[test]
+    fn first_connection_claims_an_unowned_session() {
+        let owners = SessionOwners::default();
+        let sid = SessionId::new("s1");
+        assert!(owners.touch(&sid, 1));
+    }
+
+    #[test]
+    fn second_connection_does_not_own_an_already_claimed_session() {
+        let owners = SessionOwners::default();
+        let sid = SessionId::new("s1");
+        assert!(owners.touch(&sid, 1));
+        assert!(!owners.touch(&sid, 2));
+        // The original owner still checks out as owner on a repeat touch.
+        assert!(owners.touch(&sid, 1));
+    }
+
+    #[test]
+    fn release_frees_the_session_for_reclaiming() {
+        let owners = SessionOwners::default();
+        let sid = SessionId::new("s1");
+        assert!(owners.touch(&sid, 1));
+        owners.release(1);
+        assert!(owners.touch(&sid, 2));
+    }
+
+    #[test]
+    fn release_only_affects_its_own_connection() {
+        let owners = SessionOwners::default();
+        let sid_a = SessionId::new("a");
+        let sid_b = SessionId::new("b");
+        assert!(owners.touch(&sid_a, 1));
+        assert!(owners.touch(&sid_b, 2));
+        owners.release(1);
+        // Session B's owner (conn 2) is untouched by conn 1's release.
+        assert!(owners.touch(&sid_b, 2));
+        assert!(!owners.touch(&sid_b, 3));
+    }
 
     #[test]
     fn no_allowlist_accepts_any_origin_including_none() {
