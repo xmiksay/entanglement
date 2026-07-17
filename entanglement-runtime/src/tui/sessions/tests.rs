@@ -134,23 +134,25 @@ fn switch_round_trip_preserves_scroll_and_agent() {
 }
 
 #[test]
-fn create_generates_unique_incrementing_ids() {
-    let mut reg = SessionRegistry::new(SessionId::new("tui"));
+fn create_generates_unique_opaque_uuids() {
+    let base = SessionId::new("tui");
+    let mut reg = SessionRegistry::new(base.clone());
     let s2 = reg.create();
     let s3 = reg.create();
-    assert_eq!(s2, SessionId::new("tui-2"));
-    assert_eq!(s3, SessionId::new("tui-3"));
+    // Each new session is a fresh v4 UUID — no `{base}-{ordinal}` suffix.
+    assert_ne!(s2, s3);
+    assert_ne!(s2, base);
+    assert!(
+        !s2.0.starts_with("tui-"),
+        "no human-readable suffix: {}",
+        s2.0
+    );
+    // Canonical UUID shape: 36 chars, `8-4-4-4-12` hyphenation.
+    for id in [&s2, &s3] {
+        assert_eq!(id.0.len(), 36, "uuid length: {}", id.0);
+        assert_eq!(id.0.matches('-').count(), 4, "uuid hyphens: {}", id.0);
+    }
     assert_eq!(reg.active_id(), &s3);
-}
-
-#[test]
-fn create_skips_collisions_with_existing_sessions() {
-    let a = SessionId::new("tui");
-    let mut reg = SessionRegistry::new(a.clone());
-    reg.handle_out_event(event(&SessionId::new("tui-2"), 1, "x"));
-
-    let created = reg.create();
-    assert_eq!(created, SessionId::new("tui-3"));
 }
 
 #[test]
