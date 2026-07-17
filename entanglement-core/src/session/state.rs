@@ -73,6 +73,22 @@ pub struct Session {
     /// instead of reusing the parked `ToolExec` seq (the pre-#157 defect).
     pub seq: Arc<AtomicU64>,
     pub parent: Option<SessionId>,
+    /// The sessions this one spawned as sub-agents (#child-lineage): the live
+    /// children of this session, appended on
+    /// [`ChildSpawned`][super::SessionCmd::ChildSpawned] and pruned on
+    /// [`ChildClosed`][super::SessionCmd::ChildClosed]. The inverse of
+    /// [`parent`][Self::parent]; the supervisor's `parent_links` map stays the
+    /// authoritative tree, this is the per-session mirror. Reconstructed on
+    /// replay by inverting the `parent` edges in the shared root log.
+    pub children: Vec<SessionId>,
+    /// The session this one **succeeds** (#compact-successor, ADR-0108): set when
+    /// this session is the copy-on-write fork of a `/compact` on `predecessor`.
+    /// Unlike [`parent`][Self::parent] it is *not* a live spawn edge — the
+    /// predecessor's interactive session is closed once the successor starts — so
+    /// it never joins the spawn sub-tree or the permission ancestor clamp.
+    /// Reconstructed on replay from
+    /// [`SessionStarted`][crate::protocol::OutEvent::SessionStarted].
+    pub predecessor: Option<SessionId>,
     /// Cumulative token usage + cost across every model round-trip this session
     /// has run (#192). Each `LlmEvent::Finish` folds its normalized `Usage` in
     /// here and emits the per-round-trip delta as [`OutEvent::Usage`].
@@ -114,6 +130,8 @@ impl Session {
             profile_generation: HashMap::new(),
             seq: Arc::new(AtomicU64::new(0)),
             parent: None,
+            children: Vec::new(),
+            predecessor: None,
             usage: SessionUsage::default(),
             turn: None,
         }

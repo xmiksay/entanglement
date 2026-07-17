@@ -48,7 +48,37 @@ impl Session {
         });
         let is_root = |sid: &SessionId| root.as_ref().is_none_or(|r| r == sid);
 
+        // Reconstruct the resumed root's live `children` by inverting the parent
+        // edges recorded across the shared root log (#child-lineage): a child's
+        // `SessionStarted { parent: root }` adds it, its `SessionEnded` /
+        // `SessionHibernated` removes it. The supervisor's `parent_links` stays
+        // the authoritative tree; this only re-seeds the per-session mirror so a
+        // resumed parent still knows its live children. Only direct children of
+        // the root (grandchildren belong to their own parent).
+        let mut children: Vec<SessionId> = Vec::new();
+        if let Some(root_id) = root.as_ref() {
+            for (_, ev) in records {
+                match ev {
+                    OutEvent::SessionStarted {
+                        session: child,
+                        parent: Some(p),
+                        ..
+                    } if p == root_id => {
+                        if !children.contains(child) {
+                            children.push(child.clone());
+                        }
+                    }
+                    OutEvent::SessionEnded { session: gone, .. }
+                    | OutEvent::SessionHibernated { session: gone, .. } => {
+                        children.retain(|c| c != gone);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         let mut session = Self::new_empty(cfg, default_profile);
+        session.children = children;
         let mut pending_text: String = String::new();
         let mut pending_tools: Vec<ToolCall> = Vec::new();
         // Reconstructed tool results keyed by request id — multimodal so an image
@@ -84,8 +114,13 @@ impl Session {
             }
 
             match out_event {
-                OutEvent::SessionStarted { parent, .. } => {
+                OutEvent::SessionStarted {
+                    parent,
+                    predecessor,
+                    ..
+                } => {
                     session.parent = parent.clone();
+                    session.predecessor = predecessor.clone();
                 }
                 OutEvent::TextDelta { text, .. } => {
                     pending_text.push_str(text);
@@ -289,5 +324,58 @@ impl Session {
             .seq
             .store(max_seq, std::sync::atomic::Ordering::Relaxed);
         Ok(session)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn started(session: &str, parent: Option<&str>, predecessor: Option<&str>) -> OutEvent {
+        OutEvent::SessionStarted {
+            session: SessionId::new(session),
+            parent: parent.map(SessionId::new),
+            predecessor: predecessor.map(SessionId::new),
+            profile: "build".into(),
+            model: None,
+            root: parent.is_none(),
+            ts: 0,
+        }
+    }
+
+    /// The resumed root's live `children` are reconstructed by inverting the
+    /// parent edges in the shared root log; an ended child is dropped.
+    #[test]
+    fn replay_reconstructs_children_from_parent_edges() {
+        let cfg = EngineConfig::default();
+        let records: Vec<(Option<InMsg>, OutEvent)> = vec![
+            (None, started("root", None, None)),
+            (None, started("child-a", Some("root"), None)),
+            (None, started("child-b", Some("root"), None)),
+            // A grandchild belongs to child-a, not the root.
+            (None, started("grand", Some("child-a"), None)),
+            // child-b ends → pruned from the root's live children.
+            (
+                None,
+                OutEvent::SessionEnded {
+                    session: SessionId::new("child-b"),
+                    ts: 1,
+                },
+            ),
+        ];
+        let s = Session::replay(&records, &cfg).unwrap();
+        assert_eq!(s.parent, None);
+        assert_eq!(s.children, vec![SessionId::new("child-a")]);
+    }
+
+    /// A successor's `predecessor` is reconstructed from its own `SessionStarted`.
+    #[test]
+    fn replay_reconstructs_predecessor() {
+        let cfg = EngineConfig::default();
+        let records: Vec<(Option<InMsg>, OutEvent)> =
+            vec![(None, started("successor", None, Some("source")))];
+        let s = Session::replay(&records, &cfg).unwrap();
+        assert_eq!(s.predecessor, Some(SessionId::new("source")));
+        assert_eq!(s.parent, None);
     }
 }
