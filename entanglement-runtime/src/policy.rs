@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use entanglement_core::{AgentProfile, ApprovalScope, Permission, PermissionProfile, SessionId};
 
 use crate::grants::FileGrantStore;
-use crate::permission::{clamp_to_base, permission_arg, permission_for};
+use crate::permission::{clamp_to_base, permission_arg, permission_for, permission_workdir};
 
 /// Decide the `Allow | Ask | Deny` grade for one concrete tool call. `session`
 /// lets a multi-tenant embedder derive the tenant; `input` (the raw JSON tool
@@ -95,14 +95,15 @@ impl ProfileResolver {
 impl PermissionResolver for ProfileResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
         let arg = permission_arg(tool, input);
+        let workdir = permission_workdir(tool, input);
         // Read the folded profile view without holding the lock across an await
         // (there is none here) — the executor's single-threaded loop is the sole
         // writer, so this brief lock never contends.
         let own = {
             let active = self.active.lock().unwrap();
-            permission_for(&active, session, tool, arg.as_deref())
+            permission_for(&active, session, tool, arg.as_deref(), workdir.as_deref())
         };
-        clamp_to_base(own, &self.base, tool, arg.as_deref())
+        clamp_to_base(own, &self.base, tool, arg.as_deref(), workdir.as_deref())
     }
 }
 

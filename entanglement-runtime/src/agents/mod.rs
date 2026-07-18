@@ -598,18 +598,37 @@ pub(crate) fn permission_from_value(value: &serde_yaml::Value) -> Result<Permiss
     })
 }
 
-/// Split a rule key into its tool/capability part and optional argument glob:
-/// `read(src/*)` ⇒ `("read", Some("src/*"))`, `read` ⇒ `("read", None)`. A
-/// runtime-local mirror of core's private `split_rule_key` — duplicated rather
-/// than exposed, since the capability-expansion logic it feeds must not leak
-/// into core (ADR-0006).
-fn split_capability_key(key: &str) -> (&str, Option<&str>) {
+/// A capability rule key's scope, once split from its tool/capability part
+/// (mirrors core's private `RuleScope`): unscoped, an argument-scoped
+/// `cap(pattern)` (command/path, #173), or a workdir-scoped `cap{pattern}`
+/// (`bash`/`call`'s working directory, #425).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapScope<'a> {
+    None,
+    Arg(&'a str),
+    Workdir(&'a str),
+}
+
+/// Split a rule key into its tool/capability part and scope: `read(src/*)` ⇒
+/// `("read", Arg("src/*"))`, `call{/tmp/*}` ⇒ `("call", Workdir("/tmp/*"))`,
+/// `read` ⇒ `("read", None)`. A runtime-local mirror of core's private
+/// `split_rule_key` — duplicated rather than exposed, since the
+/// capability-expansion logic it feeds must not leak into core (ADR-0006).
+fn split_capability_key(key: &str) -> (&str, CapScope<'_>) {
     if let Some(open) = key.find('(') {
         if key.ends_with(')') {
-            return (&key[..open], Some(&key[open + 1..key.len() - 1]));
+            return (&key[..open], CapScope::Arg(&key[open + 1..key.len() - 1]));
         }
     }
-    (key, None)
+    if let Some(open) = key.find('{') {
+        if key.ends_with('}') {
+            return (
+                &key[..open],
+                CapScope::Workdir(&key[open + 1..key.len() - 1]),
+            );
+        }
+    }
+    (key, CapScope::None)
 }
 
 /// The tools a capability expands to when the key is bare (no `(...)`), or
@@ -642,23 +661,26 @@ fn arg_scoped_capability_members(cap: &str) -> Vec<&'static str> {
 /// extracted) into the literal per-tool rules `PermissionProfile::resolve`
 /// matches against. Two passes:
 ///
-/// 1. **Pre-scan**: collect the grade of every *bare* (no `(...)`) capability
-///    key that's set, plus any bare literal `rhai` grade (it tightens the
-///    same way). Their least-privileged (`min`) grade is emitted **first** as
-///    `call: mg` and `rhai: mg` ([`tool_names::MULTI_GROUP`]) — these two
-///    tools can themselves read, write, or execute, so restricting any one
-///    capability tightens what they may do, regardless of key order in the
-///    source map. Emitting them first lets a later arg-scoped `call(...)`
-///    rule still refine `call` (last-match-wins); nothing refines `rhai`,
-///    which has no argument.
+/// 1. **Pre-scan**: collect the grade of every *bare* (no `(...)`/`{...}`)
+///    capability key that's set, plus any bare literal `rhai` grade (it
+///    tightens the same way). Their least-privileged (`min`) grade is emitted
+///    **first** as `call: mg` and `rhai: mg` ([`tool_names::MULTI_GROUP`]) —
+///    these two tools can themselves read, write, or execute, so restricting
+///    any one capability tightens what they may do, regardless of key order in
+///    the source map. Emitting them first lets a later scoped `call(...)`/
+///    `call{...}` rule still refine `call` (last-match-wins); nothing refines
+///    `rhai`, which has no argument.
 /// 2. **In order**, for each entry: a non-capability key (a literal tool name,
-///    `*`, or an arg-scoped literal like `edit(src/*)`) is pushed verbatim
-///    (today's pre-#418 behavior); a bare capability key pushes its
+///    `*`, or a scoped literal like `edit(src/*)`/`bash{/tmp/*}`) is pushed
+///    verbatim (today's pre-#418 behavior); a bare capability key pushes its
 ///    single-group members only (`read`⇒read/grep/glob, `write`⇒edit/write,
 ///    `call`⇒bash — `call`/`rhai` themselves are handled by the pre-scan, not
-///    re-emitted here); an arg-scoped capability key `cap(g)` pushes
-///    `member(g)` for each of its (possibly wider, see
-///    [`arg_scoped_capability_members`]) members.
+///    re-emitted here); a scoped capability key `cap(g)`/`cap{g}` pushes
+///    `member(g)`/`member{g}` for each of its (possibly wider, see
+///    [`arg_scoped_capability_members`]) members — `call{/tmp/*}: allow` fans
+///    out to `call{/tmp/*}` and `bash{/tmp/*}` exactly like the arg-scoped
+///    case, since a workdir-scoped rule (#425) restricts the same member set
+///    as a command-scoped one.
 ///
 /// Single-group members resolve through core's ordinary last-match-wins
 /// (a later literal `grep: ask` still overrides an earlier `read: allow`).
@@ -666,8 +688,8 @@ fn expand_capabilities(entries: Vec<(String, Permission)>) -> Vec<(String, Permi
     let mg = entries
         .iter()
         .filter_map(|(key, perm)| {
-            let (name, arg) = split_capability_key(key);
-            if arg.is_some() {
+            let (name, scope) = split_capability_key(key);
+            if scope != CapScope::None {
                 return None;
             }
             (capability_members(name).is_some() || name == tool_names::RHAI_TOOL).then_some(*perm)
@@ -682,29 +704,46 @@ fn expand_capabilities(entries: Vec<(String, Permission)>) -> Vec<(String, Permi
     }
 
     for (key, perm) in entries {
-        let (name, pattern) = split_capability_key(&key);
+        let (name, scope) = split_capability_key(&key);
         let name = name.to_string();
-        let pattern = pattern.map(str::to_string);
-        match pattern {
-            None => match capability_members(&name) {
+        match scope {
+            CapScope::None => match capability_members(&name) {
                 Some(members) => rules.extend(members.iter().map(|m| (m.to_string(), perm))),
                 None => rules.push((key, perm)),
             },
-            Some(pattern) => {
-                let members = arg_scoped_capability_members(&name);
-                if members.is_empty() {
-                    rules.push((key, perm));
-                } else {
-                    rules.extend(
-                        members
-                            .into_iter()
-                            .map(|m| (format!("{m}({pattern})"), perm)),
-                    );
-                }
+            CapScope::Arg(pattern) => {
+                rules.extend(scoped_member_rules(&name, '(', pattern, ')', &key, perm));
+            }
+            CapScope::Workdir(pattern) => {
+                rules.extend(scoped_member_rules(&name, '{', pattern, '}', &key, perm));
             }
         }
     }
     rules
+}
+
+/// The literal `member(pattern)`/`member{pattern}` rules a scoped capability
+/// key fans out to — shared by [`CapScope::Arg`] and [`CapScope::Workdir`],
+/// which differ only in the bracket pair wrapping `pattern`. Falls back to
+/// pushing `key` verbatim when `name` isn't a capability at all (a literal
+/// scoped tool rule like `edit(src/*)`/`bash{/tmp/*}`, unaffected by #418).
+fn scoped_member_rules(
+    name: &str,
+    open: char,
+    pattern: &str,
+    close: char,
+    key: &str,
+    perm: Permission,
+) -> Vec<(String, Permission)> {
+    let members = arg_scoped_capability_members(name);
+    if members.is_empty() {
+        vec![(key.to_string(), perm)]
+    } else {
+        members
+            .into_iter()
+            .map(|m| (format!("{m}{open}{pattern}{close}"), perm))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -780,6 +819,33 @@ mod tests {
         // Outside the command pattern, falls through to `default`.
         assert_eq!(p.resolve("call", Some("rm -rf /")), Permission::Deny);
         assert_eq!(p.resolve("bash", Some("rm -rf /")), Permission::Deny);
+    }
+
+    #[test]
+    fn workdir_scoped_call_capability_expands_to_call_and_bash() {
+        // #425: a workdir-scoped `call{...}` capability key fans out to
+        // `call{...}` and `bash{...}` exactly like the command-scoped case.
+        let p = perm("default: deny\ncall{/tmp/*}: allow");
+        assert_eq!(
+            p.resolve_scoped("call", None, Some("/tmp/scratch")),
+            Permission::Allow
+        );
+        assert_eq!(
+            p.resolve_scoped("bash", None, Some("/tmp/scratch")),
+            Permission::Allow
+        );
+        // Outside the workdir pattern, falls through to `default`.
+        assert_eq!(
+            p.resolve_scoped("call", None, Some("/home/x")),
+            Permission::Deny
+        );
+        assert_eq!(
+            p.resolve_scoped("bash", None, Some("/home/x")),
+            Permission::Deny
+        );
+        // A workdir-scoped rule never matches through the plain `resolve`
+        // entry point (equivalent to `workdir = None`).
+        assert_eq!(p.resolve("bash", None), Permission::Deny);
     }
 
     #[test]

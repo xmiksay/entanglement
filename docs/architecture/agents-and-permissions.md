@@ -77,7 +77,17 @@ below realize one model:
   `grep(src/*): allow` all refine a coarse `bash: ask`/`grep: ask`. The runtime
   extracts the argument from the call input (`runtime::permission::permission_arg`)
   where the JSON is already in hand; argument-less rules and name-only callers
-  (inspect/TUI posture panels) resolve exactly as before. The graded decision drives:
+  (inspect/TUI posture panels) resolve exactly as before. A second, independent
+  clause `tool{pattern}` (✅ #425, [ADR-0116](../adr/0116-workdir-scoped-permission-rules-for-bash-call.md))
+  scopes `bash`/`call` by **working directory** instead of command line —
+  `bash{/tmp/*}: allow`, `bash{/etc/*}: deny` — extracted by
+  `runtime::permission::permission_workdir` and resolved via
+  `PermissionProfile::resolve_scoped(name, arg, workdir)`; `resolve` stays the
+  two-argument entry point every other tool uses, equivalent to
+  `resolve_scoped(.., workdir: None)`, so a `tool{pattern}` rule is simply inert
+  for a tool with no workdir concept. Both clauses compose in one ordered rule
+  list via the same last-match-wins semantics — no compound-key grammar. The
+  graded decision drives:
   - `Allow` → run the tool, reply `ToolResult` → core emits `ToolOutput`.
   - `Ask` → emit `ToolRequest`, park at `WaitingApproval` until `Approve`/`Reject`;
     on approve, run the tool and reply `ToolResult`; on reject, reply
@@ -105,7 +115,10 @@ below realize one model:
   per member, with `call`'s arg-scoped list additionally including the literal
   `call` tool (`call(git *)` ⇒ both `call(git *)` and `bash(git *)`). Command
   sets stay flat `call(pattern): grade` lines expanding to `call`+`bash`, not a
-  nested YAML shape. `plan.md`'s pre-existing `read: allow` is now a capability
+  nested YAML shape. A workdir-scoped capability key (✅ #425, ADR-0116) fans
+  out the same way through the `{pattern}` clause — `call{/tmp/*}: allow` ⇒
+  both `call{/tmp/*}` and `bash{/tmp/*}` — sharing the identical member list as
+  the arg-scoped case. `plan.md`'s pre-existing `read: allow` is now a capability
   key too, so it also flips `grep`/`glob` from the profile's `ask` default to
   `allow` — an accepted, test-pinned behavior change, not a silent diff.
 - **Lag-proof decision delivery (✅ #156, [ADR-0070](../adr/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md)):**
