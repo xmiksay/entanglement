@@ -3,7 +3,7 @@ members = ["entanglement-core", "entanglement-provider", "entanglement-runtime"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
@@ -15,8 +15,8 @@ categories = ["development-tools"]
 [workspace.dependencies]
 # `version` alongside `path` so `cargo publish` resolves the registry dep
 # (path-only deps are rejected at packaging time).
-entanglement-core = { path = "entanglement-core", version = "0.2.0" }
-entanglement-provider = { path = "entanglement-provider", version = "0.2.0" }
+entanglement-core = { path = "entanglement-core", version = "0.3.0" }
+entanglement-provider = { path = "entanglement-provider", version = "0.3.0" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

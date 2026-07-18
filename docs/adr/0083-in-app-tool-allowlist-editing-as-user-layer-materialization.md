@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-15
 - Builds on the layered agent loader of
-  [0034](0034-file-defined-agent-profiles.md) (embedded < user < project, later
+  [0034](0034-file-based-agent-definitions.md) (embedded < user < project, later
   wins on `name`), the physical tool mask of
   [0038](0038-physical-per-agent-tool-restriction.md) (`tools`/`disallowed_tools`),
   the shared atomic writer of

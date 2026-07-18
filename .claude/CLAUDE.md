@@ -795,7 +795,14 @@ are **complete**.
 The July 2026 audit backlog — thematic epics tracked on GitHub with P0/P1/P2
 labels and blocked-by links — is now **fully closed** (no open issues), and its
 work ships in the **0.2.0** release (the project's first tagged release; see
-[`../CHANGELOG.md`](../CHANGELOG.md)). It covered
+[`../CHANGELOG.md`](../CHANGELOG.md)). The follow-on **0.3.0** release adds the
+capability-level tool-permission epic (#416: capability keys `read`/`write`/`call`
+with parse-time fan-out incl. MCP tools, `rhai` exec bindings, workdir-scoped
+rules — [ADR-0114](../docs/adr/0114-capability-level-permission-keys.md)–[ADR-0117](../docs/adr/0117-mcp-tool-capability-fan-out.md)),
+per-endpoint concurrency cap + adaptive pacing + bounded 429 backpressure
+(#413/#414, [ADR-0111](../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)),
+and session-lineage robustness fixes ([ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)/[ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)).
+The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
 [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md); the
