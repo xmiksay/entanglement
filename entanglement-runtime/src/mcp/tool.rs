@@ -34,7 +34,7 @@ impl McpTool {
     /// sanitized so it can never collide with a host tool (`read`) or another
     /// server's tool, and stays within providers' `^[A-Za-z0-9_-]+$` tool-name rule.
     pub fn new(client: Arc<McpClient>, server: &str, def: McpToolDef) -> Self {
-        let name = sanitize(&format!("mcp__{server}__{}", def.name));
+        let name = namespaced_tool_name(server, &def.name);
         Self {
             client,
             name,
@@ -104,6 +104,15 @@ fn render_result(result: &Value) -> String {
     } else {
         body.to_string()
     }
+}
+
+/// The advertised, collision-free, sanitized name for `tool` on `server`
+/// (`mcp__<server>__<tool>`) — the single naming rule [`McpTool::new`] and the
+/// config-side capability index ([`super::capability_index`], #426) both build
+/// against, so a `capabilities:` annotation naming a raw tool always matches
+/// the name the registered tool actually advertises.
+pub(crate) fn namespaced_tool_name(server: &str, tool: &str) -> String {
+    sanitize(&format!("mcp__{server}__{tool}"))
 }
 
 /// Replace any character outside `[A-Za-z0-9_-]` with `_` so the advertised tool

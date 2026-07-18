@@ -68,13 +68,19 @@
 #     url       — the server's endpoint (e.g. https://example.com/mcp)
 #     headers   — static request headers; values may use ${VAR} from the env
 #
-#   disabled  — skip this server without deleting the block (both transports)
+#   disabled     — skip this server without deleting the block (both transports)
+#   capabilities — (#426) map a server's raw tool name to `read`/`write`/`call` so
+#                  a bare `permissions: { read: allow }` above also covers it —
+#                  an MCP tool isn't self-describing, so without this hint it only
+#                  ever grades as its own literal `mcp__<server>__<tool>` name.
 #mcp:
 #  everything:
 #    command: npx
 #    args: ["-y", "@modelcontextprotocol/server-everything"]
 #    env:
 #      EXAMPLE_TOKEN: "…"
+#    capabilities:
+#      search: read
 #  my-remote:
 #    url: https://example.com/mcp
 #    headers:

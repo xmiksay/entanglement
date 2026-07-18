@@ -289,8 +289,16 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         merged = merge_value(merged, rl.doc.clone());
     }
     let raw: RawConfig = serde_yaml::from_value(merged).context("validating merged user config")?;
+    // The ceiling's `permission_from_value` needs the same MCP capability
+    // index (#426) `agents::load_registry` uses, built from this same `mcp:`
+    // section — `read: allow` in the ceiling should cover an annotated MCP
+    // tool exactly like it does in agent frontmatter.
+    let mcp_capabilities =
+        crate::mcp::capability_index(&raw.mcp).context("in user config `mcp` capabilities")?;
     let permissions = match &raw.permissions {
-        Some(v) => permission_from_value(v).context("in user config `permissions`")?,
+        Some(v) => {
+            permission_from_value(v, &mcp_capabilities).context("in user config `permissions`")?
+        }
         None => PermissionProfile::new(Permission::Allow),
     };
     let config = Config {

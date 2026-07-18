@@ -20,6 +20,7 @@ use entanglement_core::{
     OutEvent, SessionId,
 };
 use entanglement_runtime::agents::load_registry;
+use entanglement_runtime::mcp::McpCapabilityIndex;
 use entanglement_runtime::system_prompt::{EnvBlock, PromptContext, SkillDisclosure};
 
 const PREAMBLE: &str = "SHARED-PREAMBLE-RULES";
@@ -89,6 +90,7 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
         project.path(),
         &ctx,
         &entanglement_runtime::skills::SkillRegistry::default(),
+        &McpCapabilityIndex::new(),
     )
     .expect("load_registry");
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");

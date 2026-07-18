@@ -209,8 +209,13 @@ mod tests {
             root_dir: None,
             body: "git body".to_string(),
         });
-        crate::agents::parse_definition(&rewritten, &ctx, &skills)
-            .expect("rewritten definition must parse");
+        crate::agents::parse_definition(
+            &rewritten,
+            &ctx,
+            &skills,
+            &crate::mcp::McpCapabilityIndex::new(),
+        )
+        .expect("rewritten definition must parse");
     }
 
     #[test]
@@ -231,7 +236,13 @@ mod tests {
 
         let ctx = PromptContext::default();
         let skills = SkillRegistry::default();
-        let reg = load_registry(root_dir.path(), &ctx, &skills).unwrap();
+        let reg = load_registry(
+            root_dir.path(),
+            &ctx,
+            &skills,
+            &crate::mcp::McpCapabilityIndex::new(),
+        )
+        .unwrap();
         let build = reg.get("build").expect("build still resolves");
         assert_eq!(
             build.tools.as_deref(),
@@ -258,7 +269,13 @@ mod tests {
 
         let ctx = PromptContext::default();
         let skills = SkillRegistry::default();
-        let reg = load_registry(root_dir.path(), &ctx, &skills).unwrap();
+        let reg = load_registry(
+            root_dir.path(),
+            &ctx,
+            &skills,
+            &crate::mcp::McpCapabilityIndex::new(),
+        )
+        .unwrap();
         let plan = reg.get("plan").expect("plan still resolves");
         assert_eq!(plan.tools, None, "an omitted allowlist inherits all");
 

@@ -377,7 +377,14 @@ the same permission profiles as `read`/`bash`.
   `disabled` — resolved by `McpServerConfig::transport()`, which rejects both-set or
   neither-set. `deny_unknown_fields`-validated by the same loader as
   `permissions`/`hooks`. Empty ⇒ no servers (the norm). `skutter inspect config`
-  lists the configured servers and their resolved transport.
+  lists the configured servers and their resolved transport. An optional
+  `capabilities: {tool: read|write|call}` map (raw tool name, #426,
+  [ADR-0117](../adr/0117-mcp-tool-capability-fan-out.md)) hand-annotates a
+  server's tools for the permission capability fan-out (§agents-and-permissions)
+  — an MCP tool carries no such hint of its own, so without this a bare
+  `read: allow` would never reach it; `mcp::capability_index` folds it into an
+  `McpCapabilityIndex` keyed by capability name, resolved from config alone
+  (no live connection needed) and consumed by `agents::expand_capabilities`.
 - **Wiring:** `build_config` is `async` and calls `mcp::connect(&config.mcp, &mut
   tools)` after the host tools are registered but before `tool_specs` is derived, so
   MCP tools flow into both the advertised schemas and the executor's registry with

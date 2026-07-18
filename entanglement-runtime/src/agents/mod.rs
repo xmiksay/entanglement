@@ -54,6 +54,7 @@ use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile, 
 use serde::Deserialize;
 
 use crate::layers::Strictness;
+use crate::mcp::McpCapabilityIndex;
 use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, assemble_parts, PromptContext, PromptPart};
 use crate::tool_names;
@@ -209,10 +210,17 @@ fn parse_raw(raw: &RawAgent) -> Result<Option<(AgentDefinition, String)>> {
 /// project brief, environment block, skill index): each profile's body is
 /// composed into a final `system_prompt` via [`assemble`] as it is parsed
 /// (#113). Pass [`PromptContext::default`] for the raw, un-composed bodies.
+///
+/// `mcp` is the config-side MCP capability index (#426,
+/// `entanglement_runtime::mcp::capability_index`): a bare `read`/`write`/`call`
+/// permission key fans out to these namespaced MCP tool names in addition to
+/// the fixed built-in set. Pass an empty index when no MCP capability fan-out
+/// applies (e.g. `McpCapabilityIndex::new()`).
 pub fn load_registry(
     root: &Path,
     ctx: &PromptContext,
     skills: &SkillRegistry,
+    mcp: &McpCapabilityIndex,
 ) -> Result<ProfileRegistry> {
     let mut reg = ProfileRegistry::default();
     // Track the winning (layer, source) per name so a later-wins collision is no
@@ -226,7 +234,7 @@ pub fn load_registry(
         let Some((def, body)) = parse_raw(&raw)? else {
             continue;
         };
-        let profile = build_profile(def, &body, ctx, skills)
+        let profile = build_profile(def, &body, ctx, skills, mcp)
             .with_context(|| format!("parsing agent `{}`", raw.source))?;
         if let Some((prior_layer, prior_source)) =
             winning.insert(profile.name.clone(), (raw.layer, raw.source.clone()))
@@ -255,13 +263,16 @@ pub fn load_registry(
 ///
 /// The embedded definitions are compile-time constants guarded by
 /// [`tests::built_ins_parse_with_expected_shape`], so a parse failure here is a
-/// build-time bug, not a runtime condition.
+/// build-time bug, not a runtime condition. No MCP servers exist at this
+/// remove (no filesystem/config touched), so the built-ins parse with an empty
+/// [`McpCapabilityIndex`] — none of them reference an MCP tool.
 pub fn built_in_registry() -> ProfileRegistry {
     let ctx = PromptContext::default();
     let skills = SkillRegistry::default();
+    let mcp = McpCapabilityIndex::new();
     let mut reg = ProfileRegistry::default();
     for (file, contents) in BUILT_INS {
-        let profile = parse_definition(contents, &ctx, &skills)
+        let profile = parse_definition(contents, &ctx, &skills, &mcp)
             .unwrap_or_else(|e| panic!("embedded built-in agent `{file}` must parse: {e}"));
         reg.insert(profile);
     }
@@ -288,11 +299,19 @@ pub struct AgentResolution {
 /// layer precedence as [`load_registry`] but keeping *which* layer won and what
 /// it shadowed. Sorted by name for a stable table. Malformed files behave
 /// exactly as at load (native aborts, foreign warns and skips).
+///
+/// `skutter inspect agents` (unlike [`load_registry`]) doesn't already resolve
+/// the user config's MCP servers, so this reports each profile's permission
+/// rules with an empty [`McpCapabilityIndex`] — a bare `read: allow` here shows
+/// only the built-in fan-out, not any config-side MCP capability hint (#426).
+/// Real permission resolution (`load_registry`, driving the engine) still sees
+/// the full fan-out; only this debug view is scoped down.
 pub fn resolve_registry(
     root: &Path,
     ctx: &PromptContext,
     skills: &SkillRegistry,
 ) -> Result<Vec<AgentResolution>> {
+    let mcp = McpCapabilityIndex::new();
     // Preserve first-seen order of names, then sort at the end; group each name's
     // definitions in precedence order so the last is the winner and the rest are
     // what it shadowed.
@@ -303,7 +322,7 @@ pub fn resolve_registry(
         let Some((def, body)) = parse_raw(&raw)? else {
             continue;
         };
-        let profile = build_profile(def, &body, ctx, skills)
+        let profile = build_profile(def, &body, ctx, skills, &mcp)
             .with_context(|| format!("parsing agent `{}`", raw.source))?;
         let name = profile.name.clone();
         let entry = by_name.entry(name.clone()).or_default();
@@ -352,7 +371,9 @@ pub struct AgentPromptReport {
 /// [`load_registry`]) and report its assembled prompt plus per-part breakdown,
 /// without spawning the engine (#184). `Ok(None)` if no such agent exists;
 /// malformed definitions behave exactly as at load (native aborts, foreign
-/// warns and skips).
+/// warns and skips). Like [`resolve_registry`], resolves permission with an
+/// empty [`McpCapabilityIndex`] (#426) — this view doesn't consult the user
+/// config's MCP servers.
 pub fn prompt_report(
     root: &Path,
     agent: &str,
@@ -384,7 +405,7 @@ pub fn prompt_report(
         p.source = source.clone();
     }
     let brief_included = parts.iter().any(|p| p.label == "project brief");
-    let profile = build_profile(def, &body, ctx, skills)?;
+    let profile = build_profile(def, &body, ctx, skills, &McpCapabilityIndex::new())?;
     Ok(Some(AgentPromptReport {
         source,
         profile,
@@ -468,11 +489,12 @@ fn parse_definition(
     content: &str,
     ctx: &PromptContext,
     skills: &SkillRegistry,
+    mcp: &McpCapabilityIndex,
 ) -> Result<AgentProfile> {
     let (frontmatter, body) = crate::frontmatter::split(content)?;
     let def: AgentDefinition =
         serde_yaml::from_str(&frontmatter).context("invalid agent frontmatter")?;
-    build_profile(def, &body, ctx, skills)
+    build_profile(def, &body, ctx, skills, mcp)
 }
 
 /// Build a core [`AgentProfile`] from an already-parsed definition + body,
@@ -484,12 +506,13 @@ fn build_profile(
     body: &str,
     ctx: &PromptContext,
     skills: &SkillRegistry,
+    mcp: &McpCapabilityIndex,
 ) -> Result<AgentProfile> {
     if def.name.trim().is_empty() {
         bail!("agent frontmatter `name` must not be empty");
     }
     let permission = match &def.permission {
-        Some(v) => permission_from_value(v)?,
+        Some(v) => permission_from_value(v, mcp)?,
         None => PermissionProfile::new(Permission::Allow),
     };
     let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
@@ -571,8 +594,14 @@ fn resolve_preload(names: &[String], agent: &str, skills: &SkillRegistry) -> Res
 /// uses the identical shape. Capability keys are expanded here, at parse time,
 /// into the literal per-tool rules [`PermissionProfile::resolve`] actually
 /// matches against — core stays capability-unaware (ADR-0006) — see
-/// [`expand_capabilities`].
-pub(crate) fn permission_from_value(value: &serde_yaml::Value) -> Result<PermissionProfile> {
+/// [`expand_capabilities`]. `mcp` is the config-side MCP capability index
+/// (#426, [ADR-0117](../../../docs/adr/0117-mcp-tool-capability-fan-out.md))
+/// that additionally folds any annotated MCP tool into a bare capability's
+/// fan-out — pass an empty index where no MCP fan-out applies.
+pub(crate) fn permission_from_value(
+    value: &serde_yaml::Value,
+    mcp: &McpCapabilityIndex,
+) -> Result<PermissionProfile> {
     let map = value.as_mapping().context(
         "`permission` must be a mapping of tool → allow|ask|deny (a tool name, `*`, or a \
          capability key `read`/`write`/`call`)",
@@ -593,7 +622,7 @@ pub(crate) fn permission_from_value(value: &serde_yaml::Value) -> Result<Permiss
         }
     }
     Ok(PermissionProfile {
-        rules: expand_capabilities(entries),
+        rules: expand_capabilities(entries, mcp),
         default,
     })
 }
@@ -675,16 +704,24 @@ fn arg_scoped_capability_members(cap: &str) -> Vec<&'static str> {
 ///    verbatim (today's pre-#418 behavior); a bare capability key pushes its
 ///    single-group members only (`read`⇒read/grep/glob, `write`⇒edit/write,
 ///    `call`⇒bash — `call`/`rhai` themselves are handled by the pre-scan, not
-///    re-emitted here); a scoped capability key `cap(g)`/`cap{g}` pushes
+///    re-emitted here) **plus** any MCP tool `mcp` annotates with that
+///    capability (#426) — `read: allow` also allows every namespaced
+///    `mcp__<server>__<tool>` a server's config-side `capabilities:` hint maps
+///    to `read`; a scoped capability key `cap(g)`/`cap{g}` pushes
 ///    `member(g)`/`member{g}` for each of its (possibly wider, see
-///    [`arg_scoped_capability_members`]) members — `call{/tmp/*}: allow` fans
+///    [`arg_scoped_capability_members`]) *built-in* members only — an MCP tool
+///    name has no notion of a command/workdir argument to scope against, so
+///    `mcp` is not consulted there — `call{/tmp/*}: allow` fans
 ///    out to `call{/tmp/*}` and `bash{/tmp/*}` exactly like the arg-scoped
 ///    case, since a workdir-scoped rule (#425) restricts the same member set
 ///    as a command-scoped one.
 ///
 /// Single-group members resolve through core's ordinary last-match-wins
 /// (a later literal `grep: ask` still overrides an earlier `read: allow`).
-fn expand_capabilities(entries: Vec<(String, Permission)>) -> Vec<(String, Permission)> {
+fn expand_capabilities(
+    entries: Vec<(String, Permission)>,
+    mcp: &McpCapabilityIndex,
+) -> Vec<(String, Permission)> {
     let mg = entries
         .iter()
         .filter_map(|(key, perm)| {
@@ -708,7 +745,15 @@ fn expand_capabilities(entries: Vec<(String, Permission)>) -> Vec<(String, Permi
         let name = name.to_string();
         match scope {
             CapScope::None => match capability_members(&name) {
-                Some(members) => rules.extend(members.iter().map(|m| (m.to_string(), perm))),
+                Some(members) => {
+                    rules.extend(members.iter().map(|m| (m.to_string(), perm)));
+                    rules.extend(
+                        mcp.get(&name)
+                            .into_iter()
+                            .flatten()
+                            .map(|m| (m.clone(), perm)),
+                    );
+                }
                 None => rules.push((key, perm)),
             },
             CapScope::Arg(pattern) => {
@@ -757,12 +802,18 @@ mod tests {
             content,
             &PromptContext::default(),
             &SkillRegistry::default(),
+            &McpCapabilityIndex::new(),
         )
     }
 
     /// Parse against a supplied skill registry, to exercise `skills:` preload.
     fn parse_with_skills(content: &str, skills: &SkillRegistry) -> Result<AgentProfile> {
-        parse_definition(content, &PromptContext::default(), skills)
+        parse_definition(
+            content,
+            &PromptContext::default(),
+            skills,
+            &McpCapabilityIndex::new(),
+        )
     }
 
     /// A one-off registry holding a single embedded (built-in shape) skill.
@@ -783,8 +834,14 @@ mod tests {
     /// Parse a YAML `permission:` mapping literal through the shared expansion
     /// path (#418) for capability-key tests.
     fn perm(yaml: &str) -> PermissionProfile {
+        perm_with_mcp(yaml, &McpCapabilityIndex::new())
+    }
+
+    /// Like [`perm`] but with an explicit MCP capability index, for #426's
+    /// capability-fan-out-covers-MCP-tools tests.
+    fn perm_with_mcp(yaml: &str, mcp: &McpCapabilityIndex) -> PermissionProfile {
         let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
-        permission_from_value(&value).unwrap()
+        permission_from_value(&value, mcp).unwrap()
     }
 
     #[test]
@@ -795,6 +852,47 @@ mod tests {
         assert_eq!(p.for_tool("glob"), Permission::Allow);
         // Not a member of `read` — untouched.
         assert_eq!(p.for_tool("edit"), Permission::Deny);
+    }
+
+    #[test]
+    fn bare_read_capability_also_covers_an_mcp_annotated_tool() {
+        // #426: a config-side `capabilities:` hint folds an MCP tool into the
+        // same bare capability fan-out as the built-in read-only set.
+        let mut mcp = McpCapabilityIndex::new();
+        mcp.insert(
+            "read".to_string(),
+            vec![
+                "mcp__docs__search".to_string(),
+                "mcp__docs__fetch".to_string(),
+            ],
+        );
+        let p = perm_with_mcp("default: deny\nread: allow", &mcp);
+        assert_eq!(p.for_tool("read"), Permission::Allow);
+        assert_eq!(p.for_tool("mcp__docs__search"), Permission::Allow);
+        assert_eq!(p.for_tool("mcp__docs__fetch"), Permission::Allow);
+        // An MCP tool annotated under a different capability is untouched.
+        mcp.insert("write".to_string(), vec!["mcp__docs__edit".to_string()]);
+        let p = perm_with_mcp("default: deny\nread: allow", &mcp);
+        assert_eq!(p.for_tool("mcp__docs__edit"), Permission::Deny);
+    }
+
+    #[test]
+    fn a_later_literal_rule_overrides_an_mcp_capability_fanout() {
+        let mut mcp = McpCapabilityIndex::new();
+        mcp.insert("read".to_string(), vec!["mcp__docs__search".to_string()]);
+        let p = perm_with_mcp("read: allow\nmcp__docs__search: ask", &mcp);
+        assert_eq!(p.for_tool("read"), Permission::Allow);
+        assert_eq!(p.for_tool("mcp__docs__search"), Permission::Ask);
+    }
+
+    #[test]
+    fn arg_scoped_read_capability_does_not_fan_out_to_mcp_tools() {
+        // Scoped capability keys stay built-in-only (#426): an MCP tool has no
+        // command/workdir argument to scope a rule against.
+        let mut mcp = McpCapabilityIndex::new();
+        mcp.insert("read".to_string(), vec!["mcp__docs__search".to_string()]);
+        let p = perm_with_mcp("default: ask\nread(src/*): allow", &mcp);
+        assert_eq!(p.for_tool("mcp__docs__search"), Permission::Ask);
     }
 
     #[test]

@@ -244,6 +244,27 @@ re-document them here):
   `bash{pattern}`. The rhai `exec`/`bash` bindings (#419) are **not** covered —
   they marshal no `workdir` field, so a workdir-scoped rule never fires for a
   binding call.
+- **MCP tools join the capability fan-out via a config-side hint** (#426, part
+  of the #416 epic, [ADR-0117](../docs/adr/0117-mcp-tool-capability-fan-out.md),
+  deferred by #418/[ADR-0114](../docs/adr/0114-capability-level-permission-keys.md)):
+  an external MCP tool (`mcp__<server>__<tool>`) isn't self-describing — no MCP
+  protocol field states its capability — so a bare `read`/`write`/`call` rule
+  used to fall through it entirely, grading it only by its own literal name.
+  Each `mcp:` server block now accepts an optional `capabilities: {tool:
+  read|write|call}` annotation (raw, un-namespaced tool name); `mcp::
+  capability_index` folds every server's map into an `McpCapabilityIndex`
+  (capability → namespaced tool names, reusing `McpTool`'s own naming helper).
+  `agents::expand_capabilities` takes this index as a new parameter and extends
+  only the **bare** capability case — `read: allow` also allows an annotated
+  MCP tool — leaving argument-/workdir-scoped keys and the `call`/`rhai`
+  multi-group untouched (an MCP tool has no command/workdir argument to scope
+  against). Computed once at startup from config alone (no live connection
+  needed) and threaded into `agents::load_registry`, the config ceiling, and
+  the live-reload watcher's snapshot — matching how the ceiling itself is
+  already startup-only, not live. An annotation naming a tool the server never
+  registers is simply inert. `skutter inspect agents`/`prompt_report`/
+  `built_in_registry` keep an empty index — out of scope, since those already
+  don't reflect the ceiling clamp either.
 - **Trusted/untrusted frame split** (#155,
   [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)): `Holly::send`
   is the **privileged in-process** inbox (executor/head, trusted for any frame);
@@ -612,12 +633,14 @@ re-document them here):
   **`command` XOR `url`**: `{command, args, env}` (stdio subprocess, #198) or
   `{url, headers}` (streamable HTTP, #312, behind the `mcp-http` feature; static
   headers `${VAR}`-expanded, `Mcp-Session-Id` round-trip), plus a shared
-  `disabled`. `McpClient` is an enum over both transports and `McpTool` adapts
-  whichever backs it; its `tools/list` is registered into the `ToolRegistry` as
-  `mcp__<server>__<tool>` — a runtime-side tool provider, no core change, governed
-  by the same permission profiles as any host tool; a server that fails to connect
-  is logged and skipped. `HttpClient` is public so a multi-tenant embedder can
-  assemble per-user registries with per-user tokens without the YAML path.
+  `disabled`, plus an optional `capabilities: {tool: read|write|call}` hint (#426,
+  see the capability-fan-out bullet above). `McpClient` is an enum over both
+  transports and `McpTool` adapts whichever backs it; its `tools/list` is
+  registered into the `ToolRegistry` as `mcp__<server>__<tool>` — a runtime-side
+  tool provider, no core change, governed by the same permission profiles as
+  any host tool; a server that fails to connect is logged and skipped.
+  `HttpClient` is public so a multi-tenant embedder can assemble per-user
+  registries with per-user tokens without the YAML path.
 - **Live reload + managed-file locking** (#329, [ADR-0084](../docs/adr/0084-runtime-live-reload-and-managed-file-locking.md)):
   a runtime `watch.rs` (inotify via `notify`/`notify-debouncer-mini`, 500ms debounce)
   watches the agent/skill dirs above plus `${config_dir}/entanglement/` and

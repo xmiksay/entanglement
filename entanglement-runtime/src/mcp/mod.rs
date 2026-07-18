@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::tool_names;
 use crate::tools::{Tool, ToolRegistry};
 
 pub mod client;
@@ -77,6 +78,17 @@ pub struct McpServerConfig {
     /// Skip this server without deleting its block.
     #[serde(default)]
     pub disabled: bool,
+    /// Config-side capability hint (#426): raw (un-namespaced) tool name → capability
+    /// (`read`/`write`/`call`), the same names `tool_names::CAPABILITIES` defines.
+    /// An MCP tool's `tools/list` response carries no such hint of its own, so a
+    /// profile's bare `read: allow` otherwise never reaches an MCP-provided
+    /// read-only tool — it falls through as an ungrouped literal name
+    /// (`mcp__<server>__<tool>`). Annotating it here lets
+    /// [`capability_index`] fold it into that fan-out. Speculative: a name with
+    /// no matching registered tool is simply inert, so this can be set ahead of
+    /// (or survive across) the server actually connecting.
+    #[serde(default)]
+    pub capabilities: HashMap<String, String>,
 }
 
 /// The resolved transport for one server — the `command` XOR `url` choice made
@@ -119,7 +131,10 @@ impl McpServerConfig {
 /// Mirrors `entanglement_core::McpServerSpec` (the `InMsg::McpAdd` wire DTO,
 /// #375) into the runtime's richer config type. Core carries no MCP logic
 /// (ADR-0067), so the `command`/`url` XOR check is deferred to
-/// [`McpServerConfig::transport`] — this conversion is a plain field copy.
+/// [`McpServerConfig::transport`] — this conversion is a plain field copy. The
+/// wire DTO carries no `capabilities` hint (#426, config-only), so a live
+/// `/mcp add` always starts with an empty map — annotating capabilities for a
+/// live-added server means hand-editing `config.yml` afterward.
 impl From<entanglement_core::McpServerSpec> for McpServerConfig {
     fn from(spec: entanglement_core::McpServerSpec) -> Self {
         Self {
@@ -129,8 +144,47 @@ impl From<entanglement_core::McpServerSpec> for McpServerConfig {
             url: spec.url,
             headers: spec.headers,
             disabled: spec.disabled,
+            capabilities: HashMap::new(),
         }
     }
+}
+
+/// Capability name (`read`/`write`/`call`) → the namespaced MCP tool names
+/// (`mcp__<server>__<tool>`) annotated with it across every configured server
+/// (#426). This is what lets the shared capability fan-out
+/// (`agents::expand_capabilities`) cover MCP tools alongside the fixed
+/// built-in set (`tool_names::CAPABILITIES`) — the membership just comes from
+/// config instead of a compile-time table.
+pub type McpCapabilityIndex = HashMap<String, Vec<String>>;
+
+/// Build the [`McpCapabilityIndex`] from every configured server's
+/// `capabilities` annotation (config-only — a live `/mcp add` never sets one,
+/// see the `From` impl above). An unknown capability name is a loud config
+/// error, matching every other `deny_unknown_fields` section — a typo'd
+/// capability should never silently grade as an ungrouped literal tool. Does
+/// not require the server to actually be connected: the resulting rules are
+/// resolved by tool *name*, so an entry naming a tool the server doesn't
+/// (yet, or ever) expose is simply inert.
+pub fn capability_index(servers: &HashMap<String, McpServerConfig>) -> Result<McpCapabilityIndex> {
+    let mut index: McpCapabilityIndex = HashMap::new();
+    for (server, cfg) in servers {
+        for (tool, capability) in &cfg.capabilities {
+            if !tool_names::is_capability_name(capability) {
+                bail!(
+                    "MCP server `{server}` capability hint for tool `{tool}`: unknown \
+                     capability `{capability}` (expected `read`, `write`, or `call`)"
+                );
+            }
+            index
+                .entry(capability.clone())
+                .or_default()
+                .push(tool::namespaced_tool_name(server, tool));
+        }
+    }
+    for members in index.values_mut() {
+        members.sort();
+    }
+    Ok(index)
 }
 
 /// `"stdio"` or `"http"`, for the [`McpServerStatus`][entanglement_core::McpServerStatus]
@@ -305,6 +359,7 @@ headers:
                 url: None,
                 headers: HashMap::new(),
                 disabled: true,
+                capabilities: HashMap::new(),
             },
         )]);
         let mut registry = ToolRegistry::new();
@@ -323,6 +378,7 @@ headers:
                 url: None,
                 headers: HashMap::new(),
                 disabled: false,
+                capabilities: HashMap::new(),
             },
         )]);
         let mut registry = ToolRegistry::new();
@@ -343,6 +399,7 @@ headers:
                 url: Some("http://192.0.2.1:1/mcp".to_string()),
                 headers: HashMap::new(),
                 disabled: false,
+                capabilities: HashMap::new(),
             },
         )]);
         let mut registry = ToolRegistry::new();

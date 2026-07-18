@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 use crate::config::agent_models::AgentModelStore;
 use crate::policy::DefaultGrantStore;
 use crate::skills::SkillRegistry;
-use crate::{agents, layers, skills, system_prompt};
+use crate::{agents, layers, mcp, skills, system_prompt};
 
 /// Debounce window collapsing a burst of edits (e.g. an editor's save-as-two-
 /// writes, or several files touched by one `git checkout`) into one reload.
@@ -53,6 +53,13 @@ pub struct LiveDefinitions {
     pub skills: Arc<RwLock<Arc<SkillRegistry>>>,
     pub agent_models: Arc<Mutex<AgentModelStore>>,
     pub grants: Arc<DefaultGrantStore>,
+    /// The MCP capability index (#426), captured once at startup like the
+    /// config ceiling permissions — `config.yml`'s `mcp:` section is watched
+    /// for the same *file content* fingerprint as everything else here, but
+    /// (like the ceiling) is never itself re-parsed on a reload; only the
+    /// agent/skill definition re-parse below is live. A config edit to
+    /// `capabilities:` needs a restart to take effect, same as a ceiling edit.
+    pub mcp_capabilities: mcp::McpCapabilityIndex,
 }
 
 /// Start the watcher for `cwd`'s resolved definition dirs + managed files.
@@ -303,7 +310,8 @@ fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
     let new_skills = skills::load_registry(cwd)?;
     let mut prompt_ctx = system_prompt::PromptContext::load(cwd);
     prompt_ctx.skills = new_skills.disclosures();
-    let mut new_profiles = agents::load_registry(cwd, &prompt_ctx, &new_skills)?;
+    let mut new_profiles =
+        agents::load_registry(cwd, &prompt_ctx, &new_skills, &live.mcp_capabilities)?;
 
     // Managed-file mirrors (#329): re-read whatever another skutter instance
     // may have written since this process's last load, then re-apply pins onto

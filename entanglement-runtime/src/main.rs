@@ -911,9 +911,15 @@ async fn main() -> Result<()> {
         Arc::new(RwLock::new(skill_registry.clone()));
     let mut prompt_ctx = system_prompt::PromptContext::load(&cwd);
     prompt_ctx.skills = skill_registry.disclosures();
+    // The MCP capability index (#426): config-side `capabilities:` hints on
+    // `user_config.mcp`, folded into any bare `read`/`write`/`call` permission
+    // key alongside the fixed built-in set — computed once here (like the
+    // ceiling permission below) rather than re-derived on every reload.
+    let mcp_capabilities =
+        mcp::capability_index(&user_config.mcp).context("resolving MCP capability hints")?;
     // The skill registry also resolves per-agent `skills:` preload bodies (#117),
     // orthogonal to the tier-1 disclosures above and to the `load_skill` mask.
-    let mut profiles = agents::load_registry(&cwd, &prompt_ctx, &skill_registry)
+    let mut profiles = agents::load_registry(&cwd, &prompt_ctx, &skill_registry, &mcp_capabilities)
         .context("loading agent definitions")?;
     // Per-agent model pins (#323, ADR-0081): overlay the persisted
     // `agent-models.yml` onto the freshly-loaded profiles *before* the engine
@@ -1078,6 +1084,7 @@ async fn main() -> Result<()> {
         skills: live_skills.clone(),
         agent_models: live_agent_models.clone(),
         grants: grants.clone(),
+        mcp_capabilities: mcp_capabilities.clone(),
     };
     let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watcher_handle = watch::spawn_watcher(cwd.clone(), live, Some(reload_tx));

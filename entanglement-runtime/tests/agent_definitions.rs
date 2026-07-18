@@ -16,6 +16,7 @@ use entanglement_core::{
 use std::sync::Mutex;
 
 use entanglement_runtime::agents::load_registry;
+use entanglement_runtime::mcp::McpCapabilityIndex;
 use entanglement_runtime::system_prompt::PromptContext;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::ToolRegistry;
@@ -41,6 +42,7 @@ fn load_with_dirs(
         project_root,
         &PromptContext::default(),
         &entanglement_runtime::skills::SkillRegistry::default(),
+        &McpCapabilityIndex::new(),
     )
     .expect("load_registry");
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
@@ -143,7 +145,7 @@ fn skills_preload_composes_body_into_the_agent_prompt() {
         skills: skills.disclosures(),
         ..Default::default()
     };
-    let reg = load_registry(root, &ctx, &skills).expect("load agents");
+    let reg = load_registry(root, &ctx, &skills, &McpCapabilityIndex::new()).expect("load agents");
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
     std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
 
@@ -176,6 +178,7 @@ fn malformed_project_file_aborts_load() {
         project.path(),
         &PromptContext::default(),
         &entanglement_runtime::skills::SkillRegistry::default(),
+        &McpCapabilityIndex::new(),
     );
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
     let err = result.err().expect("malformed file must error");
@@ -295,6 +298,7 @@ fn provider_without_model_is_a_loud_error() {
         project.path(),
         &PromptContext::default(),
         &entanglement_runtime::skills::SkillRegistry::default(),
+        &McpCapabilityIndex::new(),
     );
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
     let err = result.err().expect("provider-without-model must error");
@@ -507,6 +511,7 @@ fn prompt_report_reports_builtin_source_and_prompt() {
             empty.path(),
             &ctx,
             &entanglement_runtime::skills::SkillRegistry::default(),
+            &McpCapabilityIndex::new(),
         )
         .expect("load_registry");
         std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
