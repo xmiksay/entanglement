@@ -225,6 +225,25 @@ re-document them here):
   remaining wall-clock budget instead of the tool's much longer default,
   since rhai's timeout interrupt can't reach a binding call parked on the
   sync/async bridge.
+- **Workdir-scoped permission rules for `bash`/`call`** (#425, part of the #416
+  epic, [ADR-0116](../docs/adr/0116-workdir-scoped-permission-rules-for-bash-call.md),
+  deferred by #418/[ADR-0114](../docs/adr/0114-capability-level-permission-keys.md)):
+  a rule key gains a second, independent scope clause `tool{pattern}` (a
+  sibling of the argument-scoped `tool(pattern)`, #173) matching a `bash`/
+  `call` call's **`workdir`** instead of its command line — `bash{/tmp/*}:
+  allow`, `bash{/etc/*}: deny`. `PermissionProfile::resolve_scoped(name, arg,
+  workdir)` is the new three-argument entry point; the existing two-argument
+  `resolve` is unchanged, defined as `resolve_scoped(.., workdir: None)`, so a
+  `tool{pattern}` rule is inert for any tool with no workdir concept — safe by
+  construction. `runtime::permission::permission_workdir` extracts the value
+  (mirroring `permission_arg`), threaded through `permission_for`/
+  `clamp_to_base`/`effective_permission`; the `PermissionResolver` trait itself
+  is untouched (`ProfileResolver::resolve` extracts it internally from the raw
+  JSON `input` it already receives). The capability fan-out (#418) mirrors the
+  arg-scoped case: `call{pattern}` expands to both `call{pattern}` and
+  `bash{pattern}`. The rhai `exec`/`bash` bindings (#419) are **not** covered —
+  they marshal no `workdir` field, so a workdir-scoped rule never fires for a
+  binding call.
 - **Trusted/untrusted frame split** (#155,
   [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)): `Holly::send`
   is the **privileged in-process** inbox (executor/head, trusted for any frame);

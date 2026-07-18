@@ -183,15 +183,17 @@ pub enum Permission {
 
 /// Per-tool permission rules. Evaluated against a tool name **and** an optional
 /// tool-specific argument (the command for `bash`/`call`, the target path for
-/// `edit`/`write`/`read`, #173); later matching rules win (so put `"*"` first,
-/// specifics after — same semantics as opencode). Every tool — including the
-/// runtime's `update_plan`/`update_tasks` state tools (#231, ADR-0049) —
-/// resolves through this: there are no engine built-ins that bypass it.
+/// `edit`/`write`/`read`, #173) — and, for `bash`/`call`, an optional `workdir`
+/// (#425); later matching rules win (so put `"*"` first, specifics after —
+/// same semantics as opencode). Every tool — including the runtime's
+/// `update_plan`/`update_tasks` state tools (#231, ADR-0049) — resolves
+/// through this: there are no engine built-ins that bypass it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionProfile {
-    /// `(pattern, permission)` pairs. `pattern` is a tool name, `"*"`, or a
-    /// tool-with-argument glob `tool(pattern)` — e.g. `bash(git *)`,
-    /// `edit(src/*)` (#173). See [`PermissionProfile::resolve`].
+    /// `(pattern, permission)` pairs. `pattern` is a tool name, `"*"`, a
+    /// tool-with-argument glob `tool(pattern)` (#173), or a tool-with-workdir
+    /// glob `tool{pattern}` (#425) — e.g. `bash(git *)`, `edit(src/*)`,
+    /// `bash{/tmp/*}`. See [`PermissionProfile::resolve`].
     pub rules: Vec<(String, Permission)>,
     /// Used when no rule matches.
     pub default: Permission,
@@ -212,8 +214,10 @@ impl PermissionProfile {
     }
 
     /// Resolve the permission for a tool call, matching each rule key against
-    /// the tool `name` **and** an optional tool-specific `arg` (#173). A rule
-    /// key is one of:
+    /// the tool `name` **and** an optional tool-specific `arg` (#173).
+    /// Equivalent to [`resolve_scoped`][Self::resolve_scoped] with
+    /// `workdir = None` — every `tool{pattern}` workdir-scoped rule (#425)
+    /// simply never matches through this entry point. A rule key is one of:
     ///
     /// - `*` or a bare tool name — matches any call to that tool, ignoring the
     ///   argument (the pre-#173 behaviour);
@@ -223,9 +227,29 @@ impl PermissionProfile {
     /// Last matching rule wins, so an argument-scoped rule placed after a
     /// coarse one refines it (`bash: ask` then `bash(git status): allow`).
     pub fn resolve(&self, name: &str, arg: Option<&str>) -> Permission {
+        self.resolve_scoped(name, arg, None)
+    }
+
+    /// Resolve the permission for a tool call, matching each rule key against
+    /// the tool `name`, an optional tool-specific `arg` (#173, `tool(pattern)`),
+    /// **and** an optional `workdir` (#425, `tool{pattern}`) — the working
+    /// directory a `bash`/`call` invocation runs in, distinct from its command
+    /// line. Both scopes are independent single-pattern clauses (not a
+    /// compound key): a profile mixes `tool(cmd-pattern)` and `tool{workdir-
+    /// pattern}` rules freely in one ordered list, and last-matching-rule-wins
+    /// applies across the whole list exactly as it does for `resolve`. A tool
+    /// with no workdir concept (anything but `bash`/`call`) simply never
+    /// matches a `tool{pattern}` rule, since callers pass `workdir = None` for
+    /// it — safe by construction, not by convention.
+    pub fn resolve_scoped(
+        &self,
+        name: &str,
+        arg: Option<&str>,
+        workdir: Option<&str>,
+    ) -> Permission {
         let mut result = self.default;
         for (key, p) in &self.rules {
-            if rule_matches(key, name, arg) {
+            if rule_matches(key, name, arg, workdir) {
                 result = *p;
             }
         }
@@ -233,39 +257,60 @@ impl PermissionProfile {
     }
 
     /// Name-only resolution: matches `*` and bare-name rules, treating every
-    /// argument-scoped `tool(pattern)` rule as a non-match. Equivalent to
-    /// [`resolve`][Self::resolve] with `arg = None`. Kept for callers that
-    /// render a profile's coarse per-tool posture without a concrete call in
-    /// hand (inspect views, the TUI panel).
+    /// argument-scoped `tool(pattern)`/`tool{pattern}` rule as a non-match.
+    /// Equivalent to [`resolve`][Self::resolve] with `arg = None`. Kept for
+    /// callers that render a profile's coarse per-tool posture without a
+    /// concrete call in hand (inspect views, the TUI panel).
     pub fn for_tool(&self, name: &str) -> Permission {
         self.resolve(name, None)
     }
 }
 
-/// Whether a rule `key` matches a tool `name` + optional `arg` (#173). `key` is
-/// `*`, a bare tool name, or `tool(pattern)`; an argument-scoped rule matches
-/// only when `arg` is present and its `*`/`?` glob matches.
-fn rule_matches(key: &str, name: &str, arg: Option<&str>) -> bool {
-    let (tool_pat, arg_pat) = split_rule_key(key);
+/// A rule key's argument scope, once split from its tool/capability part
+/// (#173, #425): unscoped, a `tool(pattern)` command/path glob, or a
+/// `tool{pattern}` workdir glob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuleScope<'a> {
+    None,
+    Arg(&'a str),
+    Workdir(&'a str),
+}
+
+/// Whether a rule `key` matches a tool `name` + optional `arg`/`workdir`
+/// (#173/#425). `key` is `*`, a bare tool name, `tool(pattern)`, or
+/// `tool{pattern}`; a scoped rule matches only when the corresponding value is
+/// present and its `*`/`?` glob matches.
+fn rule_matches(key: &str, name: &str, arg: Option<&str>, workdir: Option<&str>) -> bool {
+    let (tool_pat, scope) = split_rule_key(key);
     if tool_pat != "*" && tool_pat != name {
         return false;
     }
-    match arg_pat {
-        None => true,
-        Some(pat) => arg.is_some_and(|a| glob_match(pat, a)),
+    match scope {
+        RuleScope::None => true,
+        RuleScope::Arg(pat) => arg.is_some_and(|a| glob_match(pat, a)),
+        RuleScope::Workdir(pat) => workdir.is_some_and(|w| glob_match(pat, w)),
     }
 }
 
-/// Split a rule key into its tool part and optional argument glob: `bash(git *)`
-/// ⇒ `("bash", Some("git *"))`, `bash` ⇒ `("bash", None)`. A key without a
-/// trailing `)` is treated as a plain tool name (no argument pattern).
-fn split_rule_key(key: &str) -> (&str, Option<&str>) {
+/// Split a rule key into its tool part and scope: `bash(git *)` ⇒
+/// `("bash", Arg("git *"))`, `bash{/tmp/*}` ⇒ `("bash", Workdir("/tmp/*"))`,
+/// `bash` ⇒ `("bash", None)`. A key without a matching trailing `)`/`}` is
+/// treated as a plain tool name (no pattern).
+fn split_rule_key(key: &str) -> (&str, RuleScope<'_>) {
     if let Some(open) = key.find('(') {
         if key.ends_with(')') {
-            return (&key[..open], Some(&key[open + 1..key.len() - 1]));
+            return (&key[..open], RuleScope::Arg(&key[open + 1..key.len() - 1]));
         }
     }
-    (key, None)
+    if let Some(open) = key.find('{') {
+        if key.ends_with('}') {
+            return (
+                &key[..open],
+                RuleScope::Workdir(&key[open + 1..key.len() - 1]),
+            );
+        }
+    }
+    (key, RuleScope::None)
 }
 
 /// Minimal `*`/`?` wildcard match for argument-scoped permission rules (#173):
@@ -1952,12 +1997,49 @@ mod tests {
 
     #[test]
     fn split_rule_key_parses_tool_and_pattern() {
-        assert_eq!(split_rule_key("bash"), ("bash", None));
-        assert_eq!(split_rule_key("*"), ("*", None));
-        assert_eq!(split_rule_key("bash(git *)"), ("bash", Some("git *")));
-        assert_eq!(split_rule_key("edit(src/*)"), ("edit", Some("src/*")));
-        // A malformed key with no closing paren stays a plain name.
-        assert_eq!(split_rule_key("bash(oops"), ("bash(oops", None));
+        assert_eq!(split_rule_key("bash"), ("bash", RuleScope::None));
+        assert_eq!(split_rule_key("*"), ("*", RuleScope::None));
+        assert_eq!(
+            split_rule_key("bash(git *)"),
+            ("bash", RuleScope::Arg("git *"))
+        );
+        assert_eq!(
+            split_rule_key("edit(src/*)"),
+            ("edit", RuleScope::Arg("src/*"))
+        );
+        assert_eq!(
+            split_rule_key("bash{/tmp/*}"),
+            ("bash", RuleScope::Workdir("/tmp/*"))
+        );
+        // A malformed key with no closing paren/brace stays a plain name.
+        assert_eq!(split_rule_key("bash(oops"), ("bash(oops", RuleScope::None));
+        assert_eq!(split_rule_key("bash{oops"), ("bash{oops", RuleScope::None));
+    }
+
+    #[test]
+    fn workdir_scoped_rule_matches_the_bash_call_workdir() {
+        // A workdir-scoped rule is independent of the command-scoped rule and
+        // composes with it via ordinary last-match-wins.
+        let p = PermissionProfile::new(Permission::Allow)
+            .with("bash", Permission::Ask)
+            .with("bash{/tmp/*}", Permission::Allow)
+            .with("bash{/etc/*}", Permission::Deny);
+        assert_eq!(
+            p.resolve_scoped("bash", Some("ls"), Some("/tmp/scratch")),
+            Permission::Allow
+        );
+        assert_eq!(
+            p.resolve_scoped("bash", Some("ls"), Some("/etc/cron.d")),
+            Permission::Deny
+        );
+        // Falls through to the coarse rule for a workdir matching neither.
+        assert_eq!(
+            p.resolve_scoped("bash", Some("ls"), Some("/home/x")),
+            Permission::Ask
+        );
+        // The plain `resolve` entry point never sees `workdir` (equivalent to
+        // `workdir = None`), so a workdir-scoped rule never matches through it.
+        assert_eq!(p.resolve("bash", Some("ls")), Permission::Ask);
     }
 
     fn masked_profile(tools: Option<Vec<&str>>, disallowed: Vec<&str>) -> AgentProfile {

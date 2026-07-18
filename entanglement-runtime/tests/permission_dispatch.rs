@@ -378,6 +378,125 @@ async fn argument_scoped_falls_through_to_coarse_ask() {
     );
 }
 
+/// A profile that grades `bash` by its `workdir` (#425): `/tmp/*` runs
+/// outright, `/etc/*` is denied, anything else asks.
+fn scoped_workdir_bash_registry() -> ProfileRegistry {
+    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    profiles.insert(AgentProfile {
+        name: "scopedworkdir".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        provider: None,
+        permission: PermissionProfile::new(Permission::Ask)
+            .with("bash{/tmp/*}", Permission::Allow)
+            .with("bash{/etc/*}", Permission::Deny),
+        tools: None,
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+    });
+    profiles
+}
+
+#[tokio::test]
+async fn workdir_scoped_allow_runs_matching_workdir_without_approval() {
+    // A `bash` call under `/tmp` matches `bash{/tmp/*}: allow` → runs directly.
+    let holly = spawn_with_bash_call_using(
+        &serde_json::json!({ "command": "ls", "workdir": "/tmp/scratch" }).to_string(),
+        scoped_workdir_bash_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedworkdir".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a workdir-scoped Allow must not ask for approval; got {events:?}"
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("/tmp/scratch"))
+        ),
+        "the matching call should run; got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn workdir_scoped_deny_blocks_matching_workdir() {
+    // A `bash` call under `/etc` matches `bash{/etc/*}: deny` → refused.
+    let holly = spawn_with_bash_call_using(
+        &serde_json::json!({ "command": "ls", "workdir": "/etc/cron.d" }).to_string(),
+        scoped_workdir_bash_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedworkdir".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("denied"))),
+        "the matching call should be denied; got {events:?}"
+    );
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
+        ),
+        "a denied call must not run"
+    );
+}
+
+#[tokio::test]
+async fn workdir_scoped_falls_through_to_coarse_ask_outside_every_pattern() {
+    // A `bash` call under neither scoped workdir falls to the coarse `ask`.
+    let holly = spawn_with_bash_call_using(
+        &serde_json::json!({ "command": "ls", "workdir": "/home/x" }).to_string(),
+        scoped_workdir_bash_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedworkdir".into(),
+        })
+        .await
+        .unwrap();
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let mut got_request = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            got_request = true;
+            break;
+        }
+    }
+    assert!(
+        got_request,
+        "a workdir matching no scoped rule should fall through to the coarse Ask"
+    );
+}
+
 #[tokio::test]
 async fn ask_rejected_reports_rejection() {
     // askbash profile: bash → Ask. Reject the request; the tool never runs.

@@ -17,7 +17,9 @@
 //!   (`Deny < Ask < Allow`), so a child cannot touch the shared working tree in
 //!   ways the parent couldn't. Resolution takes the call's tool-specific argument
 //!   (command/path, #173) so an argument-scoped rule matches the actual input;
-//!   [`permission_arg`] extracts it.
+//!   [`permission_arg`] extracts it. A `bash`/`call` call also carries its
+//!   `workdir` (#425) so a `tool{pattern}` workdir-scoped rule matches too;
+//!   [`permission_workdir`] extracts it.
 //! - **Tool mask** — [`tool_masked`] (#116, ADR-0038): a tool omitted from a
 //!   profile's allowlist (or listed in its denylist) does not *exist* for that
 //!   session — a call is refused before permission is even resolved. Like the
@@ -94,18 +96,20 @@ pub fn spawn_refusal(
 /// Effective permission for a `tool` call in `session`, clamped so a child
 /// sub-agent is never more privileged than its ancestors. Walks the parent chain
 /// in `guard`, taking the least-privileged `resolve` across the session and every
-/// ancestor. `arg` is the tool-specific argument (command/path, #173) so
-/// argument-scoped rules resolve against the actual call; pass `None` for a
-/// name-only decision. A root has no ancestors, so this reduces to its own
-/// profile — single-session behavior is unchanged.
+/// ancestor. `arg` is the tool-specific argument (command/path, #173) and
+/// `workdir` the `bash`/`call` working directory (#425) so argument-/workdir-
+/// scoped rules resolve against the actual call; pass `None` for a name-only
+/// decision. A root has no ancestors, so this reduces to its own profile —
+/// single-session behavior is unchanged.
 pub fn effective_permission(
     active: &HashMap<SessionId, AgentProfile>,
     guard: &SpawnGuard,
     session: &SessionId,
     tool: &str,
     arg: Option<&str>,
+    workdir: Option<&str>,
 ) -> Permission {
-    let (perm, source) = resolve_with_source(active, guard, session, tool, arg);
+    let (perm, source) = resolve_with_source(active, guard, session, tool, arg, workdir);
     // Per-resolution trace (#189) so sub-agent debugging ("why was this child's
     // edit denied?") reads off logs instead of three `.md` layers by hand.
     tracing::debug!(
@@ -131,8 +135,9 @@ fn resolve_with_source(
     session: &SessionId,
     tool: &str,
     arg: Option<&str>,
+    workdir: Option<&str>,
 ) -> (Permission, Option<SessionId>) {
-    let mut perm = permission_for(active, session, tool, arg);
+    let mut perm = permission_for(active, session, tool, arg, workdir);
     let mut source: Option<SessionId> = None;
     let mut current = session.clone();
     // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
@@ -140,7 +145,8 @@ fn resolve_with_source(
     while visited.insert(current.clone()) {
         match guard.parent_of(&current) {
             Some(parent) => {
-                let clamped = min_permission(perm, permission_for(active, &parent, tool, arg));
+                let clamped =
+                    min_permission(perm, permission_for(active, &parent, tool, arg, workdir));
                 // Only a *strictly* lower ancestor changes the outcome (ties keep
                 // the nearer link), so record it as the deciding source.
                 if clamped != perm {
@@ -266,19 +272,21 @@ pub(crate) fn permission_chain(
 /// result and the config's rule for the `tool` call — so the user/repo config
 /// `permissions` section is a *ceiling*: it can tighten what an agent allows
 /// (`bash: ask` forces every agent to ask), never loosen it. `arg` carries the
-/// tool-specific argument (#173) so an argument-scoped ceiling rule like
-/// `bash(rm *): deny` resolves against the actual command. The embedded default
-/// is allow-all, so an untouched config is a no-op. This is a pure ceiling (it
-/// only tightens); the orthogonal "always allow" grants (#174, [`crate::grants`])
-/// that *raise* an `Ask` are applied by the executor *after* this clamp, so a
-/// `Deny` here can never be re-opened by a stale grant.
+/// tool-specific argument (#173) and `workdir` the `bash`/`call` working
+/// directory (#425) so an argument-/workdir-scoped ceiling rule like
+/// `bash(rm *): deny` or `bash{/etc/*}: deny` resolves against the actual call.
+/// The embedded default is allow-all, so an untouched config is a no-op. This is
+/// a pure ceiling (it only tightens); the orthogonal "always allow" grants (#174,
+/// [`crate::grants`]) that *raise* an `Ask` are applied by the executor *after*
+/// this clamp, so a `Deny` here can never be re-opened by a stale grant.
 pub fn clamp_to_base(
     perm: Permission,
     base: &PermissionProfile,
     tool: &str,
     arg: Option<&str>,
+    workdir: Option<&str>,
 ) -> Permission {
-    min_permission(perm, base.resolve(tool, arg))
+    min_permission(perm, base.resolve_scoped(tool, arg, workdir))
 }
 
 /// A session's own permission for a `tool` call; an unseen session defaults to
@@ -288,16 +296,18 @@ pub fn clamp_to_base(
 /// silently allow-all. The executor self-heals the leaf from `ToolExec.agent`
 /// before resolving, so this floor fires only for a genuinely-unknown session (an
 /// unresolved agent name, or an ancestor whose spawn was itself dropped). `arg`
-/// carries the tool-specific argument (#173) so argument-scoped rules resolve.
+/// carries the tool-specific argument (#173) and `workdir` the `bash`/`call`
+/// working directory (#425) so argument-/workdir-scoped rules resolve.
 pub(crate) fn permission_for(
     active: &HashMap<SessionId, AgentProfile>,
     session: &SessionId,
     tool: &str,
     arg: Option<&str>,
+    workdir: Option<&str>,
 ) -> Permission {
     active
         .get(session)
-        .map(|p| p.permission.resolve(tool, arg))
+        .map(|p| p.permission.resolve_scoped(tool, arg, workdir))
         .unwrap_or(Permission::Deny)
 }
 
@@ -356,16 +366,36 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
     }
 }
 
+/// The `workdir` a `bash`/`call` invocation would run in, for a
+/// workdir-scoped permission rule (#425, `tool{pattern}`,
+/// [`entanglement_core::PermissionProfile::resolve_scoped`]) — distinct from
+/// [`permission_arg`] (which yields the *command* line for these two tools).
+/// `None` for any other tool, an absent `workdir` (the tool then defaults to
+/// root), or on malformed input — a workdir-scoped rule then never matches,
+/// falling through to the tool's other rules.
+pub fn permission_workdir(tool: &str, input: &str) -> Option<String> {
+    match tool {
+        "bash" | "call" => {
+            let value: serde_json::Value = serde_json::from_str(input).ok()?;
+            value.get("workdir")?.as_str().map(String::from)
+        }
+        _ => None,
+    }
+}
+
 /// The **filesystem path** a call would touch, for the escape-root gate
 /// (ADR-0109) — distinct from [`permission_arg`] (which yields the *command* for
 /// `bash`/`call`). It's the `path` for `read`/`edit`/`write` and the `workdir`
-/// for `bash`/`call` (absent → the tool defaults to root, never an escape).
+/// for `bash`/`call` (absent → the tool defaults to root, never an escape),
+/// the same value [`permission_workdir`] extracts for permission scoping.
 /// `None` for any other tool or on malformed input, so those never trip the gate.
 pub fn escape_root_target(tool: &str, input: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(input).ok()?;
     match tool {
-        "read" | "edit" | "write" => value.get("path")?.as_str().map(String::from),
-        "bash" | "call" => value.get("workdir")?.as_str().map(String::from),
+        "read" | "edit" | "write" => {
+            let value: serde_json::Value = serde_json::from_str(input).ok()?;
+            value.get("path")?.as_str().map(String::from)
+        }
+        "bash" | "call" => permission_workdir(tool, input),
         _ => None,
     }
 }
@@ -488,17 +518,17 @@ mod tests {
 
         // `edit` is Allow on the child alone, but Ask on the parent → clamped to Ask.
         assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None),
+            effective_permission(&active, &guard, &child, "edit", None, None),
             Permission::Ask
         );
         // `read` is Allow on both → stays Allow.
         assert_eq!(
-            effective_permission(&active, &guard, &child, "read", None),
+            effective_permission(&active, &guard, &child, "read", None, None),
             Permission::Allow
         );
         // The parent (a root) is never loosened or clamped — its own profile stands.
         assert_eq!(
-            effective_permission(&active, &guard, &parent, "edit", None),
+            effective_permission(&active, &guard, &parent, "edit", None, None),
             Permission::Ask
         );
     }
@@ -535,17 +565,17 @@ mod tests {
 
         // `edit`: own+parent Allow, grandparent Ask → clamped to Ask, sourced to gp.
         assert_eq!(
-            resolve_with_source(&active, &guard, &child, "edit", None),
+            resolve_with_source(&active, &guard, &child, "edit", None, None),
             (Permission::Ask, Some(gp.clone()))
         );
         // `read`: Allow the whole way → own profile stands, no ancestor source.
         assert_eq!(
-            resolve_with_source(&active, &guard, &child, "read", None),
+            resolve_with_source(&active, &guard, &child, "read", None, None),
             (Permission::Allow, None)
         );
         // A root resolves to its own profile — never an ancestor.
         assert_eq!(
-            resolve_with_source(&active, &guard, &gp, "edit", None),
+            resolve_with_source(&active, &guard, &gp, "edit", None, None),
             (Permission::Ask, None)
         );
     }
@@ -592,12 +622,19 @@ mod tests {
         active.insert(seen.clone(), build);
         let guard = SpawnGuard::new();
         assert_eq!(
-            effective_permission(&active, &guard, &seen, "edit", None),
+            effective_permission(&active, &guard, &seen, "edit", None, None),
             Permission::Allow
         );
         // An unseen session (never inserted) fails closed.
         assert_eq!(
-            effective_permission(&active, &guard, &SessionId::new("ghost"), "edit", None),
+            effective_permission(
+                &active,
+                &guard,
+                &SessionId::new("ghost"),
+                "edit",
+                None,
+                None
+            ),
             Permission::Deny
         );
     }
@@ -621,7 +658,7 @@ mod tests {
         guard.record_start(parent.clone(), None);
         guard.record_start(child.clone(), Some(parent.clone()));
         assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None),
+            effective_permission(&active, &guard, &child, "edit", None, None),
             Permission::Deny
         );
     }
@@ -666,27 +703,27 @@ mod tests {
         // Allow-all base (the embedded default) never changes the agent's grade.
         let open = PermissionProfile::new(Permission::Allow);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &open, "bash", None),
+            clamp_to_base(Permission::Allow, &open, "bash", None, None),
             Permission::Allow
         );
         assert_eq!(
-            clamp_to_base(Permission::Ask, &open, "bash", None),
+            clamp_to_base(Permission::Ask, &open, "bash", None, None),
             Permission::Ask
         );
         // A base `bash: ask` tightens an agent's Allow to Ask, but leaves a
         // stricter agent Deny untouched (least-privilege wins either way).
         let base = PermissionProfile::new(Permission::Allow).with("bash", Permission::Ask);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", None),
+            clamp_to_base(Permission::Allow, &base, "bash", None, None),
             Permission::Ask
         );
         assert_eq!(
-            clamp_to_base(Permission::Deny, &base, "bash", None),
+            clamp_to_base(Permission::Deny, &base, "bash", None, None),
             Permission::Deny
         );
         // The base never loosens: base Allow over an agent Ask stays Ask.
         assert_eq!(
-            clamp_to_base(Permission::Ask, &base, "read", None),
+            clamp_to_base(Permission::Ask, &base, "read", None, None),
             Permission::Ask
         );
     }
@@ -703,7 +740,7 @@ mod tests {
         active.insert(root.clone(), build);
         let guard = SpawnGuard::new();
         assert_eq!(
-            effective_permission(&active, &guard, &root, "edit", None),
+            effective_permission(&active, &guard, &root, "edit", None, None),
             Permission::Allow
         );
     }
@@ -752,6 +789,68 @@ mod tests {
     }
 
     #[test]
+    fn permission_workdir_extracts_bash_and_call_only() {
+        assert_eq!(
+            permission_workdir("bash", r#"{"command":"ls","workdir":"/tmp"}"#).as_deref(),
+            Some("/tmp")
+        );
+        assert_eq!(
+            permission_workdir("call", r#"{"command":"git","workdir":"/tmp/repo"}"#).as_deref(),
+            Some("/tmp/repo")
+        );
+        // No `workdir` field, a tool with no workdir concept, and malformed
+        // input all yield None.
+        assert_eq!(permission_workdir("bash", r#"{"command":"ls"}"#), None);
+        assert_eq!(
+            permission_workdir("read", r#"{"path":"x","workdir":"/tmp"}"#),
+            None
+        );
+        assert_eq!(permission_workdir("bash", "not json"), None);
+    }
+
+    #[test]
+    fn workdir_scoped_rule_resolves_through_the_agent_chain() {
+        // A root whose profile pre-approves anything run under `/tmp` but asks
+        // for `bash` elsewhere (#425).
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow)
+                .with("bash", Permission::Ask)
+                .with("bash{/tmp/*}", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            permission_for(&active, &root, "bash", None, Some("/tmp/scratch")),
+            Permission::Allow
+        );
+        assert_eq!(
+            permission_for(&active, &root, "bash", None, Some("/home/x")),
+            Permission::Ask
+        );
+        // `effective_permission`/`clamp_to_base` see the same `workdir` slot.
+        assert_eq!(
+            effective_permission(&active, &guard, &root, "bash", None, Some("/tmp/scratch")),
+            Permission::Allow
+        );
+        let deny_etc =
+            PermissionProfile::new(Permission::Allow).with("bash{/etc/*}", Permission::Deny);
+        assert_eq!(
+            clamp_to_base(
+                Permission::Allow,
+                &deny_etc,
+                "bash",
+                None,
+                Some("/etc/cron.d")
+            ),
+            Permission::Deny
+        );
+    }
+
+    #[test]
     fn argument_scoped_rule_resolves_through_the_agent_chain() {
         // A root whose profile pre-approves `git *` but asks for every other bash.
         let build = profile(
@@ -766,11 +865,11 @@ mod tests {
         active.insert(root.clone(), build);
         let guard = SpawnGuard::new();
         assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", Some("git status")),
+            effective_permission(&active, &guard, &root, "bash", Some("git status"), None),
             Permission::Allow
         );
         assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", Some("rm -rf /")),
+            effective_permission(&active, &guard, &root, "bash", Some("rm -rf /"), None),
             Permission::Ask
         );
     }
@@ -796,7 +895,8 @@ mod tests {
                 &guard,
                 &root,
                 "grep",
-                permission_arg("grep", r#"{"pattern":"foo","path":"src/*"}"#).as_deref()
+                permission_arg("grep", r#"{"pattern":"foo","path":"src/*"}"#).as_deref(),
+                None
             ),
             Permission::Allow
         );
@@ -806,7 +906,8 @@ mod tests {
                 &guard,
                 &root,
                 "glob",
-                permission_arg("glob", r#"{"pattern":"src/*"}"#).as_deref()
+                permission_arg("glob", r#"{"pattern":"src/*"}"#).as_deref(),
+                None
             ),
             Permission::Allow
         );
@@ -818,7 +919,8 @@ mod tests {
                 &guard,
                 &root,
                 "grep",
-                permission_arg("grep", r#"{"pattern":"foo","path":"docs/*"}"#).as_deref()
+                permission_arg("grep", r#"{"pattern":"foo","path":"docs/*"}"#).as_deref(),
+                None
             ),
             Permission::Ask
         );
@@ -828,7 +930,8 @@ mod tests {
                 &guard,
                 &root,
                 "grep",
-                permission_arg("grep", r#"{"pattern":"foo"}"#).as_deref()
+                permission_arg("grep", r#"{"pattern":"foo"}"#).as_deref(),
+                None
             ),
             Permission::Ask
         );
@@ -839,11 +942,11 @@ mod tests {
         // A config ceiling that hard-denies `rm *` but leaves other bash alone.
         let base = PermissionProfile::new(Permission::Allow).with("bash(rm *)", Permission::Deny);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", Some("rm -rf /")),
+            clamp_to_base(Permission::Allow, &base, "bash", Some("rm -rf /"), None),
             Permission::Deny
         );
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", Some("git status")),
+            clamp_to_base(Permission::Allow, &base, "bash", Some("git status"), None),
             Permission::Allow
         );
     }

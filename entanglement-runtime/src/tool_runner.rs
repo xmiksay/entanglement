@@ -672,6 +672,7 @@ pub fn spawn_tool_executor_with_policy(
                             // the pluggable resolver (#311); the sync grant read
                             // still upgrades its own `Ask`.
                             let arg = permission_arg(&tool, &input);
+                            let workdir = crate::permission::permission_workdir(&tool, &input);
                             let (base_self, policy) = {
                                 let active = active.lock().unwrap();
                                 let base_self = clamp_to_base(
@@ -681,10 +682,12 @@ pub fn spawn_tool_executor_with_policy(
                                         &session,
                                         &tool,
                                         arg.as_deref(),
+                                        workdir.as_deref(),
                                     ),
                                     &base,
                                     &tool,
                                     arg.as_deref(),
+                                    workdir.as_deref(),
                                 );
                                 let policy = crate::script::BindingPolicy::capture(
                                     &active,
