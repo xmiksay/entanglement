@@ -84,6 +84,7 @@ mod tests {
             url: None,
             headers: HashMap::new(),
             disabled: false,
+            capabilities: HashMap::new(),
         }
     }
 

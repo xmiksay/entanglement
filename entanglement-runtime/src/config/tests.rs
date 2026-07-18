@@ -35,8 +35,9 @@ fn merge_user(user: &str) -> Config {
     let over: Value = serde_yaml::from_str(user).unwrap();
     let merged = merge_value(base, over);
     let raw: RawConfig = serde_yaml::from_value(merged).unwrap();
+    let mcp_capabilities = crate::mcp::capability_index(&raw.mcp).unwrap();
     let permissions = match &raw.permissions {
-        Some(v) => permission_from_value(v).unwrap(),
+        Some(v) => permission_from_value(v, &mcp_capabilities).unwrap(),
         None => PermissionProfile::new(Permission::Allow),
     };
     Config {
@@ -119,6 +120,35 @@ fn permissions_ceiling_honors_capability_keys() {
     let c = merge_user("permissions:\n  call: deny\n");
     assert_eq!(c.permissions.for_tool("call"), Permission::Deny);
     assert_eq!(c.permissions.for_tool("bash"), Permission::Deny);
+}
+
+#[test]
+fn permissions_ceiling_covers_an_mcp_annotated_tool() {
+    // #426: an MCP server's config-side `capabilities:` hint folds its tool
+    // into the ceiling's bare `read`/`write`/`call` fan-out exactly like it
+    // does for agent frontmatter.
+    let c = merge_user(
+        "permissions:\n  default: deny\n  read: allow\n\
+         mcp:\n  docs:\n    command: docs-server\n    capabilities:\n      search: read\n",
+    );
+    assert_eq!(
+        c.permissions.for_tool("mcp__docs__search"),
+        Permission::Allow
+    );
+    // An unannotated MCP tool name is untouched — still an ungrouped literal.
+    assert_eq!(c.permissions.for_tool("mcp__docs__other"), Permission::Deny);
+}
+
+#[test]
+fn unknown_mcp_capability_hint_is_a_loud_error() {
+    let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
+    let over: Value = serde_yaml::from_str(
+        "mcp:\n  docs:\n    command: docs-server\n    capabilities:\n      search: typo\n",
+    )
+    .unwrap();
+    let raw: RawConfig = serde_yaml::from_value(merge_value(base, over)).unwrap();
+    let err = crate::mcp::capability_index(&raw.mcp).unwrap_err();
+    assert!(err.to_string().contains("typo"), "got: {err}");
 }
 
 #[test]

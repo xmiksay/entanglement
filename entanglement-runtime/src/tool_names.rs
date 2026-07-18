@@ -51,7 +51,14 @@ pub const LOAD_SKILL_TOOL: &str = "load_skill";
 /// of spelling out every member tool — `("read", &["read", "grep", "glob"])`
 /// means a bare `read: allow` grades all three read-only tools identically.
 /// `call`'s member list is `bash` only: the literal `call` tool is
-/// [`MULTI_GROUP`], not a single-group member — see there for why.
+/// [`MULTI_GROUP`], not a single-group member — see there for why. This table
+/// is the fixed, compile-time built-in membership only — an external MCP tool
+/// (`mcp__<server>__<tool>`) is never a member here, since it isn't
+/// self-describing; a bare capability key additionally fans out to whatever an
+/// MCP server's config-side `capabilities:` annotation maps to it (#426,
+/// `entanglement_runtime::mcp::capability_index`), a *data-driven* extension
+/// of this same table applied alongside it in
+/// `agents::expand_capabilities`.
 pub const CAPABILITIES: &[(&str, &[&str])] = &[
     ("read", &["read", "grep", "glob"]),
     ("write", &["edit", "write"]),
@@ -67,3 +74,11 @@ pub const CAPABILITIES: &[(&str, &[&str])] = &[
 /// `rhai`) grade a profile sets, so restricting any one capability tightens
 /// what these general-purpose tools may do.
 pub const MULTI_GROUP: &[&str] = &["call", "rhai"];
+
+/// Whether `name` names a capability (`read`/`write`/`call`) — shared by the
+/// frontmatter/ceiling expansion above and by an MCP server's config-side
+/// `capabilities` annotation (#426, `entanglement_runtime::mcp::capability_index`),
+/// which validates its declared capability strings against the same table.
+pub fn is_capability_name(name: &str) -> bool {
+    CAPABILITIES.iter().any(|(n, _)| *n == name)
+}

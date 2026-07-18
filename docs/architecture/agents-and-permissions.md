@@ -121,6 +121,25 @@ below realize one model:
   the arg-scoped case. `plan.md`'s pre-existing `read: allow` is now a capability
   key too, so it also flips `grep`/`glob` from the profile's `ask` default to
   `allow` — an accepted, test-pinned behavior change, not a silent diff.
+  **MCP tools join the fan-out via a config-side hint** (✅ #426,
+  [ADR-0117](../adr/0117-mcp-tool-capability-fan-out.md)): an MCP tool
+  (`mcp__<server>__<tool>`) carries no protocol-level capability of its own, so
+  a bare `read`/`write`/`call` key used to fall straight through it. A `mcp:`
+  server block now accepts an optional `capabilities: {tool: read|write|call}`
+  map (raw tool name), folded by `mcp::capability_index` into an
+  `McpCapabilityIndex` (capability → namespaced tool names, reusing `McpTool`'s
+  own naming helper so it can never drift from what actually registers).
+  `expand_capabilities` takes this index as a parameter and extends only the
+  **bare** capability case with it — scoped (`read(pattern)`/`call{pattern}`)
+  keys and the `call`/`rhai` multi-group are untouched, since an MCP tool has
+  no command/workdir argument to scope against and isn't a general-purpose host
+  tool. The index is built once at startup from config alone (no live server
+  connection required) and threaded into `agents::load_registry`, the ceiling
+  parse below, and the live-reload watcher's static snapshot — matching how
+  the ceiling itself is already startup-only, not live; an annotation naming a
+  tool the server never registers is simply inert. `skutter inspect agents`/
+  `prompt_report`/`built_in_registry` deliberately keep an empty index (a debug
+  view that already doesn't reflect the ceiling clamp either).
 - **Lag-proof decision delivery (✅ #156, [ADR-0070](../adr/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md)):**
   the `Ask` park (and `ask_user`/`propose_plan`/each `rhai` binding) no longer holds
   its own `broadcast` subscription of the inbound fan-out — that per-task subscriber
