@@ -611,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "entanglement-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -628,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "entanglement-provider"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "entanglement-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -8,6 +8,39 @@ Versioning is [Semantic Versioning](https://semver.org/). The *why* and rejected
 alternatives behind each design decision live in the ADRs under
 [`docs/adr/`](docs/adr/); the referenced `ADR-####` tags link there.
 
+## [0.3.0] - 2026-07-18
+
+Capability-level tool permissions, provider concurrency/backpressure, and
+session-lineage robustness on top of 0.2.0.
+
+### Added
+
+- **Capability-level permission keys.** A profile writes `read`/`write`/`call`
+  once and it fans out at parse time to every member tool (`read` ⇒
+  `read`/`grep`/`glob`, `write` ⇒ `edit`/`write`, `call` ⇒ `bash`), with
+  `call`/`rhai` graded at the least-privileged bare grade — core stays
+  capability-unaware (ADR-0114). Config-side `mcp.<server>.capabilities:` hints
+  extend the same fan-out to external MCP tools (ADR-0117).
+- **`rhai` exec bindings.** `rhai` scripts can drive `call`/`bash` under the
+  Call capability, with approval-cache and timeout fixes (ADR-0115).
+- **Workdir-scoped permission rules** for `bash`/`call` — a `call{pattern}`
+  rule keyed on working directory (ADR-0116).
+- **Per-endpoint concurrency cap + coordinated 429 backpressure.** A shared
+  per-endpoint concurrency semaphore (permit held across the whole stream so
+  spawned sub-agents queue instead of 429-storming), an AIMD adaptive pacing
+  gate, and a bounded 429 retry that parks every concurrent session's window
+  (ADR-0111). The cap is catalog data mirroring `rpm` — `ProviderEntry.concurrency`,
+  env `{NAME}_CONCURRENCY`, user `providers.yml`, embedded default (#414).
+
+### Fixed
+
+- `Resume` cascades over the spawn sub-tree; fixes predecessor loss on a
+  resumed compaction successor (ADR-0112).
+- A spawned child's initiating prompt is now persisted, so it survives replay
+  (ADR-0113).
+- `permission_arg` extracts a path for `grep`/`glob`, giving the read-search
+  tools argument-scoped rules (#417).
+
 ## [0.2.0] - 2026-07-17
 
 First tagged release. Builds on the 0.1.0 crates.io baseline with session
@@ -79,4 +112,5 @@ Initial (untagged) crates.io publish — the three-layer engine foundation
 streaming LLM providers, the stdio/TUI/`serve` heads, and the root-contained
 host tools.
 
+[0.3.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.3.0
 [0.2.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.2.0
