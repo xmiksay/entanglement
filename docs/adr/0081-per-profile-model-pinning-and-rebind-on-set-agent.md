@@ -5,7 +5,7 @@
 - Builds on the realtime model/provider switch of
   [0063](0063-realtime-model-provider-switch.md) (the `model_resolver` seam this
   reuses), the file-defined agent profiles of
-  [0034](0034-file-defined-agent-profiles.md), the local trust boundary of
+  [0034](0034-file-based-agent-definitions.md), the local trust boundary of
   [0047](0047-local-trust-boundary.md) (the managed store is trusted, like the
   grants file [0052](0052-approval-scope-and-persisted-grants.md) and the env
   file [0073](0073-managed-env-file-writer-and-key-surfaces.md)), and the frozen

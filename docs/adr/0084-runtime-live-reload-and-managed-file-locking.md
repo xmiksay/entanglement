@@ -21,7 +21,7 @@ Two related gaps in the runtime, both about a long-running `skutter` process
 (TUI, `serve`) drifting from what's on disk:
 
 1. **No live reload.** Agent/skill/provider-catalog/config definitions are
-   loaded once at startup ([0034](0034-file-defined-agent-profiles.md),
+   loaded once at startup ([0034](0034-file-based-agent-definitions.md),
    [0036](0036-skill-discovery-and-registry.md)). Editing an agent's
    frontmatter or adding a skill mid-session requires a restart to take
    effect — annoying during iteration on a profile, and impossible for a
