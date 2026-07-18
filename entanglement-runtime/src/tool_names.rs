@@ -13,13 +13,18 @@ pub const ASK_USER_TOOL: &str = "ask_user";
 /// Tool name the model calls to await a launched sub-agent's answer (#89, ADR-0026).
 pub const AGENT_POLL_TOOL: &str = "agent_poll";
 
-/// Tool name the model calls to run a sandboxed script (ADR-0046).
+/// Tool name the model calls to run a sandboxed script (ADR-0046, exec
+/// bindings added by ADR-0115).
 pub const RHAI_TOOL: &str = "rhai";
 
-/// The host functions bound into every `rhai` script — exactly the
-/// root-contained quintet, so `rhai` is precisely as privileged as the
-/// always-registered tools.
-pub const BINDING_TOOLS: [&str; 5] = ["read", "glob", "grep", "edit", "write"];
+/// The host functions bound into every `rhai` script — the root-contained
+/// quintet plus permission-gated process-exec (`call`/`bash`, ADR-0115
+/// amending ADR-0046) — so `rhai` is precisely as privileged as the
+/// always-registered tools. `bash` is only ever *reachable*, not just masked,
+/// when the host `bash` tool itself is registered (`ENTANGLEMENT_ENABLE_BASH`);
+/// it stays in this mask/grade list unconditionally since `BindingPolicy`
+/// grading is argument-independent of whether the engine bound the function.
+pub const BINDING_TOOLS: [&str; 7] = ["read", "glob", "grep", "edit", "write", "call", "bash"];
 
 /// Tool name the plan agent calls to finalize and submit its plan for approval
 /// (#141, ADR-0042).
@@ -56,7 +61,7 @@ pub const CAPABILITIES: &[(&str, &[&str])] = &[
 /// Tools that belong to *every* capability at once, because they can
 /// themselves read, write, or execute regardless of which capability key
 /// graded them: the argv-exec `call` tool and the sandboxed `rhai` script
-/// (bound to the root-contained quintet, see [`BINDING_TOOLS`]). Never
+/// (bound to the quintet plus `call`/`bash`, see [`BINDING_TOOLS`]). Never
 /// expanded by a bare/arg-scoped capability rule — instead, `permission_from_value`
 /// grades them by the least-privileged bare `read`/`write`/`call` (+ literal
 /// `rhai`) grade a profile sets, so restricting any one capability tightens

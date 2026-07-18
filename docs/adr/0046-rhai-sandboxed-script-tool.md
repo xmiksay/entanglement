@@ -1,6 +1,6 @@
 # 0046. `rhai` host tool — embedded, capability-sandboxed script engine
 
-- Status: Accepted
+- Status: Amended by [0115](0115-rhai-exec-bindings-call-bash.md)
 - Date: 2026-07-11
 
 ## Context
@@ -54,7 +54,10 @@ catchable script exception; `Allow` runs; `Ask` parks the script on the normal
 `ToolRequest` → `Approve`/`Reject` round-trip. **`Ask` is resolved once per
 function per run** (the first `edit` asks, approval covers the rest) — per-call
 prompts in a loop would be noise. No exec bindings (`bash`/`call`) in v1 — that
-would let a script escalate past its sandbox.
+would let a script escalate past its sandbox. **Added by
+[ADR-0115](0115-rhai-exec-bindings-call-bash.md)** once the Call capability
+([ADR-0114](0114-capability-level-permission-keys.md)) gave exec a uniform
+grade to escalate *through*, not past.
 
 **The sync/async bridge.** Rhai's engine is synchronous; the permission
 round-trip is async. The script runs under `tokio::task::spawn_blocking`; each
@@ -91,7 +94,8 @@ way as any host tool.
   does not) rather than on OS isolation.
 - **Deferred.** Skill-provenance tagging (`rhai` run id on nested binding calls,
   tying into [ADR-0037](0037-load-skill-tool-deterministic-resolution.md)) lands
-  with the broader provenance work; exec bindings, if ever, get their own ADR.
+  with the broader provenance work; exec bindings, if ever, get their own ADR
+  — shipped as [ADR-0115](0115-rhai-exec-bindings-call-bash.md).
 
 ## Alternatives considered
 
@@ -116,4 +120,7 @@ way as any host tool.
   executor, where the profile state lives, is the security-correct seam.
 - **Bind exec (`bash`/`call`) into the script.** Rejected for v1: it would let a
   script escape the capability sandbox to the same unsandboxed shell this tool
-  exists to avoid; revisit only with its own ADR.
+  exists to avoid; revisit only with its own ADR — see
+  [ADR-0115](0115-rhai-exec-bindings-call-bash.md), which revisits this once the
+  Call capability gives exec a permission grade to run *through* rather than
+  *past*.

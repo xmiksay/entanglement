@@ -208,6 +208,23 @@ re-document them here):
   dispatch per-tenant MCP endpoints or scope a DB-backed tool's writes to the
   caller through one shared registry, closing the gap #311 left between
   session-aware policy and session-blind execution.
+- **`rhai` gains exec bindings, gated by the Call capability** (#419, part of
+  the #416 epic, [ADR-0115](../docs/adr/0115-rhai-exec-bindings-call-bash.md)
+  amending [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)):
+  `exec(command)`/`exec(command, args)` (marshalled to the `call` tool) and
+  `bash(command)` (marshalled to `bash`, bound only when the host `bash` tool
+  is registered) join `tool_names::BINDING_TOOLS` (5→7), graded through the
+  same chain as the quintet. Named `exec`, not `call`, in script source — `call`
+  is a hard-reserved Rhai keyword the interpreter special-cases ahead of any
+  same-named registered function — but the dispatched tool name/permission
+  grade stay the literal `call`. Two bridge fixes ship alongside: the `Ask`
+  approval cache moves from a bare-tool-name key to
+  `"{tool}:{permission_arg(tool, input)}"` for `call`/`bash` (approving one
+  command can no longer silently pre-clear a different one in the same run),
+  and each `exec`/`bash` call derives its `timeout` from the script's own
+  remaining wall-clock budget instead of the tool's much longer default,
+  since rhai's timeout interrupt can't reach a binding call parked on the
+  sync/async bridge.
 - **Trusted/untrusted frame split** (#155,
   [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)): `Holly::send`
   is the **privileged in-process** inbox (executor/head, trusted for any frame);

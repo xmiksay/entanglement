@@ -15,7 +15,7 @@ use entanglement_core::{
     LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId,
     ToolCall,
 };
-use entanglement_runtime::host::{host_tools, ReadRawTool};
+use entanglement_runtime::host::{host_tools, BashTool, CallTool, ReadRawTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 
@@ -110,6 +110,55 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
     holly
 }
 
+/// [`spawn_with_rhai`] plus the exec pair registered into the same registry —
+/// `call` always, `bash` only when `bash_enabled` (mirrors `main.rs`'s
+/// `ENTANGLEMENT_ENABLE_BASH` gate) — so the script-facing `exec(...)`/
+/// `bash(...)` bindings have a real host tool to delegate to (#419).
+fn spawn_with_rhai_exec(
+    script: &str,
+    root: &std::path::Path,
+    profiles: ProfileRegistry,
+    bash_enabled: bool,
+) -> Holly {
+    let input = serde_json::json!({ "script": script }).to_string();
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: RHAI_TOOL.into(),
+                input,
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut tools = host_tools(root.to_path_buf());
+    tools.register(ReadRawTool::new(root.to_path_buf()));
+    tools.register(CallTool::new(root.to_path_buf()));
+    if bash_enabled {
+        tools.register(BashTool::new(root.to_path_buf()));
+    }
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+    holly
+}
+
 /// A single primary profile with a caller-shaped permission, advertising every
 /// tool (no mask) so binding behavior is decided by permission alone.
 fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
@@ -154,6 +203,39 @@ fn rhai_output(events: &[OutEvent]) -> Option<String> {
         OutEvent::ToolOutput { tool, output, .. } if tool == RHAI_TOOL => Some(output.clone()),
         _ => None,
     })
+}
+
+/// Like [`collect`], but auto-approves every `ToolRequest` for `sid` the
+/// instant it arrives, so a script that issues more than one `Ask`-graded
+/// binding call in sequence can run to completion without the test having to
+/// pre-know how many approvals are coming.
+async fn collect_auto_approving(
+    holly: &Holly,
+    mut sub: tokio::sync::broadcast::Receiver<OutEvent>,
+    sid: &SessionId,
+) -> Vec<OutEvent> {
+    let mut out = Vec::new();
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        if ev.session() != Some(sid) {
+            continue;
+        }
+        if let OutEvent::ToolRequest { request_id, .. } = &ev {
+            holly
+                .send(InMsg::Approve {
+                    session: sid.clone(),
+                    request_id: request_id.clone(),
+                    scope: Default::default(),
+                })
+                .await
+                .unwrap();
+        }
+        let done = matches!(ev, OutEvent::Done { .. });
+        out.push(ev);
+        if done {
+            break;
+        }
+    }
+    out
 }
 
 async fn prompt(holly: &Holly, sid: &SessionId, agent: &str) {
@@ -453,5 +535,214 @@ async fn parse_json_failure_is_catchable_without_touching_the_bridge() {
     assert!(
         out.contains("caught"),
         "invalid JSON should be catchable: {out}"
+    );
+}
+
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ┃ #419: call/bash exec bindings
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[tokio::test]
+async fn call_binding_runs_argv_exec_when_allowed() {
+    let dir = TempDir::new("call-allow");
+    let holly = spawn_with_rhai_exec(
+        r#"exec("echo", ["hi"])"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+        false,
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "Allow call must not ask for approval"
+    );
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(out.contains("hi"), "exec binding ran echo: {out}");
+}
+
+#[tokio::test]
+async fn call_binding_denied_surfaces_as_catchable_script_error() {
+    let dir = TempDir::new("call-deny");
+    let holly = spawn_with_rhai_exec(
+        r#"let r = ""; try { exec("echo", ["hi"]); r = "ran" } catch(e) { r = "caught: " + e } r"#,
+        &dir.path,
+        one_profile(
+            "denycall",
+            PermissionProfile::new(Permission::Allow).with("call", Permission::Deny),
+        ),
+        false,
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "denycall").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("caught") && out.contains("denied"),
+        "deny should throw a catchable error; got {out}"
+    );
+}
+
+#[tokio::test]
+async fn call_binding_masked_when_omitted_from_profile_tools() {
+    let dir = TempDir::new("call-masked");
+    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    profiles.insert(AgentProfile {
+        name: "readonly".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        provider: None,
+        permission: PermissionProfile::new(Permission::Allow),
+        // `rhai` itself must stay allowlisted so the run reaches the binding
+        // mask being tested here — only `call` is omitted.
+        tools: Some(vec!["read".into(), RHAI_TOOL.into()]),
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+    });
+    let holly = spawn_with_rhai_exec(
+        r#"let r = ""; try { exec("echo", ["hi"]); r = "ran" } catch(e) { r = "caught: " + e } r"#,
+        &dir.path,
+        profiles,
+        false,
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "readonly").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("caught") && out.contains("restricted"),
+        "call omitted from `tools` must mask the binding; got {out}"
+    );
+}
+
+#[tokio::test]
+async fn bash_binding_absent_without_bash_enabled() {
+    let dir = TempDir::new("bash-absent");
+    let holly = spawn_with_rhai_exec(
+        r#"bash("echo hi")"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+        false,
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.to_lowercase().contains("function"),
+        "bash() must be an unknown-function (unregistered) error when bash is \
+         disabled, not a graded-then-failing binding: {out}"
+    );
+}
+
+#[tokio::test]
+async fn bash_binding_runs_when_enabled_and_allowed() {
+    let dir = TempDir::new("bash-allow");
+    let holly = spawn_with_rhai_exec(
+        r#"bash("echo hi")"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+        true,
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(out.contains("hi"), "bash binding ran echo: {out}");
+}
+
+/// #419 fix A regression: `call`/`bash` approvals are cached per resolved
+/// command line, not per bare tool name — approving `exec(echo a)` (asking
+/// under the `call` tool) must not silently pre-clear the unrelated
+/// `exec(echo b)` later in the same run.
+#[tokio::test]
+async fn approving_one_call_command_does_not_auto_clear_a_different_one() {
+    let dir = TempDir::new("call-fix-a");
+    // `print(...)` (not a returned value) so the raw call output — including
+    // its real newlines — lands in the tool output verbatim; a *returned*
+    // string instead gets JSON-serialized (escaped `\n`), which would make a
+    // line-based assertion on the echoed output meaningless.
+    let holly = spawn_with_rhai_exec(
+        r#"print(exec("echo", ["a"])); print(exec("echo", ["b"]));"#,
+        &dir.path,
+        one_profile(
+            "askcall",
+            PermissionProfile::new(Permission::Allow).with("call", Permission::Ask),
+        ),
+        false,
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "askcall").await;
+
+    // `exec()` blocks the (synchronous) script until its approval resolves, so
+    // the two calls' asks arrive one at a time, not concurrently — auto-approve
+    // each as it comes and let the run finish, then check *how many* asks fired.
+    let events = collect_auto_approving(&holly, sub, &sid).await;
+    let requests = events
+        .iter()
+        .filter(|e| matches!(e, OutEvent::ToolRequest { .. }))
+        .count();
+    assert_eq!(
+        requests, 2,
+        "two distinct exec() commands must ask twice, not share one cache entry \
+         (a cache keyed by bare tool name would collapse this to 1)"
+    );
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.lines().any(|l| l == "a") && out.lines().any(|l| l == "b"),
+        "both calls ran: {out}"
+    );
+}
+
+/// Same-command re-invocation still hits the once-per-run cache (unchanged
+/// behavior for `call`/`bash`, same as the quintet) — only a *different*
+/// command line forces a fresh ask.
+#[tokio::test]
+async fn approving_a_call_command_covers_a_repeat_of_the_same_command() {
+    let dir = TempDir::new("call-same-cmd");
+    let holly = spawn_with_rhai_exec(
+        r#"print(exec("echo", ["a"])); print(exec("echo", ["a"]));"#,
+        &dir.path,
+        one_profile(
+            "askcall",
+            PermissionProfile::new(Permission::Allow).with("call", Permission::Ask),
+        ),
+        false,
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "askcall").await;
+    let events = collect_auto_approving(&holly, sub, &sid).await;
+
+    let requests = events
+        .iter()
+        .filter(|e| matches!(e, OutEvent::ToolRequest { .. }))
+        .count();
+    assert_eq!(
+        requests, 1,
+        "the same command line reuses the cached approval"
+    );
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert_eq!(
+        out.lines().filter(|l| *l == "a").count(),
+        2,
+        "both calls ran: {out}"
     );
 }

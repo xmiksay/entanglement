@@ -1,12 +1,15 @@
-//! `rhai` — embedded, capability-sandboxed script engine (ADR-0046).
+//! `rhai` — embedded, capability-sandboxed script engine (ADR-0046, amended by
+//! ADR-0115 to add exec bindings).
 //!
 //! A runtime-owned host tool that runs a [Rhai](https://rhai.rs) script in one
 //! tool call — the sanctioned replacement for "shell out to `python3`/`node`
 //! with a heredoc". A fresh Rhai engine has **no** filesystem, network, process
 //! spawn, or env access: every capability is a Rust function we register, so the
-//! sandbox is deny-by-default. The only capabilities bound are the root-contained
-//! host quintet (`read`/`glob`/`grep`/`edit`/`write`), each routed through the
-//! **same permission resolution as a model-issued tool call** (#59).
+//! sandbox is deny-by-default. The bound capabilities are the root-contained
+//! host quintet (`read`/`glob`/`grep`/`edit`/`write`) plus permission-gated
+//! process-exec (`call`/`bash`, ADR-0115) — each routed through the **same
+//! permission resolution as a model-issued tool call** (#59), `call`/`bash`
+//! graded under the Call capability (#418) like their host-tool counterparts.
 //!
 //! Because the engine is sync and the permission round-trip is async, the script
 //! runs under [`tokio::task::spawn_blocking`] and each binding call crosses a
@@ -80,10 +83,16 @@ pub fn rhai_spec() -> ToolSpec {
          read_raw(path) (exact file content, no line numbers — use this before \
          parse_json/parse_yaml), glob(pattern), grep(pattern), grep(pattern, path), \
          edit(path, old, new), edit(path, old, new, replace_all), write(path, \
-         content) — each routed through the same permission checks as the \
-         equivalent tool call (read_raw graded identically to read), and each \
-         returns the tool's text output (throws on denial/failure; catch with \
-         try/catch). Also bound (pure, no IO, no permission check — these \
+         content), exec(command), exec(command, args) (argv exec, no shell — \
+         graded as the `call` tool; named exec() because `call` is a reserved \
+         Rhai keyword for function-pointer invocation), bash(command) (shell \
+         exec via sh -c; only callable when the host has bash enabled — \
+         otherwise unknown-function) — each routed through the same permission \
+         checks as the equivalent tool call (read_raw graded identically to \
+         read), and each returns the tool's text output (throws on denial/ \
+         failure; catch with try/catch). exec/bash inherit a timeout clamped \
+         to this run's own remaining time budget, so a child process cannot \
+         outlive the script. Also bound (pure, no IO, no permission check — these \
          transform a value already in the script, not a file): parse_json(str), \
          to_json(value), parse_yaml(str), to_yaml(value) — parse throws on \
          invalid input, so `try { parse_json(x) } catch(e) {...}` doubles as a \
@@ -301,12 +310,16 @@ async fn execute_script(
     let prints = Arc::new(Mutex::new(String::new()));
     let engine_prints = prints.clone();
     let start = Instant::now();
+    // Whether the host `bash` tool is registered at all — computed before the
+    // blocking closure moves `tools` out of reach, since a `bool` is `Copy`
+    // but `ToolRegistry` is borrowed here with a non-'static lifetime.
+    let bash_enabled = tools.contains("bash");
 
     let engine_stop = stop.clone();
     let handle = tokio::task::spawn_blocking(move || {
         let mut engine = Engine::new_raw();
         configure_engine(&mut engine, timeout, start, engine_prints, engine_stop);
-        register_bindings(&mut engine, tx);
+        register_bindings(&mut engine, tx, bash_enabled, start, timeout);
         register_data_functions(&mut engine);
         engine.eval::<Dynamic>(&script)
     });
@@ -316,7 +329,14 @@ async fn execute_script(
     // registered functions that hold the senders). `spawn_blocking` cannot be
     // aborted, so the wall-clock timeout is enforced *inside* the engine by the
     // progress callback, not by dropping this task.
-    let mut approved: HashSet<&'static str> = HashSet::new();
+    //
+    // Keyed by `approval_cache_key`, not bare tool name: for `call`/`bash` that
+    // key includes the resolved command line, so approving `call(git status)`
+    // does not silently pre-clear `call(rm -rf /)` in the same run (#419 fix A).
+    // Every other binding keeps the coarser per-function cache (approve one
+    // `edit`, cover the rest) — its argument is always a file path already
+    // implied by the tool, not an open-ended command line.
+    let mut approved: HashSet<String> = HashSet::new();
     let mut stopped = false;
     while let Some(call) = rx.recv().await {
         let (result, was_stopped) = service_binding(
@@ -349,9 +369,12 @@ async fn execute_script(
 
 /// Resolve one binding call per its policy and either run it or refuse. Returns
 /// the script-visible result plus whether a `Stop` was seen (which unwinds the
-/// whole run). An `Ask` is prompted **once per function per run**: the first
-/// `edit` asks, approval covers the rest of that run (per-call prompts in a loop
-/// would be noise).
+/// whole run). An `Ask` is prompted **once per cache key per run** — see
+/// [`approval_cache_key`]: for most bindings that's once per function (the
+/// first `edit` asks, approval covers the rest — per-call prompts in a loop
+/// would be noise); for `call`/`bash` it's once per resolved command line
+/// (#419 fix A), since a single approved command must not silently clear a
+/// different, more dangerous one in the same run.
 #[allow(clippy::too_many_arguments)]
 async fn service_binding(
     tools: &ToolRegistry,
@@ -360,7 +383,7 @@ async fn service_binding(
     session: &SessionId,
     request_id: &str,
     pending: &PendingDecisions,
-    approved: &mut HashSet<&'static str>,
+    approved: &mut HashSet<String>,
     call: &BindingCall,
 ) -> (Result<String, String>, bool) {
     match policy.decide(call.tool, &call.input) {
@@ -377,7 +400,8 @@ async fn service_binding(
         ),
         Decision::Perm(Permission::Allow) => (Ok(exec(tools, session, call).await), false),
         Decision::Perm(Permission::Ask) => {
-            if approved.contains(call.tool) {
+            let key = approval_cache_key(call.tool, &call.input);
+            if approved.contains(&key) {
                 return (Ok(exec(tools, session, call).await), false);
             }
             // Nested approval gets its own request id so the head's Approve/Reject
@@ -388,7 +412,7 @@ async fn service_binding(
             match await_approval(holly, pending, session, &bind_rid, &card_tool, &call.input).await
             {
                 Approval::Approved => {
-                    approved.insert(call.tool);
+                    approved.insert(key);
                     set_state(holly, session, AgentState::Thinking);
                     (Ok(exec(tools, session, call).await), false)
                 }
@@ -402,6 +426,24 @@ async fn service_binding(
                 Approval::Stopped => (Err("rhai run stopped".to_string()), true),
             }
         }
+    }
+}
+
+/// The `approved` cache key for one binding call (#419 fix A). For `call`/
+/// `bash` the key includes the resolved command line (`permission_arg`, same
+/// extraction the permission grade itself uses) — the exec surface is
+/// open-ended, so an approval must not generalize past the exact command the
+/// user saw on the card. Every other binding keeps the coarser bare-tool-name
+/// key (approve one `edit`, cover the rest of the run) — that surface is
+/// already the fixed, pre-existing "once per function" behavior this issue
+/// leaves unchanged.
+fn approval_cache_key(tool: &'static str, input: &str) -> String {
+    match tool {
+        "call" | "bash" => {
+            let arg = permission_arg(tool, input).unwrap_or_default();
+            format!("{tool}:{arg}")
+        }
+        _ => tool.to_string(),
     }
 }
 
@@ -507,9 +549,34 @@ fn configure_engine(
     });
 }
 
-/// Bind the host quintet as script functions. Each closure marshals its args to
+/// Bind the host quintet plus permission-gated process-exec as script
+/// functions (ADR-0115, amending ADR-0046). Each closure marshals its args to
 /// the tool's JSON shape and blocks on the bridge for the resolved output.
-fn register_bindings(engine: &mut Engine, tx: UnboundedSender<BindingCall>) {
+/// The argv-exec host tool is bound under the script-callable name `exec`,
+/// **not** `call`: `call` is a hard-reserved Rhai keyword
+/// (`KEYWORD_FN_PTR_CALL`) the interpreter special-cases in
+/// `make_function_call` to always mean "invoke this `FnPtr`" — registering a
+/// same-named function is silently shadowed (its first argument gets coerced
+/// as a function pointer instead of dispatched to ours). The tool name
+/// dispatched to the bridge, its permission grade, and its `BINDING_TOOLS`/
+/// capability membership all stay the literal `call` (matching the
+/// model-facing `call` tool) — only the script-facing identifier differs.
+/// `exec`/`bash` additionally stamp a `timeout` derived from this run's own
+/// remaining wall-clock budget (`start`/`timeout`, #419 fix B): rhai's
+/// `on_progress` interrupt can't reach into a binding call blocked on
+/// `blocking_recv`, so the exec tool's own (much longer, up to 600s) timeout
+/// would otherwise stand alone as the only bound on an in-flight child.
+/// `bash` is registered only when the host `bash` tool itself is
+/// (`bash_enabled`, i.e. `ENTANGLEMENT_ENABLE_BASH`) — off, `bash(...)` is an
+/// unknown (catchable) script function rather than a graded-then-failing
+/// binding.
+fn register_bindings(
+    engine: &mut Engine,
+    tx: UnboundedSender<BindingCall>,
+    bash_enabled: bool,
+    start: Instant,
+    timeout: Duration,
+) {
     let t = tx.clone();
     engine.register_fn("read", move |path: &str| {
         call_binding(&t, "read", serde_json::json!({ "path": path }))
@@ -567,7 +634,7 @@ fn register_bindings(engine: &mut Engine, tx: UnboundedSender<BindingCall>) {
             )
         },
     );
-    let t = tx;
+    let t = tx.clone();
     engine.register_fn("write", move |path: &str, content: &str| {
         call_binding(
             &t,
@@ -575,6 +642,62 @@ fn register_bindings(engine: &mut Engine, tx: UnboundedSender<BindingCall>) {
             serde_json::json!({ "path": path, "content": content }),
         )
     });
+    let t = tx.clone();
+    engine.register_fn("exec", move |command: &str| {
+        call_binding(
+            &t,
+            "call",
+            serde_json::json!({
+                "command": command,
+                "args": Vec::<String>::new(),
+                "timeout": remaining_timeout_secs(start, timeout),
+            }),
+        )
+    });
+    let t = tx.clone();
+    engine.register_fn("exec", move |command: &str, args: rhai::Array| {
+        let args = call_args_to_strings(args)?;
+        call_binding(
+            &t,
+            "call",
+            serde_json::json!({ "command": command, "args": args, "timeout": remaining_timeout_secs(start, timeout) }),
+        )
+    });
+    if bash_enabled {
+        let t = tx;
+        engine.register_fn("bash", move |command: &str| {
+            call_binding(
+                &t,
+                "bash",
+                serde_json::json!({
+                    "command": command,
+                    "timeout": remaining_timeout_secs(start, timeout),
+                }),
+            )
+        });
+    }
+}
+
+/// Convert a Rhai `args` array (`exec(command, args)`) to argv strings — a
+/// non-string element throws a catchable error naming the offending type
+/// rather than silently stringifying it (Rhai's `to_string()` on, say, a map
+/// would produce nonsense argv).
+fn call_args_to_strings(args: rhai::Array) -> Result<Vec<String>, Box<EvalAltResult>> {
+    args.into_iter()
+        .map(|v| {
+            v.into_string()
+                .map_err(|ty| runtime_err(&format!("call: args must be strings, got {ty}")))
+        })
+        .collect()
+}
+
+/// Derive a `call`/`bash` binding's `timeout` (whole seconds, minimum 1) from
+/// the script's own remaining wall-clock budget, so an in-flight child cannot
+/// outlive the run — rhai's `on_progress` interrupt cannot reach a binding
+/// call parked in `blocking_recv`, so the bound has to ride along in the
+/// marshalled input instead (#419 fix B).
+fn remaining_timeout_secs(start: Instant, timeout: Duration) -> u64 {
+    timeout.saturating_sub(start.elapsed()).as_secs().max(1)
 }
 
 /// Bind pure JSON/YAML (de)serialization functions. Unlike the host quintet
@@ -964,6 +1087,135 @@ mod tests {
             policy.decide("edit", r#"{"path":"Cargo.toml"}"#),
             Decision::Perm(Permission::Ask)
         ));
+    }
+
+    /// #419: `call`/`bash` are graded through the same Allow/Ask/Deny chain as
+    /// the quintet — the Call capability (#418) applies to them identically.
+    #[test]
+    fn binding_policy_grades_call_and_bash_allow_ask_deny() {
+        use entanglement_core::{AgentMode, PermissionProfile};
+
+        let profile = AgentProfile {
+            name: "exec".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            provider: None,
+            permission: PermissionProfile::new(Permission::Ask)
+                .with("call", Permission::Allow)
+                .with("bash", Permission::Deny),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+        };
+        let session = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(session.clone(), profile);
+        let guard = SpawnGuard::new();
+        let base = PermissionProfile::new(Permission::Allow);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+
+        assert!(matches!(
+            policy.decide("call", "{}"),
+            Decision::Perm(Permission::Allow)
+        ));
+        assert!(matches!(
+            policy.decide("bash", "{}"),
+            Decision::Perm(Permission::Deny)
+        ));
+    }
+
+    /// #419: a profile whose `tools` allowlist omits `call` (and `bash`) masks
+    /// both bindings out, same as any other tool the #116 mask governs.
+    #[test]
+    fn binding_policy_masks_call_and_bash_when_omitted_from_tools() {
+        use entanglement_core::{AgentMode, PermissionProfile};
+
+        let profile = AgentProfile {
+            name: "readonly".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            provider: None,
+            permission: PermissionProfile::new(Permission::Allow),
+            tools: Some(vec!["read".into()]),
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+        };
+        let session = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(session.clone(), profile);
+        let guard = SpawnGuard::new();
+        let base = PermissionProfile::new(Permission::Allow);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+
+        assert!(matches!(policy.decide("call", "{}"), Decision::Masked));
+        assert!(matches!(policy.decide("bash", "{}"), Decision::Masked));
+    }
+
+    /// #419: an arg-scoped `call(git *): allow` rule under a `default: ask`
+    /// profile pre-clears `git` invocations while everything else still asks —
+    /// mirrors the existing `bash(git *)` coverage in `permission.rs`.
+    #[test]
+    fn binding_policy_resolves_call_arg_scoped_git_rule() {
+        use entanglement_core::{AgentMode, PermissionProfile};
+
+        let profile = AgentProfile {
+            name: "build".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            provider: None,
+            permission: PermissionProfile::new(Permission::Ask)
+                .with("call(git *)", Permission::Allow),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+        };
+        let session = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(session.clone(), profile);
+        let guard = SpawnGuard::new();
+        let base = PermissionProfile::new(Permission::Allow);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+
+        assert!(matches!(
+            policy.decide("call", r#"{"command":"git","args":["status"]}"#),
+            Decision::Perm(Permission::Allow)
+        ));
+        assert!(matches!(
+            policy.decide("call", r#"{"command":"rm","args":["-rf","/"]}"#),
+            Decision::Perm(Permission::Ask)
+        ));
+    }
+
+    /// #419 fix A: the `approved` cache key scopes `call`/`bash` to the
+    /// resolved command line, not the bare tool name — approving one command
+    /// must not silently clear a different one.
+    #[test]
+    fn approval_cache_key_scopes_exec_tools_by_command_not_just_tool_name() {
+        let a = approval_cache_key("call", r#"{"command":"git","args":["status"]}"#);
+        let b = approval_cache_key("call", r#"{"command":"rm","args":["-rf","/"]}"#);
+        assert_ne!(
+            a, b,
+            "different call commands must get different cache keys"
+        );
+
+        let a_again = approval_cache_key("call", r#"{"command":"git","args":["status"]}"#);
+        assert_eq!(a, a_again, "the same call command reuses its cache key");
+
+        // Every other binding keeps the coarser bare-tool-name key (approve
+        // one `edit`, cover the rest of the run) — unchanged by this fix.
+        assert_eq!(
+            approval_cache_key("edit", r#"{"path":"a.rs"}"#),
+            approval_cache_key("edit", r#"{"path":"b.rs"}"#),
+        );
     }
 
     #[test]
