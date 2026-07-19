@@ -235,6 +235,7 @@ impl Llm for OpenAiLlm {
                 }
             }
             let has_pending_tools = !tools.is_empty();
+            let mut emitted_any_tool_call = false;
             if has_pending_tools {
                 tracing::warn!(
                     finish_reason = seen_finish_reason.as_deref().unwrap_or("none"),
@@ -256,15 +257,21 @@ impl Llm for OpenAiLlm {
                     };
 
                     if should_emit {
+                        emitted_any_tool_call = true;
                         yield LlmEvent::ToolCall(t.into_tool_call());
                     }
                 }
             }
             // A tool-flush without an explicit finish_reason still means the model
             // wants to run tools; fall back to ToolUse so the reason is never lost.
+            // Gated on `emitted_any_tool_call` rather than `has_pending_tools`: a
+            // tool call dropped above for malformed JSON must not report ToolUse
+            // with zero actual `LlmEvent::ToolCall`s yielded — that contradiction
+            // left the turn loop unable to tell a genuine tool-use stop from an
+            // ambiguous one (ADR-0118).
             let stop_reason = match seen_finish_reason.as_deref() {
                 Some(r) => Some(StopReason::from_openai(r)),
-                None if has_pending_tools => Some(StopReason::ToolUse),
+                None if emitted_any_tool_call => Some(StopReason::ToolUse),
                 None => None,
             };
             yield LlmEvent::Finish { stop_reason, usage };

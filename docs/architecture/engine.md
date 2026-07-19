@@ -35,7 +35,9 @@ tool calls, **emit the whole batch up front** — the per-call (`ToolCall`,
 *return to the session loop* (`RoundOutcome::Parked`); the loop resolves each
 `InMsg::ToolResult` against the pending set (**any order** — outputs fold into
 `Context` on arrival, in arrival order) and re-enters `drive_turn` when the
-batch drains → rounds repeat until the model returns no tool calls → `Done`.
+batch drains → rounds repeat until the model returns no tool calls **and a
+confident stop** → `Done`. A round that returns no tool calls with an
+*ambiguous* stop instead retries in place (ADR-0118, detailed below).
 Batch calls thereby execute **concurrently**, not serially in call order
 (#270, [ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md));
 a stale, duplicate, or unknown `ToolResult` is dropped with a debug trace.
@@ -204,7 +206,48 @@ ADR-0061). **Beware:** the trip path emits **only** an
 `OutEvent::Error` and returns — *not* the `Error` + `Done` + `Status` triple that
 `emit_turn_error` (`session/emit.rs`) fires on a backend error — so a one-shot
 head awaiting `Done` hangs when the turn limit trips. That missing-`Done` is a
-known robustness gap (see #177). Separately, before each iteration core checks
+known robustness gap (see #177).
+
+**Ambiguous-stop retry — `max_ambiguous_stop_retries`** (`session/turn.rs`,
+[ADR-0118](../adr/0118-ambiguous-stop-reason-bounded-retry.md)). A round that
+ends with empty `tool_calls` is classified by `is_confident_stop(stop_reason)`:
+`EndTurn`/`MaxTokens`/`StopSequence` are deliberate and end the turn as above
+(`MaxTokens` also fires its truncation-warning `Error`, ADR-0055, unchanged).
+Everything else reaching this point — a bare `None` (the stream closed with no
+`finish_reason` ever observed, e.g. a provider like Ollama dropping the
+connection mid-generation), `Other`, or a contradictory `ToolUse` with zero
+actual tool calls (a tool call dropped for malformed JSON) — is *ambiguous*:
+instead of ending the turn, core commits whatever partial text streamed, pushes
+a short synthetic user-role nudge into `Context`, and retries the round **in
+place**, inside the same `run_round` call, with no new park and no round-trip
+through the runtime tool executor. Two consequences of that bare context
+mutation are made sound explicitly. **(1) The nudge is persisted.** The retry
+emits a seq-bearing `OutEvent::AmbiguousRetry { nudge }` — like `Compacted`,
+part of the event-sourced log — so `Session::replay` folds the exact boundary
+(flush the partial assistant round, then push the nudge) instead of merging
+both rounds' `TextDelta`s into one assistant message and dropping the nudge; a
+resumed session then continues from the history the live model actually saw
+(the load-bearing "event log is the persistence seam" invariant, ADR-0061).
+Its non-delta arrival also delimits the re-streamed text, so a head (the TUI
+transcript, `subagent.rs`'s answer collector) starts a fresh segment rather
+than concatenating consecutive rounds. **(2) An *empty* ambiguous round commits
+nothing** — a stream that died before any text would otherwise push
+`content: []`, which the strict clients (`anthropic.rs`, `gemini/request.rs`)
+drop, leaving the retry request with two adjacent user turns the provider
+rejects with a 400. Core skips that empty commit, and the strict clients also
+coalesce adjacent same-role turns (`coalesce_same_role`), so the nudge landing
+next to the original prompt stays well-formed. The retry count lives on
+`TurnState::ambiguous_retries`, capped by
+`EngineConfig.max_ambiguous_stop_retries` (default 2) and reset to 0 by any
+round that produces a confident outcome — real tool calls or a deliberate
+stop — so only a *persistently* ambiguous model exhausts the budget. A retry
+round still increments `TurnState::iterations`, so `max_turns` above remains
+the hard outer backstop regardless of this knob (including set to 0, which
+disables the retry outright — a true opt-out that stays silent, restoring the
+pre-ADR-0118 behavior). Exhausting a *non-zero* budget emits a distinct warning
+`Error` ("model stop was ambiguous ... response may be incomplete") followed
+by the normal `Done`/`Status::Done`, rather than silently succeeding as
+before; a zero budget skips the warning and emits only the `Done`/`Status::Done`. Separately, before each iteration core checks
 `Context::within_limit()` against the **model's real context window** (#178). The
 budget is `INPUT_BUDGET_FRACTION` (0.85) of the active model's catalog
 `context_window` — threaded runtime → `EngineConfig.context_window` →

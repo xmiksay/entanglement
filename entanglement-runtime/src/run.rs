@@ -195,6 +195,11 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
             Some(id) => writeln!(out, "◆ skill active: {id}")?,
             None => writeln!(out, "◆ skill cleared")?,
         },
+        // Ambiguous-stop bounded retry (#ADR-0118): the model's stream ended
+        // without a confident finish signal, so the turn is retrying in place.
+        // Render a one-line notice; its non-delta arrival also flushes the
+        // preceding partial `TextDelta` line so the retry's text stays separate.
+        OutEvent::AmbiguousRetry { .. } => writeln!(out, "↻ model stop was ambiguous — retrying")?,
     }
     Ok(())
 }

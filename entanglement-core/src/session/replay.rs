@@ -277,6 +277,30 @@ impl Session {
 
                     session.ctx.apply_compaction(summary, *kept as usize);
                 }
+                // An ambiguous-stop retry (#ADR-0118): the live engine committed
+                // the round's partial text as an assistant message, then injected
+                // `nudge` as a user-role steering message and re-queried in place.
+                // Reconstruct that exact boundary — flush the pending
+                // assistant/tool state (the partial round, same flush as `Done`),
+                // then push the nudge — so a resumed session's history matches
+                // what the live model saw, instead of merging both rounds' text.
+                OutEvent::AmbiguousRetry { nudge, .. } => {
+                    if !pending_text.is_empty() || !pending_tools.is_empty() {
+                        session
+                            .ctx
+                            .push_assistant(pending_text.clone(), pending_tools.clone());
+                        pending_text.clear();
+                        pending_tools.clear();
+                    }
+                    for (request_id, output) in &pending_tool_outputs {
+                        session
+                            .ctx
+                            .push_tool_content(request_id.clone(), output.clone());
+                    }
+                    pending_tool_outputs.clear();
+
+                    session.ctx.push_user(nudge.clone());
+                }
                 OutEvent::Compacted { auto: false, .. } => {}
                 _ => {}
             }
@@ -314,6 +338,7 @@ impl Session {
             session.turn = Some(TurnState {
                 pending,
                 iterations: 0,
+                ambiguous_retries: 0,
             });
         }
 
@@ -377,6 +402,59 @@ mod tests {
         let s = Session::replay(&records, &cfg, &SessionId::new("successor")).unwrap();
         assert_eq!(s.predecessor, Some(SessionId::new("source")));
         assert_eq!(s.parent, None);
+    }
+
+    /// An ambiguous-stop retry (ADR-0118) folds back into three distinct
+    /// messages — the truncated partial, the injected nudge, and the recovered
+    /// reply — not one merged assistant message. Without folding
+    /// `AmbiguousRetry` the two rounds' `TextDelta`s coalesce and the nudge
+    /// vanishes, resuming from a history the live model never saw.
+    #[test]
+    fn replay_reconstructs_ambiguous_retry_boundary_and_nudge() {
+        let cfg = EngineConfig::default();
+        let sid = SessionId::new("root");
+        let text = |t: &str, seq: u64| OutEvent::TextDelta {
+            session: sid.clone(),
+            seq,
+            text: t.into(),
+        };
+        let records: Vec<(Option<InMsg>, OutEvent)> = vec![
+            (None, started("root", None, None)),
+            (
+                Some(InMsg::prompt(sid.clone(), "do it")),
+                text("partial", 1),
+            ),
+            (
+                None,
+                OutEvent::AmbiguousRetry {
+                    session: sid.clone(),
+                    seq: 2,
+                    nudge: "[nudge]".into(),
+                },
+            ),
+            (None, text("final", 3)),
+            (
+                None,
+                OutEvent::Done {
+                    session: sid.clone(),
+                    seq: 4,
+                },
+            ),
+        ];
+        let s = Session::replay(&records, &cfg, &sid).unwrap();
+        let msgs = s.ctx.messages();
+        let rendered: Vec<(_, String)> = msgs.iter().map(|m| (m.role, m.text())).collect();
+        use entanglement_provider::MessageRole::*;
+        assert_eq!(
+            rendered,
+            vec![
+                (User, "do it".to_string()),
+                (Assistant, "partial".to_string()),
+                (User, "[nudge]".to_string()),
+                (Assistant, "final".to_string()),
+            ],
+            "the retry boundary and nudge must survive replay distinctly"
+        );
     }
 
     /// Replaying a *child*'s own id (not the log's flagged root) reconstructs its

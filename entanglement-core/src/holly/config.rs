@@ -149,6 +149,17 @@ pub struct EngineConfig {
     /// prompt, so a legitimate long session (many prompts) is never capped —
     /// only a single wedged turn. User-configurable; default 200.
     pub max_turns: usize,
+    /// Cap on consecutive *ambiguous*-stop retries within one LLM→tool loop
+    /// stretch (ADR-0118): when a round ends with empty tool_calls and a
+    /// stop_reason that isn't a confident `EndTurn`/`MaxTokens`/`StopSequence`
+    /// (bare `None`, `Other`, or a contradictory `ToolUse`-with-no-calls —
+    /// seen from providers like Ollama that close the stream without a
+    /// `finish_reason`), the engine injects a short nudge and re-requests
+    /// instead of silently ending the turn. Reset to 0 by any round with a
+    /// confident outcome, so only a persistently confused model exhausts it.
+    /// Separate from `max_turns`, the hard backstop on total round-trips.
+    /// Default: 2.
+    pub max_ambiguous_stop_retries: usize,
     /// Auto-hibernate a **settled** root session (and its spawn sub-tree) after
     /// this long with no activity (#363). Judged per root, strictly: every
     /// member of the sub-tree must be settled — `Session::turn.is_none()`, i.e.
@@ -204,6 +215,7 @@ impl Default for EngineConfig {
             generation_resolver: None,
             reoffer_interval: Some(Duration::from_secs(60)),
             max_turns: 200,
+            max_ambiguous_stop_retries: 2,
             idle_ttl: None,
             auto_compact: true,
         }
