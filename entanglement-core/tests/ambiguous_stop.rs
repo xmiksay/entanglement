@@ -20,33 +20,7 @@ use futures::stream;
 use futures::StreamExt;
 
 mod common;
-use common::{spawn_tool_executor, unknown_tool};
-
-/// Collect every event for `sid` until `Done` (or a timeout), so a test can
-/// inspect the full sequence (retries, warnings, the eventual outcome).
-async fn collect_until_done(
-    mut sub: tokio::sync::broadcast::Receiver<OutEvent>,
-    sid: &SessionId,
-) -> Vec<OutEvent> {
-    let mut out = Vec::new();
-    loop {
-        let Ok(recv) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await else {
-            break;
-        };
-        match recv {
-            Ok(ev) if ev.session() == Some(sid) => {
-                let done = matches!(ev, OutEvent::Done { .. });
-                out.push(ev);
-                if done {
-                    break;
-                }
-            }
-            Ok(_) => {}
-            Err(_) => break,
-        }
-    }
-    out
-}
+use common::{collect_until_done, spawn_tool_executor, unknown_tool};
 
 /// Always streams a text-only reply with an ambiguous `stop_reason: None` —
 /// the shape of a stream that closed with no `finish_reason` ever observed
