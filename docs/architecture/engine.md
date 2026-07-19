@@ -5,10 +5,14 @@
 ## 5. Per-session engine (`session/`)
 
 The turn loop lives in the `session/` split — `session/turn.rs` (the live
-reasoning turn: `drive_turn`/`run_round`), `session/stream.rs` (one streamed
-round-trip), `session/turn_state.rs` (the parked-turn state), and
-`session/emit.rs` (outbound-event helpers), with `session/replay.rs` holding the
-pure state reconstruction.
+reasoning turn: `drive_turn`/`run_round`, owning the per-round setup that only
+needs to run once — tool specs, the context-window gate, system prompt
+resolution — plus the small driver loop that retries in place),
+`session/round.rs` (`run_attempt`: one streamed attempt and the ADR-0118
+ambiguous-stop retry decision, split out of `turn.rs` along that retry seam,
+#436), `session/stream.rs` (one streamed round-trip), `session/turn_state.rs`
+(the parked-turn state), and `session/emit.rs` (outbound-event helpers), with
+`session/replay.rs` holding the pure state reconstruction.
 
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
 token estimate), an LLM backend `llm: Box<dyn Llm>` (from
@@ -194,8 +198,9 @@ runs once before the subcommand match), mainly useful for a long-lived
 multi-session `skutter serve`. Unset (the default) stays `None`, byte-identical
 to before this config surface existed.
 
-**Loop bounds — `max_turns` and context-over-limit** (`session/turn.rs`). The
-turn is capped at `EngineConfig.max_turns` rounds (default 200; user-configurable
+**Loop bounds — `max_turns` and context-over-limit** (`session/round.rs` for
+the per-attempt cap, `session/turn.rs` for the once-per-round context-window
+gate). The turn is capped at `EngineConfig.max_turns` rounds (default 200; user-configurable
 via `config.yml`, [ADR-0089](../adr/0089-user-configurable-max-turns.md)), one
 round = one LLM round-trip that may fan out into tool calls, counted on
 `TurnState::iterations` and reset per prompt (#177 — a fresh `TurnState` per
@@ -208,13 +213,13 @@ ADR-0061). **Beware:** the trip path emits **only** an
 head awaiting `Done` hangs when the turn limit trips. That missing-`Done` is a
 known robustness gap (see #177).
 
-**Ambiguous-stop retry — `max_ambiguous_stop_retries`** (`session/turn.rs`,
+**Ambiguous-stop retry — `max_ambiguous_stop_retries`** (`session/round.rs`,
 [ADR-0118](../adr/0118-ambiguous-stop-reason-bounded-retry.md)). A round that
 ends with empty `tool_calls` is classified by `StopReason::is_confident_stop`
 (#433 — an exhaustive method on `StopReason` itself, in
 `entanglement-provider/src/llm.rs`, so a new variant is a compile error until
 it's explicitly classified, rather than a non-exhaustive `matches!` in
-`turn.rs` silently defaulting it to ambiguous):
+`round.rs` silently defaulting it to ambiguous):
 `EndTurn`/`MaxTokens`/`StopSequence` are deliberate and end the turn as above
 (`MaxTokens` also fires its truncation-warning `Error`, ADR-0055, unchanged).
 Everything else reaching this point — a bare `None` (the stream closed with no
@@ -222,10 +227,14 @@ Everything else reaching this point — a bare `None` (the stream closed with no
 connection mid-generation), `Other`, or a contradictory `ToolUse` with zero
 actual tool calls (a tool call dropped for malformed JSON) — is *ambiguous*:
 instead of ending the turn, core commits whatever partial text streamed, pushes
-a short synthetic user-role nudge into `Context`, and retries the round **in
-place**, inside the same `run_round` call, with no new park and no round-trip
-through the runtime tool executor. Two consequences of that bare context
-mutation are made sound explicitly. **(1) The nudge is persisted.** The retry
+a short synthetic user-role nudge into `Context`, and returns
+`RoundAttempt::AmbiguousRetry` so `run_round`'s driver loop calls
+`run_attempt` again **in place** — no new park, no round-trip through the
+runtime tool executor, and (#436) no re-running the per-round setup
+`run_round` already resolved once (`system_prompt_resolver`, the
+context-window/auto-compact gate) — only the cheap per-attempt work
+(iteration count, mid-turn prompt fold) repeats. Two consequences of that bare
+context mutation are made sound explicitly. **(1) The nudge is persisted.** The retry
 emits a seq-bearing `OutEvent::AmbiguousRetry { nudge }` — like `Compacted`,
 part of the event-sourced log — so `Session::replay` folds the exact boundary
 (flush the partial assistant round, then push the nudge) instead of merging

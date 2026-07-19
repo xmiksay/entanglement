@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmStream, OutEvent, SessionId,
-    StopReason, ToolCall, Usage,
+    AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmStream, OutEvent,
+    SessionId, StopReason, ToolCall, Usage,
 };
 use futures::stream;
 use futures::StreamExt;
@@ -422,5 +422,61 @@ async fn max_turns_still_bounds_ambiguous_retries() {
         calls.load(Ordering::SeqCst) <= 4,
         "loop must stop at the configured max_turns cap (3), streamed {} times",
         calls.load(Ordering::SeqCst)
+    );
+}
+
+/// The system prompt resolver (ADR-0078) is per-round setup, not per-attempt
+/// (#436): it must be consulted exactly once for a round even when that round
+/// retries several times over an ambiguous stop. Before the `turn.rs`/
+/// `round.rs` split, the whole per-round setup lived inside the retry loop,
+/// so a potentially remote resolver fetch re-ran on every retry.
+#[tokio::test]
+async fn system_prompt_resolver_runs_once_per_round_not_per_retry() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_factory = calls.clone();
+    let resolver_calls = Arc::new(AtomicUsize::new(0));
+    let resolver_calls_for_closure = resolver_calls.clone();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(AmbiguousLlm {
+                calls: calls_for_factory.clone(),
+            }) as Box<dyn Llm>
+        }),
+        max_ambiguous_stop_retries: 2,
+        system_prompt_resolver: Some(Arc::new(
+            move |_session: &SessionId, _profile: &AgentProfile| {
+                resolver_calls_for_closure.fetch_add(1, Ordering::SeqCst);
+                None
+            },
+        )),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "do something"))
+        .await
+        .unwrap();
+
+    let events = collect_until_done(sub, &sid).await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "1 initial call + 2 retries, matching the persistently-ambiguous case"
+    );
+    assert_eq!(
+        resolver_calls.load(Ordering::SeqCst),
+        1,
+        "the system prompt resolver must not re-run on every in-place ambiguous-stop \
+         retry; got {} resolver calls across {} streamed attempts",
+        resolver_calls.load(Ordering::SeqCst),
+        calls.load(Ordering::SeqCst)
+    );
+    assert!(
+        matches!(events.last(), Some(OutEvent::Done { .. })),
+        "the turn must still end cleanly (Done); got {events:?}"
     );
 }

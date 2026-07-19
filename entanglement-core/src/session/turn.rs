@@ -4,22 +4,23 @@
 //! batch is emitted as `ToolExec` up front and control returns to the session
 //! loop, which resolves `ToolResult`s (any order) and re-enters [`drive_turn`]
 //! when the batch drains. Separable from the replay fold (pure state
-//! reconstruction) in `session/replay.rs`.
+//! reconstruction) in `session/replay.rs`. The per-attempt streaming and the
+//! ADR-0118 ambiguous-stop retry live in `session/round.rs` (#436) — this
+//! module owns the setup that only needs to run once per round (tool specs,
+//! the context-window gate, system prompt resolution) and the small driver
+//! loop that retries in place without repeating it.
 
 use std::collections::VecDeque;
 
 use tokio::sync::{broadcast, mpsc};
 
-use super::emit::{
-    emit_tool_call, emit_tool_exec, emit_turn_done, emit_turn_error, emit_usage, next_seq,
-};
-use super::stream::{stream_round, StreamedRound};
+use super::emit::{emit_turn_error, emit_usage, next_seq};
+use super::round::{run_attempt, RoundAttempt, RoundSetup};
 use super::summarize::{summarize, SummarizeOutcome};
-use super::turn_state::TurnState;
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::{StopReason, ToolSpec};
+use entanglement_provider::ToolSpec;
 
 /// How many trailing messages auto-summarize asks to keep verbatim (#398,
 /// ADR-0103), so the turn's own most recent exchange isn't paraphrased away.
@@ -27,15 +28,6 @@ use entanglement_provider::{StopReason, ToolSpec};
 /// exact number is a soft target, not a guarantee — a request deep in an
 /// unfinished tool round-trip can collapse to `0`.
 const AUTO_COMPACT_KEEP_TAIL: usize = 4;
-
-/// Injected as a user-role message when a round ends with no tool calls and
-/// an ambiguous stop_reason (ADR-0118) — steers a possibly-truncated model to
-/// either finish the action or confirm completion, instead of silently ending
-/// the turn.
-const AMBIGUOUS_STOP_NUDGE: &str =
-    "[system] Your previous response may have been cut off before completing. \
-     If you intended to take an action, call the appropriate tool now. If you \
-     are finished, reply with a short confirmation.";
 
 /// How one LLM round-trip left the turn.
 pub(crate) enum RoundOutcome {
@@ -128,265 +120,102 @@ async fn run_round(
 
     let max_turns = cfg.max_turns.max(1);
 
-    // Ambiguous-stop retry loop (ADR-0118): normally one LLM round-trip either
-    // parks on tool calls or ends the turn on the first pass. A round that
-    // ends with no tool calls *and* an ambiguous stop_reason (the stream
-    // closed without a confident signal — e.g. Ollama dropping the connection
-    // mid-generation) loops back for another round-trip in place, instead of
-    // silently committing the truncated reply as a finished turn.
+    // Resolved once per round, *before* the ADR-0118 retry loop below —
+    // not on every attempt. An ambiguous-stop retry mutates context with a
+    // small nudge and re-streams in place; redoing this setup per retry would
+    // repeat a potentially remote `system_prompt_resolver` fetch (ADR-0078)
+    // and could trip the auto-compact gate into an unneeded LLM
+    // summarization purely because of the retry's own pushed nudge + partial
+    // text (#436).
+    if !s.ctx.within_limit() {
+        if let Some(outcome) = enforce_context_window(session, s, events, cfg).await {
+            return outcome;
+        }
+    }
+
+    // System prompt: the active profile's own, unless a per-turn
+    // `system_prompt_resolver` is wired (#310, ADR-0078). An embedder whose
+    // prompt is user-editable content (a site serving it from a CMS page)
+    // consults it here so an edit lands on this turn with no engine respawn;
+    // a `None` return falls back to the profile's static prompt. Resolved as
+    // an owned `String` up front so `stream_round` borrows nothing extra off
+    // `s`.
+    let system_prompt: String = cfg
+        .system_prompt_resolver
+        .as_ref()
+        .and_then(|resolve| resolve(session, &s.profile))
+        .unwrap_or_else(|| s.profile.system_prompt.clone());
+
+    // Ambiguous-stop retry loop (ADR-0118): normally one LLM round-trip
+    // either parks on tool calls or ends the turn on the first pass. A round
+    // that ends with no tool calls *and* an ambiguous stop_reason (the
+    // stream closed without a confident signal — e.g. Ollama dropping the
+    // connection mid-generation) loops back for another attempt in place
+    // (`session::round::run_attempt`), instead of silently committing the
+    // truncated reply as a finished turn.
+    let setup = RoundSetup {
+        specs: &specs,
+        system_prompt: &system_prompt,
+        cfg,
+        max_turns,
+    };
     loop {
-        // Bound the inner LLM→tool loop (#177). Each round is one LLM
-        // round-trip that may fan out into tool calls; a model wedged in a
-        // tool loop (or persistently ambiguous, see below) would otherwise
-        // run forever. The counter lives on `TurnState`, reset per prompt — a
-        // legitimate long session (many prompts) is never capped, only a
-        // single runaway turn. User-configurable via `max_turns` (default
-        // 200); an ambiguous-stop retry still consumes this budget too, so it
-        // remains the hard outer backstop regardless of
-        // `max_ambiguous_stop_retries`.
-        let turn = s.turn.get_or_insert_with(TurnState::default);
-        turn.iterations += 1;
-        if turn.iterations > max_turns {
-            let _ = events.send(OutEvent::Error {
-                session: session.clone(),
-                seq: next_seq(&s.seq),
-                message: format!(
-                    "exceeded maximum turn limit ({max_turns}) - possible infinite loop"
-                ),
-            });
-            return RoundOutcome::TurnEnded;
+        match run_attempt(session, rx, s, events, stash, &setup).await {
+            RoundAttempt::Parked => return RoundOutcome::Parked,
+            RoundAttempt::TurnEnded => return RoundOutcome::TurnEnded,
+            RoundAttempt::Cancelled => return RoundOutcome::Cancelled,
+            RoundAttempt::AmbiguousRetry => continue,
         }
+    }
+}
 
-        // Fold any user prompts that arrived mid-turn into the live context
-        // before the next model request (#182). This is steering: guidance
-        // sent while the turn is running reaches the model on the very next
-        // round-trip — the same way a queued user message folds into the next
-        // request — instead of replaying as a separate turn after `Done`.
-        // Only reachable when the previous round emitted tool calls or an
-        // ambiguous stop (a confidently-ended reply returns below instead), so
-        // a prompt sent after the model's final answer still correctly starts
-        // a fresh turn via the stash. Non-`Prompt` commands (`SetAgent`) stay
-        // stashed for the session loop to handle once this turn ends.
-        let mut i = 0;
-        while i < stash.len() {
-            if matches!(stash[i], SessionCmd::Prompt(_)) {
-                if let Some(SessionCmd::Prompt(content)) = stash.remove(i) {
-                    tracing::debug!("folding mid-turn prompt into live context");
-                    s.ctx.push_user_content(content);
-                }
-            } else {
-                i += 1;
-            }
-        }
-
-        // Keep the request inside the model's real context window (#178).
-        // Over budget, first try an LLM-generated summary in place (#398,
-        // ADR-0103) — far less lossy than placeholder pruning, and the
-        // natural default since a turn mid-flight has no head to fork a
-        // copy-on-write `/compact` into. If that's disabled, skipped by its
-        // own guard, or still doesn't fit, fall back to the prune-only
-        // `Context::compact`; if even that doesn't fit, refuse the turn —
-        // sending an over-window request just burns a paid round-trip and
-        // errors at the provider. Refusing ends the turn cleanly (Error +
-        // Done + Status) so a one-shot head unblocks.
-        if !s.ctx.within_limit() {
-            let before = s.ctx.estimated_tokens();
-            if cfg.auto_compact {
-                try_auto_compact(session, s, events, cfg).await;
-            }
-            let fits = if s.ctx.within_limit() {
-                true
-            } else {
-                s.ctx.compact()
-            };
-            let after = s.ctx.estimated_tokens();
-            if fits {
-                tracing::info!(
-                    before,
-                    after,
-                    limit = s.ctx.limit(),
-                    "compacted context to fit the model's window"
-                );
-            } else {
-                emit_turn_error(
-                    session,
-                    &s.seq,
-                    events,
-                    format!(
-                        "context window exceeded: {after} tokens estimated after \
-                         compaction, over the {}-token budget — start a new session \
-                         or shorten the request",
-                        s.ctx.limit()
-                    ),
-                );
-                return RoundOutcome::TurnEnded;
-            }
-        }
-
-        // System prompt: the active profile's own, unless a per-turn
-        // `system_prompt_resolver` is wired (#310, ADR-0078). An embedder
-        // whose prompt is user-editable content (a site serving it from a CMS
-        // page) consults it here so an edit lands on this turn with no engine
-        // respawn; a `None` return falls back to the profile's static prompt.
-        // Resolved as an owned `String` up front so `stream_round` borrows
-        // nothing extra off `s`.
-        let system_prompt: String = cfg
-            .system_prompt_resolver
-            .as_ref()
-            .and_then(|resolve| resolve(session, &s.profile))
-            .unwrap_or_else(|| s.profile.system_prompt.clone());
-
-        let (text_buf, tool_calls, finish) =
-            match stream_round(session, rx, s, events, stash, &specs, &system_prompt).await {
-                StreamedRound::Complete {
-                    text,
-                    tool_calls,
-                    finish,
-                } => (text, tool_calls, finish),
-                // Stop / inbox close mid-stream — the turn ends but the
-                // session stays alive (cancel semantics, ADR-0017).
-                StreamedRound::Cancelled => return RoundOutcome::Cancelled,
-                // Partial committed + Error/Done already emitted (#181).
-                StreamedRound::Failed => return RoundOutcome::TurnEnded,
-            };
-
-        // Fold this round-trip's usage into the session total and emit the
-        // delta (#192). A `max_tokens`-truncated reply is surfaced as a
-        // recoverable warning so it no longer commits silently as a clean
-        // turn.
-        let stop_reason: Option<StopReason> = finish.as_ref().and_then(|(sr, _)| *sr);
-        if let Some((sr, usage)) = finish {
-            // A live model switch (#218) prices the turn under the switched
-            // model.
-            let model = s
-                .model
-                .as_deref()
-                .or(s.profile.model.as_deref())
-                .or(cfg.default_model.as_deref());
-            let cost = model
-                .and_then(|m| cfg.pricing.get(m))
-                .map(|p| p.cost_usd(&usage));
-            emit_usage(session, s, events, &usage, cost);
-            if sr == Some(StopReason::MaxTokens) {
-                let _ = events.send(OutEvent::Error {
-                    session: session.clone(),
-                    seq: next_seq(&s.seq),
-                    message: "model response truncated: hit the max output token limit \
-                              (stop reason: max_tokens)"
-                        .to_string(),
-                });
-            }
-        }
-
-        // Classify the stop up front so the commit below can tell an ambiguous
-        // round (retried) from a confident one (ends the turn) or a tool round
-        // (ADR-0118; classification itself lives on `StopReason::is_confident_stop`,
-        // an exhaustive match in entanglement-provider so a new variant forces
-        // an explicit classification decision, #433).
-        let confident = stop_reason.is_some_and(StopReason::is_confident_stop);
-        let ambiguous = tool_calls.is_empty() && !confident;
-
-        // Don't commit an *empty* assistant message on an ambiguous round: a
-        // stream that died before emitting any text (the motivating Ollama
-        // case) would otherwise push `content: []`, which the strict clients
-        // drop entirely (`anthropic.rs`/`gemini` skip a block-less assistant) —
-        // leaving the retry request with two adjacent user turns the provider
-        // rejects with a 400 (ADR-0118). Replay mirrors this: an empty round
-        // logs no `TextDelta`, so its `AmbiguousRetry` fold flushes nothing.
-        // (The strict clients also coalesce the resulting adjacent user turns —
-        // the original prompt + the nudge — for the same reason.)
-        if !(ambiguous && text_buf.is_empty()) {
-            s.ctx.push_assistant(text_buf.clone(), tool_calls.clone());
-        }
-        tracing::debug!(
-            text_len = text_buf.len(),
-            tool_calls_count = tool_calls.len(),
-            context_messages = s.ctx.messages().len(),
-            "assistant message pushed"
+/// Keep the request inside the model's real context window (#178) before
+/// this round. Over budget, first try an LLM-generated summary in place
+/// (#398, ADR-0103) — far less lossy than placeholder pruning, and the
+/// natural default since a turn mid-flight has no head to fork a
+/// copy-on-write `/compact` into. If that's disabled, skipped by its own
+/// guard, or still doesn't fit, fall back to the prune-only
+/// `Context::compact`; if even that doesn't fit, refuse the turn — sending an
+/// over-window request just burns a paid round-trip and errors at the
+/// provider. Returns `Some(outcome)` only on that refusal (Error + Done +
+/// Status already emitted); `None` means the request now fits and the round
+/// should proceed.
+async fn enforce_context_window(
+    session: &SessionId,
+    s: &mut Session,
+    events: &broadcast::Sender<OutEvent>,
+    cfg: &EngineConfig,
+) -> Option<RoundOutcome> {
+    let before = s.ctx.estimated_tokens();
+    if cfg.auto_compact {
+        try_auto_compact(session, s, events, cfg).await;
+    }
+    let fits = if s.ctx.within_limit() {
+        true
+    } else {
+        s.ctx.compact()
+    };
+    let after = s.ctx.estimated_tokens();
+    if fits {
+        tracing::info!(
+            before,
+            after,
+            limit = s.ctx.limit(),
+            "compacted context to fit the model's window"
         );
-
-        if !tool_calls.is_empty() {
-            // Real tool calls: recovered from any prior ambiguity.
-            if let Some(turn) = s.turn.as_mut() {
-                turn.ambiguous_retries = 0;
-            }
-            // Emit the whole batch up front and park (#270). Every tool is a
-            // protocol round-trip (#58): the runtime tool executor (or any
-            // external resolver) answers each `ToolExec` with
-            // `InMsg::ToolResult`; core makes no policy call (#59). Calls
-            // execute concurrently — results resolve in any order against the
-            // pending set (ADR-0061; deliberate change from the serial
-            // in-call-order dispatch this replaced).
-            for call in &tool_calls {
-                emit_tool_call(events, session, &call.id, &call.name, &call.input, &s.seq);
-                emit_tool_exec(events, session, call, &s.profile.name, &s.seq);
-            }
-            if let Some(turn) = s.turn.as_mut() {
-                turn.begin_batch(tool_calls);
-            }
-            return RoundOutcome::Parked;
-        }
-
-        if confident {
-            tracing::debug!("no tool calls, confident stop - emitting Done");
-            emit_turn_done(session, &s.seq, events);
-            return RoundOutcome::TurnEnded;
-        }
-
-        // Ambiguous stop (ADR-0118): `None`, `Other`, or a contradictory
-        // `ToolUse` with zero actual tool calls — the stream ended without a
-        // clean signal that the model was actually finished. Retry in place,
-        // bounded by `max_ambiguous_stop_retries`, so a persistently confused
-        // model still can't loop forever.
-        let turn = s
-            .turn
-            .as_mut()
-            .expect("turn set above by get_or_insert_with");
-        if turn.ambiguous_retries >= cfg.max_ambiguous_stop_retries {
-            tracing::debug!(
-                ?stop_reason,
-                retries = turn.ambiguous_retries,
-                "ambiguous stop - retry budget exhausted, emitting Done"
-            );
-            // A cap of 0 is a deliberate opt-out (ADR-0118): it restores the
-            // pre-ADR-0118 behavior of silently committing the reply, so the
-            // very first ambiguous stop must *not* surface a warning it never
-            // asked for. Only emit the warning when at least one retry was
-            // budgeted (and thus actually attempted).
-            if cfg.max_ambiguous_stop_retries > 0 {
-                let _ = events.send(OutEvent::Error {
-                    session: session.clone(),
-                    seq: next_seq(&s.seq),
-                    message: format!(
-                        "model stop was ambiguous (stop reason: {stop_reason:?}) after \
-                         {} retries - response may be incomplete",
-                        cfg.max_ambiguous_stop_retries
-                    ),
-                });
-            }
-            emit_turn_done(session, &s.seq, events);
-            return RoundOutcome::TurnEnded;
-        }
-        turn.ambiguous_retries += 1;
-        tracing::debug!(
-            ?stop_reason,
-            retries = turn.ambiguous_retries,
-            "ambiguous stop - nudging and retrying"
+        None
+    } else {
+        emit_turn_error(
+            session,
+            &s.seq,
+            events,
+            format!(
+                "context window exceeded: {after} tokens estimated after compaction, \
+                 over the {}-token budget — start a new session or shorten the request",
+                s.ctx.limit()
+            ),
         );
-        // Persist the retry as a seq-bearing content event *before* mutating
-        // the context (ADR-0118): the bare `push_user` below is invisible to
-        // both the persistence tap and the wire, so without this event replay
-        // would fold every retry round's `TextDelta`s into one assistant
-        // message and lose the nudge — resuming from a history the live model
-        // never saw — and heads would concatenate the re-streamed partial text.
-        // `Session::replay` folds this by flushing the partial assistant round
-        // then pushing `nudge`, reconstructing the exact live boundary.
-        let _ = events.send(OutEvent::AmbiguousRetry {
-            session: session.clone(),
-            seq: next_seq(&s.seq),
-            nudge: AMBIGUOUS_STOP_NUDGE.to_string(),
-        });
-        s.ctx.push_user(AMBIGUOUS_STOP_NUDGE);
+        Some(RoundOutcome::TurnEnded)
     }
 }
 
