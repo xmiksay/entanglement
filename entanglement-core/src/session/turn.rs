@@ -35,17 +35,6 @@ const AMBIGUOUS_STOP_NUDGE: &str =
      If you intended to take an action, call the appropriate tool now. If you \
      are finished, reply with a short confirmation.";
 
-/// A confident, deliberate stop — the only kind that ends a turn with no tool
-/// calls. Everything else (`None`, `Other`, or a contradictory `ToolUse` with
-/// zero actual tool calls) is ambiguous and gets a bounded, nudged retry
-/// instead (ADR-0118) — see the classification at the bottom of `run_round`.
-fn is_confident_stop(stop_reason: Option<StopReason>) -> bool {
-    matches!(
-        stop_reason,
-        Some(StopReason::EndTurn) | Some(StopReason::MaxTokens) | Some(StopReason::StopSequence)
-    )
-}
-
 /// How one LLM round-trip left the turn.
 pub(crate) enum RoundOutcome {
     /// The model answered without tool calls (or the round failed / hit the
@@ -288,8 +277,11 @@ async fn run_round(
         }
 
         // Classify the stop up front so the commit below can tell an ambiguous
-        // round (retried) from a confident one (ends the turn) or a tool round.
-        let confident = is_confident_stop(stop_reason);
+        // round (retried) from a confident one (ends the turn) or a tool round
+        // (ADR-0118; classification itself lives on `StopReason::is_confident_stop`,
+        // an exhaustive match in entanglement-provider so a new variant forces
+        // an explicit classification decision, #433).
+        let confident = stop_reason.is_some_and(StopReason::is_confident_stop);
         let ambiguous = tool_calls.is_empty() && !confident;
 
         // Don't commit an *empty* assistant message on an ambiguous round: a
