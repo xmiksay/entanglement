@@ -18,7 +18,7 @@
 
 use tokio::sync::broadcast;
 
-use super::emit::{emit_turn_error, emit_usage, next_seq};
+use super::emit::{emit_turn_done, emit_turn_error, emit_usage, next_seq};
 use super::summarize::{compose_report, summarize, SummarizeOutcome};
 use super::Session;
 use crate::protocol::{AgentState, OutEvent, SessionId};
@@ -109,14 +109,7 @@ async fn compact_op(
                     .map(|p| p.cost_usd(&usage));
                 emit_usage(session, s, events, &usage, cost);
             }
-            let _ = events.send(OutEvent::Done {
-                session: session.clone(),
-                seq: next_seq(&s.seq),
-            });
-            let _ = events.send(OutEvent::Status {
-                session: session.clone(),
-                state: AgentState::Done,
-            });
+            emit_turn_done(session, &s.seq, events);
         }
         Err(e) => emit_turn_error(session, &s.seq, events, e.to_string()),
     }
