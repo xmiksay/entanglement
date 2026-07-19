@@ -345,15 +345,22 @@ async fn run_round(
                 retries = turn.ambiguous_retries,
                 "ambiguous stop - retry budget exhausted, emitting Done"
             );
-            let _ = events.send(OutEvent::Error {
-                session: session.clone(),
-                seq: next_seq(&s.seq),
-                message: format!(
-                    "model stop was ambiguous (stop reason: {stop_reason:?}) after \
-                     {} retries - response may be incomplete",
-                    cfg.max_ambiguous_stop_retries
-                ),
-            });
+            // A cap of 0 is a deliberate opt-out (ADR-0118): it restores the
+            // pre-ADR-0118 behavior of silently committing the reply, so the
+            // very first ambiguous stop must *not* surface a warning it never
+            // asked for. Only emit the warning when at least one retry was
+            // budgeted (and thus actually attempted).
+            if cfg.max_ambiguous_stop_retries > 0 {
+                let _ = events.send(OutEvent::Error {
+                    session: session.clone(),
+                    seq: next_seq(&s.seq),
+                    message: format!(
+                        "model stop was ambiguous (stop reason: {stop_reason:?}) after \
+                         {} retries - response may be incomplete",
+                        cfg.max_ambiguous_stop_retries
+                    ),
+                });
+            }
             let _ = events.send(OutEvent::Done {
                 session: session.clone(),
                 seq: next_seq(&s.seq),

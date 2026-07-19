@@ -223,6 +223,49 @@ async fn persistently_ambiguous_model_terminates_within_budget_with_warning() {
     );
 }
 
+/// `max_ambiguous_stop_retries = 0` is a true opt-out (ADR-0118): it disables
+/// the retry *and* stays silent, restoring the pre-ADR-0118 behavior of
+/// committing the reply. The first ambiguous stop must end the turn with no
+/// retry round-trip and, crucially, **no** warning `Error`.
+#[tokio::test]
+async fn zero_retry_budget_opts_out_silently() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_factory = calls.clone();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(AmbiguousLlm {
+                calls: calls_for_factory.clone(),
+            }) as Box<dyn Llm>
+        }),
+        max_ambiguous_stop_retries: 0,
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "do something"))
+        .await
+        .unwrap();
+
+    let events = collect_until_done(sub, &sid).await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a zero budget must not trigger any retry round-trip"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, OutEvent::Error { .. })),
+        "opting out with a zero budget must not surface any warning; got {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(OutEvent::Done { .. })),
+        "the turn must still end with Done; got {events:?}"
+    );
+}
+
 /// A genuinely clean `EndTurn` stop is unaffected: the turn ends on the first
 /// round, with no retry round-trip and no warning.
 #[tokio::test]

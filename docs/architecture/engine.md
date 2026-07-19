@@ -226,10 +226,11 @@ round that produces a confident outcome — real tool calls or a deliberate
 stop — so only a *persistently* ambiguous model exhausts the budget. A retry
 round still increments `TurnState::iterations`, so `max_turns` above remains
 the hard outer backstop regardless of this knob (including set to 0, which
-disables the retry outright). Exhausting the budget emits a distinct warning
+disables the retry outright — a true opt-out that stays silent, restoring the
+pre-ADR-0118 behavior). Exhausting a *non-zero* budget emits a distinct warning
 `Error` ("model stop was ambiguous ... response may be incomplete") followed
 by the normal `Done`/`Status::Done`, rather than silently succeeding as
-before. Separately, before each iteration core checks
+before; a zero budget skips the warning and emits only the `Done`/`Status::Done`. Separately, before each iteration core checks
 `Context::within_limit()` against the **model's real context window** (#178). The
 budget is `INPUT_BUDGET_FRACTION` (0.85) of the active model's catalog
 `context_window` — threaded runtime → `EngineConfig.context_window` →
