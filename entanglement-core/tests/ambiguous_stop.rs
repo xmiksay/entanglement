@@ -128,6 +128,88 @@ impl Llm for AmbiguousThenToolCallLlm {
     }
 }
 
+/// First call: an *empty* ambiguous stop (the stream died before any text — the
+/// exact motivating Ollama case, Bug A). Second call: a clean `EndTurn` reply.
+/// Models the empty-round path where committing `content: []` would break the
+/// strict clients' retry request.
+struct EmptyAmbiguousThenDoneLlm {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Llm for EmptyAmbiguousThenDoneLlm {
+    async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let events = if n == 0 {
+            // No text at all, ambiguous stop.
+            vec![Ok(LlmEvent::Finish {
+                stop_reason: None,
+                usage: Usage::default(),
+            })]
+        } else {
+            vec![
+                Ok(LlmEvent::Text("recovered".into())),
+                Ok(LlmEvent::Finish {
+                    stop_reason: Some(StopReason::EndTurn),
+                    usage: Usage::default(),
+                }),
+            ]
+        };
+        Ok(stream::iter(events).boxed())
+    }
+}
+
+/// An empty ambiguous round recovers on retry and ends cleanly: the retry
+/// boundary is emitted, the recovered text reaches the caller, and the turn is
+/// not wedged by the empty first round (Bug A / ADR-0118).
+#[tokio::test]
+async fn empty_ambiguous_round_recovers_and_ends_cleanly() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_factory = calls.clone();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(EmptyAmbiguousThenDoneLlm {
+                calls: calls_for_factory.clone(),
+            }) as Box<dyn Llm>
+        }),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "do something"))
+        .await
+        .unwrap();
+
+    let events = collect_until_done(sub, &sid).await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "the empty ambiguous round must be retried once, then recover"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, OutEvent::AmbiguousRetry { .. }))
+            .count(),
+        1,
+        "the empty ambiguous round must emit exactly one retry boundary; got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::TextDelta { text, .. } if text == "recovered")),
+        "the recovered reply must reach the caller; got {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(OutEvent::Done { .. })),
+        "the turn must end with Done; got {events:?}"
+    );
+}
+
 /// An ambiguous stop followed by a real tool call succeeds with no user
 /// intervention: the retry's nudge gives the model another chance, and the
 /// turn parks on the tool call it eventually produces instead of ending on
@@ -216,6 +298,16 @@ async fn persistently_ambiguous_model_terminates_within_budget_with_warning() {
         warnings.len(),
         1,
         "exactly one ambiguous-stop warning should fire once the budget is exhausted; got {events:?}"
+    );
+    // Each of the 2 retries persists a seq-bearing `AmbiguousRetry` boundary
+    // (ADR-0118) so replay/heads reconstruct the nudge + round split.
+    let retries = events
+        .iter()
+        .filter(|e| matches!(e, OutEvent::AmbiguousRetry { .. }))
+        .count();
+    assert_eq!(
+        retries, 2,
+        "each in-place retry must emit a persisted AmbiguousRetry boundary; got {events:?}"
     );
     assert!(
         matches!(events.last(), Some(OutEvent::Done { .. })),

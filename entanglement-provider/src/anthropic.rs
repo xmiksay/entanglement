@@ -330,6 +330,32 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
             }
         }
     }
+    coalesce_same_role(out, "content")
+}
+
+/// Merge adjacent messages that share a `role` by concatenating their content
+/// arrays under `content_key`. Anthropic (and Gemini) reject non-alternating
+/// roles, and an ambiguous-stop retry (ADR-0118) can legitimately leave two
+/// adjacent user turns — the original prompt and the injected nudge — once an
+/// empty assistant round is dropped. Coalescing them into one message keeps the
+/// request well-formed without the caller having to reason about turn shape.
+pub(crate) fn coalesce_same_role(messages: Vec<Value>, content_key: &str) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::with_capacity(messages.len());
+    for msg in messages {
+        match out.last_mut() {
+            Some(prev) if prev.get("role") == msg.get("role") => {
+                if let (Some(prev_content), Some(new_content)) = (
+                    prev.get_mut(content_key).and_then(Value::as_array_mut),
+                    msg.get(content_key).and_then(Value::as_array),
+                ) {
+                    prev_content.extend(new_content.iter().cloned());
+                    continue;
+                }
+                out.push(msg);
+            }
+            _ => out.push(msg),
+        }
+    }
     out
 }
 
@@ -817,6 +843,40 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["tool_use_id"], "a");
         assert_eq!(blocks[1]["tool_use_id"], "b");
+    }
+
+    #[test]
+    fn adjacent_user_turns_coalesce_into_one() {
+        // The ambiguous-stop retry shape (ADR-0118): an empty assistant round is
+        // dropped, leaving the original prompt adjacent to the injected nudge.
+        // Anthropic rejects non-alternating roles, so they must merge.
+        let msgs = vec![
+            msg(MessageRole::User, "do it"),
+            msg(MessageRole::Assistant, ""), // empty ambiguous round → dropped
+            msg(MessageRole::User, "[system] nudge"),
+        ];
+        let out = convert_messages(&msgs);
+        assert_eq!(out.len(), 1, "the two user turns must merge; got {out:?}");
+        assert_eq!(out[0]["role"], "user");
+        let blocks = out[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["text"], "do it");
+        assert_eq!(blocks[1]["text"], "[system] nudge");
+    }
+
+    #[test]
+    fn alternating_roles_are_left_untouched() {
+        // A well-formed history (the non-empty ambiguous case) must not merge.
+        let msgs = vec![
+            msg(MessageRole::User, "do it"),
+            msg(MessageRole::Assistant, "partial"),
+            msg(MessageRole::User, "[system] nudge"),
+        ];
+        let out = convert_messages(&msgs);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0]["role"], "user");
+        assert_eq!(out[1]["role"], "assistant");
+        assert_eq!(out[2]["role"], "user");
     }
 
     #[test]

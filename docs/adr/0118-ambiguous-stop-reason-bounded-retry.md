@@ -64,7 +64,37 @@ via `session::turn::is_confident_stop`:
 ambiguous retry still increments `TurnState::iterations` too, so `max_turns`
 remains the hard outer backstop regardless of how the new knob is configured
 (including set to 0, which disables the retry entirely and restores the
-pre-ADR-0118 behavior).
+pre-ADR-0118 behavior — silently committing the reply, with **no** warning
+`Error`; the warning fires only when a non-zero budget is actually exhausted).
+
+The retry does a bare `Context` mutation (commit the partial round, push the
+nudge) that is invisible to both the wire and the event-sourced persistence
+tap. Three properties make that sound:
+
+- **The nudge is persisted.** The retry emits a seq-bearing
+  `OutEvent::AmbiguousRetry { session, seq, nudge }` (modeled on `Compacted`,
+  ADR-0082/0103) *before* mutating context. `Session::replay` folds it by
+  flushing the pending assistant round then pushing the nudge — reconstructing
+  the exact `assistant(partial) / user(nudge) / assistant(recovered)` shape the
+  live model saw. Without it, replay would merge every retry round's
+  `TextDelta`s into one assistant message and drop the nudge, so a resumed
+  session (`Holly::resume`) would continue from a history the model never saw —
+  breaking the "event log is the persistence seam" invariant (ADR-0061). The
+  event's non-delta arrival also delimits the re-streamed partial text, so a
+  head (the TUI transcript, `subagent.rs`'s answer collector) starts a fresh
+  segment instead of concatenating consecutive rounds' text.
+- **An empty ambiguous round commits nothing.** A stream that dies before any
+  text (the motivating Ollama case) would otherwise push an assistant message
+  with `content: []`, which the strict clients (`anthropic.rs`,
+  `gemini/request.rs`) drop entirely — leaving the retry request with two
+  adjacent user turns the Anthropic/Gemini APIs reject with a 400. Core skips
+  the empty commit; replay mirrors this (an empty round logs no `TextDelta`, so
+  its `AmbiguousRetry` fold flushes nothing).
+- **The strict clients coalesce adjacent same-role turns.** Even with the empty
+  commit skipped, the nudge lands adjacent to the original user prompt. A shared
+  `coalesce_same_role` post-pass merges adjacent same-role messages in the
+  Anthropic and Gemini request builders, keeping the request well-formed without
+  the turn loop having to reason about provider-specific turn shape.
 
 Companion fixes shipped in the same change (both feed the classification
 above, not separable without leaving it half-working):

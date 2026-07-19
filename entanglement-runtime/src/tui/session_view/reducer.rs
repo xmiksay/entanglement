@@ -417,6 +417,24 @@ impl SessionView {
                     false
                 }
             }
+            // Ambiguous-stop bounded retry (#ADR-0118): a distinct out-of-band
+            // notice (like `Compacted`/`SkillActive`) reporting the in-place
+            // retry. Advancing `last_seen_seq` past this event also closes the
+            // preceding partial `TextDelta` segment, so the retry's re-streamed
+            // text renders as its own bubble instead of concatenating onto the
+            // truncated one.
+            OutEvent::AmbiguousRetry { seq, .. } => {
+                if seq > self.last_seen_seq {
+                    self.transcript.push(TranscriptEntry::ToolOutput {
+                        tool: Some("retry".to_string()),
+                        output: "model stop was ambiguous — retrying in place".to_string(),
+                    });
+                    self.last_seen_seq = seq;
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 }

@@ -51,6 +51,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | Done{session,seq}
          | Compacted{session,seq,summary,kept,auto}   // compaction summary ready; auto:false (default) → source untouched, head forks into a new session (#324, ADR-0082 → ADR-0101); auto:true → in-place mutation the live engine already applied (#398, ADR-0103)
          | FileChange{session,seq,path,change_kind,hash}   // file-change audit: runtime executor emits on edit/write; hash = sha256(after) (#202, ADR-0060)
+         | AmbiguousRetry{session,seq,nudge}   // ambiguous LLM stop → bounded in-place retry: persisted boundary so replay reconstructs the partial round + nudge, not one merged assistant message (ADR-0118)
 ```
 
 `AnswerQuestion` mirrors `Approve`/`Reject`: the supervisor drops it off the

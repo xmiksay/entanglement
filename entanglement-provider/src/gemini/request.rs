@@ -109,7 +109,10 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
             }
         }
     }
-    out
+    // Gemini, like Anthropic, rejects non-alternating roles; an ambiguous-stop
+    // retry (ADR-0118) can leave the original user prompt adjacent to the
+    // injected nudge once an empty assistant round is dropped. Merge them.
+    crate::anthropic::coalesce_same_role(out, "parts")
 }
 
 /// One assistant `functionCall` part, restoring the opaque `thoughtSignature`
@@ -357,6 +360,24 @@ mod request_tests {
         assert_eq!(contents[0]["role"], "user");
         assert_eq!(fr["name"], "search");
         assert_eq!(fr["response"]["result"], "42 results");
+    }
+
+    #[test]
+    fn adjacent_user_turns_coalesce_into_one() {
+        // The ambiguous-stop retry shape (ADR-0118): an empty assistant round is
+        // dropped, leaving the prompt adjacent to the nudge. Gemini rejects
+        // non-alternating roles, so the two `user` turns must merge.
+        let contents = convert_messages(&[
+            Message::user("do it"),
+            Message::assistant("", vec![]), // empty ambiguous round → dropped
+            Message::user("[system] nudge"),
+        ]);
+        assert_eq!(contents.len(), 1, "the two user turns must merge");
+        assert_eq!(contents[0]["role"], "user");
+        let parts = contents[0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["text"], "do it");
+        assert_eq!(parts[1]["text"], "[system] nudge");
     }
 
     #[test]

@@ -217,10 +217,27 @@ Everything else reaching this point — a bare `None` (the stream closed with no
 `finish_reason` ever observed, e.g. a provider like Ollama dropping the
 connection mid-generation), `Other`, or a contradictory `ToolUse` with zero
 actual tool calls (a tool call dropped for malformed JSON) — is *ambiguous*:
-instead of ending the turn, core pushes a short synthetic user-role nudge into
-`Context` and retries the round **in place**, inside the same `run_round`
-call, with no new park and no round-trip through the runtime tool executor.
-The retry count lives on `TurnState::ambiguous_retries`, capped by
+instead of ending the turn, core commits whatever partial text streamed, pushes
+a short synthetic user-role nudge into `Context`, and retries the round **in
+place**, inside the same `run_round` call, with no new park and no round-trip
+through the runtime tool executor. Two consequences of that bare context
+mutation are made sound explicitly. **(1) The nudge is persisted.** The retry
+emits a seq-bearing `OutEvent::AmbiguousRetry { nudge }` — like `Compacted`,
+part of the event-sourced log — so `Session::replay` folds the exact boundary
+(flush the partial assistant round, then push the nudge) instead of merging
+both rounds' `TextDelta`s into one assistant message and dropping the nudge; a
+resumed session then continues from the history the live model actually saw
+(the load-bearing "event log is the persistence seam" invariant, ADR-0061).
+Its non-delta arrival also delimits the re-streamed text, so a head (the TUI
+transcript, `subagent.rs`'s answer collector) starts a fresh segment rather
+than concatenating consecutive rounds. **(2) An *empty* ambiguous round commits
+nothing** — a stream that died before any text would otherwise push
+`content: []`, which the strict clients (`anthropic.rs`, `gemini/request.rs`)
+drop, leaving the retry request with two adjacent user turns the provider
+rejects with a 400. Core skips that empty commit, and the strict clients also
+coalesce adjacent same-role turns (`coalesce_same_role`), so the nudge landing
+next to the original prompt stays well-formed. The retry count lives on
+`TurnState::ambiguous_retries`, capped by
 `EngineConfig.max_ambiguous_stop_retries` (default 2) and reset to 0 by any
 round that produces a confident outcome — real tool calls or a deliberate
 stop — so only a *persistently* ambiguous model exhausts the budget. A retry

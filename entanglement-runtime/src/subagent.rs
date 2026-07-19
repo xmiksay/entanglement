@@ -388,6 +388,10 @@ async fn collect_child_answer(events: &mut Receiver<OutEvent>, child: &SessionId
         match events.recv().await {
             Ok(ev) if ev.session() != Some(child) => {}
             Ok(OutEvent::TextDelta { text: delta, .. }) => text.push_str(&delta),
+            // An ambiguous-stop retry (ADR-0118) supersedes the truncated round:
+            // drop the partial text so the final answer is the recovered round's
+            // alone, not the discarded round concatenated onto it.
+            Ok(OutEvent::AmbiguousRetry { .. }) => text.clear(),
             Ok(OutEvent::Error { message, .. }) => error = Some(message),
             Ok(OutEvent::Done { .. }) => break,
             Ok(_) => {}

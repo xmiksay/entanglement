@@ -1227,6 +1227,24 @@ pub enum OutEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         allowed_tools: Option<Vec<String>>,
     },
+    /// An ambiguous LLM stop (ADR-0118) triggered a bounded in-place retry: the
+    /// round ended with no tool calls and no confident finish signal, so core
+    /// committed whatever partial text streamed, injected `nudge` as a synthetic
+    /// user-role steering message, and re-queried the model within the same
+    /// turn. Persisted + seq-bearing (like `Compacted`) so `Session::replay`
+    /// reconstructs the exact round boundary — flushing the partial assistant
+    /// message and pushing the nudge — instead of merging every retry round's
+    /// `TextDelta`s into one assistant message and dropping the nudge, which
+    /// would resume a session from a history the live model never saw. Its
+    /// non-delta arrival also delimits the re-streamed partial text so a head
+    /// (the TUI transcript, a sub-agent answer collector) starts a fresh
+    /// segment rather than concatenating consecutive rounds' text. Heads render
+    /// it as a one-line "retrying" notice.
+    AmbiguousRetry {
+        session: SessionId,
+        seq: u64,
+        nudge: String,
+    },
 }
 
 impl OutEvent {
@@ -1261,7 +1279,8 @@ impl OutEvent {
             | OutEvent::Done { session, .. }
             | OutEvent::Compacted { session, .. }
             | OutEvent::FileChange { session, .. }
-            | OutEvent::SkillActive { session, .. } => Some(session),
+            | OutEvent::SkillActive { session, .. }
+            | OutEvent::AmbiguousRetry { session, .. } => Some(session),
             OutEvent::SessionList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. } => None,
@@ -1304,7 +1323,8 @@ impl OutEvent {
             | OutEvent::Done { seq, .. }
             | OutEvent::Compacted { seq, .. }
             | OutEvent::FileChange { seq, .. }
-            | OutEvent::SkillActive { seq, .. } => Some(*seq),
+            | OutEvent::SkillActive { seq, .. }
+            | OutEvent::AmbiguousRetry { seq, .. } => Some(*seq),
         }
     }
 }

@@ -287,7 +287,23 @@ async fn run_round(
             }
         }
 
-        s.ctx.push_assistant(text_buf.clone(), tool_calls.clone());
+        // Classify the stop up front so the commit below can tell an ambiguous
+        // round (retried) from a confident one (ends the turn) or a tool round.
+        let confident = is_confident_stop(stop_reason);
+        let ambiguous = tool_calls.is_empty() && !confident;
+
+        // Don't commit an *empty* assistant message on an ambiguous round: a
+        // stream that died before emitting any text (the motivating Ollama
+        // case) would otherwise push `content: []`, which the strict clients
+        // drop entirely (`anthropic.rs`/`gemini` skip a block-less assistant) —
+        // leaving the retry request with two adjacent user turns the provider
+        // rejects with a 400 (ADR-0118). Replay mirrors this: an empty round
+        // logs no `TextDelta`, so its `AmbiguousRetry` fold flushes nothing.
+        // (The strict clients also coalesce the resulting adjacent user turns —
+        // the original prompt + the nudge — for the same reason.)
+        if !(ambiguous && text_buf.is_empty()) {
+            s.ctx.push_assistant(text_buf.clone(), tool_calls.clone());
+        }
         tracing::debug!(
             text_len = text_buf.len(),
             tool_calls_count = tool_calls.len(),
@@ -317,7 +333,7 @@ async fn run_round(
             return RoundOutcome::Parked;
         }
 
-        if is_confident_stop(stop_reason) {
+        if confident {
             tracing::debug!("no tool calls, confident stop - emitting Done");
             let _ = events.send(OutEvent::Done {
                 session: session.clone(),
@@ -377,6 +393,19 @@ async fn run_round(
             retries = turn.ambiguous_retries,
             "ambiguous stop - nudging and retrying"
         );
+        // Persist the retry as a seq-bearing content event *before* mutating
+        // the context (ADR-0118): the bare `push_user` below is invisible to
+        // both the persistence tap and the wire, so without this event replay
+        // would fold every retry round's `TextDelta`s into one assistant
+        // message and lose the nudge — resuming from a history the live model
+        // never saw — and heads would concatenate the re-streamed partial text.
+        // `Session::replay` folds this by flushing the partial assistant round
+        // then pushing `nudge`, reconstructing the exact live boundary.
+        let _ = events.send(OutEvent::AmbiguousRetry {
+            session: session.clone(),
+            seq: next_seq(&s.seq),
+            nudge: AMBIGUOUS_STOP_NUDGE.to_string(),
+        });
         s.ctx.push_user(AMBIGUOUS_STOP_NUDGE);
     }
 }
