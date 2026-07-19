@@ -812,6 +812,21 @@ async fn dispatch(
     tool: String,
     input: String,
 ) {
+    // A hallucinated tool name can never execute, so reject it *before* the
+    // ladder runs (#437): otherwise an `Ask` grade prompts the user to approve
+    // a call that can only fail, `pre_tool_use` vetoes a call that was never
+    // executable, and an `Always`-scoped approval could record a grant for a
+    // tool that doesn't exist. Uses the same freshly-snapshotted `tools`
+    // `dispatch` already received, so a live `McpAdd`/`McpRemove` (#372) is
+    // honored exactly as execution itself would see it. `update_plan`/
+    // `update_tasks` are runtime state tools with no registry entry (#231,
+    // ADR-0049) — `run_and_reply` handles them separately — so they're exempt
+    // from this registry check.
+    if !tools.contains(&tool) && !crate::plan_tasks::is_state_tool(&tool) {
+        let output = tools.unknown_tool_message(&tool);
+        seam::reply(holly, session, request_id, output).await;
+        return;
+    }
     // Resolve + apply grants first (matching the pre-seam order where `perm` was
     // computed before the hook ran), so a grant upgrade and the veto compose the
     // same way. The tool-specific argument (command/path, #173) lets an
