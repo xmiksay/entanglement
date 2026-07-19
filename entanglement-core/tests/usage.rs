@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
@@ -14,6 +13,9 @@ use entanglement_core::{
 };
 use futures::stream;
 use futures::StreamExt;
+
+mod common;
+use common::collect_until_done;
 
 /// An `Llm` that streams one text chunk then a `Finish` carrying a scripted
 /// stop reason + usage — enough to exercise the engine's fold/emit path without
@@ -54,36 +56,12 @@ fn config(
     }
 }
 
-async fn collect(
-    mut sub: tokio::sync::broadcast::Receiver<OutEvent>,
-    sid: &SessionId,
-) -> Vec<OutEvent> {
-    let mut out = Vec::new();
-    loop {
-        let Ok(recv) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await else {
-            break;
-        };
-        match recv {
-            Ok(ev) if ev.session() == Some(sid) => {
-                let done = matches!(ev, OutEvent::Done { .. });
-                out.push(ev);
-                if done {
-                    break;
-                }
-            }
-            Ok(_) => {}
-            Err(_) => break,
-        }
-    }
-    out
-}
-
 async fn run(cfg: EngineConfig) -> Vec<OutEvent> {
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
-    collect(sub, &sid).await
+    collect_until_done(sub, &sid).await
 }
 
 #[tokio::test]

@@ -17,30 +17,8 @@ use entanglement_core::{
 };
 use futures::StreamExt;
 
-/// Collect events for `sid` until `Done`, with a safety timeout.
-async fn collect(
-    mut sub: tokio::sync::broadcast::Receiver<OutEvent>,
-    sid: &SessionId,
-) -> Vec<OutEvent> {
-    let mut out = Vec::new();
-    loop {
-        let Ok(recv) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await else {
-            break;
-        };
-        match recv {
-            Ok(ev) if ev.session() == Some(sid) => {
-                let done = matches!(ev, OutEvent::Done { .. });
-                out.push(ev);
-                if done {
-                    break;
-                }
-            }
-            Ok(_) => {}
-            Err(_) => break,
-        }
-    }
-    out
-}
+mod common;
+use common::collect_until_done;
 
 /// ScriptedLlm variant that records every request's `messages` slice into a
 /// shared snapshot, so a test can assert what the model was shown across
@@ -184,7 +162,7 @@ async fn stop_preempts_a_stalled_stream() {
         .send(InMsg::prompt(sid.clone(), "second-prompt"))
         .await
         .unwrap();
-    let events = collect(sub2, &sid).await;
+    let events = collect_until_done(sub2, &sid).await;
     assert!(
         events
             .iter()
@@ -217,7 +195,7 @@ async fn stop_while_idle_preserves_context_for_next_prompt() {
         .send(InMsg::prompt(sid.clone(), "first-prompt"))
         .await
         .unwrap();
-    let e1 = collect(sub1, &sid).await;
+    let e1 = collect_until_done(sub1, &sid).await;
     assert!(
         e1.iter().any(|e| matches!(e, OutEvent::Done { .. })),
         "turn 1 should complete"
@@ -239,7 +217,7 @@ async fn stop_while_idle_preserves_context_for_next_prompt() {
         .send(InMsg::prompt(sid.clone(), "second-prompt"))
         .await
         .unwrap();
-    let e2 = collect(sub2, &sid).await;
+    let e2 = collect_until_done(sub2, &sid).await;
     assert!(
         e2.iter().any(|e| matches!(e, OutEvent::Done { .. })),
         "turn 2 should complete after Stop"
@@ -332,7 +310,7 @@ async fn stop_during_tool_exec_keeps_session_alive() {
         .send(InMsg::prompt(sid.clone(), "second-prompt"))
         .await
         .unwrap();
-    let events = collect(sub3, &sid).await;
+    let events = collect_until_done(sub3, &sid).await;
     assert!(
         events.iter().any(|e| matches!(e, OutEvent::Done { .. })),
         "session should still respond after Stop cancelled the approval"
