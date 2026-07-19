@@ -10,7 +10,9 @@ use std::collections::VecDeque;
 
 use tokio::sync::{broadcast, mpsc};
 
-use super::emit::{emit_tool_call, emit_tool_exec, emit_turn_error, emit_usage, next_seq};
+use super::emit::{
+    emit_tool_call, emit_tool_exec, emit_turn_done, emit_turn_error, emit_usage, next_seq,
+};
 use super::stream::{stream_round, StreamedRound};
 use super::summarize::{summarize, SummarizeOutcome};
 use super::turn_state::TurnState;
@@ -327,14 +329,7 @@ async fn run_round(
 
         if confident {
             tracing::debug!("no tool calls, confident stop - emitting Done");
-            let _ = events.send(OutEvent::Done {
-                session: session.clone(),
-                seq: next_seq(&s.seq),
-            });
-            let _ = events.send(OutEvent::Status {
-                session: session.clone(),
-                state: AgentState::Done,
-            });
+            emit_turn_done(session, &s.seq, events);
             return RoundOutcome::TurnEnded;
         }
 
@@ -369,14 +364,7 @@ async fn run_round(
                     ),
                 });
             }
-            let _ = events.send(OutEvent::Done {
-                session: session.clone(),
-                seq: next_seq(&s.seq),
-            });
-            let _ = events.send(OutEvent::Status {
-                session: session.clone(),
-                state: AgentState::Done,
-            });
+            emit_turn_done(session, &s.seq, events);
             return RoundOutcome::TurnEnded;
         }
         turn.ambiguous_retries += 1;

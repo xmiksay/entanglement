@@ -74,6 +74,26 @@ pub(crate) fn emit_turn_error(
     });
 }
 
+/// Surface a completed turn: a `Done` (so one-shot heads exit), then the
+/// `Done` lifecycle state. The sibling of [`emit_turn_error`] — every
+/// termination path (confident stop, exhausted ambiguous-retry budget,
+/// manual `/compact`) emits this exact pair, so a future change to how a turn
+/// signals completion can't silently diverge between them (#434).
+pub(crate) fn emit_turn_done(
+    session: &SessionId,
+    seq: &AtomicU64,
+    events: &broadcast::Sender<OutEvent>,
+) {
+    let _ = events.send(OutEvent::Done {
+        session: session.clone(),
+        seq: next_seq(seq),
+    });
+    let _ = events.send(OutEvent::Status {
+        session: session.clone(),
+        state: AgentState::Done,
+    });
+}
+
 pub(crate) fn emit_tool_call(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
