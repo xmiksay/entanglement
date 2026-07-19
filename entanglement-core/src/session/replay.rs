@@ -314,6 +314,7 @@ impl Session {
             session.turn = Some(TurnState {
                 pending,
                 iterations: 0,
+                ambiguous_retries: 0,
             });
         }
 

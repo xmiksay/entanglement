@@ -24,6 +24,13 @@ pub struct TurnState {
     /// per prompt by constructing a fresh `TurnState`; a prompt folded into a
     /// live turn (ADR-0058) deliberately does not reset it.
     pub iterations: usize,
+    /// Consecutive ambiguous-stop retries in the current stretch (ADR-0118).
+    /// Reset to 0 by any round that produces a confident outcome (real tool
+    /// calls, or a confident stop) — only a persistently confused model
+    /// exhausts the budget. Bounded separately from `iterations`, which
+    /// remains the hard backstop (a retry round still counts against it).
+    #[serde(default)]
+    pub ambiguous_retries: usize,
 }
 
 impl TurnState {

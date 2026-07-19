@@ -427,7 +427,7 @@ impl Llm for DummyLlm {
         let events = vec![
             Ok(LlmEvent::Text(self.reply.clone())),
             Ok(LlmEvent::Finish {
-                stop_reason: None,
+                stop_reason: Some(StopReason::EndTurn),
                 usage: Usage::default(),
             }),
         ];
@@ -466,7 +466,7 @@ impl Llm for EchoLlm {
         let events = vec![
             Ok(LlmEvent::Text(reply)),
             Ok(LlmEvent::Finish {
-                stop_reason: None,
+                stop_reason: Some(StopReason::EndTurn),
                 usage: Usage::default(),
             }),
         ];
@@ -515,6 +515,11 @@ fn sha8(s: &str) -> String {
 /// `Finish`). Convenience for scripted/test backends.
 pub fn stream_from_response(resp: LlmResponse) -> LlmStream {
     let mut events: Vec<anyhow::Result<LlmEvent>> = Vec::with_capacity(resp.tool_calls.len() + 2);
+    let stop_reason = if resp.tool_calls.is_empty() {
+        StopReason::EndTurn
+    } else {
+        StopReason::ToolUse
+    };
     if !resp.text.is_empty() {
         events.push(Ok(LlmEvent::Text(resp.text)));
     }
@@ -522,7 +527,7 @@ pub fn stream_from_response(resp: LlmResponse) -> LlmStream {
         events.push(Ok(LlmEvent::ToolCall(call)));
     }
     events.push(Ok(LlmEvent::Finish {
-        stop_reason: None,
+        stop_reason: Some(stop_reason),
         usage: Usage::default(),
     }));
     stream::iter(events).boxed()
