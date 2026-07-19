@@ -210,7 +210,11 @@ known robustness gap (see #177).
 
 **Ambiguous-stop retry — `max_ambiguous_stop_retries`** (`session/turn.rs`,
 [ADR-0118](../adr/0118-ambiguous-stop-reason-bounded-retry.md)). A round that
-ends with empty `tool_calls` is classified by `is_confident_stop(stop_reason)`:
+ends with empty `tool_calls` is classified by `StopReason::is_confident_stop`
+(#433 — an exhaustive method on `StopReason` itself, in
+`entanglement-provider/src/llm.rs`, so a new variant is a compile error until
+it's explicitly classified, rather than a non-exhaustive `matches!` in
+`turn.rs` silently defaulting it to ambiguous):
 `EndTurn`/`MaxTokens`/`StopSequence` are deliberate and end the turn as above
 (`MaxTokens` also fires its truncation-warning `Error`, ADR-0055, unchanged).
 Everything else reaching this point — a bare `None` (the stream closed with no

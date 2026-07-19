@@ -139,6 +139,21 @@ impl StopReason {
             _ => StopReason::Other,
         }
     }
+
+    /// A confident, deliberate stop — the only kind that ends a turn with no
+    /// tool calls (ADR-0118). `session::turn::run_round` treats every other
+    /// reason (`ToolUse` with zero actual tool calls, or `Other`) as ambiguous
+    /// and retries instead of ending the turn; a caller with no `StopReason` at
+    /// all (a stream that closed without reporting one) treats that as
+    /// ambiguous too. Written as an exhaustive `match` (no `_` wildcard) so
+    /// adding a variant here is a compile error until it is explicitly
+    /// classified, instead of silently defaulting to ambiguous.
+    pub fn is_confident_stop(self) -> bool {
+        match self {
+            StopReason::EndTurn | StopReason::MaxTokens | StopReason::StopSequence => true,
+            StopReason::ToolUse | StopReason::Other => false,
+        }
+    }
 }
 
 /// Normalized token usage for one model round-trip (#192). Every field is
@@ -611,5 +626,17 @@ mod tests {
         let out = echo_reply(&req("SECRET-PROMPT", &[], &[]), true);
         assert!(out.contains("system_len=13"), "{out}");
         assert!(out.ends_with("\nsystem:\nSECRET-PROMPT"), "{out}");
+    }
+
+    #[test]
+    fn is_confident_stop_matches_adr_0118_classification() {
+        // EndTurn/MaxTokens/StopSequence are deliberate, confident stops.
+        assert!(StopReason::EndTurn.is_confident_stop());
+        assert!(StopReason::MaxTokens.is_confident_stop());
+        assert!(StopReason::StopSequence.is_confident_stop());
+        // ToolUse (a contradictory reason when no tool calls actually landed)
+        // and Other are ambiguous.
+        assert!(!StopReason::ToolUse.is_confident_stop());
+        assert!(!StopReason::Other.is_confident_stop());
     }
 }
