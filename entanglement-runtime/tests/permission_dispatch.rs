@@ -580,6 +580,71 @@ fn spawn_two_ask_bash_calls(command: &str) -> Holly {
     holly
 }
 
+/// A hallucinated tool name must never reach the `Ask` approval ladder (#437):
+/// the registry miss is now discovered *before* permission resolution, so an
+/// unknown-tool call gets an immediate `ToolOutput` — no `ToolRequest`, no wait
+/// for a human — even under a profile that would otherwise ask for `bash`.
+#[tokio::test]
+async fn unknown_tool_is_rejected_before_the_permission_ladder() {
+    let call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "t1".into(),
+            name: "bsah".into(),
+            input: "{}".into(),
+            provider_meta: None,
+        }],
+    };
+    let ok = LlmResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![call, ok]);
+    let profiles = ask_bash_registry();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        PermissionProfile::new(Permission::Allow),
+    );
+
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "askbash".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "an unknown tool must never reach the Ask approval prompt; got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. }
+            if output.contains("unknown tool") && output.contains("did you mean `bash`"))),
+        "expected an immediate unknown-tool reply with a closest-match hint; got {events:?}"
+    );
+}
+
 /// An `Approve { scope: Session }` (#174) records an in-memory grant, so the next
 /// *identical* call in the same session runs without a second `ToolRequest`.
 #[tokio::test]

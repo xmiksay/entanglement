@@ -164,9 +164,56 @@ impl ToolRegistry {
                 Ok(content) => content,
                 Err(e) => text_parts(format!("tool `{}` failed: {e}", call.name)),
             },
-            None => text_parts(format!("unknown tool: `{}`", call.name)),
+            None => text_parts(self.unknown_tool_message(&call.name)),
         }
     }
+
+    /// Format the "unknown tool" error for a name that isn't registered (#437),
+    /// enriched with a closest-match hint (smallest edit distance over the
+    /// registered names) and — when the roster is short — the full name list, so
+    /// a weak model that hallucinated a name can self-correct in one round
+    /// instead of guessing again.
+    pub fn unknown_tool_message(&self, name: &str) -> String {
+        let mut names: Vec<&str> = self.tools.keys().map(AsRef::as_ref).collect();
+        names.sort_unstable();
+        let mut msg = format!("unknown tool: `{name}`");
+        if let Some(hint) = closest_name(name, &names) {
+            msg.push_str(&format!(" — did you mean `{hint}`?"));
+        }
+        if !names.is_empty() && names.len() <= 12 {
+            msg.push_str(&format!(" (registered tools: {})", names.join(", ")));
+        }
+        msg
+    }
+}
+
+/// Levenshtein edit distance between two strings.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0; b.len() + 1];
+    for i in 1..=a.len() {
+        curr[0] = i;
+        for (j, &bc) in b.iter().enumerate() {
+            let cost = usize::from(a[i - 1] != bc);
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
+/// The closest registered name to `name` by edit distance, capped so a wildly
+/// different name (or an empty/tiny registry) doesn't surface a useless hint.
+fn closest_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    let max_distance = (name.chars().count() / 2).max(2);
+    candidates
+        .iter()
+        .map(|&c| (c, levenshtein(name, c)))
+        .filter(|(_, d)| *d <= max_distance)
+        .min_by_key(|(_, d)| *d)
+        .map(|(c, _)| c)
 }
 
 #[cfg(test)]
@@ -225,6 +272,24 @@ mod tests {
             .await;
         assert_eq!(out.len(), 1);
         assert!(out[0].as_text().unwrap().contains("unknown tool"));
+    }
+
+    #[test]
+    fn unknown_tool_message_hints_the_closest_registered_name() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Echo);
+        let msg = reg.unknown_tool_message("ecko");
+        assert!(msg.contains("unknown tool: `ecko`"), "{msg}");
+        assert!(msg.contains("did you mean `echo`?"), "{msg}");
+        assert!(msg.contains("registered tools: echo"), "{msg}");
+    }
+
+    #[test]
+    fn unknown_tool_message_omits_hint_when_nothing_is_close() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Echo);
+        let msg = reg.unknown_tool_message("completely_different_name");
+        assert!(!msg.contains("did you mean"), "{msg}");
     }
 
     /// A session-aware tool overriding `run_for_session` (#360) sees the caller's
