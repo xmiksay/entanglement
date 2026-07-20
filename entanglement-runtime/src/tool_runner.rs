@@ -971,10 +971,12 @@ async fn await_decision(
                 // The prompt was forced by an out-of-root access (ADR-0109):
                 // record the approval in the escape-root store so the host tool's
                 // containment check lets *this tool* reach *this path*. Every scope
-                // is recorded (a `Once` becomes the single-use token the tool
-                // consumes); `Session`/`Always` also relax future containment and
-                // let the executor skip re-asking. Per-tool by construction.
-                store.record(&tool, abs, scope);
+                // is recorded (a `Once` becomes the single-use token bound to this
+                // exact `request_id`, #449, so a concurrent call to the same path
+                // can't consume it); `Session`/`Always` also relax future
+                // containment and let the executor skip re-asking. Per-tool by
+                // construction.
+                store.record(&tool, abs, scope, &request_id);
             } else if scope != ApprovalScope::Once {
                 // Ordinary (in-root) approval: record the wider scopes (#174) so an
                 // identical later call skips this prompt — through the pluggable

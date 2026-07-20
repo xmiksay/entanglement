@@ -182,7 +182,10 @@ below realize one model:
   permission grants above — `runtime::extra_roots::ExtraRootStore`, managed file
   `${config_dir}/entanglement/extra-roots.yml` (override
   `ENTANGLEMENT_EXTRA_ROOTS_FILE`) — keyed by `(tool, resolved-absolute-path)`,
-  **per tool** (a `read` grant never unlocks `write`), at `Once` (single-use) /
+  **per tool** (a `read` grant never unlocks `write`), at `Once` (single-use,
+  additionally bound to the approving call's `request_id` so a concurrent
+  in-flight call can't spend it, #449,
+  [ADR-0120](../adr/0120-once-scoped-escape-root-grant-bound-to-request-id.md)) /
   `Session` (process-lifetime) / `Always` (persisted) scope. The host tools
   consult it via `resolve_under_root_or_grant` to relax containment for the
   approved path (matched against the symlink-canonicalized target). Reuses the

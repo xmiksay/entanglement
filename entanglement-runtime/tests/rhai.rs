@@ -480,7 +480,7 @@ async fn pre_existing_durable_grant_is_honored_without_a_new_prompt() {
         one_profile("build", PermissionProfile::new(Permission::Allow)),
     );
     let target = outside.path.canonicalize().unwrap().join("f.txt");
-    store.record("write", &target, ApprovalScope::Session);
+    store.record("write", &target, ApprovalScope::Session, "pre-existing");
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();

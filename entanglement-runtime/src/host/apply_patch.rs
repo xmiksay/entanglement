@@ -12,6 +12,7 @@ use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
+use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -73,6 +74,25 @@ impl Tool for ApplyPatchTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
+        self.apply("", input).await
+    }
+
+    async fn run_for_session(
+        &self,
+        _session: &SessionId,
+        request_id: &str,
+        input: &str,
+    ) -> Result<Vec<ContentPart>> {
+        Ok(crate::tools::text_parts(
+            self.apply(request_id, input).await?,
+        ))
+    }
+}
+
+impl ApplyPatchTool {
+    /// `request_id` (#449) is forwarded to the escape-root grant check so a
+    /// `Once` approval is only consumed by the call it was approved for.
+    async fn apply(&self, request_id: &str, input: &str) -> Result<String> {
         let parsed: ApplyPatchInput = serde_json::from_str(input).context(
             "invalid input to apply_patch: expected {\"path\": string, \"patch\": string}",
         )?;
@@ -80,6 +100,7 @@ impl Tool for ApplyPatchTool {
             &self.root,
             self.extra_roots.as_deref(),
             "apply_patch",
+            request_id,
             &parsed.path,
         )?;
 

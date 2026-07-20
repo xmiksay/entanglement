@@ -8,6 +8,7 @@ use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
+use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -93,12 +94,32 @@ impl Tool for EditTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
+        self.edit("", input).await
+    }
+
+    async fn run_for_session(
+        &self,
+        _session: &SessionId,
+        request_id: &str,
+        input: &str,
+    ) -> Result<Vec<ContentPart>> {
+        Ok(crate::tools::text_parts(
+            self.edit(request_id, input).await?,
+        ))
+    }
+}
+
+impl EditTool {
+    /// `request_id` (#449) is forwarded to the escape-root grant check so a
+    /// `Once` approval is only consumed by the call it was approved for.
+    async fn edit(&self, request_id: &str, input: &str) -> Result<String> {
         let parsed: EditInput = serde_json::from_str(input)
             .context("invalid input to edit: expected {\"path\": string, \"oldString\": string, \"newString\": string, ...}")?;
         let target_abs = resolve_under_root_or_grant(
             &self.root,
             self.extra_roots.as_deref(),
             "edit",
+            request_id,
             &parsed.path,
         )?;
 

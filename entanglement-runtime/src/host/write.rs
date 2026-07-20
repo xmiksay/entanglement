@@ -10,6 +10,7 @@ use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
+use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -89,12 +90,32 @@ impl Tool for WriteTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
+        self.write("", input).await
+    }
+
+    async fn run_for_session(
+        &self,
+        _session: &SessionId,
+        request_id: &str,
+        input: &str,
+    ) -> Result<Vec<ContentPart>> {
+        Ok(crate::tools::text_parts(
+            self.write(request_id, input).await?,
+        ))
+    }
+}
+
+impl WriteTool {
+    /// `request_id` (#449) is forwarded to the escape-root grant check so a
+    /// `Once` approval is only consumed by the call it was approved for.
+    async fn write(&self, request_id: &str, input: &str) -> Result<String> {
         let parsed: WriteInput = serde_json::from_str(input)
             .context("invalid input to write: expected {\"path\": string, \"content\": string}")?;
         let target_abs = resolve_under_root_or_grant(
             &self.root,
             self.extra_roots.as_deref(),
             "write",
+            request_id,
             &parsed.path,
         )?;
 

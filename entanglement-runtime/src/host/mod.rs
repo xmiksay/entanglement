@@ -91,11 +91,16 @@ pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
 /// Like [`resolve_under_root`], but a path that escapes root is permitted when
 /// the user has granted `tool` access to it (ADR-0109). `extra == None` (the
 /// standalone/test constructors) reduces to the strict containment of
-/// [`resolve_under_root`]. A `Once` grant is **consumed** by this call.
+/// [`resolve_under_root`]. A `Once` grant is **consumed** by this call — and
+/// only if `request_id` matches the call it was approved for (#449), so a
+/// different concurrently-running call to the same `(tool, path)` can't spend
+/// someone else's single-use token; a durable (`Session`/`Always`) grant falls
+/// back to path-only matching and ignores `request_id`.
 pub fn resolve_under_root_or_grant(
     root: &Path,
     extra: Option<&crate::extra_roots::ExtraRootStore>,
     tool: &str,
+    request_id: &str,
     rel: &str,
 ) -> Result<PathBuf> {
     let (resolved, contained) = resolve_and_contained(root, rel)?;
@@ -105,7 +110,7 @@ pub fn resolve_under_root_or_grant(
     // Escapes root — allow only if the user approved this exact `(tool, path)`.
     // The grant is checked against the *resolved* (symlink-canonicalized) target,
     // so a symlink under root can't smuggle access to an unapproved path.
-    if extra.is_some_and(|e| e.take_allowance(tool, &resolved)) {
+    if extra.is_some_and(|e| e.take_allowance(tool, &resolved, request_id)) {
         return Ok(resolved);
     }
     Err(anyhow::anyhow!("path escapes working directory: {rel}"))
@@ -191,22 +196,25 @@ fn resolve_and_contained(root: &Path, rel: &str) -> Result<(PathBuf, bool)> {
 /// [`crate::host::call::CallTool`] — the containment + directory check is
 /// identical between the two (#386).
 pub fn resolve_workdir(root: &Path, workdir: Option<&str>) -> Result<PathBuf> {
-    resolve_workdir_or_grant(root, None, "", workdir)
+    resolve_workdir_or_grant(root, None, "", "", workdir)
 }
 
 /// [`resolve_workdir`] with an escape-root grant escape hatch (ADR-0109): a
 /// `workdir` outside root is allowed when the user granted `tool` access to it.
-/// `extra == None` reduces to the strict [`resolve_workdir`].
+/// `extra == None` reduces to the strict [`resolve_workdir`]. `request_id`
+/// (#449) is forwarded to [`resolve_under_root_or_grant`] so a `Once` grant is
+/// only consumed by the call it was approved for.
 pub fn resolve_workdir_or_grant(
     root: &Path,
     extra: Option<&crate::extra_roots::ExtraRootStore>,
     tool: &str,
+    request_id: &str,
     workdir: Option<&str>,
 ) -> Result<PathBuf> {
     match workdir {
         None => Ok(root.to_path_buf()),
         Some(w) => {
-            let p = resolve_under_root_or_grant(root, extra, tool, w)?;
+            let p = resolve_under_root_or_grant(root, extra, tool, request_id, w)?;
             if !p.is_dir() {
                 anyhow::bail!("workdir is not a directory: {w}");
             }
@@ -774,7 +782,8 @@ mod tests {
         let store = Arc::new(ExtraRootStore::ephemeral());
         // No grant → still refused, even with a store present.
         let err =
-            resolve_under_root_or_grant(&dir.path, Some(&store), "read", &target_str).unwrap_err();
+            resolve_under_root_or_grant(&dir.path, Some(&store), "read", "req-1", &target_str)
+                .unwrap_err();
         assert!(
             format!("{err}").contains("escapes working directory"),
             "{err}"
@@ -783,11 +792,65 @@ mod tests {
         // Grant `read` on this path (session scope) → allowed for `read`,
         // still refused for `write` (per-tool isolation).
         let canon = escaping_path(&dir.path, &target_str).expect("escapes root");
-        store.record("read", &canon, entanglement_core::ApprovalScope::Session);
-        let ok = resolve_under_root_or_grant(&dir.path, Some(&store), "read", &target_str).unwrap();
+        store.record(
+            "read",
+            &canon,
+            entanglement_core::ApprovalScope::Session,
+            "req-1",
+        );
+        let ok = resolve_under_root_or_grant(&dir.path, Some(&store), "read", "req-1", &target_str)
+            .unwrap();
         assert_eq!(ok, canon);
         let err =
-            resolve_under_root_or_grant(&dir.path, Some(&store), "write", &target_str).unwrap_err();
+            resolve_under_root_or_grant(&dir.path, Some(&store), "write", "req-1", &target_str)
+                .unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+    }
+
+    /// #449: a `Once` grant approved for one request id can't be consumed by a
+    /// different concurrently-running call to the same `(tool, path)` — the
+    /// "loser" still sees the strict-containment refusal, and only the call the
+    /// approval was actually for can redeem it.
+    #[test]
+    fn escape_root_once_grant_is_bound_to_its_request_id() {
+        use crate::extra_roots::ExtraRootStore;
+        use std::sync::Arc;
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("f.txt"), "x\n").unwrap();
+        let target = outside.join("f.txt");
+        let target_str = target.to_string_lossy().into_owned();
+
+        let store = Arc::new(ExtraRootStore::ephemeral());
+        let canon = escaping_path(&dir.path, &target_str).expect("escapes root");
+        // Approved for request "req-A" only.
+        store.record(
+            "read",
+            &canon,
+            entanglement_core::ApprovalScope::Once,
+            "req-A",
+        );
+
+        // A concurrent, unrelated call ("req-B") to the same (tool, path) must
+        // not be able to spend req-A's single-use token.
+        let err =
+            resolve_under_root_or_grant(&dir.path, Some(&store), "read", "req-B", &target_str)
+                .unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+
+        // The approved call can still redeem its own token, exactly once.
+        let ok = resolve_under_root_or_grant(&dir.path, Some(&store), "read", "req-A", &target_str)
+            .unwrap();
+        assert_eq!(ok, canon);
+        let err =
+            resolve_under_root_or_grant(&dir.path, Some(&store), "read", "req-A", &target_str)
+                .unwrap_err();
         assert!(
             format!("{err}").contains("escapes working directory"),
             "{err}"
@@ -802,7 +865,8 @@ mod tests {
         let dir = TempDir::new();
         let store = Arc::new(ExtraRootStore::ephemeral());
         let resolved =
-            resolve_under_root_or_grant(&dir.path, Some(&store), "read", "a/b.txt").unwrap();
+            resolve_under_root_or_grant(&dir.path, Some(&store), "read", "req-1", "a/b.txt")
+                .unwrap();
         assert!(resolved.ends_with("a/b.txt"));
         assert!(resolved.starts_with(dir.path.canonicalize().unwrap()));
     }
