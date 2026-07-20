@@ -900,6 +900,11 @@ mod tests {
         let p = perm("default: deny\nwrite(src/*): allow");
         assert_eq!(p.resolve("edit", Some("src/main.rs")), Permission::Allow);
         assert_eq!(p.resolve("write", Some("src/main.rs")), Permission::Allow);
+        // apply_patch joins the `write` capability's fan-out (#455).
+        assert_eq!(
+            p.resolve("apply_patch", Some("src/main.rs")),
+            Permission::Allow
+        );
         // Outside the scoped path, falls through to `default`.
         assert_eq!(p.resolve("edit", Some("docs/x.md")), Permission::Deny);
         // grep/glob/call are not members of `write` — the arg-scoped rule

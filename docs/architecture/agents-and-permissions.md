@@ -69,7 +69,8 @@ below realize one model:
   A rule key is a bare tool name, `*`, or an **argument-scoped** `tool(pattern)`
   (✅ #173, [ADR-0051](../adr/0051-argument-scoped-permission-rules.md)): the
   `*`/`?` glob `pattern` matches a tool-specific argument — the
-  command for `bash`/`call`, the target path for `edit`/`write`/`read`, the
+  command for `bash`/`call`, the target path for `edit`/`write`/`read`/`apply_patch`
+  (#455), the
   `pattern` (itself a path glob) for `glob`, and the optional file filter for
   `grep` (a path, distinct from `grep`'s regex `pattern`; absent → `None`, #417
   — a prerequisite for #416 phase B's arg-scoped read fan-out) — so
@@ -101,7 +102,7 @@ below realize one model:
   ceiling below), into the literal per-tool rules `PermissionProfile::resolve`
   actually matches — core stays capability-unaware (ADR-0006). The membership
   table (`tool_names::CAPABILITIES`) is `read`⇒`read`/`grep`/`glob`,
-  `write`⇒`edit`/`write`, `call`⇒`bash`; the literal `call` tool and `rhai`
+  `write`⇒`edit`/`write`/`apply_patch` (#455), `call`⇒`bash`; the literal `call` tool and `rhai`
   are `tool_names::MULTI_GROUP` — general-purpose tools that can themselves
   read, write, or execute — so their grade isn't taken from any one
   capability's fan-out. Instead a pre-scan takes the least-privileged (`min`)
@@ -173,7 +174,7 @@ below realize one model:
   the safe direction. The TUI modal offers `y` once / `s` session / `a` always /
   `n` reject / `e` edit-reason / `Esc` interrupt.
 - **Escape-root access via approval (✅ #escape-root, [ADR-0109](../adr/0109-escape-root-access-via-approval.md)):**
-  root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`
+  root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`/`apply_patch`
   path or a `bash`/`call` `workdir` that resolves **outside** root is detected in
   the executor (`permission::escape_root_target` + `host::escaping_path`) and
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor

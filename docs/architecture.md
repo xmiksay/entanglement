@@ -22,7 +22,7 @@ throughout the docs and ADRs map as follows:
 | [Per-session engine](architecture/engine.md) | §5 | turn loop, tool round-trip, steering, cancellation |
 | [LLM I/O (provider)](architecture/provider.md) | §5b | streaming client, catalog, pool/retry/rate-limit |
 | [Heads & persistence](architecture/heads-and-persistence.md) | §6, §6b | stdio/TUI/serve heads, event-sourced sessions |
-| [Hygiene gates & host tools](architecture/gates-and-host-tools.md) | §7–8 | dependency gates, the quintet + exec tools |
+| [Hygiene gates & host tools](architecture/gates-and-host-tools.md) | §7–8 | dependency gates, the sextet + exec tools |
 
 Trust & scope decisions cut across modules: the local trust boundary
 ([ADR-0047](adr/0047-local-trust-boundary.md)) and the local-only `serve` head

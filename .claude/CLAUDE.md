@@ -685,7 +685,7 @@ re-document them here):
 | turn loop, tool round-trip, steering, cancellation | [engine](../docs/architecture/engine.md) |
 | streaming client, catalog, pool/retry/rate-limit | [provider](../docs/architecture/provider.md) |
 | stdio/TUI/`serve` heads, event-sourced persistence | [heads & persistence](../docs/architecture/heads-and-persistence.md) |
-| dependency gates, the quintet + exec tools (`bash`/`call`/`bash_output`/`rhai`), lifecycle hooks, MCP client (external tool servers) | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
+| dependency gates, the sextet (incl. `apply_patch`) + exec tools (`bash`/`call`/`bash_output`/`rhai`), lifecycle hooks, MCP client (external tool servers) | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
 
 Debugging: `skutter inspect prompt|agents|skills|config` re-runs the load-time
 discovery with **no engine** and prints the resolved prompt / registries / user
@@ -801,7 +801,9 @@ with parse-time fan-out incl. MCP tools, `rhai` exec bindings, workdir-scoped
 rules — [ADR-0114](../docs/adr/0114-capability-level-permission-keys.md)–[ADR-0117](../docs/adr/0117-mcp-tool-capability-fan-out.md)),
 per-endpoint concurrency cap + adaptive pacing + bounded 429 backpressure
 (#413/#414, [ADR-0111](../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)),
-and session-lineage robustness fixes ([ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)/[ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)).
+session-lineage robustness fixes ([ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)/[ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)),
+and the `apply_patch` host tool (#455: unified-diff apply beside `edit`/`write`,
+the first producer of the reserved `FileChangeKind::ApplyDiff`).
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
@@ -831,10 +833,15 @@ Anthropic client; `ENTANGLEMENT_PROVIDER` or key auto-detect, else `EchoLlm`.
 Heads: stdio `run`/`pipe`, `tui`, the `sessions`/`inspect` subcommands, and the
 local WebSocket `serve` head (`skutter serve --port <N>`, loopback-bound axum
 HTTP+WS, ✅ #153). Tools:
-the root-contained quintet (`read` on an image file — `png`/`jpg`/`jpeg`/`gif`/
+the root-contained sextet (`read` on an image file — `png`/`jpg`/`jpeg`/`gif`/
 `webp` — emits a base64 **image content block** through a now-multimodal
 `ToolResult`/`ToolOutput` path, #221/[ADR-0065](../docs/adr/0065-read-emits-image-content-blocks.md),
-built on the `Message`/`Prompt` content-block migration #197/[ADR-0064](../docs/adr/0064-message-content-blocks.md)),
+built on the `Message`/`Prompt` content-block migration #197/[ADR-0064](../docs/adr/0064-message-content-blocks.md);
+`apply_patch` joins `edit`/`write` as a multi-hunk unified-diff apply, the
+first producer of the previously-reserved `FileChangeKind::ApplyDiff`, #455 —
+a small hand-rolled parser/applier in `host::unified_diff`, not the `diffy`
+crate, since `diffy` is `tui`-feature-gated and forbidden from the lean
+`--no-default-features` build `apply_patch` lives in),
 the always-registered `call` (argv exec, no shell — registered independent of
 `ENTANGLEMENT_ENABLE_BASH` since #386/[ADR-0094](../docs/adr/0093-call-registration-independent-of-bash-opt-in.md);
 gains a `workdir` param, mirroring `bash`'s) and the opt-in exec pair
