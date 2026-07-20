@@ -451,6 +451,23 @@ pub fn spawn_tool_executor_with_policy(
                 Ok(OutEvent::Done { session, .. }) => {
                     clear_active_skill(&holly, &active_skill, &session);
                 }
+                // A `Stop` that lands while a batch is parked unwinds with no
+                // `ToolResult`/`ToolOutput` for its still-running calls (#448):
+                // core clears the parked turn state and emits this `Idle`
+                // without ever resolving them, so the #274 dedupe set above
+                // would otherwise leak their request ids for the rest of the
+                // session's life. Core only ever sends `Idle` on session start
+                // (before any `ToolExec`, so the set is already empty) or here
+                // on a `Stop` — never mid-turn — so dropping the session's
+                // whole set is exactly "no call is in flight any more", not an
+                // approximation.
+                Ok(OutEvent::Status {
+                    session,
+                    state: AgentState::Idle,
+                    ..
+                }) => {
+                    in_flight.remove(&session);
+                }
                 // A resolved call (#274): core folded its result and emitted this
                 // `ToolOutput`, so the id is no longer in flight — drop it from the
                 // dedupe set. This frees the id for a later round to reuse (core
