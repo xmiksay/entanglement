@@ -338,12 +338,12 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
 
 /// The argument string an argument-scoped permission rule (#173) matches
 /// against: the shell command for `bash`, the `command`+`args` line for `call`,
-/// the target path for `edit`/`write`/`read`, the search pattern (itself a path
-/// glob) for `glob`, and the optional file filter for `grep` (#417 — a path,
-/// distinct from `grep`'s `pattern` which is a regex, not a path). `None` for
-/// any other tool, a `grep` call with no `path` filter, or on malformed input —
-/// an argument-scoped rule then never matches, so resolution falls through to
-/// the tool's name-only rules.
+/// the target path for `edit`/`write`/`read`/`apply_patch` (#455), the search
+/// pattern (itself a path glob) for `glob`, and the optional file filter for
+/// `grep` (#417 — a path, distinct from `grep`'s `pattern` which is a regex,
+/// not a path). `None` for any other tool, a `grep` call with no `path`
+/// filter, or on malformed input — an argument-scoped rule then never
+/// matches, so resolution falls through to the tool's name-only rules.
 pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(input).ok()?;
     match tool {
@@ -359,7 +359,7 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
             }
             Some(line)
         }
-        "edit" | "write" | "read" => value.get("path")?.as_str().map(String::from),
+        "edit" | "write" | "read" | "apply_patch" => value.get("path")?.as_str().map(String::from),
         "glob" => value.get("pattern")?.as_str().map(String::from),
         "grep" => value.get("path").and_then(|p| p.as_str()).map(String::from),
         _ => None,
@@ -385,13 +385,14 @@ pub fn permission_workdir(tool: &str, input: &str) -> Option<String> {
 
 /// The **filesystem path** a call would touch, for the escape-root gate
 /// (ADR-0109) — distinct from [`permission_arg`] (which yields the *command* for
-/// `bash`/`call`). It's the `path` for `read`/`edit`/`write` and the `workdir`
-/// for `bash`/`call` (absent → the tool defaults to root, never an escape),
-/// the same value [`permission_workdir`] extracts for permission scoping.
-/// `None` for any other tool or on malformed input, so those never trip the gate.
+/// `bash`/`call`). It's the `path` for `read`/`edit`/`write`/`apply_patch` and
+/// the `workdir` for `bash`/`call` (absent → the tool defaults to root, never
+/// an escape), the same value [`permission_workdir`] extracts for permission
+/// scoping. `None` for any other tool or on malformed input, so those never
+/// trip the gate.
 pub fn escape_root_target(tool: &str, input: &str) -> Option<String> {
     match tool {
-        "read" | "edit" | "write" => {
+        "read" | "edit" | "write" | "apply_patch" => {
             let value: serde_json::Value = serde_json::from_str(input).ok()?;
             value.get("path")?.as_str().map(String::from)
         }
@@ -757,7 +758,7 @@ mod tests {
             permission_arg("call", r#"{"command":"git","args":["status","-s"]}"#).as_deref(),
             Some("git status -s")
         );
-        // edit/write/read → the target path.
+        // edit/write/read/apply_patch → the target path.
         assert_eq!(
             permission_arg(
                 "edit",
@@ -769,6 +770,14 @@ mod tests {
         assert_eq!(
             permission_arg("write", r#"{"path":"README.md","content":"x"}"#).as_deref(),
             Some("README.md")
+        );
+        assert_eq!(
+            permission_arg(
+                "apply_patch",
+                r#"{"path":"src/lib.rs","patch":"@@ -1 +1 @@"}"#
+            )
+            .as_deref(),
+            Some("src/lib.rs")
         );
         // glob → the pattern itself, since a glob pattern is a path.
         assert_eq!(

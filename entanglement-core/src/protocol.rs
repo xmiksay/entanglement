@@ -72,14 +72,13 @@ pub enum AgentState {
     Error,
 }
 
-/// Kind of file change. `ApplyDiff` is reserved for future work.
+/// Kind of file change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileChangeKind {
     Edit,
-    /// Reserved for future diff-based file editing. ApplyDiff would allow sending
-    /// unified diffs (or similar formats) instead of full file contents, enabling
-    /// more efficient incremental updates and better change tracking.
+    /// Multi-hunk unified-diff apply, produced by the runtime's `apply_patch`
+    /// host tool (#455) — beside `edit`'s single exact-string replace.
     ApplyDiff,
     Create,
 }
@@ -1198,7 +1197,8 @@ pub enum OutEvent {
         auto: bool,
     },
     /// File change record (audit log entry). Emitted by the runtime's tool
-    /// executor after each successful `edit`/`write` (#202). The record carries
+    /// executor after each successful `edit`/`write`/`apply_patch` (#202, #455).
+    /// The record carries
     /// the `path`, `change_kind`, and a content **hash** (lowercase hex SHA-256
     /// of the after-content) — not the whole-file bytes: the event fans out to
     /// every subscriber, so a large edit must not clone its contents per head.

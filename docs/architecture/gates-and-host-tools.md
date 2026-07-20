@@ -113,6 +113,7 @@ guessing again:
 | `grep` | `{pattern, path?, exclude?}` | matches as `path:lineno:line` over files matched by `path` (default `**/*`) minus `exclude` and the always-on `.git` exclusion ([ADR-0099](../adr/0099-glob-grep-exclude-and-default-git-exclusion.md)); a file over the 1 MiB **scan** cap (independent of the 32 KiB output cap, [ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)) or sniffed as binary (a NUL byte in its content) is skipped and named in a labeled notice appended to the result — regardless of match count |
 | `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists → hints `write`); non-unique match errors unless `replaceAll` |
 | `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
+| `apply_patch` | `{path, patch}` | apply a unified diff (one or more `@@ -oldStart,oldLen +newStart,newLen @@` hunks) against the current file; each hunk's context/deleted lines are matched **exactly** at the position its header declares (offset by the net line-count delta of hunks already applied in the same patch) — no fuzzy alternate-position search, a mismatch hard-errors before any write and leaves the file untouched; emits `FileChangeKind::ApplyDiff` (#455, the first producer of that previously-reserved variant). Parsing/applying is a small hand-rolled module (`host::unified_diff`), not the `diffy` crate — `diffy` is `tui`-feature-gated and named in `LEAN_FORBIDDEN` above, and `apply_patch` is unconditional lean-library code alongside `edit`/`write` |
 | `bash` ⚠ | `{command, timeout?, workdir?, run_in_background?}` | `sh -c` rooted at root (or at `workdir`, a subdir validated under root by the same symlink-safe containment as the fs tools, #170); `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600; spawned in its **own process group** (`process_group(0)`) so an expiry SIGKILLs the whole tree — grandchildren (a launched server/pipeline) can't orphan (#168); a `Stop`-driven task abort drops the wait future, whose group-kill guard SIGKILLs the same group so cancellation matches the timeout's containment rather than orphaning under bare `kill_on_drop` (#167). Output is drained incrementally, so a timeout returns the **partial output buffered before the kill** under a `[killed: timed out after Ns]` header instead of discarding it (#169). Oversized output is capped **head + tail** (¼ head / ¾ tail, `truncate_head_tail`) so the trailing error survives — head-only truncation dropped exactly what a failing build needs (#170). `run_in_background: true` spawns the command **detached** and returns a job id instead of blocking — poll it with `bash_output` (#170). Stdin is always closed (`Stdio::null()`), never inherited from the engine — the same leaked-by-default class ADR-0092 closed for `call`, applying uniformly to both the foreground and `run_in_background` paths since both share the one command builder (#389); use shell-native `< file` redirection if a command needs input |
 | `bash_output` ⚠ | `{job_id, kill?}` | poll a background `bash` job (started with `run_in_background`) for the output produced **since the last poll**, plus status (`running` / `exited N` / `exited (killed)`). Buffers are drained per poll (`mem::take`) so memory is reclaimed and each read is incremental; between polls each stream is capped at 256 KiB dropping the **oldest** bytes (the live tip is kept) with a `[N bytes … dropped]` notice. `kill: true` SIGKILLs the job's whole process group before reading. Registered as a pair with `bash` under the same opt-in gate (#170) |
 | `call` ⚠ | `{command, args?, tail?, timeout?, input_file?, output_file?, workdir?}` | **argv, no shell** — `command`+`args` exec verbatim (no `sh -c`, so no pipe/glob/`$VAR`/metachar interpretation); output tailed to the last `tail` lines per stream (default 30, `tail=0` = full, byte-cap still applies), with a `(… N earlier lines omitted, tail=30 — rerun with tail=0 …)` notice; same envelope as `bash` (`[exit N]` + stdout + `[stderr]`, 120 s/600 s, own-process-group kill on timeout #168, partial output preserved on timeout #169) — ADR-0045. `input_file`/`output_file` (ADR-0092, #381), both root-contained via `resolve_under_root` and validated **before spawn** (relative to the **root**, not `workdir`): `input_file` is read and piped to the child's stdin (fed concurrently with the stdout/stderr drain to avoid a full-pipe deadlock); its **absence closes stdin** (`Stdio::null()`) rather than inheriting the engine's own (a leaked-by-default behavior until now). The full **untruncated raw** stdout is always persisted — to `output_file` if given (missing parent dirs created), else to an **auto-named default artifact** in a runtime-owned per-project **scratch dir outside the repo** (`session_store::scratch_dir` → `<data_dir>/entanglement/sessions/<cwd>/tmp/call-output/call-{pid}-{seq}.stdout`, wired via `CallTool::with_scratch_base`) so a routine `call` neither pollutes the workdir nor re-triggers the definitions watcher — with a `<output_file>.stderr` sibling always alongside; the artifact's **absolute** path is named in the result header (`[output: …] [stderr: …]`). (Standalone/test constructors with no scratch base fall back to the legacy in-repo `.entanglement/tmp/call-output/`.) An explicit `output_file` write failure is a hard error; a default-artifact write failure is best-effort (logged + a degraded notice, never fails an otherwise-successful call). `workdir` (#386) sets the child's **cwd** to a subdirectory validated under root via the shared `resolve_workdir` (same containment as `bash`'s); a non-directory or escaping `workdir` errors before spawn. **Registered unconditionally** — independent of `ENTANGLEMENT_ENABLE_BASH` ([ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md)) |
@@ -123,13 +124,13 @@ guessing again:
   escape **and on symlink escape** — `resolve_under_root` canonicalizes the
   resolved target's deepest existing ancestor and requires it under the canonical
   root, so a `root/link -> /etc` symlink can't be followed out of tree by
-  `read`/`edit`/`write` (the create path still works: only the existing ancestor
+  `read`/`edit`/`write`/`apply_patch` (the create path still works: only the existing ancestor
   is canonicalized), and `glob`/`grep` (`list_files`) drop any match whose
   canonical path escapes — ADR-0008 upgraded by [ADR-0054](../adr/0054-canonicalizing-symlink-safe-root-containment.md)
   (#163). Not TOCTOU-tight (an OS sandbox via `openat2(RESOLVE_BENEATH)` is
   deferred).
 - **Approval-gated escape (ADR-0109):** containment is no longer absolute — a
-  `read`/`edit`/`write` path or a `bash`/`call` `workdir` that resolves *outside*
+  `read`/`edit`/`write`/`apply_patch` path or a `bash`/`call` `workdir` that resolves *outside*
   root can be reached after the user explicitly approves it. The executor detects
   the out-of-root target (`permission::escape_root_target` + `host::escaping_path`),
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor
@@ -206,10 +207,11 @@ guessing again:
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
 - **Wiring (ADR-0010, amended by [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md)):**
-  `host_tools(root)` registers the **root-contained quintet**
-  (`read`/`glob`/`grep`/`edit`/`write`; `write` added in ADR-0031). The
+  `host_tools(root)` registers the **root-contained sextet**
+  (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`; `write` added in
+  ADR-0031, `apply_patch` in #455). The
   `skutter` binary registers `CallTool` **unconditionally**, alongside the
-  quintet — no shell means no injection surface, so its registration no
+  sextet — no shell means no injection surface, so its registration no
   longer rides `bash`'s opt-in gate (#386). `BashTool` **and**
   `BashOutputTool` (the background-job poller, #170) still register only
   when `ENTANGLEMENT_ENABLE_BASH=1`, because `bash` runs arbitrary shell code
@@ -217,7 +219,7 @@ guessing again:
   jobs are pollable across the pair. `EngineConfig::default()` ships an empty
   registry (embedders opt in via `host_tools`).
 
-`edit`/`write`/`bash`/`bash_output`/`call` are advertised only to the inherit-all
+`edit`/`write`/`apply_patch`/`bash`/`bash_output`/`call` are advertised only to the inherit-all
 `build` profile (`tools: None`), which auto-allows them (default `Allow`). The `plan`
 and `explore` profiles set an explicit `tools` allowlist that omits them
 (#116/#140, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)), so

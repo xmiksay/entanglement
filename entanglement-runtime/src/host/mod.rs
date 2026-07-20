@@ -1,19 +1,22 @@
 //! Host tools that execute against the local filesystem and shell — `read`,
-//! `glob`, `grep`, `edit`, `write`, `call`, and the opt-in `bash`. The
-//! read-only trio (`read`/`glob`/`grep`) is covered by ADR-0008; `edit`/`bash`
-//! by ADR-0009/ADR-0012; whole-file `write` by ADR-0031; the argv-exec `call`
-//! (no shell, auto-tailed output) by ADR-0045; [`host_tools`] assembles the
-//! **root-contained quintet** (`read`/`glob`/`grep`/`edit`/`write`) — a head
-//! registers [`CallTool`] unconditionally alongside it and opts into
-//! [`BashTool`] separately (gated by `ENTANGLEMENT_ENABLE_BASH`) — see
-//! ADR-0010, amended by ADR-0093 for `call`'s registration.
+//! `glob`, `grep`, `edit`, `write`, `apply_patch`, `call`, and the opt-in
+//! `bash`. The read-only trio (`read`/`glob`/`grep`) is covered by ADR-0008;
+//! `edit`/`bash` by ADR-0009/ADR-0012; whole-file `write` by ADR-0031;
+//! multi-hunk `apply_patch` (unified-diff apply, beside `edit`/`write`) by
+//! #455; the argv-exec `call` (no shell, auto-tailed output) by ADR-0045;
+//! [`host_tools`] assembles the **root-contained sextet**
+//! (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`) — a head registers
+//! [`CallTool`] unconditionally alongside it and opts into [`BashTool`]
+//! separately (gated by `ENTANGLEMENT_ENABLE_BASH`) — see ADR-0010, amended
+//! by ADR-0093 for `call`'s registration.
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
 //! paths resolve against it and are **rejected on `..` escape** *and* on
 //! **symlink escape** — the resolved target's deepest existing ancestor is
 //! canonicalized and must stay under the canonical root (ADR-0054, #163), so a
 //! `root/link -> /etc` symlink can't be followed out of tree by `read`/`edit`/
-//! `write`, and `glob`/`grep` drop any match whose canonical path escapes.
+//! `write`/`apply_patch`, and `glob`/`grep` drop any match whose canonical
+//! path escapes.
 //! Output is byte-capped so a runaway
 //! listing or huge file can't silently consume the context window. `bash`/
 //! `call` run the command rooted at `root` (or at a validated `workdir`) but
@@ -29,6 +32,7 @@ use anyhow::{Context, Result};
 
 use crate::tools::ToolRegistry;
 
+pub mod apply_patch;
 pub mod bash;
 pub mod bash_output;
 pub mod call;
@@ -39,8 +43,10 @@ pub mod grep;
 pub mod jobs;
 pub mod read;
 pub mod sandbox;
+pub mod unified_diff;
 pub mod write;
 
+pub use apply_patch::ApplyPatchTool;
 pub use bash::BashTool;
 pub use bash_output::BashOutputTool;
 pub use call::CallTool;
@@ -347,18 +353,19 @@ pub fn list_files(root: &Path, pattern: &str, excludes: &[String]) -> Result<Fil
 // ┃ host_tools registry
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Build the **root-contained quintet** (`read`/`glob`/`grep`/`edit`/`write`).
-/// Bash is opt-in at the head level (ADR-0010): call [`BashTool::new`] directly and
-/// register it when `ENTANGLEMENT_ENABLE_BASH=1`.
+/// Build the **root-contained sextet**
+/// (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`). Bash is opt-in at the
+/// head level (ADR-0010): call [`BashTool::new`] directly and register it
+/// when `ENTANGLEMENT_ENABLE_BASH=1`.
 pub fn host_tools(root: PathBuf) -> ToolRegistry {
     host_tools_with_extra_roots(root, None)
 }
 
 /// [`host_tools`] with an optional escape-root grant store (ADR-0109) wired into
-/// the path-touching tools (`read`/`edit`/`write`), so an approved out-of-root
-/// path is reachable. `glob`/`grep` stay strictly root-contained (their
-/// pattern-relative search has no single path to approve). `None` is byte-
-/// identical to the pre-ADR-0109 strict quintet.
+/// the path-touching tools (`read`/`edit`/`write`/`apply_patch`), so an approved
+/// out-of-root path is reachable. `glob`/`grep` stay strictly root-contained
+/// (their pattern-relative search has no single path to approve). `None` is
+/// byte-identical to the pre-ADR-0109 strict sextet.
 pub fn host_tools_with_extra_roots(
     root: PathBuf,
     extra: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
@@ -367,16 +374,19 @@ pub fn host_tools_with_extra_roots(
     let mut read = ReadTool::new(root.clone());
     let mut edit = EditTool::new(root.clone());
     let mut write = WriteTool::new(root.clone());
+    let mut apply_patch = ApplyPatchTool::new(root.clone());
     if let Some(e) = &extra {
         read = read.with_extra_roots(e.clone());
         edit = edit.with_extra_roots(e.clone());
         write = write.with_extra_roots(e.clone());
+        apply_patch = apply_patch.with_extra_roots(e.clone());
     }
     reg.register(read);
     reg.register(GlobTool::new(root.clone()));
     reg.register(GrepTool::new(root.clone()));
     reg.register(edit);
     reg.register(write);
+    reg.register(apply_patch);
     reg
 }
 
@@ -844,6 +854,7 @@ mod tests {
         assert!(names.contains(&"grep"), "{names:?}");
         assert!(names.contains(&"edit"), "{names:?}");
         assert!(names.contains(&"write"), "{names:?}");
+        assert!(names.contains(&"apply_patch"), "{names:?}");
         assert!(!names.contains(&"bash"), "{names:?}");
         for s in &specs {
             assert!(
