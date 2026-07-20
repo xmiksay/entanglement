@@ -488,7 +488,15 @@ re-document them here):
   byte-identical to the pre-#398 behavior in that case. Heads must not fork on
   `auto: true` (the TUI renders an in-place notice on the same view instead of
   `handle_compacted`'s new-session fork; the stdio `run` head's one-line render
-  likewise branches on `auto`).
+  likewise branches on `auto`). **The prune fallback stays silent, by design**
+  (#450, [ADR-0121](../docs/adr/0121-prune-only-compact-stays-silent.md)):
+  `Context::compact` mutates `Session.ctx` in place exactly like
+  `apply_compaction` but emits no `OutEvent`, so `Session::replay` never
+  replays it and a resumed session can briefly see more history than the live
+  session had — accepted, since `enforce_context_window` re-derives the
+  identical prune from the raw log on the very next round either way (replay
+  included), unlike the summary branch's LLM-authored rewrite that can't be
+  recomputed and so must be recorded.
 - **In-app tool-allowlist editing materializes a user-layer override** (#330,
   [ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)):
   no separate mask store — editing a profile's `tools:`/`disallowed_tools:`

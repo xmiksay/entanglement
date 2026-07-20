@@ -167,6 +167,15 @@ impl Context {
     /// survives is a later phase; when even fully-pruned history overflows (a
     /// single oversized message), this returns `false` and the caller refuses the
     /// turn rather than shipping an over-window request.
+    ///
+    /// Unlike [`Self::apply_compaction`], this mutation is **never recorded on
+    /// the wire** — no caller emits an `OutEvent` for it (#450, ADR-0121).
+    /// `Session::replay` therefore never replays a prune, so a resumed session
+    /// can briefly see more history than the live session did after this ran;
+    /// deliberate, since this function is a deterministic, idempotent
+    /// re-derivation of "this transcript, this budget" that the resumed
+    /// session's own next overflow check reproduces on its own — nothing an
+    /// event would let replay reconstruct that the guard doesn't already.
     pub fn compact(&mut self) -> bool {
         // Prune oldest-first so recent tool results (the ones the model is
         // actively reasoning over) survive as long as possible.

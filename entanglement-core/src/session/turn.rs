@@ -180,6 +180,12 @@ async fn run_round(
 /// provider. Returns `Some(outcome)` only on that refusal (Error + Done +
 /// Status already emitted); `None` means the request now fits and the round
 /// should proceed.
+///
+/// The prune fallback emits no `OutEvent` (unlike the summary branch's
+/// `Compacted { auto: true, .. }`) — a resumed session can briefly replay
+/// with more history than the live session had after a prune, self-healing
+/// on that session's own next call into this function. Accepted, documented
+/// divergence (#450, ADR-0121); see [`Context::compact`]'s doc comment.
 async fn enforce_context_window(
     session: &SessionId,
     s: &mut Session,

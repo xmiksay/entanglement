@@ -286,6 +286,22 @@ recovery steps in order (#398,
    `Error` + `Done` + `Status`) if pruning also doesn't fit — sending an
    over-window request just burns a paid round-trip and errors at the provider.
 
+Step 2's prune mutates `Session.ctx` in place — like step 1 — but, unlike
+step 1, **emits no `OutEvent`** (#450,
+[ADR-0121](../adr/0121-prune-only-compact-stays-silent.md)): nothing records
+that the prune happened, so `Session::replay` never replays it and a resumed
+session briefly reconstructs the full, unpruned history the live session had
+already discarded — a real but accepted live/replay divergence in the exact
+request shape. It self-heals within one round-trip: `enforce_context_window`
+runs before every round, so a resumed session still over budget just re-prunes
+(or re-summarizes) on its very next turn and converges to where the live
+session already was, and it never ships an over-window request in the
+meantime. Recording it was rejected — `Context::compact` is a deterministic,
+idempotent function of the existing log and the model's token budget alone
+(no LLM call, nothing destroyed that a subsequent guard run can't re-derive),
+unlike step 1's LLM-authored rewrite that *must* be recorded for replay to
+reconstruct the same `Context`.
+
 So both the turn-limit trip and the context-refusal *end* a turn — the former
 on an `Error` with no `Done` (the #177 gap), the latter on the full
 `emit_turn_error` triple; the #192 `max_tokens` truncation `Error` remains a
