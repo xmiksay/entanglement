@@ -148,7 +148,10 @@ impl Llm for GeminiLlm {
         let rx = crate::client::spawn_byte_stream(response, "gemini", guard);
 
         let stream = try_stream! {
-            let mut buf = String::new();
+            // Byte-buffered framing (#443): a multi-byte UTF-8 character can
+            // straddle two network chunks, so decoding must wait for a complete
+            // `\n\n`-terminated frame — see `sse_frame::SseFrameBuffer`.
+            let mut frames = crate::sse_frame::SseFrameBuffer::new(b"\n\n");
             let mut usage = Usage::default();
             let mut finish_reason: Option<String> = None;
             let mut saw_tool_call = false;
@@ -156,10 +159,9 @@ impl Llm for GeminiLlm {
 
             while let Some(item) = rx.recv().await {
                 let chunk = item?;
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(idx) = buf.find("\n\n") {
-                    let frame: String = buf.drain(..idx + 2).collect();
-                    let Some(data) = parse_frame(&frame) else { continue };
+                frames.push(&chunk);
+                while let Some(frame_owned) = frames.next_frame() {
+                    let Some(data) = parse_frame(&frame_owned) else { continue };
                     for ev in handle_chunk(&data, &mut usage, &mut finish_reason)? {
                         if matches!(ev, LlmEvent::ToolCall(_)) {
                             saw_tool_call = true;

@@ -198,7 +198,10 @@ impl Llm for OpenAiLlm {
         let rx = crate::client::spawn_byte_stream(response, "openai-compat", guard);
 
         let stream = try_stream! {
-            let mut buf = String::new();
+            // Byte-buffered framing (#443): a multi-byte UTF-8 character can
+            // straddle two network chunks, so decoding must wait for a complete
+            // `\n`-terminated frame — see `sse_frame::SseFrameBuffer`.
+            let mut frames = crate::sse_frame::SseFrameBuffer::new(b"\n");
             let mut tools: BTreeMap<u32, PendingTool> = BTreeMap::new();
             let mut usage = Usage::default();
             let mut seen_finish_reason: Option<String> = None;
@@ -206,10 +209,9 @@ impl Llm for OpenAiLlm {
 
             while let Some(item) = rx.recv().await {
                 let chunk = item?;
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(idx) = buf.find('\n') {
-                    let line: String = buf.drain(..idx + 1).collect();
-                    let line = line.trim();
+                frames.push(&chunk);
+                while let Some(line_owned) = frames.next_frame() {
+                    let line = line_owned.trim();
                     if line.is_empty() {
                         continue;
                     }
