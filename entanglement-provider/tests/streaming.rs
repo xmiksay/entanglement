@@ -225,6 +225,37 @@ async fn tool_call_stream_assembles_and_emits_tool_call() {
     );
 }
 
+#[tokio::test]
+async fn tool_call_with_malformed_json_args_is_skipped_on_explicit_finish_reason() {
+    // #445: the explicit `finish_reason: "tool_calls"` flush must apply the
+    // same JSON-object validation as the no-finish-reason fallback — a call
+    // whose streamed `arguments` never parse as a JSON object is dropped
+    // instead of forwarded with malformed `input`, and with nothing valid
+    // actually emitted this turn, `stop_reason` degrades (ADR-0118) instead
+    // of falsely reporting a confident `ToolUse` stop.
+    let body = sse_body(&[
+        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"not json"}}]}}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+    ]);
+    let base_url = serve_sse_once(body).await;
+
+    let events = collect_events(&base_url).await;
+
+    assert!(
+        !events.iter().any(|e| matches!(e, LlmEvent::ToolCall(_))),
+        "malformed tool call must not be emitted: {events:?}"
+    );
+    let stop_reason = events.iter().find_map(|e| match e {
+        LlmEvent::Finish { stop_reason, .. } => Some(*stop_reason),
+        _ => None,
+    });
+    assert_eq!(
+        stop_reason,
+        Some(None),
+        "no valid tool call emitted ⇒ stop_reason degrades instead of a confident ToolUse"
+    );
+}
+
 // ── rate-limit / retry path (per endpoint, ADR-0050 + ADR-0111) ─────────────
 //
 // A 429 is "wait your turn", not a failure: the client parks the endpoint and

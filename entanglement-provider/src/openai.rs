@@ -21,7 +21,9 @@
 //! - `choices[0].delta.tool_calls[]`   → per-index tool assembly (`id` +
 //!   `function.name` on the first delta, `function.arguments` appended after)
 //! - `choices[0].finish_reason`        → `"stop"` (text done) or `"tool_calls"`
-//!   (flush every assembled tool as a [`LlmEvent::ToolCall`])
+//!   (the model wants to run tools; every assembled tool flushes as a
+//!   validated [`LlmEvent::ToolCall`] once the stream ends — see
+//!   `flush_pending_tools`, #445)
 //! - `usage` (final chunk)             → token counts
 //!
 //! Tool-result messages round-trip as `role: "tool"` **per call** — unlike
@@ -237,41 +239,31 @@ impl Llm for OpenAiLlm {
                 }
             }
             let has_pending_tools = !tools.is_empty();
-            let mut emitted_any_tool_call = false;
             if has_pending_tools {
                 tracing::warn!(
                     finish_reason = seen_finish_reason.as_deref().unwrap_or("none"),
                     pending_tools = tools.len(),
                     "stream ended with pending tools - flushing anyway"
                 );
-                for (_, t) in std::mem::take(&mut tools) {
-                    let should_emit = if t.arguments.is_empty() {
-                        true
-                    } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t.arguments) {
-                        matches!(v, serde_json::Value::Object(_))
-                    } else {
-                        tracing::warn!(
-                            tool = %t.name,
-                            args = %t.arguments,
-                            "skipping tool call with malformed JSON arguments"
-                        );
-                        false
-                    };
-
-                    if should_emit {
-                        emitted_any_tool_call = true;
-                        yield LlmEvent::ToolCall(t.into_tool_call());
-                    }
-                }
             }
-            // A tool-flush without an explicit finish_reason still means the model
-            // wants to run tools; fall back to ToolUse so the reason is never lost.
-            // Gated on `emitted_any_tool_call` rather than `has_pending_tools`: a
-            // tool call dropped above for malformed JSON must not report ToolUse
-            // with zero actual `LlmEvent::ToolCall`s yielded — that contradiction
-            // left the turn loop unable to tell a genuine tool-use stop from an
-            // ambiguous one (ADR-0118).
+            // Single validating flush site (#445) for both the explicit
+            // `finish_reason == "tool_calls"` case and the no-finish-reason
+            // fallback — `handle_chunk` no longer flushes eagerly, so `tools`
+            // still holds everything assembled across the whole stream here.
+            let mut flushed = Vec::new();
+            let emitted_any_tool_call = flush_pending_tools(&mut tools, &mut flushed);
+            for ev in flushed {
+                yield ev;
+            }
+            // A tool-flush with no valid call actually emitted (every pending
+            // tool had malformed JSON args, or the stream ended without one)
+            // must not report a confident-looking `ToolUse` stop with zero
+            // `LlmEvent::ToolCall`s behind it — that contradiction left the
+            // turn loop unable to tell a genuine tool-use stop from an
+            // ambiguous one (ADR-0118). This applies equally whether
+            // `finish_reason` was the explicit `"tool_calls"` or absent.
             let stop_reason = match seen_finish_reason.as_deref() {
+                Some("tool_calls") if !emitted_any_tool_call => None,
                 Some(r) => Some(StopReason::from_openai(r)),
                 None if emitted_any_tool_call => Some(StopReason::ToolUse),
                 None => None,
@@ -485,8 +477,11 @@ fn web_search_tool_entry(ws: &WebSearchConfig) -> Value {
 // ── SSE chunk handling ──────────────────────────────────────────────────────
 
 /// Map one parsed `data:` chunk to zero or more [`LlmEvent`]s, updating tool
-/// assembly + usage state. Pure (no I/O) so it unit-tests directly. Tools flush
-/// when `finish_reason == "tool_calls"` is observed (all args already assembled).
+/// assembly + usage state. Pure (no I/O) so it unit-tests directly. Tool calls
+/// are *not* flushed here even once `finish_reason == "tool_calls"` is seen —
+/// the caller keeps assembling in `tools` and flushes once, with JSON
+/// validation, after the stream ends (`flush_pending_tools`) so there is a
+/// single validating flush path instead of two that can disagree (#445).
 fn handle_chunk(
     data: &Value,
     tools: &mut BTreeMap<u32, PendingTool>,
@@ -580,14 +575,40 @@ fn handle_chunk(
         has_tools = !tools.is_empty(),
         "openai-compat chunk"
     );
-    let flush = finish_reason == Some("tool_calls");
-    if flush {
-        for (_, t) in std::mem::take(tools) {
+
+    Ok(out)
+}
+
+/// Flush every assembled tool in `tools` as a validated [`LlmEvent::ToolCall`],
+/// skipping any whose streamed `arguments` are not a JSON object (a model
+/// glitch, or corruption from the UTF-8 chunk-boundary bug, #443) instead of
+/// forwarding malformed `input` downstream. Returns whether at least one call
+/// was actually emitted, so the caller can degrade `stop_reason` the same way
+/// regardless of which path reached the end of the stream (ADR-0118, #445) —
+/// this is the single flush site both the explicit `finish_reason ==
+/// "tool_calls"` case and the no-finish-reason fallback fall through to.
+fn flush_pending_tools(tools: &mut BTreeMap<u32, PendingTool>, out: &mut Vec<LlmEvent>) -> bool {
+    let mut emitted_any = false;
+    for (_, t) in std::mem::take(tools) {
+        let should_emit = if t.arguments.is_empty() {
+            true
+        } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t.arguments) {
+            matches!(v, serde_json::Value::Object(_))
+        } else {
+            tracing::warn!(
+                tool = %t.name,
+                args = %t.arguments,
+                "skipping tool call with malformed JSON arguments"
+            );
+            false
+        };
+
+        if should_emit {
+            emitted_any = true;
             out.push(LlmEvent::ToolCall(t.into_tool_call()));
         }
     }
-
-    Ok(out)
+    emitted_any
 }
 
 /// Render a z.ai `web_search` source array (#305) as one `[web_search] {title} —
@@ -822,7 +843,11 @@ mod tests {
     }
 
     #[test]
-    fn tool_calls_assemble_across_deltas_and_flush_on_finish() {
+    fn tool_calls_assemble_across_deltas_and_flush_via_flush_pending_tools() {
+        // `handle_chunk` no longer flushes on `finish_reason: "tool_calls"`
+        // itself (#445) — the assembled call stays pending even past that
+        // chunk, so the caller's single validating flush site
+        // (`flush_pending_tools`) is what emits it.
         let mut tools = BTreeMap::new();
         let d1 = json!({ "choices": [{ "delta": { "tool_calls": [
             { "index": 0, "id": "c1", "type": "function",
@@ -837,8 +862,17 @@ mod tests {
         assert!(tools.contains_key(&0)); // assembled but not yet flushed
         let _ = handle_chunk(&d2, &mut tools, &mut Usage::default()).unwrap();
         let evs = handle_chunk(&d3, &mut tools, &mut Usage::default()).unwrap();
+        assert!(evs.is_empty(), "finish_reason chunk itself flushes nothing");
+        assert!(
+            tools.contains_key(&0),
+            "still pending after the finish chunk"
+        );
+
+        let mut out = Vec::new();
+        let emitted_any = flush_pending_tools(&mut tools, &mut out);
+        assert!(emitted_any);
         assert_eq!(
-            evs,
+            out,
             vec![LlmEvent::ToolCall(ToolCall {
                 id: "c1".into(),
                 name: "greet".into(),
@@ -847,6 +881,41 @@ mod tests {
             })]
         );
         assert!(tools.is_empty(), "flush should drain the map");
+    }
+
+    #[test]
+    fn flush_pending_tools_skips_malformed_json_arguments() {
+        let mut tools = BTreeMap::new();
+        tools.insert(
+            0,
+            PendingTool {
+                id: "c1".into(),
+                name: "greet".into(),
+                arguments: "not json".into(),
+            },
+        );
+        let mut out = Vec::new();
+        let emitted_any = flush_pending_tools(&mut tools, &mut out);
+        assert!(!emitted_any, "malformed args must not be emitted");
+        assert!(out.is_empty());
+        assert!(tools.is_empty(), "flush should still drain the map");
+    }
+
+    #[test]
+    fn flush_pending_tools_skips_non_object_json_arguments() {
+        let mut tools = BTreeMap::new();
+        tools.insert(
+            0,
+            PendingTool {
+                id: "c1".into(),
+                name: "greet".into(),
+                arguments: "[1,2,3]".into(),
+            },
+        );
+        let mut out = Vec::new();
+        let emitted_any = flush_pending_tools(&mut tools, &mut out);
+        assert!(!emitted_any, "a JSON array is not a valid tool input");
+        assert!(out.is_empty());
     }
 
     #[test]
@@ -917,7 +986,9 @@ mod tests {
         ] } }] });
         let d2 = json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] });
         let _ = handle_chunk(&d1, &mut tools, &mut Usage::default()).unwrap();
-        let evs = handle_chunk(&d2, &mut tools, &mut Usage::default()).unwrap();
+        let _ = handle_chunk(&d2, &mut tools, &mut Usage::default()).unwrap();
+        let mut evs = Vec::new();
+        flush_pending_tools(&mut tools, &mut evs);
         assert_eq!(evs.len(), 2);
         assert_eq!(
             evs[0],
