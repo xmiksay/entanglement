@@ -101,7 +101,14 @@ check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
 test-gates: ## run scripts/dep-gate.test.sh (dep-gate self-test)
 	@sh scripts/dep-gate.test.sh
 
-verify: check-fmt tree check-lean lint test ## full CI-equivalent gate locally
+# 400-line file cap (AGENTS.md; issue #451). Grandfathered violations live in
+# scripts/file-cap-allowlist.txt, which must shrink as files get split — the
+# gate fails just as loud on a stale (now-compliant) allowlist entry as on a
+# fresh violation.
+file-cap: ## fail if a src file exceeds 400 code lines and isn't grandfathered
+	@sh scripts/file-cap-gate.sh
+
+verify: check-fmt tree check-lean file-cap lint test ## full CI-equivalent gate locally
 
 # Release gate (issue #107): workspace line coverage via cargo-llvm-cov. Fails
 # below COV_MIN, writes lcov.info + a Cobertura XML for artifact upload / badges.

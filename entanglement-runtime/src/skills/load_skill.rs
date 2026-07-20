@@ -203,7 +203,7 @@ fn collect_refs(root: &Path, dir: &Path, refs: &mut Vec<PathBuf>) {
         } else if meta.is_file() {
             // The SKILL.md at the skill root is the marker, not a reference.
             let is_marker = path.parent() == Some(root)
-                && path.file_name().and_then(|n| n.to_str()) == Some(super::SKILL_FILE);
+                && path.file_name().and_then(|n| n.to_str()) == Some(super::discovery::SKILL_FILE);
             if !is_marker {
                 refs.push(path);
             }
