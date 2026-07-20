@@ -677,6 +677,16 @@ re-document them here):
   a no-`output_file` artifact now lands in a runtime-owned per-project scratch dir
   (`session_store::scratch_dir` → `<data_dir>/entanglement/sessions/<cwd>/tmp/`,
   via `CallTool::with_scratch_base`), not `<root>/.entanglement/tmp/`.
+  **`rhai` file/exec bindings route through the identical gate** (#446,
+  [ADR-0119](../docs/adr/0119-rhai-bindings-route-through-the-escape-root-gate.md)):
+  the `Intercept::Rhai` route never called `dispatch`, so a script's
+  `read`/`edit`/`write`/`exec`/`bash` binding used to hard-fail on a first-time
+  out-of-root access with no chance to prompt. `EscapeRoot` (now `pub(crate)`
+  on its `escaping` helper) threads one hop further into `run_rhai` →
+  `execute_script` → `service_binding`, which forces the same approval +
+  warning for an escaping call (bypassing the coarse per-run `Ask` cache) and
+  records the grant into the same `ExtraRootStore` on approval — a durably
+  granted path still resolves silently, matching a direct call exactly.
 
 | Topic | Module |
 | --- | --- |
