@@ -277,7 +277,9 @@ pub struct EscapeRoot {
 impl EscapeRoot {
     /// The absolute out-of-root path a call to `tool` with `input` would touch,
     /// or `None` when it stays contained (or the tool has no path argument).
-    fn escaping(&self, tool: &str, input: &str) -> Option<std::path::PathBuf> {
+    /// `pub(crate)`: also called from [`crate::script`], whose bindings route
+    /// through this same gate (#446).
+    pub(crate) fn escaping(&self, tool: &str, input: &str) -> Option<std::path::PathBuf> {
         let rel = crate::permission::escape_root_target(tool, input)?;
         crate::host::escaping_path(&self.root, &rel)
     }
@@ -670,7 +672,12 @@ pub fn spawn_tool_executor_with_policy(
                             // keeps the profile/base path (its inner bindings are a
                             // separate sync mechanism), so it is not routed through
                             // the pluggable resolver (#311); the sync grant read
-                            // still upgrades its own `Ask`.
+                            // still upgrades its own `Ask`. The escape-root policy
+                            // (ADR-0109) is cloned through too (#446): a file/exec
+                            // binding targeting an out-of-root path is gated by the
+                            // same forced-`Ask` + `ExtraRootStore` grant as a direct
+                            // tool call, not silently hard-refused.
+                            let escape_root = escape_root.clone();
                             let arg = permission_arg(&tool, &input);
                             let workdir = crate::permission::permission_workdir(&tool, &input);
                             let (base_self, policy) = {
@@ -714,8 +721,16 @@ pub fn spawn_tool_executor_with_policy(
                             let run_stop = stop.clone();
                             let handle = tokio::spawn(async move {
                                 crate::script::run_rhai(
-                                    holly, tools, policy, self_perm, session, request_id, pending,
-                                    input, run_stop,
+                                    holly,
+                                    tools,
+                                    policy,
+                                    self_perm,
+                                    escape_root,
+                                    session,
+                                    request_id,
+                                    pending,
+                                    input,
+                                    run_stop,
                                 )
                                 .await;
                             });

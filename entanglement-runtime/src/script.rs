@@ -20,6 +20,16 @@
 //! untouched — like `ask_user`/`propose_plan` this is all inside the runtime
 //! executor ([`crate::tool_runner`]).
 //!
+//! A file/exec binding (`read`/`edit`/`write`/`exec`/`bash`) targeting a path or
+//! `workdir` outside the project root is gated by the **same** escape-root
+//! policy as a direct tool call (ADR-0109, #446): [`service_binding`] forces an
+//! `Ask` even when the binding grades `Allow`, shows the same "outside the
+//! project root" warning on the approval card, and — on approval — records the
+//! grant into the shared `ExtraRootStore` so the delegated host tool's own
+//! containment check lets the call through. Previously a script could only ever
+//! *ride* a durable grant recorded earlier by a direct call; a first-time escape
+//! from inside a script hard-failed with no chance to prompt.
+//!
 //! Resource bounds are by construction: `max_operations`, a wall-clock timeout
 //! enforced by the progress callback, `max_call_levels`, and string/array/map
 //! size caps — a runaway script terminates deterministically with a clear error,
@@ -32,8 +42,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use entanglement_core::{
-    AgentProfile, AgentState, Holly, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
-    ToolSpec,
+    AgentProfile, AgentState, ApprovalScope, Holly, OutEvent, Permission, PermissionProfile,
+    SessionId, ToolCall, ToolSpec,
 };
 
 use crate::tools::ToolRegistry;
@@ -50,6 +60,7 @@ use crate::permission::{min_permission, permission_arg, permission_chain, tool_m
 use crate::seam;
 use crate::subagent::SpawnGuard;
 use crate::tool_names::{BINDING_TOOLS, RHAI_TOOL};
+use crate::tool_runner::EscapeRoot;
 
 /// Default wall-clock budget for a script, in seconds, when the model omits
 /// `timeout`. Clamped to [`MAX_TIMEOUT_SECS`].
@@ -214,6 +225,7 @@ pub async fn run_rhai(
     tools: ToolRegistry,
     policy: BindingPolicy,
     self_perm: Permission,
+    escape_root: Option<EscapeRoot>,
     session: SessionId,
     request_id: String,
     pending: PendingDecisions,
@@ -258,7 +270,7 @@ pub async fn run_rhai(
             )
             .await
             {
-                Approval::Approved => set_state(&holly, &session, AgentState::Thinking),
+                Approval::Approved(_) => set_state(&holly, &session, AgentState::Thinking),
                 Approval::Rejected(reason) => {
                     set_state(&holly, &session, AgentState::Thinking);
                     let out = format!("tool `{RHAI_TOOL}` rejected: {reason}");
@@ -277,6 +289,7 @@ pub async fn run_rhai(
     if let Some(output) = execute_script(
         &tools,
         &policy,
+        escape_root.as_ref(),
         &holly,
         &session,
         &request_id,
@@ -298,6 +311,7 @@ pub async fn run_rhai(
 async fn execute_script(
     tools: &ToolRegistry,
     policy: &BindingPolicy,
+    escape_root: Option<&EscapeRoot>,
     holly: &Holly,
     session: &SessionId,
     request_id: &str,
@@ -342,6 +356,7 @@ async fn execute_script(
         let (result, was_stopped) = service_binding(
             tools,
             policy,
+            escape_root,
             holly,
             session,
             request_id,
@@ -375,10 +390,20 @@ async fn execute_script(
 /// would be noise); for `call`/`bash` it's once per resolved command line
 /// (#419 fix A), since a single approved command must not silently clear a
 /// different, more dangerous one in the same run.
+///
+/// Escape-root gate (ADR-0109, #446): mirrors `tool_runner::dispatch`. A path/
+/// `workdir` that resolves outside the project root forces an `Ask` even when
+/// `policy.decide` graded `Allow`, unless the user already durably granted this
+/// exact `(tool, path)` — e.g. via an earlier direct call. Never applies once
+/// the grade is `Deny` (refused above, same as `dispatch`). An escaping call
+/// bypasses the coarse per-run `approved` cache — that cache exists to avoid
+/// re-prompting an ordinary `Ask`, not to authorize a fresh out-of-root target —
+/// so it always re-checks the `ExtraRootStore` instead.
 #[allow(clippy::too_many_arguments)]
 async fn service_binding(
     tools: &ToolRegistry,
     policy: &BindingPolicy,
+    escape_root: Option<&EscapeRoot>,
     holly: &Holly,
     session: &SessionId,
     request_id: &str,
@@ -386,46 +411,76 @@ async fn service_binding(
     approved: &mut HashSet<String>,
     call: &BindingCall,
 ) -> (Result<String, String>, bool) {
-    match policy.decide(call.tool, &call.input) {
-        Decision::Masked => (
-            Err(format!(
-                "tool `{}` is not available to this agent (restricted by profile)",
-                call.tool
-            )),
-            false,
-        ),
-        Decision::Perm(Permission::Deny) => (
-            Err(format!("tool `{}` denied by permission profile", call.tool)),
-            false,
-        ),
-        Decision::Perm(Permission::Allow) => (Ok(exec(tools, session, call).await), false),
-        Decision::Perm(Permission::Ask) => {
-            let key = approval_cache_key(call.tool, &call.input);
-            if approved.contains(&key) {
-                return (Ok(exec(tools, session, call).await), false);
-            }
-            // Nested approval gets its own request id so the head's Approve/Reject
-            // matches this binding, not the outer `rhai` call. The card shows the
-            // binding's tool + args; the script source rode the outer approval.
-            let bind_rid = format!("{request_id}:rhai:{}", call.tool);
-            let card_tool = format!("{} (rhai)", call.tool);
-            match await_approval(holly, pending, session, &bind_rid, &card_tool, &call.input).await
-            {
-                Approval::Approved => {
-                    approved.insert(key);
-                    set_state(holly, session, AgentState::Thinking);
-                    (Ok(exec(tools, session, call).await), false)
-                }
-                Approval::Rejected(reason) => {
-                    set_state(holly, session, AgentState::Thinking);
-                    (
-                        Err(format!("tool `{}` rejected: {reason}", call.tool)),
-                        false,
-                    )
-                }
-                Approval::Stopped => (Err("rhai run stopped".to_string()), true),
-            }
+    let perm = match policy.decide(call.tool, &call.input) {
+        Decision::Masked => {
+            return (
+                Err(format!(
+                    "tool `{}` is not available to this agent (restricted by profile)",
+                    call.tool
+                )),
+                false,
+            )
         }
+        Decision::Perm(Permission::Deny) => {
+            return (
+                Err(format!("tool `{}` denied by permission profile", call.tool)),
+                false,
+            )
+        }
+        Decision::Perm(perm) => perm,
+    };
+
+    let escape = escape_root
+        .and_then(|er| er.escaping(call.tool, &call.input).map(|abs| (er, abs)))
+        .filter(|(er, abs)| !er.store.is_durably_allowed(call.tool, abs));
+
+    if perm == Permission::Allow && escape.is_none() {
+        return (Ok(exec(tools, session, call).await), false);
+    }
+
+    let key = approval_cache_key(call.tool, &call.input);
+    if escape.is_none() && approved.contains(&key) {
+        return (Ok(exec(tools, session, call).await), false);
+    }
+
+    // Nested approval gets its own request id so the head's Approve/Reject
+    // matches this binding, not the outer `rhai` call. The card shows the
+    // binding's tool + args; the script source rode the outer approval. An
+    // escaping call also carries the same "outside the project root" warning a
+    // direct call's approval card would (ADR-0109) — otherwise the user
+    // approves a generic-looking "{tool} (rhai)" prompt with no signal the
+    // script is about to reach outside the project.
+    let bind_rid = format!("{request_id}:rhai:{}", call.tool);
+    let card_tool = format!("{} (rhai)", call.tool);
+    let card_input = match &escape {
+        Some((_, abs)) => format!(
+            "{}\n\n⚠ accesses a path OUTSIDE the project root: {}",
+            call.input,
+            abs.display()
+        ),
+        None => call.input.clone(),
+    };
+    match await_approval(holly, pending, session, &bind_rid, &card_tool, &card_input).await {
+        Approval::Approved(scope) => {
+            if let Some((er, abs)) = &escape {
+                // Record into the same store a direct call's approval would
+                // (`tool_runner::await_decision`), so the delegated host tool's
+                // own containment check lets this call through.
+                er.store.record(call.tool, abs, scope);
+            } else {
+                approved.insert(key);
+            }
+            set_state(holly, session, AgentState::Thinking);
+            (Ok(exec(tools, session, call).await), false)
+        }
+        Approval::Rejected(reason) => {
+            set_state(holly, session, AgentState::Thinking);
+            (
+                Err(format!("tool `{}` rejected: {reason}", call.tool)),
+                false,
+            )
+        }
+        Approval::Stopped => (Err("rhai run stopped".to_string()), true),
     }
 }
 
@@ -467,9 +522,11 @@ async fn exec(tools: &ToolRegistry, session: &SessionId, call: &BindingCall) -> 
     entanglement_core::content_text(&content)
 }
 
-/// Outcome of a parked approval round-trip.
+/// Outcome of a parked approval round-trip. `Approved` carries the scope
+/// (#446) — needed to record an escape-root grant at the scope the user chose,
+/// mirroring `tool_runner::await_decision`; `rhai`'s own gate ignores it.
 enum Approval {
-    Approved,
+    Approved(ApprovalScope),
     Rejected(String),
     Stopped,
 }
@@ -499,7 +556,7 @@ async fn await_approval(
     });
     set_state(holly, session, AgentState::WaitingApproval);
     match pending::await_decision(rx).await {
-        seam::Decision::Approve { .. } => Approval::Approved,
+        seam::Decision::Approve { scope } => Approval::Approved(scope),
         seam::Decision::Reject { reason } => {
             Approval::Rejected(reason.unwrap_or_else(|| "user".to_string()))
         }
