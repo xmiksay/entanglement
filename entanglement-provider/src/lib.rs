@@ -33,6 +33,7 @@ pub mod gemini;
 pub mod llm;
 pub mod message;
 pub mod openai;
+mod sse_frame;
 pub mod web_search;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm};

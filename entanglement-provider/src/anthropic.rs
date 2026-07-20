@@ -173,7 +173,10 @@ impl Llm for AnthropicLlm {
         let rx = crate::client::spawn_byte_stream(response, "anthropic", guard);
 
         let stream = try_stream! {
-            let mut buf = String::new();
+            // Byte-buffered framing (#443): a multi-byte UTF-8 character can
+            // straddle two network chunks, so decoding must wait for a complete
+            // `\n\n`-terminated frame — see `sse_frame::SseFrameBuffer`.
+            let mut frames = crate::sse_frame::SseFrameBuffer::new(b"\n\n");
             let mut current_tool: Option<PendingTool> = None;
             let mut usage = Usage::default();
             let mut stop_reason: Option<StopReason> = None;
@@ -181,10 +184,9 @@ impl Llm for AnthropicLlm {
 
             while let Some(item) = rx.recv().await {
                 let chunk = item?;
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(idx) = buf.find("\n\n") {
-                    let frame: String = buf.drain(..idx + 2).collect();
-                    let (event, data) = parse_frame(&frame);
+                frames.push(&chunk);
+                while let Some(frame_owned) = frames.next_frame() {
+                    let (event, data) = parse_frame(&frame_owned);
                     for ev in handle_frame(
                         &event,
                         data,

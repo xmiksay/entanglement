@@ -78,6 +78,37 @@ async fn serve_sse_once(body: String) -> String {
     format!("http://{addr}")
 }
 
+/// Bind an ephemeral port and serve one SSE response split into two raw
+/// writes at `split_at` (a byte offset into `body`, not necessarily a char
+/// boundary), with a flush + short sleep between them so the two halves are
+/// near-certain to arrive as separate `reqwest` chunks — reproducing a network
+/// chunk boundary landing mid multi-byte UTF-8 character (#443).
+async fn serve_sse_split(body: String, split_at: usize) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept");
+        let _ = read_http_request(&mut stream).await;
+        let full = sse_response(&body);
+        // `split_at` indexes into `body`; offset by the header length so it
+        // still lands at the intended byte inside the SSE body.
+        let header_len = full.len() - body.len();
+        let cut = header_len + split_at;
+        stream
+            .write_all(&full[..cut])
+            .await
+            .expect("write first half");
+        stream.flush().await.expect("flush first half");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        stream
+            .write_all(&full[cut..])
+            .await
+            .expect("write second half");
+        stream.flush().await.expect("flush second half");
+    });
+    format!("http://{addr}")
+}
+
 /// Assemble an SSE body from JSON chunk strings, appending the terminal
 /// `[DONE]` sentinel.
 fn sse_body(chunks: &[&str]) -> String {
@@ -337,4 +368,55 @@ async fn retryable_500_then_success_retries_and_streams() {
         text, "recovered",
         "the retry should surface the good stream"
     );
+}
+
+// ── multi-byte UTF-8 split across a network chunk boundary (#443) ──────────
+
+#[tokio::test]
+async fn text_delta_survives_multibyte_char_split_across_chunks() {
+    // "🎉" (U+1F389) is 4 bytes; split the raw response so the boundary falls
+    // inside the emoji, exactly like an arbitrary TCP/HTTP-chunk boundary.
+    let body = sse_body(&[r#"{"choices":[{"delta":{"content":"party 🎉 time"}}]}"#]);
+    let emoji_byte_offset = body.find('🎉').expect("emoji present in body");
+    let split_at = emoji_byte_offset + 2; // inside the 4-byte sequence
+
+    let base_url = serve_sse_split(body, split_at).await;
+    let events = collect_events(&base_url).await;
+
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            LlmEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "party 🎉 time");
+    assert!(
+        !text.contains('\u{FFFD}'),
+        "split emoji must reassemble losslessly, got {text:?}"
+    );
+}
+
+#[tokio::test]
+async fn tool_call_argument_survives_multibyte_char_split_across_chunks() {
+    // A non-ASCII value ("Curaçao") inside the streamed `function.arguments`
+    // fragment, split mid-character across the raw chunk boundary.
+    let body = sse_body(&[
+        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Curaçao\"}"}}]}}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+    ]);
+    let c_cedilla_offset = body.find('ç').expect("ç present in body");
+    let split_at = c_cedilla_offset + 1; // inside the 2-byte sequence
+
+    let base_url = serve_sse_split(body, split_at).await;
+    let events = collect_events(&base_url).await;
+
+    let call = events
+        .iter()
+        .find_map(|e| match e {
+            LlmEvent::ToolCall(tc) => Some(tc),
+            _ => None,
+        })
+        .expect("a ToolCall event, not dropped as malformed JSON");
+    assert_eq!(call.input, r#"{"city": "Curaçao"}"#);
 }
