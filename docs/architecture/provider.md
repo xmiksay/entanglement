@@ -78,12 +78,19 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   thinking model must echo back verbatim or the API 4xxs on replayed history. It
   streams `candidates[].content.parts[]` (text / `thought:true` reasoning /
   `functionCall`), maps history to `contents` (assistant → `role: model`, tool
-  result → a `user` `functionResponse` keyed by call **name** — Gemini matches by
-  name, so the `ToolCall.id` is the name), sanitizes the tool `parameters` schema
-  (Gemini rejects `$schema`/`additionalProperties`/union-`type`/dangling
-  `required`), and stashes/restores the signature via `ToolCall.provider_meta`
-  (below). `gemini_factory(base, key, model, rpm, concurrency, http)` — no
-  web-search knob.
+  result → a `user` `functionResponse` keyed by call **name** — Gemini itself
+  matches a response to its call by name, it has no call-id concept). Gemini
+  emitting two parallel calls to the *same* tool would otherwise give both
+  `ToolCall`s the identical id, colliding on the wire's `request_id` dedupe and
+  wedging the turn (#444); `function_call_to_tool_call` instead synthesizes
+  `ToolCall.id` as `name#ordinal` (a per-stream counter threaded through
+  `handle_chunk`), while `ToolCall.name` stays bare — `gemini::tool_name_from_id`
+  strips the `#ordinal` suffix back off when building the `functionResponse` so
+  the reply still keys by the bare name Gemini expects. Also sanitizes the tool
+  `parameters` schema (Gemini rejects `$schema`/`additionalProperties`/
+  union-`type`/dangling `required`), and stashes/restores the signature via
+  `ToolCall.provider_meta` (below). `gemini_factory(base, key, model, rpm,
+  concurrency, http)` — no web-search knob.
   Request-body assembly lives in the `gemini::request` submodule.
 - **Opaque `provider_meta`** (#309) — `ToolCall.provider_meta: Option<Value>` is a
   provider-private slot that must round-trip **verbatim** through history persistence
@@ -95,7 +102,8 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   `LlmResponse` are `PartialEq` but no longer `Eq`.
 - `ToolSpec.schema` surfaces as `input_schema` (Anthropic) / `parameters`
   (OpenAI-compat, Gemini); `Message.tool_call_id` → `tool_use_id` / `tool_call_id`
-  / Gemini `functionResponse.name`.
+  / Gemini `functionResponse.name` (the bare name recovered from the synthesized
+  `name#ordinal` id, above).
 - A `Message`'s `content: Vec<ContentPart>` renders per wire (#197,
   [ADR-0064](../adr/0064-message-content-blocks.md)): text-only user content stays
   a plain string (OpenAI) / string content (Anthropic); an image part switches to

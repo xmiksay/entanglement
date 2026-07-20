@@ -6,7 +6,7 @@
 
 use serde_json::{json, Map, Value};
 
-use super::THOUGHT_SIGNATURE_KEY;
+use super::{tool_name_from_id, THOUGHT_SIGNATURE_KEY};
 use crate::{
     ContentPart, GenerationParams, ImageSource, Message, MessageRole, ReasoningEffort, ToolCall,
     ToolSpec,
@@ -76,7 +76,8 @@ fn generation_config(generation: Option<GenerationParams>) -> Option<Value> {
 /// Map entanglement's `Message` history to Gemini `contents`. User messages →
 /// `role: "user"`; assistant → `role: "model"` (text + `functionCall` parts, each
 /// restoring its stashed `thoughtSignature`); tool results → a `user` turn of
-/// `functionResponse` parts keyed by the call name (#309).
+/// `functionResponse` parts keyed by the call name (#309) — recovered from the
+/// synthesized `id#ordinal` via [`tool_name_from_id`] (#444).
 fn convert_messages(messages: &[Message]) -> Vec<Value> {
     let mut out = Vec::with_capacity(messages.len());
     for m in messages {
@@ -96,7 +97,8 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 }
             }
             MessageRole::Tool => {
-                let name = m.tool_call_id.clone().unwrap_or_default();
+                let id = m.tool_call_id.clone().unwrap_or_default();
+                let name = tool_name_from_id(&id).to_string();
                 out.push(json!({
                     "role": "user",
                     "parts": [{
@@ -360,6 +362,18 @@ mod request_tests {
         assert_eq!(contents[0]["role"], "user");
         assert_eq!(fr["name"], "search");
         assert_eq!(fr["response"]["result"], "42 results");
+    }
+
+    #[test]
+    fn tool_result_strips_ordinal_suffix_from_synthesized_id() {
+        // ToolCall.id is synthesized as `name#ordinal` (#444) so parallel calls
+        // to the same tool don't collide; the reply must still key by the bare
+        // name, since that's what Gemini matches a functionResponse against.
+        let msg = Message::tool("read#1", "file b contents");
+        let contents = convert_messages(&[msg]);
+        let fr = &contents[0]["parts"][0]["functionResponse"];
+        assert_eq!(fr["name"], "read");
+        assert_eq!(fr["response"]["result"], "file b contents");
     }
 
     #[test]
