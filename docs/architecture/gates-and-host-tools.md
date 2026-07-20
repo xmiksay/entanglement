@@ -138,16 +138,26 @@ guessing again:
   (`extra_roots.rs`; managed `extra-roots.yml`, override
   `ENTANGLEMENT_EXTRA_ROOTS_FILE`) keyed by `(tool, resolved-absolute-path)` —
   **per tool** (a `read` grant never unlocks `write`) at `Once`/`Session`/`Always`
-  scope. The host tools consult that store via `resolve_under_root_or_grant` to
-  relax containment for the approved path (checked against the symlink-resolved
-  target). `glob`/`grep` stay strictly root-contained; no store wired (`None`) is
-  byte-identical to strict containment. `rhai`'s file/exec bindings route
-  through the identical gate (#446,
-  [ADR-0119](../adr/0119-rhai-bindings-route-through-the-escape-root-gate.md)):
+  scope. `Once` is additionally bound to the approving call's `request_id`
+  (#449, [ADR-0120](../adr/0120-once-scoped-escape-root-grant-bound-to-request-id.md)):
+  per-call executor tasks are detached and run concurrently, so without that
+  binding a single-use token approved for one call could be spent by a
+  different in-flight call to the same `(tool, path)`; `Session`/`Always`
+  still match `(tool, path)` alone, since a durable grant is meant to cover
+  every later call. `Tool::run_for_session` carries the `request_id` (the
+  `ToolCall.id` `ToolRegistry::execute` already had) into the six
+  escape-root-capable host tools for this. The host tools consult the store via
+  `resolve_under_root_or_grant` to relax containment for the approved path
+  (checked against the symlink-resolved target). `glob`/`grep` stay strictly
+  root-contained; no store wired (`None`) is byte-identical to strict
+  containment. `rhai`'s file/exec bindings route through the identical gate
+  (#446, [ADR-0119](../adr/0119-rhai-bindings-route-through-the-escape-root-gate.md)):
   `service_binding` forces the same approval + warning for a first-time
   out-of-root binding call and records the grant into the same
-  `ExtraRootStore`, so a script is no more (and no less) able to escape root
-  than an equivalent direct tool call. See
+  `ExtraRootStore` — keyed by the binding's own `bind_rid`, threaded into the
+  delegated call so a script-obtained `Once` grant is redeemed by that exact
+  binding invocation too — so a script is no more (and no less) able to escape
+  root than an equivalent direct tool call. See
   [ADR-0109](../adr/0109-escape-root-access-via-approval.md). `bash`/`call` set only the **cwd** (root, or `workdir` if given,
   through the shared `resolve_workdir` helper both tools call) and run with the
   engine's full privileges **by default** — unsandboxed unless opted in

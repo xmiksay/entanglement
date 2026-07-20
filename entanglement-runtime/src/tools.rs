@@ -57,10 +57,15 @@ pub trait Tool: Send + Sync {
     /// calls. Default delegates to [`run_content`][Tool::run_content], so an
     /// existing single-tenant tool is unaffected; a multi-tenant embedder's tool
     /// (e.g. one that picks a per-tenant `HttpClient`/DB scope by session) overrides
-    /// this instead.
+    /// this instead. `request_id` (#449) is the calling `ToolExec`'s id — the
+    /// escape-root host tools (`read`/`edit`/`write`/`apply_patch`/`bash`/`call`)
+    /// override this to thread it into their `Once`-scoped grant consumption
+    /// ([`crate::extra_roots::ExtraRootStore::take_allowance`]), so a single-use
+    /// approval can only be spent by the exact call it was granted to.
     async fn run_for_session(
         &self,
         _session: &SessionId,
+        _request_id: &str,
         input: &str,
     ) -> anyhow::Result<Vec<ContentPart>> {
         self.run_content(input).await
@@ -157,10 +162,13 @@ impl ToolRegistry {
     /// part the engine feeds back to the model rather than erroring the run.
     /// `session` (#360) lets a session-aware tool (e.g. a multi-tenant embedder's
     /// per-tenant MCP dispatch) tell callers apart; the executor already has it at
-    /// every call site (`resolve_effective` takes it too).
+    /// every call site (`resolve_effective` takes it too). `call.id` is the
+    /// request id, threaded to [`Tool::run_for_session`] as-is (#449) — it is
+    /// already the same identifier the executor uses for the `ToolExec`/
+    /// `ToolResult` round-trip, so no separate id is minted here.
     pub async fn execute(&self, call: &ToolCall, session: &SessionId) -> Vec<ContentPart> {
         match self.tools.get(call.name.as_str()) {
-            Some(tool) => match tool.run_for_session(session, &call.input).await {
+            Some(tool) => match tool.run_for_session(session, &call.id, &call.input).await {
                 Ok(content) => content,
                 Err(e) => text_parts(format!("tool `{}` failed: {e}", call.name)),
             },
@@ -308,6 +316,7 @@ mod tests {
         async fn run_for_session(
             &self,
             session: &SessionId,
+            _request_id: &str,
             _input: &str,
         ) -> anyhow::Result<Vec<ContentPart>> {
             Ok(text_parts(session.0.clone()))

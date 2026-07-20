@@ -687,6 +687,20 @@ re-document them here):
   warning for an escaping call (bypassing the coarse per-run `Ask` cache) and
   records the grant into the same `ExtraRootStore` on approval — a durably
   granted path still resolves silently, matching a direct call exactly.
+  **A `Once` grant is bound to its approving `request_id`** (#449,
+  [ADR-0120](../docs/adr/0120-once-scoped-escape-root-grant-bound-to-request-id.md)):
+  per-call executor tasks are detached and run concurrently, so keying `once`
+  by `(tool, path)` alone let a different in-flight call to the same escaping
+  path consume a single-use token it was never approved for.
+  `ExtraRootStore::record`/`take_allowance` now key `Once` on
+  `(tool, path, request_id)` — `Session`/`Always` are unchanged, still
+  `(tool, path)` only. `Tool::run_for_session` gains a `request_id: &str`
+  parameter (`ToolRegistry::execute` forwards `call.id`, which it already had);
+  default delegates to `run_content` unchanged, so this is source-compatible —
+  only the six escape-root-capable host tools override it. `script.rs`
+  threads its per-binding `bind_rid` into both `record` and the delegated
+  `exec()` call so a script-obtained `Once` grant is redeemed by that exact
+  binding invocation too.
 
 | Topic | Module |
 | --- | --- |

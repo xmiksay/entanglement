@@ -15,8 +15,13 @@
 //!
 //! # Scopes
 //!
-//! - **Once** — a single-use allowance consumed by the very next access to that
-//!   `(tool, path)`. Not persisted, not reusable.
+//! - **Once** — a single-use allowance bound to the specific `request_id` it was
+//!   approved for (#449) and consumed by that call alone. Per-call executor
+//!   tasks are detached and multiple tool tasks per session are normal, so
+//!   without this binding a `Once` token approved for one call could be
+//!   consumed by a *different* concurrently-running call to the same
+//!   `(tool, path)` — whichever resolving call happened to reach the store
+//!   first. Not persisted, not reusable.
 //! - **Session** — kept in memory for the life of the process. (Escape-root
 //!   scope is process-wide rather than per-[`SessionId`]: this is a local,
 //!   single-user tool, ADR-0047/0048, so "for this session" and "for this run"
@@ -45,14 +50,21 @@ const EXTRA_ROOTS_FILE_ENV: &str = "ENTANGLEMENT_EXTRA_ROOTS_FILE";
 /// `write` check.
 type GrantKey = (String, String);
 
+/// A single-use grant: the `(tool, path)` it covers plus the `request_id` of
+/// the call it was approved for (#449) — the durable scopes fall back to
+/// path-only matching (`GrantKey` alone), but a `Once` token must be redeemed
+/// by the exact call that earned it.
+type OnceKey = (String, String, String);
+
 #[derive(Default)]
 struct Inner {
     /// Persisted across runs (`Always`).
     always: HashSet<GrantKey>,
     /// Process-lifetime (`Session`).
     session: HashSet<GrantKey>,
-    /// Single-use (`Once`), removed on first consumption.
-    once: HashSet<GrantKey>,
+    /// Single-use (`Once`), removed on first consumption by its bound
+    /// `request_id`.
+    once: HashSet<OnceKey>,
 }
 
 /// Approval-gated out-of-root access grants (ADR-0109). Cheaply cloneable behind
@@ -101,27 +113,35 @@ impl ExtraRootStore {
         g.always.contains(&k) || g.session.contains(&k)
     }
 
-    /// Whether `(tool, path)` may be accessed now, **consuming** a one-shot grant
-    /// if that is what authorizes it. The host tools call this from the
-    /// containment gate: a durable grant leaves state untouched, a `Once` grant
-    /// is spent by this call.
-    pub fn take_allowance(&self, tool: &str, path: &Path) -> bool {
+    /// Whether `(tool, path)` may be accessed now by `request_id`, **consuming**
+    /// a one-shot grant if that is what authorizes it. The host tools call this
+    /// from the containment gate: a durable (`Session`/`Always`) grant leaves
+    /// state untouched and matches on `(tool, path)` alone — the fallback for
+    /// scopes that are meant to cover every later call, not just one. A `Once`
+    /// grant is spent by this call **only if `request_id` matches the call it
+    /// was approved for** (#449); a different concurrent call to the same
+    /// `(tool, path)` cannot consume someone else's single-use token.
+    pub fn take_allowance(&self, tool: &str, path: &Path, request_id: &str) -> bool {
         let k = key(tool, path);
         let mut g = self.inner.lock().expect("extra-roots mutex poisoned");
         if g.always.contains(&k) || g.session.contains(&k) {
             return true;
         }
-        g.once.remove(&k)
+        let once_key = (k.0, k.1, request_id.to_string());
+        g.once.remove(&once_key)
     }
 
-    /// Record an approval for `(tool, path)` at `scope`. `Always` also persists.
-    pub fn record(&self, tool: &str, path: &Path, scope: ApprovalScope) {
+    /// Record an approval for `(tool, path)` at `scope`, approved by the call
+    /// identified by `request_id`. `Always` also persists. `request_id` is only
+    /// meaningful for `Once` (#449) — a durable scope is path-only by design, so
+    /// it is ignored for `Session`/`Always`.
+    pub fn record(&self, tool: &str, path: &Path, scope: ApprovalScope, request_id: &str) {
         let k = key(tool, path);
         let persist = {
             let mut g = self.inner.lock().expect("extra-roots mutex poisoned");
             match scope {
                 ApprovalScope::Once => {
-                    g.once.insert(k);
+                    g.once.insert((k.0, k.1, request_id.to_string()));
                     false
                 }
                 ApprovalScope::Session => {
@@ -194,29 +214,119 @@ mod tests {
     fn once_is_single_use_per_tool() {
         let s = ExtraRootStore::ephemeral();
         let p = Path::new("/etc/hosts");
-        s.record("read", p, ApprovalScope::Once);
+        s.record("read", p, ApprovalScope::Once, "req-1");
         // A different tool is not covered by a read grant.
-        assert!(!s.take_allowance("write", p));
+        assert!(!s.take_allowance("write", p, "req-1"));
         // The read one-shot is spent by the first consume.
-        assert!(s.take_allowance("read", p));
-        assert!(!s.take_allowance("read", p));
+        assert!(s.take_allowance("read", p, "req-1"));
+        assert!(!s.take_allowance("read", p, "req-1"));
+    }
+
+    /// #449: a `Once` grant is bound to the `request_id` it was approved for —
+    /// a different concurrently-running call to the same `(tool, path)` cannot
+    /// consume someone else's single-use token.
+    #[test]
+    fn once_is_bound_to_the_approving_request_id() {
+        let s = ExtraRootStore::ephemeral();
+        let p = Path::new("/etc/hosts");
+        s.record("read", p, ApprovalScope::Once, "req-A");
+        // A different, concurrently-running call cannot spend req-A's token.
+        assert!(!s.take_allowance("read", p, "req-B"));
+        // The token is still there — only the approved call can redeem it.
+        assert!(s.take_allowance("read", p, "req-A"));
+        assert!(!s.take_allowance("read", p, "req-A"), "spent once");
+    }
+
+    /// #449: two concurrent calls to the same `(tool, path)` can each be
+    /// separately approved `Once` — every approval mints its own token bound to
+    /// its own request id, so neither steals the other's allowance.
+    #[test]
+    fn concurrent_once_grants_to_the_same_path_are_independent() {
+        let s = ExtraRootStore::ephemeral();
+        let p = Path::new("/etc/hosts");
+        s.record("read", p, ApprovalScope::Once, "req-A");
+        s.record("read", p, ApprovalScope::Once, "req-B");
+        // Redeeming req-B's token first must not also spend req-A's.
+        assert!(s.take_allowance("read", p, "req-B"));
+        assert!(s.take_allowance("read", p, "req-A"));
+        assert!(!s.take_allowance("read", p, "req-A"));
+        assert!(!s.take_allowance("read", p, "req-B"));
+    }
+
+    /// #449: the concurrency scenario from the issue, exercised with real
+    /// tokio tasks racing on a shared, `Arc`-wrapped store — not just
+    /// sequential calls. A `Once` grant approved for `"owner"` is hammered by
+    /// many concurrent tasks impersonating *other* request ids while the real
+    /// owner also races to redeem it; regardless of scheduling, only the owner
+    /// ever succeeds, and it succeeds exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_calls_cannot_steal_a_once_grant_from_its_owner() {
+        use std::sync::Arc;
+
+        let s = Arc::new(ExtraRootStore::ephemeral());
+        let p = std::path::PathBuf::from("/etc/hosts");
+        s.record("read", &p, ApprovalScope::Once, "owner");
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(21));
+        let mut tasks = Vec::new();
+
+        // 20 impostors, all racing to steal the token with the wrong id.
+        for i in 0..20 {
+            let s = s.clone();
+            let p = p.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                s.take_allowance("read", &p, &format!("impostor-{i}"))
+            }));
+        }
+
+        // The real owner, racing alongside them.
+        let owner_task = {
+            let s = s.clone();
+            let p = p.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                s.take_allowance("read", &p, "owner")
+            })
+        };
+
+        let impostor_results: Vec<bool> = futures::future::join_all(tasks)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+        let owner_result = owner_task.await.unwrap();
+
+        assert!(
+            impostor_results.iter().all(|&won| !won),
+            "no impostor request id may ever consume another call's Once token"
+        );
+        assert!(
+            owner_result,
+            "the approved call must be able to redeem its own token"
+        );
     }
 
     #[test]
     fn session_is_reusable_but_not_durable_across_take() {
         let s = ExtraRootStore::ephemeral();
         let p = Path::new("/var/data");
-        s.record("write", p, ApprovalScope::Session);
+        s.record("write", p, ApprovalScope::Session, "req-1");
         assert!(s.is_durably_allowed("write", p));
-        assert!(s.take_allowance("write", p));
-        assert!(s.take_allowance("write", p), "session grant is reusable");
+        assert!(s.take_allowance("write", p, "req-1"));
+        assert!(
+            s.take_allowance("write", p, "some-other-request"),
+            "a durable grant falls back to path-only matching, ignoring request_id"
+        );
     }
 
     #[test]
     fn per_tool_isolation() {
         let s = ExtraRootStore::ephemeral();
         let p = Path::new("/x");
-        s.record("read", p, ApprovalScope::Session);
+        s.record("read", p, ApprovalScope::Session, "req-1");
         assert!(s.is_durably_allowed("read", p));
         assert!(
             !s.is_durably_allowed("write", p),
@@ -231,7 +341,12 @@ mod tests {
         std::env::set_var(EXTRA_ROOTS_FILE_ENV, &file);
 
         let s = ExtraRootStore::load();
-        s.record("read", Path::new("/opt/thing"), ApprovalScope::Always);
+        s.record(
+            "read",
+            Path::new("/opt/thing"),
+            ApprovalScope::Always,
+            "req-1",
+        );
 
         let reloaded = ExtraRootStore::load();
         assert!(reloaded.is_durably_allowed("read", Path::new("/opt/thing")));

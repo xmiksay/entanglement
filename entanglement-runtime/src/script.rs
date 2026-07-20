@@ -411,6 +411,13 @@ async fn service_binding(
     approved: &mut HashSet<String>,
     call: &BindingCall,
 ) -> (Result<String, String>, bool) {
+    // This binding's own request id (distinct from the outer `rhai` call's):
+    // the head's Approve/Reject for a nested `Ask` matches this, not the outer
+    // call, and it doubles as the identity a `Once` escape-root grant is bound
+    // to (#449) — threaded into `exec` below so the tool that redeems the grant
+    // is the exact one that was approved, not a differently-keyed stand-in.
+    let bind_rid = format!("{request_id}:rhai:{}", call.tool);
+
     let perm = match policy.decide(call.tool, &call.input) {
         Decision::Masked => {
             return (
@@ -435,22 +442,19 @@ async fn service_binding(
         .filter(|(er, abs)| !er.store.is_durably_allowed(call.tool, abs));
 
     if perm == Permission::Allow && escape.is_none() {
-        return (Ok(exec(tools, session, call).await), false);
+        return (Ok(exec(tools, session, &bind_rid, call).await), false);
     }
 
     let key = approval_cache_key(call.tool, &call.input);
     if escape.is_none() && approved.contains(&key) {
-        return (Ok(exec(tools, session, call).await), false);
+        return (Ok(exec(tools, session, &bind_rid, call).await), false);
     }
 
-    // Nested approval gets its own request id so the head's Approve/Reject
-    // matches this binding, not the outer `rhai` call. The card shows the
-    // binding's tool + args; the script source rode the outer approval. An
-    // escaping call also carries the same "outside the project root" warning a
-    // direct call's approval card would (ADR-0109) — otherwise the user
-    // approves a generic-looking "{tool} (rhai)" prompt with no signal the
-    // script is about to reach outside the project.
-    let bind_rid = format!("{request_id}:rhai:{}", call.tool);
+    // The card shows the binding's tool + args; the script source rode the
+    // outer approval. An escaping call also carries the same "outside the
+    // project root" warning a direct call's approval card would (ADR-0109) —
+    // otherwise the user approves a generic-looking "{tool} (rhai)" prompt with
+    // no signal the script is about to reach outside the project.
     let card_tool = format!("{} (rhai)", call.tool);
     let card_input = match &escape {
         Some((_, abs)) => format!(
@@ -465,13 +469,16 @@ async fn service_binding(
             if let Some((er, abs)) = &escape {
                 // Record into the same store a direct call's approval would
                 // (`tool_runner::await_decision`), so the delegated host tool's
-                // own containment check lets this call through.
-                er.store.record(call.tool, abs, scope);
+                // own containment check lets this call through. Bound to
+                // `bind_rid` (#449) — the same id `exec` below hands the tool as
+                // its request id, so a `Once` grant is redeemed by this exact
+                // binding call, not a concurrently-running one.
+                er.store.record(call.tool, abs, scope, &bind_rid);
             } else {
                 approved.insert(key);
             }
             set_state(holly, session, AgentState::Thinking);
-            (Ok(exec(tools, session, call).await), false)
+            (Ok(exec(tools, session, &bind_rid, call).await), false)
         }
         Approval::Rejected(reason) => {
             set_state(holly, session, AgentState::Thinking);
@@ -507,11 +514,20 @@ fn approval_cache_key(tool: &'static str, input: &str) -> String {
 /// the run — it surfaces the message to the script). A `rhai` script is a text
 /// context, so an image result (#221) collapses to its text parts (empty for an
 /// image-only `read`) rather than smuggling base64 into the script.
-async fn exec(tools: &ToolRegistry, session: &SessionId, call: &BindingCall) -> String {
+/// `request_id` (#449) is this binding's own id (`bind_rid` in
+/// [`service_binding`]) — carried as the `ToolCall`'s id so a delegated host
+/// tool's `Once` escape-root grant, bound to that same id, is redeemed by this
+/// exact call.
+async fn exec(
+    tools: &ToolRegistry,
+    session: &SessionId,
+    request_id: &str,
+    call: &BindingCall,
+) -> String {
     let content = tools
         .execute(
             &ToolCall {
-                id: format!("rhai:{}", call.tool),
+                id: request_id.to_string(),
                 name: call.tool.to_string(),
                 input: call.input.clone(),
                 provider_meta: None,

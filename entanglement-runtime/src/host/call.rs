@@ -28,6 +28,7 @@ use super::{resolve_under_root, truncate_output};
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -291,6 +292,26 @@ impl Tool for CallTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
+        self.run_impl("", input).await
+    }
+
+    async fn run_for_session(
+        &self,
+        _session: &SessionId,
+        request_id: &str,
+        input: &str,
+    ) -> Result<Vec<ContentPart>> {
+        Ok(crate::tools::text_parts(
+            self.run_impl(request_id, input).await?,
+        ))
+    }
+}
+
+impl CallTool {
+    /// `request_id` (#449) is forwarded to the escape-root grant check so a
+    /// `Once` approval for `workdir` is only consumed by the call it was
+    /// approved for.
+    async fn run_impl(&self, request_id: &str, input: &str) -> Result<String> {
         let parsed: CallInput = serde_json::from_str(input)
             .context("invalid input to call: expected {\"command\": string, ...}")?;
         let secs = parsed.timeout.unwrap_or(120);
@@ -319,6 +340,7 @@ impl Tool for CallTool {
             &self.root,
             self.extra_roots.as_deref(),
             "call",
+            request_id,
             parsed.workdir.as_deref(),
         )?;
 

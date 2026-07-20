@@ -9,7 +9,7 @@ use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::Engine as _;
-use entanglement_core::ContentPart;
+use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -110,12 +110,37 @@ impl Tool for ReadTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
+        self.read_text("", input).await
+    }
+
+    /// An image file (by extension) is base64-encoded into an image content block
+    /// the provider renders natively (#221); `offset`/`limit` don't apply. Every
+    /// other file takes the text path via [`run`][Self::run].
+    async fn run_content(&self, input: &str) -> Result<Vec<ContentPart>> {
+        self.read_content("", input).await
+    }
+
+    async fn run_for_session(
+        &self,
+        _session: &SessionId,
+        request_id: &str,
+        input: &str,
+    ) -> Result<Vec<ContentPart>> {
+        self.read_content(request_id, input).await
+    }
+}
+
+impl ReadTool {
+    /// `request_id` (#449) is forwarded to the escape-root grant check so a
+    /// `Once` approval is only consumed by the call it was approved for.
+    async fn read_text(&self, request_id: &str, input: &str) -> Result<String> {
         let parsed: ReadInput = serde_json::from_str(input)
             .context("invalid input to read: expected {\"path\": string, ...}")?;
         let full = resolve_under_root_or_grant(
             &self.root,
             self.extra_roots.as_deref(),
             "read",
+            request_id,
             &parsed.path,
         )?;
         let bytes = tokio::fs::read(&full)
@@ -144,19 +169,19 @@ impl Tool for ReadTool {
         Ok(truncate_output(out))
     }
 
-    /// An image file (by extension) is base64-encoded into an image content block
-    /// the provider renders natively (#221); `offset`/`limit` don't apply. Every
-    /// other file takes the text path via [`run`][Self::run].
-    async fn run_content(&self, input: &str) -> Result<Vec<ContentPart>> {
+    async fn read_content(&self, request_id: &str, input: &str) -> Result<Vec<ContentPart>> {
         let parsed: ReadInput = serde_json::from_str(input)
             .context("invalid input to read: expected {\"path\": string, ...}")?;
         let Some(media_type) = image_media_type(&parsed.path) else {
-            return Ok(crate::tools::text_parts(self.run(input).await?));
+            return Ok(crate::tools::text_parts(
+                self.read_text(request_id, input).await?,
+            ));
         };
         let full = resolve_under_root_or_grant(
             &self.root,
             self.extra_roots.as_deref(),
             "read",
+            request_id,
             &parsed.path,
         )?;
         let bytes = tokio::fs::read(&full)

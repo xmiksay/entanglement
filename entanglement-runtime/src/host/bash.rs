@@ -13,6 +13,7 @@ use super::truncate_head_tail;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -159,12 +160,33 @@ impl Tool for BashTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
+        self.run_impl("", input).await
+    }
+
+    async fn run_for_session(
+        &self,
+        _session: &SessionId,
+        request_id: &str,
+        input: &str,
+    ) -> Result<Vec<ContentPart>> {
+        Ok(crate::tools::text_parts(
+            self.run_impl(request_id, input).await?,
+        ))
+    }
+}
+
+impl BashTool {
+    /// `request_id` (#449) is forwarded to the escape-root grant check so a
+    /// `Once` approval for `workdir` is only consumed by the call it was
+    /// approved for.
+    async fn run_impl(&self, request_id: &str, input: &str) -> Result<String> {
         let parsed: BashInput = serde_json::from_str(input)
             .context("invalid input to bash: expected {\"command\": string, ...}")?;
         let cwd = super::resolve_workdir_or_grant(
             &self.root,
             self.extra_roots.as_deref(),
             "bash",
+            request_id,
             parsed.workdir.as_deref(),
         )?;
         let mut cmd = self.build_command(&parsed.command, &cwd);
