@@ -75,9 +75,11 @@ fn generation_config(generation: Option<GenerationParams>) -> Option<Value> {
 
 /// Map entanglement's `Message` history to Gemini `contents`. User messages →
 /// `role: "user"`; assistant → `role: "model"` (text + `functionCall` parts, each
-/// restoring its stashed `thoughtSignature`); tool results → a `user` turn of
-/// `functionResponse` parts keyed by the call name (#309) — recovered from the
-/// synthesized `id#ordinal` via [`tool_name_from_id`] (#444).
+/// restoring its stashed `thoughtSignature`); tool results → a `user` turn with a
+/// `functionResponse` part keyed by the call name (#309) — recovered from the
+/// synthesized `id#ordinal` via [`tool_name_from_id`] (#444) — plus a trailing
+/// `inlineData` part for each image block the result carries (#447), since
+/// Gemini's `functionResponse.response` has no slot for binary content.
 fn convert_messages(messages: &[Message]) -> Vec<Value> {
     let mut out = Vec::with_capacity(messages.len());
     for m in messages {
@@ -99,15 +101,21 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
             MessageRole::Tool => {
                 let id = m.tool_call_id.clone().unwrap_or_default();
                 let name = tool_name_from_id(&id).to_string();
-                out.push(json!({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": name,
-                            "response": { "result": m.text() },
-                        }
-                    }],
-                }));
+                let mut parts = vec![json!({
+                    "functionResponse": {
+                        "name": name,
+                        "response": { "result": m.text() },
+                    }
+                })];
+                for p in &m.content {
+                    if let ContentPart::Image {
+                        source: ImageSource::Base64 { media_type, data },
+                    } = p
+                    {
+                        parts.push(image_part(media_type, data));
+                    }
+                }
+                out.push(json!({ "role": "user", "parts": parts }));
             }
         }
     }
@@ -143,9 +151,14 @@ fn content_parts(content: &[ContentPart]) -> Vec<Value> {
             ContentPart::Text { text } => Some(json!({ "text": text })),
             ContentPart::Image {
                 source: ImageSource::Base64 { media_type, data },
-            } => Some(json!({ "inlineData": { "mimeType": media_type, "data": data } })),
+            } => Some(image_part(media_type, data)),
         })
         .collect()
+}
+
+/// One base64 image content block → Gemini `{ inlineData: { mimeType, data } }`.
+fn image_part(media_type: &str, data: &str) -> Value {
+    json!({ "inlineData": { "mimeType": media_type, "data": data } })
 }
 
 fn convert_tools(tools: &[ToolSpec]) -> Option<Vec<Value>> {
@@ -374,6 +387,31 @@ mod request_tests {
         let fr = &contents[0]["parts"][0]["functionResponse"];
         assert_eq!(fr["name"], "read");
         assert_eq!(fr["response"]["result"], "file b contents");
+    }
+
+    #[test]
+    fn tool_result_with_image_includes_inline_data_alongside_response() {
+        // `read` on an image (#221) must not lose the image on the Gemini wire
+        // (#447): the functionResponse part stays text-only, and each image
+        // block rides along as a trailing inlineData part in the same turn.
+        let msg = Message::tool_content(
+            "read#1",
+            vec![
+                ContentPart::text("file contents"),
+                ContentPart::image("image/png", "AAAA"),
+            ],
+        );
+        let contents = convert_messages(&[msg]);
+        assert_eq!(contents[0]["role"], "user");
+        let parts = contents[0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["functionResponse"]["name"], "read");
+        assert_eq!(
+            parts[0]["functionResponse"]["response"]["result"],
+            "file contents"
+        );
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(parts[1]["inlineData"]["data"], "AAAA");
     }
 
     #[test]
