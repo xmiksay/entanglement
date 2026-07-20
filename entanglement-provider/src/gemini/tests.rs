@@ -22,7 +22,8 @@ fn text_part_yields_text() {
     let data = json!({ "candidates": [{ "content": { "parts": [{ "text": "hello" }] } }] });
     let mut usage = Usage::default();
     let mut fr = None;
-    let evs = handle_chunk(&data, &mut usage, &mut fr).unwrap();
+    let mut ordinal = 0;
+    let evs = handle_chunk(&data, &mut usage, &mut fr, &mut ordinal).unwrap();
     assert_eq!(evs, vec![LlmEvent::Text("hello".into())]);
 }
 
@@ -33,7 +34,8 @@ fn thought_part_yields_reasoning() {
     });
     let mut usage = Usage::default();
     let mut fr = None;
-    let evs = handle_chunk(&data, &mut usage, &mut fr).unwrap();
+    let mut ordinal = 0;
+    let evs = handle_chunk(&data, &mut usage, &mut fr, &mut ordinal).unwrap();
     assert_eq!(evs, vec![LlmEvent::Reasoning("pondering".into())]);
 }
 
@@ -47,18 +49,76 @@ fn function_call_assembles_tool_call_with_signature() {
     });
     let mut usage = Usage::default();
     let mut fr = None;
-    let evs = handle_chunk(&data, &mut usage, &mut fr).unwrap();
+    let mut ordinal = 0;
+    let evs = handle_chunk(&data, &mut usage, &mut fr, &mut ordinal).unwrap();
     let LlmEvent::ToolCall(tc) = &evs[0] else {
         panic!("expected ToolCall, got {evs:?}");
     };
     assert_eq!(tc.name, "search");
-    assert_eq!(tc.id, "search"); // Gemini matches responses by name.
+    assert_eq!(tc.id, "search#0"); // unique per stream (#444), name recovered on reply.
     assert_eq!(tc.input, r#"{"q":"rust"}"#);
     // The opaque signature is stashed for verbatim round-trip (#309).
     assert_eq!(
         tc.provider_meta.as_ref().unwrap()[THOUGHT_SIGNATURE_KEY],
         "SIG-xyz"
     );
+}
+
+#[test]
+fn parallel_same_tool_calls_get_distinct_ids() {
+    // Two parallel calls to the same tool in one chunk (#444): sharing an id
+    // would collapse to one `request_id` and wedge the turn (see module docs).
+    let data = json!({
+        "candidates": [{ "content": { "parts": [
+            { "functionCall": { "name": "read", "args": { "path": "a.rs" } } },
+            { "functionCall": { "name": "read", "args": { "path": "b.rs" } } },
+        ] } }]
+    });
+    let mut usage = Usage::default();
+    let mut fr = None;
+    let mut ordinal = 0;
+    let evs = handle_chunk(&data, &mut usage, &mut fr, &mut ordinal).unwrap();
+    let ids: Vec<&str> = evs
+        .iter()
+        .map(|ev| {
+            let LlmEvent::ToolCall(tc) = ev else {
+                panic!("expected ToolCall, got {ev:?}");
+            };
+            assert_eq!(tc.name, "read");
+            tc.id.as_str()
+        })
+        .collect();
+    assert_eq!(ids, vec!["read#0", "read#1"]);
+    assert_ne!(ids[0], ids[1]);
+}
+
+#[test]
+fn tool_call_ordinal_advances_across_chunks() {
+    // The ordinal is threaded per-stream, not per-chunk, so two separate
+    // chunks (as Gemini may send across SSE frames) still get distinct ids.
+    let one = json!({
+        "candidates": [{ "content": { "parts": [
+            { "functionCall": { "name": "bash", "args": {} } },
+        ] } }]
+    });
+    let two = json!({
+        "candidates": [{ "content": { "parts": [
+            { "functionCall": { "name": "bash", "args": {} } },
+        ] } }]
+    });
+    let mut usage = Usage::default();
+    let mut fr = None;
+    let mut ordinal = 0;
+    let first = handle_chunk(&one, &mut usage, &mut fr, &mut ordinal).unwrap();
+    let second = handle_chunk(&two, &mut usage, &mut fr, &mut ordinal).unwrap();
+    let LlmEvent::ToolCall(tc1) = &first[0] else {
+        panic!("expected ToolCall");
+    };
+    let LlmEvent::ToolCall(tc2) = &second[0] else {
+        panic!("expected ToolCall");
+    };
+    assert_eq!(tc1.id, "bash#0");
+    assert_eq!(tc2.id, "bash#1");
 }
 
 #[test]
@@ -70,7 +130,8 @@ fn function_call_without_signature_has_no_meta() {
     });
     let mut usage = Usage::default();
     let mut fr = None;
-    let evs = handle_chunk(&data, &mut usage, &mut fr).unwrap();
+    let mut ordinal = 0;
+    let evs = handle_chunk(&data, &mut usage, &mut fr, &mut ordinal).unwrap();
     let LlmEvent::ToolCall(tc) = &evs[0] else {
         panic!("expected ToolCall");
     };
@@ -92,7 +153,8 @@ fn usage_metadata_splits_cached_from_input() {
     });
     let mut usage = Usage::default();
     let mut fr = None;
-    handle_chunk(&data, &mut usage, &mut fr).unwrap();
+    let mut ordinal = 0;
+    handle_chunk(&data, &mut usage, &mut fr, &mut ordinal).unwrap();
     assert_eq!(usage.input_tokens, Some(70));
     assert_eq!(usage.cached_input_tokens, Some(30));
     assert_eq!(usage.output_tokens, Some(12));

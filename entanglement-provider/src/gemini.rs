@@ -33,6 +33,24 @@ pub const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/
 /// [`ToolCall::provider_meta`], so restore reads back exactly what stream wrote.
 pub(crate) const THOUGHT_SIGNATURE_KEY: &str = "gemini_thought_signature";
 
+/// Build a per-stream-unique [`ToolCall::id`] for a Gemini `functionCall`
+/// (#444). Gemini itself has no call id — matching a `functionResponse` back
+/// to its call is done by **name** — so two parallel calls to the same tool
+/// would otherwise share one id, and the runtime's `request_id` dedupe (the
+/// ADR-0071 re-offer soundness mechanism) collapses them into a single
+/// `ToolExec`, wedging the turn. `#` can't appear in a Gemini function name
+/// (`^[a-zA-Z0-9_.-]+$`), so it's a safe, unambiguous separator to split back
+/// off in [`tool_name_from_id`].
+fn synthesize_tool_call_id(name: &str, ordinal: usize) -> String {
+    format!("{name}#{ordinal}")
+}
+
+/// Recover the bare tool name from an id built by [`synthesize_tool_call_id`],
+/// for the `functionResponse.name` Gemini matches results by (#444).
+pub(crate) fn tool_name_from_id(id: &str) -> &str {
+    id.rsplit_once('#').map_or(id, |(name, _)| name)
+}
+
 /// Streaming Gemini client. Cheap to clone (the HTTP client is `Arc`-shared
 /// internally); build one per session via [`gemini_factory`].
 #[derive(Clone)]
@@ -155,6 +173,7 @@ impl Llm for GeminiLlm {
             let mut usage = Usage::default();
             let mut finish_reason: Option<String> = None;
             let mut saw_tool_call = false;
+            let mut tool_call_ordinal: usize = 0;
             let mut rx = rx;
 
             while let Some(item) = rx.recv().await {
@@ -162,7 +181,7 @@ impl Llm for GeminiLlm {
                 frames.push(&chunk);
                 while let Some(frame_owned) = frames.next_frame() {
                     let Some(data) = parse_frame(&frame_owned) else { continue };
-                    for ev in handle_chunk(&data, &mut usage, &mut finish_reason)? {
+                    for ev in handle_chunk(&data, &mut usage, &mut finish_reason, &mut tool_call_ordinal)? {
                         if matches!(ev, LlmEvent::ToolCall(_)) {
                             saw_tool_call = true;
                         }
@@ -212,6 +231,7 @@ fn handle_chunk(
     data: &Value,
     usage: &mut Usage,
     finish_reason: &mut Option<String>,
+    tool_call_ordinal: &mut usize,
 ) -> Result<Vec<LlmEvent>, anyhow::Error> {
     let mut out = Vec::new();
 
@@ -221,7 +241,12 @@ fn handle_chunk(
     {
         for part in parts {
             if let Some(fc) = part.get("functionCall") {
-                out.push(LlmEvent::ToolCall(function_call_to_tool_call(fc, part)));
+                out.push(LlmEvent::ToolCall(function_call_to_tool_call(
+                    fc,
+                    part,
+                    *tool_call_ordinal,
+                )));
+                *tool_call_ordinal += 1;
             } else if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                 if text.is_empty() {
                     continue;
@@ -250,12 +275,13 @@ fn handle_chunk(
     Ok(out)
 }
 
-/// Build a [`ToolCall`] from a Gemini `functionCall` part. Gemini matches a
-/// `functionResponse` back to its call by **name**, so the id is the name (the
-/// runtime echoes `tool_call_id` as that name in [`convert_messages`]). The
-/// `thoughtSignature` (a thinking model's opaque per-call token) is preserved in
-/// `provider_meta` for verbatim round-trip on the next turn (#309).
-fn function_call_to_tool_call(fc: &Value, part: &Value) -> ToolCall {
+/// Build a [`ToolCall`] from a Gemini `functionCall` part. The id is
+/// `name#ordinal` (#444) — unique per stream even when the same tool is
+/// called in parallel — while `name` stays bare; [`tool_name_from_id`]
+/// recovers it when the reply is sent back as a `functionResponse`. The
+/// `thoughtSignature` (a thinking model's opaque per-call token) is preserved
+/// in `provider_meta` for verbatim round-trip on the next turn (#309).
+fn function_call_to_tool_call(fc: &Value, part: &Value, ordinal: usize) -> ToolCall {
     let name = fc
         .get("name")
         .and_then(|v| v.as_str())
@@ -268,7 +294,7 @@ fn function_call_to_tool_call(fc: &Value, part: &Value) -> ToolCall {
         .and_then(|v| v.as_str())
         .map(|sig| json!({ THOUGHT_SIGNATURE_KEY: sig }));
     ToolCall {
-        id: name.clone(),
+        id: synthesize_tool_call_id(&name, ordinal),
         name,
         input,
         provider_meta,
