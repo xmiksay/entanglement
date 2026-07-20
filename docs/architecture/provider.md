@@ -108,7 +108,10 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   [ADR-0064](../adr/0064-message-content-blocks.md)): text-only user content stays
   a plain string (OpenAI) / string content (Anthropic); an image part switches to
   the block array — OpenAI `image_url` with a `data:` URL, Anthropic an `image`
-  block with a base64 `source` (incl. image `tool_result`s, the #221 path).
+  block with a base64 `source` (incl. image `tool_result`s, the #221 path); Gemini
+  has no image slot on `functionResponse.response` at all, so a tool result's
+  image blocks ride as trailing `inlineData` parts alongside the
+  `functionResponse` part in the same turn (#447).
 
 **Provider-side web search** (#305,
 [ADR-0075](../adr/0075-provider-side-web-search-mvp.md)) — opt-in, **client-
