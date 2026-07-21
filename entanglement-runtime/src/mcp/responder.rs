@@ -22,11 +22,14 @@ use crate::tools::SharedRegistry;
 use super::live::{mcp_add, mcp_list, mcp_remove, ActiveServers, ServerConfigs};
 
 /// Spawns a subscriber that answers `InMsg::McpList`/`McpAdd`/`McpRemove`.
+/// `secret_env` (the catalog's provider API-key env vars, #164) is scrubbed
+/// from any stdio server a live add spawns.
 pub fn spawn_mcp_responder(
     holly: &Holly,
     registry: SharedRegistry,
     active: ActiveServers,
     configs: ServerConfigs,
+    secret_env: Vec<String>,
 ) -> tokio::task::JoinHandle<()> {
     let emitter = holly.clone();
     let mut inbound = holly.subscribe_inbound();
@@ -39,7 +42,16 @@ pub fn spawn_mcp_responder(
                     emitter.emit_mcp_list(correlation_id, servers);
                 }
                 Ok(InMsg::McpAdd { name, config }) => {
-                    match mcp_add(name.clone(), config.into(), &registry, &active, &configs).await {
+                    match mcp_add(
+                        name.clone(),
+                        config.into(),
+                        &registry,
+                        &active,
+                        &configs,
+                        &secret_env,
+                    )
+                    .await
+                    {
                         Ok(tools) => {
                             tracing::info!(server = %name, tools = tools.len(), "MCP: live-added");
                             emitter.emit_mcp_changed(name, McpAction::Added);
@@ -86,7 +98,7 @@ mod tests {
         let registry: SharedRegistry = Arc::new(RwLock::new(ToolRegistry::new()));
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
         let configs: ServerConfigs = Arc::new(Mutex::new(HashMap::new()));
-        let handle = spawn_mcp_responder(&holly, registry, active, configs);
+        let handle = spawn_mcp_responder(&holly, registry, active, configs, Vec::new());
 
         holly
             .send(InMsg::McpList {
@@ -119,7 +131,13 @@ mod tests {
         let registry: SharedRegistry = Arc::new(RwLock::new(ToolRegistry::new()));
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
         let configs: ServerConfigs = Arc::new(Mutex::new(HashMap::new()));
-        let handle = spawn_mcp_responder(&holly, registry.clone(), active.clone(), configs);
+        let handle = spawn_mcp_responder(
+            &holly,
+            registry.clone(),
+            active.clone(),
+            configs,
+            Vec::new(),
+        );
 
         holly
             .send(InMsg::McpAdd {

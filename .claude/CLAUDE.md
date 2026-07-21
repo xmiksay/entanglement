@@ -296,10 +296,16 @@ re-document them here):
   [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)): `Holly::send`
   is the **privileged in-process** inbox (executor/head, trusted for any frame);
   a wire head deserializing untrusted bytes uses `Holly::send_from_wire`, which
-  enforces the `InMsg::wire_allowed()` allowlist and refuses (`WireError`) the
-  runtime-authored trio — `ToolResult` (a forged one resolves a parked turn on
+  enforces the `InMsg::wire_allowed()` allowlist — since #472/[ADR-0124](../docs/adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md)
+  an **explicit fail-closed `match`** (a new variant is wire-refused until
+  deliberately opted in) — and refuses (`WireError`) the trusted-only set:
+  `ToolResult` (a forged one resolves a parked turn on
   `request_id` alone, bypassing execution + permission), `Spawn` (bypasses
-  `spawn_refusal`), `Resume` (internal). The executor folds results back over the
+  `spawn_refusal`), `Resume` (internal), `HibernateSession` (#318), and
+  `McpAdd`/`McpRemove` (ADR-0124: an unapproved `McpAdd` spawns an arbitrary
+  local subprocess; the read-only `McpList` stays wire-allowed and the TUI
+  `/mcp` path is unaffected — it sends over the privileged `Holly::send`).
+  The executor folds results back over the
   named privileged `Holly::submit_tool_result` handle (via `seam::reply_content`);
   `pipe` calls `send_from_wire`. Local single-user scope
   ([ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md)) → robustness/UX,
@@ -415,7 +421,9 @@ re-document them here):
   execution and the model's advertised schemas with no restart. `InMsg::McpList
   { correlation_id }`/`McpAdd { name, config: McpServerSpec }`/`McpRemove { name
   }` are engine-global exactly like `ListSessions` (`session()` → `None`,
-  `msg_to_cmd` → no session task, wire-allowed), answered by
+  `msg_to_cmd` → no session task; only the read-only `McpList` is
+  wire-allowed — `McpAdd`/`McpRemove` are trusted-only since #472/ADR-0124,
+  and a stdio server's child env gets the #164 provider-key scrub), answered by
   `OutEvent::McpList { correlation_id, servers: Vec<McpServerStatus> }`/
   `McpChanged { name, action: McpAction }` — not by the core supervisor (which
   answers `ListSessions` from its own live-session directory) but by a new

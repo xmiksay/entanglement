@@ -146,7 +146,7 @@ async fn build_config(
         root.clone(),
         scratch_base,
         Some(extra_root_store.clone()),
-        secret_env,
+        secret_env.clone(),
         bash_enabled,
         sandbox,
     );
@@ -179,7 +179,9 @@ async fn build_config(
     // `ToolExec` round-trip (execution) with no core change — governed by the same
     // permission profiles as any host tool. A server that fails to connect is
     // logged and skipped, never fatal.
-    let initial_mcp = mcp::connect(&user_config.mcp, &mut tools).await;
+    // The same provider-key scrub as the exec tools (#164): an MCP stdio server
+    // is an arbitrary external process and must not inherit the engine's keys.
+    let initial_mcp = mcp::connect(&user_config.mcp, &mut tools, &secret_env).await;
     cfg.tool_specs = tools.specs();
     // `read_raw` (rhai-only, see `script.rs`'s `parse_json`/`parse_yaml`)
     // registers *after* the specs snapshot above: present in `tools` for
@@ -1076,8 +1078,13 @@ async fn main() -> Result<()> {
     // `McpList`/`McpAdd`/`McpRemove` off the inbound fan-out, since it alone
     // holds `tools` + `mcp_active` + `mcp_configs` — mirrors
     // `history::spawn_history_responder`'s answer to `ReplayFrom`.
-    let mcp_responder_handle =
-        mcp::spawn_mcp_responder(&holly, tools.clone(), mcp_active, mcp_configs);
+    let mcp_responder_handle = mcp::spawn_mcp_responder(
+        &holly,
+        tools.clone(),
+        mcp_active,
+        mcp_configs,
+        catalog.key_envs(),
+    );
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());

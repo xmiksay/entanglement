@@ -1,6 +1,6 @@
 # 0069. Trusted/untrusted wire-frame split: privileged in-process `ToolResult`/`Spawn`
 
-- Status: Accepted
+- Status: Amended by [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md)
 - Date: 2026-07-15
 
 ## Context

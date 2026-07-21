@@ -57,11 +57,12 @@ pub async fn mcp_add(
     registry: &SharedRegistry,
     active: &ActiveServers,
     configs: &ServerConfigs,
+    secret_env: &[String],
 ) -> Result<Vec<String>> {
     if cfg.disabled {
         bail!("cannot live-add a disabled MCP server `{name}` — omit `disabled` or set it false");
     }
-    let (client, defs) = connect_client(&name, &cfg).await?;
+    let (client, defs) = connect_client(&name, &cfg, secret_env).await?;
     let prefix = format!("mcp__{name}__");
     let tools = {
         let mut reg = registry.write().unwrap();
@@ -161,7 +162,7 @@ mod tests {
         let mut cfg = stdio_cfg("definitely-not-a-real-binary-xyz");
         cfg.disabled = true;
 
-        let err = mcp_add("srv".into(), cfg, &registry, &active, &configs)
+        let err = mcp_add("srv".into(), cfg, &registry, &active, &configs, &[])
             .await
             .unwrap_err();
         assert!(err.to_string().contains("disabled"));
@@ -181,6 +182,7 @@ mod tests {
             &registry,
             &active,
             &configs,
+            &[],
         )
         .await;
         assert!(result.is_err());

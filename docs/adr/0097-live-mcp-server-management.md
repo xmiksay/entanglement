@@ -1,6 +1,6 @@
 # 0097. Live MCP server management: wire ops, engine-global routing, config persistence
 
-- Status: Accepted
+- Status: Amended by [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md)
 - Date: 2026-07-16
 - Phase 4 of the MCP umbrella (#377), directly on top of
   [0096](0096-dynamic-toolregistry-sharedregistry.md) (Phase 3 —
