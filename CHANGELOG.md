@@ -8,7 +8,16 @@ Versioning is [Semantic Versioning](https://semver.org/). The *why* and rejected
 alternatives behind each design decision live in the ADRs under
 [`docs/adr/`](docs/adr/); the referenced `ADR-####` tags link there.
 
-## [Unreleased]
+## [0.4.0] - 2026-07-21
+
+The `apply_patch` host tool, engine-robustness fixes (ambiguous-stop retry,
+provider stream fixes), and the 2026-07-21 security-audit hardening (MCP
+stdio key scrub, wire-refused MCP mutation) on top of 0.3.0.
+
+> **Wire-behavior change:** `InMsg::McpAdd`/`McpRemove` are now refused on the
+> untrusted wire (`send_from_wire`) — a WS/pipe client can no longer add or
+> remove MCP servers (ADR-0124). `McpList` and trusted in-process heads (the
+> TUI `/mcp` command, embedders using `Holly::send`) are unaffected.
 
 ### Added
 
@@ -185,5 +194,6 @@ Initial (untagged) crates.io publish — the three-layer engine foundation
 streaming LLM providers, the stdio/TUI/`serve` heads, and the root-contained
 host tools.
 
+[0.4.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.4.0
 [0.3.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.3.0
 [0.2.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.2.0

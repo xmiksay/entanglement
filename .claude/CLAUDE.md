@@ -894,13 +894,18 @@ with parse-time fan-out incl. MCP tools, `rhai` exec bindings, workdir-scoped
 rules — [ADR-0114](../docs/adr/0114-capability-level-permission-keys.md)–[ADR-0117](../docs/adr/0117-mcp-tool-capability-fan-out.md)),
 per-endpoint concurrency cap + adaptive pacing + bounded 429 backpressure
 (#413/#414, [ADR-0111](../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)),
-session-lineage robustness fixes ([ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)/[ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)),
-and the `apply_patch` host tool (#455: unified-diff apply beside `edit`/`write`,
-the first producer of the reserved `FileChangeKind::ApplyDiff`).
-Unreleased since 0.3.0: the bounded ambiguous-stop retry
+and session-lineage robustness fixes ([ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)/[ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)).
+The **0.4.0** release (see [`../CHANGELOG.md`](../CHANGELOG.md)) adds the
+`apply_patch` host tool (#455: unified-diff apply beside `edit`/`write`, the
+first producer of the reserved `FileChangeKind::ApplyDiff`), the bounded
+ambiguous-stop retry
 ([ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md),
-`OutEvent::AmbiguousRetry`) — see [`../CHANGELOG.md`](../CHANGELOG.md)'s
-`[Unreleased]` section.
+`OutEvent::AmbiguousRetry`), `agent_poll timeout_secs: 0` as
+wait-for-completion ([ADR-0123](../docs/adr/0123-agent-poll-zero-timeout-waits-for-notification.md)),
+provider stream/throttle fixes, and the 2026-07-21 security-audit hardening
+(#472/[ADR-0124](../docs/adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md):
+MCP stdio provider-key scrub, `McpAdd`/`McpRemove` wire-refused, fail-closed
+wire allowlist).
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
