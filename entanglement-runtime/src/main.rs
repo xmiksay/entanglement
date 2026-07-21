@@ -798,6 +798,19 @@ enum InspectCmd {
     Config,
 }
 
+/// Whether this invocation runs the TUI as its head — either the explicit
+/// `skutter tui` subcommand or a bare `skutter` (no subcommand) with no prompt,
+/// which falls through to the TUI as the default head. Both hold the terminal in
+/// raw mode, so both must route logs to the file sink (see [`logging::init`]).
+/// Must stay in sync with the `Cmd::Tui`/`None` dispatch arms in [`main`].
+fn launches_tui_head(cmd: &Option<Cmd>, prompt: &[String]) -> bool {
+    match cmd {
+        Some(Cmd::Tui { .. }) => true,
+        None => prompt.is_empty(),
+        _ => false,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -815,10 +828,13 @@ async fn main() -> Result<()> {
     // go to stderr, except under the TUI (raw mode) where they'd corrupt the
     // screen and get a file sink instead. `RUST_LOG` overrides `--verbose`;
     // `--verbose` overrides the config's `verbose`.
-    logging::init(
-        cli.verbose || user_config.verbose,
-        matches!(cli.cmd, Some(Cmd::Tui { .. })),
-    )?;
+    //
+    // The TUI is entered via `skutter tui` *and* as the default head for a bare
+    // `skutter` with no prompt (see the `None` arm below); both hold the terminal
+    // in raw mode, so both must route logs to the file sink — otherwise a
+    // mid-session log line corrupts the display.
+    let launches_tui = launches_tui_head(&cli.cmd, &cli.prompt);
+    logging::init(cli.verbose || user_config.verbose, launches_tui)?;
 
     // First run: drop a commented starter config so `${config_dir}/entanglement/`
     // is a discoverable starting point rather than an empty dir (#219). The
@@ -1298,8 +1314,27 @@ fn format_relative(ts_ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::register_default_tools;
+    use super::{launches_tui_head, register_default_tools, Cmd};
     use crate::host::SandboxPolicy;
+
+    #[test]
+    fn tui_head_covers_bare_skutter_and_explicit_subcommand() {
+        // Explicit `skutter tui`.
+        assert!(launches_tui_head(
+            &Some(Cmd::Tui {
+                session: None,
+                agent: None,
+            }),
+            &[],
+        ));
+        // Bare `skutter` with no prompt → the TUI is the default head (the bug:
+        // this used to log to stderr and corrupt the interface).
+        assert!(launches_tui_head(&None, &[]));
+        // Bare `skutter "do a thing"` → a one-shot `run`, not the TUI.
+        assert!(!launches_tui_head(&None, &["hi".to_string()]));
+        // Any other subcommand is not the TUI.
+        assert!(!launches_tui_head(&Some(Cmd::Sessions), &[]));
+    }
 
     fn test_entry(name: &str) -> entanglement_provider::ProviderEntry {
         entanglement_provider::ProviderEntry {
