@@ -657,12 +657,17 @@ pub enum InMsg {
     /// `config.yml` so it survives a restart (#375). Best-effort like startup
     /// connect: a failed connect/handshake is logged, not surfaced as a session
     /// error (there is no session to attach one to). On success emits
-    /// [`OutEvent::McpChanged`] with [`McpAction::Added`].
+    /// [`OutEvent::McpChanged`] with [`McpAction::Added`]. **Trusted-only**
+    /// (#472, ADR-0124): a stdio `config` spawns an arbitrary local subprocess
+    /// with no approval prompt, so this must never arrive over an untrusted
+    /// wire — see [`wire_allowed`][InMsg::wire_allowed].
     McpAdd { name: String, config: McpServerSpec },
     /// Disconnect an MCP server (killing its subprocess / closing its HTTP
     /// session), drop its tools from the registry, and persist the removal
     /// (#375). Unknown name is a no-op (logged). On success emits
-    /// [`OutEvent::McpChanged`] with [`McpAction::Removed`].
+    /// [`OutEvent::McpChanged`] with [`McpAction::Removed`]. **Trusted-only**
+    /// (#472, ADR-0124) like [`McpAdd`][InMsg::McpAdd]: it mutates engine-global
+    /// config and tears down live tools.
     McpRemove { name: String },
     /// Fetch a session's persisted content history from `after_seq` onward, for a
     /// head that subscribed late and missed the live broadcast (#160, ADR-0072).
@@ -853,12 +858,8 @@ impl InMsg {
     ///
     /// The trusted/untrusted frame split. A head deserializing attacker-adjacent
     /// bytes (stdio `pipe`, WebSocket `serve`) forwards only the allowlisted
-    /// frames — `Prompt`/`Approve`/`Reject`/`AnswerQuestion`/`Stop`/`SetAgent`/
-    /// `SetModel`/`SetGeneration`/`ListSessions`/`ReplayFrom`/`CloseSession`/
-    /// `McpList`/`McpAdd`/`McpRemove` (#375: same local-trust tier as
-    /// `ListSessions` — enabling a server *is* consent, ADR-0047/ADR-0080). The
-    /// privileged trio
-    /// is **runtime-authored in process**, never wire-forgeable:
+    /// frames below. Everything else is **runtime-authored in process** (or an
+    /// engine-privileged control), never wire-forgeable:
     ///
     /// - [`ToolResult`][InMsg::ToolResult] resolves a parked turn matched on
     ///   `request_id` alone — a forged one bypasses execution *and* permission;
@@ -867,20 +868,48 @@ impl InMsg {
     /// - [`Resume`][InMsg::Resume] is internal (`#[serde(skip)]`, never on wire);
     /// - [`HibernateSession`][InMsg::HibernateSession] is an embedder memory-eviction
     ///   control (#318) — a wire head must not be able to evict another session's
-    ///   in-memory state.
+    ///   in-memory state;
+    /// - [`McpAdd`][InMsg::McpAdd]/[`McpRemove`][InMsg::McpRemove] (#472,
+    ///   ADR-0124, reversing #375's wire tier): an unapproved `McpAdd` spawns an
+    ///   arbitrary local subprocess, and the `serve` head's origin gate is
+    ///   opt-in — a hostile web page could otherwise drive it cross-origin over
+    ///   the local WebSocket. ADR-0047's "config is consent" covers the *config
+    ///   file*, not an unauthenticated wire frame. Trusted heads (the TUI
+    ///   `/mcp` command) keep both via [`Holly::send`][crate::Holly::send];
+    ///   `McpList` is read-only and stays wire-allowed.
     ///
     /// The executor submits `ToolResult`/`Spawn` over the privileged in-process
     /// [`Holly::send`][crate::Holly::send] (it holds the handle); a wire head uses
     /// [`Holly::send_from_wire`][crate::Holly::send_from_wire], which enforces this
     /// allowlist.
+    ///
+    /// An explicit allow-list `match` — not a negated blocklist — so a **new**
+    /// variant fails closed: it is wire-refused until someone adds it here
+    /// deliberately, and the exhaustive match makes that decision a compile
+    /// error to skip (mirroring [`session`][Self::session] /
+    /// [`variant_name`][Self::variant_name]).
     pub fn wire_allowed(&self) -> bool {
-        !matches!(
-            self,
+        match self {
+            InMsg::Prompt { .. }
+            | InMsg::Approve { .. }
+            | InMsg::Reject { .. }
+            | InMsg::AnswerQuestion { .. }
+            | InMsg::Stop { .. }
+            | InMsg::ListSessions { .. }
+            | InMsg::McpList { .. }
+            | InMsg::ReplayFrom { .. }
+            | InMsg::CloseSession { .. }
+            | InMsg::SetAgent { .. }
+            | InMsg::SetModel { .. }
+            | InMsg::SetGeneration { .. }
+            | InMsg::Oneshot { .. } => true,
             InMsg::ToolResult { .. }
-                | InMsg::Spawn { .. }
-                | InMsg::Resume { .. }
-                | InMsg::HibernateSession { .. }
-        )
+            | InMsg::Spawn { .. }
+            | InMsg::Resume { .. }
+            | InMsg::HibernateSession { .. }
+            | InMsg::McpAdd { .. }
+            | InMsg::McpRemove { .. } => false,
+        }
     }
 
     /// The serde `kind` tag of this variant, for diagnostics (e.g. a rejected
@@ -1375,6 +1404,22 @@ mod tests {
         // Memory eviction is an embedder control, trusted-only (#318): a wire head
         // must not be able to evict another session's in-memory state.
         assert!(!InMsg::HibernateSession { session: s.clone() }.wire_allowed());
+        // MCP mutation is trusted-only (#472, ADR-0124): an unapproved `McpAdd`
+        // spawns an arbitrary local subprocess, so neither mutating op may
+        // arrive over an untrusted wire. The read-only `McpList` stays allowed.
+        assert!(!InMsg::McpAdd {
+            name: "srv".into(),
+            config: McpServerSpec {
+                command: Some("evil".into()),
+                args: vec![],
+                env: std::collections::HashMap::new(),
+                url: None,
+                headers: std::collections::HashMap::new(),
+                disabled: false,
+            },
+        }
+        .wire_allowed());
+        assert!(!InMsg::McpRemove { name: "srv".into() }.wire_allowed());
         // Every head-authored frame stays acceptable off the wire.
         for msg in [
             InMsg::prompt(s.clone(), "hi"),
@@ -1420,6 +1465,9 @@ mod tests {
                 session: s.clone(),
                 op: "compact".into(),
                 args: serde_json::Value::Null,
+            },
+            InMsg::McpList {
+                correlation_id: "c1".into(),
             },
         ] {
             assert!(
@@ -1714,7 +1762,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_ops_are_wire_allowed_and_session_less() {
+    fn mcp_ops_are_session_less_and_only_the_query_is_wire_allowed() {
         let list = InMsg::McpList {
             correlation_id: "c1".into(),
         };
@@ -1736,12 +1784,17 @@ mod tests {
             name: "everything".into(),
         };
         for msg in [&list, &add, &remove] {
-            assert!(msg.wire_allowed(), "{msg:?} should be wire-allowed");
             assert_eq!(msg.session(), None, "{msg:?} is engine-global");
             let json = serde_json::to_string(msg).unwrap();
             let back: InMsg = serde_json::from_str(&json).unwrap();
             assert_eq!(msg, &back);
         }
+        // The read-only query stays wire-allowed; the mutating pair is
+        // trusted-only (#472, ADR-0124) — an unapproved `McpAdd` would spawn an
+        // arbitrary local subprocess straight off the wire.
+        assert!(list.wire_allowed());
+        assert!(!add.wire_allowed(), "McpAdd must be wire-refused");
+        assert!(!remove.wire_allowed(), "McpRemove must be wire-refused");
         assert_eq!(list.variant_name(), "mcp_list");
         assert_eq!(add.variant_name(), "mcp_add");
         assert_eq!(remove.variant_name(), "mcp_remove");
