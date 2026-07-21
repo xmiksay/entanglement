@@ -37,6 +37,7 @@
 //! or re-enter the parser.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -56,7 +57,8 @@ use tokio::sync::oneshot;
 
 use crate::host::truncate_output;
 use crate::pending::{self, PendingDecisions};
-use crate::permission::{min_permission, permission_arg, permission_chain, tool_masked};
+use crate::permission::{min_permission, permission_chain, tool_masked};
+use crate::permission_path::grading_arg;
 use crate::seam;
 use crate::subagent::SpawnGuard;
 use crate::tool_names::{BINDING_TOOLS, RHAI_TOOL};
@@ -161,6 +163,10 @@ pub struct BindingPolicy {
     masked: HashSet<&'static str>,
     /// Profiles folded least-privilege for each call: `[own, ancestors…, base]`.
     chain: Vec<PermissionProfile>,
+    /// The project root a path-arg binding's argument is normalized relative
+    /// to before matching (#485, ADR-0125) — mirrors `tool_runner::dispatch`'s
+    /// use of `grading_arg`. `None` keeps the pre-#485 verbatim match.
+    root: Option<PathBuf>,
 }
 
 impl BindingPolicy {
@@ -173,6 +179,7 @@ impl BindingPolicy {
         guard: &SpawnGuard,
         session: &SessionId,
         base: &PermissionProfile,
+        root: Option<&Path>,
     ) -> Self {
         let masked = BINDING_TOOLS
             .into_iter()
@@ -180,7 +187,11 @@ impl BindingPolicy {
             .collect();
         let mut chain = permission_chain(active, guard, session);
         chain.push(base.clone());
-        BindingPolicy { masked, chain }
+        BindingPolicy {
+            masked,
+            chain,
+            root: root.map(Path::to_path_buf),
+        }
     }
 
     /// Resolve one binding call: masked tools do not exist; otherwise the grade
@@ -195,7 +206,7 @@ impl BindingPolicy {
         if self.masked.contains(tool) {
             return Decision::Masked;
         }
-        let arg = permission_arg(tool, input);
+        let arg = grading_arg(tool, input, self.root.as_deref());
         let perm = self.chain.iter().fold(Permission::Allow, |acc, p| {
             min_permission(acc, p.resolve(tool, arg.as_deref()))
         });
@@ -445,7 +456,7 @@ async fn service_binding(
         return (Ok(exec(tools, session, &bind_rid, call).await), false);
     }
 
-    let key = approval_cache_key(call.tool, &call.input);
+    let key = approval_cache_key(call.tool, &call.input, policy.root.as_deref());
     if escape.is_none() && approved.contains(&key) {
         return (Ok(exec(tools, session, &bind_rid, call).await), false);
     }
@@ -492,17 +503,18 @@ async fn service_binding(
 }
 
 /// The `approved` cache key for one binding call (#419 fix A). For `call`/
-/// `bash` the key includes the resolved command line (`permission_arg`, same
-/// extraction the permission grade itself uses) — the exec surface is
-/// open-ended, so an approval must not generalize past the exact command the
-/// user saw on the card. Every other binding keeps the coarser bare-tool-name
-/// key (approve one `edit`, cover the rest of the run) — that surface is
-/// already the fixed, pre-existing "once per function" behavior this issue
-/// leaves unchanged.
-fn approval_cache_key(tool: &'static str, input: &str) -> String {
+/// `bash` the key includes the resolved command line (`grading_arg`, same
+/// extraction the permission grade itself uses, #485 — a no-op for these two
+/// since neither is a path-arg tool, kept for one canonical extraction path)
+/// — the exec surface is open-ended, so an approval must not generalize past
+/// the exact command the user saw on the card. Every other binding keeps the
+/// coarser bare-tool-name key (approve one `edit`, cover the rest of the run)
+/// — that surface is already the fixed, pre-existing "once per function"
+/// behavior this issue leaves unchanged.
+fn approval_cache_key(tool: &'static str, input: &str, root: Option<&Path>) -> String {
     match tool {
         "call" | "bash" => {
-            let arg = permission_arg(tool, input).unwrap_or_default();
+            let arg = grading_arg(tool, input, root).unwrap_or_default();
             format!("{tool}:{arg}")
         }
         _ => tool.to_string(),
@@ -1072,7 +1084,7 @@ mod tests {
         let guard = SpawnGuard::new();
         // Allow-all base = the embedded config default: a no-op ceiling.
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
 
         // `edit` is not in the allowlist → masked.
         assert!(matches!(policy.decide("edit", "{}"), Decision::Masked));
@@ -1111,7 +1123,7 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow).with("read", Permission::Ask);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
 
         // The base ceiling clamps the `read` binding to Ask despite the agent's
         // allow-all; `write` (base-silent) stays Allow.
@@ -1149,7 +1161,7 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
 
         // Same tool, two inputs, two grades — resolved live against the path.
         assert!(matches!(
@@ -1188,7 +1200,7 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
 
         assert!(matches!(
             policy.decide("call", "{}"),
@@ -1224,7 +1236,7 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
 
         assert!(matches!(policy.decide("call", "{}"), Decision::Masked));
         assert!(matches!(policy.decide("bash", "{}"), Decision::Masked));
@@ -1256,7 +1268,7 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base);
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
 
         assert!(matches!(
             policy.decide("call", r#"{"command":"git","args":["status"]}"#),
@@ -1273,21 +1285,21 @@ mod tests {
     /// must not silently clear a different one.
     #[test]
     fn approval_cache_key_scopes_exec_tools_by_command_not_just_tool_name() {
-        let a = approval_cache_key("call", r#"{"command":"git","args":["status"]}"#);
-        let b = approval_cache_key("call", r#"{"command":"rm","args":["-rf","/"]}"#);
+        let a = approval_cache_key("call", r#"{"command":"git","args":["status"]}"#, None);
+        let b = approval_cache_key("call", r#"{"command":"rm","args":["-rf","/"]}"#, None);
         assert_ne!(
             a, b,
             "different call commands must get different cache keys"
         );
 
-        let a_again = approval_cache_key("call", r#"{"command":"git","args":["status"]}"#);
+        let a_again = approval_cache_key("call", r#"{"command":"git","args":["status"]}"#, None);
         assert_eq!(a, a_again, "the same call command reuses its cache key");
 
         // Every other binding keeps the coarser bare-tool-name key (approve
         // one `edit`, cover the rest of the run) — unchanged by this fix.
         assert_eq!(
-            approval_cache_key("edit", r#"{"path":"a.rs"}"#),
-            approval_cache_key("edit", r#"{"path":"b.rs"}"#),
+            approval_cache_key("edit", r#"{"path":"a.rs"}"#, None),
+            approval_cache_key("edit", r#"{"path":"b.rs"}"#, None),
         );
     }
 

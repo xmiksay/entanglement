@@ -205,7 +205,16 @@ re-document them here):
   `read`/`glob`, optional file filter for `grep` (#417 — a path, distinct from
   its regex `pattern`; absent → no match)), matched against the call input the
   runtime extracts (`permission::permission_arg`) — the
-  `PermissionProfile::resolve(name, arg)` glob is the only core surface. A rule
+  `PermissionProfile::resolve(name, arg)` glob is the only core surface. **Path
+  tools grade root-relative** (#485,
+  [ADR-0125](../docs/adr/0125-permission-arguments-for-path-tools-are-normalized-root-relative.md)):
+  `permission_path::grading_arg` wraps `permission_arg` with lexical
+  `.`/`..`/`//` folding + a root-prefix strip for the path-arg tools
+  (`read`/`edit`/`write`/`apply_patch`/`glob`/`grep`, never `bash`/`call`) when
+  a project root is wired, so an absolute in-root path (`/root/src/main.rs`)
+  grades and grant-keys identically to its relative spelling (`src/main.rs`);
+  an absolute *out*-of-root path stays verbatim. `permission_arg` itself is
+  unchanged (still the TUI transcript's literal-display source). A rule
   key may also be a **capability** — `read`/`write`/`call` (#418,
   [ADR-0114](../docs/adr/0114-capability-level-permission-keys.md), part of the
   #416 epic) — fanned out at **parse time** in the shared

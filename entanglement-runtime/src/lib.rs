@@ -49,6 +49,7 @@ pub mod layers;
 pub mod mcp;
 pub mod pending;
 pub mod permission;
+pub mod permission_path;
 pub mod persistence;
 pub mod plan_tasks;
 pub mod policy;

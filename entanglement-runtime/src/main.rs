@@ -1058,6 +1058,9 @@ async fn main() -> Result<()> {
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
         active.clone(),
         user_config.permissions.clone(),
+        // Root-relative arg normalization (#485, ADR-0125): cloned before
+        // `escape_root` moves into `spawn_tool_executor_with_policy` below.
+        Some(escape_root.root.clone()),
     ));
     let grants = Arc::new(DefaultGrantStore::load());
     let tool_executor = tool_runner::spawn_tool_executor_with_policy(

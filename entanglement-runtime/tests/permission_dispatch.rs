@@ -4,16 +4,21 @@
 //! `AgentProfile` and drives the approval round-trip on `Ask`.
 
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId,
-    ToolCall,
+    stream_from_response, AgentMode, AgentProfile, ApprovalScope, EngineConfig, Holly, InMsg, Llm,
+    LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
+    SessionId, ToolCall,
 };
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::policy::{
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+};
+use entanglement_runtime::skills::SkillRegistry;
+use entanglement_runtime::tool_runner::{spawn_tool_executor, spawn_tool_executor_with_policy};
 use entanglement_runtime::{Tool, ToolRegistry};
 
 /// An LLM that replays scripted responses in order, then plain text (so a turn
@@ -705,5 +710,257 @@ async fn session_grant_skips_the_second_prompt() {
             .iter()
             .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("ls"))),
         "turn 2 should still run the command; got {turn2:?}"
+    );
+}
+
+// --- #485, ADR-0125: absolute-inside-root path args grade like the relative
+// spelling ------------------------------------------------------------------
+
+/// A trivial `read` host tool, standing in for the real filesystem tool — this
+/// module only exercises permission grading, never actual file I/O.
+struct EchoRead;
+#[async_trait]
+impl Tool for EchoRead {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("read")
+    }
+    async fn run(&self, input: &str) -> anyhow::Result<String> {
+        Ok(format!("ran: {input}"))
+    }
+}
+
+/// A profile that grades `read` by an arg-scoped rule authored root-relative
+/// (#173): `src/*` runs outright, anything else asks.
+fn scoped_read_registry() -> ProfileRegistry {
+    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    profiles.insert(AgentProfile {
+        name: "scopedread".into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        provider: None,
+        permission: PermissionProfile::new(Permission::Ask).with("read(src/*)", Permission::Allow),
+        tools: None,
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+    });
+    profiles
+}
+
+/// Build a Holly whose scripted LLM calls `read` twice — `input1` (id `t1`)
+/// then `input2` (id `t2`) — wired to `profiles` through a [`ProfileResolver`]
+/// with `root` set (#485, ADR-0125), mirroring `main.rs`'s production wiring
+/// rather than the no-root `spawn_tool_executor` convenience wrapper the rest
+/// of this file uses.
+fn spawn_two_read_calls_rooted(
+    root: &Path,
+    input1: &str,
+    input2: &str,
+    profiles: ProfileRegistry,
+) -> Holly {
+    let call = |id: &str, input: &str| LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: id.into(),
+            name: "read".into(),
+            input: input.into(),
+            provider_meta: None,
+        }],
+    };
+    let ok = || LlmResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![call("t1", input1), ok(), call("t2", input2), ok()]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoRead);
+    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        active.clone(),
+        PermissionProfile::new(Permission::Allow),
+        Some(root.to_path_buf()),
+    ));
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    // Wire the same `root` into the executor's escape-root policy too (#485,
+    // ADR-0125) — `dispatch` derives its grading-arg root from this param, so
+    // it must match the `ProfileResolver`'s, mirroring `main.rs`'s production
+    // wiring where both come from the same canonicalized `root`.
+    let escape_root = entanglement_runtime::tool_runner::EscapeRoot {
+        root: root.to_path_buf(),
+        store: Arc::new(entanglement_runtime::extra_roots::ExtraRootStore::ephemeral()),
+    };
+    let _executor = spawn_tool_executor_with_policy(
+        &holly,
+        reg.shared(),
+        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+        PermissionProfile::new(Permission::Allow),
+        active,
+        resolver,
+        grants,
+        Default::default(),
+        Some(escape_root),
+    );
+    holly
+}
+
+/// (a) An absolute path resolving inside root must match the same
+/// root-relative arg-scoped rule its relative spelling matches — the bug: the
+/// verbatim `/root/src/main.rs` used to fall through `read(src/*)` to the
+/// coarse `ask` default, prompting for a call the relative spelling would run
+/// outright.
+#[tokio::test]
+async fn absolute_inside_root_read_matches_the_relative_scoped_rule() {
+    let root = Path::new("/home/user/project");
+    let holly = spawn_two_read_calls_rooted(
+        root,
+        &serde_json::json!({ "path": "/home/user/project/src/main.rs" }).to_string(),
+        &serde_json::json!({ "path": "/home/user/project/src/main.rs" }).to_string(),
+        scoped_read_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedread".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "an absolute in-root path matching a root-relative rule must not ask; got {events:?}"
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("main.rs"))
+        ),
+        "the matching call should run; got {events:?}"
+    );
+}
+
+/// (b) Grant-key stability: a Session grant recorded against the relative
+/// spelling of a call must also cover the absolute spelling of the identical
+/// file — the bug: the two spellings keyed different grants, so the second
+/// (absolute) call still prompted.
+#[tokio::test]
+async fn session_grant_on_relative_spelling_covers_the_absolute_spelling() {
+    let root = Path::new("/home/user/project");
+    // `askbash` (this file's default-Ask, no-mask profile, reused here for
+    // `read`) — coarse `ask` with no arg-scoped rule, so both calls would
+    // prompt absent a grant, isolating this test from the arg-scoped-rule
+    // behavior covered above.
+    let holly = spawn_two_read_calls_rooted(
+        root,
+        &serde_json::json!({ "path": "src/main.rs" }).to_string(),
+        &serde_json::json!({ "path": "/home/user/project/src/main.rs" }).to_string(),
+        ask_bash_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "askbash".into(),
+        })
+        .await
+        .unwrap();
+
+    // Turn 1: the relative spelling prompts; approve it for the session.
+    let sub1 = holly.subscribe();
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
+    let mut asked = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "read") {
+            asked = true;
+            break;
+        }
+    }
+    assert!(asked, "turn 1 (relative spelling) should prompt");
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "t1".into(),
+            scope: ApprovalScope::Session,
+        })
+        .await
+        .unwrap();
+    let turn1 = collect(sub1, &sid).await;
+    assert!(
+        turn1.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("main.rs"))
+        ),
+        "turn 1 should run the approved read; got {turn1:?}"
+    );
+
+    // Turn 2: the absolute spelling of the SAME file must NOT prompt again.
+    let sub2 = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "run again"))
+        .await
+        .unwrap();
+    let turn2 = collect(sub2, &sid).await;
+    assert!(
+        !turn2
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "the absolute spelling of an already-granted file must not ask again; got {turn2:?}"
+    );
+    assert!(
+        turn2.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("main.rs"))
+        ),
+        "turn 2 should still run the read; got {turn2:?}"
+    );
+}
+
+/// (c) An absolute path resolving OUTSIDE root must stay verbatim and
+/// therefore keep asking — a root-relative rule matching an outside path
+/// would be a privilege escalation, not a convenience.
+#[tokio::test]
+async fn absolute_outside_root_still_prompts() {
+    let root = Path::new("/home/user/project");
+    let holly = spawn_two_read_calls_rooted(
+        root,
+        &serde_json::json!({ "path": "/etc/passwd" }).to_string(),
+        &serde_json::json!({ "path": "/etc/passwd" }).to_string(),
+        scoped_read_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedread".into(),
+        })
+        .await
+        .unwrap();
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let mut got_request = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "read") {
+            got_request = true;
+            break;
+        }
+    }
+    assert!(
+        got_request,
+        "an out-of-root absolute path must not silently match a root-relative rule"
     );
 }

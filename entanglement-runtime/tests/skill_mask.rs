@@ -185,6 +185,7 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
         Arc::new(entanglement_runtime::policy::ProfileResolver::new(
             active.clone(),
             PermissionProfile::new(Permission::Allow),
+            None,
         ));
     let grants: Arc<dyn entanglement_runtime::policy::GrantStore> =
         Arc::new(entanglement_runtime::policy::DefaultGrantStore::load());
