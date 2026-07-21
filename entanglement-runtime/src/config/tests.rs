@@ -51,6 +51,7 @@ fn merge_user(user: &str) -> Config {
         web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(std::time::Duration::from_secs),
+        editor: raw.editor.filter(|s| !s.trim().is_empty()),
     }
 }
 
@@ -92,6 +93,22 @@ fn idle_ttl_secs_defaults_to_none_and_parses_as_seconds() {
 
     // And it keeps siblings intact.
     assert_eq!(c.agent.as_deref(), Some("build"));
+}
+
+#[test]
+fn editor_defaults_to_none_and_parses_a_string() {
+    // The embedded default leaves the editor unset (env resolution in charge).
+    assert_eq!(defaults().editor, None);
+
+    // A user override parses through the merge…
+    let c = merge_user("editor: nvim\n");
+    assert_eq!(c.editor.as_deref(), Some("nvim"));
+
+    // …a blank/whitespace value is treated as unset…
+    assert_eq!(merge_user("editor: \"  \"\n").editor, None);
+
+    // …and it keeps siblings intact.
+    assert_eq!(merge_user("editor: nvim\n").agent.as_deref(), Some("build"));
 }
 
 #[test]

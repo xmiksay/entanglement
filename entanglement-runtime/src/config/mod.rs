@@ -141,6 +141,12 @@ struct RawConfig {
     /// [ADR-0105]: ../../../docs/adr/0105-expose-idle-ttl-via-runtime-config.md
     #[serde(default)]
     idle_ttl_secs: Option<u64>,
+    /// Editor command for the TUI `$EDITOR` round-trip (`/editor`). When set it
+    /// **wins over** `$VISUAL`/`$EDITOR`, so the persisted choice is the default
+    /// regardless of the shell env; absent ⇒ fall back to `$VISUAL` → `$EDITOR`
+    /// → `vi`. Word-split like a shell command, so `"code --wait"` works.
+    #[serde(default)]
+    editor: Option<String>,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -174,6 +180,9 @@ pub struct Config {
     /// memory growth; the CLI/TUI (single session, process-bound) rarely need
     /// it but sharing the one engine-global `EngineConfig` costs them nothing.
     pub idle_ttl: Option<Duration>,
+    /// Editor command for the TUI `$EDITOR` round-trip; `Some` wins over
+    /// `$VISUAL`/`$EDITOR`. `None` ⇒ resolve from env then `vi`.
+    pub editor: Option<String>,
 }
 
 /// Which of the three precedence layers a value came from. Ordered low → high so
@@ -312,6 +321,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
+        editor: raw.editor.filter(|s| !s.trim().is_empty()),
     };
     Ok(Resolved {
         config,
@@ -336,6 +346,7 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "web_search",
         "max_turns",
         "idle_ttl_secs",
+        "editor",
     ];
     KEYS.iter()
         .filter_map(|key| {

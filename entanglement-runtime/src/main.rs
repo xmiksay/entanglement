@@ -1172,6 +1172,8 @@ async fn main() -> Result<()> {
                 cwd.clone(),
                 bash_enabled,
                 tool_names,
+                http_client.clone(),
+                user_config.editor.clone(),
             )
             .await
         }
@@ -1207,6 +1209,8 @@ async fn main() -> Result<()> {
                     cwd.clone(),
                     bash_enabled,
                     tool_names,
+                    http_client.clone(),
+                    user_config.editor.clone(),
                 )
                 .await
             } else {

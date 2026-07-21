@@ -194,8 +194,4 @@ impl App {
         self.input_multiline = multiline;
         self.mark_dirty();
     }
-
-    pub fn help_text(&self) -> &str {
-        &self.help_text
-    }
 }

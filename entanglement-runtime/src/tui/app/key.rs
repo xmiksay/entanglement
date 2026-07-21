@@ -119,7 +119,7 @@ impl App {
     }
 
     /// Records a head-side status line into the active session's transcript.
-    fn record_status(&mut self, label: &str, message: String) {
+    pub(crate) fn record_status(&mut self, label: &str, message: String) {
         self.sessions
             .active_view_mut()
             .record_status(label, message);

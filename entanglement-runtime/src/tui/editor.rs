@@ -30,9 +30,12 @@ type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 /// to `<session>-<unix_secs>.md` and open it. Errors are returned, not fatal —
 /// the caller logs them and keeps the session alive.
 pub fn run_effect(terminal: &mut Term, app: &mut App, effect: UiEffect) -> Result<()> {
+    // Resolve once up front (config.yml editor > $VISUAL > $EDITOR > vi) so both
+    // effect paths launch the same editor.
+    let editor = resolve_editor(app.configured_editor());
     match effect {
         UiEffect::OpenEditor => {
-            let edited = edit_text(terminal, &app.input_text())?;
+            let edited = edit_text(terminal, &app.input_text(), &editor)?;
             app.set_input_text(edited);
         }
         UiEffect::Export => {
@@ -50,7 +53,12 @@ pub fn run_effect(terminal: &mut Term, app: &mut App, effect: UiEffect) -> Resul
             std::fs::write(&path, markdown)
                 .with_context(|| format!("writing transcript to {}", path.display()))?;
             tracing::info!("exported transcript to {}", path.display());
-            suspended(terminal, || launch_editor(&path))?;
+            suspended(terminal, || launch_editor(&path, &editor))?;
+        }
+        // Clipboard write needs no terminal suspend (OSC 52 is a control string,
+        // not a visible cursor move) — just write it to the backend in place.
+        UiEffect::CopyToClipboard(text) => {
+            crate::tui::clipboard::copy_osc52(terminal, &text)?;
         }
     }
     Ok(())
@@ -59,11 +67,11 @@ pub fn run_effect(terminal: &mut Term, app: &mut App, effect: UiEffect) -> Resul
 /// Seeds a temp file with `initial`, opens it in `$EDITOR`, and returns the
 /// edited content (trailing newlines trimmed so the input box gains no blank
 /// lines). The temp file is removed afterwards.
-fn edit_text(terminal: &mut Term, initial: &str) -> Result<String> {
+fn edit_text(terminal: &mut Term, initial: &str, editor: &str) -> Result<String> {
     let path = std::env::temp_dir().join(format!("skutter-input-{}.md", std::process::id()));
     std::fs::write(&path, initial)
         .with_context(|| format!("seeding editor buffer {}", path.display()))?;
-    suspended(terminal, || launch_editor(&path))?;
+    suspended(terminal, || launch_editor(&path, editor))?;
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("reading editor buffer {}", path.display()))?;
     let _ = std::fs::remove_file(&path);
@@ -109,12 +117,10 @@ fn enter(terminal: &mut Term) -> Result<()> {
     Ok(())
 }
 
-/// Launches `$EDITOR` on `path`, blocking until it exits (the `--wait`
-/// convention). Word-splits the env value so `EDITOR="code --wait"` works;
-/// falls back to `vi`.
-fn launch_editor(path: &Path) -> Result<()> {
-    let editor = resolve_editor();
-    let (program, args) = split_editor_command(&editor);
+/// Launches the resolved editor on `path`, blocking until it exits (the
+/// `--wait` convention). Word-splits the command so `"code --wait"` works.
+fn launch_editor(path: &Path, editor: &str) -> Result<()> {
+    let (program, args) = split_editor_command(editor);
     let status = Command::new(program)
         .args(args)
         .arg(path)
@@ -135,17 +141,26 @@ fn split_editor_command(editor: &str) -> (String, Vec<String>) {
     (program, parts.map(str::to_string).collect())
 }
 
-/// `$VISUAL`, then `$EDITOR`, then `vi`. Configurable-via-`tui.json` is backlog.
-fn resolve_editor() -> String {
-    pick_editor(std::env::var("VISUAL").ok(), std::env::var("EDITOR").ok())
+/// The persisted `config.yml` `editor:` (if any) wins, then `$VISUAL`, then
+/// `$EDITOR`, then `vi` — so an in-app default overrides the shell env
+/// (#persist-editor).
+fn resolve_editor(configured: Option<&str>) -> String {
+    pick_editor(
+        configured.map(str::to_string),
+        std::env::var("VISUAL").ok(),
+        std::env::var("EDITOR").ok(),
+    )
 }
 
-/// Pure editor selection: prefer `visual`, then `editor`, skipping blank values,
-/// else `vi`. Split out from env access so the precedence is unit-testable.
-fn pick_editor(visual: Option<String>, editor: Option<String>) -> String {
-    visual
-        .or(editor)
-        .filter(|s| !s.trim().is_empty())
+/// Pure editor selection: the first non-blank of `config` → `visual` → `editor`,
+/// else `vi`. Each source is skipped independently when blank, so a set-but-empty
+/// `$VISUAL` no longer shadows a real `$EDITOR`. Split out from env/config access
+/// so the precedence is unit-testable.
+fn pick_editor(config: Option<String>, visual: Option<String>, editor: Option<String>) -> String {
+    [config, visual, editor]
+        .into_iter()
+        .flatten()
+        .find(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "vi".to_string())
 }
 
@@ -167,25 +182,46 @@ mod tests {
     use super::{pick_editor, split_editor_command};
 
     #[test]
-    fn pick_editor_prefers_visual() {
+    fn pick_editor_config_wins_over_env() {
+        // The persisted config editor beats both $VISUAL and $EDITOR.
         assert_eq!(
-            pick_editor(Some("emacs".into()), Some("nano".into())),
+            pick_editor(
+                Some("nvim".into()),
+                Some("emacs".into()),
+                Some("nano".into())
+            ),
+            "nvim"
+        );
+    }
+
+    #[test]
+    fn pick_editor_prefers_visual_over_editor() {
+        assert_eq!(
+            pick_editor(None, Some("emacs".into()), Some("nano".into())),
             "emacs"
         );
     }
 
     #[test]
     fn pick_editor_falls_back_to_editor_then_vi() {
-        assert_eq!(pick_editor(None, Some("nano".into())), "nano");
-        assert_eq!(pick_editor(None, None), "vi");
+        assert_eq!(pick_editor(None, None, Some("nano".into())), "nano");
+        assert_eq!(pick_editor(None, None, None), "vi");
     }
 
     #[test]
-    fn pick_editor_skips_blank_values() {
-        // A set-but-empty VISUAL is treated as unset (matches the original
-        // env-based precedence).
-        assert_eq!(pick_editor(Some("   ".into()), None), "vi");
-        assert_eq!(pick_editor(Some("".into()), Some("nano".into())), "vi");
+    fn pick_editor_skips_blank_values_per_source() {
+        // A blank source is skipped independently, so a set-but-empty $VISUAL
+        // falls through to a real $EDITOR rather than shadowing it.
+        assert_eq!(pick_editor(None, Some("   ".into()), None), "vi");
+        assert_eq!(
+            pick_editor(None, Some("".into()), Some("nano".into())),
+            "nano"
+        );
+        // A blank config falls through to $VISUAL.
+        assert_eq!(
+            pick_editor(Some("  ".into()), Some("emacs".into()), None),
+            "emacs"
+        );
     }
 
     #[test]

@@ -64,3 +64,9 @@ max_turns: 200
 # otherwise grows memory monotonically; the CLI/TUI are single-session and
 # process-bound, so they rarely need it.
 idle_ttl_secs: null
+
+# Editor command the TUI opens for the `/editor` ($EDITOR round-trip). When set,
+# this WINS OVER $VISUAL/$EDITOR, so the persisted choice is the default no
+# matter the shell env. `null` (the default) falls back to $VISUAL → $EDITOR →
+# vi. Word-split like a shell command, so flags work, e.g. "code --wait".
+editor: null
