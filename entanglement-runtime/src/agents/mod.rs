@@ -964,6 +964,81 @@ mod tests {
     }
 
     #[test]
+    fn capability_grammar_matches_core_split_rule_key_forms() {
+        // #453: `split_capability_key` is a runtime-local mirror of core's
+        // private `split_rule_key` (protocol.rs). This fixture walks every
+        // grammar form that function's own test asserts
+        // (`split_rule_key_parses_tool_and_pattern`: bare, `(arg)`, `{workdir}`,
+        // and unterminated brackets), applied to the `read`/`call` capabilities
+        // so the split's scope classification is load-bearing for
+        // `expand_capabilities`'s fan-out, and checks it against a hand-built
+        // core `PermissionProfile` over the literal member rules it should
+        // produce. If core ever grows a new scope bracket that
+        // `split_capability_key` doesn't learn too, a capability key using it
+        // would silently stop expanding on the runtime side while core parses
+        // it differently — this test pins today's agreement so that kind of
+        // drift fails loudly here instead of shipping silently.
+
+        // Bare: unscoped, applies to every member unconditionally.
+        let got = perm("default: deny\nread: allow");
+        let want = PermissionProfile::new(Permission::Deny)
+            .with("read", Permission::Allow)
+            .with("grep", Permission::Allow)
+            .with("glob", Permission::Allow);
+        for name in ["read", "grep", "glob"] {
+            assert_eq!(got.for_tool(name), want.for_tool(name), "bare `{name}`");
+        }
+
+        // `(pattern)`: argument-scoped, fans out to `member(pattern)`.
+        let got = perm("default: ask\nread(src/*): allow");
+        let want = PermissionProfile::new(Permission::Ask)
+            .with("read(src/*)", Permission::Allow)
+            .with("grep(src/*)", Permission::Allow)
+            .with("glob(src/*)", Permission::Allow);
+        for name in ["read", "grep", "glob"] {
+            for arg in [Some("src/main.rs"), Some("lib/main.rs"), None] {
+                assert_eq!(
+                    got.resolve(name, arg),
+                    want.resolve(name, arg),
+                    "arg-scoped `{name}` arg={arg:?}"
+                );
+            }
+        }
+
+        // `{pattern}`: workdir-scoped, fans out to `member{pattern}` — proven
+        // on `call` since `read`/`grep`/`glob` have no workdir concept.
+        let got = perm("default: ask\ncall{/tmp/*}: allow");
+        let want = PermissionProfile::new(Permission::Ask)
+            .with("call{/tmp/*}", Permission::Allow)
+            .with("bash{/tmp/*}", Permission::Allow);
+        for name in ["call", "bash"] {
+            for workdir in [Some("/tmp/scratch"), Some("/etc/passwd"), None] {
+                assert_eq!(
+                    got.resolve_scoped(name, None, workdir),
+                    want.resolve_scoped(name, None, workdir),
+                    "workdir-scoped `{name}` workdir={workdir:?}"
+                );
+            }
+        }
+
+        // Unterminated brackets: core's `split_rule_key` falls back to a
+        // literal, unscoped tool name (`bash(oops` ⇒ `("bash(oops", None)`,
+        // per its own test) — so the capability lookup on the *whole* string
+        // misses and the key passes through unexpanded on both sides.
+        for key in ["read(oops", "read{oops"] {
+            let yaml = format!("default: deny\n{key}: allow");
+            let got = perm(&yaml);
+            for name in ["read", "grep", "glob"] {
+                assert_eq!(
+                    got.for_tool(name),
+                    Permission::Deny,
+                    "malformed `{key}` `{name}`"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn multi_group_call_and_rhai_take_least_privilege_regardless_of_key_order() {
         let forward = perm("read: allow\nwrite: deny");
         let backward = perm("write: deny\nread: allow");
