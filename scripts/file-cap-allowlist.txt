@@ -1,0 +1,38 @@
+# Grandfathered files over the 400-line cap (AGENTS.md), read by
+# scripts/file-cap-gate.sh (issue #451). One path per line, repo-relative,
+# blank lines and `#` comments ignored by grep -xF matching (comments never
+# match a real path, so they're inert, not special-cased).
+#
+# This list must only shrink: split a file below the cap, delete its row in
+# the same change — the gate fails loudly if a listed file is no longer over
+# the cap and forgot to be removed. Do not add new entries for files that
+# grew past the cap after this change; split them instead.
+#
+# Split guidance from issue #451 (natural seams to split along, once
+# attempted): protocol.rs by message family; tool_runner.rs ladder vs
+# executor; main.rs by subcommand. The provider parser splits
+# (anthropic.rs/openai.rs) are easier after the UTF-8 chunk-boundary fix
+# rework touches the same code region.
+#
+# This list is wider than issue #451's original 9-file table — that table
+# was a snapshot; re-measuring at gate-authoring time turned up further
+# drift in the interim. `host/call.rs` and `skills/mod.rs` from the original
+# table are deliberately absent: both were split below the cap in the same
+# change that added this gate.
+entanglement-core/src/protocol.rs
+entanglement-runtime/src/main.rs
+entanglement-runtime/src/tool_runner.rs
+entanglement-core/src/holly.rs
+entanglement-runtime/src/agents/mod.rs
+entanglement-provider/src/anthropic.rs
+entanglement-provider/src/openai.rs
+entanglement-core/src/session.rs
+entanglement-provider/src/client.rs
+entanglement-runtime/src/permission.rs
+entanglement-runtime/src/script.rs
+entanglement-runtime/src/session_store.rs
+entanglement-runtime/src/subagent.rs
+entanglement-runtime/src/tui/app/pickers.rs
+entanglement-runtime/src/tui/event_loop.rs
+entanglement-runtime/src/tui/modal_events.rs
+entanglement-runtime/src/tui/session_view/reducer.rs

@@ -13,8 +13,9 @@ read the authoritative sources it defers to:
 This is a hard project rule, not a style preference. The Makefile wraps every
 command and `make help` lists them. Key targets:
 
-- **`make verify`** — the pre-"done" gate. Equals `check-fmt + tree + check-lean + lint + test`. Run it before declaring a task complete or pushing.
+- **`make verify`** — the pre-"done" gate. Equals `check-fmt + tree + check-lean + file-cap + lint + test`. Run it before declaring a task complete or pushing.
 - **`make tree`** — the **non-obvious** one. It's the dependency-hygiene gate (ADR-0006): `entanglement-core` must pull in **zero** UI/transport crates. Adding `clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` to `entanglement-core` will make `make verify` fail here even though `cargo build` is green.
+- **`make file-cap`** — enforces the 400-line file cap below (issue #451). A currently-over-cap file must be listed in `scripts/file-cap-allowlist.txt` (grandfathered debt) or the gate fails; splitting a file below the cap requires deleting its row in the same change, or the gate fails the other way (a stale allowlist entry).
 - `make test-unit` / `make test-integration` — split suites (`--lib --bins` vs `--test '*'`).
 - `make run` / `make run-json` / `make run-tui` — build + run the `skutter` binary one turn (text / NDJSON / TUI). `make inspect ARGS=…` prints the resolved prompt/agents/skills with no engine; `make sessions` lists past sessions.
 
@@ -36,7 +37,7 @@ Heads depend on core, **never the reverse.**
 
 ## Code conventions (this repo-specific)
 
-- **Files must not exceed 400 lines of code.** Split long files into modules when they exceed this limit.
+- **Files must not exceed 400 lines of code.** Split long files into modules when they exceed this limit. Enforced by `make file-cap` (issue #451) — see `scripts/file-cap-allowlist.txt` for the shrinking list of grandfathered violations.
 - **Tests ship with the change.** Pure logic → in-module `#[cfg(test)] mod tests`; actor/protocol behavior → `entanglement-core/tests/` (`actor.rs`, `host_tools.rs`).
 - **No panicking operators on I/O / user / network / config paths** in `entanglement-core`. Propagate with `?` + `.context()`. `.unwrap()`/`.expect()` only in tests or provably-unreachable spots (then `.expect("invariant …")`).
 - **Comments: WHY, not WHAT.**

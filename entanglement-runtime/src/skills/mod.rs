@@ -34,7 +34,7 @@
 //! contract. `user_only` skills are withheld from the disclosure list so the
 //! model cannot self-trigger them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -43,19 +43,9 @@ use serde::Deserialize;
 use crate::layers::Strictness;
 use crate::system_prompt::SkillDisclosure;
 
+mod discovery;
 pub mod load_skill;
 pub use load_skill::LoadSkillTool;
-
-/// Embedded stock skills, parsed through the same loader as user/project files.
-/// `(filename, contents)` — the filename only feeds parse-error messages; the
-/// skill's identity is its frontmatter `name`.
-const BUILT_INS: &[(&str, &str)] = &[("commit.md", include_str!("commit.md"))];
-
-/// Env var overriding the user skills directory (tests + non-XDG setups).
-const SKILLS_DIR_ENV: &str = "ENTANGLEMENT_SKILLS_DIR";
-
-/// The `SKILL.md` marker file that makes a directory a skill.
-const SKILL_FILE: &str = "SKILL.md";
 
 /// One discovered skill: the tier-1 metadata plus the loaded body. `root_dir` is
 /// resolved **once** here at discovery (the directory holding `SKILL.md` and its
@@ -169,16 +159,7 @@ impl SkillRegistry {
 /// `name` collision — re-exported under the skills-facing name.
 pub use crate::layers::Layer as SkillLayer;
 
-/// A discovered `SKILL.md` *before* parsing: which layer it came from (#186), a
-/// display label for its origin (`built-in (commit.md)` or the file path), the
-/// pre-resolved `root_dir`, and the raw file content.
-struct RawSkill {
-    layer: SkillLayer,
-    strictness: Strictness,
-    source: String,
-    root_dir: Option<PathBuf>,
-    content: String,
-}
+use discovery::RawSkill;
 
 /// Parse one discovered `SKILL.md` honoring its layer's strictness (ADR-0074):
 /// strict → the current loud behavior (a malformed file aborts the load);
@@ -213,7 +194,7 @@ pub fn load_registry(root: &Path) -> Result<SkillRegistry> {
     // longer silent (#186): emit a `replaces=<prior source>` debug at the
     // overwrite, matching the provenance `inspect skills` surfaces.
     let mut winning: HashMap<String, (SkillLayer, String)> = HashMap::new();
-    for raw in discover(root)? {
+    for raw in discovery::discover(root)? {
         let Some(skill) = parse_raw(&raw)? else {
             continue;
         };
@@ -256,7 +237,7 @@ pub struct SkillResolution {
 pub fn resolve_registry(root: &Path) -> Result<Vec<SkillResolution>> {
     let mut order: Vec<String> = Vec::new();
     let mut by_name: HashMap<String, Vec<(SkillLayer, String, SkillMeta)>> = HashMap::new();
-    for raw in discover(root)? {
+    for raw in discovery::discover(root)? {
         let Some(meta) = parse_raw(&raw)? else {
             continue;
         };
@@ -286,108 +267,6 @@ pub fn resolve_registry(root: &Path) -> Result<Vec<SkillResolution>> {
         .collect();
     resolved.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
     Ok(resolved)
-}
-
-/// Enumerate every `SKILL.md` in precedence order — embedded built-ins, then the
-/// user dir, then the project dir — without parsing. Later entries win on a
-/// `name` collision, so consumers keep the last match. A missing dir is fine; an
-/// unreadable dir or file is an error. A missing *explicit*
-/// `ENTANGLEMENT_SKILLS_DIR` override is warned by [`crate::layers::load_layers`].
-fn discover(root: &Path) -> Result<Vec<RawSkill>> {
-    let built_ins: Vec<RawSkill> = BUILT_INS
-        .iter()
-        .map(|(file, contents)| RawSkill {
-            // Embedded built-ins are guarded by `built_ins_parse`, so a parse
-            // failure downstream is a build-time bug, not a runtime condition.
-            layer: SkillLayer::BuiltIn,
-            strictness: Strictness::Strict,
-            source: format!("built-in ({file})"),
-            root_dir: None,
-            content: (*contents).to_string(),
-        })
-        .collect();
-    crate::layers::load_layers(root, "skills", SKILLS_DIR_ENV, built_ins, discover_dir)
-}
-
-/// Append every `SKILL.md` under `dir` (recursively), tagged with `layer`, to
-/// `raws`. A missing dir is fine; an unreadable dir or file is an error.
-/// Symlinked duplicates (a link to an already-seen file, or a directory cycle)
-/// are deduped by canonical path.
-fn discover_dir(
-    layer: SkillLayer,
-    dir: &Path,
-    strictness: Strictness,
-    raws: &mut Vec<RawSkill>,
-) -> Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    let mut found: Vec<PathBuf> = Vec::new();
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    walk(dir, &mut found, &mut seen)?;
-    // Sort for deterministic collision resolution within a single layer.
-    found.sort();
-    for skill_md in found {
-        let content = std::fs::read_to_string(&skill_md)
-            .with_context(|| format!("reading skill file {}", skill_md.display()))?;
-        // `root_dir` is the SKILL.md's directory — resolved once, here.
-        let root_dir = skill_md.parent().map(Path::to_path_buf);
-        raws.push(RawSkill {
-            layer,
-            strictness,
-            source: skill_md.display().to_string(),
-            root_dir,
-            content,
-        });
-    }
-    Ok(())
-}
-
-/// Recursively collect `SKILL.md` paths under `dir`. `seen` holds canonicalized
-/// paths of already-visited files *and* directories: it dedupes symlinked
-/// duplicate files and breaks symlink directory cycles. `std::fs::metadata`
-/// follows symlinks so a linked directory is still traversed once.
-fn walk(dir: &Path, found: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) -> Result<()> {
-    let entries =
-        std::fs::read_dir(dir).with_context(|| format!("reading skills dir {}", dir.display()))?;
-    let mut subdirs: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let path = entry
-            .with_context(|| format!("reading an entry under {}", dir.display()))?
-            .path();
-        let meta = match std::fs::metadata(&path) {
-            Ok(m) => m,
-            // A broken symlink (or a racing removal) is skipped, not fatal — but
-            // no longer silent (#186): a dangling link to a skill dir would drop
-            // the skill with zero signal, so log it at `warn!`.
-            Err(e) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "skipping unreadable skills entry (broken symlink or racing removal)",
-                );
-                continue;
-            }
-        };
-        if meta.is_dir() {
-            subdirs.push(path);
-        } else if meta.is_file() && path.file_name().and_then(|n| n.to_str()) == Some(SKILL_FILE) {
-            let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-            if seen.insert(canon) {
-                found.push(path);
-            }
-        }
-    }
-    subdirs.sort();
-    for sub in subdirs {
-        let canon = std::fs::canonicalize(&sub).unwrap_or_else(|_| sub.clone());
-        // A directory already seen (a symlink pointing back into the tree) is
-        // not re-entered, so a cycle cannot loop forever.
-        if seen.insert(canon) {
-            walk(&sub, found, seen)?;
-        }
-    }
-    Ok(())
 }
 
 /// Parse a `SKILL.md`: split frontmatter from body, deserialize the frontmatter,
@@ -430,8 +309,10 @@ fn parse_foreign_skill(content: &str, root_dir: Option<PathBuf>) -> Result<Skill
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Mutex;
 
+    use super::discovery::{walk, BUILT_INS, SKILLS_DIR_ENV, SKILL_FILE};
     use super::*;
 
     /// `load_registry` reads a process-global env var (`SKILLS_DIR_ENV`); tests
