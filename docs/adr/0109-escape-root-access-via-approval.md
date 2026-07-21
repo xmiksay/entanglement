@@ -1,6 +1,6 @@
 # 0109. Access outside the project root via per-tool approval — containment becomes subordinate to an explicit grant
 
-- Status: Accepted
+- Status: Amended by [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) (rhai bindings route through the same gate) and [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) (`Once` grants bound to the approving `request_id`)
 - Date: 2026-07-17
 
 ## Context

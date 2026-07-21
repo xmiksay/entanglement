@@ -42,6 +42,8 @@ make run-json      # one turn, NDJSON events (opencode run --format json)
 make run-tui       # launch the terminal UI
 make pipe          # stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
 make serve         # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
+make sessions      # list past (resumable) sessions
+make inspect       # resolved prompt/agents/skills, no engine (ARGS='prompt --agent build')
 make install       # install the `skutter` binary into $CARGO_HOME/bin
 make test          # unit + integration
 make test-unit | make test-integration
@@ -52,6 +54,8 @@ make verify        # check-fmt + tree + check-lean + file-cap + lint + test  (CI
 make tree          # entanglement-core dep hygiene gate (fails on UI/transport crates)
 make check-lean    # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
 make file-cap      # 400-line file cap gate (issue #451; grandfathered debt in scripts/file-cap-allowlist.txt)
+make test-gates    # dep-gate self-test (scripts/dep-gate.test.sh)
+make tag           # cut a release tag (VERSION=vX.Y.Z): refuses dirty tree / red verify
 make build | check | clean
 ```
 

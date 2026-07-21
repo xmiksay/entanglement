@@ -10,7 +10,40 @@ alternatives behind each design decision live in the ADRs under
 
 ## [Unreleased]
 
+### Added
+
+- **`apply_patch` host tool** — multi-hunk unified-diff apply beside
+  `edit`/`write`, the first producer of the previously-reserved
+  `FileChangeKind::ApplyDiff`. A small hand-rolled parser/applier
+  (`host::unified_diff`), root-contained and escape-root-gated like the rest
+  of the file sextet (#455).
+- **`agent_poll` `timeout_secs: 0` waits for the child's completion** instead
+  of returning a useless still-running status immediately — the same
+  hang-safe unbounded wait the blocking `agent` tool uses; positive timeouts
+  keep the 600 s cap (ADR-0123).
+- **Request-send retry + throttle status** in the provider pool: transient
+  request-send faults retry like 5xx, and endpoint throttling is surfaced so
+  heads can show it — the TUI gains a throttle indicator, plus a persisted
+  external-editor choice and drag-select copy (`feat(tui)`, `feat(provider)`).
+- **400-line file-cap gate** — `make file-cap` (in `make verify`) enforces the
+  cap with a shrinking grandfathered allowlist
+  (`scripts/file-cap-allowlist.txt`, #451).
+
 ### Security
+
+- **rhai file/exec bindings route through the escape-root gate.** A script's
+  `read`/`edit`/`write`/`exec`/`bash` binding hitting an out-of-root path now
+  gets the same forced approval + grant recording as a direct tool call,
+  instead of hard-failing with no prompt (#446, ADR-0119).
+- **`Once`-scoped escape-root grants are bound to the approving
+  `request_id`**, so a concurrent call to the same escaping path can no
+  longer consume a single-use token it was never approved for (#449,
+  ADR-0120).
+- **Unknown tool names are rejected before the permission ladder**: a
+  hallucinated tool name under an `Ask` grade could previously prompt the
+  user to approve a call that could only fail — and even record an
+  `Always`-scoped grant for a tool that doesn't exist. `dispatch()` now
+  checks the registry snapshot first and replies immediately on a miss.
 
 - **MCP stdio servers no longer inherit the provider API keys.** The spawned
   subprocess env gets the same scrub `bash`/`call` children have had since
@@ -33,6 +66,20 @@ alternatives behind each design decision live in the ADRs under
   `EngineConfig::max_ambiguous_stop_retries` (default 2). Persisted as
   `OutEvent::AmbiguousRetry` so replay reconstructs the exact round boundary
   (ADR-0118).
+- **SSE streams are framed on raw bytes**, so a multi-byte UTF-8 character
+  split across chunks no longer corrupts a streamed response (#443).
+- **Gemini:** image content blocks are carried through tool results (#447),
+  and parallel same-tool calls get synthesized unique `ToolCall` ids (#444).
+- **OpenAI-compat:** tool-call flush unified on the validating path, so the
+  end-of-stream fallback can no longer emit a call the streaming path would
+  have rejected (#445); the stream-end handler no longer warns on every
+  ordinary tool-use turn.
+- **Executor:** in-flight dedupe entries are pruned on a `Stop`-driven abort —
+  a cancelled call unwound with no resolving `ToolOutput`, leaking its
+  `request_id` in the per-session in-flight set forever (#448).
+- **TUI:** logs route to the file sink for the *default* (bare `skutter`) TUI
+  head too, not just the explicit `tui` subcommand — a mid-session WARN on
+  stderr corrupted the raw-mode interface.
 
 ## [0.3.0] - 2026-07-18
 

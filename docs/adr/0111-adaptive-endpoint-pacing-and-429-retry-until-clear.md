@@ -1,6 +1,6 @@
 # 0111. Per-endpoint concurrency cap, adaptive pacing, and bounded 429 retry
 
-- Status: Accepted
+- Status: Accepted; its "Deferred: per-provider concurrency in the catalog" follow-up framing is superseded by [0122](0122-per-provider-concurrency-and-rpm-as-catalog-data.md) (shipped under #414)
 - Date: 2026-07-17
 
 ## Context

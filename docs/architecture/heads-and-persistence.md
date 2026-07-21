@@ -334,7 +334,9 @@ assistant/tool messages and the model appears to forget the conversation.
   *no* rendered tail text (unlike the copy-on-write report above) — `kept`
   alone is enough for both the live mutation and its replay to re-derive the
   same tail structurally from `Context::messages()`.
-- **Pluggable append target — `RecordSink`** (#313). The tap's *what to persist*
+- **Pluggable append target — `RecordSink`** (#313,
+  [ADR-0086](../adr/0086-recordsink-pluggable-persistence-append-target.md)).
+  The tap's *what to persist*
   (route each record to its root, tombstone lag gaps) is split from its *where to
   persist*: it appends every finished `LogRecord` through a
   `RecordSink { fn append(&self, root: &SessionId, record: &LogRecord) }`, and an
