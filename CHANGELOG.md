@@ -8,6 +8,19 @@ Versioning is [Semantic Versioning](https://semver.org/). The *why* and rejected
 alternatives behind each design decision live in the ADRs under
 [`docs/adr/`](docs/adr/); the referenced `ADR-####` tags link there.
 
+## [Unreleased]
+
+### Fixed
+
+- **Bounded retry on an ambiguous LLM stop.** A round that ends with no tool
+  calls and an ambiguous `stop_reason` (`None`/`Other`, or a contradictory
+  `ToolUse` with zero actual calls — the Ollama-class "announced intent, then
+  the stream died" symptom) now retries in place with a synthetic nudge
+  instead of silently ending the turn, bounded by
+  `EngineConfig::max_ambiguous_stop_retries` (default 2). Persisted as
+  `OutEvent::AmbiguousRetry` so replay reconstructs the exact round boundary
+  (ADR-0118).
+
 ## [0.3.0] - 2026-07-18
 
 Capability-level tool permissions, provider concurrency/backpressure, and

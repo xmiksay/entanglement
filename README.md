@@ -21,12 +21,15 @@ table below.
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetAgent | SetModel | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
+          | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
+          | McpList | McpAdd | McpRemove
           | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status
-          | AgentChanged | ModelChanged | Plan | TextDelta | ReasoningDelta
+          | AgentChanged | ModelChanged | GenerationChanged | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
-          | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange (engine → harness)
+          | McpList | McpChanged
+          | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
+          | SkillActive | AmbiguousRetry (engine → harness)
 ```
 
 Every frame is **session-scoped** (one connection multiplexes many sessions via
