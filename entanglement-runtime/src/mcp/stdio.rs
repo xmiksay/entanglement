@@ -53,24 +53,50 @@ pub struct StdioClient {
     _child: Option<Child>,
 }
 
+/// Assemble the server `Command`: args + per-server env over an inherited
+/// environment with the provider API-key vars removed (#164 parity with
+/// `bash`/`call`). `env_remove` runs before `.envs(env)`, so a per-server
+/// `env:` entry that deliberately names a secret var survives the scrub.
+/// Split from [`StdioClient::spawn`] so the env shape is unit-testable
+/// without spawning a process.
+fn build_command(
+    command: &str,
+    args: &[String],
+    env: &HashMap<String, String>,
+    secret_env: &[String],
+) -> Command {
+    let mut cmd = Command::new(command);
+    for var in secret_env {
+        cmd.env_remove(var);
+    }
+    cmd.args(args)
+        .envs(env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // The server's own logs go to *its* stderr; inherit so they surface
+        // on the head's stderr rather than being swallowed.
+        .stderr(Stdio::inherit())
+        // A leaked server must die with us, not orphan (#168 spirit).
+        .kill_on_drop(true);
+    cmd
+}
+
 impl StdioClient {
     /// Spawn the configured server subprocess and complete the handshake.
+    ///
+    /// `secret_env` (the catalog's provider API-key env vars, #164) is scrubbed
+    /// from the child: an MCP server is an arbitrary external process and must
+    /// not inherit the engine's provider credentials, exactly like `bash`/`call`
+    /// children. An explicit per-server `env:` entry still wins — the user
+    /// naming a var in the server's own config is deliberate consent.
     pub async fn spawn(
         server: &str,
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        secret_env: &[String],
     ) -> Result<Self> {
-        let mut cmd = Command::new(command);
-        cmd.args(args)
-            .envs(env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            // The server's own logs go to *its* stderr; inherit so they surface
-            // on the head's stderr rather than being swallowed.
-            .stderr(Stdio::inherit())
-            // A leaked server must die with us, not orphan (#168 spirit).
-            .kill_on_drop(true);
+        let mut cmd = build_command(command, args, env, secret_env);
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning MCP server `{server}` (`{command}`)"))?;
@@ -308,6 +334,36 @@ mod tests {
             .unwrap();
         let text = res["content"][0]["text"].as_str().unwrap();
         assert_eq!(text, "echo: hi");
+    }
+
+    #[test]
+    fn build_command_scrubs_secret_env_but_explicit_server_env_wins() {
+        let mut env = HashMap::new();
+        env.insert("SERVER_TOKEN".to_string(), "abc".to_string());
+        env.insert("ZAI_API_KEY".to_string(), "explicit".to_string());
+        let secret = vec!["ZAI_API_KEY".to_string(), "ANTHROPIC_API_KEY".to_string()];
+        let cmd = build_command("srv-bin", &[], &env, &secret);
+        let envs: HashMap<_, _> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| (k.to_os_string(), v.map(|v| v.to_os_string())))
+            .collect();
+        // Scrubbed: the inherited key is explicitly removed…
+        assert_eq!(
+            envs.get("ANTHROPIC_API_KEY".as_ref() as &std::ffi::OsStr),
+            Some(&None)
+        );
+        // …the per-server `env:` entry re-adds its own value (applied after the
+        // scrub, so deliberate config wins)…
+        assert_eq!(
+            envs.get("ZAI_API_KEY".as_ref() as &std::ffi::OsStr),
+            Some(&Some("explicit".into()))
+        );
+        // …and unrelated per-server vars pass through untouched.
+        assert_eq!(
+            envs.get("SERVER_TOKEN".as_ref() as &std::ffi::OsStr),
+            Some(&Some("abc".into()))
+        );
     }
 
     #[tokio::test]

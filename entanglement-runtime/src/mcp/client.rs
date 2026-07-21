@@ -42,12 +42,18 @@ pub enum McpClient {
 
 impl McpClient {
     /// Connect to the server described by `cfg`, resolving its transport from the
-    /// `command` XOR `url` fields, and return a shareable handle.
-    pub async fn connect(server: &str, cfg: &McpServerConfig) -> Result<Arc<Self>> {
+    /// `command` XOR `url` fields, and return a shareable handle. `secret_env`
+    /// is scrubbed from a stdio server's child environment (#164 parity); the
+    /// HTTP transport spawns nothing, so it ignores the list.
+    pub async fn connect(
+        server: &str,
+        cfg: &McpServerConfig,
+        secret_env: &[String],
+    ) -> Result<Arc<Self>> {
         let client = match cfg.transport()? {
-            super::Transport::Stdio { command, args, env } => {
-                McpClient::Stdio(StdioClient::spawn(server, &command, &args, &env).await?)
-            }
+            super::Transport::Stdio { command, args, env } => McpClient::Stdio(
+                StdioClient::spawn(server, &command, &args, &env, secret_env).await?,
+            ),
             #[cfg(feature = "mcp-http")]
             super::Transport::Http { url, headers } => {
                 McpClient::Http(super::http::HttpClient::connect(server, &url, &headers).await?)

@@ -207,9 +207,12 @@ pub(crate) fn transport_label(cfg: &McpServerConfig) -> String {
 /// connection alive for the process lifetime — no separate handle to retain.
 /// Returns the servers that connected, seeding [`ActiveServers`] (#375) so a
 /// later live `/mcp list`/`remove` sees exactly what startup actually attached.
+/// `secret_env` (the catalog's provider API-key env vars, #164) is scrubbed
+/// from every stdio server's child environment.
 pub async fn connect(
     servers: &HashMap<String, McpServerConfig>,
     registry: &mut ToolRegistry,
+    secret_env: &[String],
 ) -> HashMap<String, ActiveServer> {
     let mut active = HashMap::new();
     for (name, cfg) in servers {
@@ -217,7 +220,7 @@ pub async fn connect(
             tracing::info!("MCP server `{name}` is disabled; skipping");
             continue;
         }
-        match connect_one(name, cfg, registry).await {
+        match connect_one(name, cfg, registry, secret_env).await {
             Ok((client, tools)) => {
                 active.insert(
                     name.clone(),
@@ -241,8 +244,9 @@ pub async fn connect(
 async fn connect_client(
     name: &str,
     cfg: &McpServerConfig,
+    secret_env: &[String],
 ) -> Result<(std::sync::Arc<McpClient>, Vec<McpToolDef>)> {
-    let client = McpClient::connect(name, cfg).await?;
+    let client = McpClient::connect(name, cfg, secret_env).await?;
     let defs = client.list_tools().await?;
     Ok((client, defs))
 }
@@ -270,8 +274,9 @@ async fn connect_one(
     name: &str,
     cfg: &McpServerConfig,
     registry: &mut ToolRegistry,
+    secret_env: &[String],
 ) -> Result<(std::sync::Arc<McpClient>, Vec<String>)> {
-    let (client, defs) = connect_client(name, cfg).await?;
+    let (client, defs) = connect_client(name, cfg, secret_env).await?;
     let count = defs.len();
     let tools = register_tools(registry, &client, name, defs);
     tracing::info!("MCP server `{name}`: registered {count} tool(s)");
@@ -363,7 +368,7 @@ headers:
             },
         )]);
         let mut registry = ToolRegistry::new();
-        connect(&servers, &mut registry).await;
+        connect(&servers, &mut registry, &[]).await;
         assert!(registry.is_empty());
     }
 
@@ -383,7 +388,7 @@ headers:
         )]);
         let mut registry = ToolRegistry::new();
         // Must not panic or hang — the failure is logged and swallowed.
-        connect(&servers, &mut registry).await;
+        connect(&servers, &mut registry, &[]).await;
         assert!(registry.is_empty());
     }
 
@@ -403,7 +408,7 @@ headers:
             },
         )]);
         let mut registry = ToolRegistry::new();
-        connect(&servers, &mut registry).await;
+        connect(&servers, &mut registry, &[]).await;
         assert!(registry.is_empty());
     }
 }
