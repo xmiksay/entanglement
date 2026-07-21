@@ -23,8 +23,8 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
          | McpList{correlation_id}   // supervisor-global query; live MCP servers → McpList reply (#375)
-         | McpAdd{name,config:McpServerSpec}   // hot-connect + persist to config.yml → McpChanged (#375)
-         | McpRemove{name}   // hot-disconnect + persist removal → McpChanged (#375)
+         | McpAdd{name,config:McpServerSpec}   // hot-connect + persist to config.yml → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
+         | McpRemove{name}   // hot-disconnect + persist removal → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | ReplayFrom{session,correlation_id,after_seq}   // late-subscriber history fetch → History (#160, ADR-0072)
          | CloseSession{session}   // explicit destroy → SessionEnded, tombstones the id (#21)
          | HibernateSession{session}   // trusted-only: evict memory, NO tombstone → SessionHibernated, resumable (#318, ADR-0077)
@@ -70,17 +70,28 @@ embedder holding a `Holly` (a head, the runtime tool executor) authors any
 frame. `Holly::send_from_wire` is the **untrusted** path a wire head (stdio
 `pipe`, WebSocket `serve`) calls after deserializing a line — it enforces the
 `InMsg::wire_allowed()` allowlist and refuses (`WireError::Privileged`, not
-routed) the runtime/embedder-authored variants: `ToolResult` (a forged one resolves
+routed) the trusted-only variants: `ToolResult` (a forged one resolves
 a parked turn on `request_id` alone, bypassing execution *and* permission),
 `Spawn` (bypasses the tool path's `spawn_refusal` gate, #119), `Resume`
-(internal, `#[serde(skip)]`), and `HibernateSession` (an embedder memory-eviction
-control — a wire head must not evict another session's in-memory state, #318). The executor folds a completed tool round-trip back
+(internal, `#[serde(skip)]`), `HibernateSession` (an embedder memory-eviction
+control — a wire head must not evict another session's in-memory state, #318),
+and `McpAdd`/`McpRemove` (#472,
+[ADR-0124](../adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md),
+reversing #375's wire tier: an unapproved `McpAdd` spawns an arbitrary local
+subprocess, and with the `serve` origin gate opt-in-off a hostile web page
+could drive it cross-origin — the read-only `McpList` stays wire-allowed, and
+the TUI `/mcp` path is unaffected since it sends over the privileged
+`Holly::send`). `wire_allowed` is an explicit exhaustive allowlist `match`
+(ADR-0124), so a new variant is wire-refused until deliberately opted in — a
+compile error to skip, mirroring `session()`/`variant_name()`. The executor
+folds a completed tool round-trip back
 over the named privileged handle `Holly::submit_tool_result` (used by
 `seam::reply_content`, the single fold-back site). Under the local single-user
 `serve` scope ([ADR-0048](../adr/0048-serve-head-local-trust-model.md)) this is
 robustness/UX — which cooperating local client owns a frame — not defence against
-a remote attacker; the WS head's `send_from_wire` call and per-connection
-`Approve` ownership are deferred to #153.
+a remote attacker; the WS head routes every inbound frame through
+`send_from_wire` and implements per-connection `Approve` ownership (#402,
+[ADR-0107](../adr/0107-ws-per-connection-approval-ownership.md)).
 
 **Session lifecycle** (✅ #21, [ADR-0028](../adr/0028-session-lifecycle-enumeration-and-backpressure.md)).
 `ListSessions` and `CloseSession` are **supervisor-global**: the supervisor

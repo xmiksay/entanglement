@@ -10,6 +10,19 @@ alternatives behind each design decision live in the ADRs under
 
 ## [Unreleased]
 
+### Security
+
+- **MCP stdio servers no longer inherit the provider API keys.** The spawned
+  subprocess env gets the same scrub `bash`/`call` children have had since
+  #164 (`catalog.key_envs()` removed before the per-server `env:` map is
+  applied — an explicit per-server entry still wins) (#472, ADR-0124).
+- **`McpAdd`/`McpRemove` are trusted-only.** An unapproved `McpAdd` spawns an
+  arbitrary local subprocess, so the mutating MCP ops are refused off the
+  untrusted wire (`send_from_wire`); the read-only `McpList` and the TUI
+  `/mcp` command are unaffected. `InMsg::wire_allowed` is now an explicit
+  fail-closed allowlist `match`, so a future variant is wire-refused until
+  deliberately opted in (#472, ADR-0124 amending ADR-0069/ADR-0097).
+
 ### Fixed
 
 - **Bounded retry on an ambiguous LLM stop.** A round that ends with no tool

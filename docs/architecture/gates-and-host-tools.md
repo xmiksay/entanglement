@@ -385,6 +385,11 @@ the same permission profiles as `read`/`bash`.
     and on EOF the reader **drains all pending requests with an error** so a crashed
     server can't hang a caller. The subprocess is held for the client's lifetime
     (`kill_on_drop`); keeping the registered tools alive keeps the server alive.
+    The child env is the inherited environment **minus the provider API-key
+    vars** (`catalog.key_envs()`, the same #164 scrub `bash`/`call` apply —
+    #472, [ADR-0124](../adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md));
+    an explicit per-server `env:` entry naming a key still wins, since writing
+    it into the server's own config block is deliberate consent.
     Lives in the **lean library** (tokio process + `serde_json` only).
   - **streamable HTTP (`mcp::http::HttpClient`, #312, behind the `mcp-http`
     feature):** a remote server over `POST <url>` — the streamable-HTTP transport.
@@ -438,8 +443,14 @@ both dispatch and model-advertised schemas with no engine restart.
 
 - **`InMsg::McpList { correlation_id }` / `McpAdd { name, config }` /
   `McpRemove { name }`** are engine-global, exactly like `ListSessions`:
-  `session()` is `None`, `msg_to_cmd` routes them to no session task, and they
-  are wire-allowed (enabling a server *is* consent, §ADR-0047/§ADR-0080).
+  `session()` is `None` and `msg_to_cmd` routes them to no session task. Only
+  the read-only `McpList` is wire-allowed; `McpAdd`/`McpRemove` are
+  **trusted-only** (#472,
+  [ADR-0124](../adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md),
+  reversing #375's wire tier — an unapproved `McpAdd` spawns an arbitrary
+  local subprocess, and ADR-0047's "enabling is consent" covers the trusted
+  config file, not an unauthenticated wire frame). The TUI `/mcp` command is
+  unaffected: it sends over the privileged `Holly::send`.
   `McpAdd`'s `config` is a core-owned `McpServerSpec` DTO — core cannot depend
   on the runtime crate, so it never carries the runtime's `McpServerConfig`
   directly; a `From<McpServerSpec>` conversion happens runtime-side. Answered
