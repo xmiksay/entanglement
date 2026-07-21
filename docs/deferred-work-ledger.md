@@ -68,3 +68,18 @@ Fixed in the same change once filed:
   deferred anyway" — it shipped as `permission::skill_masked`, wired in
   `tool_runner.rs`, per [ADR-0106](adr/0106-skill-scoped-allowed-tools-enforcement.md)
   (#400). ([#452](https://github.com/xmiksay/entanglement/issues/452))
+- `docs/architecture/protocol.md` §2 type block — presents itself as the
+  exhaustive wire contract but was missing `InMsg::McpList`/`McpAdd`/
+  `McpRemove` and `OutEvent::McpList`/`McpChanged`/`SkillActive`
+  (`protocol.rs:656/662/667`, `967/973/1222`). ([#454](https://github.com/xmiksay/entanglement/issues/454))
+- `.claude/CLAUDE.md` "The contract" `OutEvent` list — missing `SkillActive` +
+  `AmbiguousRetry` (`protocol.rs:1222/1243`); also a link-label typo (call-
+  registration bullet said "ADR-0094" while correctly linking
+  `0093-call-registration-independent-of-bash-opt-in.md`). ([#454](https://github.com/xmiksay/entanglement/issues/454))
+- `README.md` contract block — missing `SetGeneration` + the MCP trio
+  (`InMsg`), and `GenerationChanged` + the MCP pair + `SkillActive` +
+  `AmbiguousRetry` (`OutEvent`). ([#454](https://github.com/xmiksay/entanglement/issues/454))
+- `CHANGELOG.md` had no `[Unreleased]` section — `AmbiguousRetry`/
+  [ADR-0118](adr/0118-ambiguous-stop-reason-bounded-retry.md) shipped after
+  0.3.0 tagged but skipped the brief-sync convention entirely (absent from
+  `.claude/CLAUDE.md` too, now added alongside). ([#454](https://github.com/xmiksay/entanglement/issues/454))

@@ -145,6 +145,7 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | His
           | McpList | McpChanged
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
+          | SkillActive | AmbiguousRetry
 ```
 
 Load-bearing invariants (details in the split architecture docs — do **not**
@@ -710,6 +711,28 @@ re-document them here):
   threads its per-binding `bind_rid` into both `record` and the delegated
   `exec()` call so a script-obtained `Once` grant is redeemed by that exact
   binding invocation too.
+- **An ambiguous LLM stop retries in place instead of ending the turn**
+  (post-0.3.0, [ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md)):
+  `session::turn::is_confident_stop` classifies a round that ends with empty
+  `tool_calls` by its `stop_reason` — `EndTurn`/`MaxTokens`/`StopSequence` end
+  the turn as before, but `None`/`Other`/a contradictory `ToolUse` with no
+  actual calls (the Ollama-class "announced intent then stream died"
+  symptom) commit the partial round, inject a synthetic user-role nudge, and
+  retry the same round in place, bounded by
+  `EngineConfig::max_ambiguous_stop_retries` (default 2, separate from
+  `max_turns`) and reset to 0 by any round that does produce real tool calls.
+  Emits a persisted, seq-bearing `OutEvent::AmbiguousRetry { session, seq,
+  nudge }` (modeled on `Compacted`) *before* the mutation so `Session::replay`
+  reconstructs the exact `assistant(partial)/user(nudge)/assistant(recovered)`
+  shape instead of merging retry rounds' `TextDelta`s into one message and
+  dropping the nudge; an empty ambiguous round commits nothing (the strict
+  Anthropic/Gemini clients reject empty-content messages), and a shared
+  `coalesce_same_role` post-pass merges the nudge with an adjacent same-role
+  turn. Companion fixes: the OpenAI-compat client now tracks
+  `emitted_any_tool_call` instead of gating on the pre-JSON-filter
+  accumulator, and the stub `Llm` backends (`DummyLlm`/`EchoLlm`) report an
+  honest `stop_reason` instead of bare `None`, since `None` is now
+  load-bearing as "ambiguous, retry."
 
 | Topic | Module |
 | --- | --- |
@@ -837,6 +860,10 @@ per-endpoint concurrency cap + adaptive pacing + bounded 429 backpressure
 session-lineage robustness fixes ([ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)/[ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)),
 and the `apply_patch` host tool (#455: unified-diff apply beside `edit`/`write`,
 the first producer of the reserved `FileChangeKind::ApplyDiff`).
+Unreleased since 0.3.0: the bounded ambiguous-stop retry
+([ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md),
+`OutEvent::AmbiguousRetry`) — see [`../CHANGELOG.md`](../CHANGELOG.md)'s
+`[Unreleased]` section.
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
@@ -876,7 +903,7 @@ a small hand-rolled parser/applier in `host::unified_diff`, not the `diffy`
 crate, since `diffy` is `tui`-feature-gated and forbidden from the lean
 `--no-default-features` build `apply_patch` lives in),
 the always-registered `call` (argv exec, no shell — registered independent of
-`ENTANGLEMENT_ENABLE_BASH` since #386/[ADR-0094](../docs/adr/0093-call-registration-independent-of-bash-opt-in.md);
+`ENTANGLEMENT_ENABLE_BASH` since #386/[ADR-0093](../docs/adr/0093-call-registration-independent-of-bash-opt-in.md);
 gains a `workdir` param, mirroring `bash`'s) and the opt-in exec pair
 `bash`/`bash_output` (`ENTANGLEMENT_ENABLE_BASH=1`; `bash` gains `workdir` +
 `run_in_background`, polled via `bash_output`, #170) — both run unsandboxed by
