@@ -36,10 +36,13 @@ depends on neither.
 ## Commands — drive through `make`
 
 ```bash
+make help         # list every target with its one-line description
 make run           # stdio head, one turn (text)
 make run-json      # one turn, NDJSON events (opencode run --format json)
 make run-tui       # launch the terminal UI
+make pipe          # stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
 make serve         # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
+make install       # install the `skutter` binary into $CARGO_HOME/bin
 make test          # unit + integration
 make test-unit | make test-integration
 make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
@@ -92,6 +95,28 @@ is OpenAI-native; Anthropic/Gemini have no effort concept, so each maps it onto
 a fixed thinking-budget tier when no explicit `thinking_budget_tokens` is set.
 Precedence: **env > user YAML > embedded defaults**. See
 `entanglement-provider::catalog`.
+
+Runtime env vars (full surface — each is documented inline at the feature that
+reads it; this table is the one-place index):
+
+| Env var | Purpose |
+| --- | --- |
+| `ENTANGLEMENT_PROVIDER` | select provider (`zai`/`openai`/`ollama`/`anthropic`/`gemini`/`echo`); else auto-detect by key |
+| `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_BASE` | per-provider key/model/base (the catalog `key_env`, e.g. `ZAI_API_KEY`) |
+| `<NAME>_RPM` / `<NAME>_CONCURRENCY` | per-provider endpoint RPM / in-flight cap (#414), overriding the catalog `rpm`/`concurrency`; `None` ⇒ client default |
+| `ENTANGLEMENT_MAX_CONCURRENCY` | last-resort process-wide concurrency override (default 3) |
+| `ENTANGLEMENT_LOG_BODIES=1` | opt-in symmetric LLM request-body logging (#165) |
+| `ENTANGLEMENT_PROVIDERS_FILE` | override the provider-catalog user file path |
+| `ENTANGLEMENT_CONFIG_FILE` | override the layered user config file path (`config.yml`) |
+| `ENTANGLEMENT_ENV_FILE` | override the managed provider-key env file path (`.env`) |
+| `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` | replace the whole user agents/skills layer (also the cross-vendor opt-out) |
+| `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the four managed runtime files |
+| `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
+| `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register the `bash`/`bash_output` exec pair |
+| `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call`; opt-in to keep network (#399) |
+| `ENTANGLEMENT_ECHO_FULL=1` | `EchoLlm` appends the full system text (debugging) |
+| `ENTANGLEMENT_TUI_NOTIFY=1` / `ENTANGLEMENT_TUI_NO_MOUSE` | TUI desktop-notification opt-in / mouse opt-out |
+| `ENTANGLEMENT_HOOK_EVENT` / `_SESSION_ID` / `_TOOL_NAME` | set on every hook child's env by the runtime (read-only context, not user-set) |
 
 z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
 format); **Gemini** has a native `GeminiLlm` (✅ #309,
