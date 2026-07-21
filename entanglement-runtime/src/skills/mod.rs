@@ -59,8 +59,9 @@ pub struct SkillMeta {
     /// `true` ⇒ only explicit user invocation can trigger it (destructive/deploy
     /// skills). Withheld from the model's disclosure list.
     pub user_only: bool,
-    /// Tool mask active while the skill is loaded (tier-2 enforcement, deferred).
-    /// `None` ⇒ inherit the session's tools.
+    /// Tool mask active while the skill is loaded, enforced by
+    /// `permission::skill_masked` (ADR-0106). `None` ⇒ inherit the session's
+    /// tools.
     pub allowed_tools: Option<Vec<String>>,
     /// The skill directory (holds `SKILL.md` + payload). `None` for embedded
     /// built-ins, which have no on-disk home.
@@ -87,7 +88,8 @@ struct SkillFrontmatter {
 /// `argument-hint`, …) is ignored. Claude's `disable-model-invocation` maps to
 /// [`SkillMeta::user_only`] — same semantics, the model must not self-trigger.
 /// Claude's `allowed-tools` is deliberately dropped: its tool names don't map
-/// onto entanglement's, and `allowed_tools` enforcement is deferred anyway.
+/// onto entanglement's, and `allowed_tools` enforcement (ADR-0106) keys off
+/// `SkillMeta::allowed_tools`, which a foreign skill never populates.
 #[derive(Debug, Deserialize)]
 struct ForeignSkillFrontmatter {
     name: String,

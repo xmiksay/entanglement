@@ -60,3 +60,11 @@ merged:
 
 No open findings. Record entries here as `file:line — stale claim — current
 truth — issue` when filed, and drop the row once fixed.
+
+Fixed in the same change once filed:
+
+- `entanglement-runtime/src/skills/mod.rs:62,90` — comments called skill
+  `allowed_tools` masking "tier-2 enforcement, deferred" / "enforcement is
+  deferred anyway" — it shipped as `permission::skill_masked`, wired in
+  `tool_runner.rs`, per [ADR-0106](adr/0106-skill-scoped-allowed-tools-enforcement.md)
+  (#400). ([#452](https://github.com/xmiksay/entanglement/issues/452))
