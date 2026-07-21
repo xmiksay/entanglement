@@ -55,7 +55,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | Error{session,seq,message}
          | Done{session,seq}
          | Compacted{session,seq,summary,kept,auto}   // compaction summary ready; auto:false (default) → source untouched, head forks into a new session (#324, ADR-0082 → ADR-0101); auto:true → in-place mutation the live engine already applied (#398, ADR-0103)
-         | FileChange{session,seq,path,change_kind,hash}   // file-change audit: runtime executor emits on edit/write; hash = sha256(after) (#202, ADR-0060)
+         | FileChange{session,seq,path,change_kind,hash}   // file-change audit: runtime executor emits on edit/write/apply_patch; hash = sha256(after) (#202, ADR-0060, #455)
          | SkillActive{session,seq,skill_id?,allowed_tools?}   // wire-facing posture only: the active skill's scope (tool mask); core neither interprets nor enforces it. Mirrors FileChange: a fresh per-session seq (#157), no core replay-fold semantics (a head just tracks the latest value). (#400, ADR-0106)
          | AmbiguousRetry{session,seq,nudge}   // ambiguous LLM stop → bounded in-place retry: persisted boundary so replay reconstructs the partial round + nudge, not one merged assistant message (ADR-0118)
 ```

@@ -34,18 +34,21 @@ thread is where new items get filed and discussed.
 
 ## Open deferred items
 
-Six items surfaced by the 2026-07-21 whole-codebase audit — each a real gap
-explicitly marked "follow-up"/"deferred" in an Accepted ADR but not previously
-tracked here. Filed against [#396](https://github.com/xmiksay/entanglement/issues/396).
+Items 1–6 surfaced by the 2026-07-21 whole-codebase audit, item 7 by the same
+day's post-remediation pass ([#473](https://github.com/xmiksay/entanglement/issues/473))
+— each a real gap explicitly marked "follow-up"/"deferred" in an Accepted ADR
+but not previously tracked here. Filed against
+[#396](https://github.com/xmiksay/entanglement/issues/396).
 
 | # | Deferred item | Documented at | Verified state |
 | --- | --- | --- | --- |
 | 1 | **Per-profile sandbox scoping** (bubblewrap is global-only today). A mixed run — one profile confined, another not — needs the sandbox policy threaded through `run_for_session` (ADR-0088). | [ADR-0104](adr/0104-bubblewrap-sandbox-for-bash-call.md) §3 & "Negative" (lines 53–69, 149): "per-profile scoping is the tracked next step." | `entanglement-runtime/src/host/sandbox.rs` comment confirms: "Global for now — see the ADR's per-profile follow-up." **Not shipped (intentional).** |
-| 2 | **Rhai `exec`/`bash` binding `workdir` scoping.** The bindings marshal `{command, args, timeout}` only, so a `tool{pattern}` workdir-scoped permission rule never fires for a binding call. | [ADR-0116](adr/0116-workdir-scoped-permission-rules-for-bash-call.md) §"the rhai binding grade is not touched" (lines 92–97): "Extending the bindings with their own `workdir` parameter, if ever wanted, is separate future work." | `script.rs` `exec`/`bash` bindings carry `{command, args, timeout}` only. **Not shipped (intentional).** |
+| 2 | **Rhai `exec`/`bash` binding `workdir` scoping.** The bindings marshal `{command, args, timeout}` only, so a `tool{pattern}` workdir-scoped permission *rule* never fires for a binding call. Distinct from — and not closed by — [ADR-0119](adr/0119-rhai-bindings-route-through-the-escape-root-gate.md) (#446, shipped), which routes an *out-of-root* binding access through the escape-root approval gate: 0119 covers the containment boundary, this row covers workdir-scoped rule matching for in-root calls. | [ADR-0116](adr/0116-workdir-scoped-permission-rules-for-bash-call.md) §"the rhai binding grade is not touched" (lines 92–97): "Extending the bindings with their own `workdir` parameter, if ever wanted, is separate future work." | `script.rs` `exec`/`bash` bindings carry `{command, args, timeout}` only. **Not shipped (intentional).** |
 | 3 | **Web search MVP limitations** (four sub-items): search results not persisted to history; `pause_turn` ends the turn rather than continuing; z.ai streaming `web_search` placement unverified; the newer Anthropic `_20260209` server-tool version gated on a `ModelEntry` capability flag instead of hardcoded `_20250305`. | [ADR-0075](adr/0075-provider-side-web-search-mvp.md) §"Accepted MVP limitations (follow-ups)" (lines 83–96) — all four explicitly called "follow-up." | All four still open. **Not shipped.** |
 | 4 | **`glob`/`grep` escape-root access via approval.** A recursive search descending into an approved external directory is a distinct, murkier capability ("which external root? the whole filesystem?") than approving one `read`/`edit`/`write` path. | [ADR-0109](adr/0109-escape-root-access-via-approval.md) §"Negative / accepted" (lines 95–101): "deferred until a concrete need — reading a specific external file via `read` + approval covers the practical case." | `read`/`edit`/`write`/`bash`/`call` wired with `with_extra_roots()`; `glob`/`grep` route through `list_files`, which still silently drops out-of-root matches. **Not shipped (intentional).** |
 | 5 | **OpenAI `[DONE]`-as-terminator + trailing-buffer-flush + Ollama `max_output_tokens` catalog default.** Pure robustness improvements: once `turn.rs` treats a bare `None` `stop_reason` as ambiguous-and-retried (ADR-0118, shipped), every scenario these could produce degrades to that already-handled case. | [ADR-0118](adr/0118-ambiguous-stop-reason-bounded-retry.md) §"Alternatives considered" (lines 162–169): "Deferred: pure robustness improvement with no attached user-visible bug." | **Not shipped.** |
 | 6 | **Wire-trust doc note for MCP HTTP `${VAR}` expansion.** Any `${VAR}` in a configured MCP server header is expanded from the engine's process env, so a named secret (`ZAI_API_KEY`, etc.) can leak to the MCP server in a header. Mitigations exist (servers are trusted-by-config per ADR-0047; enabling is explicit consent; no header logging found) but the leak surface is not documented in ADR-0080, and any future debug logging must redact expanded values. | `entanglement-runtime/src/mcp/http.rs:296-336` `expand_env()`; not yet called out in [ADR-0080](adr/0080-mcp-streamable-http-transport.md). | Mitigations in place; **doc gap not yet closed.** |
+| 7 | **Skill `allowed_tools` mask does not reach rhai bindings.** A skill loaded in a turn scopes generic tool dispatch via `permission::skill_masked`, but the `Intercept::Rhai` route resolves its bindings against a `BindingPolicy` snapshot with no skill-mask consultation — a `rhai` script run in the same turn can call tools the active skill's `allowed_tools` excludes. | [ADR-0106](adr/0106-skill-scoped-allowed-tools-enforcement.md) §"Negative / accepted" (lines 120–129): "threading skill-mask state through it is deferred until a concrete need for skill-scoped script tool calls appears." | `script.rs` binding resolution consults agent mask + permission chain only; no built-in or documented skill combines `allowed_tools` with `rhai` today. **Not shipped (intentional).** ([#473](https://github.com/xmiksay/entanglement/issues/473)) |
 
 ## Resolved (shipped since the 2026-07-16 audit)
 
@@ -94,6 +97,34 @@ Fixed in the same change once filed:
   [ADR-0118](adr/0118-ambiguous-stop-reason-bounded-retry.md) shipped after
   0.3.0 tagged but skipped the brief-sync convention entirely (absent from
   `.claude/CLAUDE.md` too, now added alongside). ([#454](https://github.com/xmiksay/entanglement/issues/454))
+
+Findings of the 2026-07-21 **post-remediation** pass ([#473](https://github.com/xmiksay/entanglement/issues/473)),
+fixed in the same change:
+
+- `docs/architecture/protocol.md:82-83` — claimed the WS head's
+  `send_from_wire` + per-connection `Approve` ownership were "deferred to
+  #153" — both shipped (#402,
+  [ADR-0107](adr/0107-ws-per-connection-approval-ownership.md)). (Fixed in
+  the #472 PR, whose ADR-0124 edit rewrote the same paragraph.)
+- `docs/architecture/protocol.md:58` — the `FileChange` comment omitted
+  `apply_patch` (#455), which code (`protocol.rs`) already documents as the
+  third emitter beside `edit`/`write`.
+- `CHANGELOG.md` `[Unreleased]` — recorded only `AmbiguousRetry` while ~14
+  user-facing changes had landed since v0.3.0 (`apply_patch` #455, the
+  escape-root fixes #446/#449, the provider stream fixes #443–#445/#447, the
+  executor leak fix #448, unknown-tool rejection, and PR #471's batch).
+  Backfilled.
+- ADR back-links: [ADR-0109](adr/0109-escape-root-access-via-approval.md) not
+  marked amended by 0119/0120, [ADR-0101](adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)
+  not marked amended by 0110, [ADR-0111](adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)
+  carrying no pointer to [ADR-0122](adr/0122-per-provider-concurrency-and-rpm-as-catalog-data.md)
+  (and 0122 no `Supersedes` field) — status lines + README index cells now
+  link forward, matching the 0046→0115 precedent.
+- [ADR-0086](adr/0086-recordsink-pluggable-persistence-append-target.md) was
+  referenced nowhere outside the ADR index — now linked from
+  `docs/architecture/heads-and-persistence.md`'s `RecordSink` bullet.
+- `.claude/CLAUDE.md` commands block — missing `make sessions`/`inspect`/
+  `test-gates`/`tag`. Added.
 
 Additional findings fixed in the 2026-07-21 audit pass (kept for one cycle as
 the audit trail, then pruned):

@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-21
+- Supersedes: [ADR-0111](0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)'s "Deferred: per-provider concurrency in the catalog" framing only — 0111's decisions themselves stand
 
 ## Context
 

@@ -5,7 +5,11 @@
   [0102](0102-compact-keep-tail-verbatim-in-the-fork-prompt.md) — that
   rejection was scoped to the *source* (which does keep everything, unchanged
   here), not the *fork*'s fidelity, which 0102 addresses without touching
-  anything decided in this document
+  anything decided in this document; amended by
+  [0110](0110-compaction-successor-closes-predecessor.md) — the fork now
+  *retires* the source session (successor closes predecessor), so the
+  source-kept-open implicit undo described here is no longer reachable
+  interactively
 - Supersedes [0082](0082-single-shot-session-ops-and-persisted-compaction.md)
   (the `InMsg::Oneshot` wire shape and `OutEvent::Compacted` variant stay; the
   in-place `apply_compaction` mutation is removed)
