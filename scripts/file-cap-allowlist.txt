@@ -27,7 +27,7 @@ entanglement-runtime/src/agents/mod.rs
 entanglement-provider/src/anthropic.rs
 entanglement-provider/src/openai.rs
 entanglement-core/src/session.rs
-entanglement-provider/src/client.rs
+entanglement-provider/src/client/mod.rs
 entanglement-runtime/src/permission.rs
 entanglement-runtime/src/script.rs
 entanglement-runtime/src/session_store.rs
