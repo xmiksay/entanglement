@@ -1,7 +1,7 @@
 # Deferred-work ledger & docs/implementation drift
 
-Standing ledger for two recurring failure modes found by the 2026-07-16
-whole-codebase audit:
+Standing ledger for two recurring failure modes found by the 2026-07-16 and
+2026-07-21 whole-codebase audits:
 
 1. **Intentionally-deferred work** that falls out of tracking once its
    originating issue closes (a design landed with an explicit "X deferred to a
@@ -34,8 +34,18 @@ thread is where new items get filed and discussed.
 
 ## Open deferred items
 
-None open — see the resolved table below for #426, the last item filed
-against this ledger.
+Six items surfaced by the 2026-07-21 whole-codebase audit — each a real gap
+explicitly marked "follow-up"/"deferred" in an Accepted ADR but not previously
+tracked here. Filed against [#396](https://github.com/xmiksay/entanglement/issues/396).
+
+| # | Deferred item | Documented at | Verified state |
+| --- | --- | --- | --- |
+| 1 | **Per-profile sandbox scoping** (bubblewrap is global-only today). A mixed run — one profile confined, another not — needs the sandbox policy threaded through `run_for_session` (ADR-0088). | [ADR-0104](adr/0104-bubblewrap-sandbox-for-bash-call.md) §3 & "Negative" (lines 53–69, 149): "per-profile scoping is the tracked next step." | `entanglement-runtime/src/host/sandbox.rs` comment confirms: "Global for now — see the ADR's per-profile follow-up." **Not shipped (intentional).** |
+| 2 | **Rhai `exec`/`bash` binding `workdir` scoping.** The bindings marshal `{command, args, timeout}` only, so a `tool{pattern}` workdir-scoped permission rule never fires for a binding call. | [ADR-0116](adr/0116-workdir-scoped-permission-rules-for-bash-call.md) §"the rhai binding grade is not touched" (lines 92–97): "Extending the bindings with their own `workdir` parameter, if ever wanted, is separate future work." | `script.rs` `exec`/`bash` bindings carry `{command, args, timeout}` only. **Not shipped (intentional).** |
+| 3 | **Web search MVP limitations** (four sub-items): search results not persisted to history; `pause_turn` ends the turn rather than continuing; z.ai streaming `web_search` placement unverified; the newer Anthropic `_20260209` server-tool version gated on a `ModelEntry` capability flag instead of hardcoded `_20250305`. | [ADR-0075](adr/0075-provider-side-web-search-mvp.md) §"Accepted MVP limitations (follow-ups)" (lines 83–96) — all four explicitly called "follow-up." | All four still open. **Not shipped.** |
+| 4 | **`glob`/`grep` escape-root access via approval.** A recursive search descending into an approved external directory is a distinct, murkier capability ("which external root? the whole filesystem?") than approving one `read`/`edit`/`write` path. | [ADR-0109](adr/0109-escape-root-access-via-approval.md) §"Negative / accepted" (lines 95–101): "deferred until a concrete need — reading a specific external file via `read` + approval covers the practical case." | `read`/`edit`/`write`/`bash`/`call` wired with `with_extra_roots()`; `glob`/`grep` route through `list_files`, which still silently drops out-of-root matches. **Not shipped (intentional).** |
+| 5 | **OpenAI `[DONE]`-as-terminator + trailing-buffer-flush + Ollama `max_output_tokens` catalog default.** Pure robustness improvements: once `turn.rs` treats a bare `None` `stop_reason` as ambiguous-and-retried (ADR-0118, shipped), every scenario these could produce degrades to that already-handled case. | [ADR-0118](adr/0118-ambiguous-stop-reason-bounded-retry.md) §"Alternatives considered" (lines 162–169): "Deferred: pure robustness improvement with no attached user-visible bug." | **Not shipped.** |
+| 6 | **Wire-trust doc note for MCP HTTP `${VAR}` expansion.** Any `${VAR}` in a configured MCP server header is expanded from the engine's process env, so a named secret (`ZAI_API_KEY`, etc.) can leak to the MCP server in a header. Mitigations exist (servers are trusted-by-config per ADR-0047; enabling is explicit consent; no header logging found) but the leak surface is not documented in ADR-0080, and any future debug logging must redact expanded values. | `entanglement-runtime/src/mcp/http.rs:296-336` `expand_env()`; not yet called out in [ADR-0080](adr/0080-mcp-streamable-http-transport.md). | Mitigations in place; **doc gap not yet closed.** |
 
 ## Resolved (shipped since the 2026-07-16 audit)
 
@@ -83,3 +93,25 @@ Fixed in the same change once filed:
   [ADR-0118](adr/0118-ambiguous-stop-reason-bounded-retry.md) shipped after
   0.3.0 tagged but skipped the brief-sync convention entirely (absent from
   `.claude/CLAUDE.md` too, now added alongside). ([#454](https://github.com/xmiksay/entanglement/issues/454))
+
+Additional findings fixed in the 2026-07-21 audit pass (kept for one cycle as
+the audit trail, then pruned):
+
+- `.claude/CLAUDE.md:108-110` — described `ProviderEntry.concurrency` as shipped
+  under #414, which the 2026-07-21 audit flagged as possible drift against
+  ADR-0111's "Deferred" section. **Verified shipped** (catalog.rs field +
+  test + `<NAME>_CONCURRENCY` env resolver in main.rs); ADR-0111's deferred
+  framing is now superseded by [ADR-0122](adr/0122-per-provider-concurrency-and-rpm-as-catalog-data.md).
+  No brief text change needed.
+- `.claude/CLAUDE.md:38-52` — commands block was missing `make help`/`make
+  install`/`make pipe`. **Fixed:** added all three to the block.
+- `.claude/CLAUDE.md` — env-var surface was scattered inline with no one-place
+  index; several vars (`ENTANGLEMENT_CONFIG_FILE`, `ENTANGLEMENT_GRANTS_FILE`,
+  `ENTANGLEMENT_PREAMBLE_FILE`/`_BRIEF_FILE`, `ENTANGLEMENT_ECHO_FULL`,
+  `ENTANGLEMENT_TUI_*`, hook-context vars) were not surfaced at all.
+  **Fixed:** added a consolidated env-var reference table after the providers
+  section.
+- `README.md:42` — mentioned a "future Vue SPA" as a hypothetical client with
+  no evidence any such SPA exists or is tracked. **Fixed:** reworded to "any
+  future client".
+
