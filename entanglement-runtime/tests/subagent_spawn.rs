@@ -769,6 +769,148 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
     );
 }
 
+/// Parent spawns an `explore` child (non-blocking), then polls it with
+/// `timeout_secs: 0` — the indefinite-wait sentinel (ADR-0123). The child is
+/// gated on a release signal so the poll is provably parked; the test releases
+/// the child, then asserts the poll returned the answer (not a still-running
+/// status) and that the parent turn completed. This is the behavioral proof that
+/// `0` means "wait for notification," not the old "return immediately."
+struct ZeroTimeoutPollLlm {
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl Llm for ZeroTimeoutPollLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        // Child: block until the test releases it, then answer.
+        if last_user(&req) == "child-task" && last_tool(&req).is_none() {
+            self.release.notified().await;
+            return Ok(finish("zero-timeout-child-answer"));
+        }
+        match last_tool(&req) {
+            // A launch handle → poll with `timeout_secs: 0` (the sentinel).
+            Some(t) => match extract_agent_id(t) {
+                Some(id) => Ok(call(
+                    "poll1",
+                    "agent_poll",
+                    format!(r#"{{"agent_id":"{id}","timeout_secs":0}}"#),
+                )),
+                // A poll result → finish.
+                None => Ok(finish("parent done")),
+            },
+            // First parent turn: launch a sub-agent.
+            None => Ok(call(
+                "spawn1",
+                "agent_spawn",
+                r#"{"agent":"explore","prompt":"child-task"}"#.into(),
+            )),
+        }
+    }
+}
+
+#[tokio::test]
+async fn agent_poll_zero_timeout_blocks_until_completion() {
+    let release = Arc::new(Notify::new());
+    let r = release.clone();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ZeroTimeoutPollLlm { release: r.clone() }) as Box<dyn Llm>
+        }),
+        // Core carries only `build` now (#201); the spawn target needs the trio.
+        profiles: entanglement_runtime::agents::built_in_registry(),
+        ..EngineConfig::default()
+    };
+    let profiles = cfg.profiles.clone();
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+
+    let parent = SessionId::new("parent");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(parent.clone(), "delegate"))
+        .await
+        .unwrap();
+
+    // Drain until we've seen the spawn return a handle and a child start, but
+    // NOT the poll result yet — the poll is parked on the child (the signal has
+    // not been released). We confirm the park by observing the child is running
+    // without an agent_poll answer landing.
+    let mut child_started = false;
+    let mut saw_launch_handle = false;
+    let mut saw_poll_answer = false;
+    let deadline = std::time::Instant::now() + Duration::from_millis(300);
+    while std::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(50), sub.recv()).await {
+            Ok(Ok(OutEvent::SessionStarted {
+                parent: Some(p),
+                root: false,
+                ..
+            })) if p == parent => child_started = true,
+            Ok(Ok(OutEvent::ToolOutput {
+                session,
+                tool,
+                output,
+                ..
+            })) if session == parent => {
+                if tool == "agent_spawn" && output.contains("agent_id:") {
+                    saw_launch_handle = true;
+                }
+                if tool == "agent_poll" {
+                    saw_poll_answer = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(child_started, "the child should start under the parent");
+    assert!(saw_launch_handle, "agent_spawn should return a handle");
+    assert!(
+        !saw_poll_answer,
+        "the timeout_secs:0 poll must NOT return while the child is still running"
+    );
+
+    // Release the child; the parked poll should now wake and surface the answer.
+    release.notify_one();
+
+    let mut parent_finished = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        match &ev {
+            OutEvent::ToolOutput {
+                session,
+                tool,
+                output,
+                ..
+            } if session == &parent && tool == "agent_poll" => {
+                assert!(
+                    output.contains("zero-timeout-child-answer"),
+                    "the timeout_secs:0 poll should return the child's answer, got: {output}"
+                );
+                assert!(
+                    !output.contains("still running"),
+                    "timeout_secs:0 must block, not return a still-running status"
+                );
+                saw_poll_answer = true;
+            }
+            OutEvent::Done { session, .. } if session == &parent && saw_poll_answer => {
+                parent_finished = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_poll_answer, "the timeout_secs:0 poll should complete");
+    assert!(
+        parent_finished,
+        "the parent finishes its turn after the indefinite-wait poll returns"
+    );
+}
+
 /// A second Subagent-mode target, used to exercise the `spawnable_agents`
 /// allowlist (a valid target that is nonetheless off a scoped spawner's list).
 fn subagent_helper() -> AgentProfile {

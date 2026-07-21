@@ -253,7 +253,7 @@ Five **runtime-owned orchestration tools** are *not* in the registry — the
 touch no host resource) and advertises their schemas separately: the `agent_*`
 family (§5, ADR-0033) —
 `agent_spawn { agent, prompt }` (renamed from `spawn_agent`, ADR-0022), its
-non-blocking join `agent_poll { agent_id, timeout_secs }` (ADR-0026), and the
+non-blocking join `agent_poll { agent_id, timeout_secs }` (ADR-0026; `timeout_secs: 0` is the indefinite-wait sentinel, ADR-0123), and the
 blocking `agent { agent, prompt }` (spawn-and-wait in one call) —
 `ask_user { question, options, allow_free_form }` (§5, ADR-0027), and
 `propose_plan { plan }`, the plan agent's finalize step, force-parked on the
