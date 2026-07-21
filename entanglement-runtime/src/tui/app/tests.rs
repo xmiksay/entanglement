@@ -371,7 +371,7 @@ fn reasoning_block_at_maps_row_plus_offset_to_block() {
     let area = Rect::new(2, 1, 10, 4);
     // Rendered lines: only indices 3 and 5 belong to reasoning block 7.
     let line_blocks = vec![None, None, None, Some(7), None, Some(7), None];
-    app.set_chat_hit_test(area, 3, line_blocks);
+    app.set_chat_hit_test(area, 3, line_blocks, Vec::new());
 
     // Top row of the area (row 1) + offset 3 → line index 3 → block 7.
     assert_eq!(app.block_at(3, 1), Some(7));
@@ -382,11 +382,50 @@ fn reasoning_block_at_maps_row_plus_offset_to_block() {
 }
 
 #[test]
+fn drag_selection_extracts_text_across_lines() {
+    let sid = SessionId::new("test");
+    let mut app = App::new_for_test(sid);
+    let area = Rect::new(0, 0, 20, 3);
+    let line_text = vec!["hello world".to_string(), "second line".to_string()];
+    app.set_chat_hit_test(area, 0, vec![None, None], line_text);
+    // Press at (col 6, row 0) → line 0 col 6 ("world"); a press alone hasn't
+    // moved, so it would be treated as a click.
+    app.start_selection(6, 0);
+    assert!(!app.selection_moved());
+    // Drag to (col 6, row 1) → line 1 col 6, spanning into "second line".
+    app.update_selection(6, 1);
+    assert!(app.selection_moved());
+    assert_eq!(app.take_selection_text().as_deref(), Some("world\nsecond"));
+}
+
+#[test]
+fn bare_click_yields_no_selection_text() {
+    let sid = SessionId::new("test");
+    let mut app = App::new_for_test(sid);
+    let area = Rect::new(0, 0, 20, 3);
+    app.set_chat_hit_test(area, 0, vec![None], vec!["hello".to_string()]);
+    app.start_selection(2, 0); // press, no drag
+    assert!(!app.selection_moved());
+    // A zero-width selection copies nothing.
+    assert!(app.take_selection_text().is_none());
+}
+
+#[test]
+fn selection_outside_chat_area_is_ignored() {
+    let sid = SessionId::new("test");
+    let mut app = App::new_for_test(sid);
+    let area = Rect::new(2, 1, 10, 4);
+    app.set_chat_hit_test(area, 0, vec![None], vec!["hello".to_string()]);
+    app.start_selection(0, 0); // above/left of the chat area
+    assert!(app.selection().is_none());
+}
+
+#[test]
 fn reasoning_block_at_rejects_clicks_outside_chat_rect() {
     let sid = SessionId::new("test");
     let mut app = App::new_for_test(sid);
     let area = Rect::new(2, 1, 10, 4);
-    app.set_chat_hit_test(area, 3, vec![None, None, None, Some(7)]);
+    app.set_chat_hit_test(area, 3, vec![None, None, None, Some(7)], Vec::new());
 
     assert_eq!(app.block_at(1, 1), None, "left of area");
     assert_eq!(app.block_at(12, 1), None, "right of area");

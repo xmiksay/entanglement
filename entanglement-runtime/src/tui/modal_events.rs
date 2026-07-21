@@ -4,11 +4,12 @@ use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use super::app::App;
+use super::app::{App, UiEffect};
 
 /// Routes a mouse event. The wheel prefers an open modal's selection (mirroring
-/// `j`/`k`), else scrolls the chat transcript; a left click hit-tests the chat
-/// area and toggles the reasoning block it lands on.
+/// `j`/`k`), else scrolls the chat transcript. Left-button press/drag/release
+/// drives text selection over the transcript: a drag selects and copies (OSC 52)
+/// on release; a bare click (no drag) toggles the reasoning block it lands on.
 pub(super) fn handle_mouse(app: &mut App, ev: MouseEvent) {
     match ev.kind {
         MouseEventKind::ScrollUp => {
@@ -22,8 +23,25 @@ pub(super) fn handle_mouse(app: &mut App, ev: MouseEvent) {
             }
         }
         MouseEventKind::Down(MouseButton::Left) if !any_modal_open(app) => {
-            if let Some(id) = app.block_at(ev.column, ev.row) {
-                app.toggle_block(id);
+            // Begin a (possibly zero-width) selection; mouse-up decides whether
+            // it was a drag (copy) or a bare click (block toggle).
+            app.start_selection(ev.column, ev.row);
+        }
+        MouseEventKind::Drag(MouseButton::Left) if !any_modal_open(app) => {
+            app.update_selection(ev.column, ev.row);
+        }
+        MouseEventKind::Up(MouseButton::Left) if !any_modal_open(app) => {
+            if app.selection_moved() {
+                if let Some(text) = app.take_selection_text() {
+                    app.request_effect(UiEffect::CopyToClipboard(text));
+                }
+            } else {
+                // No drag → treat as a click: drop the empty selection and
+                // toggle the block under the cursor (the pre-selection UX).
+                app.clear_selection();
+                if let Some(id) = app.block_at(ev.column, ev.row) {
+                    app.toggle_block(id);
+                }
             }
         }
         _ => {}

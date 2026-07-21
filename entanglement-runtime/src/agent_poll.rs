@@ -7,6 +7,8 @@
 //! collects the result: it blocks up to `timeout_secs` for that specific child
 //! and returns the final answer (with elapsed time) once it completes, or a
 //! still-running status on timeout so the model can poll again or do other work.
+//! A `timeout_secs` of `0` is the sentinel for an unbounded wait — it blocks
+//! until the child's completion notification, with no caller-side bound (ADR-0123).
 //!
 //! Like `agent_spawn`/`ask_user`, `agent_poll` is a runtime-owned tool the
 //! executor intercepts *before* permission resolution: it starts no session and
@@ -107,7 +109,8 @@ pub fn agent_poll_spec() -> ToolSpec {
          returns its final answer once complete (with how long it ran), or a \
          still-running status on timeout so you can poll again or do other work \
          meanwhile. Launch several sub-agents first, then poll each handle to run \
-         them concurrently.",
+         them concurrently. Pass timeout_secs: 0 to block until the child \
+         completes (no caller-side bound).",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -117,7 +120,7 @@ pub fn agent_poll_spec() -> ToolSpec {
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "Max seconds to wait this poll before returning a still-running status. Defaults to 60."
+                    "description": "Max seconds to wait this poll before returning a still-running status. Defaults to 60. 0 means wait indefinitely for the sub-agent to complete."
                 }
             },
             "required": ["agent_id"]
@@ -162,7 +165,20 @@ pub async fn run_agent_poll(
         return;
     };
 
-    let output =
+    let output = if timeout_secs == 0 {
+        // Sentinel: 0 ⇒ wait for the child's completion notification with no
+        // caller-side bound (ADR-0123). Mirrors the blocking `agent` tool;
+        // `wait_complete` is hang-safe (returns when the watch sender drops).
+        match wait_complete(&mut rx).await {
+            AgentStatus::Complete { answer, elapsed } => {
+                format!(
+                    "sub-agent `{agent_id}` completed in {:.1}s:\n\n{answer}",
+                    elapsed.as_secs_f64()
+                )
+            }
+            AgentStatus::Running => unreachable!("wait_complete returns only on completion"),
+        }
+    } else {
         match tokio::time::timeout(Duration::from_secs(timeout_secs), wait_complete(&mut rx)).await
         {
             Ok(AgentStatus::Complete { answer, elapsed }) => {
@@ -174,11 +190,12 @@ pub async fn run_agent_poll(
             // `wait_complete` only returns on completion; a running value never escapes.
             Ok(AgentStatus::Running) => unreachable!("wait_complete returns only on completion"),
             Err(_) => format!(
-            "sub-agent `{agent_id}` still running ({:.1}s elapsed); polled with a {timeout_secs}s \
-             timeout. Poll again later or do other work meanwhile.",
-            started.elapsed().as_secs_f64()
-        ),
-        };
+                "sub-agent `{agent_id}` still running ({:.1}s elapsed); polled with a \
+                 {timeout_secs}s timeout. Poll again later or do other work meanwhile.",
+                started.elapsed().as_secs_f64()
+            ),
+        }
+    };
     reply(&holly, session, request_id, output).await;
 }
 
@@ -241,6 +258,16 @@ mod tests {
         assert_eq!(default, DEFAULT_TIMEOUT_SECS);
         let (_, clamped) = parse_input(r#"{"agent_id":"abc","timeout_secs":100000}"#);
         assert_eq!(clamped, MAX_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn parse_input_preserves_zero_timeout() {
+        // `0` is the sentinel for an unbounded wait (ADR-0123): parse_input must
+        // not clamp it to the default, so the caller's explicit `0` reaches the
+        // wait branch intact.
+        let (id, timeout) = parse_input(r#"{"agent_id":"abc","timeout_secs":0}"#);
+        assert_eq!(id.as_deref(), Some("abc"));
+        assert_eq!(timeout, 0);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::Paragraph,
     Frame,
@@ -198,11 +198,25 @@ fn draw_body(f: &mut Frame, area: Rect, app: &mut App) {
         app.scroll_offset().min(max_offset)
     };
 
-    // Owned (no borrow of `app`), so it can outlive the `body.lines` borrow and
+    // Owned (no borrow of `app`), so they can outlive the `body.lines` borrow and
     // be handed back after rendering consumes the lines below.
     let line_blocks = body.line_blocks;
+    // Plain text per rendered line, captured before `body.lines` is consumed so a
+    // drag-selection can be sliced back to text in `take_selection_text`.
+    let line_text: Vec<String> = body
+        .lines
+        .iter()
+        .map(crate::tui::selection::line_to_string)
+        .collect();
 
-    let text = Text::from(body.lines);
+    // Paint the drag-selection highlight over the absolute (pre-scroll) lines.
+    let mut lines = body.lines;
+    if let Some(sel) = app.selection() {
+        let hl = Style::default().add_modifier(Modifier::REVERSED);
+        crate::tui::selection::apply_highlight(&mut lines, &sel, hl);
+    }
+
+    let text = Text::from(lines);
     // Clamp rather than truncate: `Paragraph::scroll` takes u16, and a very
     // long transcript would otherwise wrap silently at 65 536 lines.
     let offset_y = offset.min(u16::MAX as usize) as u16;
@@ -210,11 +224,12 @@ fn draw_body(f: &mut Frame, area: Rect, app: &mut App) {
 
     f.render_widget(paragraph, inner_area);
 
-    // Record the geometry + line provenance so a mouse click can map a
-    // (col, row) back to the transcript block it landed on; and feed the
-    // measured metrics back so the next scroll clamps and follow re-arms. Both
-    // run after the immutable `body.lines` borrow is consumed above.
-    app.set_chat_hit_test(inner_area, offset, line_blocks);
+    // Record the geometry + line provenance + rendered text so a mouse click
+    // maps a (col, row) back to the transcript block it landed on and a drag
+    // maps back to selected text; and feed the measured metrics back so the next
+    // scroll clamps and follow re-arms. Both run after the immutable `body.lines`
+    // borrow is consumed above.
+    app.set_chat_hit_test(inner_area, offset, line_blocks, line_text);
     app.set_viewport_metrics(content_height, viewport_height);
 }
 

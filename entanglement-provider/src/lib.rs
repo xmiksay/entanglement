@@ -38,7 +38,7 @@ pub mod web_search;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm};
 pub use catalog::{Catalog, ModelEntry, ModelPricing, ProviderEntry, Wire};
-pub use client::{HttpClient, RetryConfig, StreamGuard};
+pub use client::{HttpClient, RetryConfig, StreamGuard, ThrottleStatus};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
     stream_from_response, DummyLlm, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmEvent,

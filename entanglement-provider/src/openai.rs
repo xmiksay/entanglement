@@ -238,22 +238,29 @@ impl Llm for OpenAiLlm {
                     }
                 }
             }
-            let has_pending_tools = !tools.is_empty();
-            if has_pending_tools {
-                tracing::warn!(
-                    finish_reason = seen_finish_reason.as_deref().unwrap_or("none"),
-                    pending_tools = tools.len(),
-                    "stream ended with pending tools - flushing anyway"
-                );
-            }
+            // Post-#445 `handle_chunk` no longer flushes eagerly, so a non-empty
+            // `tools` map at stream end is the **normal** tool-use path, not an
+            // anomaly — kept only to detect genuine data loss after the flush.
+            let had_pending_tools = !tools.is_empty();
             // Single validating flush site (#445) for both the explicit
             // `finish_reason == "tool_calls"` case and the no-finish-reason
-            // fallback — `handle_chunk` no longer flushes eagerly, so `tools`
-            // still holds everything assembled across the whole stream here.
+            // fallback — `tools` still holds everything assembled across the
+            // whole stream here.
             let mut flushed = Vec::new();
             let emitted_any_tool_call = flush_pending_tools(&mut tools, &mut flushed);
             for ev in flushed {
                 yield ev;
+            }
+            // Warn only on real data loss: tool calls were assembled but *every*
+            // one had malformed/incomplete JSON arguments (e.g. a stream
+            // truncated mid-arguments), so nothing valid was emitted. The normal
+            // path — valid calls flushed just above — stays silent (this used to
+            // warn on every tool-use turn, since #445 defers the flush to here).
+            if had_pending_tools && !emitted_any_tool_call {
+                tracing::warn!(
+                    finish_reason = seen_finish_reason.as_deref().unwrap_or("none"),
+                    "stream ended with tool calls whose arguments were incomplete - dropped (likely a truncated stream)"
+                );
             }
             // A tool-flush with no valid call actually emitted (every pending
             // tool had malformed JSON args, or the stream ended without one)

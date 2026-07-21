@@ -51,6 +51,9 @@ pub enum UiEffect {
     OpenEditor,
     /// Export the transcript to Markdown and open it in `$EDITOR`.
     Export,
+    /// Copy the given text to the system clipboard (OSC 52). Deferred to the
+    /// event loop because it writes to the terminal the loop owns.
+    CopyToClipboard(String),
 }
 
 /// A deferred compaction fork (ADR-0101): on `OutEvent::Compacted`, the TUI
@@ -130,6 +133,15 @@ pub struct App {
     /// `(agent, overrides)` awaiting its matching `GenerationChanged` confirmation.
     pending_generation_persist: Option<(String, entanglement_provider::GenerationParams)>,
 
+    // Shared HTTP transport (#rate-limit-status): the same per-endpoint pool the
+    // provider clients meter through, so the bottom info line can surface a
+    // throttle indicator while an endpoint is backing off. `None` in tests.
+    http_client: Option<entanglement_provider::HttpClient>,
+
+    // Persisted default editor from `config.yml` (#persist-editor). Wins over
+    // `$VISUAL`/`$EDITOR` in the `/editor` round-trip; `None` ⇒ resolve from env.
+    configured_editor: Option<String>,
+
     // `/key` dialog (#304): two-stage modal to persist a provider API key.
     key_dialog: crate::tui::key_dialog::KeyDialog,
 
@@ -161,7 +173,6 @@ pub struct App {
 
     // Input state
     input_multiline: bool,
-    help_text: String,
 
     // Resume session modal state
     showing_resume_modal: bool,
@@ -175,6 +186,12 @@ pub struct App {
     chat_area: Rect,
     chat_scroll_offset: usize,
     chat_line_blocks: Vec<Option<usize>>,
+    // Plain text of each rendered transcript line (parallel to `chat_line_blocks`),
+    // captured at draw time so a mouse drag-selection can be sliced back to text.
+    chat_line_text: Vec<String>,
+    // Active mouse text-selection over the transcript (drag-select → copy), in
+    // absolute rendered-line coordinates. `None` = nothing selected.
+    selection: Option<crate::tui::selection::Selection>,
 
     // Deferred terminal-owning effect (editor / export) for the event loop to run.
     pending_effect: Option<UiEffect>,

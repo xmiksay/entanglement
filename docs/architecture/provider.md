@@ -192,7 +192,18 @@ a hung one dies fast. Both `OpenAiLlm` and `AnthropicLlm` use this one helper.
 (not just a `reqwest::Error`) is retried, not silently dropped; before #217 those
 responses came back as `reqwest::Ok` and were never retried (#193). A 5xx retries
 with exponential backoff + jitter up to `max_attempts`; a 429 retries until clear
-(ADR-0111, above). `RetryConfig` (`max_attempts`, `initial_backoff`,
+(ADR-0111, above). Transport `reqwest::Error`s are classified by
+`is_transient_error`: connect/timeout faults, retryable statuses, **and
+request-send faults** (`is_request()` — a dropped keep-alive connection reset
+*between* requests, which reqwest renders as `"error sending request for url …"`
+and is *not* `is_connect()`; safe to resend since no response body was consumed)
+all retry; anything else is permanent.
+
+**Throttle visibility.** `HttpClient::throttle_status() -> Option<ThrottleStatus>`
+is a read-only snapshot over the live pool (in-flight/cap, `Retry-After` remaining,
+whether the pacing gate is penalized) for the most-throttled endpoint, or `None`
+when every endpoint is at rest. It feeds no request logic — the TUI polls it each
+frame to show a throttle indicator only while backing off (see heads doc). `RetryConfig` (`max_attempts`, `initial_backoff`,
 `max_backoff`, `rpm`) tunes the *failure* path; `HttpClient::with_config` +
 `RetryConfig::no_retry()` build variants (tests use the latter). This
 per-endpoint state is the reason a session carries **no** per-session connection

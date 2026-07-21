@@ -380,6 +380,8 @@ timeout_secs }` — also intercepted before permission resolution (it starts no
 session and touches no host resource): it blocks up to `timeout_secs` for that
 child and returns its answer (with elapsed time) as the tool `ToolOutput`, or a
 still-running status on timeout so the model can poll again or do other work.
+Or, with `timeout_secs: 0`, blocks until the child completes (no caller-side
+bound, ADR-0123 — the same indefinite-wait path the blocking `agent` tool takes).
 For the single-delegation case, a third tool `agent { agent, prompt }` (✅ #120,
 [ADR-0033](../adr/0033-agent-tool-family-and-blocking-agent.md)) **blocks**: it runs
 the exact `agent_spawn` launch path (same guard, clamp, `Spawn`), then parks on

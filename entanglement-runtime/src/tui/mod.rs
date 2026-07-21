@@ -1,5 +1,6 @@
 mod app;
 mod attention;
+mod clipboard;
 mod command_palette;
 mod commands;
 mod diff;
@@ -18,6 +19,7 @@ mod mention;
 mod modal_events;
 mod modals;
 mod progress;
+mod selection;
 mod session_view;
 mod sessions;
 mod theme;
@@ -47,7 +49,7 @@ use tokio::sync::mpsc;
 use crate::ModelInfo;
 use app::App;
 use attention::Attention;
-use entanglement_provider::Catalog;
+use entanglement_provider::{Catalog, HttpClient};
 use event::Event;
 use event_loop::handle_event;
 
@@ -67,6 +69,8 @@ pub async fn tui(
     root: std::path::PathBuf,
     bash_enabled: bool,
     tool_roster: Vec<String>,
+    http_client: HttpClient,
+    configured_editor: Option<String>,
 ) -> Result<()> {
     setup_panic_handler();
 
@@ -115,6 +119,8 @@ pub async fn tui(
     app.set_active_provider(provider_name);
     app.set_agent_models(agent_models);
     app.set_agent_generation(agent_generation);
+    app.set_http_client(http_client);
+    app.set_configured_editor(configured_editor);
     app.init_head_context(root, bash_enabled);
 
     let mut attention = Attention::from_env();

@@ -111,14 +111,27 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   swap) drops the whole memo and rebuilds once; the approval/question tail stays
   rendered fresh per frame after the cached body. The memo lives on
   `SessionView` beside `expanded_blocks`, so each session keeps its own. Mouse capture is on by default
-  (opt out with `ENTANGLEMENT_TUI_NO_MOUSE=1`, which restores native text
-  selection): the wheel scrolls the chat (or the open modal's selection), and a
-  left click hit-tests the chat area to toggle a transcript block — reasoning
+  (opt out with `ENTANGLEMENT_TUI_NO_MOUSE=1`, which restores native terminal
+  text selection): the wheel scrolls the chat (or the open modal's selection).
+  **Left button drives transcript selection + copy** (`tui::selection`,
+  `tui::clipboard`): a drag paints a reversed-video highlight over the selected
+  span (`apply_highlight` re-splits the rendered `Line` spans at the selection
+  bounds) and, on release, copies the selected text to the system clipboard via
+  an **OSC 52** escape (works over SSH/tmux, no clipboard-crate dep) with a
+  "Copied N chars" status line; the write is deferred through a
+  `UiEffect::CopyToClipboard` so the event loop (which owns the terminal) emits
+  it. A bare **click** (press+release, no drag) instead hit-tests the chat area
+  to toggle a transcript block — reasoning
   runs render collapsed as a `▸ Thinking (N lines)` header, and each **tool
   operation** as a single collapsible `▸ {tool}  {primary_arg}  ✓` line with its
   paired output folded in (#340; the `ToolOutput` matches its `ToolCall` by
   `request_id`, so batch results still pair correctly), both expanded on click
-  (or via the leader `t` key, which toggles the most recent block of either kind). **Attention signals** (issue #14, `tui::attention`):
+  (or via the leader `t` key, which toggles the most recent block of either kind).
+  The bottom **info line** (`draw_input_info`) shows `provider · model | tokens`
+  and — *only while an endpoint is backing off* — a red throttle indicator
+  (`⚠ host throttled · retry Ns · in/cap`) polled from
+  `HttpClient::throttle_status()`; it no longer duplicates the keybinding hints
+  (those live in the input-box placeholder). **Attention signals** (issue #14, `tui::attention`):
   a `Status` transition into `WaitingApproval`, `Done`, or `Error` rings the
   terminal bell — and, opt-in via `ENTANGLEMENT_TUI_NOTIFY=1`, emits an OSC 9
   desktop notification (iTerm2/kitty/WezTerm; silently dropped elsewhere). Core
@@ -145,8 +158,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   the panic hook already covered crashes, this covers the signal path.
   **External editor + export** (✅ #13,
   [ADR-0029](../adr/0029-external-editor-and-markdown-export.md), `tui::editor` +
-  `tui::export`): `<leader>e` / `/editor` suspends the TUI and opens `$EDITOR`
-  (`$VISUAL`→`$EDITOR`→`vi`) on the input draft, reading the result back into the
+  `tui::export`): `<leader>e` / `/editor` suspends the TUI and opens the resolved
+  editor (`pick_editor`: the persisted `config.yml` `editor:` **wins over**
+  `$VISUAL`→`$EDITOR`→`vi`, each source skipped when blank) on the input draft,
+  reading the result back into the
   input box; `<leader>E` / `/export` writes the transcript to
   `<session>-<unix_secs>.md` and opens it. Both defer through a `UiEffect` on
   `App` that the event loop (terminal owner) runs, restoring the alternate screen

@@ -113,3 +113,9 @@
 # long-lived multi-session embedder such as `skutter serve`; a background sweep
 # never touches a session mid-turn, so this can't cancel in-flight work.
 #idle_ttl_secs: 1800
+
+# Editor the TUI opens for `/editor` (the $EDITOR round-trip). When set, this
+# WINS OVER $VISUAL/$EDITOR — the persisted choice is the default regardless of
+# the shell env. Leave commented to fall back to $VISUAL → $EDITOR → vi.
+# Word-split like a shell command, so flags work, e.g. "code --wait".
+#editor: nvim

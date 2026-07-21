@@ -203,8 +203,10 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(Color::Cyan),
     ));
 
-    // A pending two-stage quit (ADR-0087) replaces the help text with a
-    // highlighted "press again" hint so the armed state is unmissable.
+    // The keybinding hints that used to sit here duplicated the input-box
+    // placeholder, so this segment now carries only transient status: a pending
+    // two-stage quit (ADR-0087), else a rate-limit throttle indicator that shows
+    // *only* while an endpoint is backing off (quiet otherwise).
     let mut spans: Vec<Span> = pm_spans;
     spans.push(Span::raw(" | "));
     spans.push(Span::styled(
@@ -217,11 +219,11 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
             "Press Ctrl+C again to quit",
             Style::default().fg(Color::Yellow).bold(),
         ));
-    } else {
+    } else if let Some(status) = app.throttle_status() {
         spans.push(Span::raw(" | "));
         spans.push(Span::styled(
-            app.help_text().to_string(),
-            Style::default().dim(),
+            throttle_label(&status),
+            Style::default().fg(Color::Red).bold(),
         ));
     }
     let info_line = Line::from(spans);
@@ -232,12 +234,82 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(paragraph, area);
 }
 
+/// A compact one-line label for a throttled endpoint: `⚠ host throttled · retry
+/// Ns · in/cap` for an active 429/`Retry-After` cool-down, `pacing` when only
+/// the adaptive gate has slowed, or `busy` when just the in-flight cap is full.
+fn throttle_label(status: &entanglement_provider::ThrottleStatus) -> String {
+    let host = short_host(&status.endpoint);
+    let occupancy = format!("{}/{}", status.in_flight, status.cap);
+    match status.backoff_remaining {
+        // Round the wait up to whole seconds so a sub-second tail never shows "0s".
+        Some(remaining) => {
+            let secs = remaining.as_millis().div_ceil(1000).max(1);
+            format!("⚠ {host} throttled · retry {secs}s · {occupancy}")
+        }
+        None if status.penalized => format!("⚠ {host} pacing · {occupancy}"),
+        None => format!("⚠ {host} busy · {occupancy}"),
+    }
+}
+
+/// The bare host of an endpoint URL (`https://api.z.ai/v4` → `api.z.ai`), so the
+/// status label stays short.
+fn short_host(endpoint: &str) -> String {
+    let no_scheme = endpoint
+        .strip_prefix("https://")
+        .or_else(|| endpoint.strip_prefix("http://"))
+        .unwrap_or(endpoint);
+    no_scheme.split('/').next().unwrap_or(no_scheme).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::app::App;
     use entanglement_core::SessionId;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn short_host_strips_scheme_and_path() {
+        assert_eq!(
+            short_host("https://api.z.ai/api/coding/paas/v4"),
+            "api.z.ai"
+        );
+        assert_eq!(short_host("http://localhost:11434/v1"), "localhost:11434");
+        assert_eq!(short_host("api.custom"), "api.custom");
+    }
+
+    #[test]
+    fn throttle_label_reflects_the_backoff_kind() {
+        use entanglement_provider::ThrottleStatus;
+        use std::time::Duration;
+        // An active cool-down window rounds its wait up to whole seconds.
+        let parked = ThrottleStatus {
+            endpoint: "https://api.z.ai/v4".to_string(),
+            in_flight: 2,
+            cap: 3,
+            backoff_remaining: Some(Duration::from_millis(7200)),
+            penalized: true,
+        };
+        assert_eq!(
+            throttle_label(&parked),
+            "⚠ api.z.ai throttled · retry 8s · 2/3"
+        );
+        // Penalized pacing with no cool-down window.
+        let paced = ThrottleStatus {
+            backoff_remaining: None,
+            penalized: true,
+            ..parked.clone()
+        };
+        assert_eq!(throttle_label(&paced), "⚠ api.z.ai pacing · 2/3");
+        // Only the in-flight cap is full (no 429, no penalty).
+        let busy = ThrottleStatus {
+            backoff_remaining: None,
+            penalized: false,
+            in_flight: 3,
+            ..parked
+        };
+        assert_eq!(throttle_label(&busy), "⚠ api.z.ai busy · 3/3");
+    }
 
     #[test]
     fn format_tokens_uses_si_multipliers() {
