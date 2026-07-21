@@ -210,8 +210,11 @@ fn spawn_with_rhai_escape(
     tools.register(ReadRawTool::new(root.to_path_buf()));
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> =
-        Arc::new(ProfileResolver::new(active.clone(), base.clone()));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        active.clone(),
+        base.clone(),
+        Some(root.to_path_buf()),
+    ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     let escape_root = EscapeRoot {
         root: root.to_path_buf(),

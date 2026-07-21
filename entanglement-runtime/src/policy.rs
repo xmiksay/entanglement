@@ -25,13 +25,15 @@
 //! file/session grants the CLI needs.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use entanglement_core::{AgentProfile, ApprovalScope, Permission, PermissionProfile, SessionId};
 
 use crate::grants::FileGrantStore;
-use crate::permission::{clamp_to_base, permission_arg, permission_for, permission_workdir};
+use crate::permission::{clamp_to_base, permission_for, permission_workdir};
+use crate::permission_path::grading_arg;
 
 /// Decide the `Allow | Ask | Deny` grade for one concrete tool call. `session`
 /// lets a multi-tenant embedder derive the tenant; `input` (the raw JSON tool
@@ -76,25 +78,30 @@ pub trait GrantStore: Send + Sync {
 /// for the sub-agent clamp, so the pair reproduces `effective_permission` +
 /// `clamp_to_base` exactly (the clamp is monotonic, so min-of-clamped equals
 /// clamp-of-min). Shares the same `Arc<Mutex<..>>` the executor folds lifecycle
-/// events into, so it always reads the current profile view.
+/// events into, so it always reads the current profile view. `root` (#485,
+/// ADR-0125) is the project root a path-arg tool's argument is normalized
+/// relative to before matching an arg-scoped rule — `None` (the test-only
+/// executor wrappers) keeps the pre-#485 verbatim match.
 pub struct ProfileResolver {
     active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
     base: PermissionProfile,
+    root: Option<PathBuf>,
 }
 
 impl ProfileResolver {
     pub fn new(
         active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
         base: PermissionProfile,
+        root: Option<PathBuf>,
     ) -> Self {
-        Self { active, base }
+        Self { active, base, root }
     }
 }
 
 #[async_trait]
 impl PermissionResolver for ProfileResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
-        let arg = permission_arg(tool, input);
+        let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
         // Read the folded profile view without holding the lock across an await
         // (there is none here) — the executor's single-threaded loop is the sole
@@ -148,5 +155,79 @@ impl GrantStore for DefaultGrantStore {
 
     fn forget_session(&self, session: &SessionId) {
         self.inner.lock().unwrap().forget_session(session);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use entanglement_core::AgentMode;
+
+    fn build_profile_with_scoped_read() -> AgentProfile {
+        AgentProfile {
+            name: "build".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            provider: None,
+            permission: PermissionProfile::new(Permission::Ask)
+                .with("read(src/*)", Permission::Allow),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+        }
+    }
+
+    /// #485, ADR-0125: an absolute path resolving inside a wired `root` must
+    /// grade identically to its root-relative spelling — regression pin for the
+    /// bug (an arg-scoped rule authored root-relative silently fell through to
+    /// the profile default for the absolute form).
+    #[tokio::test]
+    async fn resolve_matches_an_absolute_in_root_path_when_root_is_wired() {
+        let session = SessionId::new("s1");
+        let active = Arc::new(Mutex::new(HashMap::from([(
+            session.clone(),
+            build_profile_with_scoped_read(),
+        )])));
+        let resolver = ProfileResolver::new(
+            active,
+            PermissionProfile::new(Permission::Allow),
+            Some(PathBuf::from("/r")),
+        );
+        assert_eq!(
+            resolver
+                .resolve(&session, "read", r#"{"path":"/r/src/main.rs"}"#)
+                .await,
+            Permission::Allow
+        );
+        // The relative spelling already worked pre-#485 — must stay identical.
+        assert_eq!(
+            resolver
+                .resolve(&session, "read", r#"{"path":"src/main.rs"}"#)
+                .await,
+            Permission::Allow
+        );
+    }
+
+    /// With no root wired (the test-only executor wrappers), the absolute
+    /// spelling stays verbatim and therefore falls through to the profile
+    /// default — byte-identical to pre-#485 behavior.
+    #[tokio::test]
+    async fn resolve_does_not_relativize_without_a_wired_root() {
+        let session = SessionId::new("s1");
+        let active = Arc::new(Mutex::new(HashMap::from([(
+            session.clone(),
+            build_profile_with_scoped_read(),
+        )])));
+        let resolver =
+            ProfileResolver::new(active, PermissionProfile::new(Permission::Allow), None);
+        assert_eq!(
+            resolver
+                .resolve(&session, "read", r#"{"path":"/r/src/main.rs"}"#)
+                .await,
+            Permission::Ask
+        );
     }
 }

@@ -78,7 +78,21 @@ below realize one model:
   `grep(src/*): allow` all refine a coarse `bash: ask`/`grep: ask`. The runtime
   extracts the argument from the call input (`runtime::permission::permission_arg`)
   where the JSON is already in hand; argument-less rules and name-only callers
-  (inspect/TUI posture panels) resolve exactly as before. A second, independent
+  (inspect/TUI posture panels) resolve exactly as before. **Path-arg tools grade
+  root-relative** (✅ #485, [ADR-0125](../adr/0125-permission-arguments-for-path-tools-are-normalized-root-relative.md)):
+  rules like `read(src/*)` are authored relative to the project root, but a
+  model may spell an in-root path absolutely — `permission_arg`'s verbatim
+  extraction alone can't match `bash(git *)`-style rules against
+  `/root/src/main.rs`. `runtime::permission_path::grading_arg` wraps
+  `permission_arg` with lexical `.`/`..`/`//` folding plus a root-prefix strip
+  (for `read`/`edit`/`write`/`apply_patch`/`glob`/`grep` only — `bash`/`call`'s
+  command line is never touched) whenever a project root is wired
+  (`ProfileResolver`'s `root`, `tool_runner::dispatch`'s escape-root-derived
+  root, `script::BindingPolicy`'s `root`); an absolute path *outside* root
+  stays verbatim, since a root-relative rule matching it would be a privilege
+  escalation, and the escape-root gate below already owns that case.
+  `permission_arg` itself is unchanged and keeps driving the TUI transcript's
+  literal display. A second, independent
   clause `tool{pattern}` (✅ #425, [ADR-0116](../adr/0116-workdir-scoped-permission-rules-for-bash-call.md))
   scopes `bash`/`call` by **working directory** instead of command line —
   `bash{/tmp/*}: allow`, `bash{/etc/*}: deny` — extracted by
@@ -158,7 +172,10 @@ below realize one model:
   `GrantStore` trait object (#311; the default `DefaultGrantStore` wraps the
   managed-file `runtime::grants::FileGrantStore`, shared with its per-request
   dispatch tasks) records the wider scopes keyed by an exact
-  `(tool, argument)` — the same argument #173 resolves against. **After** the full
+  `(tool, argument)` — the same (root-relative, ✅ #485, ADR-0125) argument
+  #173 resolves against, computed once in `dispatch` and threaded into the
+  post-approval record rather than re-derived, so the pre-prompt lookup and
+  the record provably share one key. **After** the full
   resolution (ancestor clamp → config ceiling), a call that lands on `Ask` is
   upgraded to `Allow` when the store already grants it, so the *identical* later
   call skips the prompt. A grant **only raises `Ask` → `Allow`** — it never

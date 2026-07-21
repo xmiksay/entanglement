@@ -48,9 +48,10 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::cancel::{CancelRegistry, TaskCanceller};
 use crate::hooks::Hooks;
 use crate::permission::{
-    ancestor_chain, clamp_to_base, effective_permission, min_permission, permission_arg,
-    skill_masked, spawn_refusal, tool_masked, ActiveSkill,
+    ancestor_chain, clamp_to_base, effective_permission, min_permission, skill_masked,
+    spawn_refusal, tool_masked, ActiveSkill,
 };
+use crate::permission_path::grading_arg;
 use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver};
 use crate::seam;
 use crate::skills::load_skill::parse_skill_id;
@@ -212,8 +213,10 @@ pub fn spawn_tool_executor_with_hooks(
     // grade stays byte-identical with the pre-seam `effective_permission` path.
     // "Always allow" grants persist to the managed file.
     let active = Arc::new(Mutex::new(HashMap::new()));
+    // No escape-root policy wired here (root: None) — the strict-containment
+    // 4-arg wrapper keeps the pre-#485 verbatim arg match (ADR-0125).
     let resolver: Arc<dyn PermissionResolver> =
-        Arc::new(ProfileResolver::new(active.clone(), base.clone()));
+        Arc::new(ProfileResolver::new(active.clone(), base.clone(), None));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     spawn_tool_executor_with_policy(
         holly,
@@ -694,8 +697,16 @@ pub fn spawn_tool_executor_with_policy(
                             // binding targeting an out-of-root path is gated by the
                             // same forced-`Ask` + `ExtraRootStore` grant as a direct
                             // tool call, not silently hard-refused.
+                            // Root-relative arg normalization (#485, ADR-0125):
+                            // computed from the escape-root policy before it's
+                            // cloned/shadowed below, so an in-root absolute path
+                            // grades identically to its relative spelling here too.
+                            let arg = grading_arg(
+                                &tool,
+                                &input,
+                                escape_root.as_ref().map(|er| er.root.as_path()),
+                            );
                             let escape_root = escape_root.clone();
-                            let arg = permission_arg(&tool, &input);
                             let workdir = crate::permission::permission_workdir(&tool, &input);
                             let (base_self, policy) = {
                                 let active = active.lock().unwrap();
@@ -718,6 +729,7 @@ pub fn spawn_tool_executor_with_policy(
                                     &spawn_guard,
                                     &session,
                                     &base,
+                                    escape_root.as_ref().map(|er| er.root.as_path()),
                                 );
                                 (base_self, policy)
                             };
@@ -862,8 +874,13 @@ async fn dispatch(
     // Resolve + apply grants first (matching the pre-seam order where `perm` was
     // computed before the hook ran), so a grant upgrade and the veto compose the
     // same way. The tool-specific argument (command/path, #173) lets an
-    // argument-scoped rule resolve against the call.
-    let arg = permission_arg(&tool, &input);
+    // argument-scoped rule resolve against the call. Normalized root-relative
+    // (#485, ADR-0125) so an in-root absolute path grades identically to its
+    // relative spelling and keys the same grant — computed once here and
+    // threaded into `await_decision` below instead of recomputed there, so the
+    // grant lookup (`apply_grant`) and grant record (on approval) provably
+    // share one key.
+    let arg = grading_arg(&tool, &input, escape_root.map(|er| er.root.as_path()));
     let base_perm = resolve_effective(resolver, chain, &tool, &input).await;
     let perm = apply_grant(grants, &session, &tool, arg.as_deref(), base_perm);
     if let Some(reason) = hooks.run_pre_tool_use(&session, &tool, &input).await {
@@ -939,6 +956,7 @@ async fn dispatch(
                 request_id,
                 tool,
                 input,
+                arg,
             )
             .await;
         }
@@ -948,7 +966,11 @@ async fn dispatch(
 /// Park until the head answers the pending approval, then run-or-refuse. A
 /// `Stop` (Esc-in-approval) unwinds silently: core's `wait_tool_result` sees the
 /// same `Stop` on its inbox and cancels the turn, so no `ToolResult` is owed
-/// (the shared park/filter is [`crate::seam::await_decision`]).
+/// (the shared park/filter is [`crate::seam::await_decision`]). `arg` is the
+/// grading-time argument `dispatch` already computed (#485, ADR-0125) — taken
+/// as a parameter rather than recomputed here, so the grant this records on
+/// approval provably uses the exact same key `apply_grant` looked up before
+/// the prompt was ever shown.
 #[allow(clippy::too_many_arguments)]
 async fn await_decision(
     holly: &Holly,
@@ -963,6 +985,7 @@ async fn await_decision(
     request_id: String,
     tool: String,
     input: String,
+    arg: Option<String>,
 ) {
     match crate::pending::await_decision(rx).await {
         seam::Decision::Approve { scope } => {
@@ -981,7 +1004,6 @@ async fn await_decision(
                 // Ordinary (in-root) approval: record the wider scopes (#174) so an
                 // identical later call skips this prompt — through the pluggable
                 // [`GrantStore`] (#311). `Once` records nothing.
-                let arg = permission_arg(&tool, &input);
                 grants.record(&session, &tool, arg.as_deref(), scope).await;
             }
             run_and_reply(

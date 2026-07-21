@@ -4,9 +4,10 @@
 //! [`ApprovalScope`]: [`Once`][ApprovalScope::Once] is the historical one-shot
 //! approval (the next identical call asks again); [`Session`][ApprovalScope::Session]
 //! and [`Always`][ApprovalScope::Always] widen it so an *identical* later call —
-//! same tool **and** the argument [`permission_arg`][crate::permission::permission_arg]
-//! extracts (command/path, #173) — skips the prompt. This module owns the grant
-//! set that makes that decision.
+//! same tool **and** the argument [`grading_arg`][crate::permission_path::grading_arg]
+//! extracts (command/path, #173; root-relativized for path tools, #485,
+//! ADR-0125) — skips the prompt. This module owns the grant set that makes
+//! that decision.
 //!
 //! A grant only ever upgrades a resolved `Ask` to `Allow`; it never touches a
 //! `Deny`, so a hard policy floor (agent profile or config ceiling, #172) stands
