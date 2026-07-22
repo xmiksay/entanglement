@@ -724,12 +724,19 @@ pub fn spawn_tool_executor_with_policy(
                                     arg.as_deref(),
                                     workdir.as_deref(),
                                 );
+                                // The session's active-skill mask (#400, #477): a
+                                // snapshot alongside the agent mask above, not a
+                                // live read — sound because `load_skill` is not
+                                // itself a binding, so nothing inside a running
+                                // script can change it mid-run.
+                                let active_skill = active_skill.lock().unwrap();
                                 let policy = crate::script::BindingPolicy::capture(
                                     &active,
                                     &spawn_guard,
                                     &session,
                                     &base,
                                     escape_root.as_ref().map(|er| er.root.as_path()),
+                                    &active_skill,
                                 );
                                 (base_self, policy)
                             };

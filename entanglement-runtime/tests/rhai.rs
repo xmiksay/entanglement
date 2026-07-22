@@ -24,7 +24,7 @@ use entanglement_runtime::host::{
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
 };
-use entanglement_runtime::skills::SkillRegistry;
+use entanglement_runtime::skills::{load_registry, LoadSkillTool, SkillRegistry};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::{
     spawn_tool_executor, spawn_tool_executor_with_policy, EscapeRoot,
@@ -926,5 +926,187 @@ async fn approving_a_call_command_covers_a_repeat_of_the_same_command() {
         out.lines().filter(|l| *l == "a").count(),
         2,
         "both calls ran: {out}"
+    );
+}
+
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ┃ #477: the active skill's `allowed_tools` mask reaches rhai bindings
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Collect events for `sid` up to and including the *n*th `Done`, then linger
+/// briefly to also catch anything the tool executor emits asynchronously right
+/// after `Done` — mirrors `skill_mask.rs`'s helper of the same shape.
+async fn collect_through_dones(
+    sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
+    sid: &SessionId,
+    dones: usize,
+) -> Vec<OutEvent> {
+    let mut out = Vec::new();
+    let mut seen_dones = 0;
+    while seen_dones < dones {
+        let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await else {
+            break;
+        };
+        if ev.session() != Some(sid) {
+            continue;
+        }
+        if matches!(ev, OutEvent::Done { .. }) {
+            seen_dones += 1;
+        }
+        out.push(ev);
+    }
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_millis(200), sub.recv()).await {
+        if ev.session() == Some(sid) {
+            out.push(ev);
+        }
+    }
+    out
+}
+
+/// #477: a skill loaded via `load_skill` scopes `rhai` bindings exactly like it
+/// scopes generic tool dispatch (#400/ADR-0106) — a script running while a
+/// restrictive skill is active cannot use its `edit` binding to reach a tool
+/// the skill's `allowed_tools` excludes, and the same script succeeds once the
+/// skill's scope clears at the turn's `Done`.
+#[tokio::test]
+async fn skill_mask_refuses_a_binding_then_clears_after_done() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-rhai-skillmask-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+
+    // A skill whose `allowed_tools` covers `read`/`rhai` (so the script itself
+    // can launch) but excludes `edit` — the binding under test.
+    let skill_dir = root.join(".entanglement/skills/restricted");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: restricted\ndescription: a read-only skill\nallowed_tools: [read, rhai]\n---\n\
+         Only read and rhai.\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("f.txt"), "before").unwrap();
+
+    std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
+    let skill_registry = Arc::new(load_registry(&root).unwrap());
+    std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
+    let skills = Arc::new(RwLock::new(skill_registry));
+
+    let mut tools = host_tools(root.clone());
+    tools.register(ReadRawTool::new(root.clone()));
+    tools.register(LoadSkillTool::new(skills.clone()));
+
+    let script = r#"let r = ""; try { edit("f.txt", "before", "after"); r = "ran" } catch(e) { r = "caught: " + e } r"#;
+    let rhai_call = |id: &str| ToolCall {
+        id: id.into(),
+        name: RHAI_TOOL.into(),
+        input: serde_json::json!({ "script": script }).to_string(),
+        provider_meta: None,
+    };
+
+    let scripted = Arc::new(vec![
+        // Turn 1, round 1: activate the skill.
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "l1".into(),
+                name: "load_skill".into(),
+                input: serde_json::json!({ "skill_name": "restricted" }).to_string(),
+                provider_meta: None,
+            }],
+        },
+        // Turn 1, round 2: the script's `edit` binding must be refused — the
+        // skill's `allowed_tools` excludes it.
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![rhai_call("r1")],
+        },
+        // Turn 1, round 3: finish — triggers `Done`, clearing the skill mask.
+        LlmResponse {
+            text: "turn1 done".into(),
+            tool_calls: vec![],
+        },
+        // Turn 2, round 1: the identical script, unmasked — must succeed.
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![rhai_call("r2")],
+        },
+        LlmResponse {
+            text: "turn2 done".into(),
+            tool_calls: vec![],
+        },
+    ]);
+
+    let profiles = entanglement_runtime::agents::built_in_registry();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        active.clone(),
+        PermissionProfile::new(Permission::Allow),
+        None,
+    ));
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let _executor = spawn_tool_executor_with_policy(
+        &holly,
+        tools.shared(),
+        Arc::new(RwLock::new(profiles)),
+        skills,
+        PermissionProfile::new(Permission::Allow),
+        active,
+        resolver,
+        grants,
+        Hooks::default(),
+        None,
+    );
+
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "use the restricted skill"))
+        .await
+        .unwrap();
+    let turn1 = collect_through_dones(&mut sub, &sid, 1).await;
+
+    let out1 = rhai_output(&turn1).expect("expected turn 1 rhai output");
+    assert!(
+        out1.contains("caught")
+            && out1.contains("not available while skill `restricted` is active"),
+        "the edit binding must be refused by the active skill's allowed_tools; got {out1}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("f.txt")).unwrap(),
+        "before",
+        "the masked edit binding must not touch the filesystem"
+    );
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "run it again"))
+        .await
+        .unwrap();
+    let turn2 = collect_through_dones(&mut sub, &sid, 1).await;
+
+    let out2 = rhai_output(&turn2).expect("expected turn 2 rhai output");
+    assert!(
+        out2.contains("ran") && !out2.contains("not available while skill"),
+        "the binding must be unmasked once the skill's scope clears at Done; got {out2}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("f.txt")).unwrap(),
+        "after",
+        "the unmasked edit binding must run in turn 2"
     );
 }

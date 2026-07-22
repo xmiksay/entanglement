@@ -1,5 +1,6 @@
 //! `rhai` — embedded, capability-sandboxed script engine (ADR-0046, amended by
-//! ADR-0115 to add exec bindings).
+//! ADR-0115 to add exec bindings and ADR-0129 to thread the session's active
+//! skill mask into binding resolution).
 //!
 //! A runtime-owned host tool that runs a [Rhai](https://rhai.rs) script in one
 //! tool call — the sanctioned replacement for "shell out to `python3`/`node`
@@ -30,6 +31,12 @@
 //! *ride* a durable grant recorded earlier by a direct call; a first-time escape
 //! from inside a script hard-failed with no chance to prompt.
 //!
+//! A skill loaded via `load_skill` (#400, ADR-0106) narrows the session's tool
+//! set for the rest of its turn; [`BindingPolicy::capture`] snapshots that mask
+//! (ADR-0129) alongside the agent mask, so a binding excluded by the active
+//! skill's `allowed_tools` refuses the same way a direct call to that tool
+//! would — a script is not a side channel around a loaded skill's restriction.
+//!
 //! Resource bounds are by construction: `max_operations`, a wall-clock timeout
 //! enforced by the progress callback, `max_call_levels`, and string/array/map
 //! size caps — a runaway script terminates deterministically with a clear error,
@@ -57,7 +64,7 @@ use tokio::sync::oneshot;
 
 use crate::host::truncate_output;
 use crate::pending::{self, PendingDecisions};
-use crate::permission::{min_permission, permission_chain, tool_masked};
+use crate::permission::{min_permission, permission_chain, skill_masked, tool_masked, ActiveSkill};
 use crate::permission_path::grading_arg;
 use crate::seam;
 use crate::subagent::SpawnGuard;
@@ -144,10 +151,13 @@ struct ScriptInput {
 }
 
 /// Permission decision for one binding, precomputed once per script run.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Decision {
     /// Tool masked out of the session's advertised set (#116) — does not exist.
     Masked,
+    /// Tool excluded by the active skill's `allowed_tools` (#400, #477) — the
+    /// `String` is the skill id, for the refusal message.
+    SkillMasked(String),
     /// Tool available; run it under this permission.
     Perm(Permission),
 }
@@ -159,8 +169,19 @@ enum Decision {
 /// executor loop where the profile state lives, then moved into the script task
 /// so the read stays ordered with lifecycle events. The mask is argument-
 /// independent so it stays a precomputed set; only the grade is resolved live.
+///
+/// The skill mask (#400, #477) is captured the same way, as a snapshot rather
+/// than a live read: `load_skill` is not itself a binding
+/// ([`BINDING_TOOLS`] has no entry for it), so nothing inside a running script
+/// can change which skill is active — a snapshot at `Intercept::Rhai` entry is
+/// exactly as current as a live read would be, and simpler.
 pub struct BindingPolicy {
     masked: HashSet<&'static str>,
+    /// Bindings excluded by the active skill's `allowed_tools`, mapped to the
+    /// skill id that excluded them (#400, #477) — checked after `masked`,
+    /// mirroring `tool_runner`'s agent-mask-then-skill-mask ordering for the
+    /// generic dispatch route.
+    skill_masked: HashMap<&'static str, String>,
     /// Profiles folded least-privilege for each call: `[own, ancestors…, base]`.
     chain: Vec<PermissionProfile>,
     /// The project root a path-arg binding's argument is normalized relative
@@ -170,41 +191,58 @@ pub struct BindingPolicy {
 }
 
 impl BindingPolicy {
-    /// Snapshot each binding's mask and the effective permission chain for
-    /// `session`, appending the user config's global ceiling (#172) so the
-    /// quintet bindings honor the same `permissions` floor — including its
-    /// argument-scoped rules (#173) — as a direct tool call.
+    /// Snapshot each binding's agent mask, active-skill mask, and the effective
+    /// permission chain for `session`, appending the user config's global
+    /// ceiling (#172) so the quintet bindings honor the same `permissions`
+    /// floor — including its argument-scoped rules (#173) — as a direct tool
+    /// call. `active_skill` is the same session-keyed map `tool_runner`'s
+    /// generic route checks via [`skill_masked`] — pass an empty map where no
+    /// skill can be active (tests, or a caller with no skills wired).
     pub fn capture(
         active: &HashMap<SessionId, AgentProfile>,
         guard: &SpawnGuard,
         session: &SessionId,
         base: &PermissionProfile,
         root: Option<&Path>,
+        active_skill: &HashMap<SessionId, ActiveSkill>,
     ) -> Self {
-        let masked = BINDING_TOOLS
+        let masked: HashSet<&'static str> = BINDING_TOOLS
             .into_iter()
             .filter(|tool| tool_masked(active, guard, session, tool))
+            .collect();
+        let skill_masked = BINDING_TOOLS
+            .into_iter()
+            .filter(|tool| !masked.contains(tool))
+            .filter_map(|tool| {
+                skill_masked(active_skill, session, tool).map(|skill_id| (tool, skill_id))
+            })
             .collect();
         let mut chain = permission_chain(active, guard, session);
         chain.push(base.clone());
         BindingPolicy {
             masked,
+            skill_masked,
             chain,
             root: root.map(Path::to_path_buf),
         }
     }
 
-    /// Resolve one binding call: masked tools do not exist; otherwise the grade
-    /// is the least-privileged across the whole chain for this tool + argument.
+    /// Resolve one binding call: masked tools do not exist; a tool the active
+    /// skill excludes is refused next; otherwise the grade is the
+    /// least-privileged across the whole chain for this tool + argument.
     /// `read_raw` is graded and masked as an alias of `read` — it is not in
     /// `BINDING_TOOLS`/a profile's `tools`/`disallowed_tools` at all (never
     /// advertised, see [`crate::host::ReadRawTool`]), so without this alias a
     /// profile that restricts `read` would be silently bypassed by a script
-    /// reaching for the unlabeled raw path instead.
+    /// reaching for the unlabeled raw path instead. The same alias applies to
+    /// the skill mask, for the same reason.
     fn decide(&self, tool: &'static str, input: &str) -> Decision {
         let tool = if tool == "read_raw" { "read" } else { tool };
         if self.masked.contains(tool) {
             return Decision::Masked;
+        }
+        if let Some(skill_id) = self.skill_masked.get(tool) {
+            return Decision::SkillMasked(skill_id.clone());
         }
         let arg = grading_arg(tool, input, self.root.as_deref());
         let perm = self.chain.iter().fold(Permission::Allow, |acc, p| {
@@ -434,6 +472,16 @@ async fn service_binding(
             return (
                 Err(format!(
                     "tool `{}` is not available to this agent (restricted by profile)",
+                    call.tool
+                )),
+                false,
+            )
+        }
+        Decision::SkillMasked(skill_id) => {
+            return (
+                Err(format!(
+                    "tool `{}` is not available while skill `{skill_id}` is active \
+                     (restricted by its allowed_tools)",
                     call.tool
                 )),
                 false,
@@ -1084,7 +1132,8 @@ mod tests {
         let guard = SpawnGuard::new();
         // Allow-all base = the embedded config default: a no-op ceiling.
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
+        let policy =
+            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
 
         // `edit` is not in the allowlist → masked.
         assert!(matches!(policy.decide("edit", "{}"), Decision::Masked));
@@ -1098,6 +1147,65 @@ mod tests {
             policy.decide("glob", "{}"),
             Decision::Perm(Permission::Ask)
         ));
+    }
+
+    /// #477: the active skill's `allowed_tools` mask, checked after the agent
+    /// mask, refuses a binding the agent itself would otherwise permit —
+    /// `read_raw` shares the alias-to-`read` treatment the agent mask already
+    /// gets, and a tool omitted from the agent's own `tools` allowlist stays
+    /// `Decision::Masked` (the agent mask wins, not swapped for the skill's).
+    #[test]
+    fn binding_policy_honors_the_active_skill_mask_after_the_agent_mask() {
+        use entanglement_core::{AgentMode, PermissionProfile};
+
+        let profile = AgentProfile {
+            name: "build".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            provider: None,
+            permission: PermissionProfile::new(Permission::Allow),
+            tools: Some(vec!["read".into(), "write".into()]),
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+        };
+        let session = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(session.clone(), profile);
+        let guard = SpawnGuard::new();
+        let base = PermissionProfile::new(Permission::Allow);
+
+        let mut active_skill = HashMap::new();
+        active_skill.insert(
+            session.clone(),
+            crate::permission::ActiveSkill {
+                skill_id: "restricted".into(),
+                allowed_tools: Some(vec!["read".into()]),
+            },
+        );
+        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None, &active_skill);
+
+        // `write` survives the agent mask but is excluded by the skill.
+        assert!(matches!(
+            policy.decide("write", "{}"),
+            Decision::SkillMasked(id) if id == "restricted"
+        ));
+        // `read` survives both masks and grades normally.
+        assert!(matches!(
+            policy.decide("read", "{}"),
+            Decision::Perm(Permission::Allow)
+        ));
+        // `read_raw` is graded/masked as an alias of `read` for the skill mask
+        // too, same as it already is for the agent mask.
+        assert!(matches!(
+            policy.decide("read_raw", "{}"),
+            Decision::Perm(Permission::Allow)
+        ));
+        // `edit` is outside the agent's own `tools` allowlist — the agent
+        // mask fires first, not the (looser) skill mask.
+        assert!(matches!(policy.decide("edit", "{}"), Decision::Masked));
     }
 
     #[test]
@@ -1123,7 +1231,8 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow).with("read", Permission::Ask);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
+        let policy =
+            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
 
         // The base ceiling clamps the `read` binding to Ask despite the agent's
         // allow-all; `write` (base-silent) stays Allow.
@@ -1161,7 +1270,8 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
+        let policy =
+            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
 
         // Same tool, two inputs, two grades — resolved live against the path.
         assert!(matches!(
@@ -1200,7 +1310,8 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
+        let policy =
+            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
 
         assert!(matches!(
             policy.decide("call", "{}"),
@@ -1236,7 +1347,8 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
+        let policy =
+            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
 
         assert!(matches!(policy.decide("call", "{}"), Decision::Masked));
         assert!(matches!(policy.decide("bash", "{}"), Decision::Masked));
@@ -1268,7 +1380,8 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None);
+        let policy =
+            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
 
         assert!(matches!(
             policy.decide("call", r#"{"command":"git","args":["status"]}"#),

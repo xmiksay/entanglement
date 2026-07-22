@@ -634,6 +634,18 @@ below realize one model:
   wire-facing posture surface (a fresh per-session seq, no `Session::replay`
   fold, persisted for free); the stdio `run --format text` head and the TUI
   transcript both render it as a one-line notice.
+- **The skill mask reaches `rhai` bindings too (✅ #477, [ADR-0129](../adr/0129-thread-the-skill-mask-into-rhai-binding-resolution.md),
+  amending ADR-0106):** `Intercept::Rhai`'s `BindingPolicy` snapshot (§8) now
+  folds in `skill_masked` alongside the agent mask, so a binding
+  (`read`/`glob`/`grep`/`edit`/`write`/`call`/`bash`) the active skill's
+  `allowed_tools` excludes refuses with the identical message a direct call
+  gets ("not available while skill `X` is active…"), checked strictly after
+  the agent mask, same ordering as generic dispatch. `BindingPolicy::capture`
+  takes the session's `active_skill` map as a one-time **snapshot** rather
+  than a live read — sound because `load_skill` is not itself a binding, so
+  nothing inside a running script can activate or change a skill mid-run.
+  Clears on the session's next `Done`, exactly as for generic dispatch, since
+  it is the same `ActiveSkill` map both routes read.
 - **Skill preload vs access — two independent mechanisms (✅ #117, [ADR-0043](../adr/0043-skill-preload-vs-access-independent-mechanisms.md)):** an agent
   definition controls skills along two orthogonal axes, deliberately *not* merged
   (merging loses expressiveness). **Preload** is `skills: [name, …]` frontmatter:
