@@ -275,6 +275,137 @@ fn edit_op_expands_to_a_diff_not_raw_json() {
     );
 }
 
+fn feed_tool_request(
+    app: &mut App,
+    sid: &SessionId,
+    seq: u64,
+    request_id: &str,
+    tool: &str,
+    input: &str,
+) {
+    app.handle_out_event(OutEvent::ToolRequest {
+        session: sid.clone(),
+        seq,
+        request_id: request_id.to_string(),
+        tool: tool.to_string(),
+        input: input.to_string(),
+    });
+}
+
+#[test]
+fn approval_tail_header_shows_primary_arg_like_a_block() {
+    // #487: the approval tail's header now matches the block idiom — the
+    // primary arg lives in the header, not buried in a raw JSON dump below.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(&mut app, &sid, 1, "t1", "bash", r#"{"command":"echo hi"}"#);
+
+    let body = render_body_lines(&mut app, 80);
+    let header_idx = line_index_of(&body, "▾ bash");
+    let header = line_text(&body.lines[header_idx]);
+    assert!(
+        header.contains("echo hi"),
+        "approval header must show the primary arg: {header:?}"
+    );
+}
+
+#[test]
+fn approval_tail_edit_shows_a_diff_not_raw_json() {
+    // #487: the approval body reuses the shared per-tool renderer instead of
+    // `serde_json::to_string_pretty`, so an `edit` approval shows a real diff
+    // instead of raw `oldString`/`newString` JSON.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        "edit",
+        r#"{"path":"a.rs","oldString":"foo","newString":"bar"}"#,
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let has_delete = body
+        .lines
+        .iter()
+        .any(|l| l.spans.iter().any(|s| s.content == "- "));
+    let has_insert = body
+        .lines
+        .iter()
+        .any(|l| l.spans.iter().any(|s| s.content == "+ "));
+    assert!(
+        has_delete && has_insert,
+        "approval body must render a `-`/`+` diff pair"
+    );
+    assert!(
+        !body
+            .lines
+            .iter()
+            .any(|l| line_text(l).contains("oldString")),
+        "approval body must not dump raw JSON args"
+    );
+}
+
+#[test]
+fn approval_tail_lines_carry_the_left_bar_decoration() {
+    // #487: the tail now goes through `Theme::decorate`, so its header/body
+    // lines get the same left-bar treatment as any other transcript block,
+    // instead of the old bare, undecorated `Line::from(...)`.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(&mut app, &sid, 1, "t1", "bash", r#"{"command":"echo hi"}"#);
+
+    let body = render_body_lines(&mut app, 80);
+    let header_idx = line_index_of(&body, "▾ bash");
+    let header = &body.lines[header_idx];
+    assert_eq!(
+        header.spans.first().map(|s| s.content.as_ref()),
+        Some("▌"),
+        "approval header should carry the decorate left bar"
+    );
+}
+
+#[test]
+fn approval_tail_shows_queued_count() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(&mut app, &sid, 1, "t1", "bash", r#"{"command":"echo one"}"#);
+    feed_tool_request(&mut app, &sid, 2, "t2", "bash", r#"{"command":"echo two"}"#);
+
+    let body = render_body_lines(&mut app, 80);
+    assert!(
+        body.lines
+            .iter()
+            .any(|l| line_text(l).contains("more queued")),
+        "a second parked approval should show a queued count"
+    );
+}
+
+#[test]
+fn standalone_tool_output_uses_the_shared_header_idiom() {
+    // #487: a `record_status`/stray-output notice now renders `▸ label`
+    // instead of the old "Tool Output (label):" sentence.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.record_status("compact", "did the thing".to_string());
+
+    let body = render_body_lines(&mut app, 80);
+    assert!(
+        body.lines
+            .iter()
+            .any(|l| line_text(l).contains("▸ compact")),
+        "standalone output header should use the shared ▸ tool idiom"
+    );
+    assert!(
+        !body
+            .lines
+            .iter()
+            .any(|l| line_text(l).contains("Tool Output")),
+        "old 'Tool Output (...)' sentence should be gone"
+    );
+}
+
 #[test]
 fn streamed_table_renders_as_grid_after_all_deltas() {
     let sid = SessionId::new("s1");

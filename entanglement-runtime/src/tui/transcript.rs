@@ -5,6 +5,8 @@ use ratatui::{
 
 use crate::tui::app::App;
 use crate::tui::session_view::ApprovalMode;
+use crate::tui::theme::RoleColors;
+use crate::tui::tool_render;
 use crate::tui::wrap;
 
 mod block;
@@ -46,15 +48,29 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
     // so it renders fresh after the cached body rather than through the cache.
     if let ApprovalMode::WaitingForApproval { .. } = app.approval_mode() {
         if let Some((_, tool, input)) = app.pending_tool_request() {
+            let (tool, input) = (tool.clone(), input.clone());
             let rule = "─".repeat(available_width.max(1) as usize);
-            let wrap_width = available_width.saturating_sub(4);
+            // Yellow accent ties this tail to the surrounding rules; the tail
+            // now goes through `Theme::decorate` like any other block so it
+            // reads as part of the transcript, not a bolted-on overlay (#487).
+            let approval_colors = RoleColors {
+                fg: Color::Yellow,
+                bg: theme.message_bg,
+            };
             lines.push(Line::from(""));
             lines.push(Line::from(rule.clone()).fg(Color::Yellow));
-            let mut header = vec![
-                Span::styled("?", Style::default().fg(Color::Yellow).bold()),
-                Span::raw(" "),
-                Span::styled(tool.clone(), Style::default().fg(Color::Cyan).bold()),
-            ];
+
+            // Same `▸/▾ tool  primary_arg` idiom the collapsed/expanded block
+            // header uses (`flush_tool_call`) — the tail is always fully shown,
+            // so the arrow is `▾`.
+            let mut header = render_run::tool_header_spans(
+                &tool,
+                &input,
+                '▾',
+                Color::Yellow,
+                available_width,
+                None,
+            );
             // Core batch-emits tool calls (#270), so more approvals may be
             // parked behind this one (#273) — show how many are waiting.
             let queued = app.queued_approvals();
@@ -64,34 +80,24 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
                     Style::default().fg(Color::DarkGray),
                 ));
             }
-            lines.push(Line::from(header));
+            lines.push(theme.decorate(Line::from(header), approval_colors, available_width));
 
-            if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
-                // `propose_plan` carries a full markdown plan as its single arg;
-                // pretty-printing it as JSON makes the approval unreadable
-                // (ADR-0042). Render the plan markdown, wrapped to the panel.
-                let plan = crate::propose_plan::parse_plan(input);
-                for md_line in app.markdown_renderer().render(&plan).lines {
-                    for wline in wrap::wrap_line(md_line, wrap_width) {
-                        let joined: String =
-                            wline.spans.iter().map(|s| s.content.as_ref()).collect();
-                        lines.push(Line::from(format!("  {joined}")));
-                    }
-                }
-            } else {
-                // Pretty-print the JSON if we can, else the raw input — and wrap
-                // every line to the panel so a wide value never overflows.
-                let formatted = serde_json::from_str::<serde_json::Value>(input)
-                    .ok()
-                    .and_then(|v| serde_json::to_string_pretty(&v).ok());
-                let source = formatted.as_deref().unwrap_or(input);
-                for line in source.lines() {
-                    for wline in wrap::wrap_line(Line::from(line.to_string()), wrap_width) {
-                        let joined: String =
-                            wline.spans.iter().map(|s| s.content.as_ref()).collect();
-                        lines.push(Line::from(format!("  {joined}")));
-                    }
-                }
+            // The body: the same per-tool renderer the expanded block uses (a
+            // real diff for `edit`, the new content for `write`, plan markdown
+            // for `propose_plan`, …) instead of raw JSON — the primary arg
+            // already lives in the header above, so it's never re-dumped
+            // (mirrors `flush_tool_call`'s expanded branch, #487). No output
+            // yet — the call hasn't run.
+            let rendered = tool_render::render_expansion(
+                Some(&tool),
+                &input,
+                "",
+                theme,
+                available_width,
+                app.markdown_renderer(),
+            );
+            for line in rendered.lines {
+                lines.push(theme.decorate(line, approval_colors, available_width));
             }
 
             lines.push(Line::from(""));

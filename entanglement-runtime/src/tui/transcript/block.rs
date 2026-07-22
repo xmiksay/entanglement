@@ -8,7 +8,9 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::{RoleColors, Theme};
 use crate::tui::tool_render;
 
-use super::render_run::{flush_reasoning, flush_text, flush_tool_call, padding_line};
+use super::render_run::{
+    flush_reasoning, flush_text, flush_tool_call, padding_line, tool_header_spans,
+};
 use super::segment::Block;
 
 /// Renders a single transcript [`Block`] to owned lines. This is the unit the
@@ -94,13 +96,18 @@ fn render_tool_output(
 ) -> Vec<Line<'static>> {
     let padding = padding_line(tool_out, available_width);
     let mut out = vec![padding.clone()];
-    let header_text = match tool {
-        Some(tool_name) => format!("Tool Output ({tool_name}):"),
-        None => "Tool Output:".to_string(),
-    };
-    for wline in wrap::wrap_line(Line::from(header_text), available_width.saturating_sub(4)) {
-        out.push(theme.decorate(wline, tool_out, available_width));
-    }
+    // Same `▸ tool  arg` idiom as the block header and approval tail (#487);
+    // there is no call `input` here (only the free-text `output`), so the arg
+    // slot is empty and the header falls back to the bare tool name.
+    let header = tool_header_spans(
+        tool.unwrap_or("output"),
+        "",
+        '▸',
+        tool_out.fg,
+        available_width,
+        None,
+    );
+    out.push(theme.decorate(Line::from(header), tool_out, available_width));
 
     let rendered = tool_render::render_tool_output(tool, output, theme, available_width);
     for line in rendered.lines {
