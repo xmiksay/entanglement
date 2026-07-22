@@ -50,6 +50,27 @@ impl App {
         self.mark_dirty();
     }
 
+    pub fn question_toggle(&mut self) {
+        self.sessions.active_view_mut().question_toggle();
+        self.mark_dirty();
+    }
+
+    pub fn question_toggle_at(&mut self, idx: usize) {
+        self.sessions.active_view_mut().question_toggle_at(idx);
+        self.mark_dirty();
+    }
+
+    /// Records the current question's answer; `Some` once the whole call is
+    /// answered (#488).
+    pub fn commit_question_answer(&mut self, answer: Vec<String>) -> Option<Vec<Vec<String>>> {
+        let result = self
+            .sessions
+            .active_view_mut()
+            .commit_question_answer(answer);
+        self.mark_dirty();
+        result
+    }
+
     pub fn question_begin_free_form(&mut self) {
         self.sessions.active_view_mut().question_begin_free_form();
         self.mark_dirty();

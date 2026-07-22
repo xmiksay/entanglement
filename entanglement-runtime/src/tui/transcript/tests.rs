@@ -753,41 +753,34 @@ fn markdown_table_wraps_within_panel() {
 
 #[test]
 fn render_question_wraps_long_text_and_sized_rule() {
-    use crate::tui::session_view::PendingQuestion;
-    use entanglement_core::QuestionOption;
+    use entanglement_core::{Question, QuestionOption, Questions};
     use unicode_width::UnicodeWidthStr;
 
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());
     let long_question = "Which of these excessively verbose and long-winded options do you prefer?";
     let long_label = "A particularly verbose and lengthy option label that cannot fit on one line";
-    let q = PendingQuestion {
-        request_id: "q1".into(),
-        question: long_question.into(),
-        options: vec![
-            QuestionOption {
-                label: long_label.into(),
-                description: None,
-            },
-            QuestionOption {
-                label: "short".into(),
-                description: Some(
-                    "a description that is also fairly long and should wrap nicely".into(),
-                ),
-            },
-        ],
-        allow_free_form: true,
-        selected: 0,
-        entering_free_form: false,
-    };
     // Park the question on the view directly via the reducer path.
     app.handle_out_event(OutEvent::UserQuestion {
         session: sid.clone(),
         seq: 1,
-        request_id: q.request_id.clone(),
-        question: q.question.clone(),
-        options: q.options.clone(),
-        allow_free_form: q.allow_free_form,
+        request_id: "q1".into(),
+        questions: Questions(vec![Question {
+            question: long_question.into(),
+            options: vec![
+                QuestionOption {
+                    label: long_label.into(),
+                    description: None,
+                },
+                QuestionOption {
+                    label: "short".into(),
+                    description: Some(
+                        "a description that is also fairly long and should wrap nicely".into(),
+                    ),
+                },
+            ],
+            multi_select: false,
+        }]),
     });
 
     let width = 30u16;

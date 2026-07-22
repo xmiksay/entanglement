@@ -154,25 +154,35 @@ fn render_agent_poll_body(agent_id: &str, timeout_secs: Option<u64>) -> Text<'st
     Text::from(lines)
 }
 
-/// An `ask_user` body: the question followed by its numbered option labels.
+/// An `ask_user` body (#488): each question followed by its numbered option
+/// labels. Accepts the current `{"questions": [...]}` array shape as well as
+/// the legacy single-question `{"question", "options"}` shape, so a replayed
+/// pre-#488 log still renders.
 fn render_ask_user_body(value: &serde_json::Value) -> Text<'static> {
     let mut lines = Vec::new();
-    if let Some(q) = value.get("question").and_then(|s| s.as_str()) {
-        lines.push(Line::from(format!("  {q}")));
-    }
-    if let Some(options) = value.get("options").and_then(|o| o.as_array()) {
-        for (i, opt) in options.iter().enumerate() {
-            if let Some(label) = opt.get("label").and_then(|s| s.as_str()) {
-                lines.push(Line::from(format!("  {}. {label}", i + 1)));
+    let questions = value
+        .get("questions")
+        .and_then(|q| q.as_array())
+        .cloned()
+        .unwrap_or_else(|| vec![value.clone()]);
+    for question in &questions {
+        if let Some(q) = question.get("question").and_then(|s| s.as_str()) {
+            lines.push(Line::from(format!("  {q}")));
+        }
+        if let Some(options) = question.get("options").and_then(|o| o.as_array()) {
+            for (i, opt) in options.iter().enumerate() {
+                if let Some(label) = opt.get("label").and_then(|s| s.as_str()) {
+                    lines.push(Line::from(format!("  {}. {label}", i + 1)));
+                }
             }
         }
-    }
-    if value
-        .get("allow_free_form")
-        .and_then(|f| f.as_bool())
-        .unwrap_or(false)
-    {
-        lines.push(Line::from("  (free-form answer allowed)"));
+        if question
+            .get("multi_select")
+            .and_then(|f| f.as_bool())
+            .unwrap_or(false)
+        {
+            lines.push(Line::from("  (multiple selections allowed)"));
+        }
     }
     Text::from(lines)
 }
@@ -568,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_expansion_ask_user_renders_question_and_options() {
+    fn test_expansion_ask_user_renders_legacy_single_question_shape() {
         let result = render_expansion(
             Some("ask_user"),
             r#"{"question":"Which?","options":[{"label":"A","description":"x"}]}"#,
@@ -589,6 +599,29 @@ mod tests {
         assert!(
             !text.contains('{'),
             "ask_user expansion must not dump raw JSON braces: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_expansion_ask_user_renders_multiple_questions() {
+        let result = render_expansion(
+            Some("ask_user"),
+            r#"{"questions":[
+                {"question":"Which DB?","options":[{"label":"Postgres"}]},
+                {"question":"Which regions?","options":[{"label":"us-east"}],"multi_select":true}
+            ]}"#,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(text.contains("Which DB?"), "{text:?}");
+        assert!(text.contains("Which regions?"), "{text:?}");
+        assert!(text.contains("Postgres"), "{text:?}");
+        assert!(
+            text.contains("multiple selections allowed"),
+            "multi_select question should note it: {text:?}"
         );
     }
 

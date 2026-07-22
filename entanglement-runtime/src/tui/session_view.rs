@@ -1,4 +1,4 @@
-use entanglement_core::{AgentState, OutEvent, QuestionOption, SessionId};
+use entanglement_core::{AgentState, OutEvent, Question, SessionId};
 use ratatui::text::Line;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -53,17 +53,27 @@ pub enum ApprovalMode {
     EnteringRejectReason { request_id: String },
 }
 
-/// A model-driven `ask_user` question awaiting the user's answer (ADR-0027).
+/// A model-driven `ask_user` **call** awaiting the user's answers (#488,
+/// supersedes parts of ADR-0027). One call can carry several `questions`,
+/// walked in order: `current` is the one on screen, `answers` buffers the
+/// ones already picked (parallel to `questions[0..current]`), and `picked`
+/// holds the current question's checked options while it's a multi-select.
 /// Distinct from [`ApprovalMode`]: approval is binary, this carries labelled
-/// choices plus an optional free-text "Other" escape.
+/// choices plus an always-available free-text "Other" escape.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingQuestion {
     pub request_id: String,
-    pub question: String,
-    pub options: Vec<QuestionOption>,
-    pub allow_free_form: bool,
-    /// Highlighted choice. Indices `0..options.len()` are the options; when
-    /// `allow_free_form`, index `options.len()` is the "Other" entry.
+    pub questions: Vec<Question>,
+    /// Index into `questions` of the one currently on screen.
+    pub current: usize,
+    /// Answers collected so far, one inner vec per completed question, in
+    /// `questions` order.
+    pub answers: Vec<Vec<String>>,
+    /// Options checked for the current question so far (multi-select only).
+    pub picked: HashSet<usize>,
+    /// Highlighted choice for the current question. Indices
+    /// `0..options.len()` are the options; index `options.len()` is the
+    /// always-available "Other" free-text entry.
     pub selected: usize,
     /// True while the "Other" free-text field is being typed into (answer flows
     /// through the shared input box, like a reject reason).
@@ -71,14 +81,43 @@ pub struct PendingQuestion {
 }
 
 impl PendingQuestion {
-    /// Total selectable choices, including the "Other" entry when allowed.
+    pub fn new(request_id: String, questions: Vec<Question>) -> Self {
+        Self {
+            request_id,
+            questions,
+            current: 0,
+            answers: Vec::new(),
+            picked: HashSet::new(),
+            selected: 0,
+            entering_free_form: false,
+        }
+    }
+
+    /// The question currently on screen.
+    pub fn current_question(&self) -> &Question {
+        &self.questions[self.current]
+    }
+
+    /// Total selectable choices for the current question: its options plus
+    /// the always-available "Other" free-text entry.
     pub fn choice_count(&self) -> usize {
-        self.options.len() + usize::from(self.allow_free_form)
+        self.current_question().options.len() + 1
     }
 
     /// Whether the highlighted choice is the free-text "Other" entry.
     pub fn free_form_selected(&self) -> bool {
-        self.allow_free_form && self.selected == self.options.len()
+        self.selected == self.current_question().options.len()
+    }
+
+    /// Whether the current question accepts more than one checked option.
+    pub fn is_multi_select(&self) -> bool {
+        self.current_question().multi_select
+    }
+
+    /// 1-based `(position, total)` among the call's questions, for a
+    /// "(2/3)" progress indicator.
+    pub fn progress(&self) -> (usize, usize) {
+        (self.current + 1, self.questions.len())
     }
 }
 
@@ -315,7 +354,7 @@ impl SessionView {
     }
 
     /// Move the highlighted choice by `delta`, wrapping around all choices
-    /// (options plus the "Other" entry when allowed).
+    /// (options plus the always-available "Other" entry).
     pub fn question_move(&mut self, delta: isize) {
         if let Some(q) = self.pending_questions.front_mut() {
             let count = q.choice_count() as isize;
@@ -325,13 +364,39 @@ impl SessionView {
         }
     }
 
-    /// Enter free-text mode for the "Other" entry (no-op without free-form).
+    /// Toggle the highlighted option's checkbox (`Space`), for a multi-select
+    /// question only — a no-op on a single-select question or the "Other" row
+    /// (#488).
+    pub fn question_toggle(&mut self) {
+        if let Some(q) = self.pending_questions.front_mut() {
+            if q.current_question().multi_select && q.selected < q.current_question().options.len()
+            {
+                let idx = q.selected;
+                if !q.picked.remove(&idx) {
+                    q.picked.insert(idx);
+                }
+            }
+        }
+    }
+
+    /// Toggle a specific option's checkbox by index (number-key quick toggle
+    /// on a multi-select question) and move the cursor to it.
+    pub fn question_toggle_at(&mut self, idx: usize) {
+        if let Some(q) = self.pending_questions.front_mut() {
+            if q.current_question().multi_select && idx < q.current_question().options.len() {
+                q.selected = idx;
+                if !q.picked.remove(&idx) {
+                    q.picked.insert(idx);
+                }
+            }
+        }
+    }
+
+    /// Enter free-text mode for the always-available "Other" entry.
     pub fn question_begin_free_form(&mut self) {
         if let Some(q) = self.pending_questions.front_mut() {
-            if q.allow_free_form {
-                q.selected = q.options.len();
-                q.entering_free_form = true;
-            }
+            q.selected = q.current_question().options.len();
+            q.entering_free_form = true;
         }
     }
 
@@ -342,7 +407,29 @@ impl SessionView {
         }
     }
 
-    /// Pops the front question (just answered) so the next queued one, if any,
+    /// Records `answer` as the current question's answer for the front call,
+    /// then advances to the next question with fresh selection state. Returns
+    /// the full per-question answers list once every question in the call has
+    /// been answered — `None` while more of the call's questions remain, in
+    /// which case the same call stays parked with the next question on screen.
+    /// The caller sends one `AnswerQuestion` frame with the `Some` result and
+    /// then calls [`Self::advance_question`] to promote the next queued call,
+    /// if any (#273, #488).
+    pub fn commit_question_answer(&mut self, answer: Vec<String>) -> Option<Vec<Vec<String>>> {
+        let q = self.pending_questions.front_mut()?;
+        q.answers.push(answer);
+        q.current += 1;
+        q.selected = 0;
+        q.picked.clear();
+        q.entering_free_form = false;
+        if q.current >= q.questions.len() {
+            Some(q.answers.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Pops the front call (fully answered) so the next queued one, if any,
     /// surfaces with its own fresh selection state (#273).
     pub fn advance_question(&mut self) {
         self.pending_questions.pop_front();

@@ -1,9 +1,11 @@
-//! Integration test for the runtime-owned `ask_user` tool (#90, ADR-0027).
+//! Integration test for the runtime-owned `ask_user` tool (#90, ADR-0027; #488
+//! v2: several questions per call, an always-available free-text answer, and
+//! per-question multi-select).
 //!
 //! The model calls `ask_user`; the executor intercepts it on `ToolExec` (before
 //! permission resolution, like `agent_spawn`), emits `OutEvent::UserQuestion`,
-//! and parks for the head's `InMsg::AnswerQuestion`. The picked answer is folded
-//! back as the tool's `ToolResult` so the parent turn continues.
+//! and parks for the head's `InMsg::AnswerQuestion`. Every answer is folded
+//! back as one `ToolResult` so the parent turn continues.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -86,7 +88,7 @@ fn spawn_with_ask_user_call(input: &str) -> Holly {
 #[tokio::test]
 async fn ask_user_emits_question_and_folds_answer_back() {
     let holly = spawn_with_ask_user_call(
-        r#"{"question":"Which DB?","options":[{"label":"Postgres"},{"label":"SQLite"}],"allow_free_form":true}"#,
+        r#"{"questions":[{"question":"Which DB?","options":[{"label":"Postgres"},{"label":"SQLite"}]}]}"#,
     );
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -98,16 +100,15 @@ async fn ask_user_emits_question_and_folds_answer_back() {
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
         if let OutEvent::UserQuestion {
             request_id: rid,
-            question,
-            options,
-            allow_free_form,
+            questions,
             ..
         } = &ev
         {
-            assert_eq!(question, "Which DB?");
-            assert_eq!(options.len(), 2);
-            assert_eq!(options[0].label, "Postgres");
-            assert!(allow_free_form);
+            assert_eq!(questions.0.len(), 1);
+            assert_eq!(questions.0[0].question, "Which DB?");
+            assert_eq!(questions.0[0].options.len(), 2);
+            assert_eq!(questions.0[0].options[0].label, "Postgres");
+            assert!(!questions.0[0].multi_select);
             request_id = Some(rid.clone());
             break;
         }
@@ -116,11 +117,11 @@ async fn ask_user_emits_question_and_folds_answer_back() {
 
     // The user picks an option; the label flows back as the tool output.
     holly
-        .send(InMsg::AnswerQuestion {
-            session: sid.clone(),
+        .send(InMsg::answer_question(
+            sid.clone(),
             request_id,
-            answer: "SQLite".into(),
-        })
+            vec![vec!["SQLite".into()]],
+        ))
         .await
         .unwrap();
 
@@ -142,5 +143,91 @@ async fn ask_user_emits_question_and_folds_answer_back() {
     assert!(
         got_answer,
         "the ask_user tool output should carry the answer"
+    );
+}
+
+#[tokio::test]
+async fn ask_user_batches_multiple_questions_into_one_call() {
+    let holly = spawn_with_ask_user_call(
+        r#"{"questions":[
+            {"question":"Which DB?","options":[{"label":"Postgres"},{"label":"SQLite"}]},
+            {"question":"Which regions?","options":[{"label":"us-east"},{"label":"eu-west"}],"multi_select":true}
+        ]}"#,
+    );
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let mut request_id = None;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if let OutEvent::UserQuestion {
+            request_id: rid,
+            questions,
+            ..
+        } = &ev
+        {
+            assert_eq!(questions.0.len(), 2);
+            assert!(questions.0[1].multi_select);
+            request_id = Some(rid.clone());
+            break;
+        }
+    }
+    let request_id = request_id.expect("expected a UserQuestion event");
+
+    // One `AnswerQuestion` carries both answers — the second is a multi-select
+    // pick of both regions.
+    holly
+        .send(InMsg::answer_question(
+            sid.clone(),
+            request_id,
+            vec![
+                vec!["SQLite".into()],
+                vec!["us-east".into(), "eu-west".into()],
+            ],
+        ))
+        .await
+        .unwrap();
+
+    let mut output_text = None;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
+        if ev.session() != Some(&sid) {
+            continue;
+        }
+        if let OutEvent::ToolOutput { tool, output, .. } = &ev {
+            if tool == ASK_USER_TOOL {
+                output_text = Some(output.clone());
+            }
+        }
+        if matches!(ev, OutEvent::Done { .. }) {
+            break;
+        }
+    }
+    let output_text = output_text.expect("the ask_user tool output should carry both answers");
+    assert!(output_text.contains("SQLite"), "{output_text}");
+    assert!(output_text.contains("us-east, eu-west"), "{output_text}");
+}
+
+#[tokio::test]
+async fn ask_user_accepts_legacy_single_question_shape() {
+    let holly = spawn_with_ask_user_call(
+        r#"{"question":"Which DB?","options":[{"label":"Postgres"},{"label":"SQLite"}],"allow_free_form":true}"#,
+    );
+    let sid = SessionId::new("s1");
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let mut saw_question = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if let OutEvent::UserQuestion { questions, .. } = &ev {
+            assert_eq!(questions.0.len(), 1);
+            assert_eq!(questions.0[0].question, "Which DB?");
+            saw_question = true;
+            break;
+        }
+    }
+    assert!(
+        saw_question,
+        "legacy single-question input must still parse"
     );
 }

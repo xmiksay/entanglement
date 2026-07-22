@@ -55,25 +55,32 @@ pub async fn run_one(
             render_text(&mut out, &ev)?;
         }
         out.flush()?;
-        // No interactive user on the one-shot head: auto-answer an `ask_user`
-        // prompt (first option, or a canned note when only free-form) so the
+        // No interactive user on the one-shot head: auto-answer every `ask_user`
+        // question (its first option, or a canned note when it has none) so the
         // turn proceeds instead of parking forever (ADR-0027 fallback).
         if let OutEvent::UserQuestion {
             request_id,
-            options,
+            questions,
             ..
         } = &ev
         {
-            let answer = options
-                .first()
-                .map(|o| o.label.clone())
-                .unwrap_or_else(|| "(no interactive user available)".to_string());
-            holly
-                .send(InMsg::AnswerQuestion {
-                    session: session.clone(),
-                    request_id: request_id.clone(),
-                    answer,
+            let answers = questions
+                .0
+                .iter()
+                .map(|q| {
+                    vec![q
+                        .options
+                        .first()
+                        .map(|o| o.label.clone())
+                        .unwrap_or_else(|| "(no interactive user available)".to_string())]
                 })
+                .collect();
+            holly
+                .send(InMsg::answer_question(
+                    session.clone(),
+                    request_id.clone(),
+                    answers,
+                ))
                 .await?;
         }
         // `propose_plan` force-parks on approval (#141, ADR-0042); a one-shot head
@@ -140,12 +147,12 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::ToolCallDelta { .. } => {}
         OutEvent::ToolCall { tool, input, .. } => writeln!(out, "→ {tool}: {input}")?,
         OutEvent::ToolRequest { tool, input, .. } => writeln!(out, "? {tool}: {input}")?,
-        OutEvent::UserQuestion {
-            question, options, ..
-        } => {
-            writeln!(out, "? {question}")?;
-            for opt in options {
-                writeln!(out, "  - {}", opt.label)?;
+        OutEvent::UserQuestion { questions, .. } => {
+            for q in &questions.0 {
+                writeln!(out, "? {}", q.question)?;
+                for opt in &q.options {
+                    writeln!(out, "  - {}", opt.label)?;
+                }
             }
         }
         // Runtime plumbing (#58): execution round-trip, not user-facing.

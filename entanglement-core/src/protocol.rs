@@ -114,6 +114,79 @@ pub struct QuestionOption {
     pub description: Option<String>,
 }
 
+/// One question in a model-driven [`OutEvent::UserQuestion`] call (#488,
+/// supersedes parts of ADR-0027): several may ride in a single `ask_user`
+/// invocation. `multi_select` lets the user check off any number of
+/// `options`; a free-text "Other" answer is always offered by every head
+/// regardless of this flag — unlike the v1 shape this supersedes, there is no
+/// `allow_free_form` to opt out of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Question {
+    pub question: String,
+    pub options: Vec<QuestionOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+}
+
+/// The `questions` payload of an [`OutEvent::UserQuestion`] (#488). A plain
+/// `Vec<Question>` field can't absorb a legacy log's sibling top-level keys
+/// (`question`/`options`/`allow_free_form`) — `serde`'s field-level
+/// `deserialize_with` only ever sees the value already keyed under its own
+/// field name, and merging *sibling* keys into one field needs `#[serde(flatten)]`
+/// over an `untagged` shape instead (unlike [`de_prompt_content`], which only
+/// ever swaps one field's own shape). This newtype is that flattened field:
+/// it deserializes either the current `{"questions": [...]}` shape or the
+/// pre-#488 flat `{"question", "options", "allow_free_form"}` shape (folded
+/// into a one-element vec, `allow_free_form` dropped — free text is
+/// unconditional now), and always serializes back out as `{"questions": [...]}`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Questions(pub Vec<Question>);
+
+impl Serialize for Questions {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("Questions", 1)?;
+        st.serialize_field("questions", &self.0)?;
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Questions {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Multi {
+                questions: Vec<Question>,
+            },
+            Legacy {
+                question: String,
+                #[serde(default)]
+                options: Vec<QuestionOption>,
+                #[serde(default)]
+                #[allow(dead_code)]
+                allow_free_form: bool,
+            },
+        }
+        Ok(match Repr::deserialize(d)? {
+            Repr::Multi { questions } => Questions(questions),
+            Repr::Legacy {
+                question, options, ..
+            } => Questions(vec![Question {
+                question,
+                options,
+                multi_select: false,
+            }]),
+        })
+    }
+}
+
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Live MCP server management (#375)
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -634,16 +707,26 @@ pub enum InMsg {
         #[serde(alias = "output", default, deserialize_with = "de_prompt_content")]
         content: Vec<ContentPart>,
     },
-    /// Answer a pending model-driven question (`request_id` from
+    /// Answer a pending model-driven `ask_user` call (`request_id` from
     /// [`OutEvent::UserQuestion`]). Like [`Approve`][InMsg::Approve]/
     /// [`Reject`][InMsg::Reject], it is consumed by the runtime off the inbound
     /// fan-out (the `ask_user` executor parks on it), not routed to a session —
-    /// core stays unaware of the interaction (ADR-0027). `answer` is the picked
-    /// option's label or the free-form text; the runtime folds it back as the
-    /// `ask_user` tool's [`ToolResult`][InMsg::ToolResult].
+    /// core stays unaware of the interaction (ADR-0027). `answers` (#488) is
+    /// one inner vec of chosen option labels (multi-select) or a single
+    /// free-form string per question, in the call's `questions` order — the
+    /// always-available "Other" answer is just a string among them, no longer
+    /// gated by a dropped `allow_free_form`. Build one with
+    /// [`InMsg::answer_question`]. Legacy `answer: String` (pre-#488, a single
+    /// question's picked label/free text) still deserializes; a current head
+    /// never writes it, leaving it at its empty-string default. The runtime
+    /// folds the answers back as the `ask_user` tool's
+    /// [`ToolResult`][InMsg::ToolResult].
     AnswerQuestion {
         session: SessionId,
         request_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        answers: Vec<Vec<String>>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         answer: String,
     },
     /// Cancel the current turn and park the session at idle.
@@ -832,6 +915,23 @@ impl InMsg {
             session,
             request_id: request_id.into(),
             content,
+        }
+    }
+
+    /// Build an [`AnswerQuestion`][InMsg::AnswerQuestion] in the current v2
+    /// shape (#488) — one inner vec of chosen labels / free text per question,
+    /// in the answered call's `questions` order. Leaves the legacy `answer`
+    /// field at its empty default.
+    pub fn answer_question(
+        session: SessionId,
+        request_id: impl Into<String>,
+        answers: Vec<Vec<String>>,
+    ) -> Self {
+        InMsg::AnswerQuestion {
+            session,
+            request_id: request_id.into(),
+            answers,
+            answer: String::new(),
         }
     }
 
@@ -1140,19 +1240,22 @@ pub enum OutEvent {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         agent: String,
     },
-    /// The model asked the user a decision question via the runtime-owned
-    /// `ask_user` tool (ADR-0027). Carries the prompt, labelled `options`, and
-    /// whether a free-form ("Other") answer is allowed. A head renders it as a
-    /// multiple-choice prompt and replies with [`InMsg::AnswerQuestion`]; the
-    /// runtime folds that answer back as the tool's output. Dedicated (not
+    /// The model asked the user one or more decision questions in a single
+    /// `ask_user` call (#488, supersedes parts of ADR-0027: one event now
+    /// carries a `questions` array, and a free-text answer is always
+    /// available rather than gated by a per-call `allow_free_form`). A head
+    /// walks `questions` in order and replies once with
+    /// [`InMsg::AnswerQuestion`]; the runtime folds every answer back as the
+    /// one tool call's output. Dedicated (not
     /// [`ToolRequest`][OutEvent::ToolRequest]) so choices render cleanly.
+    /// `questions` flattens onto the wire via [`Questions`] so a legacy
+    /// single-question log still deserializes.
     UserQuestion {
         session: SessionId,
         seq: u64,
         request_id: String,
-        question: String,
-        options: Vec<QuestionOption>,
-        allow_free_form: bool,
+        #[serde(flatten)]
+        questions: Questions,
     },
     /// Result of an executed tool, a denied tool, or a built-in tool. `output` is
     /// the text rendering heads display (for an image result, a short
@@ -1444,11 +1547,7 @@ mod tests {
                 request_id: "r".into(),
                 reason: None,
             },
-            InMsg::AnswerQuestion {
-                session: s.clone(),
-                request_id: "r".into(),
-                answer: "a".into(),
-            },
+            InMsg::answer_question(s.clone(), "r", vec![vec!["a".into()]]),
             InMsg::Stop { session: s.clone() },
             InMsg::ListSessions {
                 correlation_id: "c1".into(),
@@ -1687,43 +1786,88 @@ mod tests {
     }
 
     #[test]
-    fn user_question_roundtrips_with_options() {
+    fn user_question_roundtrips_with_multiple_questions() {
         let ev = OutEvent::UserQuestion {
             session: SessionId::new("s1"),
             seq: 4,
             request_id: "q1".into(),
-            question: "Which approach?".into(),
-            options: vec![
-                QuestionOption {
-                    label: "REST".into(),
-                    description: Some("HTTP + JSON".into()),
+            questions: Questions(vec![
+                Question {
+                    question: "Which approach?".into(),
+                    options: vec![
+                        QuestionOption {
+                            label: "REST".into(),
+                            description: Some("HTTP + JSON".into()),
+                        },
+                        QuestionOption {
+                            label: "gRPC".into(),
+                            description: None,
+                        },
+                    ],
+                    multi_select: false,
                 },
-                QuestionOption {
-                    label: "gRPC".into(),
-                    description: None,
+                Question {
+                    question: "Which regions?".into(),
+                    options: vec![
+                        QuestionOption {
+                            label: "us-east".into(),
+                            description: None,
+                        },
+                        QuestionOption {
+                            label: "eu-west".into(),
+                            description: None,
+                        },
+                    ],
+                    multi_select: true,
                 },
-            ],
-            allow_free_form: true,
+            ]),
         };
         let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains(r#""questions":[{"#), "{json}");
         let back: OutEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
     }
 
     #[test]
+    fn user_question_deserializes_legacy_flat_shape() {
+        let json = r#"{"kind":"user_question","session":"s1","seq":4,"request_id":"q1","question":"Which?","options":[{"label":"A"}],"allow_free_form":true}"#;
+        let ev: OutEvent = serde_json::from_str(json).unwrap();
+        match ev {
+            OutEvent::UserQuestion { questions, .. } => {
+                assert_eq!(questions.0.len(), 1);
+                assert_eq!(questions.0[0].question, "Which?");
+                assert_eq!(questions.0[0].options.len(), 1);
+                assert!(!questions.0[0].multi_select);
+            }
+            _ => panic!("expected UserQuestion"),
+        }
+    }
+
+    #[test]
     fn answer_question_roundtrips_as_tagged_json() {
-        let msg = InMsg::AnswerQuestion {
-            session: SessionId::new("s1"),
-            request_id: "q1".into(),
-            answer: "REST".into(),
-        };
+        let msg = InMsg::answer_question(SessionId::new("s1"), "q1", vec![vec!["REST".into()]]);
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
             json,
-            r#"{"kind":"answer_question","session":"s1","request_id":"q1","answer":"REST"}"#
+            r#"{"kind":"answer_question","session":"s1","request_id":"q1","answers":[["REST"]]}"#
         );
         let back: InMsg = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn answer_question_deserializes_legacy_shape() {
+        let json = r#"{"kind":"answer_question","session":"s1","request_id":"q1","answer":"REST"}"#;
+        let msg: InMsg = serde_json::from_str(json).unwrap();
+        match msg {
+            InMsg::AnswerQuestion {
+                answers, answer, ..
+            } => {
+                assert!(answers.is_empty());
+                assert_eq!(answer, "REST");
+            }
+            _ => panic!("expected AnswerQuestion"),
+        }
     }
 
     #[test]
