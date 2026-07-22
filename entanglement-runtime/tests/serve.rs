@@ -244,11 +244,11 @@ async fn approval_from_non_owning_connection_is_refused_then_owner_unblocks() {
     // Ownership is A's, so B's answer must be refused: no `Done`/`ToolOutput`
     // shows up on B within a short window, and B's own socket stays usable.
     let mut ws_b = connect(port).await;
-    let bad_answer = serde_json::to_string(&InMsg::AnswerQuestion {
-        session: sid.clone(),
-        request_id: request_id.clone(),
-        answer: "from B".into(),
-    })
+    let bad_answer = serde_json::to_string(&InMsg::answer_question(
+        sid.clone(),
+        request_id.clone(),
+        vec![vec!["from B".into()]],
+    ))
     .unwrap();
     ws_b.send(Message::Text(bad_answer.into())).await.unwrap();
 
@@ -270,11 +270,11 @@ async fn approval_from_non_owning_connection_is_refused_then_owner_unblocks() {
     );
 
     // The real owner (A) answers; the turn must now complete.
-    let good_answer = serde_json::to_string(&InMsg::AnswerQuestion {
-        session: sid.clone(),
+    let good_answer = serde_json::to_string(&InMsg::answer_question(
+        sid.clone(),
         request_id,
-        answer: "SQLite".into(),
-    })
+        vec![vec!["SQLite".into()]],
+    ))
     .unwrap();
     ws_a.send(Message::Text(good_answer.into())).await.unwrap();
 

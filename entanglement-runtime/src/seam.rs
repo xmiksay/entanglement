@@ -53,8 +53,10 @@ pub enum Decision {
     Approve { scope: ApprovalScope },
     /// `Reject` — carries the optional reason.
     Reject { reason: Option<String> },
-    /// `AnswerQuestion` — the picked label or typed text (`ask_user`, #90).
-    Answer { answer: String },
+    /// `AnswerQuestion` — one inner vec of chosen labels / free text per
+    /// question, in the answered call's `questions` order (`ask_user`, #90,
+    /// #488).
+    Answer { answers: Vec<Vec<String>> },
     /// `Stop` for this session, or the inbound stream closed: unwind silently —
     /// core cancels the turn on the same `Stop`, so no `ToolResult` is owed
     /// (ADR-0017).
@@ -69,6 +71,10 @@ impl Decision {
     /// [`crate::pending::PendingDecisions`]. `Stop` is *not* mapped here — it is
     /// session-scoped, not request-scoped, so the router unwinds every waiter of
     /// the session via [`crate::pending::PendingDecisions::stop_session`].
+    ///
+    /// `AnswerQuestion`'s legacy `answer: String` shape (pre-#488) folds to
+    /// `[[answer]]` here when `answers` arrived empty — the one place that
+    /// back-compat mapping happens.
     pub fn from_inmsg(msg: InMsg) -> Option<(SessionId, String, Decision)> {
         match msg {
             InMsg::Approve {
@@ -84,8 +90,16 @@ impl Decision {
             InMsg::AnswerQuestion {
                 session,
                 request_id,
+                answers,
                 answer,
-            } => Some((session, request_id, Decision::Answer { answer })),
+            } => {
+                let answers = if answers.is_empty() {
+                    vec![vec![answer]]
+                } else {
+                    answers
+                };
+                Some((session, request_id, Decision::Answer { answers }))
+            }
             _ => None,
         }
     }

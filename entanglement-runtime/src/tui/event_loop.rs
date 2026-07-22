@@ -612,6 +612,7 @@ fn record_approved(app: &mut App, tool: &str, scope: ApprovalScope) {
         ApprovalScope::Once => "once",
         ApprovalScope::Session => "session",
         ApprovalScope::Always => "always",
+        ApprovalScope::SessionDir => "session, dir",
     };
     app.record_status("approval", format!("✓ approved {tool} ({scope_label})"));
 }

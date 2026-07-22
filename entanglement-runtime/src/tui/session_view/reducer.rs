@@ -236,23 +236,16 @@ impl SessionView {
             OutEvent::UserQuestion {
                 seq,
                 request_id,
-                question,
-                options,
-                allow_free_form,
+                questions,
                 ..
             } => {
                 if seq > self.last_seen_seq {
                     self.last_seen_seq = seq;
                     // Queued like approvals (#273): the front is the one
-                    // rendered; answering it promotes the next.
-                    self.pending_questions.push_back(PendingQuestion {
-                        request_id,
-                        question,
-                        options,
-                        allow_free_form,
-                        selected: 0,
-                        entering_free_form: false,
-                    });
+                    // rendered; answering every question in it promotes the
+                    // next call (#488).
+                    self.pending_questions
+                        .push_back(PendingQuestion::new(request_id, questions.0));
                     true
                 } else {
                     false

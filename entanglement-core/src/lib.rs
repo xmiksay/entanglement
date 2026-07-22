@@ -29,5 +29,5 @@ pub use entanglement_provider::{
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, McpAction,
     McpServerSpec, McpServerStatus, OutEvent, Permission, PermissionProfile, ProfileDetail,
-    QuestionOption, SessionId, SessionInfo,
+    Question, QuestionOption, Questions, SessionId, SessionInfo,
 };

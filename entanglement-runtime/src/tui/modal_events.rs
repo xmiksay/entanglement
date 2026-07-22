@@ -490,10 +490,37 @@ pub(super) async fn handle_resume_modal_event(
     Ok(false)
 }
 
-/// Drive a pending `ask_user` question (ADR-0027): arrow/number selection over
-/// the labelled options plus an "Other" entry that opens the shared input box
-/// for a free-text answer. The picked label or typed text returns as
-/// [`InMsg::AnswerQuestion`]; `Esc` interrupts the turn like an approval.
+/// Submits `answer` for the pending call's current question. If that
+/// completes every question in the call, sends the buffered per-question
+/// answers as one [`InMsg::AnswerQuestion`] and promotes the next queued call,
+/// if any (#273, #488) — otherwise the same call stays parked on its next
+/// question.
+async fn submit_current_answer(
+    app: &mut App,
+    holly: &Holly,
+    session: &entanglement_core::SessionId,
+    request_id: &str,
+    answer: Vec<String>,
+) {
+    if let Some(answers) = app.commit_question_answer(answer) {
+        let _ = holly
+            .send(InMsg::answer_question(
+                session.clone(),
+                request_id.to_string(),
+                answers,
+            ))
+            .await;
+        app.advance_question();
+    }
+}
+
+/// Drive a pending `ask_user` call (#488, supersedes parts of ADR-0027):
+/// arrow/number selection over the labelled options (checkboxes + `Space`
+/// toggle for a multi-select question), plus an always-available "Other"
+/// entry that opens the shared input box for a free-text answer. Once every
+/// question in the call is answered, the buffered per-question answers return
+/// as one [`InMsg::AnswerQuestion`]; `Esc` interrupts the turn like an
+/// approval.
 pub(super) async fn handle_question_event(
     app: &mut App,
     holly: &Holly,
@@ -505,14 +532,22 @@ pub(super) async fn handle_question_event(
     let request_id = q.request_id.clone();
     let entering = q.entering_free_form;
     let free_form_selected = q.free_form_selected();
-    let selected_label = q.options.get(q.selected).map(|o| o.label.clone());
+    let multi_select = q.is_multi_select();
+    let selected_label = q
+        .current_question()
+        .options
+        .get(q.selected)
+        .map(|o| o.label.clone());
+    let picked_labels: Vec<String> = {
+        let mut idxs: Vec<usize> = q.picked.iter().copied().collect();
+        idxs.sort_unstable();
+        let options = &q.current_question().options;
+        idxs.into_iter()
+            .filter_map(|i| options.get(i).map(|o| o.label.clone()))
+            .collect()
+    };
 
     let session = app.active_session_id().clone();
-    let answer = |text: String| InMsg::AnswerQuestion {
-        session: session.clone(),
-        request_id: request_id.clone(),
-        answer: text,
-    };
 
     if entering {
         // Shared input-edit keys (Ctrl+arrows, Home/End, doc jumps, Alt+Enter
@@ -528,8 +563,7 @@ pub(super) async fn handle_question_event(
             KeyCode::Enter => {
                 let text = app.take_input_text();
                 if !text.is_empty() {
-                    let _ = holly.send(answer(text)).await;
-                    app.advance_question();
+                    submit_current_answer(app, holly, &session, &request_id, vec![text]).await;
                 }
             }
             KeyCode::Char(c) => app.input().insert_char(c),
@@ -547,33 +581,37 @@ pub(super) async fn handle_question_event(
         }
         KeyCode::Up | KeyCode::Char('k') => app.question_move(-1),
         KeyCode::Down | KeyCode::Char('j') => app.question_move(1),
+        KeyCode::Char(' ') => app.question_toggle(),
         // Quick-pick by number: options are 1-based; the "Other" entry follows.
+        // Multi-select toggles the option; single-select submits immediately.
         KeyCode::Char(c @ '1'..='9') => {
             let idx = (c as u8 - b'1') as usize;
-            let (opt_count, allow_free_form) = app
+            let opt_count = app
                 .pending_question()
-                .map(|q| (q.options.len(), q.allow_free_form))
-                .unwrap_or((0, false));
+                .map(|q| q.current_question().options.len())
+                .unwrap_or(0);
             if idx < opt_count {
-                if let Some(label) = app
-                    .pending_question()
-                    .and_then(|q| q.options.get(idx).map(|o| o.label.clone()))
-                {
-                    let _ = holly.send(answer(label)).await;
-                    app.advance_question();
+                if multi_select {
+                    app.question_toggle_at(idx);
+                } else if let Some(label) = app.pending_question().and_then(|q| {
+                    q.current_question()
+                        .options
+                        .get(idx)
+                        .map(|o| o.label.clone())
+                }) {
+                    submit_current_answer(app, holly, &session, &request_id, vec![label]).await;
                 }
-            } else if allow_free_form && idx == opt_count {
+            } else if idx == opt_count {
                 app.question_begin_free_form();
             }
         }
         KeyCode::Enter => {
             if free_form_selected {
                 app.question_begin_free_form();
+            } else if multi_select {
+                submit_current_answer(app, holly, &session, &request_id, picked_labels).await;
             } else if let Some(label) = selected_label {
-                let _ = holly.send(answer(label)).await;
-                // Answering pops only this question — the next queued one
-                // (core batch-emits, #273) surfaces immediately.
-                app.advance_question();
+                submit_current_answer(app, holly, &session, &request_id, vec![label]).await;
             }
         }
         KeyCode::Esc => {

@@ -14,7 +14,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          //   scope: once (default) | session | always  — persisted grants (#174, ADR-0052)
          | ToolResult{session,request_id,content:[ContentPart]}   // runtime → core: tool ran (#58)
          //   content: text, or an image block when `read` opens an image (#221); legacy `output:"…"` still deserializes
-         | AnswerQuestion{session,request_id,answer}  // ask_user answer → runtime (#90)
+         | AnswerQuestion{session,request_id,answers:[[string]],answer?}  // ask_user answer(s) → runtime (#90, #488); answers = one inner vec per question; legacy answer:"…" still deserializes, folds to [[answer]] in seam::Decision::from_inmsg
          | Stop{session}
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
@@ -48,7 +48,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | ToolCall{session,seq,request_id,tool,input}      // display-only, every call (before exec)
          | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
          | ToolExec{session,seq,request_id,tool,input,agent}   // core → runtime: dispatch it (#58/#59); agent = active profile name for authoritative gating (#156)
-         | UserQuestion{session,seq,request_id,question,options,allow_free_form}  // ask_user prompt (#90)
+         | UserQuestion{session,seq,request_id,questions:[Question]}  // ask_user prompt(s), one call → one event (#90, #488); questions flattens onto the wire (Questions newtype); legacy question/options/allow_free_form still deserializes into a one-element vec
          | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart]}   // output = display text; content carries an image result for faithful replay (#221)
          | TaskList{session,seq,content}      // full outline snapshot (markdown)
          | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?}  // per-round-trip usage + cost (#192)
@@ -62,7 +62,14 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
 
 `AnswerQuestion` mirrors `Approve`/`Reject`: the supervisor drops it off the
 inbound fan-out (core never routes it) and the `ask_user` executor consumes it
-(§8, [ADR-0027](../adr/0027-ask-user-interactive-prompt.md)).
+(§8, [ADR-0027](../adr/0027-ask-user-interactive-prompt.md)). `Question`
+(`{question, options:[QuestionOption], multi_select}`) supersedes the v1
+`question`/`options`/`allow_free_form` triple (#488,
+[ADR-0127](../adr/0127-ask-user-v2-multi-question-envelope.md)): `ask_user` can
+batch several questions into one call, a typed "Other" answer is unconditional
+(no flag to opt into it), and `multi_select` lets a question accept more than
+one picked option — `answers` carries one inner vec per question, in call
+order.
 
 **Trusted/untrusted frame split** (#155, [ADR-0069](../adr/0069-trusted-untrusted-wire-frame-split.md)).
 `InMsg` has two entry points. `Holly::send` is **privileged in-process**: an

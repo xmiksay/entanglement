@@ -109,7 +109,7 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
             // (`read`/`grep`/`glob`) — a `SessionDir` grant on any other tool
             // would just degrade to an exact `Session` grant, so the hint is
             // withheld rather than shown misleadingly.
-            if crate::tool_names::is_read_capability_member(tool) {
+            if crate::tool_names::is_read_capability_member(&tool) {
                 footer.push(Span::styled(
                     "[d]",
                     Style::default().fg(Color::Green).bold(),

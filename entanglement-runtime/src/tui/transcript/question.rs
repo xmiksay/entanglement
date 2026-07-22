@@ -5,11 +5,13 @@ use ratatui::{
 
 use crate::tui::wrap;
 
-/// Render a pending `ask_user` question (ADR-0027) Claude-style: the prompt, a
-/// numbered list of labelled choices with the highlighted one marked, an
-/// optional "Other" free-text entry (showing the typed answer while active),
-/// and a key hint footer. Every line is wrapped to `available_width` so the box
-/// never overflows horizontally (#wrap).
+/// Render a pending `ask_user` call's current question (#488, supersedes parts
+/// of ADR-0027) Claude-style: the prompt (with a "(i/n)" progress suffix when
+/// the call carries more than one question), a numbered list of labelled
+/// choices — checkboxes for a multi-select question, a single highlighted
+/// marker otherwise — an always-available "Other" free-text entry (showing the
+/// typed answer while active), and a key hint footer. Every line is wrapped to
+/// `available_width` so the box never overflows horizontally (#wrap).
 pub(super) fn render_question<'a>(
     lines: &mut Vec<Line<'a>>,
     q: &crate::tui::session_view::PendingQuestion,
@@ -22,21 +24,41 @@ pub(super) fn render_question<'a>(
     lines.push(Line::from(""));
     lines.push(Line::from(rule.clone()).fg(accent));
 
+    let current = q.current_question();
+    let (pos, total) = q.progress();
+    let header = if total > 1 {
+        format!("{} ({pos}/{total})", current.question)
+    } else {
+        current.question.clone()
+    };
+
     // The "? <question>" header: wrap the question text under the 2-col "? "
     // prefix so continuation lines align under the question.
     push_wrapped_prefix(
         lines,
         "? ",
-        q.question.as_str(),
+        header.as_str(),
         Style::default().fg(accent).bold(),
         available_width,
     );
     lines.push(Line::from(""));
 
     let selecting = !q.entering_free_form;
-    for (i, opt) in q.options.iter().enumerate() {
-        let picked = selecting && i == q.selected;
-        push_choice(lines, i + 1, picked, &opt.label, available_width, accent);
+    for (i, opt) in current.options.iter().enumerate() {
+        let cursor = selecting && i == q.selected;
+        if current.multi_select {
+            push_checkbox_choice(
+                lines,
+                i + 1,
+                cursor,
+                q.picked.contains(&i),
+                &opt.label,
+                available_width,
+                accent,
+            );
+        } else {
+            push_choice(lines, i + 1, cursor, &opt.label, available_width, accent);
+        }
         if let Some(desc) = &opt.description {
             // Description is indented 6 cols under the label text; wrap
             // continuation lines to the same indent.
@@ -44,29 +66,28 @@ pub(super) fn render_question<'a>(
         }
     }
 
-    if q.allow_free_form {
-        let idx = q.options.len();
-        let picked = q.selected == idx;
-        let marker = if picked { "❯" } else { " " };
-        let style = if picked {
-            Style::default().fg(accent).bold()
+    // Always available (#488) — no longer gated by a per-question flag.
+    let idx = current.options.len();
+    let picked = q.selected == idx;
+    let marker = if picked { "❯" } else { " " };
+    let style = if picked {
+        Style::default().fg(accent).bold()
+    } else {
+        Style::default()
+    };
+    let prefix = format!(" {marker} {}. ", idx + 1);
+    // "Other (type a custom answer)" — the label is bold, the parenthetical
+    // dim. Wrap as one styled run under the prefix indent.
+    let prefix_w = prefix.chars().count();
+    let combined = "Other (type a custom answer)";
+    push_wrapped_styled_prefix(lines, &prefix, combined, style, available_width, prefix_w);
+    if q.entering_free_form {
+        let shown = if input_text.is_empty() {
+            "…".to_string()
         } else {
-            Style::default()
+            input_text.to_string()
         };
-        let prefix = format!(" {marker} {}. ", idx + 1);
-        // "Other (type a custom answer)" — the label is bold, the parenthetical
-        // dim. Wrap as one styled run under the prefix indent.
-        let prefix_w = prefix.chars().count();
-        let combined = "Other (type a custom answer)";
-        push_wrapped_styled_prefix(lines, &prefix, combined, style, available_width, prefix_w);
-        if q.entering_free_form {
-            let shown = if input_text.is_empty() {
-                "…".to_string()
-            } else {
-                input_text.to_string()
-            };
-            push_wrapped_indent(lines, "      › ", &shown, available_width);
-        }
+        push_wrapped_indent(lines, "      › ", &shown, available_width);
     }
 
     lines.push(Line::from(""));
@@ -76,6 +97,17 @@ pub(super) fn render_question<'a>(
             Span::raw(" submit  "),
             Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
             Span::raw(" back"),
+        ]
+    } else if current.multi_select {
+        vec![
+            Span::styled("[↑/↓]", Style::default().fg(accent).bold()),
+            Span::raw(" select  "),
+            Span::styled("[Space/1-9]", Style::default().fg(accent).bold()),
+            Span::raw(" toggle  "),
+            Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
+            Span::raw(" submit  "),
+            Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
+            Span::raw(" interrupt"),
         ]
     } else {
         vec![
@@ -111,6 +143,29 @@ fn push_choice<'a>(
         (" ", Style::default())
     };
     let prefix = format!(" {marker} {num}. ");
+    let prefix_w = prefix.chars().count();
+    push_wrapped_styled_prefix(lines, &prefix, label, style, available_width, prefix_w);
+}
+
+/// One numbered checkbox row for a multi-select question: `cursor` highlights
+/// the row, `checked` marks whether it's currently picked. The label wraps
+/// under the ` ❯ N. [x] ` prefix so continuation lines align under the text.
+fn push_checkbox_choice<'a>(
+    lines: &mut Vec<Line<'a>>,
+    num: usize,
+    cursor: bool,
+    checked: bool,
+    label: &str,
+    available_width: u16,
+    accent: Color,
+) {
+    let (marker, style) = if cursor {
+        ("❯", Style::default().fg(accent).bold())
+    } else {
+        (" ", Style::default())
+    };
+    let checkbox = if checked { "[x]" } else { "[ ]" };
+    let prefix = format!(" {marker} {num}. {checkbox} ");
     let prefix_w = prefix.chars().count();
     push_wrapped_styled_prefix(lines, &prefix, label, style, available_width, prefix_w);
 }

@@ -267,28 +267,30 @@ fn terminal_status_drops_the_whole_approval_queue() {
 
 #[test]
 fn user_question_sets_pending_then_status_clears() {
-    use entanglement_core::QuestionOption;
+    use entanglement_core::{Question, QuestionOption, Questions};
     let mut v = SessionView::new();
     v.apply_event(OutEvent::UserQuestion {
         session: sid(),
         seq: 1,
         request_id: "q1".into(),
-        question: "Which?".into(),
-        options: vec![
-            QuestionOption {
-                label: "A".into(),
-                description: None,
-            },
-            QuestionOption {
-                label: "B".into(),
-                description: None,
-            },
-        ],
-        allow_free_form: true,
+        questions: Questions(vec![Question {
+            question: "Which?".into(),
+            options: vec![
+                QuestionOption {
+                    label: "A".into(),
+                    description: None,
+                },
+                QuestionOption {
+                    label: "B".into(),
+                    description: None,
+                },
+            ],
+            multi_select: false,
+        }]),
     });
     assert!(v.is_asking());
     let q = v.pending_question().unwrap();
-    // 2 options + the "Other" entry = 3 choices.
+    // 2 options + the always-available "Other" entry = 3 choices.
     assert_eq!(q.choice_count(), 3);
     assert_eq!(q.selected, 0);
 
@@ -306,18 +308,103 @@ fn user_question_sets_pending_then_status_clears() {
     assert!(!v.is_asking());
 }
 
+#[test]
+fn multi_question_call_walks_sequentially_and_returns_answers_on_last() {
+    use entanglement_core::{Question, QuestionOption, Questions};
+    let mut v = SessionView::new();
+    v.apply_event(OutEvent::UserQuestion {
+        session: sid(),
+        seq: 1,
+        request_id: "q1".into(),
+        questions: Questions(vec![
+            Question {
+                question: "Which DB?".into(),
+                options: vec![QuestionOption {
+                    label: "Postgres".into(),
+                    description: None,
+                }],
+                multi_select: false,
+            },
+            Question {
+                question: "Which regions?".into(),
+                options: vec![
+                    QuestionOption {
+                        label: "us-east".into(),
+                        description: None,
+                    },
+                    QuestionOption {
+                        label: "eu-west".into(),
+                        description: None,
+                    },
+                ],
+                multi_select: true,
+            },
+        ]),
+    });
+
+    assert_eq!(v.pending_question().unwrap().progress(), (1, 2));
+    // Answering the first question doesn't complete the call yet.
+    assert_eq!(v.commit_question_answer(vec!["Postgres".into()]), None);
+    assert!(v.is_asking(), "the call stays parked on its next question");
+    let q = v.pending_question().unwrap();
+    assert_eq!(q.progress(), (2, 2));
+    assert!(q.is_multi_select());
+    assert_eq!(q.selected, 0, "selection state resets for the new question");
+
+    // Toggle both regions, then submit — this is the last question.
+    v.question_toggle();
+    v.question_move(1);
+    v.question_toggle();
+    let answers = v
+        .commit_question_answer(vec!["us-east".into(), "eu-west".into()])
+        .expect("last question's commit returns the full answers list");
+    assert_eq!(
+        answers,
+        vec![
+            vec!["Postgres".to_string()],
+            vec!["us-east".to_string(), "eu-west".to_string()]
+        ]
+    );
+}
+
+#[test]
+fn question_toggle_is_a_no_op_for_single_select() {
+    use entanglement_core::{Question, QuestionOption, Questions};
+    let mut v = SessionView::new();
+    v.apply_event(OutEvent::UserQuestion {
+        session: sid(),
+        seq: 1,
+        request_id: "q1".into(),
+        questions: Questions(vec![Question {
+            question: "Which?".into(),
+            options: vec![QuestionOption {
+                label: "A".into(),
+                description: None,
+            }],
+            multi_select: false,
+        }]),
+    });
+    v.question_toggle();
+    assert_eq!(
+        v.commit_question_answer(vec!["A".into()]),
+        Some(vec![vec!["A".into()]])
+    );
+}
+
 fn question(seq: u64, request_id: &str, text: &str) -> OutEvent {
-    use entanglement_core::QuestionOption;
+    use entanglement_core::{Question, QuestionOption, Questions};
     OutEvent::UserQuestion {
         session: sid(),
         seq,
         request_id: request_id.into(),
-        question: text.into(),
-        options: vec![QuestionOption {
-            label: "A".into(),
-            description: None,
-        }],
-        allow_free_form: true,
+        questions: Questions(vec![Question {
+            question: text.into(),
+            options: vec![QuestionOption {
+                label: "A".into(),
+                description: None,
+            }],
+            multi_select: false,
+        }]),
     }
 }
 

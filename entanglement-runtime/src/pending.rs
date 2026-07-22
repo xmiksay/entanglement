@@ -150,7 +150,13 @@ mod tests {
         pending.stop_session(&a);
         assert!(matches!(await_decision(rx_a).await, Decision::Stop));
         // b's waiter is untouched; resolving it still works.
-        pending.resolve(&b, "req", Decision::Answer { answer: "x".into() });
+        pending.resolve(
+            &b,
+            "req",
+            Decision::Answer {
+                answers: vec![vec!["x".into()]],
+            },
+        );
         assert!(matches!(
             await_decision(rx_b).await,
             Decision::Answer { .. }

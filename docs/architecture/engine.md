@@ -426,23 +426,31 @@ supervisor `Error` instead of silently resolving to the `build` default. (The
 #116 tool mask restricts each agent's *tool* set — a different axis than which
 agents it may spawn.)
 
-**Ask-user prompt** (✅ #90, [ADR-0027](../adr/0027-ask-user-interactive-prompt.md)).
-The model calls a runtime-owned `ask_user { question, options, allow_free_form }`
-tool. The runtime executor (`ask_user.rs`) intercepts it on `ToolExec` — before
-permission resolution, like `agent_spawn` — emits a dedicated
-`OutEvent::UserQuestion` and parks at `WaitingAnswer` (#160,
+**Ask-user prompt** (✅ #90, [ADR-0027](../adr/0027-ask-user-interactive-prompt.md);
+v2 #488, [ADR-0127](../adr/0127-ask-user-v2-multi-question-envelope.md)).
+The model calls a runtime-owned `ask_user { questions: [{question, options,
+multi_select}] }` tool — one call can batch several questions, each optionally
+`multi_select`; a typed "Other" answer is unconditional (no `allow_free_form`
+flag to opt into it, dropped in v2). The runtime executor (`ask_user.rs`)
+intercepts it on `ToolExec` — before permission resolution, like `agent_spawn`
+— emits a single dedicated `OutEvent::UserQuestion` carrying the whole
+`questions` array and parks at `WaitingAnswer` (#160,
 [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md): a question is not
 a permission decision, so it is distinct from the `WaitingApproval` an `Ask` tool
-raises). The head renders the labelled choices
-Claude-style (the TUI adds a `PendingQuestion` interaction state alongside
-`ApprovalMode`, with an "Other" entry that opens free-text input) and replies
-`InMsg::AnswerQuestion { request_id, answer }`. Like `Approve`/`Reject`, the
-supervisor drops it off the inbound fan-out and the executor consumes it, then
-folds the answer (the picked label or typed text, verbatim) back as the
-`ask_user` `ToolOutput` — reusing the #58 round-trip, so core needs no new turn
-logic. A `Stop` while pending unwinds silently (core cancels the turn). The
-non-interactive `run` head auto-answers (first option, else a canned note) so it
-never parks; `pipe` forwards the question and accepts the answer as-is.
+raises). The head renders the labelled choices Claude-style (the TUI's
+`PendingQuestion` interaction state, alongside `ApprovalMode`, now models one
+*call* — it walks its `questions` in order, buffering answers, with checkboxes
+for a `multi_select` question and an always-available "Other" entry that opens
+free-text input) and, once every question in the call is answered, replies
+`InMsg::AnswerQuestion { request_id, answers: [[string]] }` — one inner vec per
+question, in call order. Like `Approve`/`Reject`, the supervisor drops it off
+the inbound fan-out and the executor consumes it, then folds every answer
+(picked labels joined, or typed text, verbatim, one line per question) back as
+the `ask_user` `ToolOutput` — reusing the #58 round-trip, so core needs no new
+turn logic. A `Stop` while pending unwinds silently (core cancels the turn).
+The non-interactive `run` head auto-answers every question (first option, else
+a canned note) so it never parks; `pipe` forwards the questions and accepts the
+answers as-is.
 
 **Plan acceptance — `propose_plan` + the handoff recipe** (✅ #141,
 [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)). The
