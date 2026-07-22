@@ -209,16 +209,27 @@ providers:
   - name: ollama
     base_url: http://localhost:11434/v1
     default_model: llama3.1
+    # `max_output_tokens` set explicitly (#483, deferred-work ledger row 5): with
+    # it unset, entanglement sends no `max_tokens`, so Ollama falls back to its
+    # own built-in `num_predict` default (128 tokens) — a generation cut so
+    # short it used to surface as the ADR-0118 "announced intent then stream
+    # died" ambiguous-stop symptom on nearly every non-trivial turn. Local
+    # generation has no per-token cost, so these are generous, just kept under
+    # each model's context window; override per-model in `providers.yml` if a
+    # given local model needs more.
     models:
       - id: llama3.1
         display_name: Llama 3.1
         context_window: 128000
+        max_output_tokens: 8192
       - id: llama3
         display_name: Llama 3
         context_window: 8192
+        max_output_tokens: 2048
       - id: mistral
         display_name: Mistral
         context_window: 32768
+        max_output_tokens: 4096
 
   - name: gemini
     wire: gemini
