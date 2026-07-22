@@ -8,6 +8,59 @@ Versioning is [Semantic Versioning](https://semver.org/). The *why* and rejected
 alternatives behind each design decision live in the ADRs under
 [`docs/adr/`](docs/adr/); the referenced `ADR-####` tags link there.
 
+## [Unreleased]
+
+Web search post-MVP follow-ups, plus the batch of changes landed since 0.4.0
+was tagged (session-scoped directory grants, `ask_user` v2, permission-arg
+path normalization, an MCP HTTP docs-only leak-surface finding, and
+OpenAI-compat stream robustness fixes).
+
+### Added
+
+- **Provider-side web-search results now persist into history** instead of
+  living only on the ephemeral reasoning channel — citations, and (Anthropic)
+  the search-result cache-pricing benefit, survive into a later turn. A new
+  `ContentPart::ProviderSearch { provider, summary, data }` block round-trips
+  its opaque `data` verbatim only to the provider that minted it (mirrors
+  `ToolCall.provider_meta`); every other converter renders `summary` as plain
+  text. Anthropic `pause_turn` (a long-running search pausing rather than
+  ending the turn) is now continued client-side instead of ending the turn.
+  The Anthropic web-search server-tool version (`web_search_20250305` vs a
+  newer variant) is now catalog data (`ModelEntry.web_search_tool_version`)
+  instead of hardcoded (#481, ADR-0131 amending ADR-0075).
+- **Session-scoped directory grants**: approving one call under a directory
+  (`[d]` on an approval prompt, or the new TUI `/allow <path>` command) now
+  widens the grant to every later call under that directory for the
+  read-only `read`/`grep`/`glob` triad, instead of only the exact call (#486,
+  ADR-0126).
+- **`ask_user` v2**: one call can now ask multiple questions in a single
+  round-trip (`questions: Vec<Question>`), free-text answers are always
+  available (the old `allow_free_form` flag is gone), and `multi_select` is
+  per-question (#488, ADR-0127 amending ADR-0027).
+- **TUI**: tool-call/approval/output entries share one header idiom, and
+  approval decisions are recorded in the transcript (#487).
+
+### Fixed
+
+- **Permission arguments for path tools are normalized root-relative**: an
+  absolute in-root path (`/root/src/main.rs`) now grades and grant-keys
+  identically to its relative spelling (`src/main.rs`) for
+  `read`/`edit`/`write`/`apply_patch`/`glob`/`grep` (#485, ADR-0125).
+- **OpenAI-compat streaming robustness**: `data: [DONE]` is now the
+  protocol-correct terminator (stops reading immediately instead of relying
+  on connection close), a final unterminated SSE frame is flushed at EOF
+  instead of silently dropped, and the Ollama catalog entries gained an
+  explicit `max_output_tokens` (its own unset-`max_tokens` default was a
+  primary source of the ADR-0118 "announced intent then stream died"
+  symptom) (#483).
+
+### Docs
+
+- **MCP HTTP `${VAR}` header expansion** is documented as a consented leak
+  surface, not a bug — a header naming a provider secret sends that key's
+  live value to the configured remote server (#478, ADR-0128 amending
+  ADR-0080). No code change.
+
 ## [0.4.0] - 2026-07-21
 
 The `apply_patch` host tool, engine-robustness fixes (ambiguous-stop retry,

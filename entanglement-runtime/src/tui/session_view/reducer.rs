@@ -428,6 +428,18 @@ impl SessionView {
                     false
                 }
             }
+            // Persisted provider-side web-search block (#481): already rendered
+            // live via `ReasoningDelta`'s query/source lines — this is the
+            // persisted-to-history echo, so advance the seq dedupe guard but
+            // don't push a second, duplicate transcript entry.
+            OutEvent::SearchResult { seq, .. } => {
+                if seq > self.last_seen_seq {
+                    self.last_seen_seq = seq;
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 }

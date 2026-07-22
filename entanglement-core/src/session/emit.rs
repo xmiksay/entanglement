@@ -160,7 +160,7 @@ pub(crate) fn emit_tool_output(
 
 /// The text a head displays for a tool result: text parts verbatim, each image
 /// part as a compact `[image: <media_type>]` placeholder (its base64 is useless
-/// on a terminal).
+/// on a terminal), each provider-search block (#481) as its `summary`.
 fn tool_output_display(content: &[ContentPart]) -> String {
     content
         .iter()
@@ -169,6 +169,25 @@ fn tool_output_display(content: &[ContentPart]) -> String {
             ContentPart::Image {
                 source: ImageSource::Base64 { media_type, .. },
             } => format!("[image: {media_type}]"),
+            ContentPart::ProviderSearch { summary, .. } => summary.clone(),
         })
         .collect()
+}
+
+/// Emit a persisted `SearchResult` content event (#481) for one provider-side
+/// web-search block minted this round, so `Session::replay` can reconstruct
+/// the assistant message's content — including citations and (Anthropic) the
+/// search-cache pricing benefit of replaying the block verbatim — instead of
+/// it vanishing with the round like the pre-#481 `Reasoning`-only channel.
+pub(crate) fn emit_search_result(
+    events: &broadcast::Sender<OutEvent>,
+    session: &SessionId,
+    part: ContentPart,
+    seq: &AtomicU64,
+) {
+    let _ = events.send(OutEvent::SearchResult {
+        session: session.clone(),
+        seq: next_seq(seq),
+        part,
+    });
 }

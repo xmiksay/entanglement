@@ -34,6 +34,19 @@ pub enum ContentPart {
     /// An image block. First emitted by #221 (`read` on an image file); the
     /// converters render it to each provider's native image wire format.
     Image { source: ImageSource },
+    /// A provider-side web-search result block, minted server-side (#481,
+    /// follow-up to #305/ADR-0075's "not persisted" MVP limitation). `data` is
+    /// opaque JSON in `provider`'s own wire shape — it round-trips **verbatim**
+    /// only when replaying to that same provider (mirrors
+    /// [`ToolCall::provider_meta`][crate::ToolCall]'s opaque round-trip
+    /// contract); every other converter (a different provider, or a plain
+    /// renderer) reads only `summary`, a human-readable one-or-multi-line
+    /// rendering of the query/results, and never inspects `data`.
+    ProviderSearch {
+        provider: String,
+        summary: String,
+        data: serde_json::Value,
+    },
 }
 
 impl ContentPart {
@@ -52,11 +65,25 @@ impl ContentPart {
         }
     }
 
+    /// A provider-side web-search result block (#481). See
+    /// [`ProviderSearch`][ContentPart::ProviderSearch].
+    pub fn provider_search(
+        provider: impl Into<String>,
+        summary: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        ContentPart::ProviderSearch {
+            provider: provider.into(),
+            summary: summary.into(),
+            data,
+        }
+    }
+
     /// The text of a [`Text`][ContentPart::Text] part, else `None`.
     pub fn as_text(&self) -> Option<&str> {
         match self {
             ContentPart::Text { text } => Some(text),
-            ContentPart::Image { .. } => None,
+            ContentPart::Image { .. } | ContentPart::ProviderSearch { .. } => None,
         }
     }
 }
@@ -164,9 +191,14 @@ impl Message {
         }
     }
     pub fn assistant(text: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self::assistant_content(text_content(text), tool_calls)
+    }
+    /// An assistant turn with explicit multimodal content — text plus any
+    /// provider-native blocks (a search call/result, #481) in arrival order.
+    pub fn assistant_content(content: Vec<ContentPart>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: MessageRole::Assistant,
-            content: text_content(text),
+            content,
             tool_calls,
             tool_call_id: None,
         }
@@ -233,5 +265,20 @@ mod tests {
     fn text_constructors_skip_empty_bodies() {
         assert!(Message::user("").content.is_empty());
         assert_eq!(Message::user("hi").content, vec![ContentPart::text("hi")]);
+    }
+
+    #[test]
+    fn provider_search_block_serializes_and_roundtrips() {
+        let part = ContentPart::provider_search(
+            "anthropic",
+            "[web_search] rust async",
+            serde_json::json!({ "type": "server_tool_use", "id": "srvtoolu_1" }),
+        );
+        let msg = Message::assistant_content(vec![ContentPart::text("here"), part.clone()], vec![]);
+        assert_eq!(msg.text(), "here", "as_text skips the search block");
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content, msg.content);
+        assert_eq!(back.content[1], part);
     }
 }

@@ -193,6 +193,14 @@ pub enum LlmEvent {
     },
     /// A tool the model wants to run, fully assembled (id + name + JSON input).
     ToolCall(ToolCall),
+    /// A persisted content block minted server-side this round — a provider-side
+    /// web search's call/result (#481, follow-up to #305/ADR-0075's "not
+    /// persisted" MVP limitation). Additive: a consumer that ignores it still
+    /// gets the existing [`Reasoning`][LlmEvent::Reasoning] live-display lines
+    /// for the same search. The turn loop appends these, in arrival order, after
+    /// the round's text when it assembles the committed
+    /// [`Message`][crate::Message].
+    ContentBlock(crate::ContentPart),
     /// Stream ended cleanly. Carries the normalized [`StopReason`] and [`Usage`]
     /// when the provider reports them (#192).
     Finish {

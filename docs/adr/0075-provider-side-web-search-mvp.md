@@ -1,6 +1,6 @@
 # 0075. Provider-side web search MVP — opt-in config, results on the reasoning channel
 
-- Status: Accepted
+- Status: Amended by [0131](0131-web-search-post-mvp-follow-ups.md)
 - Date: 2026-07-15
 - Builds on the local trust boundary of [0047](0047-local-trust-boundary.md)
   (the config file is trusted), the multimodal message content blocks of
@@ -82,18 +82,27 @@ change.** Core never sees it: `LlmRequest` / `ToolSpec` / `LlmEvent` /
 
 ## Accepted MVP limitations (follow-ups)
 
-- **Not persisted into history.** Search blocks never enter `Message` content, so
-  citations and Anthropic search-cache pricing don't survive a turn — a follow-up
-  on the [0064](0064-message-content-blocks.md) content-block path.
-- **`pause_turn` ends the turn.** A search that trips Anthropic's `pause_turn`
-  stop reason finishes the turn rather than continuing — continuation is a
-  follow-up.
+> **[0131](0131-web-search-post-mvp-follow-ups.md) (2026-07-22) closes three of
+> the four items below** (#481): persistence, `pause_turn` continuation, and the
+> Anthropic tool-version capability flag all shipped. The z.ai streaming-
+> placement item stays open — verification against a live key was attempted but
+> not achieved in that environment; see 0131 §3 and the #481 deferred-work
+> ledger row.
+
+- ~~**Not persisted into history.**~~ Search blocks never enter `Message`
+  content, so citations and Anthropic search-cache pricing don't survive a
+  turn — a follow-up on the [0064](0064-message-content-blocks.md)
+  content-block path. **Closed by [0131](0131-web-search-post-mvp-follow-ups.md).**
+- ~~**`pause_turn` ends the turn.**~~ A search that trips Anthropic's
+  `pause_turn` stop reason finishes the turn rather than continuing —
+  continuation is a follow-up. **Closed by [0131](0131-web-search-post-mvp-follow-ups.md).**
 - **z.ai streaming placement unverified.** The `web_search` array's exact location
   in the streaming chunks isn't confirmed; the parser scans defensively and
-  degrades to cited-text-only if it never matches.
-- **Anthropic `_20260209` tool version.** The newer server-tool version needs
+  degrades to cited-text-only if it never matches. **Still open** — see
+  [0131](0131-web-search-post-mvp-follow-ups.md) §3.
+- ~~**Anthropic `_20260209` tool version.**~~ The newer server-tool version needs
   4.6+ models; a follow-up gates it behind a `ModelEntry` capability flag rather
-  than hardcoding `_20250305`.
+  than hardcoding `_20250305`. **Closed by [0131](0131-web-search-post-mvp-follow-ups.md).**
 
 ## Rejected alternatives
 

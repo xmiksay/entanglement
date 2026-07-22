@@ -149,16 +149,26 @@ placeholder was collapsed, ✅ #195/[ADR-0062](../docs/adr/0062-collapse-llmsess
 all live in this crate now (✅ #52–#55, #118, #195, #217,
 [ADR-0007](../docs/adr/0007-streaming-llm-and-provider-crate.md)).
 **Opt-in provider-side web search** (✅ #305,
-[ADR-0075](../docs/adr/0075-provider-side-web-search-mvp.md)): a
-`WebSearchConfig { enabled, max_uses, allowed_domains }` (`web_search.rs`,
+[ADR-0075](../docs/adr/0075-provider-side-web-search-mvp.md); post-MVP
+follow-ups ✅ #481, [ADR-0131](../docs/adr/0131-web-search-post-mvp-follow-ups.md)):
+a `WebSearchConfig { enabled, max_uses, allowed_domains }` (`web_search.rs`,
 re-exported through core) bound onto a client at build time — never seen by core.
 A `#[serde(default)] web_search:` `config.yml` section is threaded as
 `Option<WebSearchConfig>` into both client factories **and** the live `/model`
 resolver; when present `build_body` pushes the provider's **server-executed**
-search tool (z.ai `web_search` entry, Anthropic `web_search_20250305` server tool)
-and results surface on the `Reasoning`→`ReasoningDelta` channel (**not** persisted
-to history; Anthropic `server_tool_use` → `Reasoning`, never a `ToolCall`).
-Enabling *is* consent — it runs **outside** the permission ladder
+search tool (z.ai `web_search` entry, Anthropic a server tool whose type string
+is `ModelEntry.web_search_tool_version` when the model sets one, else the
+`web_search_20250305` fallback, #481) and results still stream live on the
+`Reasoning`→`ReasoningDelta` channel **and** now persist into history (#481): a
+`ContentPart::ProviderSearch { provider, summary, data }` block (`data` opaque,
+round-trips verbatim only to the minting provider, mirrors
+`ToolCall.provider_meta`) rides the assistant `Message` via a new
+`LlmEvent::ContentBlock` + persisted `OutEvent::SearchResult`; Anthropic
+`server_tool_use`/`web_search_tool_result` still never become a `ToolCall`. A
+long-running Anthropic search that trips `stop_reason: pause_turn` is now
+continued client-side (`anthropic::mod::stream()` re-POSTs the accumulated
+content, bounded, core never sees it) instead of ending the turn (#481). Enabling
+*is* consent — it runs **outside** the permission ladder
 ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
 
 ## The contract (read before touching the engine)
@@ -174,7 +184,7 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | His
           | McpList | McpChanged
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
-          | SkillActive | AmbiguousRetry
+          | SkillActive | AmbiguousRetry | SearchResult
 ```
 
 Load-bearing invariants (details in the split architecture docs — do **not**

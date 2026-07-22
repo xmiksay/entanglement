@@ -24,8 +24,6 @@ entanglement-runtime/src/main.rs
 entanglement-runtime/src/tool_runner.rs
 entanglement-core/src/holly.rs
 entanglement-runtime/src/agents/mod.rs
-entanglement-provider/src/anthropic.rs
-entanglement-provider/src/openai.rs
 entanglement-core/src/session.rs
 entanglement-provider/src/client/mod.rs
 entanglement-runtime/src/permission.rs

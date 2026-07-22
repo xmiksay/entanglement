@@ -29,7 +29,7 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | His
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
           | McpList | McpChanged
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
-          | SkillActive | AmbiguousRetry (engine → harness)
+          | SkillActive | AmbiguousRetry | SearchResult (engine → harness)
 ```
 
 Every frame is **session-scoped** (one connection multiplexes many sessions via
