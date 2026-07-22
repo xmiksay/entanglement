@@ -206,7 +206,7 @@ pub(super) fn flush_reasoning(
 /// Orchestration tools (`agent`, `ask_user`, `propose_plan`, …) fall through to
 /// [`orchestration_primary_arg`], which pulls a readable hint from their JSON
 /// input so the header isn't a bare tool name while a call is in flight.
-fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
+pub(super) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
     if let Some(arg) = entanglement_runtime::permission::permission_arg(tool, input) {
         return Some(arg);
     }
@@ -247,6 +247,43 @@ fn orchestration_primary_arg(tool: &str, value: &serde_json::Value) -> Option<St
     }
 }
 
+/// The shared collapsed-header spans for one tool op: `{arrow} {tool}
+/// {primary_arg}{status}` — arg-budgeted to fit `available_width` so the header
+/// never wraps. Shared by the block header ([`flush_tool_call`]), the approval
+/// tail (`transcript.rs`), and the standalone tool-output header (`block.rs`),
+/// so the same idiom shows up wherever a tool call renders (#487).
+pub(super) fn tool_header_spans(
+    tool: &str,
+    input: &str,
+    arrow: char,
+    fg: Color,
+    available_width: u16,
+    status_suffix: Option<(&str, Color)>,
+) -> Vec<Span<'static>> {
+    let mut header = vec![
+        Span::styled(format!("{arrow} "), Style::default().fg(fg)),
+        Span::styled(tool.to_string(), Style::default().fg(Color::Cyan).bold()),
+    ];
+    if let Some(arg) = tool_primary_arg(tool, input) {
+        // Budget the arg so the header stays on one line: strip the bar (2),
+        // arrow (2), tool name, the two-space gaps, and the trailing status.
+        let status_w = status_suffix
+            .map(|(text, _)| UnicodeWidthStr::width(text))
+            .unwrap_or(0);
+        let fixed = 2 + 2 + UnicodeWidthStr::width(tool) + 2 + status_w;
+        let budget = (available_width as usize).saturating_sub(fixed);
+        header.push(Span::raw("  "));
+        header.push(Span::styled(
+            truncate_to_width(&arg, budget),
+            Style::default().fg(fg),
+        ));
+    }
+    if let Some((text, color)) = status_suffix {
+        header.push(Span::styled(text.to_string(), Style::default().fg(color)));
+    }
+    header
+}
+
 /// Renders one tool op as a collapsible block, mirroring [`flush_reasoning`]:
 /// a one-line `{arrow} {tool}  {primary_arg}  {status}` header (collapsed, the
 /// default) plus — when expanded — the call args and its output. The whole block
@@ -266,26 +303,16 @@ pub(super) fn flush_tool_call(
     let padding = padding_line(colors, available_width);
     out.push(padding.clone());
 
-    let arrow = if expanded { "▾" } else { "▸" };
-    let mut header = vec![
-        Span::styled(format!("{arrow} "), Style::default().fg(colors.fg)),
-        Span::styled(tool.to_string(), Style::default().fg(Color::Cyan).bold()),
-    ];
-    if let Some(arg) = tool_primary_arg(tool, input) {
-        // Budget the arg so the header stays on one line: strip the bar (2),
-        // arrow (2), tool name, the two-space gaps, and the trailing status.
-        let status_w = if output.is_some() { 2 } else { 0 };
-        let fixed = 2 + 2 + UnicodeWidthStr::width(tool) + 2 + status_w;
-        let budget = (available_width as usize).saturating_sub(fixed);
-        header.push(Span::raw("  "));
-        header.push(Span::styled(
-            truncate_to_width(&arg, budget),
-            Style::default().fg(colors.fg),
-        ));
-    }
-    if output.is_some() {
-        header.push(Span::styled(" ✓", Style::default().fg(Color::Green)));
-    }
+    let arrow = if expanded { '▾' } else { '▸' };
+    let status_suffix = output.is_some().then_some((" ✓", Color::Green));
+    let header = tool_header_spans(
+        tool,
+        input,
+        arrow,
+        colors.fg,
+        available_width,
+        status_suffix,
+    );
     out.push(theme.decorate(Line::from(header), colors, available_width));
 
     if expanded {

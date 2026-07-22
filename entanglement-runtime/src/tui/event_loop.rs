@@ -214,16 +214,22 @@ pub(super) async fn handle_event(
                             }
                             KeyCode::Enter => {
                                 let text = app.take_input_text();
+                                let tool =
+                                    app.pending_tool_request().map(|(_, tool, _)| tool.clone());
+                                let reason = if text.is_empty() { None } else { Some(text) };
                                 let _ = holly
                                     .send(InMsg::Reject {
                                         session: app.active_session_id().clone(),
                                         request_id: request_id.clone(),
-                                        reason: if text.is_empty() { None } else { Some(text) },
+                                        reason: reason.clone(),
                                     })
                                     .await;
                                 // Rejecting answers only this request — parked ones
                                 // still need their own decision (#273).
                                 app.advance_approval();
+                                if let Some(tool) = tool {
+                                    record_rejected(app, &tool, &reason);
+                                }
                             }
                             KeyCode::Char(c) => {
                                 app.input().insert_char(c);
@@ -551,7 +557,8 @@ async fn send_show(app: &App, holly: &Holly) {
 /// handoff is head policy). Scope is inert for `propose_plan` (the runtime
 /// records grants only on the generic tool path), so all three keys route here.
 async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: ApprovalScope) {
-    let handoff = app.pending_tool_request().and_then(|(_, tool, input)| {
+    let pending = app.pending_tool_request().cloned();
+    let handoff = pending.as_ref().and_then(|(_, tool, input)| {
         (tool == crate::tool_names::PROPOSE_PLAN_TOOL)
             .then(|| crate::propose_plan::parse_plan(input))
     });
@@ -564,9 +571,38 @@ async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: 
         .await;
     // Pop the answered request and surface the next parked one, if any (#273).
     app.advance_approval();
+    // Leave a one-line trace of the decision (#487) — the approval tail itself
+    // clears once answered, so without this the scrollback shows no evidence a
+    // call was ever approved.
+    if let Some((_, tool, _)) = &pending {
+        record_approved(app, tool, scope);
+    }
     if let Some(plan) = handoff {
         handoff_accepted_plan(app, holly, plan).await;
     }
+}
+
+/// Records an approval as a one-line transcript entry (#487) — the same
+/// out-of-band-notice idiom `App::record_status` uses elsewhere (reducer.rs) —
+/// so a scrollback through the transcript shows what was decided, not just a
+/// tail that silently vanished. Mirrors [`record_rejected`].
+fn record_approved(app: &mut App, tool: &str, scope: ApprovalScope) {
+    let scope_label = match scope {
+        ApprovalScope::Once => "once",
+        ApprovalScope::Session => "session",
+        ApprovalScope::Always => "always",
+    };
+    app.record_status("approval", format!("✓ approved {tool} ({scope_label})"));
+}
+
+/// Records a rejection (and its optional reason) as a one-line transcript
+/// entry (#487). Mirrors [`record_approved`].
+fn record_rejected(app: &mut App, tool: &str, reason: &Option<String>) {
+    let message = match reason {
+        Some(r) => format!("✗ rejected {tool} — {r}"),
+        None => format!("✗ rejected {tool}"),
+    };
+    app.record_status("approval", message);
 }
 
 /// Perform the plan-acceptance handoff (#141, ADR-0042): mint a fresh **root**
@@ -620,4 +656,77 @@ async fn run_bash_passthrough(app: &mut App, command: &str) {
         Err(e) => format!("[bash error] {e:#}"),
     };
     app.record_bash_passthrough(command.to_string(), output);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::session_view::TranscriptEntry;
+    use entanglement_core::{EngineConfig, OutEvent};
+
+    fn engine() -> Holly {
+        Holly::spawn(EngineConfig::default())
+    }
+
+    fn park_request(app: &mut App, sid: &SessionId, request_id: &str, tool: &str, input: &str) {
+        app.handle_out_event(OutEvent::ToolRequest {
+            session: sid.clone(),
+            seq: 1,
+            request_id: request_id.to_string(),
+            tool: tool.to_string(),
+            input: input.to_string(),
+        });
+    }
+
+    #[tokio::test]
+    async fn approving_records_a_transcript_decision_line() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"echo hi"}"#);
+
+        send_approval(&mut app, &holly, "t1".to_string(), ApprovalScope::Session).await;
+
+        let recorded = app.transcript().iter().any(|e| {
+            matches!(e, TranscriptEntry::ToolOutput { tool: Some(t), output }
+                if t == "approval" && output.contains("approved bash") && output.contains("session"))
+        });
+        assert!(
+            recorded,
+            "expected an approval decision line in the transcript: {:?}",
+            app.transcript()
+        );
+    }
+
+    #[test]
+    fn rejecting_records_a_decision_line_with_its_reason() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        record_rejected(&mut app, "bash", &Some("looks risky".to_string()));
+
+        let recorded = app.transcript().iter().any(|e| {
+            matches!(e, TranscriptEntry::ToolOutput { tool: Some(t), output }
+                if t == "approval" && output.contains("rejected bash") && output.contains("looks risky"))
+        });
+        assert!(
+            recorded,
+            "expected a rejection decision line with its reason: {:?}",
+            app.transcript()
+        );
+    }
+
+    #[test]
+    fn rejecting_without_a_reason_still_records_a_decision_line() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        record_rejected(&mut app, "bash", &None);
+
+        let recorded = app.transcript().iter().any(|e| {
+            matches!(e, TranscriptEntry::ToolOutput { tool: Some(t), output }
+                if t == "approval" && output == "✗ rejected bash")
+        });
+        assert!(
+            recorded,
+            "expected a bare rejection decision line: {:?}",
+            app.transcript()
+        );
+    }
 }
