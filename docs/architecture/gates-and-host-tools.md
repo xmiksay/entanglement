@@ -400,7 +400,16 @@ the same permission profiles as `read`/`bash`.
     stream (drained until the event whose JSON-RPC `id` matches). Static per-server
     `headers` (e.g. `Authorization: Bearer …`) authenticate every request, with
     `${VAR}` expanded from the environment so a token stays out of the config file;
-    an `Mcp-Session-Id` handed back on `initialize` is echoed on every later request
+    the flip side of that expansion is a documented, accepted leak surface
+    (§ADR-0080/[ADR-0128](../adr/0128-mcp-http-var-header-expansion-leak-surface.md)):
+    `expand_env` resolves `${VAR}` against the engine's whole process
+    environment with no allowlist, so a header naming a provider secret sends
+    that secret's live value to the configured server — consent, not a bug,
+    since the config file is trusted and enabling a server is consent
+    ([ADR-0047](../adr/0047-local-trust-boundary.md)), same as the stdio
+    transport's `env:` block. Any future logging of resolved request headers
+    must redact expanded values; none exists today. An `Mcp-Session-Id`
+    handed back on `initialize` is echoed on every later request
     (and the negotiated `MCP-Protocol-Version`). `reqwest` rides the `mcp-http`
     feature so the lean build carries no HTTP transport (§ADR-0025). `HttpClient` is
     **public** so an embedder can build a per-tenant client with a per-user token and
