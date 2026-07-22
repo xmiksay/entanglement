@@ -1,6 +1,6 @@
 # 0115. `rhai` exec bindings: `exec`/`bash`, gated by the Call capability
 
-- Status: Accepted
+- Status: Amended by [0130](0130-rhai-exec-bindings-marshal-workdir.md)
 - Date: 2026-07-17
 
 ## Context

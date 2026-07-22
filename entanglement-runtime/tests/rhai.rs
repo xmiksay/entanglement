@@ -131,6 +131,26 @@ fn spawn_with_rhai_exec(
     profiles: ProfileRegistry,
     bash_enabled: bool,
 ) -> Holly {
+    spawn_with_rhai_exec_and_base(
+        script,
+        root,
+        profiles,
+        bash_enabled,
+        PermissionProfile::new(Permission::Allow),
+    )
+}
+
+/// [`spawn_with_rhai_exec`] with a caller-chosen config-level permission
+/// ceiling (#172) instead of the hardcoded allow-all `base` — lets a test
+/// exercise a `tool{pattern}`-style ceiling rule (#425/#480) against the
+/// `rhai` `exec`/`bash` bindings.
+fn spawn_with_rhai_exec_and_base(
+    script: &str,
+    root: &std::path::Path,
+    profiles: ProfileRegistry,
+    bash_enabled: bool,
+    base: PermissionProfile,
+) -> Holly {
     let input = serde_json::json!({ "script": script }).to_string();
     let scripted = Arc::new(vec![
         LlmResponse {
@@ -161,12 +181,7 @@ fn spawn_with_rhai_exec(
     if bash_enabled {
         tools.register(BashTool::new(root.to_path_buf()));
     }
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = spawn_tool_executor(&holly, tools, profiles, base);
     holly
 }
 
@@ -890,6 +905,51 @@ async fn approving_one_call_command_does_not_auto_clear_a_different_one() {
     assert!(
         out.lines().any(|l| l == "a") && out.lines().any(|l| l == "b"),
         "both calls ran: {out}"
+    );
+}
+
+/// #480/ADR-0130: a workdir-scoped config-ceiling rule (`bash{pattern}`,
+/// #425/ADR-0116) now fires for a rhai `bash(command, workdir)` binding call
+/// — previously inert, since the binding never marshalled a `workdir` at all.
+/// The same rule stays inert for a workdir-less binding call, matching a
+/// direct tool call's behavior with no `workdir` argument.
+#[tokio::test]
+async fn bash_binding_workdir_scoped_rule_fires_for_matching_workdir() {
+    let dir = TempDir::new("bash-workdir-rule");
+    std::fs::create_dir_all(dir.path.join("sub")).unwrap();
+    let base = PermissionProfile::new(Permission::Allow).with("bash{sub*}", Permission::Deny);
+    let holly = spawn_with_rhai_exec_and_base(
+        r#"
+        let out = "";
+        try { bash("echo hi", "sub"); out += "unexpectedly-ran;" }
+        catch(e) { out += "denied:" + e + ";" }
+        try { bash("echo hi"); out += "ran-ok;" }
+        catch(e) { out += "unexpected-deny:" + e + ";" }
+        out
+        "#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+        true,
+        base,
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("denied:") && out.contains("denied by permission profile"),
+        "bash{{sub*}} must deny bash(\"...\", \"sub\"): {out}"
+    );
+    assert!(
+        out.contains("ran-ok;"),
+        "a workdir-less bash(...) call must still run — the rule is inert \
+         with no `workdir` marshalled: {out}"
+    );
+    assert!(
+        !out.contains("unexpectedly-ran") && !out.contains("unexpected-deny"),
+        "unexpected grade: {out}"
     );
 }
 
