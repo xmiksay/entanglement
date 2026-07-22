@@ -190,6 +190,31 @@ below realize one model:
   store loads empty and a write failure is logged — both fail *closed* (ask again),
   the safe direction. The TUI modal offers `y` once / `s` session / `a` always /
   `n` reject / `e` edit-reason / `Esc` interrupt.
+- **Session-scoped directory grants (✅ #486, [ADR-0126](../adr/0126-session-scoped-directory-grants.md)):**
+  a fourth `ApprovalScope::SessionDir` — session-only like `Session`, but
+  widened to every later call whose grading argument falls under the approved
+  call's directory (`grants::dir_covers`, a plain path-component-prefix check
+  on the #485-normalized argument) instead of matching one exact call.
+  Restricted to the read-only triad (`read`/`grep`/`glob`, the ADR-0114 `read`
+  capability's members, reused via `tool_names::is_read_capability_member` so
+  the grant store, the TUI's `[d]` key gate, and its footer hint can never
+  drift apart); any other tool — or an escape-forced prompt, in
+  `ExtraRootStore` — degrades it to an exact `Session` grant rather than
+  widening. `FileGrantStore` gains a separate, never-persisted
+  `session_dirs: HashMap<SessionId, BTreeSet<String>>` (no `Always`-directory
+  scope, so `grants.yml`'s shape is untouched); `grants::dir_for(tool, arg)`
+  derives the directory an approved call implies (parent dir for
+  `read`/`edit`/`write`/`apply_patch`, the path filter verbatim for `grep`,
+  the literal non-wildcard prefix for `glob`). `GrantStore::grant_session_dir`
+  is default-implemented (a no-op echo), so the #311 seam's existing custom
+  implementations keep compiling untouched — only `DefaultGrantStore`
+  overrides it for real. Two TUI surfaces: `[d]` on an approval prompt
+  (`tui/event_loop.rs`, gated on the pending tool being read-like) and a
+  proactive `/allow <path>` command (`tui/allow_command.rs`, normalizing the
+  path against the head's root and rejecting anything outside it) — both call
+  `grant_session_dir` synchronously through a cloned `Arc<DefaultGrantStore>`
+  handle threaded into the TUI, introducing no new wire surface (`Approve`
+  was already wire-allowed).
 - **Escape-root access via approval (✅ #escape-root, [ADR-0109](../adr/0109-escape-root-access-via-approval.md)):**
   root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`/`apply_patch`
   path or a `bash`/`call` `workdir` that resolves **outside** root is detected in

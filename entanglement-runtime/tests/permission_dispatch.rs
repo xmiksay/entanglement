@@ -964,3 +964,223 @@ async fn absolute_outside_root_still_prompts() {
         "an out-of-root absolute path must not silently match a root-relative rule"
     );
 }
+
+// --- #486, ADR-0126: ApprovalScope::SessionDir --------------------------
+
+/// A trivial host tool that just echoes its input, parameterized by name —
+/// standing in for `read`/`grep`/`glob`/`edit` in the `SessionDir` tests
+/// below; this module only exercises permission grading, never real file I/O.
+struct EchoNamed(&'static str);
+#[async_trait]
+impl Tool for EchoNamed {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed(self.0)
+    }
+    async fn run(&self, input: &str) -> anyhow::Result<String> {
+        Ok(format!("ran {}: {input}", self.0))
+    }
+}
+
+/// Build a Holly wired exactly like [`spawn_two_read_calls_rooted`] (a
+/// `root`-aware `ProfileResolver` + escape-root policy + `DefaultGrantStore`),
+/// but scripted with an arbitrary `(id, tool, input)` call sequence, each
+/// followed by a tool-less "ok" turn. Registers `read`/`grep`/`glob`/`edit`
+/// `EchoNamed` tools — every tool the `SessionDir` tests below exercise. The
+/// scripted queue is a single shared template: each *session* gets its own
+/// fresh clone from `llm_factory` (starting at element 0), so a second,
+/// independent session that sends exactly one prompt naturally replays this
+/// list's *first* call — the deliberate mechanism the cross-session test
+/// below relies on to re-ask the identical call a first session had granted.
+fn spawn_scripted_calls_rooted(
+    root: &Path,
+    calls: &[(&str, &str, String)],
+    profiles: ProfileRegistry,
+) -> Holly {
+    let mut responses = Vec::new();
+    for (id, tool, input) in calls {
+        responses.push(LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: (*id).into(),
+                name: (*tool).into(),
+                input: input.clone(),
+                provider_meta: None,
+            }],
+        });
+        responses.push(LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        });
+    }
+    let scripted = Arc::new(responses);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoNamed("read"));
+    reg.register(EchoNamed("grep"));
+    reg.register(EchoNamed("glob"));
+    reg.register(EchoNamed("edit"));
+    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        active.clone(),
+        PermissionProfile::new(Permission::Allow),
+        Some(root.to_path_buf()),
+    ));
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let escape_root = entanglement_runtime::tool_runner::EscapeRoot {
+        root: root.to_path_buf(),
+        store: Arc::new(entanglement_runtime::extra_roots::ExtraRootStore::ephemeral()),
+    };
+    let _executor = spawn_tool_executor_with_policy(
+        &holly,
+        reg.shared(),
+        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+        PermissionProfile::new(Permission::Allow),
+        active,
+        resolver,
+        grants,
+        Default::default(),
+        Some(escape_root),
+    );
+    holly
+}
+
+/// Approving a `read` call with `Approve { scope: SessionDir }` widens the
+/// grant to every later `read`/`grep`/`glob` call whose path falls under the
+/// approved call's directory — a sibling file, a nested subdirectory, and a
+/// directory-rooted `grep`/`glob` all skip the prompt — but `edit` (not in the
+/// read-only triad) still asks, and a second session never inherits the grant.
+#[tokio::test]
+async fn session_dir_grant_widens_the_read_only_triad_but_not_edit_or_other_sessions() {
+    let root = Path::new("/home/user/project");
+    let calls: Vec<(&str, &str, String)> = vec![
+        (
+            "t1",
+            "read",
+            serde_json::json!({ "path": "src/a.rs" }).to_string(),
+        ),
+        (
+            "t2",
+            "read",
+            serde_json::json!({ "path": "src/b/c.rs" }).to_string(),
+        ),
+        (
+            "t3",
+            "grep",
+            serde_json::json!({ "path": "src" }).to_string(),
+        ),
+        (
+            "t4",
+            "edit",
+            serde_json::json!({ "path": "src/a.rs" }).to_string(),
+        ),
+    ];
+    let holly = spawn_scripted_calls_rooted(root, &calls, ask_bash_registry());
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "askbash".into(),
+        })
+        .await
+        .unwrap();
+
+    // Turn 1: `read src/a.rs` prompts; approve it with SessionDir scope.
+    let sub1 = holly.subscribe();
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let mut asked = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "read") {
+            asked = true;
+            break;
+        }
+    }
+    assert!(asked, "turn 1 (read src/a.rs) should prompt");
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "t1".into(),
+            scope: ApprovalScope::SessionDir,
+        })
+        .await
+        .unwrap();
+    let turn1 = collect(sub1, &sid).await;
+    assert!(
+        turn1
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("a.rs"))),
+        "turn 1 should run the approved read; got {turn1:?}"
+    );
+
+    // Turn 2: `read src/b/c.rs` — a nested subdirectory under "src" — must not
+    // prompt again.
+    let sub2 = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let turn2 = collect(sub2, &sid).await;
+    assert!(
+        !turn2
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a read under the granted directory must not ask again; got {turn2:?}"
+    );
+
+    // Turn 3: `grep {path: "src"}` — the directory itself — must not prompt.
+    let sub3 = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let turn3 = collect(sub3, &sid).await;
+    assert!(
+        !turn3
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a grep rooted at the granted directory must not ask again; got {turn3:?}"
+    );
+
+    // Turn 4: `edit src/a.rs` is NOT in the read-only triad — still prompts.
+    let mut watch4 = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let mut edit_asked = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch4.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "edit") {
+            edit_asked = true;
+            break;
+        }
+    }
+    assert!(
+        edit_asked,
+        "a SessionDir grant must never widen a mutation tool like edit"
+    );
+
+    // A second, independent session replays the same first call (`read
+    // src/a.rs`, per `spawn_scripted_calls_rooted`'s doc) and must still be
+    // asked — a directory grant never crosses sessions.
+    let sid2 = SessionId::new("s2");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid2.clone(),
+            agent: "askbash".into(),
+        })
+        .await
+        .unwrap();
+    let mut watch2 = holly.subscribe();
+    holly.send(InMsg::prompt(sid2.clone(), "go")).await.unwrap();
+    let mut other_session_asked = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch2.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { session, tool, .. } if session == &sid2 && tool == "read")
+        {
+            other_session_asked = true;
+            break;
+        }
+    }
+    assert!(
+        other_session_asked,
+        "a SessionDir grant must never be inherited by a different session"
+    );
+}

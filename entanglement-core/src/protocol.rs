@@ -353,8 +353,13 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 /// tool + argument, [`crate::PermissionProfile::resolve`]'s `arg`) skips the
 /// prompt: [`Session`][ApprovalScope::Session] for the life of the session (in
 /// memory), [`Always`][ApprovalScope::Always] persisted to the user's managed
-/// grants file. A grant only ever upgrades an `Ask` to `Allow`; it never
-/// overrides a `Deny` (policy stays a hard floor).
+/// grants file, or [`SessionDir`][ApprovalScope::SessionDir] (#486, ADR-0126) —
+/// session-only like `Session`, but widened to every call under the approved
+/// call's directory instead of an exact match, and restricted to the read-only
+/// triad (`read`/`grep`/`glob`); on any other tool the runtime degrades it to
+/// an exact `Session` grant rather than widening it. A grant only ever
+/// upgrades an `Ask` to `Allow`; it never overrides a `Deny` (policy stays a
+/// hard floor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalScope {
@@ -366,6 +371,12 @@ pub enum ApprovalScope {
     /// Approve every identical call, now and in future sessions — persisted to
     /// the runtime's managed grants file.
     Always,
+    /// Approve every call under this call's directory for the rest of this
+    /// session (#486) — the read-only triad (`read`/`grep`/`glob`) only; any
+    /// other tool degrades this to an exact [`Session`][ApprovalScope::Session]
+    /// grant instead of widening it. Never persisted (no `Always`-directory
+    /// scope).
+    SessionDir,
 }
 
 impl ApprovalScope {
@@ -1565,7 +1576,11 @@ mod tests {
 
     #[test]
     fn approve_scope_roundtrips_when_set() {
-        for scope in [ApprovalScope::Session, ApprovalScope::Always] {
+        for scope in [
+            ApprovalScope::Session,
+            ApprovalScope::Always,
+            ApprovalScope::SessionDir,
+        ] {
             let msg = InMsg::Approve {
                 session: SessionId::new("s1"),
                 request_id: "r1".into(),
@@ -1575,6 +1590,15 @@ mod tests {
             assert!(json.contains("scope"));
             assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
         }
+    }
+
+    /// #486: `SessionDir` is an additive variant — pin its exact wire spelling
+    /// (`snake_case`, matching the existing `session`/`always`) so a client
+    /// implementation has a stable literal to target.
+    #[test]
+    fn approve_scope_session_dir_serializes_as_session_dir() {
+        let json = serde_json::to_string(&ApprovalScope::SessionDir).unwrap();
+        assert_eq!(json, "\"session_dir\"");
     }
 
     #[test]

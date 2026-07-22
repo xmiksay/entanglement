@@ -70,6 +70,19 @@ pub trait GrantStore: Send + Sync {
     );
     /// Release a session's in-memory grants when it ends.
     fn forget_session(&self, session: &SessionId);
+
+    /// Grant an explicit directory to `session`, covering the read-only triad
+    /// (`read`/`grep`/`glob`) for the rest of the session (#486, ADR-0126) —
+    /// the TUI `/allow <path>` command's entry point. Synchronous and never
+    /// persisted (unlike `Always` scope above), so no DB round-trip is
+    /// needed. Default no-op that just echoes `dir` back unnormalized, so an
+    /// embedder's custom `GrantStore` (`tests/policy_seam.rs`) keeps
+    /// compiling without wiring directory grants; only `DefaultGrantStore`
+    /// (the TUI's store) overrides it for real.
+    fn grant_session_dir(&self, session: &SessionId, dir: &str) -> String {
+        let _ = session;
+        dir.to_string()
+    }
 }
 
 /// The single-user CLI resolver: the executor's live active-profile map plus the
@@ -155,6 +168,10 @@ impl GrantStore for DefaultGrantStore {
 
     fn forget_session(&self, session: &SessionId) {
         self.inner.lock().unwrap().forget_session(session);
+    }
+
+    fn grant_session_dir(&self, session: &SessionId, dir: &str) -> String {
+        self.inner.lock().unwrap().grant_session_dir(session, dir)
     }
 }
 

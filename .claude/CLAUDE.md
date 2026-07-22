@@ -231,7 +231,14 @@ re-document them here):
   `Session`/`Always` record an exact `(tool, arg)` grant in `runtime::grants`
   that upgrades a later resolved `Ask` → `Allow` (never a `Deny`, applied *after*
   the ceiling); `Always` persists to a managed `${config_dir}/entanglement/grants.yml`
-  (sibling of `config.yml`, not its ceiling section). Both policy sources are
+  (sibling of `config.yml`, not its ceiling section). A fourth scope,
+  `SessionDir` (#486, [ADR-0126](../docs/adr/0126-session-scoped-directory-grants.md)),
+  widens a grant to every later call under the approved call's directory
+  instead of an exact match — restricted to the read-only triad
+  (`read`/`grep`/`glob`; any other tool, or an escape-forced prompt, degrades
+  it to an exact `Session` grant) and never persisted (session-only, no
+  `Always`-directory scope). Reachable via `[d]` on an approval prompt or the
+  TUI `/allow <path>` command. Both policy sources are
   **pluggable seams** (#311, `runtime::policy`): `spawn_tool_executor_with_policy`
   drives an `Arc<dyn PermissionResolver>` (per-call `Allow|Ask|Deny`, async) + an
   `Arc<dyn GrantStore>` (always-allow persistence), so a multi-tenant embedder

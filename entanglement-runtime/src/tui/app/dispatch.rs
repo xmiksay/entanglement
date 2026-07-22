@@ -65,6 +65,10 @@ impl App {
             // (plus, for `add`/`remove`, the trailing text) — both call sites
             // intercept it before reaching this dispatch.
             Command::Mcp => false,
+            // Same shape again (#486): `/allow <path>` needs the trailing path
+            // text, not available here — both call sites intercept it before
+            // reaching this dispatch.
+            Command::Allow => false,
         }
     }
 

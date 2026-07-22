@@ -84,3 +84,16 @@ pub const MULTI_GROUP: &[&str] = &["call", "rhai"];
 pub fn is_capability_name(name: &str) -> bool {
     CAPABILITIES.iter().any(|(n, _)| *n == name)
 }
+
+/// Whether `tool` is a member of the `read` capability (`read`/`grep`/`glob`,
+/// #418) — the read-only triad eligible for `ApprovalScope::SessionDir`'s
+/// directory-prefix widening (#486, ADR-0126). Shared by the grant store
+/// (`grants::is_granted`/`record`) and the TUI's `[d]` approval-mode key gate
+/// (`tui/event_loop.rs`) and footer (`tui/transcript.rs`) so the "is this tool
+/// read-like" check can never drift from the capability table above.
+pub fn is_read_capability_member(tool: &str) -> bool {
+    CAPABILITIES
+        .iter()
+        .find(|(name, _)| *name == "read")
+        .is_some_and(|(_, members)| members.contains(&tool))
+}
