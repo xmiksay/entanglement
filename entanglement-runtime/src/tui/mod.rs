@@ -1,3 +1,4 @@
+mod allow_command;
 mod app;
 mod attention;
 mod clipboard;
@@ -71,6 +72,7 @@ pub async fn tui(
     tool_roster: Vec<String>,
     http_client: HttpClient,
     configured_editor: Option<String>,
+    grants: std::sync::Arc<crate::policy::DefaultGrantStore>,
 ) -> Result<()> {
     setup_panic_handler();
 
@@ -121,6 +123,7 @@ pub async fn tui(
     app.set_agent_generation(agent_generation);
     app.set_http_client(http_client);
     app.set_configured_editor(configured_editor);
+    app.set_grants(grants);
     app.init_head_context(root, bash_enabled);
 
     let mut attention = Attention::from_env();

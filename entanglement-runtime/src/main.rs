@@ -20,9 +20,9 @@ mod run;
 mod tui;
 
 use entanglement_runtime::{
-    agents, ask_user, config, extra_roots, history, host, inspect, logging, mcp, persistence,
-    plan_tasks, policy, propose_plan, script, session_store, skills, subagent, system_prompt,
-    tool_names, tool_runner, watch, ToolRegistry,
+    agents, ask_user, config, extra_roots, history, host, inspect, logging, mcp, permission_path,
+    persistence, plan_tasks, policy, propose_plan, script, session_store, skills, subagent,
+    system_prompt, tool_names, tool_runner, watch, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -1200,6 +1200,7 @@ async fn main() -> Result<()> {
                 tool_names,
                 http_client.clone(),
                 user_config.editor.clone(),
+                grants.clone(),
             )
             .await
         }
@@ -1237,6 +1238,7 @@ async fn main() -> Result<()> {
                     tool_names,
                     http_client.clone(),
                     user_config.editor.clone(),
+                    grants.clone(),
                 )
                 .await
             } else {

@@ -141,6 +141,7 @@ impl App {
             agent_generation: None,
             pending_generation_persist: None,
             http_client: None,
+            grants: None,
             configured_editor: None,
             key_dialog: crate::tui::key_dialog::KeyDialog::new(key_providers),
             mcp_panel: crate::tui::mcp_panel::McpPanel::default(),

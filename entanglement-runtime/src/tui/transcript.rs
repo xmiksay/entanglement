@@ -95,16 +95,29 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
             }
 
             lines.push(Line::from(""));
-            let footer = vec![
+            let mut footer = vec![
                 Span::styled("[y]", Style::default().fg(Color::Green).bold()),
                 Span::raw(" approve  "),
+            ];
+            // `[d]` (#486, ADR-0126) only makes sense for the read-only triad
+            // (`read`/`grep`/`glob`) — a `SessionDir` grant on any other tool
+            // would just degrade to an exact `Session` grant, so the hint is
+            // withheld rather than shown misleadingly.
+            if crate::tool_names::is_read_capability_member(tool) {
+                footer.push(Span::styled(
+                    "[d]",
+                    Style::default().fg(Color::Green).bold(),
+                ));
+                footer.push(Span::raw(" allow dir (session)  "));
+            }
+            footer.extend([
                 Span::styled("[n]", Style::default().fg(Color::Red).bold()),
                 Span::raw(" reject  "),
                 Span::styled("[e]", Style::default().fg(Color::Yellow).bold()),
                 Span::raw(" edit reason  "),
                 Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
                 Span::raw(" interrupt"),
-            ];
+            ]);
             // The footer is short, but wrap it too so a very narrow panel can't
             // overflow horizontally (#wrap).
             push_wrapped_spans(&mut lines, footer, available_width);

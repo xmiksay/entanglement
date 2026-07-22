@@ -176,6 +176,23 @@ pub(super) async fn handle_event(
                             send_approval(app, holly, request_id.clone(), ApprovalScope::Always)
                                 .await;
                         }
+                        // Allow the call's directory for the rest of the session
+                        // (#486, ADR-0126) — only offered while the pending call
+                        // is one of the read-only triad (`read`/`grep`/`glob`);
+                        // any other tool has no `[d]` to press.
+                        KeyCode::Char('d')
+                            if app.pending_tool_request().is_some_and(|(_, tool, _)| {
+                                crate::tool_names::is_read_capability_member(tool)
+                            }) =>
+                        {
+                            send_approval(
+                                app,
+                                holly,
+                                request_id.clone(),
+                                ApprovalScope::SessionDir,
+                            )
+                            .await;
+                        }
                         KeyCode::Char('n') => {
                             app.set_approval_mode(ApprovalMode::EnteringRejectReason {
                                 request_id: request_id.clone(),
@@ -367,6 +384,10 @@ pub(super) async fn handle_event(
                                                     app, holly, &text,
                                                 )
                                                 .await;
+                                                return Ok(false);
+                                            }
+                                            if cmd == crate::tui::commands::Command::Allow {
+                                                crate::tui::allow_command::send_allow(app, &text);
                                                 return Ok(false);
                                             }
                                             if app.execute_command(cmd) {

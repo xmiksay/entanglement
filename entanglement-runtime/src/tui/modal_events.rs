@@ -330,6 +330,13 @@ pub(super) async fn handle_command_palette_event(
                     // (#373), so a picked `/mcp` always runs `list` — the same
                     // default a bare typed `/mcp` falls back to.
                     super::mcp_command::send_mcp_list(app, holly).await;
+                } else if cmd == crate::tui::commands::Command::Allow {
+                    // Same "no sensible default" reasoning as `/set` (#486): a
+                    // bare `/allow` has no path to grant, so prefill the input
+                    // instead of running it — the user types the path and
+                    // presses Enter, which routes through the typed path
+                    // (`event_loop`'s Enter handler → `allow_command::send_allow`).
+                    app.set_input_text("/allow ".to_string());
                 } else if app.execute_command(cmd) {
                     return Ok(true);
                 }

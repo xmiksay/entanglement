@@ -134,7 +134,12 @@ impl ExtraRootStore {
     /// Record an approval for `(tool, path)` at `scope`, approved by the call
     /// identified by `request_id`. `Always` also persists. `request_id` is only
     /// meaningful for `Once` (#449) — a durable scope is path-only by design, so
-    /// it is ignored for `Session`/`Always`.
+    /// it is ignored for `Session`/`Always`. A [`SessionDir`][ApprovalScope::SessionDir]
+    /// approval (#486) has no meaning for this store's per-absolute-path key
+    /// space — an escaping call's grant is out of scope for the directory
+    /// widening ADR-0126 defines — so it degrades to an exact `Session` grant
+    /// on this one path, same as the ordinary permission grant store does for
+    /// a non-read-triad tool.
     pub fn record(&self, tool: &str, path: &Path, scope: ApprovalScope, request_id: &str) {
         let k = key(tool, path);
         let persist = {
@@ -144,7 +149,7 @@ impl ExtraRootStore {
                     g.once.insert((k.0, k.1, request_id.to_string()));
                     false
                 }
-                ApprovalScope::Session => {
+                ApprovalScope::Session | ApprovalScope::SessionDir => {
                     g.session.insert(k);
                     false
                 }
