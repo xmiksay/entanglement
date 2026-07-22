@@ -208,33 +208,38 @@ impl Llm for OpenAiLlm {
             let mut usage = Usage::default();
             let mut seen_finish_reason: Option<String> = None;
             let mut rx = rx;
+            let mut saw_done = false;
 
-            while let Some(item) = rx.recv().await {
+            'outer: while let Some(item) = rx.recv().await {
                 let chunk = item?;
                 frames.push(&chunk);
-                while let Some(line_owned) = frames.next_frame() {
-                    let line = line_owned.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let Some(payload) = line.strip_prefix("data:") else {
-                        continue;
-                    };
-                    let payload = payload.trim();
-                    if payload == "[DONE]" {
-                        continue;
-                    }
-                    let data: Value = match serde_json::from_str(payload) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-
-                    if let Some(fr) = data.pointer("/choices/0/finish_reason").and_then(|v| v.as_str()) {
-                        seen_finish_reason = Some(fr.to_string());
-                    }
-
-                    for ev in handle_chunk(&data, &mut tools, &mut usage)? {
-                        yield ev;
+                let (events, done) =
+                    drain_available_frames(&mut frames, &mut tools, &mut usage, &mut seen_finish_reason)?;
+                for ev in events {
+                    yield ev;
+                }
+                if done {
+                    // Protocol-correct terminator (#483): stop reading immediately,
+                    // ignoring anything the endpoint sends afterward instead of
+                    // relying on the connection to close.
+                    saw_done = true;
+                    break 'outer;
+                }
+            }
+            // Flush a final unterminated frame at EOF (#483): a stream cut mid-frame,
+            // or a server that omits the trailing delimiter on its last event, would
+            // otherwise silently drop the closing chunk — which can carry
+            // `finish_reason`, the difference between a confident stop and an
+            // ambiguous-stop retry (ADR-0118). Skipped once `[DONE]` was already
+            // seen: whatever is still buffered after it is protocol garbage, not an
+            // event to parse.
+            if !saw_done {
+                if let Some(trailing) = frames.take_remaining() {
+                    if let SseEvent::Data(data) = parse_sse_line(&trailing) {
+                        note_finish_reason(&data, &mut seen_finish_reason);
+                        for ev in handle_chunk(&data, &mut tools, &mut usage)? {
+                            yield ev;
+                        }
                     }
                 }
             }
@@ -482,6 +487,72 @@ fn web_search_tool_entry(ws: &WebSearchConfig) -> Value {
 }
 
 // ── SSE chunk handling ──────────────────────────────────────────────────────
+
+/// The outcome of parsing one already-delimited SSE line.
+enum SseEvent {
+    /// `data: [DONE]` — the protocol-correct terminator (#483). The caller
+    /// must stop reading the stream, ignoring anything buffered afterward.
+    Done,
+    /// A blank line, a non-`data:` line, or a payload that fails to parse as
+    /// JSON — ignored rather than erroring, matching the pre-#483 behavior.
+    Skip,
+    /// A parsed JSON chunk ready for `handle_chunk`.
+    Data(Value),
+}
+
+fn parse_sse_line(line: &str) -> SseEvent {
+    let line = line.trim();
+    if line.is_empty() {
+        return SseEvent::Skip;
+    }
+    let Some(payload) = line.strip_prefix("data:") else {
+        return SseEvent::Skip;
+    };
+    let payload = payload.trim();
+    if payload == "[DONE]" {
+        return SseEvent::Done;
+    }
+    match serde_json::from_str(payload) {
+        Ok(v) => SseEvent::Data(v),
+        Err(_) => SseEvent::Skip,
+    }
+}
+
+fn note_finish_reason(data: &Value, seen: &mut Option<String>) {
+    if let Some(fr) = data
+        .pointer("/choices/0/finish_reason")
+        .and_then(|v| v.as_str())
+    {
+        *seen = Some(fr.to_string());
+    }
+}
+
+/// Drain every complete frame currently buffered in `frames`, updating
+/// `tools`/`usage`/`seen_finish_reason` and collecting events to yield.
+/// Returns `(events, saw_done)` — once `[DONE]` is seen, stops immediately
+/// without draining any further frames still sitting in the buffer, so the
+/// caller can tell "the stream is over" from "there's more to flush at EOF".
+/// Pulled out of `stream()`'s `try_stream!` block so it is plain, synchronous,
+/// and unit-testable (#483).
+fn drain_available_frames(
+    frames: &mut crate::sse_frame::SseFrameBuffer,
+    tools: &mut BTreeMap<u32, PendingTool>,
+    usage: &mut Usage,
+    seen_finish_reason: &mut Option<String>,
+) -> anyhow::Result<(Vec<LlmEvent>, bool)> {
+    let mut out = Vec::new();
+    while let Some(line) = frames.next_frame() {
+        match parse_sse_line(&line) {
+            SseEvent::Done => return Ok((out, true)),
+            SseEvent::Skip => {}
+            SseEvent::Data(data) => {
+                note_finish_reason(&data, seen_finish_reason);
+                out.extend(handle_chunk(&data, tools, usage)?);
+            }
+        }
+    }
+    Ok((out, false))
+}
 
 /// Map one parsed `data:` chunk to zero or more [`LlmEvent`]s, updating tool
 /// assembly + usage state. Pure (no I/O) so it unit-tests directly. Tool calls
@@ -1158,5 +1229,72 @@ mod tests {
         let data = json!({ "choices": [{ "delta": { "content": "hi" } }] });
         let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
         assert_eq!(evs, vec![LlmEvent::Text("hi".into())]);
+    }
+
+    // ── stream robustness: [DONE] terminator + trailing-frame flush (#483) ────
+
+    #[test]
+    fn done_terminates_before_trailing_junk_is_ever_parsed() {
+        let mut frames = crate::sse_frame::SseFrameBuffer::new(b"\n");
+        frames.push(b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n");
+        frames.push(b"data: [DONE]\n");
+        frames.push(b"data: {\"choices\":[{\"delta\":{\"content\":\"should never surface\"}}]}\n");
+
+        let mut tools = BTreeMap::new();
+        let mut usage = Usage::default();
+        let mut seen_finish_reason = None;
+        let (events, done) =
+            drain_available_frames(&mut frames, &mut tools, &mut usage, &mut seen_finish_reason)
+                .unwrap();
+
+        assert_eq!(events, vec![LlmEvent::Text("hi".into())]);
+        assert!(done, "must report the stream as terminated at [DONE]");
+        // The junk frame after [DONE] is still sitting unparsed in the buffer —
+        // proof drain_available_frames never touched it once it saw [DONE].
+        assert!(frames.take_remaining().is_some());
+    }
+
+    #[test]
+    fn trailing_unterminated_frame_with_finish_reason_yields_confident_stop() {
+        // No trailing '\n' — the connection closed mid-frame (or the server
+        // never terminates its last event), so `next_frame` can't surface it.
+        let mut frames = crate::sse_frame::SseFrameBuffer::new(b"\n");
+        frames.push(b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}");
+
+        let mut tools = BTreeMap::new();
+        let mut usage = Usage::default();
+        let mut seen_finish_reason = None;
+        let (events, done) =
+            drain_available_frames(&mut frames, &mut tools, &mut usage, &mut seen_finish_reason)
+                .unwrap();
+        assert!(events.is_empty(), "frame isn't newline-terminated yet");
+        assert!(!done);
+
+        // Mirrors the EOF flush in `stream()`: pull the leftover bytes and run
+        // them through the same parse + handle_chunk path.
+        let trailing = frames
+            .take_remaining()
+            .expect("unterminated frame must still be buffered");
+        match parse_sse_line(&trailing) {
+            SseEvent::Data(data) => {
+                note_finish_reason(&data, &mut seen_finish_reason);
+                handle_chunk(&data, &mut tools, &mut usage).unwrap();
+            }
+            _ => panic!("trailing frame should parse as a data event"),
+        }
+        assert_eq!(seen_finish_reason.as_deref(), Some("stop"));
+
+        // Reproduce the caller's stop_reason resolution (ADR-0118): a `stop`
+        // finish_reason with no pending tool calls must be a confident
+        // `EndTurn`, never `None` (which would trigger an ambiguous-stop retry).
+        let mut flushed = Vec::new();
+        let emitted_any_tool_call = flush_pending_tools(&mut tools, &mut flushed);
+        let stop_reason = match seen_finish_reason.as_deref() {
+            Some("tool_calls") if !emitted_any_tool_call => None,
+            Some(r) => Some(StopReason::from_openai(r)),
+            None if emitted_any_tool_call => Some(StopReason::ToolUse),
+            None => None,
+        };
+        assert_eq!(stop_reason, Some(StopReason::EndTurn));
     }
 }

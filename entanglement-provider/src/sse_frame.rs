@@ -46,6 +46,21 @@ impl SseFrameBuffer {
         let frame_bytes: Vec<u8> = self.buf.drain(..idx + self.delimiter.len()).collect();
         Some(String::from_utf8_lossy(&frame_bytes).into_owned())
     }
+
+    /// Drain whatever bytes remain with no trailing delimiter — call once at
+    /// EOF (#483). A stream cut mid-frame, or a server that omits the final
+    /// delimiter on its last event, leaves exactly this: a frame `next_frame`
+    /// will never surface on its own. `None` when nothing but whitespace (or
+    /// nothing at all) is left.
+    pub fn take_remaining(&mut self) -> Option<String> {
+        let bytes: Vec<u8> = std::mem::take(&mut self.buf);
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        if text.trim().is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -148,5 +163,24 @@ mod tests {
         let frame = buf.next_frame().expect("frame should be complete");
         assert_eq!(frame, frame_text);
         assert!(!frame.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn take_remaining_yields_unterminated_trailing_bytes() {
+        let mut buf = SseFrameBuffer::new(b"\n");
+        buf.push(b"data: {\"a\":1}\n");
+        buf.push(b"data: {\"b\":2}"); // no trailing newline — connection closed here
+        assert_eq!(buf.next_frame().as_deref(), Some("data: {\"a\":1}\n"));
+        assert!(buf.next_frame().is_none(), "second frame has no delimiter");
+        assert_eq!(buf.take_remaining().as_deref(), Some("data: {\"b\":2}"));
+        assert!(buf.take_remaining().is_none(), "drained, nothing left");
+    }
+
+    #[test]
+    fn take_remaining_is_none_when_buffer_empty_or_whitespace() {
+        let mut buf = SseFrameBuffer::new(b"\n");
+        assert!(buf.take_remaining().is_none());
+        buf.push(b"   ");
+        assert!(buf.take_remaining().is_none());
     }
 }

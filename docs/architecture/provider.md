@@ -271,6 +271,16 @@ derives a budget from a fixed tier (`High`/`Medium`; `Low`/unset leaves
 thinking off) — conservative per-client constants, not catalog-driven, since
 the real per-model ceiling varies.
 
+**Ollama `max_output_tokens` catalog default (#483):** the embedded `ollama`
+entries set `max_output_tokens` explicitly (8192/2048/4096 for
+`llama3.1`/`llama3`/`mistral`) rather than leaving it unset like every other
+built-in entry. Unset, `OpenAiLlm` sends no `max_tokens`, so Ollama falls back
+to its own `num_predict` default — 128 tokens — which was the leading cause of
+the ADR-0118 "announced intent then stream died" ambiguous-stop symptom on
+local models. Local generation has no per-token cost, so the values are
+generous, just kept under each model's `context_window`; a `providers.yml`
+override wins as usual.
+
 **Provider selection (`skutter`):** the catalog loads once at startup; a
 malformed user file is a loud error, never a silent fallback — and so is an
 explicit `ENTANGLEMENT_PROVIDERS_FILE` that points at a missing file (a mistyped
