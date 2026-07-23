@@ -180,38 +180,54 @@ impl ExtraRootStore {
             let mut g = self.inner.lock().expect("extra-roots mutex poisoned");
             match scope {
                 ApprovalScope::Once => {
-                    g.once.insert((k.0, k.1, request_id.to_string()));
+                    g.once
+                        .insert((k.0.clone(), k.1.clone(), request_id.to_string()));
                     false
                 }
                 ApprovalScope::Session | ApprovalScope::SessionDir => {
-                    g.session.insert(k);
+                    g.session.insert(k.clone());
                     false
                 }
                 ApprovalScope::Always => {
-                    g.always.insert(k);
+                    g.always.insert(k.clone());
                     true
                 }
             }
         };
         if persist {
-            self.persist();
+            self.persist(&k);
         }
     }
 
-    /// Best-effort atomic write of the `Always` set to the managed file.
-    fn persist(&self) {
+    /// Merge the new `Always` grant into the managed file under an exclusive
+    /// cross-process lock (#329, mirroring `grants::persist`): a concurrent
+    /// skutter instance's own `Always` grant, written between this store's
+    /// `load()` and now, must survive rather than being clobbered by a rewrite
+    /// from stale in-memory state. Best-effort: a failure is logged, never
+    /// propagated — a lost persisted grant only means the user is asked again,
+    /// the safe direction.
+    fn persist(&self, new_key: &GrantKey) {
         let Some(path) = self.path.as_deref() else {
             return;
         };
-        let always: Vec<GrantKey> = {
-            let g = self.inner.lock().expect("extra-roots mutex poisoned");
-            let mut v: Vec<GrantKey> = g.always.iter().cloned().collect();
-            v.sort();
-            v
-        };
-        let file = PersistedFile { always };
-        if let Err(e) = write_file(path, &file) {
-            tracing::warn!("could not persist extra-roots grants to {path:?}: {e:#}");
+        let result = crate::config::lock::with_locked_file(path, || {
+            let mut merged: HashSet<GrantKey> = read_file(path)
+                .map(|f| f.always.into_iter().collect())
+                .unwrap_or_default();
+            merged.insert(new_key.clone());
+            let mut always: Vec<GrantKey> = merged.iter().cloned().collect();
+            always.sort();
+            write_file(path, &PersistedFile { always })?;
+            Ok(merged)
+        });
+        match result {
+            Ok(merged) => {
+                let mut g = self.inner.lock().expect("extra-roots mutex poisoned");
+                g.always.extend(merged);
+            }
+            Err(e) => {
+                tracing::warn!("could not persist extra-roots grants to {path:?}: {e:#}");
+            }
         }
     }
 }
@@ -418,6 +434,7 @@ mod tests {
 
     #[test]
     fn always_round_trips_through_the_file() {
+        let _g = crate::config::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("extra-roots.yml");
         std::env::set_var(EXTRA_ROOTS_FILE_ENV, &file);
@@ -433,6 +450,43 @@ mod tests {
         let reloaded = ExtraRootStore::load();
         assert!(reloaded.is_durably_allowed("read", Path::new("/opt/thing")));
         assert!(!reloaded.is_durably_allowed("read", Path::new("/opt/other")));
+
+        std::env::remove_var(EXTRA_ROOTS_FILE_ENV);
+    }
+
+    /// Two "processes" (threads, each with its own `ExtraRootStore::load()`)
+    /// race to record *different* `Always` grants against the same on-disk
+    /// file. Without the lock's read-current-then-merge (mirroring
+    /// `grants::persist`), the second writer's rewrite of its own stale
+    /// in-memory `always` set would clobber the first writer's grant — a lost
+    /// update. A freshly loaded third store must see both.
+    #[test]
+    fn concurrent_always_grants_from_two_stores_both_survive() {
+        let _g = crate::config::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("extra-roots.yml");
+        std::env::set_var(EXTRA_ROOTS_FILE_ENV, &file);
+
+        let a = std::thread::spawn(|| {
+            let s = ExtraRootStore::load();
+            s.record("read", Path::new("/ext/a"), ApprovalScope::Always, "req-a");
+        });
+        let b = std::thread::spawn(|| {
+            let s = ExtraRootStore::load();
+            s.record("write", Path::new("/ext/b"), ApprovalScope::Always, "req-b");
+        });
+        a.join().unwrap();
+        b.join().unwrap();
+
+        let reloaded = ExtraRootStore::load();
+        assert!(
+            reloaded.is_durably_allowed("read", Path::new("/ext/a")),
+            "grant recorded by the first store must survive a concurrent write"
+        );
+        assert!(
+            reloaded.is_durably_allowed("write", Path::new("/ext/b")),
+            "grant recorded by the second store must survive a concurrent write"
+        );
 
         std::env::remove_var(EXTRA_ROOTS_FILE_ENV);
     }

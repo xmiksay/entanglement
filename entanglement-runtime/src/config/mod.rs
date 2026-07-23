@@ -62,6 +62,7 @@ use crate::mcp::McpServerConfig;
 pub mod agent_generation;
 pub mod agent_models;
 pub mod atomic;
+mod ceiling_warn;
 pub mod env_file;
 pub mod env_key;
 pub mod lock;
@@ -293,6 +294,7 @@ fn read_layer(layer: ConfigLayer, path: &Path, layers: &mut Vec<RawLayer>) -> Re
 /// run on the combined [`Value`], so a field override keeps its siblings and a
 /// typo in any layer is rejected.
 fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
+    ceiling_warn::warn_project_permission_overrides(raw_layers);
     let mut merged = Value::Null;
     for rl in raw_layers {
         merged = merge_value(merged, rl.doc.clone());
