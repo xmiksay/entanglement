@@ -656,7 +656,16 @@ re-document them here):
   `OutEvent::SkillActive { session, seq, skill_id: Option<String>,
   allowed_tools: Option<Vec<String>> }` mirrors `FileChange`'s shape as the
   wire-facing posture; the stdio `run --format text` head and the TUI
-  transcript both render it as a one-line notice.
+  transcript both render it as a one-line notice. **The same mask now reaches
+  `rhai` bindings** (#477, [ADR-0129](../docs/adr/0129-thread-the-skill-mask-into-rhai-binding-resolution.md),
+  amending ADR-0106): `script::BindingPolicy::capture` folds in a one-time
+  `skill_masked` snapshot alongside the agent mask, so a binding
+  (`read`/`glob`/`grep`/`edit`/`write`/`call`/`bash`) the active skill's
+  `allowed_tools` excludes refuses with the identical message shape a direct
+  call gets, checked after the agent mask — sound as a snapshot since
+  `load_skill` is not itself a binding, so nothing inside a running script
+  can change which skill is active mid-run; clears at the same `Done` the
+  generic route's mask clears at, since both read the same session-keyed map.
 - **Definitions are data, layered** embedded < user < project, later wins; the
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
   Agents (`ENTANGLEMENT_AGENTS_DIR`), skills (`ENTANGLEMENT_SKILLS_DIR`), the
