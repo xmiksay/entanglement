@@ -263,7 +263,14 @@ below realize one model:
   `call: deny` ceiling denies both the literal `call` tool and its `bash`
   member. The `permissions` section stays a pure ceiling (it only *tightens*);
   the orthogonal "always allow" grants (✅ #174) that *raise* an `Ask` live in a
-  separate managed file, not here (see the approval-scope bullet above). Loaded in the
+  separate managed file, not here (see the approval-scope bullet above). Because
+  the **project** layer merges last (trusted, ADR-0047), a repo can also
+  *re-loosen* a key the user's own layer set — that stays legal, but the loader
+  now warns loudly about it (`config::ceiling_warn`): one `tracing::warn!` per
+  `permissions` key the project file sets to a different value than the earlier
+  layers resolved to, so a hostile repo's silent `bash: ask → allow` flip is at
+  least visible at startup (ADR-0047's mitigation is inspection, not
+  restriction). Loaded in the
   runtime only (core has neither `dirs` nor `serde_yaml`). On first run, if the
   user file is missing, the runtime scaffolds a **fully-commented** starter
   template next to it (✅ #219, `config::scaffold_if_missing` writing

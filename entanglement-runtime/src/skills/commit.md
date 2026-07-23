@@ -7,6 +7,7 @@ description: >-
   and body/footer structure.
 allowed_tools:
   - bash
+  - call
   - read
   - grep
 ---
@@ -32,3 +33,8 @@ Then, when the change is not self-explanatory:
 Before writing the message, inspect what is actually staged (`git diff --cached`)
 so the type, scope, and subject describe the real change. Never invent a scope
 you have not confirmed exists.
+
+When the `bash` tool is unavailable (it is opt-in), run git through the `call`
+tool instead — single argv commands like `git diff --cached` or `git log
+--oneline -10` need no shell. Shell composition (pipes, `&&`) still requires
+`bash` (`/bash on`).

@@ -29,5 +29,4 @@ async-trait = { workspace = true }
 async-stream = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
-rand = { workspace = true }
 httpdate = "1"

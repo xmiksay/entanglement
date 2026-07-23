@@ -59,7 +59,10 @@ make tag           # cut a release tag (VERSION=vX.Y.Z): refuses dirty tree / re
 make build | check | clean
 ```
 
-Build jobs capped at 4 via `../.cargo/config.toml`.
+Build jobs capped at 4 via `../.cargo/config.toml`, which also links host
+builds with `lld`; dev-profile tuning (`line-tables-only` debuginfo,
+`opt-level = 1` for deps) lives in the workspace `../Cargo.toml` (#502 safe
+set — the deferred larger trims are ledger row 4).
 
 ## Providers (`skutter`)
 
@@ -129,7 +132,7 @@ the OpenAI-compat surface, which drops the `thoughtSignature` a 2.5 thinking mod
 must round-trip; that opaque per-call token rides the new generic
 `ToolCall.provider_meta: Option<Value>` slot (persisted with the ADR-0064 shim,
 never inspected by core). No key → `EchoLlm`. Detail in
-[`../docs/architecture.md`](../docs/architecture/provider.md). **Per-endpoint**
+[`../docs/architecture/provider.md`](../docs/architecture/provider.md). **Per-endpoint**
 connection pool, retry/backoff, rate-limit (429/`Retry-After`/RPM keyed by base
 URL + API-key hash, ✅ #217, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md);
 the shared pool coordinates across sessions ([ADR-0111](../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)):
@@ -179,9 +182,9 @@ content, bounded, core never sees it) instead of ending the turn (#481). Enablin
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
           | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove
-          | HibernateSession (trusted-only) | Resume (internal, not serialized)
+          | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status | AgentChanged | ModelChanged | GenerationChanged
-          | McpList | McpChanged
+          | McpList | McpChanged | BashChanged
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
           | SkillActive | AmbiguousRetry | SearchResult
@@ -979,7 +982,8 @@ containment for `read`/`edit`/`write` + `glob`/`grep`
 provider API keys scrubbed from `bash`/`call` child env #164, opt-in symmetric
 request-body logging behind `ENTANGLEMENT_LOG_BODIES` #165),
 and the architecture, seams & build-hygiene epic (#200 — built-in profile trio
-deduped to a single source #201, `OutEvent::FileChange` given a real emitter in
+deduped to a single source #201 (since grown to a quartet: `build`/`plan`/
+`explore`/`debug`), `OutEvent::FileChange` given a real emitter in
 the executor #202/[ADR-0060](../docs/adr/0060-filechange-audit-via-executor-as-path-kind-hash.md),
 `tool_runner`'s interception ladder made an explicit pipeline #203, registry
 loaders unified with a shared env-override-honoring loader #204, seam plumbing

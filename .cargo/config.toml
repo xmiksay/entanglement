@@ -2,3 +2,9 @@
 # don't overload the CPU / stall the box. Mirrors the global CARGO_BUILD_JOBS=4.
 [build]
 jobs = 4
+
+# lld links noticeably faster than the default bfd linker and is the dominant
+# cost of a one-file incremental change (#502 safe set). Host-only: cross
+# builds (`cross` for ARM/RISC-V targets) bring their own linker config.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
