@@ -1,6 +1,6 @@
 //! `rhai` — embedded, capability-sandboxed script engine (ADR-0046, amended by
-//! ADR-0115 to add exec bindings and ADR-0129 to thread the session's active
-//! skill mask into binding resolution).
+//! ADR-0115 to add exec bindings, ADR-0129 to thread the session's active
+//! skill mask into binding resolution, and ADR-0130 to marshal `workdir`).
 //!
 //! A runtime-owned host tool that runs a [Rhai](https://rhai.rs) script in one
 //! tool call — the sanctioned replacement for "shell out to `python3`/`node`
@@ -37,6 +37,14 @@
 //! skill's `allowed_tools` refuses the same way a direct call to that tool
 //! would — a script is not a side channel around a loaded skill's restriction.
 //!
+//! `exec`/`bash` also accept an optional `workdir` (#480, ADR-0130:
+//! `exec(command, args, workdir)` / `bash(command, workdir)`), marshalled into
+//! the delegated tool's own `workdir` field. Threading it through means a
+//! workdir-scoped permission rule (`tool{pattern}`, #425/ADR-0116) — previously
+//! inert for a binding call, since the marshalled input carried no `workdir` at
+//! all — now resolves for real (`BindingPolicy::decide`), and the same value
+//! feeds the escape-root gate above with no separate wiring.
+//!
 //! Resource bounds are by construction: `max_operations`, a wall-clock timeout
 //! enforced by the progress callback, `max_call_levels`, and string/array/map
 //! size caps — a runaway script terminates deterministically with a clear error,
@@ -64,7 +72,9 @@ use tokio::sync::oneshot;
 
 use crate::host::truncate_output;
 use crate::pending::{self, PendingDecisions};
-use crate::permission::{min_permission, permission_chain, skill_masked, tool_masked, ActiveSkill};
+use crate::permission::{
+    min_permission, permission_chain, permission_workdir, skill_masked, tool_masked, ActiveSkill,
+};
 use crate::permission_path::grading_arg;
 use crate::seam;
 use crate::subagent::SpawnGuard;
@@ -103,11 +113,15 @@ pub fn rhai_spec() -> ToolSpec {
          read_raw(path) (exact file content, no line numbers — use this before \
          parse_json/parse_yaml), glob(pattern), grep(pattern), grep(pattern, path), \
          edit(path, old, new), edit(path, old, new, replace_all), write(path, \
-         content), exec(command), exec(command, args) (argv exec, no shell — \
-         graded as the `call` tool; named exec() because `call` is a reserved \
-         Rhai keyword for function-pointer invocation), bash(command) (shell \
-         exec via sh -c; only callable when the host has bash enabled — \
-         otherwise unknown-function) — each routed through the same permission \
+         content), exec(command), exec(command, args), exec(command, args, \
+         workdir) (argv exec, no shell — graded as the `call` tool; named \
+         exec() because `call` is a reserved Rhai keyword for function-pointer \
+         invocation), bash(command), bash(command, workdir) (shell exec via \
+         sh -c; only callable when the host has bash enabled — otherwise \
+         unknown-function) — `workdir` runs the command in that directory and \
+         is what a workdir-scoped permission rule (`tool{pattern}`) matches \
+         against, same as a direct `call`/`bash` tool call — each routed through \
+         the same permission \
          checks as the equivalent tool call (read_raw graded identically to \
          read), and each returns the tool's text output (throws on denial/ \
          failure; catch with try/catch). exec/bash inherit a timeout clamped \
@@ -229,13 +243,14 @@ impl BindingPolicy {
 
     /// Resolve one binding call: masked tools do not exist; a tool the active
     /// skill excludes is refused next; otherwise the grade is the
-    /// least-privileged across the whole chain for this tool + argument.
-    /// `read_raw` is graded and masked as an alias of `read` — it is not in
-    /// `BINDING_TOOLS`/a profile's `tools`/`disallowed_tools` at all (never
-    /// advertised, see [`crate::host::ReadRawTool`]), so without this alias a
-    /// profile that restricts `read` would be silently bypassed by a script
-    /// reaching for the unlabeled raw path instead. The same alias applies to
-    /// the skill mask, for the same reason.
+    /// least-privileged across the whole chain for this tool + argument (+
+    /// `workdir` for `exec`/`bash`, #480). `read_raw` is graded and masked as
+    /// an alias of `read` — it is not in `BINDING_TOOLS`/a profile's
+    /// `tools`/`disallowed_tools` at all (never advertised, see
+    /// [`crate::host::ReadRawTool`]), so without this alias a profile that
+    /// restricts `read` would be silently bypassed by a script reaching for
+    /// the unlabeled raw path instead. The same alias applies to the skill
+    /// mask, for the same reason.
     fn decide(&self, tool: &'static str, input: &str) -> Decision {
         let tool = if tool == "read_raw" { "read" } else { tool };
         if self.masked.contains(tool) {
@@ -245,8 +260,12 @@ impl BindingPolicy {
             return Decision::SkillMasked(skill_id.clone());
         }
         let arg = grading_arg(tool, input, self.root.as_deref());
+        let workdir = permission_workdir(tool, input);
         let perm = self.chain.iter().fold(Permission::Allow, |acc, p| {
-            min_permission(acc, p.resolve(tool, arg.as_deref()))
+            min_permission(
+                acc,
+                p.resolve_scoped(tool, arg.as_deref(), workdir.as_deref()),
+            )
         });
         Decision::Perm(perm)
     }
@@ -554,16 +573,18 @@ async fn service_binding(
 /// `bash` the key includes the resolved command line (`grading_arg`, same
 /// extraction the permission grade itself uses, #485 — a no-op for these two
 /// since neither is a path-arg tool, kept for one canonical extraction path)
-/// — the exec surface is open-ended, so an approval must not generalize past
-/// the exact command the user saw on the card. Every other binding keeps the
-/// coarser bare-tool-name key (approve one `edit`, cover the rest of the run)
-/// — that surface is already the fixed, pre-existing "once per function"
-/// behavior this issue leaves unchanged.
+/// **and** the `workdir` (#480) — a workdir-scoped rule (`tool{pattern}`) can
+/// grade the same command differently in two directories, so an approval in
+/// one workdir must not silently clear the same command in another. Every
+/// other binding keeps the coarser bare-tool-name key (approve one `edit`,
+/// cover the rest of the run) — that surface is already the fixed,
+/// pre-existing "once per function" behavior this issue leaves unchanged.
 fn approval_cache_key(tool: &'static str, input: &str, root: Option<&Path>) -> String {
     match tool {
         "call" | "bash" => {
             let arg = grading_arg(tool, input, root).unwrap_or_default();
-            format!("{tool}:{arg}")
+            let workdir = permission_workdir(tool, input).unwrap_or_default();
+            format!("{tool}:{arg}:{workdir}")
         }
         _ => tool.to_string(),
     }
@@ -702,7 +723,11 @@ fn configure_engine(
 /// `bash` is registered only when the host `bash` tool itself is
 /// (`bash_enabled`, i.e. `ENTANGLEMENT_ENABLE_BASH`) — off, `bash(...)` is an
 /// unknown (catchable) script function rather than a graded-then-failing
-/// binding.
+/// binding. Each also gains a `workdir` overload (#480, ADR-0129:
+/// `exec(command, args, workdir)`/`bash(command, workdir)`) that marshals the
+/// value into the delegated tool's own `workdir` field — the same field a
+/// `tool{pattern}` workdir-scoped rule (#425) and the escape-root gate (#446)
+/// both extract, so a script gets identical scoping to a direct tool call.
 fn register_bindings(
     engine: &mut Engine,
     tx: UnboundedSender<BindingCall>,
@@ -796,14 +821,46 @@ fn register_bindings(
             serde_json::json!({ "command": command, "args": args, "timeout": remaining_timeout_secs(start, timeout) }),
         )
     });
+    let t = tx.clone();
+    // #480: an explicit `workdir` so a workdir-scoped permission rule
+    // (`call{pattern}`, #425) and the escape-root gate (#446) both see it —
+    // neither fires for a binding call that never marshals the field.
+    engine.register_fn(
+        "exec",
+        move |command: &str, args: rhai::Array, workdir: &str| {
+            let args = call_args_to_strings(args)?;
+            call_binding(
+                &t,
+                "call",
+                serde_json::json!({
+                    "command": command,
+                    "args": args,
+                    "workdir": workdir,
+                    "timeout": remaining_timeout_secs(start, timeout),
+                }),
+            )
+        },
+    );
     if bash_enabled {
-        let t = tx;
+        let t = tx.clone();
         engine.register_fn("bash", move |command: &str| {
             call_binding(
                 &t,
                 "bash",
                 serde_json::json!({
                     "command": command,
+                    "timeout": remaining_timeout_secs(start, timeout),
+                }),
+            )
+        });
+        let t = tx;
+        engine.register_fn("bash", move |command: &str, workdir: &str| {
+            call_binding(
+                &t,
+                "bash",
+                serde_json::json!({
+                    "command": command,
+                    "workdir": workdir,
                     "timeout": remaining_timeout_secs(start, timeout),
                 }),
             )
@@ -1414,6 +1471,136 @@ mod tests {
             approval_cache_key("edit", r#"{"path":"a.rs"}"#, None),
             approval_cache_key("edit", r#"{"path":"b.rs"}"#, None),
         );
+    }
+
+    /// #480: same command, different `workdir` — a workdir-scoped rule can
+    /// grade these two calls differently, so an approval in one workdir must
+    /// not silently clear the same command in another.
+    #[test]
+    fn approval_cache_key_scopes_exec_tools_by_workdir_too() {
+        let a = approval_cache_key("bash", r#"{"command":"ls","workdir":"/tmp/a"}"#, None);
+        let b = approval_cache_key("bash", r#"{"command":"ls","workdir":"/tmp/b"}"#, None);
+        assert_ne!(
+            a, b,
+            "same command, different workdir must get different cache keys"
+        );
+
+        let a_again = approval_cache_key("bash", r#"{"command":"ls","workdir":"/tmp/a"}"#, None);
+        assert_eq!(a, a_again, "the same command+workdir reuses its cache key");
+
+        // No `workdir` at all is still its own (empty-suffix) key, distinct
+        // from either workdir-scoped variant.
+        let no_workdir = approval_cache_key("bash", r#"{"command":"ls"}"#, None);
+        assert_ne!(no_workdir, a);
+        assert_ne!(no_workdir, b);
+    }
+
+    /// #480/ADR-0130: a workdir-scoped `bash{/tmp/*}: deny` rule fires for a
+    /// binding call that marshals a `workdir` — inert (falls through to the
+    /// profile's default) when the call carries none, exactly like a direct
+    /// tool call with no `workdir` argument.
+    #[test]
+    fn binding_policy_resolves_workdir_scoped_bash_rule() {
+        use entanglement_core::{AgentMode, PermissionProfile};
+
+        let profile = AgentProfile {
+            name: "build".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            provider: None,
+            permission: PermissionProfile::new(Permission::Allow)
+                .with("bash{/tmp/*}", Permission::Deny),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+        };
+        let session = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(session.clone(), profile);
+        let guard = SpawnGuard::new();
+        let base = PermissionProfile::new(Permission::Allow);
+        let policy =
+            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
+
+        assert!(matches!(
+            policy.decide("bash", r#"{"command":"ls","workdir":"/tmp/scratch"}"#),
+            Decision::Perm(Permission::Deny)
+        ));
+        assert!(matches!(
+            policy.decide("bash", r#"{"command":"ls","workdir":"/home/x"}"#),
+            Decision::Perm(Permission::Allow)
+        ));
+        // No `workdir` marshalled at all: the rule never matches, same as
+        // today's behavior before this call carried the field.
+        assert!(matches!(
+            policy.decide("bash", r#"{"command":"ls"}"#),
+            Decision::Perm(Permission::Allow)
+        ));
+    }
+
+    /// #480: `exec`/`bash`'s new three/two-arg overloads marshal `workdir`
+    /// into the dispatched tool's own JSON input; the workdir-less overloads
+    /// leave the field out entirely (not `null`), matching a direct tool
+    /// call's shape.
+    #[test]
+    fn exec_and_bash_bindings_marshal_workdir_when_given() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<BindingCall>();
+        let mut engine = Engine::new_raw();
+        register_bindings(
+            &mut engine,
+            tx,
+            true,
+            Instant::now(),
+            Duration::from_secs(5),
+        );
+
+        let captured: Arc<Mutex<Vec<(&'static str, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured2 = captured.clone();
+        let responder = std::thread::spawn(move || {
+            while let Some(call) = rx.blocking_recv() {
+                captured2
+                    .lock()
+                    .unwrap()
+                    .push((call.tool, call.input.clone()));
+                let _ = call.reply.send(Ok(String::new()));
+            }
+        });
+
+        let _ = engine
+            .eval::<Dynamic>(
+                r#"
+                exec("echo", ["hi"]);
+                exec("echo", ["hi"], "/tmp/x");
+                bash("echo hi");
+                bash("echo hi", "/tmp/y");
+                "#,
+            )
+            .unwrap();
+        // Dropping the engine drops every closure's `tx` clone, closing the
+        // channel so the responder thread's loop ends.
+        drop(engine);
+        responder.join().unwrap();
+
+        let calls = captured.lock().unwrap();
+        assert_eq!(calls.len(), 4);
+        assert!(calls
+            .iter()
+            .all(|(tool, _)| *tool == "call" || *tool == "bash"));
+
+        let parse = |i: usize| -> serde_json::Value { serde_json::from_str(&calls[i].1).unwrap() };
+        assert!(
+            parse(0).get("workdir").is_none(),
+            "exec(cmd, args) carries no workdir field"
+        );
+        assert_eq!(parse(1)["workdir"], "/tmp/x");
+        assert!(
+            parse(2).get("workdir").is_none(),
+            "bash(cmd) carries no workdir field"
+        );
+        assert_eq!(parse(3)["workdir"], "/tmp/y");
     }
 
     #[test]

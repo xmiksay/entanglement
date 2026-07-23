@@ -288,9 +288,26 @@ re-document them here):
   is untouched (`ProfileResolver::resolve` extracts it internally from the raw
   JSON `input` it already receives). The capability fan-out (#418) mirrors the
   arg-scoped case: `call{pattern}` expands to both `call{pattern}` and
-  `bash{pattern}`. The rhai `exec`/`bash` bindings (#419) are **not** covered —
-  they marshal no `workdir` field, so a workdir-scoped rule never fires for a
-  binding call.
+  `bash{pattern}`. The rhai `exec`/`bash` bindings (#419) were **not** covered
+  at first — they marshalled no `workdir` field, so a workdir-scoped rule
+  never fired for a binding call — closed by #480 below.
+- **`rhai` `exec`/`bash` bindings marshal `workdir`** (#480,
+  [ADR-0130](../docs/adr/0130-rhai-exec-bindings-marshal-workdir.md) amending
+  [ADR-0115](../docs/adr/0115-rhai-exec-bindings-call-bash.md)/[ADR-0116](../docs/adr/0116-workdir-scoped-permission-rules-for-bash-call.md)):
+  `exec(command, args, workdir)`/`bash(command, workdir)` overloads marshal an
+  optional `workdir` into the delegated `call`/`bash` tool's own `workdir`
+  field. Two independent fixes were needed, not one: the field previously
+  never rode along at all, *and* `script::BindingPolicy::decide` graded every
+  binding through `PermissionProfile::resolve` (workdir-blind by definition)
+  instead of `resolve_scoped` — fixed to extract `permission_workdir` and call
+  `resolve_scoped` like the direct-call `ProfileResolver` already does. A
+  `tool{pattern}` workdir-scoped rule (#425) now fires for a binding call
+  exactly as for a direct `bash`/`call` call, and the escape-root gate (#446,
+  ADR-0119) picks up the same field with no separate wiring — it already
+  delegated to `permission_workdir`. The per-run `Ask` approval cache key also
+  gained `workdir` alongside the command line (mirroring #419's fix A), since
+  a workdir-scoped rule can now grade the same command differently in two
+  directories.
 - **MCP tools join the capability fan-out via a config-side hint** (#426, part
   of the #416 epic, [ADR-0117](../docs/adr/0117-mcp-tool-capability-fan-out.md),
   deferred by #418/[ADR-0114](../docs/adr/0114-capability-level-permission-keys.md)):
