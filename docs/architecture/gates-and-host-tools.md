@@ -127,8 +127,8 @@ guessing again:
   `read`/`edit`/`write`/`apply_patch` (the create path still works: only the existing ancestor
   is canonicalized), and `glob`/`grep` (`list_files`) drop any match whose
   canonical path escapes — ADR-0008 upgraded by [ADR-0054](../adr/0054-canonicalizing-symlink-safe-root-containment.md)
-  (#163). Not TOCTOU-tight (an OS sandbox via `openat2(RESOLVE_BENEATH)` is
-  deferred).
+  (#163), unless a durable escape-root grant widens it (#482, below). Not
+  TOCTOU-tight (an OS sandbox via `openat2(RESOLVE_BENEATH)` is deferred).
 - **Approval-gated escape (ADR-0109):** containment is no longer absolute — a
   `read`/`edit`/`write`/`apply_patch` path or a `bash`/`call` `workdir` that resolves *outside*
   root can be reached after the user explicitly approves it. The executor detects
@@ -148,9 +148,24 @@ guessing again:
   `ToolCall.id` `ToolRegistry::execute` already had) into the six
   escape-root-capable host tools for this. The host tools consult the store via
   `resolve_under_root_or_grant` to relax containment for the approved path
-  (checked against the symlink-resolved target). `glob`/`grep` stay strictly
-  root-contained; no store wired (`None`) is byte-identical to strict
-  containment. `rhai`'s file/exec bindings route through the identical gate
+  (checked against the symlink-resolved target). No store wired (`None`) is
+  byte-identical to strict containment. **`glob`/`grep` reach outside root
+  through a distinct, narrower mechanism** (#482,
+  [ADR-0132](../adr/0132-glob-grep-escape-root-search-via-durable-grant.md)
+  amending ADR-0109): unlike the six-tool path above, a search never forces
+  its own `Ask` — the executor's `escape_root_target` still returns `None` for
+  `glob`/`grep`, so it never trips the gate at all. Instead
+  `list_files_with_extra_roots` widens its containment check per match: a
+  match whose canonical path escapes root is admitted anyway when it (or an
+  ancestor of it) already carries a **durable** (`Session`/`Always`) `read`
+  grant (`ExtraRootStore::is_durably_allowed_under`, an ancestor walk over the
+  existing per-tool grant set — no new store, no enumeration API). A `Once`
+  grant never widens a search, only `read`/`edit`/etc.'s own exact-path check
+  — a search's match count is unbounded ahead of time, so treating it as
+  consuming a single-use token would let one approval cover arbitrarily many
+  reads. `GlobTool`/`GrepTool` gained the same `with_extra_roots` builder the
+  other four escape-root tools have; `host/mod.rs`'s `list_files`/`FileList`
+  moved into `host/walk.rs` to stay under the 400-line file cap. `rhai`'s file/exec bindings route through the identical (six-tool) gate
   (#446, [ADR-0119](../adr/0119-rhai-bindings-route-through-the-escape-root-gate.md)):
   `service_binding` forces the same approval + warning for a first-time
   out-of-root binding call and records the grant into the same

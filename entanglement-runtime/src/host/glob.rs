@@ -1,20 +1,35 @@
 //! `glob` — list files matching a glob pattern (e.g. `**/*.rs`), paths
 //! relative to the working directory.
 
-use super::{list_files, truncate_output};
+use super::{list_files_with_extra_roots, truncate_output};
+use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::sync::Arc;
 
 pub struct GlobTool {
     root: std::path::PathBuf,
+    /// Widens a search into a directory already covered by a durable `read`
+    /// grant (ADR-0109/#482). `None` keeps strict containment.
+    extra_roots: Option<Arc<ExtraRootStore>>,
 }
 
 impl GlobTool {
     pub fn new(root: std::path::PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            extra_roots: None,
+        }
+    }
+
+    /// Let a search descend into a directory the user already granted `read`
+    /// access to (#482) — see [`super::list_files_with_extra_roots`].
+    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
+        self.extra_roots = Some(extra);
+        self
     }
 }
 
@@ -57,7 +72,12 @@ impl Tool for GlobTool {
         let parsed: GlobInput = serde_json::from_str(input)
             .context("invalid input to glob: expected {\"pattern\": string, ...}")?;
         tracing::debug!(pattern = %parsed.pattern, root = %self.root.display(), "glob tool executing");
-        let list = list_files(&self.root, &parsed.pattern, &parsed.exclude)?;
+        let list = list_files_with_extra_roots(
+            &self.root,
+            &parsed.pattern,
+            &parsed.exclude,
+            self.extra_roots.as_deref(),
+        )?;
         tracing::debug!(
             files = list.files.len(),
             matched_dirs = list.matched_dirs,

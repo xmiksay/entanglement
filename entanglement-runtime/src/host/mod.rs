@@ -16,7 +16,8 @@
 //! canonicalized and must stay under the canonical root (ADR-0054, #163), so a
 //! `root/link -> /etc` symlink can't be followed out of tree by `read`/`edit`/
 //! `write`/`apply_patch`, and `glob`/`grep` drop any match whose canonical
-//! path escapes.
+//! path escapes — unless it (or an ancestor of it) has an existing durable
+//! `read` grant (#482, [`crate::extra_roots::ExtraRootStore::is_durably_allowed_under`]).
 //! Output is byte-capped so a runaway
 //! listing or huge file can't silently consume the context window. `bash`/
 //! `call` run the command rooted at `root` (or at a validated `workdir`) but
@@ -44,6 +45,7 @@ pub mod jobs;
 pub mod read;
 pub mod sandbox;
 pub mod unified_diff;
+mod walk;
 pub mod write;
 
 pub use apply_patch::ApplyPatchTool;
@@ -56,6 +58,8 @@ pub use grep::GrepTool;
 pub use jobs::JobRegistry;
 pub use read::{ReadRawTool, ReadTool};
 pub use sandbox::{SandboxBackend, SandboxPolicy};
+pub(crate) use walk::MAX_RESULTS;
+pub use walk::{list_files, list_files_with_extra_roots, FileList};
 pub use write::WriteTool;
 
 /// Hard cap on a single tool's textual output, in bytes. Larger output is
@@ -63,10 +67,6 @@ pub use write::WriteTool;
 /// normal source file fits, but a minified bundle or huge directory listing
 /// can't blow the window. See ADR-0008.
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
-
-/// Cap on how many paths `glob` returns and how many matches `grep` reports —
-/// bounds the work + output for pathologically large trees.
-const MAX_RESULTS: usize = 1000;
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Shared helpers
@@ -269,94 +269,6 @@ pub fn truncate_head_tail(s: String) -> String {
     out
 }
 
-/// Result of [`list_files`]: the matched files plus enough metadata for the
-/// caller to distinguish "no match at all" from "matched only directories" or
-/// "every entry errored." Without that distinction a bare-`**` pattern (which
-/// matches directories only) looks identical to a typo, and the model has no
-/// way to self-correct — see ADR-0016.
-#[derive(Debug, Default)]
-pub struct FileList {
-    /// Files (in arbitrary glob-walk order), already capped at [`MAX_RESULTS`].
-    pub files: Vec<PathBuf>,
-    /// Entries the pattern matched but that were directories (filtered out).
-    pub matched_dirs: usize,
-    /// Entries the glob iterator yielded as `Err` (permissions, IO, etc.).
-    pub skipped_errors: usize,
-}
-
-impl FileList {
-    /// True iff the pattern matched at least one entry of any kind.
-    #[allow(dead_code)]
-    pub fn matched_anything(&self) -> bool {
-        !self.files.is_empty() || self.matched_dirs > 0
-    }
-}
-
-/// Enumerate files under `root` matching `pattern` (a glob relative to root),
-/// yielding display paths relative to root. `excludes` is a caller-supplied
-/// list of glob patterns (matched against the root-relative path) additional
-/// entries are dropped for — on top of that, any path with a `.git` path
-/// component is **always** dropped, unconditionally: `.git` internals are
-/// large, mostly binary, and never something an agent needs to read or
-/// search, so the exclusion isn't tied to (and can't be defeated by) the
-/// `excludes` list (ADR-0099). Skips directories (counted in
-/// [`FileList::matched_dirs`]) and logs unreadable entries as `warn!` (counted
-/// in [`FileList::skipped_errors`]) instead of silently dropping them.
-/// Excluded entries are dropped before either count, so an excluded subtree
-/// looks to the caller like it was never in the walk at all. Bounds the walk
-/// at [`MAX_RESULTS`] files.
-pub fn list_files(root: &Path, pattern: &str, excludes: &[String]) -> Result<FileList> {
-    let abs = root.join(pattern).to_string_lossy().into_owned();
-    let entries = ::glob::glob(&abs).with_context(|| format!("invalid glob: {pattern}"))?;
-    let exclude_patterns: Vec<::glob::Pattern> = excludes
-        .iter()
-        .map(|p| ::glob::Pattern::new(p).with_context(|| format!("invalid exclude pattern: {p}")))
-        .collect::<Result<_>>()?;
-    // Containment (#163): a `..` or absolute `pattern` makes the glob walk
-    // outside root, and a symlink under root resolves elsewhere — route glob/
-    // grep through the same boundary as read/write by dropping any entry whose
-    // canonical path escapes the canonical root (ADR-0054).
-    let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let mut list = FileList::default();
-    for entry in entries {
-        let p = match entry {
-            Ok(p) => p,
-            Err(err) => {
-                tracing::warn!(?err, pattern, "glob entry skipped");
-                list.skipped_errors += 1;
-                continue;
-            }
-        };
-        if p.components().any(|c| c.as_os_str() == ".git") {
-            continue;
-        }
-        if !exclude_patterns.is_empty() {
-            let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy();
-            if exclude_patterns.iter().any(|pat| pat.matches(&rel)) {
-                continue;
-            }
-        }
-        let contained = p
-            .canonicalize()
-            .map(|c| c.starts_with(&canon_root))
-            .unwrap_or(false);
-        if !contained {
-            continue;
-        }
-        match std::fs::metadata(&p) {
-            Ok(m) if m.is_file() => {
-                list.files.push(p);
-                if list.files.len() >= MAX_RESULTS {
-                    break;
-                }
-            }
-            Ok(m) if m.is_dir() => list.matched_dirs += 1,
-            _ => {}
-        }
-    }
-    Ok(list)
-}
-
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ host_tools registry
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -370,28 +282,33 @@ pub fn host_tools(root: PathBuf) -> ToolRegistry {
 }
 
 /// [`host_tools`] with an optional escape-root grant store (ADR-0109) wired into
-/// the path-touching tools (`read`/`edit`/`write`/`apply_patch`), so an approved
-/// out-of-root path is reachable. `glob`/`grep` stay strictly root-contained
-/// (their pattern-relative search has no single path to approve). `None` is
-/// byte-identical to the pre-ADR-0109 strict sextet.
+/// every tool that can reach outside root: the path-touching quartet
+/// (`read`/`edit`/`write`/`apply_patch`), so an approved out-of-root path is
+/// reachable, and `glob`/`grep` (#482), which never force their own approval
+/// but widen a search into a directory already covered by a durable `read`
+/// grant. `None` is byte-identical to the pre-ADR-0109 strict sextet.
 pub fn host_tools_with_extra_roots(
     root: PathBuf,
     extra: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     let mut read = ReadTool::new(root.clone());
+    let mut glob = GlobTool::new(root.clone());
+    let mut grep = GrepTool::new(root.clone());
     let mut edit = EditTool::new(root.clone());
     let mut write = WriteTool::new(root.clone());
     let mut apply_patch = ApplyPatchTool::new(root.clone());
     if let Some(e) = &extra {
         read = read.with_extra_roots(e.clone());
+        glob = glob.with_extra_roots(e.clone());
+        grep = grep.with_extra_roots(e.clone());
         edit = edit.with_extra_roots(e.clone());
         write = write.with_extra_roots(e.clone());
         apply_patch = apply_patch.with_extra_roots(e.clone());
     }
     reg.register(read);
-    reg.register(GlobTool::new(root.clone()));
-    reg.register(GrepTool::new(root.clone()));
+    reg.register(glob);
+    reg.register(grep);
     reg.register(edit);
     reg.register(write);
     reg.register(apply_patch);
@@ -905,6 +822,157 @@ mod tests {
             !names.iter().any(|n| n.contains("leak.txt")),
             "symlinked out-of-tree file leaked: {names:?}"
         );
+    }
+
+    /// #482: a directory outside root with a durable `read` grant is
+    /// searchable — matches under it are surfaced instead of dropped.
+    #[test]
+    fn list_files_with_extra_roots_admits_a_durably_granted_directory() {
+        use crate::extra_roots::ExtraRootStore;
+
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("lib.rs"), "x\n").unwrap();
+        let canon_outside = outside.path.canonicalize().unwrap();
+
+        let store = ExtraRootStore::ephemeral();
+        store.record(
+            "read",
+            &canon_outside,
+            entanglement_core::ApprovalScope::Session,
+            "req-1",
+        );
+
+        let pattern = format!("{}/**/*", outside.path.display());
+        let list = list_files_with_extra_roots(&dir.path, &pattern, &[], Some(&store)).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("lib.rs")),
+            "granted external file should be listed: {names:?}"
+        );
+    }
+
+    /// #482: without a matching grant, an out-of-root pattern is still dropped
+    /// exactly as before — passing a store doesn't change unrelated behavior.
+    #[test]
+    fn list_files_with_extra_roots_still_drops_ungranted_matches() {
+        use crate::extra_roots::ExtraRootStore;
+
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("lib.rs"), "x\n").unwrap();
+
+        let store = ExtraRootStore::ephemeral();
+        let pattern = format!("{}/**/*", outside.path.display());
+        let list = list_files_with_extra_roots(&dir.path, &pattern, &[], Some(&store)).unwrap();
+        assert!(list.files.is_empty(), "{:?}", list.files);
+    }
+
+    /// #482: a `Once` grant on the external directory must not enable search —
+    /// only `Session`/`Always` widen `list_files`.
+    #[test]
+    fn list_files_with_extra_roots_ignores_once_grant() {
+        use crate::extra_roots::ExtraRootStore;
+
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("lib.rs"), "x\n").unwrap();
+        let canon_outside = outside.path.canonicalize().unwrap();
+
+        let store = ExtraRootStore::ephemeral();
+        store.record(
+            "read",
+            &canon_outside,
+            entanglement_core::ApprovalScope::Once,
+            "req-1",
+        );
+
+        let pattern = format!("{}/**/*", outside.path.display());
+        let list = list_files_with_extra_roots(&dir.path, &pattern, &[], Some(&store)).unwrap();
+        assert!(
+            list.files.is_empty(),
+            "a Once grant must not enable search: {:?}",
+            list.files
+        );
+    }
+
+    /// #482: a symlink inside the granted directory pointing *outside* it must
+    /// not leak matches — the grant only widens containment to the granted
+    /// directory (and its real descendants), not wherever a symlink redirects.
+    #[cfg(unix)]
+    #[test]
+    fn list_files_with_extra_roots_does_not_leak_through_a_symlink_out_of_the_grant() {
+        use crate::extra_roots::ExtraRootStore;
+
+        let dir = TempDir::new();
+        let granted = TempDir::new();
+        let secret = TempDir::new();
+        std::fs::write(secret.join("leak.txt"), "x\n").unwrap();
+        std::os::unix::fs::symlink(&secret.path, granted.join("escape")).unwrap();
+        std::fs::write(granted.join("inside.txt"), "x\n").unwrap();
+        let canon_granted = granted.path.canonicalize().unwrap();
+
+        let store = ExtraRootStore::ephemeral();
+        store.record(
+            "read",
+            &canon_granted,
+            entanglement_core::ApprovalScope::Session,
+            "req-1",
+        );
+
+        let pattern = format!("{}/**/*", granted.path.display());
+        let list = list_files_with_extra_roots(&dir.path, &pattern, &[], Some(&store)).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("inside.txt")),
+            "granted directory's own file should be listed: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("leak.txt")),
+            "symlink out of the granted directory must not leak: {names:?}"
+        );
+    }
+
+    /// #482: `GlobTool`/`GrepTool` end-to-end — a durable grant on an external
+    /// directory makes both tools able to search it via `host_tools_with_extra_roots`.
+    #[tokio::test]
+    async fn glob_and_grep_search_a_durably_granted_directory() {
+        use crate::extra_roots::ExtraRootStore;
+        use std::sync::Arc;
+
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("lib.rs"), "fn needle() {}\n").unwrap();
+        let canon_outside = outside.path.canonicalize().unwrap();
+
+        let store = Arc::new(ExtraRootStore::ephemeral());
+        store.record(
+            "read",
+            &canon_outside,
+            entanglement_core::ApprovalScope::Always,
+            "req-1",
+        );
+
+        let glob_tool = GlobTool::new(dir.path.clone()).with_extra_roots(store.clone());
+        let pattern = format!(r#"{{"pattern":"{}/**/*.rs"}}"#, outside.path.display());
+        let out = glob_tool.run(&pattern).await.unwrap();
+        assert!(out.contains("lib.rs"), "got: {out}");
+
+        let grep_tool = GrepTool::new(dir.path.clone()).with_extra_roots(store);
+        let grep_input = format!(
+            r#"{{"pattern":"needle","path":"{}/**/*"}}"#,
+            outside.path.display()
+        );
+        let out = grep_tool.run(&grep_input).await.unwrap();
+        assert!(out.contains("needle"), "got: {out}");
     }
 
     #[test]
