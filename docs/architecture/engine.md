@@ -245,8 +245,9 @@ Its non-delta arrival also delimits the re-streamed text, so a head (the TUI
 transcript, `subagent.rs`'s answer collector) starts a fresh segment rather
 than concatenating consecutive rounds. **(2) An *empty* ambiguous round commits
 nothing** — a stream that died before any text would otherwise push
-`content: []`, which the strict clients (`anthropic.rs`, `gemini/request.rs`)
-drop, leaving the retry request with two adjacent user turns the provider
+`content: []`, which the strict clients (`anthropic/request.rs`,
+`gemini/request.rs`) drop, leaving the retry request with two adjacent user
+turns the provider
 rejects with a 400. Core skips that empty commit, and the strict clients also
 coalesce adjacent same-role turns (`coalesce_same_role`), so the nudge landing
 next to the original prompt stays well-formed. The retry count lives on

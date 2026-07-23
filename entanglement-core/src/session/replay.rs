@@ -9,7 +9,32 @@ use anyhow::Result;
 use super::{Session, TurnState};
 use crate::protocol::{InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::{ContentPart, ToolCall};
+use entanglement_provider::{ContentPart, Message, ToolCall};
+
+/// Flush the accumulated partial assistant round — text, persisted search
+/// blocks (#481), tool calls — into `session.ctx` as one message, mirroring
+/// the live commit in `session/round.rs`. A no-op when nothing is pending.
+/// Clears all three accumulators on flush.
+fn flush_pending_assistant(
+    session: &mut Session,
+    pending_text: &mut String,
+    pending_tools: &mut Vec<ToolCall>,
+    pending_search: &mut Vec<ContentPart>,
+) {
+    if pending_text.is_empty() && pending_tools.is_empty() && pending_search.is_empty() {
+        return;
+    }
+    let mut content: Vec<ContentPart> = Vec::new();
+    if !pending_text.is_empty() {
+        content.push(ContentPart::text(pending_text.clone()));
+    }
+    content.append(pending_search);
+    session
+        .ctx
+        .push(Message::assistant_content(content, pending_tools.clone()));
+    pending_text.clear();
+    pending_tools.clear();
+}
 
 impl Session {
     /// Resume a session from replayed log records.
@@ -81,6 +106,10 @@ impl Session {
         session.children = children;
         let mut pending_text: String = String::new();
         let mut pending_tools: Vec<ToolCall> = Vec::new();
+        // Persisted search-result blocks (#481) accumulated for the assistant
+        // message currently being reconstructed — the replay-time mirror of
+        // `session/round.rs`'s live `content_blocks`.
+        let mut pending_search: Vec<ContentPart> = Vec::new();
         // Reconstructed tool results keyed by request id — multimodal so an image
         // read (#221) rebuilds as its image block, not the display placeholder.
         let mut pending_tool_outputs: Vec<(String, Vec<ContentPart>)> = Vec::new();
@@ -96,13 +125,12 @@ impl Session {
             max_seq = max_seq.max(out_event.seq().unwrap_or(0));
 
             if let Some(InMsg::Prompt { content, .. }) = in_msg {
-                if !pending_text.is_empty() || !pending_tools.is_empty() {
-                    session
-                        .ctx
-                        .push_assistant(pending_text.clone(), pending_tools.clone());
-                    pending_text.clear();
-                    pending_tools.clear();
-                }
+                flush_pending_assistant(
+                    &mut session,
+                    &mut pending_text,
+                    &mut pending_tools,
+                    &mut pending_search,
+                );
                 for (request_id, output) in &pending_tool_outputs {
                     session
                         .ctx
@@ -131,6 +159,12 @@ impl Session {
                 OutEvent::ToolCallDelta { .. } => {
                     // Streaming arg fragments (#194) are display-only; the
                     // assembled `ToolCall` below reconstructs the call for context.
+                }
+                OutEvent::SearchResult { part, .. } => {
+                    // Persisted provider-search block (#481): accumulated
+                    // alongside `pending_text`/`pending_tools`, flushed into
+                    // the same assistant message at the next commit point.
+                    pending_search.push(part.clone());
                 }
                 OutEvent::ToolCall {
                     request_id,
@@ -222,13 +256,12 @@ impl Session {
                 // replay ignores them. A resuming head folds them from the log
                 // itself to restore its plan/task panels.
                 OutEvent::Done { .. } => {
-                    if !pending_text.is_empty() || !pending_tools.is_empty() {
-                        session
-                            .ctx
-                            .push_assistant(pending_text.clone(), pending_tools.clone());
-                        pending_text.clear();
-                        pending_tools.clear();
-                    }
+                    flush_pending_assistant(
+                        &mut session,
+                        &mut pending_text,
+                        &mut pending_tools,
+                        &mut pending_search,
+                    );
                     for (request_id, output) in &pending_tool_outputs {
                         session
                             .ctx
@@ -261,13 +294,12 @@ impl Session {
                     kept,
                     ..
                 } => {
-                    if !pending_text.is_empty() || !pending_tools.is_empty() {
-                        session
-                            .ctx
-                            .push_assistant(pending_text.clone(), pending_tools.clone());
-                        pending_text.clear();
-                        pending_tools.clear();
-                    }
+                    flush_pending_assistant(
+                        &mut session,
+                        &mut pending_text,
+                        &mut pending_tools,
+                        &mut pending_search,
+                    );
                     for (request_id, output) in &pending_tool_outputs {
                         session
                             .ctx
@@ -285,13 +317,12 @@ impl Session {
                 // then push the nudge — so a resumed session's history matches
                 // what the live model saw, instead of merging both rounds' text.
                 OutEvent::AmbiguousRetry { nudge, .. } => {
-                    if !pending_text.is_empty() || !pending_tools.is_empty() {
-                        session
-                            .ctx
-                            .push_assistant(pending_text.clone(), pending_tools.clone());
-                        pending_text.clear();
-                        pending_tools.clear();
-                    }
+                    flush_pending_assistant(
+                        &mut session,
+                        &mut pending_text,
+                        &mut pending_tools,
+                        &mut pending_search,
+                    );
                     for (request_id, output) in &pending_tool_outputs {
                         session
                             .ctx
@@ -316,9 +347,14 @@ impl Session {
         // not a quota. The fold above already dropped every child record, so
         // this tail is the resumed root's own.
         if !pending_tools.is_empty() {
+            let mut content: Vec<ContentPart> = Vec::new();
+            if !pending_text.is_empty() {
+                content.push(ContentPart::text(pending_text.clone()));
+            }
+            content.extend(pending_search.iter().cloned());
             session
                 .ctx
-                .push_assistant(pending_text.clone(), pending_tools.clone());
+                .push(Message::assistant_content(content, pending_tools.clone()));
             let resolved: HashSet<&str> = pending_tool_outputs
                 .iter()
                 .map(|(id, _)| id.as_str())
@@ -454,6 +490,62 @@ mod tests {
                 (Assistant, "final".to_string()),
             ],
             "the retry boundary and nudge must survive replay distinctly"
+        );
+    }
+
+    /// A `SearchResult` (#481) folds into the same assistant message as the
+    /// surrounding `TextDelta`s, not a separate one — mirroring the live
+    /// commit in `session/round.rs`, which appends search blocks after the
+    /// round's text in one `Message::assistant_content` push.
+    #[test]
+    fn replay_folds_search_result_into_the_assistant_message_content() {
+        let cfg = EngineConfig::default();
+        let sid = SessionId::new("root");
+        let part = entanglement_provider::ContentPart::provider_search(
+            "anthropic",
+            "[web_search] rust async",
+            serde_json::json!({ "type": "server_tool_use", "id": "srvtoolu_1" }),
+        );
+        let records: Vec<(Option<InMsg>, OutEvent)> = vec![
+            (None, started("root", None, None)),
+            (
+                Some(InMsg::prompt(sid.clone(), "search for rust async")),
+                OutEvent::TextDelta {
+                    session: sid.clone(),
+                    seq: 1,
+                    text: "looking it up".into(),
+                },
+            ),
+            (
+                None,
+                OutEvent::SearchResult {
+                    session: sid.clone(),
+                    seq: 2,
+                    part: part.clone(),
+                },
+            ),
+            (
+                None,
+                OutEvent::Done {
+                    session: sid.clone(),
+                    seq: 3,
+                },
+            ),
+        ];
+        let s = Session::replay(&records, &cfg, &sid).unwrap();
+        let msgs = s.ctx.messages();
+        assert_eq!(msgs.len(), 2, "user prompt + one assistant message");
+        let assistant = &msgs[1];
+        assert_eq!(
+            assistant.role,
+            entanglement_provider::MessageRole::Assistant
+        );
+        assert_eq!(
+            assistant.content,
+            vec![
+                entanglement_provider::ContentPart::text("looking it up"),
+                part,
+            ]
         );
     }
 

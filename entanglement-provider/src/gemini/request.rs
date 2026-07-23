@@ -142,7 +142,11 @@ fn tool_call_part(tc: &ToolCall) -> Value {
 }
 
 /// Render message content to Gemini parts: text → `{ text }`, image → base64
-/// `{ inlineData: { mimeType, data } }` (#221).
+/// `{ inlineData: { mimeType, data } }` (#221). A [`ContentPart::ProviderSearch`]
+/// block (#481) renders as its `summary` text — Gemini has no native block
+/// format to replay a search call/result verbatim (and no provider-side web
+/// search of its own, see `crate::gemini`'s module doc), so `summary` is the
+/// portable fallback, same as the OpenAI-compat converter.
 fn content_parts(content: &[ContentPart]) -> Vec<Value> {
     content
         .iter()
@@ -152,6 +156,7 @@ fn content_parts(content: &[ContentPart]) -> Vec<Value> {
             ContentPart::Image {
                 source: ImageSource::Base64 { media_type, data },
             } => Some(image_part(media_type, data)),
+            ContentPart::ProviderSearch { summary, .. } => Some(json!({ "text": summary })),
         })
         .collect()
 }

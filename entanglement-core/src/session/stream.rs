@@ -12,14 +12,18 @@ use tokio::sync::{broadcast, mpsc};
 use super::emit::{emit_turn_error, next_seq};
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
-use entanglement_provider::{LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage};
+use entanglement_provider::{
+    ContentPart, LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage,
+};
 
 /// Outcome of one streamed round-trip.
 pub(super) enum StreamedRound {
-    /// Stream completed: committed-ready text, assembled calls, `Finish` payload.
+    /// Stream completed: committed-ready text, assembled calls, any persisted
+    /// search-result blocks (#481), `Finish` payload.
     Complete {
         text: String,
         tool_calls: Vec<ToolCall>,
+        content_blocks: Vec<ContentPart>,
         finish: Option<(Option<StopReason>, Usage)>,
     },
     /// `Stop` / inbox close arrived mid-stream (`Idle` already emitted for the
@@ -55,6 +59,7 @@ pub(super) async fn stream_round(
     let mut attempt: usize = 0;
     let mut text_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut content_blocks: Vec<ContentPart> = Vec::new();
     let mut finish: Option<(Option<StopReason>, Usage)> = None;
     let mut shown = false;
     let stream_err: Option<String>;
@@ -167,6 +172,7 @@ pub(super) async fn stream_round(
                     }
                 }
                 Ok(LlmEvent::ToolCall(call)) => tool_calls.push(call),
+                Ok(LlmEvent::ContentBlock(part)) => content_blocks.push(part),
                 Ok(LlmEvent::Finish { stop_reason, usage }) => finish = Some((stop_reason, usage)),
                 Err(e) => {
                     attempt_err = Some(e.to_string());
@@ -187,6 +193,7 @@ pub(super) async fn stream_round(
                     // Nothing was shown, so re-request from a clean slate.
                     text_buf.clear();
                     tool_calls.clear();
+                    content_blocks.clear();
                     finish = None;
                     tracing::warn!(
                         error = %e,
@@ -225,6 +232,7 @@ pub(super) async fn stream_round(
     StreamedRound::Complete {
         text: text_buf,
         tool_calls,
+        content_blocks,
         finish,
     }
 }

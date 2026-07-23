@@ -11,13 +11,15 @@ use std::collections::VecDeque;
 
 use tokio::sync::{broadcast, mpsc};
 
-use super::emit::{emit_tool_call, emit_tool_exec, emit_turn_done, emit_usage, next_seq};
+use super::emit::{
+    emit_search_result, emit_tool_call, emit_tool_exec, emit_turn_done, emit_usage, next_seq,
+};
 use super::stream::{stream_round, StreamedRound};
 use super::turn_state::TurnState;
 use super::{Session, SessionCmd};
 use crate::protocol::{OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::{StopReason, ToolSpec};
+use entanglement_provider::{ContentPart, Message, StopReason, ToolSpec};
 
 /// Injected as a user-role message when a round ends with no tool calls and
 /// an ambiguous stop_reason (ADR-0118) — steers a possibly-truncated model to
@@ -120,13 +122,14 @@ pub(super) async fn run_attempt(
         }
     }
 
-    let (text_buf, tool_calls, finish) =
+    let (text_buf, tool_calls, content_blocks, finish) =
         match stream_round(session, rx, s, events, stash, specs, system_prompt).await {
             StreamedRound::Complete {
                 text,
                 tool_calls,
+                content_blocks,
                 finish,
-            } => (text, tool_calls, finish),
+            } => (text, tool_calls, content_blocks, finish),
             // Stop / inbox close mid-stream — the turn ends but the session
             // stays alive (cancel semantics, ADR-0017).
             StreamedRound::Cancelled => return RoundAttempt::Cancelled,
@@ -170,16 +173,29 @@ pub(super) async fn run_attempt(
     let ambiguous = tool_calls.is_empty() && !confident;
 
     // Don't commit an *empty* assistant message on an ambiguous round: a
-    // stream that died before emitting any text (the motivating Ollama case)
-    // would otherwise push `content: []`, which the strict clients drop
-    // entirely (`anthropic.rs`/`gemini` skip a block-less assistant) —
-    // leaving the retry request with two adjacent user turns the provider
-    // rejects with a 400 (ADR-0118). Replay mirrors this: an empty round logs
-    // no `TextDelta`, so its `AmbiguousRetry` fold flushes nothing.
-    // (The strict clients also coalesce the resulting adjacent user turns —
-    // the original prompt + the nudge — for the same reason.)
-    if !(ambiguous && text_buf.is_empty()) {
-        s.ctx.push_assistant(text_buf.clone(), tool_calls.clone());
+    // stream that died before emitting any text or search content (the
+    // motivating Ollama case) would otherwise push `content: []`, which the
+    // strict clients drop entirely (`anthropic`/`gemini` skip a block-less
+    // assistant) — leaving the retry request with two adjacent user turns the
+    // provider rejects with a 400 (ADR-0118). Replay mirrors this: an empty
+    // round logs no `TextDelta`/`SearchResult`, so its `AmbiguousRetry` fold
+    // flushes nothing. (The strict clients also coalesce the resulting
+    // adjacent user turns — the original prompt + the nudge — for the same
+    // reason.)
+    let mut content: Vec<ContentPart> = Vec::new();
+    if !text_buf.is_empty() {
+        content.push(ContentPart::text(text_buf.clone()));
+    }
+    content.extend(content_blocks.iter().cloned());
+    if !(ambiguous && content.is_empty()) {
+        // Persisted before the message itself is pushed (#481): each search
+        // block gets its own seq-bearing `SearchResult` so `Session::replay`
+        // can reconstruct this exact content, mirroring `AmbiguousRetry`.
+        for part in &content_blocks {
+            emit_search_result(events, session, part.clone(), &s.seq);
+        }
+        s.ctx
+            .push(Message::assistant_content(content, tool_calls.clone()));
     }
     tracing::debug!(
         text_len = text_buf.len(),

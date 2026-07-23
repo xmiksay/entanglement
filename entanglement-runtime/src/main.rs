@@ -490,6 +490,19 @@ fn openai_wire_config(
     ))
 }
 
+/// Anthropic web-search server-tool version for `model` (#481, follow-up to
+/// the hardcoded `_20250305`): the catalog's `ModelEntry::web_search_tool_version`
+/// capability flag, or `None` to keep the client's own fallback.
+fn web_search_tool_version(
+    entry: &ProviderEntry,
+    model: &str,
+    catalog: &Catalog,
+) -> Option<String> {
+    catalog
+        .model(&entry.name, model)
+        .and_then(|m| m.web_search_tool_version.clone())
+}
+
 /// Anthropic-wire provider. Always keyed; base is the client's own default.
 fn anthropic_wire_config(
     entry: &ProviderEntry,
@@ -498,8 +511,14 @@ fn anthropic_wire_config(
     user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
     let model = resolve_model(entry, user_config);
-    let llm_factory =
-        anthropic_factory_for(entry, &model, http_client, web_search_config(user_config)).ok()?;
+    let llm_factory = anthropic_factory_for(
+        entry,
+        &model,
+        http_client,
+        web_search_config(user_config),
+        web_search_tool_version(entry, &model, catalog),
+    )
+    .ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -601,12 +620,14 @@ fn openai_factory_for(
 
 /// Build an Anthropic-wire [`LlmFactory`] for an explicit `(entry, model)`.
 /// Shared by startup and the live-switch resolver (#218). Always keyed;
-/// `Err(message)` when the key env is absent/unset.
+/// `Err(message)` when the key env is absent/unset. `web_search_tool_version`
+/// selects the server-tool type (#481) when web search is enabled.
 fn anthropic_factory_for(
     entry: &ProviderEntry,
     model: &str,
     http_client: &HttpClient,
     web_search: Option<WebSearchConfig>,
+    web_search_tool_version: Option<String>,
 ) -> Result<LlmFactory, String> {
     let key_env = entry
         .key_env
@@ -619,6 +640,7 @@ fn anthropic_factory_for(
         resolve_rpm(entry),
         resolve_concurrency(entry),
         web_search,
+        web_search_tool_version,
         http_client.clone(),
     ))
 }
@@ -642,9 +664,13 @@ fn build_model_resolver(
             .ok_or_else(|| format!("unknown provider `{provider}`"))?;
         let llm_factory = match entry.wire {
             Wire::Openai => openai_factory_for(entry, model, &http_client, web_search.clone())?,
-            Wire::Anthropic => {
-                anthropic_factory_for(entry, model, &http_client, web_search.clone())?
-            }
+            Wire::Anthropic => anthropic_factory_for(
+                entry,
+                model,
+                &http_client,
+                web_search.clone(),
+                web_search_tool_version(entry, model, &catalog),
+            )?,
             Wire::Gemini => gemini_factory_for(entry, model, &http_client)?,
         };
         Ok(ResolvedModel {

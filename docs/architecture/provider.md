@@ -59,8 +59,8 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 
 | client (`entanglement-provider`) | wire format | serves | auth |
 | --- | --- | --- | --- |
-| `OpenAiLlm` (`openai.rs`) | `/chat/completions` SSE | **z.ai** (GLM, entanglement's primary), **OpenAI**, **Ollama** `/v1` | `Bearer` or none (Ollama) |
-| `AnthropicLlm` (`anthropic.rs`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
+| `OpenAiLlm` (`openai/`) | `/chat/completions` SSE | **z.ai** (GLM, entanglement's primary), **OpenAI**, **Ollama** `/v1` | `Bearer` or none (Ollama) |
+| `AnthropicLlm` (`anthropic/`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
 | `GeminiLlm` (`gemini.rs`) | `:streamGenerateContent?alt=sse` | Google Gemini | `x-goog-api-key` |
 
 - `OpenAiLlm` is one generic client `{ base_url, api_key: Option, default_model }`
@@ -68,10 +68,15 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
   exist, but the *default* base per provider now comes from the catalog (below);
   `openai_factory(base, key, model, rpm, concurrency, web_search)` builds an
-  `LlmFactory`.
+  `LlmFactory`. Split into `openai/{mod,request,sse}.rs` (#481) to stay under the
+  400-line file cap — `mod.rs` owns the client + streaming loop, `request.rs`
+  request-body construction, `sse.rs` chunk parsing.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
-  fragments). `anthropic_factory(key, model, rpm, concurrency, web_search)`.
+  fragments). `anthropic_factory(key, model, rpm, concurrency, web_search,
+  web_search_tool_version)`. Split into `anthropic/{mod,request,sse}.rs` (#481)
+  the same way as `openai/` — `mod.rs` additionally owns the `pause_turn`
+  continuation loop (below).
 - `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
   [ADR-0085](../adr/0085-gemini-native-wire-and-opaque-provider-meta.md)): the
   compat endpoint drops `thoughtSignature`, the opaque per-call token a 2.5
@@ -114,26 +119,60 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   `functionResponse` part in the same turn (#447).
 
 **Provider-side web search** (#305,
-[ADR-0075](../adr/0075-provider-side-web-search-mvp.md)) — opt-in, **client-
-construction-time** config, **no core/protocol change**. `WebSearchConfig {
-enabled, max_uses, allowed_domains }` (`web_search.rs`, `deny_unknown_fields`) is
-bound onto a client by its factory as an `Option` (the runtime hands it `Some`
-only when a `web_search:` `config.yml` section is enabled; the live `/model`
-resolver captures it too, so a switch re-binds identically). When present,
-`build_body` pushes the provider's **server-executed** search tool onto the same
-`tools` array (so it rides even with no function tools): z.ai a
-`{"type":"web_search","web_search":{…}}` entry, Anthropic a
-`{"type":"web_search_20250305","name":"web_search"}` server tool (+ optional
-`max_uses`/`allowed_domains`). The provider runs the search *mid-turn*, no client
-round-trip, so results land on the **reasoning channel** (`LlmEvent::Reasoning`,
-**not** committed to history): the Anthropic parser tracks a `server_tool_use`
-block with `is_server` and emits its query as `Reasoning` on stop — **never** a
-`ToolCall` — and renders each `web_search_tool_result` entry (or its error) as a
-`[web_search] …` line; z.ai's cited answer already flows as `Text`, the
-`web_search` source array is parsed defensively (streaming placement unverified →
-worst case = cited-text-only). Enabling *is* consent — the search runs
-provider-side, **outside** the runtime permission ladder
-([ADR-0047](../adr/0047-local-trust-boundary.md)).
+[ADR-0075](../adr/0075-provider-side-web-search-mvp.md); post-MVP follow-ups
+#481, [ADR-0131](../adr/0131-web-search-post-mvp-follow-ups.md)) — opt-in,
+**client-construction-time** config, **no core/protocol change**.
+`WebSearchConfig { enabled, max_uses, allowed_domains }` (`web_search.rs`,
+`deny_unknown_fields`) is bound onto a client by its factory as an `Option` (the
+runtime hands it `Some` only when a `web_search:` `config.yml` section is
+enabled; the live `/model` resolver captures it too, so a switch re-binds
+identically). When present, `build_body` pushes the provider's **server-executed**
+search tool onto the same `tools` array (so it rides even with no function
+tools): z.ai a `{"type":"web_search","web_search":{…}}` entry, Anthropic a
+`{"type":"<version>","name":"web_search"}` server tool (+ optional
+`max_uses`/`allowed_domains`) — `<version>` is `ModelEntry.web_search_tool_version`
+(#481, catalog data) when the active model sets one, else the client's
+`web_search_20250305` fallback, so a model requiring the newer `_20260209` tool
+works via catalog config with no code change. The provider runs the search
+*mid-turn*, no client round-trip; results still stream live on the **reasoning
+channel** (`LlmEvent::Reasoning`, unchanged since #305) but are now **also**
+persisted (#481): the Anthropic parser tracks a `server_tool_use` block with
+`is_server` and, on stop, emits both a `Reasoning` line and an
+`LlmEvent::ContentBlock(ContentPart::ProviderSearch { provider, summary, data })`
+— `data` is the block's raw Anthropic JSON, opaque outside this provider; each
+`web_search_tool_result` entry (or its error) renders the same way. The engine's
+turn loop (`session/round.rs`) appends every `ContentBlock` after the round's text
+when it commits the assistant `Message`, and emits a persisted, seq-bearing
+`OutEvent::SearchResult { part }` per block (mirrors `AmbiguousRetry`) so
+`Session::replay` reconstructs the exact content — `anthropic::request::
+anthropic_blocks` replays a `ProviderSearch` block's `data` **verbatim only when
+`provider == "anthropic"`** (mirrors `ToolCall.provider_meta`'s opaque round-trip
+contract; this is the search-result half of Anthropic's prompt-cache benefit);
+every other converter (Anthropic on a foreign-provider block, OpenAI-compat,
+Gemini) reads only `summary`, rendered as plain text — z.ai's cited answer
+already flows as `Text`, and its own `web_search` source array now also emits a
+`ContentBlock(provider: "zai")` alongside the existing `Reasoning` lines, so
+citations from either provider survive into a later turn's history instead of
+vanishing with the round. The z.ai array's streaming placement is still parsed
+defensively (checked at the top level and inside `choices[0].delta`); #481
+attempted live verification against a real Coding Plan key but neither a key nor
+network egress was available in that environment, so the shape stays
+**unconfirmed** — the parser is unchanged from the #305 MVP and the worst case is
+still the cited-text-only floor; a future run with `ENTANGLEMENT_LOG_BODIES=1`
+against a live key should close this out (tracked at
+[ADR-0131](../adr/0131-web-search-post-mvp-follow-ups.md) §3).
+A long-running search can end an Anthropic response with `stop_reason:
+"pause_turn"` instead of a confident stop; `anthropic::mod` owns continuing it
+entirely client-side (#481) — `sse::handle_frame` accumulates every finalized
+content block into a raw array as the stream runs, and on `pause_turn`,
+`stream()` re-POSTs with that array appended as a fresh assistant turn,
+continuing the *same* `LlmStream` (no `Finish` in between) until a confident stop
+or a bounded continuation cap (6) is hit; core never observes `pause_turn`. If
+the cap is hit, the client's own `Finish` still reports it (mapped to
+`StopReason::Other`), and the turn loop's ADR-0118 ambiguous-stop retry is the
+fallback safety net — the pre-#481 behavior this replaces as the primary path.
+Enabling web search *is* consent — the search runs provider-side, **outside**
+the runtime permission ladder ([ADR-0047](../adr/0047-local-trust-boundary.md)).
 
 **Resilience the provider layer owns — per endpoint** (#217,
 [ADR-0050](../adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)): one
