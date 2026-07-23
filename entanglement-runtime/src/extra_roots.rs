@@ -13,6 +13,19 @@
 //! grant does not unlock `write` on the same path) and keyed by the tool name
 //! plus the normalized absolute path.
 //!
+//! `glob`/`grep` never trigger this approval flow themselves (#482,
+//! [ADR-0132](../../../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md)):
+//! a recursive search has no single path to approve, so it never forces an
+//! `Ask`. Instead it **rides** an existing `read`-tool grant — a durable
+//! (`Session`/`Always`) grant on a directory (or an ancestor of one) widens
+//! `list_files`'s containment check to also admit matches under that directory
+//! ([`is_durably_allowed_under`][ExtraRootStore::is_durably_allowed_under]).
+//! `Once` grants are deliberately excluded: a single-use token is meant to be
+//! spent by the one call it was approved for, and a search can silently fan
+//! out over an unbounded number of matches under the granted path — treating
+//! that as "spending" a `Once` grant would let one approval cover arbitrarily
+//! many reads with no further confirmation.
+//!
 //! # Scopes
 //!
 //! - **Once** — a single-use allowance bound to the specific `request_id` it was
@@ -111,6 +124,27 @@ impl ExtraRootStore {
         let k = key(tool, path);
         let g = self.inner.lock().expect("extra-roots mutex poisoned");
         g.always.contains(&k) || g.session.contains(&k)
+    }
+
+    /// Whether `tool` has a **durable** grant covering `path` **or any ancestor
+    /// of it** (#482) — `glob`/`grep` use this to widen a recursive search into
+    /// a directory whose grant was recorded for that directory (or a parent of
+    /// it), without needing a separate grant per matched file. Walks `path` and
+    /// its ancestors up to the filesystem root, checking [`is_durably_allowed`]
+    /// at each; `Once` grants are still excluded (inherited from
+    /// `is_durably_allowed`), so a single-use approval never enables search —
+    /// see the module doc.
+    ///
+    /// [`is_durably_allowed`]: Self::is_durably_allowed
+    pub fn is_durably_allowed_under(&self, tool: &str, path: &Path) -> bool {
+        let mut cur = Some(path);
+        while let Some(p) = cur {
+            if self.is_durably_allowed(tool, p) {
+                return true;
+            }
+            cur = p.parent();
+        }
+        false
     }
 
     /// Whether `(tool, path)` may be accessed now by `request_id`, **consuming**
@@ -337,6 +371,49 @@ mod tests {
             !s.is_durably_allowed("write", p),
             "read grant does not unlock write"
         );
+    }
+
+    /// #482: a grant on a directory widens to every path under it (and to the
+    /// directory itself), but not to a sibling.
+    #[test]
+    fn is_durably_allowed_under_widens_to_descendants_of_a_granted_dir() {
+        let s = ExtraRootStore::ephemeral();
+        let dir = Path::new("/ext/lib");
+        s.record("read", dir, ApprovalScope::Session, "req-1");
+
+        assert!(s.is_durably_allowed_under("read", dir), "the dir itself");
+        assert!(
+            s.is_durably_allowed_under("read", &dir.join("a/b.rs")),
+            "a descendant"
+        );
+        assert!(
+            !s.is_durably_allowed_under("read", Path::new("/ext/other")),
+            "a sibling must not be widened"
+        );
+        assert!(
+            !s.is_durably_allowed_under("read", Path::new("/ext")),
+            "an ancestor of the grant is not itself covered"
+        );
+    }
+
+    /// #482: search-widening is per-tool, exactly like the exact-path check —
+    /// a `read` grant does not widen for `write`.
+    #[test]
+    fn is_durably_allowed_under_is_per_tool() {
+        let s = ExtraRootStore::ephemeral();
+        let dir = Path::new("/ext/lib");
+        s.record("read", dir, ApprovalScope::Session, "req-1");
+        assert!(!s.is_durably_allowed_under("write", &dir.join("a.rs")));
+    }
+
+    /// #482: a `Once` grant must never widen a search — only `Session`/`Always`
+    /// (durable) grants do, matching `is_durably_allowed`.
+    #[test]
+    fn is_durably_allowed_under_excludes_once_grants() {
+        let s = ExtraRootStore::ephemeral();
+        let dir = Path::new("/ext/lib");
+        s.record("read", dir, ApprovalScope::Once, "req-1");
+        assert!(!s.is_durably_allowed_under("read", &dir.join("a.rs")));
     }
 
     #[test]

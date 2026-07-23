@@ -12,8 +12,9 @@ alternatives behind each design decision live in the ADRs under
 
 Web search post-MVP follow-ups, plus the batch of changes landed since 0.4.0
 was tagged (session-scoped directory grants, `ask_user` v2, permission-arg
-path normalization, an MCP HTTP docs-only leak-surface finding, and
-OpenAI-compat stream robustness fixes).
+path normalization, `glob`/`grep` escape-root search via durable grant, an
+MCP HTTP docs-only leak-surface finding, and OpenAI-compat stream robustness
+fixes).
 
 ### Added
 
@@ -39,6 +40,12 @@ OpenAI-compat stream robustness fixes).
   per-question (#488, ADR-0127 amending ADR-0027).
 - **TUI**: tool-call/approval/output entries share one header idiom, and
   approval decisions are recorded in the transcript (#487).
+- **`glob`/`grep` can search outside the project root** by riding an existing
+  durable (`Session`/`Always`) `read`-tool grant — no new approval prompt: a
+  search never forces its own `Ask`, it only widens containment for a match
+  already covered by a `read` grant on that directory (or an ancestor of it).
+  `Once` grants deliberately stay excluded, since a search's match count is
+  unbounded (#482, ADR-0132 amending ADR-0109).
 
 ### Fixed
 

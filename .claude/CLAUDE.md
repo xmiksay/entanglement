@@ -771,8 +771,9 @@ re-document them here):
   `write`), at `Once`/`Session`/`Always` scope. The host tools consult it via
   `resolve_under_root_or_grant` to relax containment for the approved path
   (matched against the symlink-canonicalized target). Reuses the
-  `ToolRequest`/`Approve{scope}` wire (no new variant); `glob`/`grep` stay
-  strictly root-contained. **`call` default output** also moved out of the repo:
+  `ToolRequest`/`Approve{scope}` wire (no new variant); `glob`/`grep`
+  originally stayed strictly root-contained (see #482 below).
+  **`call` default output** also moved out of the repo:
   a no-`output_file` artifact now lands in a runtime-owned per-project scratch dir
   (`session_store::scratch_dir` → `<data_dir>/entanglement/sessions/<cwd>/tmp/`,
   via `CallTool::with_scratch_base`), not `<root>/.entanglement/tmp/`.
@@ -800,6 +801,29 @@ re-document them here):
   threads its per-binding `bind_rid` into both `record` and the delegated
   `exec()` call so a script-obtained `Once` grant is redeemed by that exact
   binding invocation too.
+  **`glob`/`grep` reach outside root by riding an existing durable `read`
+  grant** (#482, [ADR-0132](../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md)
+  amending ADR-0109; closed deferred-work-ledger row 4, #396): unlike the six
+  tools above, a search never forces its own `Ask` —
+  `permission::escape_root_target` still returns `None` for `glob`/`grep`, so
+  the executor's gate never fires for them. Instead
+  `host::list_files_with_extra_roots` (the 3-arg `list_files` stays a
+  `None`-store wrapper, byte-identical to before) admits a match whose
+  canonical path escapes root when it (or an ancestor of it) already carries
+  a **durable** (`Session`/`Always`) `read` grant —
+  `ExtraRootStore::is_durably_allowed_under(tool, path)` walks the match's
+  ancestors reusing the existing per-tool grant set, so one grant on a
+  directory covers every descendant with no per-file re-approval. Checked
+  post-canonicalization, so a symlink inside the granted directory pointing
+  outside it resolves to an ungranted path and is still dropped. Hardcoded to
+  the `"read"` tool regardless of which of `glob`/`grep` is asking; `Once`
+  grants are structurally excluded (reusing the durable-only
+  `is_durably_allowed` primitive) since a search's match count is unbounded
+  ahead of time, unlike a single file read. `GlobTool`/`GrepTool` gained the
+  same `with_extra_roots` builder the other four escape-root tools have, with
+  no `request_id`/`SessionId` needed (no `Once` token to consume).
+  `host/mod.rs`'s `list_files`/`FileList` moved into a new `host/walk.rs` to
+  stay under the 400-line file cap.
 - **An ambiguous LLM stop retries in place instead of ending the turn**
   (post-0.3.0, [ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md)):
   `session::turn::is_confident_stop` classifies a round that ends with empty

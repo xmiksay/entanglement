@@ -2,7 +2,8 @@
 //! `path:lineno:line`. An optional `path` glob filters which files to search
 //! (default: all files under the working directory).
 
-use super::{list_files, truncate_output};
+use super::{list_files_with_extra_roots, truncate_output};
+use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -10,6 +11,7 @@ use regex::Regex;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Cap on how much of a file `grep` is willing to read into memory and scan,
 /// **independent of** [`super::MAX_OUTPUT_BYTES`] (the *result-string* cap).
@@ -31,11 +33,24 @@ enum SkipReason {
 
 pub struct GrepTool {
     root: std::path::PathBuf,
+    /// Widens a search into a directory already covered by a durable `read`
+    /// grant (ADR-0109/#482). `None` keeps strict containment.
+    extra_roots: Option<Arc<ExtraRootStore>>,
 }
 
 impl GrepTool {
     pub fn new(root: std::path::PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            extra_roots: None,
+        }
+    }
+
+    /// Let a search descend into a directory the user already granted `read`
+    /// access to (#482) — see [`super::list_files_with_extra_roots`].
+    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
+        self.extra_roots = Some(extra);
+        self
     }
 }
 
@@ -149,7 +164,12 @@ impl Tool for GrepTool {
         let re = Regex::new(&parsed.pattern)
             .with_context(|| format!("invalid regex: {}", parsed.pattern))?;
         let filter = parsed.path.as_deref().unwrap_or("**/*");
-        let list = list_files(&self.root, filter, &parsed.exclude)?;
+        let list = list_files_with_extra_roots(
+            &self.root,
+            filter,
+            &parsed.exclude,
+            self.extra_roots.as_deref(),
+        )?;
         let mut out = String::new();
         let mut matches = 0usize;
         let mut skipped: Vec<(PathBuf, SkipReason)> = Vec::new();

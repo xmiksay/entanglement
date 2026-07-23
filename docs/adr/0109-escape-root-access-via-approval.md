@@ -1,6 +1,6 @@
 # 0109. Access outside the project root via per-tool approval — containment becomes subordinate to an explicit grant
 
-- Status: Amended by [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) (rhai bindings route through the same gate) and [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) (`Once` grants bound to the approving `request_id`)
+- Status: Amended by [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) (rhai bindings route through the same gate), [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) (`Once` grants bound to the approving `request_id`), and [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) (`glob`/`grep` ride an existing durable `read` grant to search outside root)
 - Date: 2026-07-17
 
 ## Context
@@ -92,13 +92,16 @@ carries it; no new wire variant.
   `resolve_and_contained`, and `escape_root == None` is the exact pre-ADR-0109
   behavior. The symlink defense ([ADR-0054](0054-canonicalizing-symlink-safe-root-containment.md))
   is unchanged — the grant is matched against the canonicalized target.
-- **Negative / accepted.** `glob`/`grep` are **not** covered: they route through
-  `list_files`, which silently drops out-of-root matches, and their
-  pattern-relative search has no single path to approve. Letting a recursive
-  search descend into an approved external directory is a distinct, murkier
-  capability (which external root? the whole filesystem?) deferred until a
-  concrete need — reading a specific external file via `read` + approval covers
-  the practical case.
+- **Negative / accepted, amended by [0132](0132-glob-grep-escape-root-search-via-durable-grant.md).**
+  `glob`/`grep` were **not** covered at first: they route through `list_files`,
+  which silently drops out-of-root matches, and their pattern-relative search
+  has no single path to approve. Letting a recursive search descend into an
+  approved external directory was deferred until a concrete need (tracked as
+  [deferred-work ledger](../deferred-work-ledger.md) row 4, #482) — reading a
+  specific external file via `read` + approval covered the practical case.
+  ADR-0132 closes that gap without forcing a new prompt: search rides an
+  existing durable (`Session`/`Always`) `read`-tool grant instead of
+  triggering its own approval.
 - **Negative / accepted.** `Session` scope is process-wide, not session-id-scoped,
   so a multi-session process shares out-of-root grants across its sessions. This
   trades a small amount of least-privilege for not threading `SessionId` through
