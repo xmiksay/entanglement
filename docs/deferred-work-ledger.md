@@ -34,16 +34,40 @@ thread is where new items get filed and discussed.
 
 ## Open deferred items
 
-Items 1–6 surfaced by the 2026-07-21 whole-codebase audit, item 7 by the same
-day's post-remediation pass ([#473](https://github.com/xmiksay/entanglement/issues/473))
-— each a real gap explicitly marked "follow-up"/"deferred" in an Accepted ADR
-but not previously tracked here. Filed against
+Row 3 is the remainder of the items surfaced by the 2026-07-21 whole-codebase
+audit and its post-remediation pass ([#473](https://github.com/xmiksay/entanglement/issues/473));
+the rest of that batch has moved to the Resolved table below. Row 4 was filed
+by the 2026-07-23 revisit audit. Filed against
 [#396](https://github.com/xmiksay/entanglement/issues/396).
 
 | # | Deferred item | Documented at | Verified state |
 | --- | --- | --- | --- |
-| 2 ([#480](https://github.com/xmiksay/entanglement/issues/480)) | **Rhai `exec`/`bash` binding `workdir` scoping.** The bindings marshal `{command, args, timeout}` only, so a `tool{pattern}` workdir-scoped permission *rule* never fires for a binding call. Distinct from — and not closed by — [ADR-0119](adr/0119-rhai-bindings-route-through-the-escape-root-gate.md) (#446, shipped), which routes an *out-of-root* binding access through the escape-root approval gate: 0119 covers the containment boundary, this row covers workdir-scoped rule matching for in-root calls. | [ADR-0116](adr/0116-workdir-scoped-permission-rules-for-bash-call.md) §"the rhai binding grade is not touched" (lines 92–97): "Extending the bindings with their own `workdir` parameter, if ever wanted, is separate future work." | `script.rs` `exec`/`bash` bindings carry `{command, args, timeout}` only. **Not shipped (intentional).** |
 | 3 ([#481](https://github.com/xmiksay/entanglement/issues/481)) | **Web search MVP limitations** (four sub-items): ~~search results not persisted to history~~; ~~`pause_turn` ends the turn rather than continuing~~; z.ai streaming `web_search` placement unverified; ~~the newer Anthropic `_20260209` server-tool version gated on a `ModelEntry` capability flag instead of hardcoded `_20250305`~~. | [ADR-0075](adr/0075-provider-side-web-search-mvp.md) §"Accepted MVP limitations (follow-ups)" (lines 83–96) — all four explicitly called "follow-up." | **3 of 4 shipped** ([ADR-0131](adr/0131-web-search-post-mvp-follow-ups.md) amends 0075): persistence (`ContentPart::ProviderSearch` + `OutEvent::SearchResult`), `pause_turn` continuation (client-owned in `anthropic::mod::stream()`), and the `ModelEntry.web_search_tool_version` capability flag all landed with tests. The z.ai streaming-placement item stays open — verification against a live key was attempted but blocked by no `ZAI_API_KEY`/network access in the implementing environment; parser unchanged, worst case still cited-text-only. **Row stays open until item 3 lands** (kept as row 3, not moved to Resolved, per #481's own acceptance criteria). |
+| 4 ([#502](https://github.com/xmiksay/entanglement/issues/502)) | **Build-speed trims beyond the safe set** (three sub-items): tokio `features=["full"]` → per-crate actual feature sets; `rhai` behind a default-on runtime feature for lean embedders; `syntect` `default-fancy` trim behind `tui`. The safe set (dev-profile tuning, lld linker, `rand` dep dropped) shipped with the 2026-07-23 revisit. | 2026-07-23 revisit audit (dependency/build-speed pass). | Not shipped (intentional) — each trim is mechanical but needs its own `make verify` + lean-build validation, and the `rhai` gate touches the [ADR-0025](adr/0025-runtime-cargo-feature-gates.md) feature matrix. |
+
+## Accepted risks (recorded, no action planned)
+
+Security-posture notes from the 2026-07-23 revisit audit — reviewed, judged
+consistent with the trust model, and deliberately left as-is. Recorded here so
+the decision doesn't have to be re-derived by the next audit.
+
+- **WS `serve` accepts any browser `Origin` unless `--allow-origin` is set**
+  (`serve.rs::origin_allowed`). A malicious web page can open
+  `ws://127.0.0.1:<port>/ws`, create its *own* session, and self-approve its
+  tool calls — the per-connection approval ownership
+  ([ADR-0107](adr/0107-ws-per-connection-approval-ownership.md)) only defends
+  *existing* sessions against a second client. In scope of
+  [ADR-0048](adr/0048-serve-head-local-trust-model.md)'s local single-user
+  trust model (the WS is a general local protocol interface; origin checking
+  is opt-in by design). Revisit if `serve` ever grows beyond loopback.
+- **`SessionDir` grant coverage is a lexical prefix match** on the #485
+  root-relative normalized arg (`grants.rs::dir_covers`), with no symlink
+  resolution — a granted directory can cover an arg whose path component is a
+  symlink pointing elsewhere in-root, skipping the *prompt* (never the
+  filesystem boundary: host tools re-canonicalize and stay root-contained,
+  and the scope is restricted to the read-only `read`/`grep`/`glob` triad,
+  [ADR-0126](adr/0126-session-scoped-directory-grants.md)). Prompt-UX nuance,
+  not a containment hole.
 
 ## Resolved (shipped since the 2026-07-16 audit)
 
@@ -75,6 +99,25 @@ merged:
 
 No open findings. Record entries here as `file:line — stale claim — current
 truth — issue` when filed, and drop the row once fixed.
+
+Findings of the 2026-07-23 revisit audit, fixed in the same change:
+
+- `.claude/CLAUDE.md` "The contract" block and `README.md` contract block —
+  both missing `InMsg::BashEnable`/`BashDisable` + `OutEvent::BashChanged`
+  (#498/[ADR-0133](adr/0133-live-bash-enablement-graded-by-permission.md));
+  the brief's own prose and `docs/architecture/protocol.md` already listed
+  them. Same drift class as the #454 batch below — the summary blocks lag the
+  prose again.
+- `.claude/CLAUDE.md` provider section — link label said
+  `../docs/architecture.md` while the href pointed at
+  `../docs/architecture/provider.md` (target correct, label wrong).
+- `.claude/CLAUDE.md` epic-history — "built-in profile trio" (#201-era) with
+  no note that the set is now a quartet (`build`/`plan`/`explore`/`debug`,
+  `agents/mod.rs::BUILT_INS`).
+- This ledger's own Open table — row 2 (#480) still said "Not shipped
+  (intentional)" while the Resolved table, [ADR-0130](adr/0130-rhai-exec-bindings-marshal-workdir.md),
+  and `script.rs` all record it shipped; the intro's "Items 1–6 … item 7"
+  numbering no longer matched the table. Both corrected.
 
 Fixed in the same change once filed:
 

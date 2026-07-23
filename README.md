@@ -23,11 +23,11 @@ table below.
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
           | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove
-          | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
+          | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status
           | AgentChanged | ModelChanged | GenerationChanged | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
-          | McpList | McpChanged
+          | McpList | McpChanged | BashChanged
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
           | SkillActive | AmbiguousRetry | SearchResult (engine → harness)
 ```
