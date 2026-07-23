@@ -349,7 +349,24 @@ mod tests {
         assert!(commit.body.contains("Conventional Commit"));
         assert_eq!(
             commit.allowed_tools.as_deref(),
-            Some(&["bash".to_string(), "read".to_string(), "grep".to_string()][..])
+            Some(
+                &[
+                    "bash".to_string(),
+                    "call".to_string(),
+                    "read".to_string(),
+                    "grep".to_string(),
+                ][..]
+            )
+        );
+        // `bash` is opt-in; the always-registered `call` must stay in the mask
+        // or the skill can't inspect staged changes in a default (bash-off) run.
+        assert!(
+            commit
+                .allowed_tools
+                .as_deref()
+                .unwrap()
+                .contains(&"call".to_string()),
+            "commit skill must allow `call` — bash is opt-in"
         );
     }
 
