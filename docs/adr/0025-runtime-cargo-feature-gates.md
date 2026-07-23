@@ -1,7 +1,16 @@
 # 0025. `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding
 
-- Status: Accepted — lean-transport claim amended by [0053](0053-invert-core-provider-seam.md); `cli`/`provider` split + module-import cleanup amended by #208
+- Status: Accepted — lean-transport claim amended by [0053](0053-invert-core-provider-seam.md); `cli`/`provider` split + module-import cleanup amended by #208; tokio feature scope + a second "zero `#[cfg(feature)]`" exception amended by [0135](0135-deferred-build-speed-trims-tokio-rhai-syntect.md)
 - Date: 2026-07-09
+
+> **Amended by [ADR-0135](0135-deferred-build-speed-trims-tokio-rhai-syntect.md)
+> (2026-07-23).** Two corrections to claims made below: (1) "`tokio` stays
+> `features = ["full"]`; trimming it is out of scope (KISS)" (under
+> Consequences) no longer holds — each crate now declares its own minimal
+> tokio feature list. (2) The new `rhai` feature (gating `entanglement-runtime`'s
+> sandboxed script tool, default-on) is a second deliberate exception to the
+> "zero `#[cfg(feature)]` in code" property, alongside the `cli`-gated
+> `logging` module #208 already carved out below.
 
 > **Amended by [ADR-0053](0053-invert-core-provider-seam.md) (2026-07-13).** Since
 > `entanglement-core` now depends on `entanglement-provider`, the lean

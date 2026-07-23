@@ -18,7 +18,10 @@ categories = ["development-tools"]
 entanglement-core = { path = "entanglement-core", version = "0.4.0" }
 entanglement-provider = { path = "entanglement-provider", version = "0.4.0" }
 
-tokio = { version = "1", features = ["full"] }
+# No default feature list here (#502, ADR-0135 amending ADR-0025): each crate
+# adds only the tokio features its own API surface needs via `features = [...]`
+# on its `workspace = true` entry (additive, not a replacement of this base).
+tokio = { version = "1" }
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
@@ -66,7 +69,12 @@ tokio-tungstenite = "0.29"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
-syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# Trimmed from `default-fancy` (#502, ADR-0135): keeps `regex-fancy` (pure Rust,
+# cross-compile friendly — no oniguruma C dep) but drops `html`/`plist-load`/
+# `yaml-load`/`dump-create`, none of which `tui/markdown.rs` uses (it only calls
+# `SyntaxSet::load_defaults_newlines`/`ThemeSet::load_defaults`/`easy::HighlightLines`
+# against the bundled dumps).
+syntect = { version = "5", default-features = false, features = ["parsing", "default-syntaxes", "default-themes", "regex-fancy"] }
 unicode-width = "0.2"
 # Advisory cross-process file lock for the managed read-modify-write writes
 # (grants.yml / agent-models.yml / the env file, #329) — two `skutter`

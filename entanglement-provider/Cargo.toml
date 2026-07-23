@@ -16,7 +16,12 @@ name = "entanglement_provider"
 path = "src/lib.rs"
 
 [dependencies]
-tokio = { workspace = true }
+# Per-crate feature trim (#502, ADR-0135): `rt`/`macros` back `tokio::spawn` +
+# `#[tokio::test]`; `sync` backs the retry semaphore; `time` backs
+# sleep/timeout backoff; `net`/`io-util` back `tests/streaming.rs`'s hand-rolled
+# loopback SSE server (no separate `tokio` dev-dependency exists to scope those
+# two to tests only).
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

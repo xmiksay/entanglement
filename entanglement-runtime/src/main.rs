@@ -19,9 +19,11 @@ mod pipe;
 mod run;
 mod tui;
 
+#[cfg(feature = "rhai")]
+use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, bash_live, config, extra_roots, history, host, inspect, logging, mcp,
-    permission_path, persistence, plan_tasks, policy, propose_plan, script, session_store, skills,
+    permission_path, persistence, plan_tasks, policy, propose_plan, session_store, skills,
     subagent, system_prompt, tool_names, tool_runner, watch, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
@@ -247,6 +249,9 @@ async fn build_config(
     // privileged than the always-registered tools and rides the shared specs
     // (registered by default; a profile masks it like any tool via its
     // allowlist). The executor intercepts it before permission resolution.
+    // Behind the `rhai` feature (#502, ADR-0135) — absent entirely from a lean
+    // build that opts out of it.
+    #[cfg(feature = "rhai")]
     cfg.tool_specs.push(script::rhai_spec());
     // The `/agent` picker's tools-checklist dialog (#330) offers every advertised
     // tool name — captured here (before `cfg` is moved into `Holly::spawn`), not
@@ -1063,11 +1068,11 @@ async fn main() -> Result<()> {
     let tools = tools.shared();
     {
         let tools = tools.clone();
-        let runtime_owned_specs = [
-            plan_tasks::update_tasks_spec(),
-            ask_user::ask_user_spec(),
-            script::rhai_spec(),
-        ];
+        #[allow(unused_mut)] // only mutated when the `rhai` feature is on
+        let mut runtime_owned_specs =
+            vec![plan_tasks::update_tasks_spec(), ask_user::ask_user_spec()];
+        #[cfg(feature = "rhai")]
+        runtime_owned_specs.push(script::rhai_spec());
         engine_config.tool_spec_resolver = Some(Arc::new(move |_session: &SessionId| {
             // `read_raw` lives in the same shared registry as every other tool
             // (rhai's bridge needs to `execute()` it) but must never reach the

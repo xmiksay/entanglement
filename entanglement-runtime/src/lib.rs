@@ -59,6 +59,10 @@ pub mod persistence;
 pub mod plan_tasks;
 pub mod policy;
 pub mod propose_plan;
+// Sandboxed `rhai` script tool (#122, ADR-0046). Behind the `rhai` feature
+// (default-on, #502/ADR-0135) so a lean embedder can drop the dep via
+// `--no-default-features`.
+#[cfg(feature = "rhai")]
 pub mod script;
 pub mod seam;
 // WebSocket `serve` head (#153, ADR-0048). Behind the `serve` feature so axum
