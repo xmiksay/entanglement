@@ -12,9 +12,9 @@ alternatives behind each design decision live in the ADRs under
 
 Web search post-MVP follow-ups, plus the batch of changes landed since 0.4.0
 was tagged (session-scoped directory grants, `ask_user` v2, permission-arg
-path normalization, `glob`/`grep` escape-root search via durable grant, an
-MCP HTTP docs-only leak-surface finding, and OpenAI-compat stream robustness
-fixes).
+path normalization, `glob`/`grep` escape-root search via durable grant, live
+bash enablement, an MCP HTTP docs-only leak-surface finding, and OpenAI-compat
+stream robustness fixes).
 
 ### Added
 
@@ -46,6 +46,12 @@ fixes).
   already covered by a `read` grant on that directory (or an ancestor of it).
   `Once` grants deliberately stay excluded, since a search's match count is
   unbounded (#482, ADR-0132 amending ADR-0109).
+- **Live bash enablement**: `bash`/`bash_output` can now be registered
+  mid-session (TUI `/bash on [--allow [<pattern>]|--ask] | off`), graded
+  through the permission model rather than a bare on/off — `Ask` (safe
+  default) or `Allow`, optionally narrowed to a command pattern
+  (`bash(git *): allow`). Still clamped by the config permission ceiling: a
+  `bash: deny` ceiling wins over a live `Allow` (#498, ADR-0133).
 
 ### Fixed
 

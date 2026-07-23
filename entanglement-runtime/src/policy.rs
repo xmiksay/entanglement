@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use entanglement_core::{AgentProfile, ApprovalScope, Permission, PermissionProfile, SessionId};
 
+use crate::bash_live::LiveBashState;
 use crate::grants::FileGrantStore;
 use crate::permission::{clamp_to_base, permission_for, permission_workdir};
 use crate::permission_path::grading_arg;
@@ -94,11 +95,16 @@ pub trait GrantStore: Send + Sync {
 /// events into, so it always reads the current profile view. `root` (#485,
 /// ADR-0125) is the project root a path-arg tool's argument is normalized
 /// relative to before matching an arg-scoped rule — `None` (the test-only
-/// executor wrappers) keeps the pre-#485 verbatim match.
+/// executor wrappers) keeps the pre-#485 verbatim match. `live_bash` (#498,
+/// ADR-0133) is `None` for a caller that never wires live bash enablement
+/// (byte-identical to pre-#498 behavior); when `Some`, a live grade overrides
+/// the session's own profile for `bash`/`bash_output` specifically — see
+/// [`resolve`][Self::resolve].
 pub struct ProfileResolver {
     active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
     base: PermissionProfile,
     root: Option<PathBuf>,
+    live_bash: Option<Arc<LiveBashState>>,
 }
 
 impl ProfileResolver {
@@ -107,7 +113,20 @@ impl ProfileResolver {
         base: PermissionProfile,
         root: Option<PathBuf>,
     ) -> Self {
-        Self { active, base, root }
+        Self {
+            active,
+            base,
+            root,
+            live_bash: None,
+        }
+    }
+
+    /// Wire in the live bash enablement state (#498) so `bash`/`bash_output`
+    /// calls consult its grade, when one is set, ahead of the session's own
+    /// profile. Chainable at construction, mirroring a builder-style opt-in.
+    pub fn with_live_bash(mut self, live_bash: Arc<LiveBashState>) -> Self {
+        self.live_bash = Some(live_bash);
+        self
     }
 }
 
@@ -116,12 +135,30 @@ impl PermissionResolver for ProfileResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
         let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
+        // A live bash enablement (#498) overrides the session's own profile
+        // for `bash`/`bash_output` specifically — a profile authored before
+        // bash was live-enabled has no real opinion on it. `grade()` is `None`
+        // when bash was never live-enabled (including the startup-only
+        // `ENTANGLEMENT_ENABLE_BASH` path), which falls through to ordinary
+        // per-profile resolution below, unchanged from pre-#498 behavior.
+        let live_grade = if matches!(tool, "bash" | "bash_output") {
+            self.live_bash.as_ref().and_then(|s| s.grade())
+        } else {
+            None
+        };
         // Read the folded profile view without holding the lock across an await
         // (there is none here) — the executor's single-threaded loop is the sole
         // writer, so this brief lock never contends.
-        let own = {
-            let active = self.active.lock().unwrap();
-            permission_for(&active, session, tool, arg.as_deref(), workdir.as_deref())
+        let own = match live_grade {
+            Some(grade) => crate::bash_live::grade_profile(&grade).resolve_scoped(
+                tool,
+                arg.as_deref(),
+                workdir.as_deref(),
+            ),
+            None => {
+                let active = self.active.lock().unwrap();
+                permission_for(&active, session, tool, arg.as_deref(), workdir.as_deref())
+            }
         };
         clamp_to_base(own, &self.base, tool, arg.as_deref(), workdir.as_deref())
     }
@@ -245,6 +282,87 @@ mod tests {
                 .resolve(&session, "read", r#"{"path":"/r/src/main.rs"}"#)
                 .await,
             Permission::Ask
+        );
+    }
+
+    /// #498: with no live bash state wired, `bash` resolves through the
+    /// session's own profile exactly as before — the opt-in `with_live_bash`
+    /// changes nothing for a caller that never calls it.
+    #[tokio::test]
+    async fn bash_resolves_through_the_profile_without_live_bash_wired() {
+        let session = SessionId::new("s1");
+        let profile = AgentProfile {
+            permission: PermissionProfile::new(Permission::Deny),
+            ..build_profile_with_scoped_read()
+        };
+        let active = Arc::new(Mutex::new(HashMap::from([(session.clone(), profile)])));
+        let resolver =
+            ProfileResolver::new(active, PermissionProfile::new(Permission::Allow), None);
+        assert_eq!(
+            resolver
+                .resolve(&session, "bash", r#"{"command":"git status"}"#)
+                .await,
+            Permission::Deny
+        );
+    }
+
+    /// #498: a live bash grade overrides the session's own profile for
+    /// `bash`/`bash_output`, but the config ceiling still clamps the result —
+    /// a live `Allow` never bypasses a `bash: deny` base.
+    #[tokio::test]
+    async fn live_bash_grade_overrides_the_profile_but_not_the_ceiling() {
+        let session = SessionId::new("s1");
+        // The session's own profile denies bash outright — a live grade must
+        // still be able to override this (bash didn't exist for this profile
+        // to have a real opinion on until it was live-enabled).
+        let profile = AgentProfile {
+            permission: PermissionProfile::new(Permission::Deny),
+            ..build_profile_with_scoped_read()
+        };
+        let active = Arc::new(Mutex::new(HashMap::from([(session.clone(), profile)])));
+        let live_bash = crate::bash_live::LiveBashState::new(false);
+
+        // Allow-all ceiling: the live grade governs outright.
+        let resolver = ProfileResolver::new(
+            active.clone(),
+            PermissionProfile::new(Permission::Allow),
+            None,
+        )
+        .with_live_bash(live_bash.clone());
+        crate::bash_live::bash_enable(
+            &Arc::new(std::sync::RwLock::new(crate::tools::ToolRegistry::new())),
+            &live_bash,
+            &crate::bash_live::BashToolConfig {
+                root: PathBuf::from("."),
+                extra_roots: None,
+                secret_env: Vec::new(),
+                sandbox: crate::host::SandboxPolicy::none(),
+            },
+            entanglement_core::BashGrade::Allow { pattern: None },
+        );
+        assert_eq!(
+            resolver
+                .resolve(&session, "bash", r#"{"command":"rm -rf /"}"#)
+                .await,
+            Permission::Allow
+        );
+        assert_eq!(
+            resolver.resolve(&session, "bash_output", "{}").await,
+            Permission::Allow
+        );
+
+        // A `bash: deny` ceiling still wins over the live `Allow`.
+        let strict_ceiling = ProfileResolver::new(
+            active,
+            PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny),
+            None,
+        )
+        .with_live_bash(live_bash);
+        assert_eq!(
+            strict_ceiling
+                .resolve(&session, "bash", r#"{"command":"git status"}"#)
+                .await,
+            Permission::Deny
         );
     }
 }

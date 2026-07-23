@@ -396,6 +396,13 @@ pub(super) async fn handle_event(
                                                 crate::tui::allow_command::send_allow(app, &text);
                                                 return Ok(false);
                                             }
+                                            if cmd == crate::tui::commands::Command::Bash {
+                                                crate::tui::bash_command::send_bash(
+                                                    app, holly, &text,
+                                                )
+                                                .await;
+                                                return Ok(false);
+                                            }
                                             if app.execute_command(cmd) {
                                                 return Ok(true);
                                             }

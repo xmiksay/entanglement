@@ -249,6 +249,17 @@ guessing again:
   (ADR-0009). `bash` and `bash_output` share one `JobRegistry` so background
   jobs are pollable across the pair. `EngineConfig::default()` ships an empty
   registry (embedders opt in via `host_tools`).
+  **Live enablement** ([ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md),
+  #498): the env var is startup-only — `bash_live::spawn_bash_responder`
+  answers `InMsg::BashEnable { grade: BashGrade }`/`BashDisable` off the
+  inbound fan-out (engine-global, trusted-only like `McpAdd`/`McpRemove`,
+  #472/ADR-0124) to register/unregister the pair into the live
+  `SharedRegistry` mid-session — the TUI `/bash on [--allow [<pattern>]|--ask]
+  | off` command. The enablement grade (`Ask` or `Allow`, optionally narrowed
+  to an argument-scoped `bash(pattern)` rule) overrides the session's own
+  profile for `bash`/`bash_output` specifically via `ProfileResolver`'s opt-in
+  `with_live_bash`, still clamped by the config permission ceiling (#172) —
+  a `bash: deny` ceiling wins over a live `Allow`.
 
 `edit`/`write`/`apply_patch`/`bash`/`bash_output`/`call` are advertised only to the inherit-all
 `build` profile (`tools: None`), which auto-allows them (default `Allow`). The `plan`

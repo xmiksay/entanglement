@@ -236,6 +236,39 @@ pub enum McpAction {
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ┃ Live bash enablement (#498)
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// How a live-registered `bash`/`bash_output` pair is graded, carried by
+/// [`InMsg::BashEnable`] and echoed back in [`OutEvent::BashChanged`] (#498,
+/// ADR-0133). Registering the tools live (mirroring the MCP `SharedRegistry`
+/// seam, #372/#375) is only half the feature — the enablement itself is
+/// expressed *through the permission model* rather than a bare on/off:
+///
+/// - [`BashGrade::Ask`] — the safe default: every `bash` call still goes
+///   through the normal [`OutEvent::ToolRequest`] approval prompt.
+/// - [`BashGrade::Allow`] — grants permission outright; an optional command
+///   `pattern` narrows the grant to matching commands only (e.g. `git *`),
+///   materializing an argument-scoped rule like `bash(git *): allow`
+///   ([`PermissionProfile`]'s existing `tool(pattern)` syntax, #173) rather
+///   than a bespoke mechanism. `None` is a blanket allow.
+///
+/// Runtime-side, this overrides the session's own profile grade for `bash`/
+/// `bash_output` specifically while live-enabled (a profile authored before
+/// bash was live-enabled has no real opinion on it), but is still clamped by
+/// the config ceiling (#172) exactly like any other grade — a ceiling of
+/// `bash: deny` still wins over a live `Allow`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BashGrade {
+    Ask,
+    Allow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pattern: Option<String>,
+    },
+}
+
+// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Agent profiles (opencode-style: system prompt + permission profile)
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -763,6 +796,27 @@ pub enum InMsg {
     /// (#472, ADR-0124) like [`McpAdd`][InMsg::McpAdd]: it mutates engine-global
     /// config and tears down live tools.
     McpRemove { name: String },
+    /// Hot-register the `bash`/`bash_output` pair in the running process,
+    /// graded by `grade` (#498, ADR-0133) — the live counterpart to the
+    /// startup-only `ENTANGLEMENT_ENABLE_BASH` env var. Engine-global like
+    /// [`McpAdd`][InMsg::McpAdd] (the tool registry is process-wide, not
+    /// per-session): a runtime responder registers the pair into the shared
+    /// tool registry (a no-op if already registered) and installs `grade` as
+    /// the live permission override for `bash`/`bash_output`, still clamped by
+    /// the config ceiling (#172). On success emits
+    /// [`OutEvent::BashChanged`] with `enabled: true`. **Trusted-only**
+    /// (#472, ADR-0124, same rationale as `McpAdd`): live-enabling `bash`
+    /// hands the model a full shell with no approval prompt when graded
+    /// `Allow`, so this must never arrive over an untrusted wire.
+    BashEnable { grade: BashGrade },
+    /// Unregister the `bash`/`bash_output` pair and clear the live grade
+    /// override (#498, ADR-0133) — the counterpart to
+    /// [`BashEnable`][InMsg::BashEnable]. A pair registered at startup via
+    /// `ENTANGLEMENT_ENABLE_BASH` is unregistered the same way. On success
+    /// emits [`OutEvent::BashChanged`] with `enabled: false`.
+    /// **Trusted-only** (#472, ADR-0124) like [`BashEnable`][InMsg::BashEnable]:
+    /// it mutates engine-global tool registration.
+    BashDisable,
     /// Fetch a session's persisted content history from `after_seq` onward, for a
     /// head that subscribed late and missed the live broadcast (#160, ADR-0072).
     /// Answered out-of-core by the runtime's history responder — which owns the
@@ -936,11 +990,14 @@ impl InMsg {
     }
 
     /// The session this message targets, or `None` for a supervisor-global query
-    /// that names no session — [`ListSessions`][InMsg::ListSessions] and the MCP
+    /// that names no session — [`ListSessions`][InMsg::ListSessions], the MCP
     /// ops [`McpList`][InMsg::McpList]/[`McpAdd`][InMsg::McpAdd]/
     /// [`McpRemove`][InMsg::McpRemove] (#375; MCP config is engine-global, not
-    /// per-session). Every other variant, including the session-scoped
-    /// [`ReplayFrom`][InMsg::ReplayFrom] query, carries one.
+    /// per-session), and the bash-live ops
+    /// [`BashEnable`][InMsg::BashEnable]/[`BashDisable`][InMsg::BashDisable]
+    /// (#498; the tool registry is likewise engine-global). Every other
+    /// variant, including the session-scoped [`ReplayFrom`][InMsg::ReplayFrom]
+    /// query, carries one.
     pub fn session(&self) -> Option<&SessionId> {
         match self {
             InMsg::Prompt { session, .. }
@@ -961,7 +1018,9 @@ impl InMsg {
             InMsg::ListSessions { .. }
             | InMsg::McpList { .. }
             | InMsg::McpAdd { .. }
-            | InMsg::McpRemove { .. } => None,
+            | InMsg::McpRemove { .. }
+            | InMsg::BashEnable { .. }
+            | InMsg::BashDisable => None,
         }
     }
 
@@ -988,6 +1047,10 @@ impl InMsg {
     ///   file*, not an unauthenticated wire frame. Trusted heads (the TUI
     ///   `/mcp` command) keep both via [`Holly::send`][crate::Holly::send];
     ///   `McpList` is read-only and stays wire-allowed.
+    /// - [`BashEnable`][InMsg::BashEnable]/[`BashDisable`][InMsg::BashDisable]
+    ///   (#498, ADR-0133, same rationale as `McpAdd`/`McpRemove`): live-enabling
+    ///   `bash` hands the model a full shell, optionally graded `Allow` with no
+    ///   approval prompt at all — a wire frame must never grant that.
     ///
     /// The executor submits `ToolResult`/`Spawn` over the privileged in-process
     /// [`Holly::send`][crate::Holly::send] (it holds the handle); a wire head uses
@@ -1019,7 +1082,9 @@ impl InMsg {
             | InMsg::Resume { .. }
             | InMsg::HibernateSession { .. }
             | InMsg::McpAdd { .. }
-            | InMsg::McpRemove { .. } => false,
+            | InMsg::McpRemove { .. }
+            | InMsg::BashEnable { .. }
+            | InMsg::BashDisable => false,
         }
     }
 
@@ -1037,6 +1102,8 @@ impl InMsg {
             InMsg::McpList { .. } => "mcp_list",
             InMsg::McpAdd { .. } => "mcp_add",
             InMsg::McpRemove { .. } => "mcp_remove",
+            InMsg::BashEnable { .. } => "bash_enable",
+            InMsg::BashDisable => "bash_disable",
             InMsg::ReplayFrom { .. } => "replay_from",
             InMsg::CloseSession { .. } => "close_session",
             InMsg::HibernateSession { .. } => "hibernate_session",
@@ -1110,6 +1177,16 @@ pub enum OutEvent {
     /// An MCP server was hot-added or removed (lifecycle event, no `seq`), in
     /// reply to [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375).
     McpChanged { name: String, action: McpAction },
+    /// `bash`/`bash_output` were live-registered or unregistered (lifecycle
+    /// event, no `seq`), in reply to
+    /// [`InMsg::BashEnable`]/[`InMsg::BashDisable`] (#498, ADR-0133).
+    /// `grade` is the live permission override now in effect — `Some` when
+    /// `enabled` is `true`, `None` when `false`.
+    BashChanged {
+        enabled: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grade: Option<BashGrade>,
+    },
     /// A session's persisted content history from a requested `after_seq`, in
     /// reply to [`InMsg::ReplayFrom`] (#160, ADR-0072). Answered by the runtime's
     /// history responder — which owns the event log — not the core supervisor.
@@ -1442,7 +1519,8 @@ impl OutEvent {
             | OutEvent::SearchResult { session, .. } => Some(session),
             OutEvent::SessionList { .. }
             | OutEvent::McpList { .. }
-            | OutEvent::McpChanged { .. } => None,
+            | OutEvent::McpChanged { .. }
+            | OutEvent::BashChanged { .. } => None,
         }
     }
 
@@ -1462,6 +1540,7 @@ impl OutEvent {
             | OutEvent::SessionList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
+            | OutEvent::BashChanged { .. }
             | OutEvent::History { .. }
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }

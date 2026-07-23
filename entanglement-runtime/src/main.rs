@@ -20,9 +20,9 @@ mod run;
 mod tui;
 
 use entanglement_runtime::{
-    agents, ask_user, config, extra_roots, history, host, inspect, logging, mcp, permission_path,
-    persistence, plan_tasks, policy, propose_plan, script, session_store, skills, subagent,
-    system_prompt, tool_names, tool_runner, watch, ToolRegistry,
+    agents, ask_user, bash_live, config, extra_roots, history, host, inspect, logging, mcp,
+    permission_path, persistence, plan_tasks, policy, propose_plan, script, session_store, skills,
+    subagent, system_prompt, tool_names, tool_runner, watch, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -96,6 +96,8 @@ async fn build_config(
     Vec<String>,
     HashMap<String, mcp::ActiveServer>,
     EscapeRoot,
+    Arc<bash_live::LiveBashState>,
+    bash_live::BashToolConfig,
 ) {
     let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
@@ -150,6 +152,20 @@ async fn build_config(
         bash_enabled,
         sandbox,
     );
+    // Live bash enablement (#498, ADR-0133): `live_bash` starts seeded from the
+    // startup `bash_enabled` (so the TUI `!bash` gate and `ProfileResolver`
+    // reflect it uniformly) but with no grade override — a startup-registered
+    // pair still resolves through the session's own profile, unchanged from
+    // pre-#498 behavior. `bash_tool_config` is what a later live `/bash on`
+    // needs to build a fresh `BashTool`/`BashOutputTool` pair on demand,
+    // mirroring this function's own bash arm in `register_default_tools`.
+    let live_bash = bash_live::LiveBashState::new(bash_enabled);
+    let bash_tool_config = bash_live::BashToolConfig {
+        root: root.clone(),
+        extra_roots: Some(extra_root_store.clone()),
+        secret_env: secret_env.clone(),
+        sandbox,
+    };
     let escape_root = EscapeRoot {
         root: root.clone(),
         store: extra_root_store,
@@ -241,6 +257,8 @@ async fn build_config(
         tool_names,
         initial_mcp,
         escape_root,
+        live_bash,
+        bash_tool_config,
     )
 }
 
@@ -1000,15 +1018,24 @@ async fn main() -> Result<()> {
     };
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
-    let (mut engine_config, model_info, provider_name, tools, tool_names, initial_mcp, escape_root) =
-        build_config(
-            &catalog,
-            &http_client,
-            profiles,
-            live_skills.clone(),
-            &user_config,
-        )
-        .await;
+    let (
+        mut engine_config,
+        model_info,
+        provider_name,
+        tools,
+        tool_names,
+        initial_mcp,
+        escape_root,
+        live_bash,
+        bash_tool_config,
+    ) = build_config(
+        &catalog,
+        &http_client,
+        profiles,
+        live_skills.clone(),
+        &user_config,
+    )
+    .await;
     // Per-agent generation-parameter overrides (#374, ADR-0094): resolved by
     // profile name at session start / `SetAgent`, same precedence tier the model
     // pin's persisted file occupies (persisted store > profile/catalog default).
@@ -1081,13 +1108,19 @@ async fn main() -> Result<()> {
     // below (#329), so a persisted "always allow" grant another skutter
     // instance recorded is visible on the next reload.
     let active = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
-        active.clone(),
-        user_config.permissions.clone(),
-        // Root-relative arg normalization (#485, ADR-0125): cloned before
-        // `escape_root` moves into `spawn_tool_executor_with_policy` below.
-        Some(escape_root.root.clone()),
-    ));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(
+        ProfileResolver::new(
+            active.clone(),
+            user_config.permissions.clone(),
+            // Root-relative arg normalization (#485, ADR-0125): cloned before
+            // `escape_root` moves into `spawn_tool_executor_with_policy` below.
+            Some(escape_root.root.clone()),
+        )
+        // Live bash enablement (#498): a `/bash on` grade overrides the
+        // session's own profile for `bash`/`bash_output`, still clamped by
+        // the ceiling above.
+        .with_live_bash(live_bash.clone()),
+    );
     let grants = Arc::new(DefaultGrantStore::load());
     let tool_executor = tool_runner::spawn_tool_executor_with_policy(
         &holly,
@@ -1114,6 +1147,12 @@ async fn main() -> Result<()> {
         mcp_configs,
         catalog.key_envs(),
     );
+
+    // Live bash enablement (#498, ADR-0133): a runtime service answering
+    // `BashEnable`/`BashDisable` off the inbound fan-out, mirroring the MCP
+    // responder above — it alone holds `tools` + `live_bash`.
+    let bash_responder_handle =
+        bash_live::spawn_bash_responder(&holly, tools.clone(), live_bash.clone(), bash_tool_config);
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
@@ -1210,7 +1249,6 @@ async fn main() -> Result<()> {
                     })
                     .await?;
             }
-            let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
             tui(
                 &holly,
                 session_id,
@@ -1222,7 +1260,7 @@ async fn main() -> Result<()> {
                 live_agent_generation,
                 reload_rx,
                 cwd.clone(),
-                bash_enabled,
+                live_bash,
                 tool_names,
                 http_client.clone(),
                 user_config.editor.clone(),
@@ -1248,7 +1286,6 @@ async fn main() -> Result<()> {
                         })
                         .await?;
                 }
-                let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
                 tui(
                     &holly,
                     session_id,
@@ -1260,7 +1297,7 @@ async fn main() -> Result<()> {
                     live_agent_generation,
                     reload_rx,
                     cwd.clone(),
-                    bash_enabled,
+                    live_bash,
                     tool_names,
                     http_client.clone(),
                     user_config.editor.clone(),
@@ -1292,6 +1329,7 @@ async fn main() -> Result<()> {
     // persistence subscriber to drain + exit.
     tool_executor.abort();
     mcp_responder_handle.abort();
+    bash_responder_handle.abort();
     history_handle.abort();
     if let Some(h) = watcher_handle {
         h.abort();

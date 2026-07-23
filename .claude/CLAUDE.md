@@ -116,7 +116,7 @@ reads it; this table is the one-place index):
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` | replace the whole user agents/skills layer (also the cross-vendor opt-out) |
 | `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the four managed runtime files |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
-| `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register the `bash`/`bash_output` exec pair |
+| `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register the `bash`/`bash_output` exec pair at startup (the TUI `/bash on` command, #498, live-registers it mid-session instead) |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call`; opt-in to keep network (#399) |
 | `ENTANGLEMENT_ECHO_FULL=1` | `EchoLlm` appends the full system text (debugging) |
 | `ENTANGLEMENT_TUI_NOTIFY=1` / `ENTANGLEMENT_TUI_NO_MOUSE` | TUI desktop-notification opt-in / mouse opt-out |
@@ -506,6 +506,37 @@ re-document them here):
   confirmations (`OutEvent::McpChanged`) and parse errors render as a
   transcript status line on the active session, mirroring `/key`'s save
   notice. No new wire surface.
+- **Live bash enablement, graded by the permission model** (#498,
+  [ADR-0133](../docs/adr/0133-live-bash-enablement-graded-by-permission.md),
+  built on the `SharedRegistry`/live-MCP pattern above): `bash`/`bash_output`
+  registration was startup-only (`ENTANGLEMENT_ENABLE_BASH`, read once before
+  `Holly::spawn`) — no way to turn it on mid-session, which left an agent with
+  no exec tool at all when a skill's `allowed_tools` assumed `bash` (the
+  built-in `commit` skill) but bash was never registered. `InMsg::BashEnable {
+  grade: BashGrade }`/`BashDisable` are engine-global and **trusted-only**
+  like `McpAdd`/`McpRemove` (#472/ADR-0124: a blanket-`Allow` live-enable hands
+  the model a full shell with no approval prompt, so it must never arrive over
+  an untrusted wire), answered by `OutEvent::BashChanged { enabled, grade }`
+  from a new `bash_live::spawn_bash_responder` mirroring
+  `mcp::spawn_mcp_responder`. `BashGrade::Ask` (safe default — every call
+  still prompts) or `Allow { pattern: Option<String> }` (blanket, or an
+  argument-scoped `bash(pattern): allow` rule, #173, when a command pattern is
+  given). `bash_live::LiveBashState` tracks registration + the live grade,
+  seeded at startup from `ENTANGLEMENT_ENABLE_BASH` with **no** grade override
+  (a startup-registered pair still resolves through the session's own
+  profile, byte-identical to pre-#498). `ProfileResolver` gained an opt-in
+  `with_live_bash`: when a live grade is set, it overrides the session's own
+  profile for `bash`/`bash_output` specifically (a profile authored before
+  bash was live-enabled has no real opinion on it), still passed through the
+  existing `clamp_to_base` config-ceiling clamp (#172) unconditionally — a
+  ceiling of `bash: deny` still wins over a live `Allow`. TUI `/bash on
+  [--allow [<pattern>]|--ask] | off` (`tui/bash_command.rs`) mirrors `/mcp`'s
+  raw-text re-parse, confirmations render as a transcript status line (no
+  panel — nothing to list); the `!bash` passthrough gate
+  (`App::bash_enabled`) now reads `LiveBashState::is_enabled()` live instead
+  of a startup-only snapshot. Enablement is process-wide (matching
+  `SharedRegistry`'s own scope) and ephemeral — no `config.yml` persistence,
+  unlike `Approve { scope: Always }`'s durable grants.
 - **Single-shot session ops + persisted compaction** (#324,
   [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)):
   `InMsg::Oneshot { session, op: String, args: Value }` is a generic **wire

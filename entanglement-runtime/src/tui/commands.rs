@@ -26,6 +26,7 @@ pub enum Command {
     Show,
     Mcp,
     Allow,
+    Bash,
 }
 
 impl Command {
@@ -48,6 +49,7 @@ impl Command {
             Command::Show => "show",
             Command::Mcp => "mcp",
             Command::Allow => "allow",
+            Command::Bash => "bash",
         }
     }
 
@@ -73,6 +75,9 @@ impl Command {
             Command::Mcp => "Manage MCP servers (list, add, remove)",
             Command::Allow => {
                 "Allow a directory for read/grep/glob for the rest of this session"
+            }
+            Command::Bash => {
+                "Live-enable/disable bash (on [--allow [<pattern>]|--ask] | off)"
             }
         }
     }
@@ -101,6 +106,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Show,
         Command::Mcp,
         Command::Allow,
+        Command::Bash,
     ]
 }
 
@@ -242,6 +248,7 @@ mod tests {
         assert_eq!(parse_command("/show"), Some(Command::Show));
         assert_eq!(parse_command("/mcp"), Some(Command::Mcp));
         assert_eq!(parse_command("/allow"), Some(Command::Allow));
+        assert_eq!(parse_command("/bash"), Some(Command::Bash));
     }
 
     #[test]

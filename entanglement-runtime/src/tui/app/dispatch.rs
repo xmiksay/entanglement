@@ -69,6 +69,10 @@ impl App {
             // text, not available here — both call sites intercept it before
             // reaching this dispatch.
             Command::Allow => false,
+            // Same shape again (#498): every `/bash` subcommand needs `holly`
+            // (plus the trailing text), not available here — both call sites
+            // intercept it before reaching this dispatch.
+            Command::Bash => false,
         }
     }
 

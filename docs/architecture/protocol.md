@@ -25,6 +25,8 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | McpList{correlation_id}   // supervisor-global query; live MCP servers → McpList reply (#375)
          | McpAdd{name,config:McpServerSpec}   // hot-connect + persist to config.yml → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | McpRemove{name}   // hot-disconnect + persist removal → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
+         | BashEnable{grade:BashGrade}   // hot-register bash/bash_output, graded Ask|Allow{pattern?} → BashChanged (#498, ADR-0133); trusted-only, wire-refused
+         | BashDisable   // hot-unregister bash/bash_output → BashChanged (#498, ADR-0133); trusted-only, wire-refused
          | ReplayFrom{session,correlation_id,after_seq}   // late-subscriber history fetch → History (#160, ADR-0072)
          | CloseSession{session}   // explicit destroy → SessionEnded, tombstones the id (#21)
          | HibernateSession{session}   // trusted-only: evict memory, NO tombstone → SessionHibernated, resumable (#318, ADR-0077)
@@ -36,6 +38,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072)
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
+         | BashChanged{enabled,grade?}   // bash/bash_output live-registered/unregistered, no seq; reply to BashEnable/BashDisable (#498, ADR-0133)
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
@@ -83,13 +86,18 @@ a parked turn on `request_id` alone, bypassing execution *and* permission),
 `Spawn` (bypasses the tool path's `spawn_refusal` gate, #119), `Resume`
 (internal, `#[serde(skip)]`), `HibernateSession` (an embedder memory-eviction
 control — a wire head must not evict another session's in-memory state, #318),
-and `McpAdd`/`McpRemove` (#472,
+`McpAdd`/`McpRemove` (#472,
 [ADR-0124](../adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md),
 reversing #375's wire tier: an unapproved `McpAdd` spawns an arbitrary local
 subprocess, and with the `serve` origin gate opt-in-off a hostile web page
 could drive it cross-origin — the read-only `McpList` stays wire-allowed, and
 the TUI `/mcp` path is unaffected since it sends over the privileged
-`Holly::send`). `wire_allowed` is an explicit exhaustive allowlist `match`
+`Holly::send`), and `BashEnable`/`BashDisable`
+([ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md), #498,
+same rationale as `McpAdd`/`McpRemove`: a blanket-`Allow` live-enable hands the
+model a full shell with no approval prompt, so a wire frame must never grant
+it — the TUI `/bash` command likewise sends over `Holly::send`). `wire_allowed`
+is an explicit exhaustive allowlist `match`
 (ADR-0124), so a new variant is wire-refused until deliberately opted in — a
 compile error to skip, mirroring `session()`/`variant_name()`. The executor
 folds a completed tool round-trip back

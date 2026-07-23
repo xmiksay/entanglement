@@ -337,6 +337,16 @@ pub(super) async fn handle_command_palette_event(
                     // presses Enter, which routes through the typed path
                     // (`event_loop`'s Enter handler → `allow_command::send_allow`).
                     app.set_input_text("/allow ".to_string());
+                } else if cmd == crate::tui::commands::Command::Bash {
+                    // The palette carries no trailing `on`/`off` args (#498), so
+                    // a picked `/bash` always live-enables with the shared safe
+                    // default — the same one `bash_command::parse_bash_on`'s
+                    // bare-arg arm falls back to, kept in one place.
+                    let _ = holly
+                        .send(InMsg::BashEnable {
+                            grade: super::bash_command::default_grade(),
+                        })
+                        .await;
                 } else if app.execute_command(cmd) {
                     return Ok(true);
                 }
