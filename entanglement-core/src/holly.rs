@@ -250,6 +250,13 @@ impl Holly {
         let _ = self.events.send(OutEvent::McpChanged { name, action });
     }
 
+    /// Broadcast a runtime-authored [`OutEvent::BashChanged`] reply to
+    /// [`InMsg::BashEnable`]/[`InMsg::BashDisable`] (#498, ADR-0133). No `seq` —
+    /// a point-in-time engine-global lifecycle event, not session content.
+    pub fn emit_bash_changed(&self, enabled: bool, grade: Option<crate::protocol::BashGrade>) {
+        let _ = self.events.send(OutEvent::BashChanged { enabled, grade });
+    }
+
     /// Mint the next seq for `session` from the shared registry, or `0` when the
     /// session has no live counter (ended / never started). Shared by
     /// [`emit_for_session`][Self::emit_for_session] and the supervisor's

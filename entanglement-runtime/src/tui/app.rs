@@ -20,6 +20,7 @@ use crate::tui::theme::Theme;
 // cohesive slice of the `impl App` surface. Fields stay private here — child
 // modules reach them through their descendant visibility.
 mod allow;
+mod bash;
 mod compact;
 mod construct;
 mod dispatch;
@@ -214,8 +215,11 @@ pub struct App {
 
     // `@file` mention completion + `!bash` passthrough (ADR-0030). `root` is the
     // working directory both the file index and `!bash` execution are rooted at.
+    // `live_bash` (#498) is the shared handle a live `/bash on`/`off` mutates —
+    // reading it live keeps the `!bash` gate in sync with both the startup env
+    // var and a live toggle, with no separate plumbing.
     root: PathBuf,
-    bash_enabled: bool,
+    live_bash: std::sync::Arc<crate::bash_live::LiveBashState>,
     mention: MentionPopup,
 
     // Two-stage Ctrl+C (ADR-0087): first press clears transient input + arms a
@@ -364,6 +368,10 @@ impl App {
         }
         if let OutEvent::McpChanged { name, action } = &event {
             self.handle_mcp_changed(name, *action);
+        }
+        // Live bash enablement (#498) is likewise engine-global.
+        if let OutEvent::BashChanged { enabled, grade } = &event {
+            self.handle_bash_changed(*enabled, grade.as_ref());
         }
         // Compaction forks (ADR-0101): intercept before routing, so the source
         // view renders a fork notice, a new view is minted + switched to, and a

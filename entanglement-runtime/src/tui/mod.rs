@@ -1,6 +1,7 @@
 mod allow_command;
 mod app;
 mod attention;
+mod bash_command;
 mod clipboard;
 mod command_palette;
 mod commands;
@@ -68,7 +69,7 @@ pub async fn tui(
     >,
     mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     root: std::path::PathBuf,
-    bash_enabled: bool,
+    live_bash: std::sync::Arc<crate::bash_live::LiveBashState>,
     tool_roster: Vec<String>,
     http_client: HttpClient,
     configured_editor: Option<String>,
@@ -124,7 +125,7 @@ pub async fn tui(
     app.set_http_client(http_client);
     app.set_configured_editor(configured_editor);
     app.set_grants(grants);
-    app.init_head_context(root, bash_enabled);
+    app.init_head_context(root, live_bash);
 
     let mut attention = Attention::from_env();
     let mut holly_sub = holly.subscribe();

@@ -264,6 +264,14 @@ below realize one model:
   is skipped in the merge (`read_layer`), and changes nothing until edited; it
   only exists as a discoverable starting point. Best-effort: a write failure is
   logged, never fatal.
+- **Live bash enablement composes with the ceiling too (✅ #498,
+  [ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md)):** a
+  live `/bash on --allow` grade (`bash_live::LiveBashState`) overrides the
+  session's own profile for `bash`/`bash_output` specifically via
+  `ProfileResolver`'s opt-in `with_live_bash`, but the result still passes
+  through `clamp_to_base` unconditionally — a config ceiling of `bash: deny`
+  still wins over a live `Allow`, same as it wins over any agent profile's own
+  `Allow`.
 - **Managed provider-key env file (✅ #220):** a sibling
   `${config_dir}/entanglement/.env` (path override `ENTANGLEMENT_ENV_FILE`) holds
   the provider API keys outside any repo (`entanglement-runtime/src/config/env_file.rs`).

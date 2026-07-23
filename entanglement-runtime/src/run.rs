@@ -118,10 +118,12 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // to render.
         OutEvent::SessionHibernated { .. } => {}
         OutEvent::SessionList { .. } => {}
-        // MCP ops (#375) are engine-global queries/commands; the one-shot head
-        // never issues them, so nothing to render.
+        // MCP ops (#375) and the bash-live ops (#498) are engine-global
+        // queries/commands; the one-shot head never issues them, so nothing to
+        // render.
         OutEvent::McpList { .. } => {}
         OutEvent::McpChanged { .. } => {}
+        OutEvent::BashChanged { .. } => {}
         // History is a late-subscriber query reply (#160); the one-shot head
         // never issues `ReplayFrom`, so nothing to render.
         OutEvent::History { .. } => {}
