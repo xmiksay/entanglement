@@ -434,7 +434,9 @@ mod tests {
 
     #[test]
     fn always_round_trips_through_the_file() {
-        let _g = crate::config::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("extra-roots.yml");
         std::env::set_var(EXTRA_ROOTS_FILE_ENV, &file);
@@ -462,7 +464,9 @@ mod tests {
     /// update. A freshly loaded third store must see both.
     #[test]
     fn concurrent_always_grants_from_two_stores_both_survive() {
-        let _g = crate::config::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("extra-roots.yml");
         std::env::set_var(EXTRA_ROOTS_FILE_ENV, &file);
