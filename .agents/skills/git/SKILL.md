@@ -11,6 +11,11 @@ The loop is the point — phase 6 returns to phase 4 (push) until the review is 
 
 ## Guardrails (non-negotiable)
 
+- **Requires the `bash` tool.** Every phase below is shell one-liners with
+  pipes/heredocs that `call` (single argv, no shell) cannot run. If `bash` is
+  not registered, don't flail with `call` — ask the user to enable it: `/bash
+  on` in the TUI (live, #498/ADR-0133) or restart with
+  `ENTANGLEMENT_ENABLE_BASH=1`.
 - **Never commit to / push to `master`.** Always work on a feature branch. (Project brief: fast-forward only, never commit to `master`.)
 - **Never work on a stale repo.** `git fetch origin` first — before branching, before pushing, before reading review state, and before rebasing. Branch/rebase off **`origin/master`**, not your local `master` (which may lag). Stale locals are how you build onto outdated code and manufacture avoidable conflicts; a fetch is cheap, a bad rebase isn't.
 - **Don't assume you start on `master`.** Orient first (Phase 0), then create the feature branch off `origin/master` from *whatever* branch you're on (`git switch -c <branch> origin/master`). Never `git switch master` as a step — it fails the moment you're mid-work elsewhere or the tree is dirty. Never switch branches over uncommitted work.
