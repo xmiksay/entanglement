@@ -36,7 +36,6 @@ dirs = "5"
 async-trait = "0.1"
 async-stream = "0.3"
 futures = "0.3"
-rand = "0.8"
 httpdate = "1"
 clap = { version = "4", features = ["derive"] }
 # Hidden terminal prompt for `skutter config set-key` (#304) — reads an API key
@@ -82,3 +81,12 @@ notify-debouncer-mini = "0.6"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Iteration-speed tuning (#502 safe set): line-tables keep backtraces usable at
+# a fraction of full debuginfo's compile+link cost; deps get light optimization
+# once (they rarely rebuild) so debug runs and test suites aren't glacial.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 1

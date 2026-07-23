@@ -59,7 +59,10 @@ make tag           # cut a release tag (VERSION=vX.Y.Z): refuses dirty tree / re
 make build | check | clean
 ```
 
-Build jobs capped at 4 via `../.cargo/config.toml`.
+Build jobs capped at 4 via `../.cargo/config.toml`, which also links host
+builds with `lld`; dev-profile tuning (`line-tables-only` debuginfo,
+`opt-level = 1` for deps) lives in the workspace `../Cargo.toml` (#502 safe
+set — the deferred larger trims are ledger row 4).
 
 ## Providers (`skutter`)
 

@@ -554,8 +554,20 @@ fn pool_key(endpoint: &str, api_key: Option<&str>) -> String {
 /// Grow the backoff geometrically, cap it, then add up to 100% jitter.
 fn next_backoff(backoff: Duration, max: Duration) -> Duration {
     let capped = std::cmp::min(backoff * 2, max);
-    let jitter = rand::random::<f64>() * capped.as_millis() as f64;
+    let jitter = jitter_unit() * capped.as_millis() as f64;
     Duration::from_millis((capped.as_millis() as f64 + jitter) as u64)
+}
+
+/// A jitter factor in `[0, 1)` from the wall clock's subsecond nanos — retry
+/// spreading needs no statistical quality, and this keeps the crate free of
+/// the `rand`/`getrandom` dependency trees it would otherwise pull for this
+/// one call.
+fn jitter_unit() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    f64::from(nanos) / 1e9
 }
 
 /// A retryable HTTP status: server errors and 429 Too Many Requests.
