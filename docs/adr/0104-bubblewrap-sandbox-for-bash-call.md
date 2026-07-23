@@ -1,6 +1,6 @@
 # 0104. OS-level process confinement for `bash`/`call` via bubblewrap — opt-in, fail-closed
 
-- Status: Accepted
+- Status: Amended by [0134](0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)
 - Date: 2026-07-17
 
 ## Context

@@ -446,6 +446,7 @@ mod tests {
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         }
     }
 

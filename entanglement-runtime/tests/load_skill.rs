@@ -265,6 +265,7 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {

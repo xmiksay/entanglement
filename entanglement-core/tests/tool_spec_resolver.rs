@@ -69,6 +69,7 @@ fn explore_profile() -> AgentProfile {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     }
 }
 

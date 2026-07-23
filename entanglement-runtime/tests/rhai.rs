@@ -22,7 +22,7 @@ use entanglement_runtime::host::{
     host_tools, host_tools_with_extra_roots, BashTool, CallTool, ReadRawTool,
 };
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
 };
 use entanglement_runtime::skills::{load_registry, LoadSkillTool, SkillRegistry};
 use entanglement_runtime::tool_names::RHAI_TOOL;
@@ -246,6 +246,7 @@ fn spawn_with_rhai_escape(
         grants,
         Hooks::default(),
         Some(escape_root),
+        SandboxConfig::none(),
     );
     (holly, store)
 }
@@ -266,6 +267,7 @@ fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     profiles
 }
@@ -805,6 +807,7 @@ async fn call_binding_masked_when_omitted_from_profile_tools() {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     let holly = spawn_with_rhai_exec(
         r#"let r = ""; try { exec("echo", ["hi"]); r = "ran" } catch(e) { r = "caught: " + e } r"#,
@@ -1131,6 +1134,7 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         grants,
         Hooks::default(),
         None,
+        SandboxConfig::none(),
     );
 
     let sid = SessionId::new("s1");

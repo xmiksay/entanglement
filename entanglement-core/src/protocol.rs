@@ -569,6 +569,15 @@ pub struct AgentProfile {
     /// can).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawnable_agents: Option<Vec<String>>,
+    /// Per-profile bubblewrap confinement override for `bash`/`call` (#479,
+    /// ADR-0104 amendment): `Some("bwrap" | "bubblewrap")` confines every exec
+    /// call this profile makes, `Some("none")` forces them unconfined, `None`
+    /// inherits the process-global `ENTANGLEMENT_SANDBOX` default. Opaque to
+    /// core — validated and interpreted entirely by the runtime
+    /// (`host::sandbox`), which owns the `bwrap` mechanism; core only carries
+    /// and serializes it, same as `permission`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
 }
 
 impl AgentProfile {
@@ -2232,6 +2241,7 @@ mod tests {
             disallowed_tools: vec!["edit".into()],
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         };
         let detail = profile.detail();
         assert_eq!(detail.mode, AgentMode::Subagent);
@@ -2392,6 +2402,7 @@ mod tests {
             disallowed_tools: disallowed.into_iter().map(String::from).collect(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         }
     }
 
@@ -2412,6 +2423,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             can_spawn,
             spawnable_agents: spawnable_agents.map(|v| v.into_iter().map(String::from).collect()),
+            sandbox: None,
         }
     }
 

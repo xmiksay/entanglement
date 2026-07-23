@@ -10,6 +10,7 @@ use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::jobs::JobRegistry;
 use super::sandbox::{self, SandboxPolicy};
 use super::truncate_head_tail;
+use crate::policy::SandboxResolver;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -17,6 +18,7 @@ use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const MAX_BASH_TIMEOUT_SECONDS: u64 = 600;
 
@@ -31,10 +33,12 @@ pub struct BashTool {
     /// the shared instance via [`BashTool::with_jobs`] so polls reach the jobs
     /// this tool spawned.
     jobs: JobRegistry,
-    /// Optional bubblewrap confinement (ADR-0104). Defaults to
-    /// [`SandboxPolicy::none()`] — unsandboxed, unchanged from before this
-    /// existed.
-    sandbox: SandboxPolicy,
+    /// Confinement resolver (#479, ADR-0104 amendment): a fixed [`SandboxPolicy`]
+    /// (set via [`BashTool::with_sandbox`]) is trivially its own resolver, so the
+    /// pre-#479 API is unchanged; [`BashTool::with_sandbox_resolver`] plugs in a
+    /// per-profile resolver instead. Defaults to [`SandboxPolicy::none()`] —
+    /// unsandboxed, unchanged from before either existed.
+    sandbox_resolver: Arc<dyn SandboxResolver>,
     /// Approval-gated out-of-root `workdir` (ADR-0109).
     extra_roots: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
 }
@@ -45,7 +49,7 @@ impl BashTool {
             root,
             secret_env: Vec::new(),
             jobs: JobRegistry::new(),
-            sandbox: SandboxPolicy::none(),
+            sandbox_resolver: Arc::new(SandboxPolicy::none()),
             extra_roots: None,
         }
     }
@@ -72,17 +76,30 @@ impl BashTool {
         self
     }
 
-    /// Confine every spawned command under `policy` (ADR-0104).
+    /// Confine every spawned command under `policy` (ADR-0104), regardless of
+    /// session/profile.
     pub fn with_sandbox(mut self, policy: SandboxPolicy) -> Self {
-        self.sandbox = policy;
+        self.sandbox_resolver = Arc::new(policy);
+        self
+    }
+
+    /// Resolve the confinement policy per session/profile (#479, ADR-0104
+    /// amendment) instead of a single fixed [`SandboxPolicy`].
+    pub fn with_sandbox_resolver(mut self, resolver: Arc<dyn SandboxResolver>) -> Self {
+        self.sandbox_resolver = resolver;
         self
     }
 
     /// Build the `sh -c` command with cwd, piped stdio, own process group, and
     /// scrubbed secrets — shared by the foreground and background paths.
-    fn build_command(&self, command: &str, cwd: &Path) -> tokio::process::Command {
+    fn build_command(
+        &self,
+        command: &str,
+        cwd: &Path,
+        policy: &SandboxPolicy,
+    ) -> tokio::process::Command {
         let args = vec!["-c".to_string(), command.to_string()];
-        let mut cmd = sandbox::command(&self.sandbox, &self.root, "sh", &args);
+        let mut cmd = sandbox::command(policy, &self.root, "sh", &args);
         cmd.current_dir(cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -160,17 +177,17 @@ impl Tool for BashTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        self.run_impl("", input).await
+        self.run_impl(None, "", input).await
     }
 
     async fn run_for_session(
         &self,
-        _session: &SessionId,
+        session: &SessionId,
         request_id: &str,
         input: &str,
     ) -> Result<Vec<ContentPart>> {
         Ok(crate::tools::text_parts(
-            self.run_impl(request_id, input).await?,
+            self.run_impl(Some(session), request_id, input).await?,
         ))
     }
 }
@@ -178,8 +195,15 @@ impl Tool for BashTool {
 impl BashTool {
     /// `request_id` (#449) is forwarded to the escape-root grant check so a
     /// `Once` approval for `workdir` is only consumed by the call it was
-    /// approved for.
-    async fn run_impl(&self, request_id: &str, input: &str) -> Result<String> {
+    /// approved for. `session` (#479, ADR-0104 amendment) resolves the
+    /// per-profile confinement policy; `None` (the plain [`Tool::run`] path)
+    /// resolves against the resolver's process-global default.
+    async fn run_impl(
+        &self,
+        session: Option<&SessionId>,
+        request_id: &str,
+        input: &str,
+    ) -> Result<String> {
         let parsed: BashInput = serde_json::from_str(input)
             .context("invalid input to bash: expected {\"command\": string, ...}")?;
         let cwd = super::resolve_workdir_or_grant(
@@ -189,7 +213,8 @@ impl BashTool {
             request_id,
             parsed.workdir.as_deref(),
         )?;
-        let mut cmd = self.build_command(&parsed.command, &cwd);
+        let policy = self.sandbox_resolver.resolve(session);
+        let mut cmd = self.build_command(&parsed.command, &cwd, &policy);
 
         if parsed.run_in_background {
             let id = self
@@ -554,5 +579,58 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("killed") && out.contains("timed out"), "{out}");
+    }
+
+    /// #479, ADR-0104 amendment: one `BashTool` instance backed by a
+    /// [`crate::policy::SandboxResolver`] confines only the session whose
+    /// resolved policy is confined — proving per-profile scoping in one
+    /// process, not the previous all-or-nothing global switch.
+    #[tokio::test]
+    async fn sandbox_resolver_confines_only_the_session_it_resolves_confined() {
+        if !sandbox::bwrap_available() {
+            eprintln!("skipping: bwrap not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::Builder::new()
+            .prefix("entanglement-sandbox-resolver-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+
+        let cfg = crate::policy::SandboxConfig::none();
+        let confined = SessionId::new("confined-profile");
+        let unconfined = SessionId::new("unconfined-profile");
+        cfg.own
+            .lock()
+            .unwrap()
+            .insert(confined.clone(), bwrap_policy(false));
+        cfg.own
+            .lock()
+            .unwrap()
+            .insert(unconfined.clone(), SandboxPolicy::none());
+        let tool = BashTool::new(dir.path().to_path_buf()).with_sandbox_resolver(cfg.resolver());
+
+        let leak_path = outside.path().join("leak.txt");
+        let write_cmd = format!(r#"{{"command":"echo pwned > {}"}}"#, leak_path.display());
+
+        let confined_out = tool
+            .run_for_session(&confined, "r1", &write_cmd)
+            .await
+            .unwrap();
+        assert!(
+            !entanglement_core::content_text(&confined_out).contains("[exit 0]"),
+            "confined session's write outside root must fail"
+        );
+        assert!(!leak_path.exists());
+
+        let unconfined_out = tool
+            .run_for_session(&unconfined, "r2", &write_cmd)
+            .await
+            .unwrap();
+        assert!(
+            entanglement_core::content_text(&unconfined_out).contains("[exit 0]"),
+            "unconfined session's write outside root must succeed"
+        );
+        assert!(leak_path.exists());
     }
 }

@@ -322,5 +322,6 @@ fn default_profile() -> AgentProfile {
         // stay spawnable without editing this built-in.
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     }
 }

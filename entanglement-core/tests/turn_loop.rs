@@ -381,6 +381,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     let holly = Holly::spawn(cfg);
     // The tool call is an unknown tool; execution is now a runtime round-trip

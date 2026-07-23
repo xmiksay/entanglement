@@ -15,7 +15,7 @@ use entanglement_core::{
     SessionId, ToolCall,
 };
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::{spawn_tool_executor, spawn_tool_executor_with_policy};
@@ -122,6 +122,7 @@ fn ask_bash_registry() -> ProfileRegistry {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     profiles
 }
@@ -186,6 +187,7 @@ async fn deny_refuses_without_request() {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     let holly = spawn_with_bash_call_using("rm -rf", profiles);
     let sid = SessionId::new("s1");
@@ -279,6 +281,7 @@ fn scoped_bash_registry() -> ProfileRegistry {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     profiles
 }
@@ -401,6 +404,7 @@ fn scoped_workdir_bash_registry() -> ProfileRegistry {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     profiles
 }
@@ -745,6 +749,7 @@ fn scoped_read_registry() -> ProfileRegistry {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     profiles
 }
@@ -810,6 +815,7 @@ fn spawn_two_read_calls_rooted(
         grants,
         Default::default(),
         Some(escape_root),
+        SandboxConfig::none(),
     );
     holly
 }
@@ -1048,6 +1054,7 @@ fn spawn_scripted_calls_rooted(
         grants,
         Default::default(),
         Some(escape_root),
+        SandboxConfig::none(),
     );
     holly
 }

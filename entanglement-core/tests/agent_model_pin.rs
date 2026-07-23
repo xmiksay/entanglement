@@ -84,6 +84,7 @@ fn profile(name: &str, pin: Option<(&str, &str)>) -> AgentProfile {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     }
 }
 

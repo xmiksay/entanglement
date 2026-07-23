@@ -117,7 +117,7 @@ reads it; this table is the one-place index):
 | `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the four managed runtime files |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
 | `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register the `bash`/`bash_output` exec pair at startup (the TUI `/bash on` command, #498, live-registers it mid-session instead) |
-| `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call`; opt-in to keep network (#399) |
+| `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide (default when a profile sets no `sandbox:` override); opt-in to keep network (#399, #479) |
 | `ENTANGLEMENT_ECHO_FULL=1` | `EchoLlm` appends the full system text (debugging) |
 | `ENTANGLEMENT_TUI_NOTIFY=1` / `ENTANGLEMENT_TUI_NO_MOUSE` | TUI desktop-notification opt-in / mouse opt-out |
 | `ENTANGLEMENT_HOOK_EVENT` / `_SESSION_ID` / `_TOOL_NAME` | set on every hook child's env by the runtime (read-only context, not user-set) |
@@ -855,6 +855,34 @@ re-document them here):
   no `request_id`/`SessionId` needed (no `Once` token to consume).
   `host/mod.rs`'s `list_files`/`FileList` moved into a new `host/walk.rs` to
   stay under the 400-line file cap.
+- **Per-profile sandbox scoping for `bash`/`call`, with a spawn-chain clamp**
+  (#479, [ADR-0134](../docs/adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)
+  amending [ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)):
+  `AgentProfile` gains an opaque `sandbox: Option<String>` frontmatter field
+  (`bwrap`/`bubblewrap`/`none`/`inherit`) — carried and serialized by core
+  exactly like `permission`, interpreted only by the runtime's `host::sandbox`.
+  `BashTool`/`CallTool` replace their fixed `SandboxPolicy` field with
+  `sandbox_resolver: Arc<dyn policy::SandboxResolver>` (`resolve(&self,
+  session: Option<&SessionId>) -> SandboxPolicy`), consulted per call — a
+  fixed policy is trivially its own resolver, so `.with_sandbox(policy)` and
+  every pre-#479 call site keep compiling; `.with_sandbox_resolver(..)` is the
+  new per-profile builder. `SandboxPolicy::resolve_profile_override` layers a
+  profile's override onto the process-global `ENTANGLEMENT_SANDBOX` default
+  (`None` inherits, `bwrap` confines keeping the default's `network` posture,
+  `none` forces unconfined). A spawned child's confinement is clamped to its
+  parent's *effective* policy — `most_confined` ranks confinement
+  (unconfined < bubblewrap-with-network < bubblewrap-no-network), mirroring
+  ADR-0024's least-privilege permission ceiling but computed once at
+  `SessionStarted` from the parent's already-resolved value
+  (`policy::record_session_sandbox`/`record_own_sandbox`/`resolve_sandbox`),
+  not a live per-call ancestor walk — composes transitively down a spawn
+  chain with an O(1) read, frozen at spawn (a later `SetAgent` recomputes only
+  the switching session's own policy, never its floor).
+  `policy::SandboxConfig { base, own, floor }` bundles the shared state
+  created once in `main.rs::build_config`, threaded into both
+  `register_default_tools` (the resolver) and `spawn_tool_executor_with_policy`
+  (the writer); `SandboxConfig::none()` is the zero-wiring default for every
+  test helper and the `embedded` example.
 - **An ambiguous LLM stop retries in place instead of ending the turn**
   (post-0.3.0, [ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md)):
   `session::turn::is_confident_stop` classifies a round that ends with empty
@@ -1059,6 +1087,9 @@ gains a `workdir` param, mirroring `bash`'s) and the opt-in exec pair
 default but may be confined via **bubblewrap**
 (`ENTANGLEMENT_SANDBOX=bwrap`, `ENTANGLEMENT_SANDBOX_NETWORK=1` to keep network
 — fail-closed, #399/[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)),
+now scopable **per agent profile** via a `sandbox:` frontmatter override with
+a spawn-chain confinement clamp (#479,
+[ADR-0134](../docs/adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)),
 and the sandboxed `rhai`
 tool. **External MCP tool
 servers** attach as a runtime-side tool provider (#198,

@@ -13,8 +13,8 @@ alternatives behind each design decision live in the ADRs under
 Web search post-MVP follow-ups, plus the batch of changes landed since 0.4.0
 was tagged (session-scoped directory grants, `ask_user` v2, permission-arg
 path normalization, `glob`/`grep` escape-root search via durable grant, live
-bash enablement, an MCP HTTP docs-only leak-surface finding, and OpenAI-compat
-stream robustness fixes).
+bash enablement, an MCP HTTP docs-only leak-surface finding, OpenAI-compat
+stream robustness fixes, and per-profile bubblewrap sandbox scoping).
 
 ### Added
 
@@ -52,6 +52,13 @@ stream robustness fixes).
   default) or `Allow`, optionally narrowed to a command pattern
   (`bash(git *): allow`). Still clamped by the config permission ceiling: a
   `bash: deny` ceiling wins over a live `Allow` (#498, ADR-0133).
+- **Per-profile sandbox scoping for `bash`/`call`**: an agent profile can now
+  set its own `sandbox: bwrap | none` frontmatter override instead of the
+  bubblewrap confinement being one process-global on/off switch — a trusted
+  profile can run unconfined beside a confined sub-agent profile in the same
+  process. A spawned child's confinement is clamped to its parent's effective
+  policy (a confined parent can't spawn an unconfined child), mirroring the
+  existing sub-agent permission ceiling (#479, ADR-0134 amending ADR-0104).
 
 ### Fixed
 

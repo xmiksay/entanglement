@@ -13,7 +13,7 @@ use entanglement_core::{
     stream_from_response, ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::policy::{GrantStore, PermissionResolver};
+use entanglement_runtime::policy::{GrantStore, PermissionResolver, SandboxConfig};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -156,6 +156,7 @@ fn spawn_with_policy(
         grants,
         Default::default(),
         None,
+        SandboxConfig::none(),
     );
     holly
 }

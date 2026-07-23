@@ -119,6 +119,13 @@ struct AgentDefinition {
     /// any registered profile whose `mode` permits sub-agent use.
     #[serde(default)]
     spawnable_agents: Option<Vec<String>>,
+    /// Per-profile bubblewrap confinement override for `bash`/`call` (#479,
+    /// ADR-0104 amendment): `bwrap`/`bubblewrap` confines, `none` forces
+    /// unconfined, `inherit`/omitted defers to the process-global
+    /// `ENTANGLEMENT_SANDBOX` default. Any other value is a loud load error
+    /// (`build_profile`), matching every other frontmatter key's strictness.
+    #[serde(default)]
+    sandbox: Option<String>,
     /// Skills to **preload** into this agent's system prompt (#117): the listed
     /// skills' full bodies are injected at load (paths substituted, same pipeline
     /// as `load_skill`). Preload only — *not* an allowlist: runtime skill access
@@ -159,6 +166,7 @@ impl ForeignAgentFrontmatter {
             disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
             skills: None,
         }
     }
@@ -530,6 +538,21 @@ fn build_profile(
             def.name
         );
     }
+    // `inherit` is the same "defer to the process default" sentinel `model`/
+    // `provider` use; any other value must be one `host::sandbox` actually
+    // understands, checked here (not in the runtime) so a typo is a loud load
+    // error like every other frontmatter key, not a silently-ignored override
+    // (#479, ADR-0104 amendment).
+    let sandbox = def.sandbox.filter(|s| s != "inherit");
+    if let Some(s) = &sandbox {
+        if !matches!(s.as_str(), "bwrap" | "bubblewrap" | "none") {
+            bail!(
+                "agent `{}` sets invalid `sandbox` value `{s}`: expected `bwrap`, \
+                 `bubblewrap`, `none`, or `inherit`",
+                def.name
+            );
+        }
+    }
     let profile = AgentProfile {
         name: def.name,
         description: def.description,
@@ -542,6 +565,7 @@ fn build_profile(
         disallowed_tools: def.disallowed_tools,
         can_spawn: def.can_spawn,
         spawnable_agents: def.spawnable_agents,
+        sandbox,
     };
     // The one observability point at load (#184): the assembled prompt is
     // otherwise invisible. `brief`/`skills` report what actually reached this
