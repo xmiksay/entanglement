@@ -377,6 +377,7 @@ async fn profile_changes_during_replay() {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     let result = entanglement_core::session::Session::replay(&records, &cfg, &sid);
 

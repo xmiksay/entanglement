@@ -111,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         grants,
         Hooks::default(),
         None,
+        entanglement_runtime::policy::SandboxConfig::none(),
     );
 
     let acme = SessionId::new(format!("acme:{}", SessionId::new_uuid()));

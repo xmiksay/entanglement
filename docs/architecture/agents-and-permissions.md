@@ -6,15 +6,22 @@
 
 A session runs under exactly one [`AgentProfile`][profile]:
 `{ name, description, mode, system_prompt, model?, provider?, permission, tools?,
-disallowed_tools, can_spawn?, spawnable_agents? }`. `mode` is
+disallowed_tools, can_spawn?, spawnable_agents?, sandbox? }`. `mode` is
 `primary | subagent | all`; `description` drives delegation matching (§8, the
-only field a spawning model sees). The last four fields are the physical
-restrictions layered over `permission`: the `tools`/`disallowed_tools` mask
+only field a spawning model sees). The `tools`/`disallowed_tools`/`can_spawn`/
+`spawnable_agents` quartet are the physical restrictions layered over
+`permission`: the `tools`/`disallowed_tools` mask
 (#116, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)) governs which tools *exist*
 for the profile, and `can_spawn`/`spawnable_agents` gate sub-agent spawning
 (#119, [ADR-0040](../adr/0040-per-profile-spawn-control.md)) — both detailed
 below. (There is no `owns_plan` field: plan authorship rides the tool mask now,
 #231, [ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md).)
+`sandbox: Option<String>` (`bwrap`/`none`/`inherit`, #479,
+[ADR-0134](../adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md))
+is opaque to core, exactly like `permission`'s rules — it overrides the
+process-global `ENTANGLEMENT_SANDBOX` bubblewrap default (§8 of
+[gates & host tools](gates-and-host-tools.md)) for this profile's `bash`/`call`
+calls; interpreted entirely by the runtime's `host::sandbox`.
 
 **At a glance (epic [#111](https://github.com/xmiksay/entanglement/issues/111), synthesized in [ADR-0044](../adr/0044-agents-skills-system-prompt-epic-synthesis.md)).**
 Agents and skills are **data, not code** — discovered from files, disclosed

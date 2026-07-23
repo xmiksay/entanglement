@@ -231,6 +231,9 @@ pub fn spawn_tool_executor_with_hooks(
         // The default 4-arg wrapper keeps strict root containment — escape-root
         // approval is opt-in, wired only by the full head (`main.rs`).
         None,
+        // No per-profile sandboxing wired here (#479) — every `bash`/`call` in
+        // this wrapper's callers runs unsandboxed, byte-identical to pre-#479.
+        crate::policy::SandboxConfig::none(),
     )
 }
 
@@ -300,6 +303,10 @@ pub fn spawn_tool_executor_with_policy(
     grants: Arc<dyn GrantStore>,
     hooks: Hooks,
     escape_root: Option<EscapeRoot>,
+    // Per-profile bubblewrap confinement for `bash`/`call` (#479, ADR-0104
+    // amendment): `own`/`floor` are folded from the same lifecycle events as
+    // `active` below, and read by the caller's `SandboxConfig::resolver()`.
+    sandbox: crate::policy::SandboxConfig,
 ) -> tokio::task::JoinHandle<()> {
     let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
@@ -420,13 +427,31 @@ pub fn spawn_tool_executor_with_policy(
                     profile,
                     ..
                 }) => {
-                    spawn_guard.record_start(session.clone(), parent);
-                    if let Some(p) = profiles.read().unwrap().get(&profile).cloned() {
-                        active.lock().unwrap().insert(session, p);
+                    spawn_guard.record_start(session.clone(), parent.clone());
+                    let started_profile = profiles.read().unwrap().get(&profile).cloned();
+                    if let Some(p) = started_profile.clone() {
+                        active.lock().unwrap().insert(session.clone(), p);
                     }
+                    // Ancestor clamp frozen at spawn (#479, ADR-0104 amendment),
+                    // mirroring ADR-0024's privilege ceiling for confinement
+                    // instead of permission grade.
+                    crate::policy::record_session_sandbox(
+                        &sandbox.own,
+                        &sandbox.floor,
+                        &session,
+                        parent.as_ref(),
+                        started_profile.as_ref().and_then(|p| p.sandbox.as_deref()),
+                        sandbox.base,
+                    );
                 }
                 Ok(OutEvent::AgentChanged { session, agent, .. }) => {
                     if let Some(p) = profiles.read().unwrap().get(&agent).cloned() {
+                        crate::policy::record_own_sandbox(
+                            &sandbox.own,
+                            &session,
+                            p.sandbox.as_deref(),
+                            sandbox.base,
+                        );
                         active.lock().unwrap().insert(session, p);
                     }
                 }
@@ -446,6 +471,9 @@ pub fn spawn_tool_executor_with_policy(
                     // The active-skill mask is moot once the session is gone too
                     // (#400) — no `Done` will follow to clear it otherwise.
                     active_skill.lock().unwrap().remove(&session);
+                    // The sandbox cache (#479) is equally moot — drop both maps.
+                    sandbox.own.lock().unwrap().remove(&session);
+                    sandbox.floor.lock().unwrap().remove(&session);
                 }
                 // A skill's tool mask scopes one model turn (#400, ADR-0106):
                 // clear it here so a later turn can `load_skill` a different one
@@ -528,6 +556,12 @@ pub fn spawn_tool_executor_with_policy(
                     // fail-closed `permission_for`/`tool_masked` defaults cover
                     // only the residual unknown case (empty/unresolved `agent`).
                     if let Some(p) = profiles.read().unwrap().get(&agent).cloned() {
+                        crate::policy::record_own_sandbox(
+                            &sandbox.own,
+                            &session,
+                            p.sandbox.as_deref(),
+                            sandbox.base,
+                        );
                         active.lock().unwrap().insert(session.clone(), p);
                     }
                     // Physical tool restriction (#116, ADR-0038): a tool outside

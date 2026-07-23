@@ -37,7 +37,7 @@ use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use host::{BashTool, CallTool, ReadRawTool, SandboxPolicy};
+use host::{BashTool, CallTool, ReadRawTool};
 use pipe::pipe;
 use run::run_one;
 use session_store::{integrity_gap, list_sessions, pair_records, read};
@@ -98,6 +98,7 @@ async fn build_config(
     EscapeRoot,
     Arc<bash_live::LiveBashState>,
     bash_live::BashToolConfig,
+    policy::SandboxConfig,
 ) {
     let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
@@ -130,10 +131,12 @@ async fn build_config(
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let secret_env = catalog.key_envs();
     let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
-    // Optional bubblewrap confinement for bash/call (#399, ADR-0104). Off by
-    // default — `bash_enabled` alone still means unsandboxed, full-privilege
-    // execution, matching every release before this.
-    let sandbox = SandboxPolicy::from_env();
+    // Optional bubblewrap confinement for bash/call (#399, ADR-0104; #479 adds
+    // the per-profile `sandbox:` frontmatter override on top of this
+    // process-global default). Off by default — `bash_enabled` alone still
+    // means unsandboxed, full-privilege execution, matching every release
+    // before this.
+    let sandbox_config = policy::SandboxConfig::from_env();
     // Per-project scratch dir for default `call` artifacts — outside the repo,
     // so a routine `call` neither pollutes the workdir nor re-triggers the
     // definitions watcher. Best-effort: if the data dir is unavailable, `call`
@@ -150,7 +153,7 @@ async fn build_config(
         Some(extra_root_store.clone()),
         secret_env.clone(),
         bash_enabled,
-        sandbox,
+        sandbox_config.resolver(),
     );
     // Live bash enablement (#498, ADR-0133): `live_bash` starts seeded from the
     // startup `bash_enabled` (so the TUI `!bash` gate and `ProfileResolver`
@@ -164,13 +167,13 @@ async fn build_config(
         root: root.clone(),
         extra_roots: Some(extra_root_store.clone()),
         secret_env: secret_env.clone(),
-        sandbox,
+        sandbox_resolver: sandbox_config.resolver(),
     };
     let escape_root = EscapeRoot {
         root: root.clone(),
         store: extra_root_store,
     };
-    if bash_enabled && !sandbox.is_sandboxed() {
+    if bash_enabled && !sandbox_config.base.is_sandboxed() {
         eprintln!(
             "skutter: bash enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
              run unsandboxed with full privileges"
@@ -178,11 +181,15 @@ async fn build_config(
     }
     // `call` is always registered (ADR-0093), so the sandbox notice fires
     // independent of `bash_enabled`.
-    if sandbox.is_sandboxed() {
+    if sandbox_config.base.is_sandboxed() {
         eprintln!(
             "skutter: bash/call sandboxed via bubblewrap (ENTANGLEMENT_SANDBOX=bwrap, \
              network: {})",
-            if sandbox.network { "allowed" } else { "cut" }
+            if sandbox_config.base.network {
+                "allowed"
+            } else {
+                "cut"
+            }
         );
     }
     // `load_skill` is tier-2 progressive disclosure (#115): a real host tool (it
@@ -259,6 +266,7 @@ async fn build_config(
         escape_root,
         live_bash,
         bash_tool_config,
+        sandbox_config,
     )
 }
 
@@ -266,8 +274,9 @@ async fn build_config(
 /// (registered unconditionally — argv exec, no shell, ADR-0094) and, only when
 /// `bash_enabled`, the opt-in `bash`/`bash_output` pair sharing one job
 /// registry (ADR-0010/#170). `secret_env` (the catalog's provider API-key env
-/// vars, #164) is scrubbed from both exec tools' children. `sandbox` (#399,
-/// ADR-0104) optionally confines both `bash` and `call` via bubblewrap —
+/// vars, #164) is scrubbed from both exec tools' children. `sandbox_resolver`
+/// (#399/ADR-0104, #479) resolves both `bash` and `call`'s bubblewrap
+/// confinement per session/profile — a resolver that always returns
 /// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
 fn register_default_tools(
     root: std::path::PathBuf,
@@ -275,12 +284,12 @@ fn register_default_tools(
     extra_roots: Option<Arc<extra_roots::ExtraRootStore>>,
     secret_env: Vec<String>,
     bash_enabled: bool,
-    sandbox: SandboxPolicy,
+    sandbox_resolver: Arc<dyn policy::SandboxResolver>,
 ) -> ToolRegistry {
     let mut tools = host::host_tools_with_extra_roots(root.clone(), extra_roots.clone());
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
-        .with_sandbox(sandbox);
+        .with_sandbox_resolver(sandbox_resolver.clone());
     if let Some(base) = scratch_base {
         call = call.with_scratch_base(base);
     }
@@ -293,7 +302,7 @@ fn register_default_tools(
         let mut bash = BashTool::new(root.clone())
             .with_secret_env(secret_env.clone())
             .with_jobs(jobs.clone())
-            .with_sandbox(sandbox);
+            .with_sandbox_resolver(sandbox_resolver);
         if let Some(e) = &extra_roots {
             bash = bash.with_extra_roots(e.clone());
         }
@@ -1028,6 +1037,7 @@ async fn main() -> Result<()> {
         escape_root,
         live_bash,
         bash_tool_config,
+        sandbox_config,
     ) = build_config(
         &catalog,
         &http_client,
@@ -1134,6 +1144,10 @@ async fn main() -> Result<()> {
         user_config.hooks.clone(),
         // Escape-root approval (ADR-0109): the same store the host tools read.
         Some(escape_root),
+        // Per-profile sandbox confinement (#479): the same `own`/`floor` maps
+        // `register_default_tools`'s resolver reads, so the dispatch loop's
+        // fold below is what `bash`/`call` actually see.
+        sandbox_config,
     );
 
     // Live MCP server management (#375): a runtime service answering
@@ -1451,7 +1465,7 @@ mod tests {
             None,
             Vec::new(),
             bash_enabled,
-            SandboxPolicy::none(),
+            std::sync::Arc::new(SandboxPolicy::none()),
         )
         .specs()
         .into_iter()

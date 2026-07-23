@@ -14,7 +14,8 @@ use entanglement_core::{BashGrade, Holly, InMsg, Permission, PermissionProfile};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::extra_roots::ExtraRootStore;
-use crate::host::{BashOutputTool, BashTool, JobRegistry, SandboxPolicy};
+use crate::host::{BashOutputTool, BashTool, JobRegistry};
+use crate::policy::SandboxResolver;
 use crate::tools::SharedRegistry;
 
 /// Shared state a live bash enablement mutates (#498). `registered` is seeded
@@ -81,13 +82,16 @@ pub fn grade_profile(grade: &BashGrade) -> PermissionProfile {
 /// Everything [`bash_enable`] needs to build a fresh `BashTool`/`BashOutputTool`
 /// pair, mirroring `register_default_tools`'s bash arm in `main.rs` — captured
 /// once at startup and handed to the bash responder, since it has no other way
-/// to reach these values.
+/// to reach these values. `sandbox_resolver` (#479) is the same per-profile
+/// resolver `register_default_tools` wires into the startup-registered pair,
+/// so a live-enabled `bash` respects a profile's `sandbox:` override exactly
+/// like one registered at startup.
 #[derive(Clone)]
 pub struct BashToolConfig {
     pub root: PathBuf,
     pub extra_roots: Option<Arc<ExtraRootStore>>,
     pub secret_env: Vec<String>,
-    pub sandbox: SandboxPolicy,
+    pub sandbox_resolver: Arc<dyn SandboxResolver>,
 }
 
 /// Register `bash`/`bash_output` into `registry` (a no-op if already
@@ -108,7 +112,7 @@ pub fn bash_enable(
             let mut bash = BashTool::new(config.root.clone())
                 .with_secret_env(config.secret_env.clone())
                 .with_jobs(jobs.clone())
-                .with_sandbox(config.sandbox);
+                .with_sandbox_resolver(config.sandbox_resolver.clone());
             if let Some(e) = &config.extra_roots {
                 bash = bash.with_extra_roots(e.clone());
             }
@@ -186,7 +190,7 @@ mod tests {
             root: PathBuf::from("."),
             extra_roots: None,
             secret_env: Vec::new(),
-            sandbox: SandboxPolicy::none(),
+            sandbox_resolver: Arc::new(crate::host::SandboxPolicy::none()),
         }
     }
 

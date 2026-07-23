@@ -1182,6 +1182,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         };
         let session = SessionId::new("s");
         let mut active = HashMap::new();
@@ -1227,6 +1228,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         };
         let session = SessionId::new("s");
         let mut active = HashMap::new();
@@ -1282,6 +1284,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         };
         let session = SessionId::new("s");
         let mut active = HashMap::new();
@@ -1321,6 +1324,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         };
         let session = SessionId::new("s");
         let mut active = HashMap::new();
@@ -1361,6 +1365,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         };
         let session = SessionId::new("s");
         let mut active = HashMap::new();
@@ -1398,6 +1403,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         };
         let session = SessionId::new("s");
         let mut active = HashMap::new();
@@ -1431,6 +1437,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         };
         let session = SessionId::new("s");
         let mut active = HashMap::new();
@@ -1516,6 +1523,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
+            sandbox: None,
         };
         let session = SessionId::new("s");
         let mut active = HashMap::new();

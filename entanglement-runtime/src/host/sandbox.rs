@@ -27,8 +27,11 @@ pub enum SandboxBackend {
     Bubblewrap,
 }
 
-/// The confinement policy for `bash`/`call` in this process (ADR-0104). Global
-/// for now — see the ADR's per-profile follow-up.
+/// A single confinement policy for `bash`/`call` — the process-global
+/// `ENTANGLEMENT_SANDBOX` default (ADR-0104), a per-profile `sandbox:`
+/// override resolved against it ([`SandboxPolicy::resolve_profile_override`],
+/// #479, ADR-0104 amendment), or the frozen ancestor floor a spawned child
+/// clamps to ([`SandboxPolicy::most_confined`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SandboxPolicy {
     pub backend: SandboxBackend,
@@ -58,6 +61,50 @@ impl SandboxPolicy {
 
     pub fn is_sandboxed(&self) -> bool {
         self.backend != SandboxBackend::None
+    }
+
+    /// Resolve this policy (typically the process-global `ENTANGLEMENT_SANDBOX`
+    /// default) against a profile's optional `sandbox:` frontmatter override
+    /// (#479, ADR-0104 amendment): `None` ⇒ inherit `self` unchanged;
+    /// `Some("bwrap" | "bubblewrap")` ⇒ confined, keeping `self.network`;
+    /// `Some("none")` ⇒ unconfined. Any other string is a load-time error
+    /// `agents::build_profile` already rejects, so a profile's `sandbox` field
+    /// never carries one here — matched as a no-op fallback rather than a
+    /// panic, since this is not the validating boundary.
+    pub fn resolve_profile_override(&self, over: Option<&str>) -> SandboxPolicy {
+        match over {
+            None => *self,
+            Some("bwrap") | Some("bubblewrap") => SandboxPolicy {
+                backend: SandboxBackend::Bubblewrap,
+                network: self.network,
+            },
+            Some("none") => SandboxPolicy::none(),
+            Some(_) => *self,
+        }
+    }
+
+    /// Confinement rank for the spawn-chain clamp (#479, ADR-0104 amendment):
+    /// higher = more confined. Network-sharing bubblewrap sits strictly
+    /// between unconfined and network-cut bubblewrap — it still isolates the
+    /// filesystem/pid/ipc/uts/cgroup namespaces, just not network.
+    fn confinement_rank(&self) -> u8 {
+        match (self.backend, self.network) {
+            (SandboxBackend::None, _) => 0,
+            (SandboxBackend::Bubblewrap, true) => 1,
+            (SandboxBackend::Bubblewrap, false) => 2,
+        }
+    }
+
+    /// The more-confined of `self`/`other` (#479, ADR-0104 amendment): a
+    /// spawned child's effective sandbox is never less confined than its
+    /// parent's, mirroring ADR-0024's permission privilege ceiling for
+    /// confinement instead of permission grade.
+    pub fn most_confined(self, other: SandboxPolicy) -> SandboxPolicy {
+        if self.confinement_rank() >= other.confinement_rank() {
+            self
+        } else {
+            other
+        }
     }
 }
 
@@ -211,5 +258,65 @@ mod tests {
         assert_eq!(policy.backend, SandboxBackend::Bubblewrap);
         assert!(policy.is_sandboxed());
         assert!(policy.network);
+    }
+
+    #[test]
+    fn profile_override_none_inherits_the_base_policy() {
+        let base = SandboxPolicy {
+            backend: SandboxBackend::Bubblewrap,
+            network: true,
+        };
+        assert_eq!(base.resolve_profile_override(None), base);
+        let unsandboxed = SandboxPolicy::none();
+        assert_eq!(unsandboxed.resolve_profile_override(None), unsandboxed);
+    }
+
+    #[test]
+    fn profile_override_bwrap_confines_regardless_of_base() {
+        let unsandboxed = SandboxPolicy::none();
+        let confined = unsandboxed.resolve_profile_override(Some("bwrap"));
+        assert_eq!(confined.backend, SandboxBackend::Bubblewrap);
+        // Network posture is inherited from the base, not forced either way.
+        assert!(!confined.network);
+        let base_with_network = SandboxPolicy {
+            backend: SandboxBackend::None,
+            network: true,
+        };
+        assert!(
+            base_with_network
+                .resolve_profile_override(Some("bubblewrap"))
+                .network
+        );
+    }
+
+    #[test]
+    fn profile_override_none_string_forces_unconfined() {
+        let base = SandboxPolicy {
+            backend: SandboxBackend::Bubblewrap,
+            network: false,
+        };
+        assert_eq!(
+            base.resolve_profile_override(Some("none")),
+            SandboxPolicy::none()
+        );
+    }
+
+    #[test]
+    fn most_confined_picks_the_stricter_policy() {
+        let none = SandboxPolicy::none();
+        let bwrap_net = SandboxPolicy {
+            backend: SandboxBackend::Bubblewrap,
+            network: true,
+        };
+        let bwrap_no_net = SandboxPolicy {
+            backend: SandboxBackend::Bubblewrap,
+            network: false,
+        };
+        assert_eq!(none.most_confined(bwrap_net), bwrap_net);
+        assert_eq!(bwrap_net.most_confined(none), bwrap_net);
+        assert_eq!(bwrap_net.most_confined(bwrap_no_net), bwrap_no_net);
+        assert_eq!(bwrap_no_net.most_confined(bwrap_net), bwrap_no_net);
+        // Ties keep either side (both branches return an equally-confined policy).
+        assert_eq!(none.most_confined(none), none);
     }
 }

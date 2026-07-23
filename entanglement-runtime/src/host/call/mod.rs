@@ -28,6 +28,7 @@ mod output;
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::resolve_under_root;
 use super::sandbox::{self, SandboxPolicy};
+use crate::policy::SandboxResolver;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -37,6 +38,7 @@ use output::{persist_output, resolve_output_target};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
 const MAX_CALL_TIMEOUT_SECONDS: u64 = 600;
@@ -56,10 +58,11 @@ pub struct CallTool {
     /// `env`/`printenv` still inherits them. Empty by default; wired from the
     /// catalog.
     secret_env: Vec<String>,
-    /// Optional bubblewrap confinement (ADR-0104). Defaults to
-    /// [`SandboxPolicy::none()`] — unsandboxed, unchanged from before this
-    /// existed.
-    sandbox: SandboxPolicy,
+    /// Confinement resolver (#479, ADR-0104 amendment) — see `BashTool`'s
+    /// identical field for the fixed-policy-is-its-own-resolver rationale.
+    /// Defaults to [`SandboxPolicy::none()`] — unsandboxed, unchanged from
+    /// before either existed.
+    sandbox_resolver: Arc<dyn SandboxResolver>,
     /// Approval-gated out-of-root `workdir` (ADR-0109).
     extra_roots: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
 }
@@ -70,7 +73,7 @@ impl CallTool {
             root,
             scratch_base: None,
             secret_env: Vec::new(),
-            sandbox: SandboxPolicy::none(),
+            sandbox_resolver: Arc::new(SandboxPolicy::none()),
             extra_roots: None,
         }
     }
@@ -98,9 +101,17 @@ impl CallTool {
         self
     }
 
-    /// Confine every spawned command under `policy` (ADR-0104).
+    /// Confine every spawned command under `policy` (ADR-0104), regardless of
+    /// session/profile.
     pub fn with_sandbox(mut self, policy: SandboxPolicy) -> Self {
-        self.sandbox = policy;
+        self.sandbox_resolver = Arc::new(policy);
+        self
+    }
+
+    /// Resolve the confinement policy per session/profile (#479, ADR-0104
+    /// amendment) instead of a single fixed [`SandboxPolicy`].
+    pub fn with_sandbox_resolver(mut self, resolver: Arc<dyn SandboxResolver>) -> Self {
+        self.sandbox_resolver = resolver;
         self
     }
 }
@@ -199,17 +210,17 @@ impl Tool for CallTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        self.run_impl("", input).await
+        self.run_impl(None, "", input).await
     }
 
     async fn run_for_session(
         &self,
-        _session: &SessionId,
+        session: &SessionId,
         request_id: &str,
         input: &str,
     ) -> Result<Vec<ContentPart>> {
         Ok(crate::tools::text_parts(
-            self.run_impl(request_id, input).await?,
+            self.run_impl(Some(session), request_id, input).await?,
         ))
     }
 }
@@ -217,8 +228,15 @@ impl Tool for CallTool {
 impl CallTool {
     /// `request_id` (#449) is forwarded to the escape-root grant check so a
     /// `Once` approval for `workdir` is only consumed by the call it was
-    /// approved for.
-    async fn run_impl(&self, request_id: &str, input: &str) -> Result<String> {
+    /// approved for. `session` (#479, ADR-0104 amendment) resolves the
+    /// per-profile confinement policy; `None` (the plain [`Tool::run`] path)
+    /// resolves against the resolver's process-global default.
+    async fn run_impl(
+        &self,
+        session: Option<&SessionId>,
+        request_id: &str,
+        input: &str,
+    ) -> Result<String> {
         let parsed: CallInput = serde_json::from_str(input)
             .context("invalid input to call: expected {\"command\": string, ...}")?;
         let secs = parsed.timeout.unwrap_or(120);
@@ -251,7 +269,8 @@ impl CallTool {
             parsed.workdir.as_deref(),
         )?;
 
-        let mut cmd = sandbox::command(&self.sandbox, &self.root, &parsed.command, &parsed.args);
+        let policy = self.sandbox_resolver.resolve(session);
+        let mut cmd = sandbox::command(&policy, &self.root, &parsed.command, &parsed.args);
         cmd.current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

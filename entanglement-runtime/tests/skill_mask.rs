@@ -200,6 +200,7 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
         grants,
         Default::default(),
         None,
+        entanglement_runtime::policy::SandboxConfig::none(),
     );
 
     let sid = SessionId::new("s1");

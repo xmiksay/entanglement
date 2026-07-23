@@ -391,6 +391,7 @@ fn all_mode_worker() -> AgentProfile {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     }
 }
 
@@ -463,6 +464,7 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
@@ -926,6 +928,7 @@ fn subagent_helper() -> AgentProfile {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     }
 }
 

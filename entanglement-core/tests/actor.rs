@@ -444,6 +444,7 @@ async fn set_agent_emits_agent_changed() {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");
@@ -641,6 +642,7 @@ async fn custom_profile_is_selectable() {
         disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
+        sandbox: None,
     });
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");

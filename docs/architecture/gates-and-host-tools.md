@@ -57,7 +57,7 @@ blocked on green tests with a coverage report attached. Both cache cargo
 artifacts (`Swatinem/rust-cache`) and inherit the committed `CARGO_BUILD_JOBS=4`
 cap from `.cargo/config.toml`.
 
-## 8. Host tools — [ADR-0008](../adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](../adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in), [ADR-0045](../adr/0045-call-host-tool-argv-exec-tailed-output.md) (`call`), [ADR-0092](../adr/0092-call-file-based-stdin-stdout.md) (`call` file-based stdin/stdout), [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md) (`call` always-registered + `workdir`), [ADR-0104](../adr/0104-bubblewrap-sandbox-for-bash-call.md) (optional bubblewrap confinement)
+## 8. Host tools — [ADR-0008](../adr/0008-host-tools-workdir-and-bounded-output.md) (trio), [ADR-0009](../adr/0009-edit-and-bash-host-tools.md) (`edit`/`bash`), [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md) (`bash` opt-in), [ADR-0045](../adr/0045-call-host-tool-argv-exec-tailed-output.md) (`call`), [ADR-0092](../adr/0092-call-file-based-stdin-stdout.md) (`call` file-based stdin/stdout), [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md) (`call` always-registered + `workdir`), [ADR-0104](../adr/0104-bubblewrap-sandbox-for-bash-call.md) (optional bubblewrap confinement), [ADR-0134](../adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md) (per-profile scoping + spawn-chain clamp)
 
 Concrete filesystem + shell tools, dispatched under the active permission
 profile ([ADR-0003](../adr/0003-agent-and-permission-profiles.md)). The
@@ -181,9 +181,10 @@ guessing again:
   profile may `Allow` `call` while keeping `bash` at `Ask`/`Deny` — and, since
   [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md),
   `call` is registered regardless of whether `bash` is even opted in.
-- **OS sandbox, opt-in (#399, [ADR-0104](../adr/0104-bubblewrap-sandbox-for-bash-call.md)):**
+- **OS sandbox, opt-in and per-profile scopable (#399/#479,
+  [ADR-0104](../adr/0104-bubblewrap-sandbox-for-bash-call.md)/[ADR-0134](../adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)):**
   `ENTANGLEMENT_SANDBOX=bwrap` confines every `bash`/`call` spawn under
-  bubblewrap for the process's lifetime — `--ro-bind / /` plus the project
+  bubblewrap by default — `--ro-bind / /` plus the project
   root re-bound read-write at the same path (so `resolve_under_root`'s
   containment above keeps working unmodified inside the sandbox), a fresh
   `/tmp`/`/dev`/`/proc`, and its own pid/ipc/uts/cgroup namespaces.
@@ -191,12 +192,22 @@ guessing again:
   shares the host network namespace back in. **Fail-closed by omission**: there
   is no fallback to unsandboxed execution when `bwrap` can't be entered (missing
   binary, unprivileged user namespaces disabled) — the spawn simply errors, like
-  any missing binary (ADR-0016). Global for the process (not yet per-profile —
-  see the ADR's follow-up); `BashTool`/`CallTool::with_sandbox` wires it,
-  `entanglement_runtime::host::sandbox::SandboxPolicy::from_env()` reads the two
-  env vars. The existing process-group timeout/cancel kill (#167/#168/#169,
-  below) needs no change — killing the outer `bwrap` process cascades through
-  its PID-namespace death to the whole sandboxed tree.
+  any missing binary (ADR-0016). An `AgentProfile`'s optional `sandbox:`
+  frontmatter key (`bwrap`/`none`/`inherit`) overrides this process-global
+  default per profile (#479) — `BashTool`/`CallTool` hold a
+  `sandbox_resolver: Arc<dyn policy::SandboxResolver>` instead of a fixed
+  `SandboxPolicy`, consulted per call via `Tool::run_for_session`'s
+  `SessionId`; `.with_sandbox(policy)` (a fixed policy is trivially its own
+  resolver) stays the pre-#479 API, `.with_sandbox_resolver(..)` is the new
+  per-profile wiring `main.rs` uses. A spawned child's confinement is clamped
+  to its parent's *effective* policy at spawn time — `most_confined` ranks
+  confinement (unconfined < bubblewrap-with-network < bubblewrap-no-network),
+  the confinement-axis mirror of the ADR-0024 permission ceiling — computed
+  once via `policy::record_session_sandbox`/`resolve_sandbox` rather than a
+  live per-call ancestor walk, since a confined parent must not spawn an
+  unconfined child. The existing process-group timeout/cancel kill
+  (#167/#168/#169, below) needs no change — killing the outer `bwrap` process
+  cascades through its PID-namespace death to the whole sandboxed tree.
 - **Secret scrubbing (#164):** both exec tools `env_remove` the catalog's
   provider API-key env vars (`Catalog::key_envs()` — `ZAI_API_KEY`,
   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) from the child before spawn, so a
