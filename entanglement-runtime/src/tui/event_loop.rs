@@ -128,6 +128,17 @@ pub(super) async fn handle_event(
                 if app.showing_inspect() {
                     return handle_inspect_event(app, key).await;
                 }
+                // Global attention jump: Ctrl+G switches to the oldest
+                // background session waiting on an approval/question (the
+                // attention panel's target). Intercepted ahead of the
+                // question/approval routing so it works while the *active*
+                // session is itself parked — the reject-reason and free-text
+                // arms match bare `Char(c)` with no modifier check, so
+                // without this Ctrl+G would type a literal `g` there.
+                if key.code == KeyCode::Char('g') && key.modifiers == KeyModifiers::CONTROL {
+                    app.jump_to_next_attention();
+                    return Ok(false);
+                }
                 // A model-driven `ask_user` question takes over input until
                 // answered (ADR-0027), just like an approval prompt.
                 if app.is_asking() {
@@ -740,6 +751,53 @@ mod tests {
             recorded,
             "expected a rejection decision line with its reason: {:?}",
             app.transcript()
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_g_jumps_to_the_waiting_background_session() {
+        let active = SessionId::new("active-1");
+        let mut app = App::new_for_test(active.clone());
+        let holly = engine();
+        let bg = SessionId::new("bg-1");
+        park_request(&mut app, &bg, "t1", "bash", r#"{"command":"ls"}"#);
+        assert_eq!(app.active_session_id(), &active);
+
+        let key =
+            ratatui::crossterm::event::KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        let mut attention = Attention::from_env();
+        handle_event(&mut app, &holly, &mut attention, Event::Key(key))
+            .await
+            .unwrap();
+
+        assert_eq!(app.active_session_id(), &bg, "jumped to the parked session");
+        assert!(
+            matches!(app.approval_mode(), ApprovalMode::WaitingForApproval { .. }),
+            "the existing approval UI takes over after the jump"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_g_never_types_a_g_into_the_reject_reason() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
+        app.set_approval_mode(ApprovalMode::EnteringRejectReason {
+            request_id: "t1".to_string(),
+        });
+
+        let key =
+            ratatui::crossterm::event::KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        let mut attention = Attention::from_env();
+        handle_event(&mut app, &holly, &mut attention, Event::Key(key))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.input().lines().join(""),
+            "",
+            "the bare Char('g') arm must not swallow the chord"
         );
     }
 

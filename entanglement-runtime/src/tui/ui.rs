@@ -1,7 +1,7 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::Text,
     widgets::Paragraph,
     Frame,
 };
@@ -11,7 +11,9 @@ use crate::tui::input_panel;
 use crate::tui::keybindings::LeaderState;
 use crate::tui::modals::{self, draw_model_picker, draw_profile_picker};
 
+pub(crate) mod alerts;
 mod sidebar;
+use alerts::{draw_attention_panel, draw_status_bar, panel_height};
 use sidebar::draw_sidebar;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -58,12 +60,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let cap = (size.height / 3).max(2);
     let input_height = input_rows.clamp(2, cap.min(8));
 
+    // The attention panel row (background sessions waiting on approval /
+    // question) sits directly above the input box; `Length(0)` while idle, so
+    // the layout is unchanged unless something actually waits.
+    let attention_height = panel_height(app);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
+            Constraint::Length(attention_height),
             Constraint::Length(input_height),
             Constraint::Length(1),
         ])
@@ -72,6 +80,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_status_bar(f, chunks[0], app);
     draw_body(f, chunks[1], app);
     input_panel::draw_top_padding(f, chunks[2], app);
+    if attention_height > 0 {
+        draw_attention_panel(f, chunks[3], app);
+    } else {
+        // Clear the recorded rect so a stale click can't hit a ghost panel.
+        app.set_attention_area(Rect::default());
+    }
 
     let input_horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -79,12 +93,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Constraint::Length(app.agent().len() as u16 + 4),
             Constraint::Min(0),
         ])
-        .split(chunks[3]);
+        .split(chunks[4]);
 
     input_panel::draw_profile_badge(f, input_horizontal_chunks[0], app);
     input_panel::draw_input(f, input_horizontal_chunks[1], app);
 
-    input_panel::draw_input_info(f, chunks[4], app);
+    input_panel::draw_input_info(f, chunks[5], app);
 
     if let Some((gutter, sidebar)) = sidebar_area {
         if gutter.width > 0 {
@@ -139,39 +153,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     app.clear_dirty();
-}
-
-fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
-    let sessions = app.sessions();
-    let background_waiting = sessions.iter().any(|(id, view)| {
-        *id != app.active_session_id() && (view.is_waiting_approval() || view.is_asking())
-    });
-
-    let mut spans = vec![
-        Span::styled("skutter", Style::default().bold()),
-        Span::raw(" | "),
-        Span::styled(
-            format!("Session: {}", app.active_session_id()),
-            Style::default().dim(),
-        ),
-    ];
-    if sessions.len() > 1 {
-        spans.push(Span::styled(
-            format!(" ({} sessions)", sessions.len()),
-            Style::default().dim(),
-        ));
-    }
-    if background_waiting {
-        spans.push(Span::styled(
-            " !",
-            Style::default().fg(Color::Yellow).bold(),
-        ));
-    }
-    let status = Line::from(spans);
-
-    let paragraph = Paragraph::new(status).alignment(Alignment::Left);
-
-    f.render_widget(paragraph, area);
 }
 
 fn draw_body(f: &mut Frame, area: Rect, app: &mut App) {

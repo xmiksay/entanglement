@@ -354,6 +354,11 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
         "call" => {
             let command = value.get("command")?.as_str()?;
             let mut line = command.to_string();
+            // Space-joining loses the argv split: `{command:"rm",args:["x"]}`
+            // and `{command:"rm x"}` grade (and grant-match) identically.
+            // Accepted: `call` execs `command` as the program with no shell,
+            // so a colliding decomposition can only fail to exec — it can
+            // never run a different program than the one graded.
             if let Some(args) = value.get("args").and_then(|a| a.as_array()) {
                 for a in args.iter().filter_map(|a| a.as_str()) {
                     line.push(' ');

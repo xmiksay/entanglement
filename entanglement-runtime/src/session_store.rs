@@ -164,7 +164,7 @@ const FIRST_PROMPT_MAX: usize = 60;
 /// Renders a first-prompt snippet for session listings (#327): the leading run
 /// of `text`, cut at the first newline, then truncated to ~[`FIRST_PROMPT_MAX`]
 /// chars on a word boundary, with a trailing `…` when anything was dropped.
-fn first_prompt_snippet(text: &str) -> String {
+pub fn first_prompt_snippet(text: &str) -> String {
     // A prompt often opens with a whole paragraph; the first raw line is the
     // label. Keep the untrimmed line to measure how much followed it.
     let raw_first_line = text.lines().next().unwrap_or("");

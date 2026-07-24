@@ -354,6 +354,12 @@ fn glob_literal_prefix(pattern: &str) -> String {
 /// argument. Operates directly on the already-#485-normalized root-relative
 /// argument — a glob pattern's wildcard tail is just a string suffix once its
 /// literal root matches, so no separate glob-specific comparison is needed.
+///
+/// A `"."` grant also string-covers an *absolute* out-of-root argument (an
+/// absolute path never gets the #485 root-prefix strip). That is safe only
+/// because the escape-root gate (ADR-0109) independently forces its own
+/// approval for any out-of-root target *before* grant matching can allow the
+/// call — this function is a permission upgrade, not the containment check.
 fn dir_covers(dir: &str, arg: &str) -> bool {
     dir == "." || arg == dir || arg.starts_with(&format!("{dir}/"))
 }
@@ -368,6 +374,19 @@ mod tests {
 
     fn tmp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("entanglement-grants-test-{name}.yml"))
+    }
+
+    #[test]
+    fn dot_dir_grant_string_covers_absolute_paths_by_design() {
+        // Pins the ADR-0109 coupling documented on `dir_covers`: a `.` grant
+        // covers absolute out-of-root arguments at the string level. If this
+        // ever changes, re-check that the escape-root gate is still the layer
+        // refusing out-of-root access — and if `dir_covers` is instead meant
+        // to reject absolute args itself, update the doc comment with it.
+        assert!(dir_covers(".", "/etc/passwd"));
+        assert!(dir_covers(".", "src/main.rs"));
+        assert!(!dir_covers("src", "/etc/passwd"));
+        assert!(!dir_covers("src", "src2/main.rs"));
     }
 
     #[test]

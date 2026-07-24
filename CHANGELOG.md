@@ -18,6 +18,17 @@ stream robustness fixes, and per-profile bubblewrap sandbox scoping).
 
 ### Added
 
+- **TUI attention panel + session-panel overhaul** (ADR-0136): a background
+  session parked on an approval or `ask_user` question is no longer invisible
+  — a one-line panel above the input box (absent while nothing waits) names
+  the oldest waiting session, its agent, and what it asks; `Ctrl+G` or a
+  click jumps there, where the existing approval/question UI takes over. The
+  status-bar `!` became a `⚠ N` count. Sessions are now identifiable: 8-char
+  short ids replace full UUIDs in the sidebar/status bar/sessions modal, the
+  sidebar shows a dim first-prompt description line per session and distinct
+  `needs approval`/`question` state words, the sessions modal gains a
+  `❓ question` badge, and sidebar session rows (plus the panel) are
+  click-to-select.
 - **Provider-side web-search results now persist into history** instead of
   living only on the ephemeral reasoning channel — citations, and (Anthropic)
   the search-result cache-pricing benefit, survive into a later turn. A new

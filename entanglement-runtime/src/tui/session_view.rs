@@ -150,6 +150,12 @@ pub struct SessionView {
     pending_tool_requests: VecDeque<(String, String, String)>,
     /// FIFO of parked `ask_user` questions — same batch rationale as approvals.
     pending_questions: VecDeque<PendingQuestion>,
+    /// Snippet of the session's first user prompt — the live "what is this
+    /// session about" label the sidebar shows under the session row. Engine-
+    /// spawned children never record a user message head-side, so they simply
+    /// have none; the resume path replays `Prompt` records through
+    /// `record_user_message`, so a restored view gets it for free.
+    first_prompt: Option<String>,
     parent: Option<SessionId>,
     /// Wall-clock (ms since epoch) the session started / ended, from
     /// `SessionStarted` / `SessionEnded`. Drives the live spawn-duration shown
@@ -193,6 +199,7 @@ impl SessionView {
             approval_mode: ApprovalMode::Normal,
             pending_tool_requests: VecDeque::new(),
             pending_questions: VecDeque::new(),
+            first_prompt: None,
             parent: None,
             started_ms: None,
             ended_ms: None,
@@ -341,6 +348,11 @@ impl SessionView {
             self.approval_mode,
             ApprovalMode::WaitingForApproval { .. } | ApprovalMode::EnteringRejectReason { .. }
         )
+    }
+
+    /// The session's first-prompt snippet, if a user message was recorded.
+    pub fn first_prompt(&self) -> Option<&str> {
+        self.first_prompt.as_deref()
     }
 
     /// The front of the question queue — the question currently prompted.

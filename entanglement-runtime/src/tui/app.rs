@@ -1,4 +1,4 @@
-use entanglement_core::{AgentMode, AgentState, OutEvent, SessionId};
+use entanglement_core::{AgentState, OutEvent, SessionId};
 use entanglement_provider::ModelInfo;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
@@ -34,58 +34,16 @@ mod pickers;
 mod quit;
 mod state;
 mod tools;
+mod types;
 mod view;
 
 pub use inspect::InspectTab;
+pub use types::{CompactFork, ProfileInfo, UiEffect};
 
 #[cfg(test)]
 mod tests;
 
 const HISTORY_CAPACITY: usize = 100;
-
-/// A deferred, terminal-owning side effect a command/action requests but cannot
-/// perform itself: the `App` has no `Terminal`, so it records the intent here
-/// and the event loop (which does) runs it via `tui::editor::run_effect`
-/// (ADR-0029).
-#[derive(Debug, Clone, PartialEq)]
-pub enum UiEffect {
-    /// Suspend the TUI, edit the input draft in `$EDITOR`, read it back.
-    OpenEditor,
-    /// Export the transcript to Markdown and open it in `$EDITOR`.
-    Export,
-    /// Copy the given text to the system clipboard (OSC 52). Deferred to the
-    /// event loop because it writes to the terminal the loop owns.
-    CopyToClipboard(String),
-}
-
-/// A deferred compaction fork (ADR-0101): on `OutEvent::Compacted`, the TUI
-/// mints a fresh session id, switches the active view to it, and records the
-/// summary as its first user message — all synchronously. The engine side
-/// (`InMsg::Spawn`) needs `Holly`, which the synchronous `handle_out_event`
-/// doesn't hold, so it's recorded here for the async main loop to send.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactFork {
-    pub new_session: SessionId,
-    pub source: SessionId,
-    /// The source session's agent profile name — `Spawn` inherits it so the
-    /// fork runs under the same profile/model pin.
-    pub agent: String,
-    pub summary: String,
-}
-
-#[derive(Clone)]
-pub struct ProfileInfo {
-    pub name: String,
-    pub description: String,
-    /// Governs the *implicit* Tab cycle ring (`Primary` only, #322); the
-    /// `/agent` picker still lists every entry agent (`primary | all`).
-    pub mode: AgentMode,
-    /// Current effective tool allowlist (#330): `None` inherits every advertised
-    /// tool. Seeds the `/agent` picker's `e` tools-checklist dialog.
-    pub tools: Option<Vec<String>>,
-    /// Current effective tool denylist, applied after `tools` (#330).
-    pub disallowed_tools: Vec<String>,
-}
 
 pub struct App {
     sessions: SessionRegistry,
@@ -199,6 +157,16 @@ pub struct App {
     // Active mouse text-selection over the transcript (drag-select → copy), in
     // absolute rendered-line coordinates. `None` = nothing selected.
     selection: Option<crate::tui::selection::Selection>,
+
+    // Sidebar click hit-testing: the inner (border-adjusted) area the session
+    // rows rendered into this frame, plus a per-row session map so a click on
+    // a session row (or its description line) switches to it. Mirrors the chat
+    // hit-test capture above.
+    sidebar_sessions_area: Rect,
+    sidebar_rows: Vec<Option<SessionId>>,
+    // The attention panel's rect this frame (zero-sized when hidden) so a
+    // click on it jumps to the oldest waiting background session.
+    attention_area: Rect,
 
     // Deferred terminal-owning effect (editor / export) for the event loop to run.
     pending_effect: Option<UiEffect>,

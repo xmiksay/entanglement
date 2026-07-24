@@ -36,10 +36,17 @@ pub(super) fn handle_mouse(app: &mut App, ev: MouseEvent) {
                     app.request_effect(UiEffect::CopyToClipboard(text));
                 }
             } else {
-                // No drag → treat as a click: drop the empty selection and
-                // toggle the block under the cursor (the pre-selection UX).
+                // No drag → treat as a click: drop the empty selection, then
+                // resolve the target by surface — a sidebar session row
+                // switches to that session, the attention panel jumps to the
+                // oldest waiting one, and the transcript toggles the block
+                // under the cursor (the pre-selection UX).
                 app.clear_selection();
-                if let Some(id) = app.block_at(ev.column, ev.row) {
+                if let Some(id) = app.session_at(ev.column, ev.row) {
+                    app.switch_to_session(id);
+                } else if app.attention_at(ev.column, ev.row) {
+                    app.jump_to_next_attention();
+                } else if let Some(id) = app.block_at(ev.column, ev.row) {
                     app.toggle_block(id);
                 }
             }
@@ -631,4 +638,72 @@ pub(super) async fn handle_question_event(
         _ => {}
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use entanglement_core::{OutEvent, SessionId};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    /// A bare left click (down + up, no drag) on a sidebar session row must
+    /// switch the active session; the attention panel must route a click to
+    /// the jump. Rendered through the real `ui::draw` so the hit-test rects
+    /// are the ones a live frame records.
+    #[test]
+    fn click_on_sidebar_row_switches_session_and_panel_click_jumps() {
+        let active = SessionId::new("active-1");
+        let mut app = App::new_for_test(active.clone());
+        let bg = SessionId::new("bg-session");
+        app.handle_out_event(OutEvent::ToolRequest {
+            session: bg.clone(),
+            seq: 1,
+            request_id: "r1".to_string(),
+            tool: "bash".to_string(),
+            input: r#"{"command":"ls"}"#.to_string(),
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| crate::tui::ui::draw(f, &mut app))
+            .unwrap();
+
+        // The background session's row is the second session line in the
+        // sidebar; resolve its coordinates through the recorded hit-test map
+        // rather than hardcoding layout math.
+        let (col, row) = (0..80u16)
+            .flat_map(|x| (0..24u16).map(move |y| (x, y)))
+            .find(|(x, y)| app.session_at(*x, *y) == Some(bg.clone()))
+            .expect("background session row is clickable");
+
+        let click = |kind| MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(&mut app, click(MouseEventKind::Down(MouseButton::Left)));
+        handle_mouse(&mut app, click(MouseEventKind::Up(MouseButton::Left)));
+        assert_eq!(app.active_session_id(), &bg, "click switched the session");
+
+        // Switch back, then click the attention panel: it jumps to the
+        // waiting background session.
+        app.switch_to_session(active.clone());
+        terminal
+            .draw(|f| crate::tui::ui::draw(f, &mut app))
+            .unwrap();
+        let (pcol, prow) = (0..80u16)
+            .flat_map(|x| (0..24u16).map(move |y| (x, y)))
+            .find(|(x, y)| app.attention_at(*x, *y))
+            .expect("attention panel is visible while a background session waits");
+        let click = |kind| MouseEvent {
+            kind,
+            column: pcol,
+            row: prow,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(&mut app, click(MouseEventKind::Down(MouseButton::Left)));
+        handle_mouse(&mut app, click(MouseEventKind::Up(MouseButton::Left)));
+        assert_eq!(app.active_session_id(), &bg, "panel click jumped");
+    }
 }

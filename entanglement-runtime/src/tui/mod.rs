@@ -10,6 +10,7 @@ mod editor;
 mod event;
 mod event_loop;
 mod export;
+mod format;
 mod input;
 mod input_panel;
 mod key_dialog;

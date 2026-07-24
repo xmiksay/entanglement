@@ -194,6 +194,15 @@ guessing again:
   profile may `Allow` `call` while keeping `bash` at `Ask`/`Deny` — and, since
   [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md),
   `call` is registered regardless of whether `bash` is even opted in.
+- **The trust boundary for exec, stated plainly:** root containment applies to
+  a `bash`/`call` invocation's **`workdir` only, never its command body** —
+  `escape_root_target` inspects no command line, so `bash: allow` (or a live
+  `BashEnable { Allow }`) hands the model the engine process's full local
+  privileges: it can read/write any path the process can, outside root
+  included. The layers that actually bound an exec tool are the permission
+  profile (whether/what it may run), the config ceiling (#172), and the opt-in
+  bubblewrap sandbox below — not filesystem containment, which governs only
+  the six path-arg tools.
 - **OS sandbox, opt-in and per-profile scopable (#399/#479,
   [ADR-0104](../adr/0104-bubblewrap-sandbox-for-bash-call.md)/[ADR-0134](../adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)):**
   `ENTANGLEMENT_SANDBOX=bwrap` confines every `bash`/`call` spawn under
