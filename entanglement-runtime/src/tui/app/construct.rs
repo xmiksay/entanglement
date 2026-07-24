@@ -155,6 +155,8 @@ impl App {
             active_provider: String::new(),
             leader_handler: LeaderKeyHandler::new(),
             showing_help: false,
+            help_scroll: 0,
+            mcp_scroll: 0,
             command_palette: CommandPalette::new(),
             sidebar_visible: true,
             sidebar_width: 0,

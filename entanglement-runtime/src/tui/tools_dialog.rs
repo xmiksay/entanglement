@@ -100,6 +100,27 @@ impl ToolsDialog {
         self.state.select(Some(prev));
     }
 
+    /// Page the highlight forward by `n`, clamping at the last tool. Unlike
+    /// [`select_next`][Self::select_next] (which wraps), a page past the end
+    /// stays on the last item.
+    pub fn page_down(&mut self, n: usize) {
+        if self.tools.is_empty() {
+            return;
+        }
+        let last = self.tools.len() - 1;
+        let current = self.state.selected().unwrap_or(0);
+        self.state.select(Some((current + n).min(last)));
+    }
+
+    /// Page the highlight backward by `n`, clamping at the first tool.
+    pub fn page_up(&mut self, n: usize) {
+        if self.tools.is_empty() {
+            return;
+        }
+        let current = self.state.selected().unwrap_or(0);
+        self.state.select(Some(current.saturating_sub(n)));
+    }
+
     /// Space: flip the highlighted row's checkbox.
     pub fn toggle_selected(&mut self) {
         if let Some(i) = self.state.selected() {
@@ -217,5 +238,30 @@ mod tests {
         d.toggle_selected();
         d.hide();
         assert!(!d.visible());
+    }
+
+    #[test]
+    fn page_down_clamps_at_last_tool() {
+        let mut d = ToolsDialog::new();
+        d.show("build".into(), roster(), None, &[]);
+        d.page_down(100);
+        assert_eq!(d.state().selected(), Some(2));
+    }
+
+    #[test]
+    fn page_up_clamps_at_first_tool() {
+        let mut d = ToolsDialog::new();
+        d.show("build".into(), roster(), None, &[]);
+        d.select_next(); // index 1
+        d.page_up(100);
+        assert_eq!(d.state().selected(), Some(0));
+    }
+
+    #[test]
+    fn page_down_on_empty_roster_is_a_noop() {
+        let mut d = ToolsDialog::new();
+        d.show("build".into(), vec![], None, &[]);
+        d.page_down(8);
+        assert_eq!(d.state().selected(), None);
     }
 }

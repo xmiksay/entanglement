@@ -6,6 +6,14 @@ use ratatui::crossterm::event::{
 
 use super::app::{App, UiEffect};
 
+/// Fixed page size for dialog navigation (`PageUp`/`PageDown`). Dialog
+/// viewports are `centered_rect(_, ~40%)` ≈ 8 visible rows on a standard
+/// terminal, so one page ≈ one viewport — the intuitive pager contract. A
+/// dynamic size would require threading the rendered area into state
+/// (over-coupling); the codebase already uses fixed page sizes (main view =
+/// 5, inspect = 10).
+pub(super) const DIALOG_PAGE_SIZE: usize = 8;
+
 /// Routes a mouse event. The wheel prefers an open modal's selection (mirroring
 /// `j`/`k`), else scrolls the chat transcript. Left-button press/drag/release
 /// drives text selection over the transcript: a drag selects and copies (OSC 52)
@@ -154,6 +162,12 @@ pub(super) async fn handle_profile_picker_event(
         KeyCode::Up | KeyCode::Char('k') => {
             app.profile_picker_prev();
         }
+        KeyCode::PageDown => {
+            app.profile_picker_page_down(DIALOG_PAGE_SIZE);
+        }
+        KeyCode::PageUp => {
+            app.profile_picker_page_up(DIALOG_PAGE_SIZE);
+        }
         // `e`: edit the highlighted profile's tool allowlist (#330) — opens the
         // checklist dialog over the picker, leaving it open underneath.
         KeyCode::Char('e') => {
@@ -198,6 +212,12 @@ pub(super) async fn handle_model_picker_event(
         KeyCode::Up | KeyCode::Char('k') => {
             app.model_picker_prev();
         }
+        KeyCode::PageDown => {
+            app.model_picker_page_down(DIALOG_PAGE_SIZE);
+        }
+        KeyCode::PageUp => {
+            app.model_picker_page_up(DIALOG_PAGE_SIZE);
+        }
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
@@ -217,6 +237,8 @@ pub(super) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Res
             KeyCode::Enter => app.key_dialog_confirm_provider(),
             KeyCode::Down | KeyCode::Char('j') => app.key_dialog_next(),
             KeyCode::Up | KeyCode::Char('k') => app.key_dialog_prev(),
+            KeyCode::PageDown => app.key_dialog_page_down(DIALOG_PAGE_SIZE),
+            KeyCode::PageUp => app.key_dialog_page_up(DIALOG_PAGE_SIZE),
             KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
                 return Ok(true);
             }
@@ -258,6 +280,8 @@ pub(super) async fn handle_tools_dialog_event(app: &mut App, key: KeyEvent) -> R
         KeyCode::Char(' ') => app.tools_dialog_toggle(),
         KeyCode::Down | KeyCode::Char('j') => app.tools_dialog_next(),
         KeyCode::Up | KeyCode::Char('k') => app.tools_dialog_prev(),
+        KeyCode::PageDown => app.tools_dialog_page_down(DIALOG_PAGE_SIZE),
+        KeyCode::PageUp => app.tools_dialog_page_up(DIALOG_PAGE_SIZE),
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
@@ -279,6 +303,12 @@ pub(super) async fn handle_sessions_modal_event(app: &mut App, key: KeyEvent) ->
         }
         KeyCode::Up | KeyCode::Char('k') => {
             app.sessions_modal_prev();
+        }
+        KeyCode::PageDown => {
+            app.sessions_modal_page_down(DIALOG_PAGE_SIZE);
+        }
+        KeyCode::PageUp => {
+            app.sessions_modal_page_up(DIALOG_PAGE_SIZE);
         }
         KeyCode::Char('n') => {
             app.create_session();
@@ -364,6 +394,12 @@ pub(super) async fn handle_command_palette_event(
         }
         KeyCode::Up | KeyCode::Char('k') => {
             app.command_palette().select_prev();
+        }
+        KeyCode::PageDown => {
+            app.command_palette().page_down(DIALOG_PAGE_SIZE);
+        }
+        KeyCode::PageUp => {
+            app.command_palette().page_up(DIALOG_PAGE_SIZE);
         }
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
@@ -499,6 +535,12 @@ pub(super) async fn handle_resume_modal_event(
         KeyCode::Up | KeyCode::Char('k') => {
             app.resume_prev();
         }
+        KeyCode::PageDown => {
+            app.resume_page_down(DIALOG_PAGE_SIZE);
+        }
+        KeyCode::PageUp => {
+            app.resume_page_up(DIALOG_PAGE_SIZE);
+        }
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
         }
@@ -598,6 +640,8 @@ pub(super) async fn handle_question_event(
         }
         KeyCode::Up | KeyCode::Char('k') => app.question_move(-1),
         KeyCode::Down | KeyCode::Char('j') => app.question_move(1),
+        KeyCode::PageUp => app.question_page(-(DIALOG_PAGE_SIZE as isize)),
+        KeyCode::PageDown => app.question_page(DIALOG_PAGE_SIZE as isize),
         KeyCode::Char(' ') => app.question_toggle(),
         // Quick-pick by number: options are 1-based; the "Other" entry follows.
         // Multi-select toggles the option; single-select submits immediately.

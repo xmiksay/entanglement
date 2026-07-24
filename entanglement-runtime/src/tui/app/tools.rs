@@ -69,6 +69,20 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Page the tools-dialog highlight forward by `n`, clamping at the last
+    /// tool (no wrap).
+    pub fn tools_dialog_page_down(&mut self, n: usize) {
+        self.tools_dialog.page_down(n);
+        self.mark_dirty();
+    }
+
+    /// Page the tools-dialog highlight backward by `n`, clamping at the first
+    /// tool.
+    pub fn tools_dialog_page_up(&mut self, n: usize) {
+        self.tools_dialog.page_up(n);
+        self.mark_dirty();
+    }
+
     pub fn tools_dialog_toggle(&mut self) {
         self.tools_dialog.toggle_selected();
         self.mark_dirty();

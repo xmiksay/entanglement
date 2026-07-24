@@ -129,7 +129,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     if app.showing_help() {
-        modals::draw_help_dialog(f, app.leader_handler().keymap());
+        modals::draw_help_dialog(f, app);
     }
 
     if app.showing_command_palette() {

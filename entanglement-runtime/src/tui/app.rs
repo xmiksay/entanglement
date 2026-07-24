@@ -123,6 +123,10 @@ pub struct App {
     // Leader key state
     leader_handler: LeaderKeyHandler,
     showing_help: bool,
+    // Vertical scroll offset (lines) for the read-only Help popup (#page-keys).
+    help_scroll: u16,
+    // Vertical scroll offset (lines) for the read-only `/mcp list` popup.
+    mcp_scroll: u16,
 
     // Command palette state
     command_palette: CommandPalette,
