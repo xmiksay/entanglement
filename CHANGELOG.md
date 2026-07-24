@@ -8,13 +8,22 @@ Versioning is [Semantic Versioning](https://semver.org/). The *why* and rejected
 alternatives behind each design decision live in the ADRs under
 [`docs/adr/`](docs/adr/); the referenced `ADR-####` tags link there.
 
-## [Unreleased]
+## [0.5.0] - 2026-07-24
 
-Web search post-MVP follow-ups, plus the batch of changes landed since 0.4.0
-was tagged (session-scoped directory grants, `ask_user` v2, permission-arg
-path normalization, `glob`/`grep` escape-root search via durable grant, live
-bash enablement, an MCP HTTP docs-only leak-surface finding, OpenAI-compat
-stream robustness fixes, and per-profile bubblewrap sandbox scoping).
+The TUI attention panel + session-panel overhaul (background approvals are no
+longer invisible, ADR-0136), web search post-MVP follow-ups, and the batch of
+changes landed since 0.4.0 was tagged (session-scoped directory grants,
+`ask_user` v2, permission-arg path normalization, `glob`/`grep` escape-root
+search via durable grant, live bash enablement, an MCP HTTP docs-only
+leak-surface finding, OpenAI-compat stream robustness fixes, per-profile
+bubblewrap sandbox scoping, and the tokio/rhai/syntect build-speed trims).
+
+> **Wire-shape changes:** `ask_user` v2 (#488) replaces the v1 single-question
+> payload — `OutEvent::UserQuestion` now carries `questions: Vec<Question>`
+> (per-question `multi_select`, no `allow_free_form`); a serde shim still
+> reads pre-v2 logs. New trusted-only `InMsg::BashEnable`/`BashDisable` +
+> `OutEvent::BashChanged` (#498) are refused on the untrusted wire
+> (`send_from_wire`), like the ADR-0124 MCP mutation ops.
 
 ### Added
 
@@ -289,6 +298,7 @@ Initial (untagged) crates.io publish — the three-layer engine foundation
 streaming LLM providers, the stdio/TUI/`serve` heads, and the root-contained
 host tools.
 
+[0.5.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.5.0
 [0.4.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.4.0
 [0.3.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.3.0
 [0.2.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.2.0
