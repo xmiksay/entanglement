@@ -1047,6 +1047,15 @@ provider stream/throttle fixes, and the 2026-07-21 security-audit hardening
 (#472/[ADR-0124](../docs/adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md):
 MCP stdio provider-key scrub, `McpAdd`/`McpRemove` wire-refused, fail-closed
 wire allowlist).
+The **0.5.0** release (see [`../CHANGELOG.md`](../CHANGELOG.md)) adds the TUI
+attention panel + session-panel overhaul ([ADR-0136](../docs/adr/0136-tui-attention-panel-signpost-and-jump.md):
+background approvals/questions surfaced above the input box with `Ctrl+G`/click
+jump, short session ids + first-prompt descriptions, click-to-select sidebar),
+web-search post-MVP follow-ups (#481, persisted `ProviderSearch` blocks +
+`pause_turn` continuation), session-scoped directory grants (#486), `ask_user`
+v2 (#488), root-relative permission-arg grading (#485), `glob`/`grep`
+escape-root search via durable grant (#482), live bash enablement (#498),
+per-profile sandbox scoping (#479), and the build-speed trims (#502).
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
