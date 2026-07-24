@@ -301,6 +301,27 @@ fn restore_from_records_rebuilds_transcript_and_switches() {
         reg.all().iter().filter(|(id, _)| **id == restored).count(),
         1
     );
+
+    // The replayed Prompt doubles as the sidebar description.
+    assert_eq!(
+        reg.active_view().first_prompt(),
+        Some("My name is Miksa"),
+        "restore derives first_prompt from the replayed Prompt record"
+    );
+}
+
+#[test]
+fn first_prompt_is_set_once_and_snippeted() {
+    let sid = SessionId::new("s1");
+    let mut reg = SessionRegistry::new(sid);
+    reg.active_view_mut()
+        .record_user_message("fix the login bug\nwith full detail below".to_string());
+    reg.active_view_mut()
+        .record_user_message("second prompt".to_string());
+
+    // First line wins, ellipsized because more content followed; a later
+    // prompt never overwrites it.
+    assert_eq!(reg.active_view().first_prompt(), Some("fix the login bug…"));
 }
 
 #[test]

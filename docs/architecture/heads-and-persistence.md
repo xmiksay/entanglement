@@ -120,8 +120,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   an **OSC 52** escape (works over SSH/tmux, no clipboard-crate dep) with a
   "Copied N chars" status line; the write is deferred through a
   `UiEffect::CopyToClipboard` so the event loop (which owns the terminal) emits
-  it. A bare **click** (press+release, no drag) instead hit-tests the chat area
-  to toggle a transcript block — reasoning
+  it. A bare **click** (press+release, no drag) instead resolves its target by
+  surface: a sidebar session row (or its description line) switches to that
+  session, the attention panel jumps to the oldest waiting background session,
+  and otherwise the chat area hit-test toggles a transcript block — reasoning
   runs render collapsed as a `▸ Thinking (N lines)` header, and each **tool
   operation** as a single collapsible `▸ {tool}  {primary_arg}  ✓` line with its
   paired output folded in (#340; the `ToolOutput` matches its `ToolCall` by
@@ -140,7 +142,28 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `OutEvent` variants but only `Status` is watched, so a turn end rings once.
   Focus reporting (crossterm `EnableFocusChange`) mutes signals while the
   terminal is focused, but best-effort only — terminals that never report focus
-  always signal. **Two-stage Ctrl+C** ([ADR-0087](../adr/0087-two-stage-ctrl-c.md)):
+  always signal. **Attention panel + jump**
+  ([ADR-0136](../adr/0136-tui-attention-panel-signpost-and-jump.md),
+  `tui::ui::alerts`): a **background** session parked on an approval or
+  `ask_user` question surfaces as a one-line panel directly above the input box
+  — absent (a `Length(0)` layout row) while nothing waits — naming the oldest
+  waiting session (short id + agent) and what it asks (`needs approval: tool
+  arg` / `question: text`), plus a count when several wait; the status bar
+  shows a matching `⚠ N` off the same aggregation (derived per frame from the
+  views' pending queues, not the flappy `Status`, #273). `Ctrl+G` — or a click
+  on the panel — switches to that session, where the existing
+  approval/question UI takes over unchanged (a *signpost + jump*, deliberately
+  not a second approval keymap; the active session's own pending request
+  already renders as the transcript tail, so the panel covers background
+  sessions only). Sessions are identifiable throughout: the sidebar, status
+  bar, and sessions modal show an **8-char short id** instead of the full
+  UUID; the sidebar adds a dim per-session **first-prompt description line**
+  (`SessionView::first_prompt`, captured on the first recorded user message
+  and rebuilt by resume's Prompt replay) and distinct
+  `needs approval`/`question` state words (queue-derived); the sessions modal
+  adds a `❓ question` badge beside `⏳ approval`; and sidebar session rows are
+  **click-to-select** via a draw-time row map mirroring the chat hit-test
+  capture. **Two-stage Ctrl+C** ([ADR-0087](../adr/0087-two-stage-ctrl-c.md)):
   a first Ctrl+C clears the transient input (text buffer, `@file` popup,
   multiline mode) and arms a pending quit; a second within 3s quits. It is
   intercepted **once** at the top of `handle_event`'s key-press block (before

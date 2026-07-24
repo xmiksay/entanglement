@@ -64,7 +64,7 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
             let color = app.profile_color_for(view.agent());
             let mut spans = vec![
                 Span::raw(format!("{}{}", indent, marker)),
-                Span::styled(id.to_string(), Style::default().bold()),
+                Span::styled(crate::tui::format::short_id(id), Style::default().bold()),
                 Span::raw(" "),
                 Span::styled("[", Style::default().dim()),
                 Span::styled(view.agent().to_string(), Style::default().fg(color).bold()),
@@ -76,6 +76,19 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
                     " ⏳ approval",
                     Style::default().fg(Color::Yellow),
                 ));
+            }
+            // A parked `ask_user` question deserves the same visibility as a
+            // parked approval — they are distinct waits (#488).
+            if view.is_asking() {
+                spans.push(Span::styled(
+                    " ❓ question",
+                    Style::default().fg(Color::Cyan),
+                ));
+            }
+            // First-prompt snippet as an inline description, dimmed (#327's
+            // resume-list idiom, now for live sessions too).
+            if let Some(desc) = view.first_prompt() {
+                spans.push(Span::styled(format!("  {desc}"), Style::default().dim()));
             }
             // Sub-agents (depth > 0) show their spawn duration: live while
             // running, fixed once ended (#89, ADR-0026).

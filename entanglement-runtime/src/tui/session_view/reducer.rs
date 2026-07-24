@@ -6,6 +6,11 @@ impl SessionView {
     /// no `seq` and bypass the dedupe guard — they originate here, not the
     /// engine broadcast.
     pub fn record_user_message(&mut self, text: String) {
+        // First user message doubles as the session's sidebar description —
+        // the same snippet shape the resume list derives from persisted logs.
+        if self.first_prompt.is_none() {
+            self.first_prompt = Some(crate::session_store::first_prompt_snippet(&text));
+        }
         self.transcript.push(TranscriptEntry::User {
             text,
             pending: true,

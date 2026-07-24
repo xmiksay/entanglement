@@ -92,6 +92,35 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Switches the active view to `id` (a sidebar click). A no-op for an
+    /// unknown id — the registry ignores it.
+    pub fn switch_to_session(&mut self, id: entanglement_core::SessionId) {
+        self.sessions.switch_to(id);
+        self.mark_dirty();
+    }
+
+    /// Jumps to the oldest background session parked on an approval or
+    /// question (`Ctrl+G` / a click on the attention panel): switching makes
+    /// it the active view, so the existing approval/question UI takes over.
+    /// Returns whether a jump happened.
+    pub fn jump_to_next_attention(&mut self) -> bool {
+        let active = self.sessions.active_id().clone();
+        let target = self
+            .sessions
+            .all()
+            .into_iter()
+            .find(|(id, view)| **id != active && crate::tui::format::attention_word(view).is_some())
+            .map(|(id, _)| id.clone());
+        match target {
+            Some(id) => {
+                self.sessions.switch_to(id);
+                self.mark_dirty();
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn leader_handler(&mut self) -> &mut LeaderKeyHandler {
         &mut self.leader_handler
     }

@@ -111,6 +111,53 @@ impl App {
         self.chat_line_text = line_text;
     }
 
+    /// Stores the sidebar's inner session-rows geometry + per-row session map
+    /// captured this frame so a later mouse click maps back to a session row.
+    pub fn set_sidebar_hit_test(
+        &mut self,
+        area: Rect,
+        rows: Vec<Option<entanglement_core::SessionId>>,
+    ) {
+        self.sidebar_sessions_area = area;
+        self.sidebar_rows = rows;
+    }
+
+    /// Maps a terminal click at `(col, row)` to the session row under it, or
+    /// `None` outside the sidebar's session list. The sidebar doesn't scroll,
+    /// so the row index needs no offset (unlike `block_at`).
+    pub fn session_at(&self, col: u16, row: u16) -> Option<entanglement_core::SessionId> {
+        let area = self.sidebar_sessions_area;
+        if area.width == 0 || area.height == 0 {
+            return None;
+        }
+        if col < area.x || col >= area.x + area.width {
+            return None;
+        }
+        if row < area.y || row >= area.y + area.height {
+            return None;
+        }
+        self.sidebar_rows
+            .get((row - area.y) as usize)
+            .cloned()
+            .flatten()
+    }
+
+    /// Stores the attention panel's rect this frame (zero when hidden).
+    pub fn set_attention_area(&mut self, area: Rect) {
+        self.attention_area = area;
+    }
+
+    /// Whether a terminal click at `(col, row)` lands on the attention panel.
+    pub fn attention_at(&self, col: u16, row: u16) -> bool {
+        let area = self.attention_area;
+        area.width > 0
+            && area.height > 0
+            && col >= area.x
+            && col < area.x + area.width
+            && row >= area.y
+            && row < area.y + area.height
+    }
+
     /// The current transcript selection, if any (for highlight rendering).
     pub fn selection(&self) -> Option<crate::tui::selection::Selection> {
         self.selection

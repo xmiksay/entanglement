@@ -12,7 +12,7 @@ use crate::tui::wrap;
 mod block;
 pub(crate) mod cache;
 mod question;
-mod render_run;
+pub(crate) mod render_run;
 mod segment;
 #[cfg(test)]
 mod tests;

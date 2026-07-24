@@ -206,7 +206,7 @@ pub(super) fn flush_reasoning(
 /// Orchestration tools (`agent`, `ask_user`, `propose_plan`, …) fall through to
 /// [`orchestration_primary_arg`], which pulls a readable hint from their JSON
 /// input so the header isn't a bare tool name while a call is in flight.
-pub(super) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
+pub(crate) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
     if let Some(arg) = entanglement_runtime::permission::permission_arg(tool, input) {
         return Some(arg);
     }
