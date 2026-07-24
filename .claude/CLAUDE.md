@@ -74,7 +74,7 @@ Set `ENTANGLEMENT_PROVIDER` explicitly, or let it auto-detect by key (z.ai first
 | --- | --- | --- | --- | --- |
 | `zai` (primary) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_MODEL` (`glm-5.2`) | `ZAI_API_BASE` (Coding Plan) |
 | `openai` | OpenAI-compat | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-4o`) | `OPENAI_API_BASE` |
-| `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_BASE` |
+| `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_API_BASE` (or legacy `OLLAMA_BASE`) |
 | `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-4-5`) | — |
 | `gemini` | Gemini `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) | `GEMINI_API_BASE` |
 
@@ -111,7 +111,7 @@ reads it; this table is the one-place index):
 | Env var | Purpose |
 | --- | --- |
 | `ENTANGLEMENT_PROVIDER` | select provider (`zai`/`openai`/`ollama`/`anthropic`/`gemini`/`echo`); else auto-detect by key |
-| `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_BASE` | per-provider key/model/base (the catalog `key_env`, e.g. `ZAI_API_KEY`) |
+| `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_API_BASE` | per-provider key/model/base (the catalog `key_env`, e.g. `ZAI_API_KEY`); the base also accepts the legacy `<NAME>_BASE` spelling (`_API_BASE` wins) |
 | `<NAME>_RPM` / `<NAME>_CONCURRENCY` | per-provider endpoint RPM / in-flight cap (#414), overriding the catalog `rpm`/`concurrency`; `None` ⇒ client default |
 | `ENTANGLEMENT_MAX_CONCURRENCY` | last-resort process-wide concurrency override (default 3) |
 | `ENTANGLEMENT_LOG_BODIES=1` | opt-in symmetric LLM request-body logging (#165) |
@@ -125,7 +125,7 @@ reads it; this table is the one-place index):
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide (default when a profile sets no `sandbox:` override); opt-in to keep network (#399, #479) |
 | `ENTANGLEMENT_ECHO_FULL=1` | `EchoLlm` appends the full system text (debugging) |
 | `ENTANGLEMENT_TUI_NOTIFY=1` / `ENTANGLEMENT_TUI_NO_MOUSE` | TUI desktop-notification opt-in / mouse opt-out |
-| `ENTANGLEMENT_HOOK_EVENT` / `_SESSION_ID` / `_TOOL_NAME` | set on every hook child's env by the runtime (read-only context, not user-set) |
+| `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child's env by the runtime (read-only context, not user-set; note the latter two carry no `HOOK` infix) |
 
 z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
 format); **Gemini** has a native `GeminiLlm` (✅ #309,

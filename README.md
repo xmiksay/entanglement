@@ -11,7 +11,8 @@ over those two methods.
 ## Status
 
 Actor core + stdio head + TUI + local WebSocket `serve` head, with real LLM
-backends wired (`entanglement-provider`: z.ai/OpenAI/Ollama + Anthropic). All
+backends wired (`entanglement-provider`: z.ai/OpenAI/Ollama + Anthropic +
+Gemini). All
 four interfaces now ship. The three-layer re-architecture (core / provider /
 runtime) has landed — see
 [`docs/adr/0006`](docs/adr/0006-core-dependency-hygiene-gate.md) and the crate
@@ -84,8 +85,9 @@ Agents (`ENTANGLEMENT_AGENTS_DIR`) and skills (`ENTANGLEMENT_SKILLS_DIR`) are
 `.md` files with YAML frontmatter — drop one in and it joins the registry with
 no code change; `skutter inspect agents|skills` shows the resolved set with
 layer provenance. Beyond the root-contained quintet (`read`/`write`/`edit`/
-`glob`/`grep`), `call` (argv exec, no shell) and the sandboxed `rhai` scripting
-tool are always registered too; only `bash` stays opt-in
+`glob`/`grep`), `call` (argv exec, no shell) is always registered too, and the
+sandboxed `rhai` scripting tool ships in every default build (droppable via
+`--no-default-features`, #502); only `bash` stays opt-in
 (`ENTANGLEMENT_ENABLE_BASH=1`).
 
 ## Crates
@@ -95,9 +97,9 @@ is `provider (leaf) ← core ← runtime` ([ADR-0053](docs/adr/0053-invert-core-
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
-| `entanglement-provider` | **leaf** crate owning the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`/`ToolSpec`) + wire `Message`; z.ai/OpenAI/Ollama + Anthropic clients; connection pool, retry, rate-limit, reasoning stream. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
+| `entanglement-provider` | **leaf** crate owning the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`/`ToolSpec`) + wire `Message`; z.ai/OpenAI/Ollama + Anthropic + native Gemini clients (#309); connection pool, retry, rate-limit, reasoning stream. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, `Context`. Advertises tool *schemas* (`ToolSpec`) only — holds no executable tools. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest` is transitive via provider (ADR-0053). Enforced via `make tree`. |
-| `entanglement-runtime` | the head crate (binary `skutter`): the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, user sessions, all transports (stdio ✅, TUI ✅, WS ✅ #153). Selects the concrete provider + glues it to core. Feature-gated `cli`/`provider`/`tui`/`serve`/`mcp-http` (`default = ["tui", "serve", "mcp-http"]`); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
+| `entanglement-runtime` | the head crate (binary `skutter`): the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, user sessions, all transports (stdio ✅, TUI ✅, WS ✅ #153). Selects the concrete provider + glues it to core. Feature-gated `cli`/`provider`/`tui`/`serve`/`mcp-http`/`rhai` (`default = ["tui", "serve", "mcp-http", "rhai"]`, #502); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
 
 ## Install
 
@@ -134,7 +136,7 @@ make run-tui      # launch the terminal UI
 make serve        # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
 make test         # unit + integration
 make lint         # clippy --all-targets -D warnings
-make verify       # check-fmt + tree + check-lean + lint + test (CI-equivalent)
+make verify       # check-fmt + tree + check-lean + file-cap + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI/web-server dep hygiene gate)
 make check-lean   # runtime --no-default-features stays CLI/TUI-free (ADR-0025 + ADR-0053)
 make coverage     # cargo llvm-cov --workspace, fails under COV_MIN% (release gate)
