@@ -328,6 +328,29 @@ below realize one model:
   `build` fallback via `ProfileRegistry::new()`; the runtime rebuilds the full set
   from the embedded markdown (`entanglement_runtime::agents::built_in_registry`).
   Add your own with `ProfileRegistry::insert`.
+- **Default restriction map (the built-in quartet, at a glance):** what a
+  session can actually do out of the box, per profile — the product of the
+  tool mask (which tools *exist*) and the permission ladder (how an existing
+  tool grades). Source of truth: `entanglement-runtime/src/agents/*.md`.
+
+  | Profile | mode | tools mask | permission | spawn |
+  | --- | --- | --- | --- | --- |
+  | `build` (default) | primary | none — every registered tool exists | `default: allow` — everything Allow | may spawn `explore`/`debug` |
+  | `plan` | primary | `read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, update_plan, propose_plan` — no edit/write/exec | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `update_plan: allow` | may spawn |
+  | `explore` | subagent | `read, glob, grep` | `default: deny`; read triad Allow | cannot spawn |
+  | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
+
+  Three cross-cutting facts complete the picture: **(1)** `bash`/`bash_output`
+  are opt-in — until registered (startup `ENTANGLEMENT_ENABLE_BASH=1`, or live
+  `/bash on`, #498/[ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md))
+  they don't exist for *any* profile and the only exec tool is `call` (single
+  argv, no shell). **(2)** an active skill's `allowed_tools` (ADR-0106) is a
+  **literal exact-name** mask — no capability fan-out — so an exec-capable
+  skill must list `call` explicitly (the built-in `commit` lists
+  `bash, call, read, grep`); it layers *after* the profile mask and also
+  reaches `rhai` bindings (ADR-0129). **(3)** the user-config permission
+  ceiling defaults to `default: allow` — a no-op clamp until the user
+  tightens it (#172).
 - **Per-profile model pinning (✅ #323, [ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)):**
   a profile's frontmatter may set `provider:` beside `model:`. Both set = a
   **model pin** (`AgentProfile::model_pin()`): switching to the profile re-binds
