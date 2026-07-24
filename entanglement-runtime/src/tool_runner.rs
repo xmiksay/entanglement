@@ -34,6 +34,7 @@
 //! parking the request forever.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "rhai")]
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -48,17 +49,20 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::cancel::{CancelRegistry, TaskCanceller};
 use crate::hooks::Hooks;
 use crate::permission::{
-    ancestor_chain, clamp_to_base, effective_permission, min_permission, skill_masked,
-    spawn_refusal, tool_masked, ActiveSkill,
+    ancestor_chain, min_permission, skill_masked, spawn_refusal, tool_masked, ActiveSkill,
 };
+#[cfg(feature = "rhai")]
+use crate::permission::{clamp_to_base, effective_permission};
 use crate::permission_path::grading_arg;
 use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver};
 use crate::seam;
 use crate::skills::load_skill::parse_skill_id;
 use crate::skills::SkillRegistry;
+#[cfg(feature = "rhai")]
+use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
     AGENT_POLL_TOOL, AGENT_SPAWN_TOOL, AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL,
-    PROPOSE_PLAN_TOOL, RHAI_TOOL,
+    PROPOSE_PLAN_TOOL,
 };
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
@@ -133,6 +137,10 @@ enum Intercept {
     ProposePlan,
     /// `rhai`: a sandboxed script tool (#122, ADR-0046) that resolves its own
     /// permission live against the loop's profile snapshot inside the script task.
+    /// Behind the `rhai` feature (#502, ADR-0135) — a lean build without it
+    /// never registers the tool, so a call named `rhai` falls through to the
+    /// generic `Permission` route below and is refused there as unknown.
+    #[cfg(feature = "rhai")]
     Rhai,
     /// Every other host tool: the generic `Allow | Ask | Deny` dispatch.
     Permission,
@@ -146,6 +154,7 @@ impl Intercept {
             AGENT_POLL_TOOL => Self::AgentPoll,
             ASK_USER_TOOL => Self::AskUser,
             PROPOSE_PLAN_TOOL => Self::ProposePlan,
+            #[cfg(feature = "rhai")]
             RHAI_TOOL => Self::Rhai,
             _ => Self::Permission,
         }
@@ -297,7 +306,9 @@ pub fn spawn_tool_executor_with_policy(
     tools: SharedRegistry,
     profiles: Arc<RwLock<ProfileRegistry>>,
     skills: Arc<RwLock<Arc<SkillRegistry>>>,
-    base: PermissionProfile,
+    // Only consulted inside the `rhai` intercept arm's own clamp below — a
+    // lean build without that feature never reads it.
+    #[cfg_attr(not(feature = "rhai"), allow(unused_variables))] base: PermissionProfile,
     active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
     resolver: Arc<dyn PermissionResolver>,
     grants: Arc<dyn GrantStore>,
@@ -718,6 +729,7 @@ pub fn spawn_tool_executor_with_policy(
                                 .await;
                             });
                         }
+                        #[cfg(feature = "rhai")]
                         Intercept::Rhai => {
                             // The bindings resolve permission live against this
                             // loop's profile state — captured here as a per-run
@@ -1209,6 +1221,7 @@ mod tests {
             Intercept::classify(PROPOSE_PLAN_TOOL),
             Intercept::ProposePlan
         );
+        #[cfg(feature = "rhai")]
         assert_eq!(Intercept::classify(RHAI_TOOL), Intercept::Rhai);
     }
 
@@ -1240,6 +1253,7 @@ mod tests {
         assert!(Intercept::AgentPoll.bypasses_permission());
         assert!(Intercept::AskUser.bypasses_permission());
         assert!(Intercept::ProposePlan.bypasses_permission());
+        #[cfg(feature = "rhai")]
         assert!(!Intercept::Rhai.bypasses_permission());
         assert!(!Intercept::Permission.bypasses_permission());
     }

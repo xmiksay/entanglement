@@ -60,6 +60,17 @@ stream robustness fixes, and per-profile bubblewrap sandbox scoping).
   policy (a confined parent can't spawn an unconfined child), mirroring the
   existing sub-agent permission ceiling (#479, ADR-0134 amending ADR-0104).
 
+### Changed
+
+- **Build-speed trims (no behavior change)**: each crate's `tokio` dependency
+  now declares its own minimal feature list instead of the workspace-wide
+  `features = ["full"]`; the sandboxed `rhai` script tool moved behind a new
+  default-on `entanglement-runtime` feature (`rhai`), so a lean
+  (`--no-default-features`) embedder that never registers it can drop one of
+  the heaviest always-compiled deps; `syntect` (behind `tui`) trims
+  `default-fancy` down to the features the TUI's markdown highlighter
+  actually uses (#502, ADR-0135 amending ADR-0025).
+
 ### Fixed
 
 - **Permission arguments for path tools are normalized root-relative**: an

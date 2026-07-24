@@ -33,8 +33,15 @@ name = "mcp_http"
 path = "examples/mcp_http.rs"
 required-features = ["mcp-http"]
 
+# The `rhai` tool integration suite needs the (now optional, #502) `rhai`
+# feature — gated the same way `mcp_http` is gated above.
+[[test]]
+name = "rhai"
+path = "tests/rhai.rs"
+required-features = ["rhai"]
+
 [features]
-default = ["tui", "serve", "mcp-http"]
+default = ["tui", "serve", "mcp-http", "rhai"]
 # Head plumbing for `skutter`: arg parsing (clap) + log init (tracing-subscriber)
 # + hidden key prompt (rpassword, for `config set-key` — #304).
 cli = ["dep:clap", "dep:tracing-subscriber", "dep:rpassword"]
@@ -56,11 +63,27 @@ tui = ["cli", "provider", "dep:ratatui", "dep:crossterm", "dep:pulldown-cmark", 
 # no HTTP-MCP transport (matching how `serve` gates axum — ADR-0025). stdio MCP
 # stays feature-free (tokio process only).
 mcp-http = ["dep:reqwest", "dep:futures"]
+# The sandboxed `rhai` script tool (#122, ADR-0046; default-on, #502/ADR-0135
+# amending ADR-0025): one of the heaviest always-compiled deps, so a lean
+# embedder that never registers `rhai` can now drop it via
+# `--no-default-features` (no `rhai` in that build's feature list). Every
+# existing default-feature build (incl. the `skutter` binary) is unaffected.
+rhai = ["dep:rhai"]
 
 [dependencies]
 entanglement-core = { workspace = true }
 entanglement-provider = { workspace = true, optional = true }
-tokio = { workspace = true }
+# Per-crate feature trim (#502, ADR-0135): the head crate exercises nearly the
+# whole tokio surface — `rt`+`rt-multi-thread`+`macros` back `#[tokio::main]`
+# (`src/main.rs`) and the one `flavor = "multi_thread"` test
+# (`src/extra_roots.rs`); `sync`/`time` back the mpsc/broadcast/oneshot/watch +
+# sleep/timeout/interval usage throughout; `fs`/`process` back the host tools
+# (`host::edit`/`write`/`read`/`bash`/`call`/mcp stdio); `net` backs `serve` +
+# the streamable-HTTP MCP transport's tests; `io-util`/`io-std` back the exec
+# tools' piping and `pipe`'s stdin read; `signal` backs `ctrl_c()` in `serve`/
+# `tui`. No separate `tokio` dev-dependency exists, so this single list also
+# has to satisfy every `#[cfg(test)]`/`tests/*.rs` need.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util", "io-std", "signal"] }
 anyhow = { workspace = true }
 clap = { workspace = true, optional = true }
 rpassword = { workspace = true, optional = true }
@@ -93,10 +116,12 @@ async-trait = { workspace = true }
 sha2 = { workspace = true }
 # `read` inline-base64-encodes an image file for its image content block (#221).
 base64 = { workspace = true }
-# `rhai` host tool — embedded sandboxed script engine (ADR-0046). Non-optional:
-# the tool lives in the lean library (runtime::script), pure Rust so lean-build
-# and cross-compile clean.
-rhai = { workspace = true }
+# `rhai` host tool — embedded sandboxed script engine (ADR-0046). Optional,
+# default-on (behind the `rhai` feature, #502/ADR-0135): pure Rust so it stays
+# lean-build/cross-compile clean when enabled, but is one of the heaviest
+# always-compiled deps, so a lean embedder can opt out via
+# `--no-default-features`.
+rhai = { workspace = true, optional = true }
 # Advisory cross-process file lock for the managed read-modify-write writes
 # (grants.yml / agent-models.yml / the env file, #329).
 fd-lock = { workspace = true }

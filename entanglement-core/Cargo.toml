@@ -17,7 +17,11 @@ path = "src/lib.rs"
 
 [dependencies]
 entanglement-provider = { workspace = true }
-tokio = { workspace = true }
+# Per-crate feature trim (#502, ADR-0135): `rt` backs `tokio::spawn`/`task::yield_now`,
+# `macros` backs `select!`/`#[tokio::test]`, `sync` backs `broadcast`/`mpsc`,
+# `time` backs `sleep`/`timeout`/`interval`/`Instant`. No fs/net/process/signal
+# use in core.
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

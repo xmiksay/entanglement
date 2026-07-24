@@ -246,6 +246,9 @@ pub fn skill_masked(
 /// binding call against it with the call's argument, matching
 /// [`effective_permission`]'s least-privilege clamp while letting argument-scoped
 /// rules see the actual input. An unseen session contributes nothing.
+// Only called by `crate::script` (feature-gated) outside this module's own
+// unit test below, which is why a lean, rhai-less build sees it as dead.
+#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
 pub(crate) fn permission_chain(
     active: &HashMap<SessionId, AgentProfile>,
     guard: &SpawnGuard,
