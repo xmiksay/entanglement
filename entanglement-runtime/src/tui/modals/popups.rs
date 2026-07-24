@@ -39,7 +39,8 @@ pub fn draw_which_key_popup(f: &mut Frame, keymap: &KeyMap) {
     f.render_widget(list, area);
 }
 
-pub fn draw_help_dialog(f: &mut Frame, keymap: &KeyMap) {
+pub fn draw_help_dialog(f: &mut Frame, app: &mut App) {
+    let keymap = app.keymap();
     let bindings = keymap.all_bindings();
     let mut current_category = String::new();
     let mut lines = Vec::new();
@@ -48,37 +49,36 @@ pub fn draw_help_dialog(f: &mut Frame, keymap: &KeyMap) {
         let category = action.category();
         if category != current_category {
             if !current_category.is_empty() {
-                lines.push(ListItem::new(Line::from("")));
+                lines.push(Line::from(""));
             }
-            lines.push(ListItem::new(Line::from(vec![Span::styled(
+            lines.push(Line::from(vec![Span::styled(
                 format!("{}:", category),
                 Style::default().fg(Color::Yellow).bold(),
-            )])));
+            )]));
             current_category = category.to_string();
         }
 
         let key_str = format!("{}", sequence);
         let description = action.description();
-        lines.push(ListItem::new(Line::from(vec![
+        lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:12} ", key_str),
                 Style::default().fg(Color::Cyan).bold(),
             ),
             Span::styled(description, Style::default()),
-        ])));
+        ]));
     }
 
-    let list = List::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Keybindings Help (Esc to close)"),
-        )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+    let scroll = app.help_scroll();
+    let para = Paragraph::new(lines).scroll((scroll, 0)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Keybindings Help (Esc to close)"),
+    );
 
     let area = centered_rect(80, 70, f.area());
     f.render_widget(Clear, area);
-    f.render_widget(list, area);
+    f.render_widget(para, area);
 }
 
 pub fn draw_command_palette(f: &mut Frame, app: &mut App) {
@@ -284,17 +284,35 @@ pub fn draw_key_dialog(f: &mut Frame, app: &mut App) {
 }
 
 /// Draw the `/mcp list` result panel (#373): connected servers, transport,
-/// status, and tools, reusing the read-only-list shape of [`draw_help_dialog`]
-/// — `Esc` is the only key it consumes, so no `ListState`/highlight is needed.
+/// status, and tools, reusing the read-only-scrollable shape of
+/// [`draw_help_dialog`] — `Esc` is the only key it consumes, so no
+/// `ListState`/highlight is needed. `PageUp`/`PageDown`/`Up`/`Down`/`j`/`k`
+/// scroll via `Paragraph::scroll`.
 pub fn draw_mcp_panel(f: &mut Frame, app: &App) {
     let servers = app.mcp_servers();
-    let mut lines: Vec<ListItem> = Vec::new();
+    let mut lines: Vec<Line> = Vec::new();
 
     if servers.is_empty() {
-        lines.push(ListItem::new(Line::from(Span::styled(
+        // WHY: a bare "no servers" panel leaves the user stuck — show the
+        // `/mcp add` syntax inline so the path to attach a server is visible
+        // right where the gap is.
+        lines.push(Line::from(Span::styled(
             "No MCP servers connected.",
             Style::default().dim(),
-        ))));
+        )));
+        let usage = [
+            "Add a server:",
+            "  /mcp add <name> --url <url> [--header KEY:VALUE]...",
+            "  /mcp add <name> -- <command> [args...]",
+            "List/remove:  /mcp list   /mcp remove <name>",
+        ];
+        lines.push(Line::from(""));
+        for u in usage {
+            lines.push(Line::from(Span::styled(
+                u,
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
     } else {
         for s in servers {
             let status = if s.connected {
@@ -302,31 +320,31 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &App) {
             } else {
                 Span::styled("disconnected", Style::default().fg(Color::Red))
             };
-            lines.push(ListItem::new(Line::from(vec![
+            lines.push(Line::from(vec![
                 Span::styled(format!("{} ", s.name), Style::default().bold()),
                 Span::styled(format!("[{}] ", s.transport), Style::default().dim()),
                 status,
-            ])));
+            ]));
             if let Some(err) = &s.error {
-                lines.push(ListItem::new(Line::from(Span::styled(
+                lines.push(Line::from(Span::styled(
                     format!("  error: {err}"),
                     Style::default().fg(Color::Red),
-                ))));
+                )));
             } else if s.tools.is_empty() {
-                lines.push(ListItem::new(Line::from(Span::styled(
+                lines.push(Line::from(Span::styled(
                     "  (no tools)",
                     Style::default().dim(),
-                ))));
+                )));
             } else {
-                lines.push(ListItem::new(Line::from(Span::styled(
+                lines.push(Line::from(Span::styled(
                     format!("  tools: {}", s.tools.join(", ")),
                     Style::default().dim(),
-                ))));
+                )));
             }
         }
     }
 
-    let list = List::new(lines).block(
+    let para = Paragraph::new(lines).scroll((app.mcp_scroll(), 0)).block(
         Block::default()
             .borders(Borders::ALL)
             .title("MCP Servers (Esc to close)"),
@@ -334,7 +352,7 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &App) {
 
     let area = centered_rect(70, 60, f.area());
     f.render_widget(Clear, area);
-    f.render_widget(list, area);
+    f.render_widget(para, area);
 }
 
 /// Draw the `/agent` picker's `e` tools-checklist dialog (#330): every

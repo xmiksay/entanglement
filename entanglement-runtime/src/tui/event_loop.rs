@@ -11,6 +11,7 @@ use super::modal_events::{
     handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
     handle_model_picker_event, handle_mouse, handle_profile_picker_event, handle_question_event,
     handle_resume_modal_event, handle_sessions_modal_event, handle_tools_dialog_event,
+    DIALOG_PAGE_SIZE,
 };
 use super::session_view::ApprovalMode;
 
@@ -106,16 +107,51 @@ pub(super) async fn handle_event(
                     return handle_key_dialog_event(app, key).await;
                 }
                 if app.showing_help() {
-                    if key.code == KeyCode::Esc {
-                        app.close_help();
+                    match key.code {
+                        KeyCode::Esc => app.close_help(),
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            let s = app.help_scroll();
+                            app.set_help_scroll(s.saturating_sub(1));
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let s = app.help_scroll();
+                            app.set_help_scroll(s.saturating_add(1));
+                        }
+                        KeyCode::PageUp => {
+                            let s = app.help_scroll();
+                            app.set_help_scroll(s.saturating_sub(DIALOG_PAGE_SIZE as u16));
+                        }
+                        KeyCode::PageDown => {
+                            let s = app.help_scroll();
+                            app.set_help_scroll(s.saturating_add(DIALOG_PAGE_SIZE as u16));
+                        }
+                        _ => {}
                     }
                     return Ok(false);
                 }
-                // `/mcp list` panel (#373): read-only, `Esc` is the only key it
-                // consumes — mirrors the help dialog's shape.
+                // `/mcp list` panel (#373): read-only + scrollable via
+                // `PageUp`/`PageDown`/`Up`/`Down`/`j`/`k` (mirrors the help
+                // dialog); `Esc` closes.
                 if app.showing_mcp_panel() {
-                    if key.code == KeyCode::Esc {
-                        app.close_mcp_panel();
+                    match key.code {
+                        KeyCode::Esc => app.close_mcp_panel(),
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            let s = app.mcp_scroll();
+                            app.set_mcp_scroll(s.saturating_sub(1));
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let s = app.mcp_scroll();
+                            app.set_mcp_scroll(s.saturating_add(1));
+                        }
+                        KeyCode::PageUp => {
+                            let s = app.mcp_scroll();
+                            app.set_mcp_scroll(s.saturating_sub(DIALOG_PAGE_SIZE as u16));
+                        }
+                        KeyCode::PageDown => {
+                            let s = app.mcp_scroll();
+                            app.set_mcp_scroll(s.saturating_add(DIALOG_PAGE_SIZE as u16));
+                        }
+                        _ => {}
                     }
                     return Ok(false);
                 }

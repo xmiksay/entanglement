@@ -102,6 +102,27 @@ impl KeyDialog {
         self.state.select(Some(prev));
     }
 
+    /// Page the selection forward by `n`, clamping at the last provider. Unlike
+    /// [`select_next`][Self::select_next] (which wraps), a page past the end
+    /// stays on the last item — the pager contract.
+    pub fn page_down(&mut self, n: usize) {
+        if self.providers.is_empty() {
+            return;
+        }
+        let last = self.providers.len() - 1;
+        let current = self.state.selected().unwrap_or(0);
+        self.state.select(Some((current + n).min(last)));
+    }
+
+    /// Page the selection backward by `n`, clamping at the first provider.
+    pub fn page_up(&mut self, n: usize) {
+        if self.providers.is_empty() {
+            return;
+        }
+        let current = self.state.selected().unwrap_or(0);
+        self.state.select(Some(current.saturating_sub(n)));
+    }
+
     pub fn selected_provider(&self) -> Option<&KeyProvider> {
         self.state.selected().and_then(|i| self.providers.get(i))
     }
@@ -237,5 +258,51 @@ mod tests {
         d.show();
         assert!(d.selected_provider().is_none());
         assert!(!d.confirm_provider(), "cannot advance without a provider");
+    }
+
+    #[test]
+    fn page_down_clamps_at_last_provider() {
+        let mut d = dialog();
+        d.show();
+        d.page_down(100);
+        assert_eq!(d.state().selected(), Some(1));
+    }
+
+    #[test]
+    fn page_up_clamps_at_first_provider() {
+        let mut d = dialog();
+        d.show();
+        d.select_next(); // index 1
+        d.page_up(100);
+        assert_eq!(d.state().selected(), Some(0));
+    }
+
+    #[test]
+    fn page_down_on_empty_list_is_a_noop() {
+        let mut d = KeyDialog::new(vec![]);
+        d.show();
+        d.page_down(8);
+        assert!(d.selected_provider().is_none());
+    }
+
+    #[test]
+    fn page_down_moves_by_n_from_mid_list() {
+        let mut d = KeyDialog::new(vec![
+            KeyProvider {
+                name: "a".into(),
+                key_env: "A".into(),
+            },
+            KeyProvider {
+                name: "b".into(),
+                key_env: "B".into(),
+            },
+            KeyProvider {
+                name: "c".into(),
+                key_env: "C".into(),
+            },
+        ]);
+        d.show();
+        d.page_down(1);
+        assert_eq!(d.state().selected(), Some(1));
     }
 }

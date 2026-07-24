@@ -376,6 +376,21 @@ impl SessionView {
         }
     }
 
+    /// Move the highlighted choice by `delta`, **clamping** at the first/last
+    /// choice rather than wrapping (unlike [`question_move`][Self::question_move]).
+    /// Used by `PageUp`/`PageDown` so paging past the end stays put.
+    pub fn question_page(&mut self, delta: isize) {
+        if let Some(q) = self.pending_questions.front_mut() {
+            let count = q.choice_count();
+            if count == 0 {
+                return;
+            }
+            let last = count - 1;
+            let next = (q.selected as isize + delta).clamp(0, last as isize) as usize;
+            q.selected = next;
+        }
+    }
+
     /// Toggle the highlighted option's checkbox (`Space`), for a multi-select
     /// question only — a no-op on a single-select question or the "Other" row
     /// (#488).

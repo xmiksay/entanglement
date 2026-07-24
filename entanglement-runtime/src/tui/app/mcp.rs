@@ -17,6 +17,17 @@ impl App {
         self.mcp_panel.servers()
     }
 
+    pub fn mcp_scroll(&self) -> u16 {
+        self.mcp_scroll
+    }
+
+    /// Set the MCP panel scroll offset (clamped at 0; the event loop clamps
+    /// the upper bound against the rendered line count).
+    pub fn set_mcp_scroll(&mut self, scroll: u16) {
+        self.mcp_scroll = scroll;
+        self.mark_dirty();
+    }
+
     pub fn close_mcp_panel(&mut self) {
         self.mcp_panel.hide();
         self.mark_dirty();
@@ -42,6 +53,7 @@ impl App {
     /// answers our own outstanding query.
     pub(super) fn handle_mcp_list(&mut self, correlation_id: &str, servers: Vec<McpServerStatus>) {
         if self.mcp_panel.apply_list(correlation_id, servers) {
+            self.mcp_scroll = 0;
             self.mark_dirty();
         }
     }

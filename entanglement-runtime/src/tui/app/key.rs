@@ -58,6 +58,20 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Page the key-dialog provider selection forward by `n`, clamping at the
+    /// last provider (no wrap). Only meaningful on the `PickProvider` stage.
+    pub fn key_dialog_page_down(&mut self, n: usize) {
+        self.key_dialog.page_down(n);
+        self.mark_dirty();
+    }
+
+    /// Page the key-dialog provider selection backward by `n`, clamping at the
+    /// first provider.
+    pub fn key_dialog_page_up(&mut self, n: usize) {
+        self.key_dialog.page_up(n);
+        self.mark_dirty();
+    }
+
     /// Advance from the provider list to the key-entry stage.
     pub fn key_dialog_confirm_provider(&mut self) {
         self.key_dialog.confirm_provider();

@@ -50,6 +50,13 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Page the highlighted choice by `delta`, clamping at the bounds (no
+    /// wrap) — used by `PageUp`/`PageDown` in the `ask_user` question dialog.
+    pub fn question_page(&mut self, delta: isize) {
+        self.sessions.active_view_mut().question_page(delta);
+        self.mark_dirty();
+    }
+
     pub fn question_toggle(&mut self) {
         self.sessions.active_view_mut().question_toggle();
         self.mark_dirty();
@@ -125,17 +132,37 @@ impl App {
         &mut self.leader_handler
     }
 
+    /// Immutable view of the leader-key handler's keymap, for read-only
+    /// rendering (the help popup) that also needs to mutate other `App`
+    /// state in the same call.
+    pub fn keymap(&self) -> &crate::tui::keybindings::KeyMap {
+        self.leader_handler.keymap()
+    }
+
     pub fn showing_help(&self) -> bool {
         self.showing_help
     }
 
+    pub fn help_scroll(&self) -> u16 {
+        self.help_scroll
+    }
+
+    /// Set the Help popup scroll offset (clamped at 0; the event loop clamps
+    /// the upper bound against the rendered line count).
+    pub fn set_help_scroll(&mut self, scroll: u16) {
+        self.help_scroll = scroll;
+        self.mark_dirty();
+    }
+
     pub fn toggle_help(&mut self) {
         self.showing_help = !self.showing_help;
+        self.help_scroll = 0;
         self.mark_dirty();
     }
 
     pub fn close_help(&mut self) {
         self.showing_help = false;
+        self.help_scroll = 0;
         self.mark_dirty();
     }
 

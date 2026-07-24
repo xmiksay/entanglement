@@ -89,6 +89,33 @@ impl App {
         }
     }
 
+    /// Page the profile-picker selection forward by `n`, clamping at the last
+    /// profile (no wrap, unlike [`profile_picker_next`][Self::profile_picker_next]).
+    pub fn profile_picker_page_down(&mut self, n: usize) {
+        if self.available_profiles.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.profile_picker_state.selected() {
+            let last = self.available_profiles.len() - 1;
+            self.profile_picker_state
+                .select(Some((selected + n).min(last)));
+            self.mark_dirty();
+        }
+    }
+
+    /// Page the profile-picker selection backward by `n`, clamping at the
+    /// first profile.
+    pub fn profile_picker_page_up(&mut self, n: usize) {
+        if self.available_profiles.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.profile_picker_state.selected() {
+            self.profile_picker_state
+                .select(Some(selected.saturating_sub(n)));
+            self.mark_dirty();
+        }
+    }
+
     /// Advance the active session to the next agent in the Tab cycle ring
     /// (`mode: primary` only, #322). When the current agent is off-ring — an
     /// `all`-mode agent picked via the Ctrl+A picker — land on the first ring
@@ -153,6 +180,20 @@ impl App {
 
     pub fn sessions_modal_prev(&mut self) {
         self.sessions.modal_prev();
+        self.mark_dirty();
+    }
+
+    /// Page the sessions-modal selection forward by `n`, clamping at the last
+    /// session (no wrap).
+    pub fn sessions_modal_page_down(&mut self, n: usize) {
+        self.sessions.modal_page_down(n);
+        self.mark_dirty();
+    }
+
+    /// Page the sessions-modal selection backward by `n`, clamping at the
+    /// first session.
+    pub fn sessions_modal_page_up(&mut self, n: usize) {
+        self.sessions.modal_page_up(n);
         self.mark_dirty();
     }
 
@@ -361,6 +402,44 @@ impl App {
         }
     }
 
+    /// Page the model-picker selection forward by `n`, clamping at the last
+    /// model across all provider groups (no wrap, unlike
+    /// [`model_picker_next`][Self::model_picker_next]).
+    pub fn model_picker_page_down(&mut self, n: usize) {
+        let total_models: usize = self
+            .available_models
+            .iter()
+            .map(|(_, models)| models.len())
+            .sum();
+        if total_models == 0 {
+            return;
+        }
+        if let Some(selected) = self.model_picker_state.selected() {
+            let last = total_models - 1;
+            self.model_picker_state
+                .select(Some((selected + n).min(last)));
+            self.mark_dirty();
+        }
+    }
+
+    /// Page the model-picker selection backward by `n`, clamping at the first
+    /// model.
+    pub fn model_picker_page_up(&mut self, n: usize) {
+        let total_models: usize = self
+            .available_models
+            .iter()
+            .map(|(_, models)| models.len())
+            .sum();
+        if total_models == 0 {
+            return;
+        }
+        if let Some(selected) = self.model_picker_state.selected() {
+            self.model_picker_state
+                .select(Some(selected.saturating_sub(n)));
+            self.mark_dirty();
+        }
+    }
+
     pub fn showing_resume_modal(&self) -> bool {
         self.showing_resume_modal
     }
@@ -422,6 +501,29 @@ impl App {
                 selected - 1
             };
             self.resume_state.select(Some(prev));
+        }
+    }
+
+    /// Page the resume-modal selection forward by `n`, clamping at the last
+    /// resumable session (no wrap).
+    pub fn resume_page_down(&mut self, n: usize) {
+        if self.available_sessions.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.resume_state.selected() {
+            let last = self.available_sessions.len() - 1;
+            self.resume_state.select(Some((selected + n).min(last)));
+        }
+    }
+
+    /// Page the resume-modal selection backward by `n`, clamping at the first
+    /// resumable session.
+    pub fn resume_page_up(&mut self, n: usize) {
+        if self.available_sessions.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.resume_state.selected() {
+            self.resume_state.select(Some(selected.saturating_sub(n)));
         }
     }
 

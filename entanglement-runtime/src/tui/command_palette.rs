@@ -98,6 +98,28 @@ impl CommandPalette {
         self.state.select(Some(prev));
     }
 
+    /// Page the highlight forward by `n`, clamping at the last filtered
+    /// command. Unlike [`select_next`][Self::select_next] (which wraps), a page
+    /// past the end stays on the last item.
+    pub fn page_down(&mut self, n: usize) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let last = self.filtered.len() - 1;
+        let current = self.state.selected().unwrap_or(0);
+        self.state.select(Some((current + n).min(last)));
+    }
+
+    /// Page the highlight backward by `n`, clamping at the first filtered
+    /// command.
+    pub fn page_up(&mut self, n: usize) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let current = self.state.selected().unwrap_or(0);
+        self.state.select(Some(current.saturating_sub(n)));
+    }
+
     pub fn execute_selected(&mut self) -> Option<Command> {
         self.selected().cloned().inspect(|_| {
             self.hide();
@@ -150,5 +172,32 @@ mod tests {
         let cmd = palette.execute_selected();
         assert_eq!(cmd, Some(Command::Help));
         assert!(!palette.visible());
+    }
+
+    #[test]
+    fn page_down_clamps_at_last_command() {
+        let mut palette = CommandPalette::new();
+        palette.show();
+        let last = palette.filtered_commands().len() - 1;
+        palette.page_down(1000);
+        assert_eq!(palette.state().selected(), Some(last));
+    }
+
+    #[test]
+    fn page_up_clamps_at_first_command() {
+        let mut palette = CommandPalette::new();
+        palette.show();
+        palette.select_next();
+        palette.page_up(1000);
+        assert_eq!(palette.state().selected(), Some(0));
+    }
+
+    #[test]
+    fn page_down_on_empty_filter_is_a_noop() {
+        let mut palette = CommandPalette::new();
+        palette.show();
+        palette.set_query("zzzzz-no-match".to_string());
+        palette.page_down(8);
+        assert_eq!(palette.state().selected(), None);
     }
 }

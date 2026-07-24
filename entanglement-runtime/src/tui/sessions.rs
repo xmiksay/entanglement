@@ -171,6 +171,29 @@ impl SessionRegistry {
         }
     }
 
+    /// Page the modal selection forward by `n`, clamping at the last session.
+    /// Unlike [`modal_next`][Self::modal_next] (which wraps), a page past the
+    /// end stays on the last session.
+    pub fn modal_page_down(&mut self, n: usize) {
+        if self.order.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.modal_state.selected() {
+            let last = self.order.len() - 1;
+            self.modal_state.select(Some((selected + n).min(last)));
+        }
+    }
+
+    /// Page the modal selection backward by `n`, clamping at the first session.
+    pub fn modal_page_up(&mut self, n: usize) {
+        if self.order.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.modal_state.selected() {
+            self.modal_state.select(Some(selected.saturating_sub(n)));
+        }
+    }
+
     /// Rebuilds a `SessionView` from persisted log records and switches to it,
     /// restoring the full visible transcript of a resumed session. The view is
     /// built fresh (seq-dedupe starts at 0) by folding `In(Prompt)` records as
