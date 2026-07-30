@@ -1183,10 +1183,25 @@ mod tests {
             explore.permission.for_tool("update_tasks"),
             Permission::Deny
         );
-        // Reference read-only agent (#116): its tool mask is the read trio only.
+        // #explore-ask-shell (ADR-0137): the read-only reference agent now
+        // advertises exec tools (`call`/`bash`/`rhai`) at `Ask` grade so a
+        // `git status`/`git diff` it needs isn't a hard dead-end — each call
+        // escalates to the user, never runs silently. File mutation stays
+        // hard-denied, and it still cannot spawn.
         assert!(explore.advertises_tool("read"));
+        assert!(explore.advertises_tool("glob"));
         assert!(explore.advertises_tool("grep"));
+        assert!(explore.advertises_tool("call"));
+        assert!(explore.advertises_tool("bash"));
+        assert!(explore.advertises_tool("rhai"));
+        assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
+        assert_eq!(explore.permission.for_tool("bash"), Permission::Ask);
+        assert_eq!(explore.permission.for_tool("call"), Permission::Ask);
+        assert_eq!(explore.permission.for_tool("rhai"), Permission::Ask);
+        assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);
+        assert_eq!(explore.permission.for_tool("write"), Permission::Deny);
         assert!(!explore.advertises_tool("edit"));
+        assert!(!explore.advertises_tool("write"));
         assert!(!explore.advertises_tool("agent_spawn"));
 
         // `debug`: a spawnable sub-agent with `build`'s own permissions (allow
