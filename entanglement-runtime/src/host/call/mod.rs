@@ -24,6 +24,7 @@
 
 mod format;
 mod output;
+mod validate;
 
 use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 use super::resolve_under_root;
@@ -239,6 +240,10 @@ impl CallTool {
     ) -> Result<String> {
         let parsed: CallInput = serde_json::from_str(input)
             .context("invalid input to call: expected {\"command\": string, ...}")?;
+        // Fail fast (with a fix) when `command` is a whole shell line rather than
+        // a bare executable — otherwise `spawn()` fails with an opaque ENOENT and
+        // the model loops the same malformed call (the PR-#446-review failure).
+        validate::check_no_shell(&parsed.command, &parsed.args)?;
         let secs = parsed.timeout.unwrap_or(120);
         let dur = std::time::Duration::from_secs(secs.min(MAX_CALL_TIMEOUT_SECONDS));
 
