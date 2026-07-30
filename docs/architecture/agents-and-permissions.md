@@ -337,7 +337,7 @@ below realize one model:
   | --- | --- | --- | --- | --- |
   | `build` (default) | primary | none — every registered tool exists | `default: allow` — everything Allow | may spawn `explore`/`debug` |
   | `plan` | primary | `read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, update_plan, propose_plan` — no edit/write/exec | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `update_plan: allow` | may spawn |
-  | `explore` | subagent | `read, glob, grep` | `default: deny`; read triad Allow | cannot spawn |
+  | `explore` | subagent | `read, glob, grep, call, bash, rhai` | `default: deny`; read triad Allow, exec triad at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
 
   Three cross-cutting facts complete the picture: **(1)** `bash`/`bash_output`
@@ -729,4 +729,6 @@ below realize one model:
   mask/permission decision, so the leaf's gate is authoritative regardless of a
   dropped `SessionStarted` (ancestors self-heal via their own spawn `ToolExec`s).
   And the residual-unknown fallback flips **fail-closed**: an unseen session resolves
+  to `Deny` (`permission_for`) and to *masked* (`tool_masked`) — degraded but safe.
+ps **fail-closed**: an unseen session resolves
   to `Deny` (`permission_for`) and to *masked* (`tool_masked`) — degraded but safe.
