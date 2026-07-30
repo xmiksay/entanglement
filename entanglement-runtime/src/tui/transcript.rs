@@ -101,9 +101,17 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
             }
 
             lines.push(Line::from(""));
+            // The three approval scopes (#174): `y` once, `s` for the rest of
+            // the session, `a` persisted to the grants file. All three dispatch
+            // in `event_loop`; the labels must surface them or the shortcuts read
+            // as missing. The `[d]` directory variant (read-only triad) follows.
             let mut footer = vec![
                 Span::styled("[y]", Style::default().fg(Color::Green).bold()),
                 Span::raw(" approve  "),
+                Span::styled("[s]", Style::default().fg(Color::Green).bold()),
+                Span::raw(" approve session  "),
+                Span::styled("[a]", Style::default().fg(Color::Green).bold()),
+                Span::raw(" approve always  "),
             ];
             // `[d]` (#486, ADR-0126) only makes sense for the read-only triad
             // (`read`/`grep`/`glob`) — a `SessionDir` grant on any other tool

@@ -214,6 +214,16 @@ pub(crate) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
     if let Some(arg) = orchestration_primary_arg(tool, &value) {
         return Some(arg);
     }
+    // MCP tools (`mcp__<server>__<tool>`) carry no path/command and aren't in
+    // the orchestration table, so without this they'd render a bare namespaced
+    // name with no hint of what the call is doing. Surface the first scalar
+    // argument — the dominant shape for MCP `tools/call` inputs (e.g. a chess
+    // move string) — so the header reads like every other tool's primary arg.
+    if tool.starts_with("mcp__") {
+        if let Some(scalar) = first_scalar(&value) {
+            return Some(scalar);
+        }
+    }
     value.get("pattern")?.as_str().map(String::from)
 }
 
@@ -359,6 +369,22 @@ fn truncate_to_width(s: &str, max: usize) -> String {
     out
 }
 
+/// The first scalar value in a JSON object, rendered as a string — the
+/// readable hint for an MCP `tools/call` whose input shape we don't know.
+/// Skips nested objects/arrays so the hint stays one line.
+fn first_scalar(value: &serde_json::Value) -> Option<String> {
+    let obj = value.as_object()?;
+    for (_k, v) in obj {
+        match v {
+            serde_json::Value::String(s) => return Some(truncate_to_width(s, 60)),
+            serde_json::Value::Number(n) => return Some(n.to_string()),
+            serde_json::Value::Bool(b) => return Some(b.to_string()),
+            _ => continue,
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,5 +488,41 @@ mod tests {
     #[test]
     fn malformed_input_yields_none() {
         assert_eq!(tool_primary_arg("ask_user", "not json"), None);
+    }
+
+    #[test]
+    fn mcp_tool_primary_arg_returns_first_scalar() {
+        // An MCP tool call's input shape is server-defined, so the header surfaces
+        // the first scalar argument rather than a bare `mcp__<server>__<tool>` name.
+        assert_eq!(
+            tool_primary_arg("mcp__chess__makemove", r#"{"move":"e2e4"}"#).as_deref(),
+            Some("e2e4")
+        );
+    }
+
+    #[test]
+    fn mcp_tool_primary_arg_truncates_long_scalar() {
+        let long = "x".repeat(80);
+        let input = format!(r#"{{"move":"{long}"}}"#);
+        let arg = tool_primary_arg("mcp__chess__makemove", &input).expect("primary arg");
+        assert!(arg.contains('…'), "long MCP scalar must truncate: {arg:?}");
+    }
+
+    #[test]
+    fn mcp_tool_with_no_scalar_yields_none() {
+        assert_eq!(
+            tool_primary_arg("mcp__chess__board", r#"{"state":{}}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn mcp_tool_fallback_does_not_intercept_known_tools() {
+        // `read` must still win over the MCP arm (the MCP arm is only reached when
+        // all earlier branches return None).
+        assert_eq!(
+            tool_primary_arg("read", r#"{"path":"src/a.rs"}"#).as_deref(),
+            Some("src/a.rs")
+        );
     }
 }
