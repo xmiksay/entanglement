@@ -1,5 +1,5 @@
 use anyhow::Result;
-use entanglement_core::{ApprovalScope, Holly, InMsg, SessionId};
+use entanglement_core::{ApprovalScope, Holly, InMsg};
 use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use tracing::debug;
 
@@ -626,17 +626,11 @@ async fn send_show(app: &App, holly: &Holly) {
 }
 
 /// Send an [`InMsg::Approve`] with the chosen [`ApprovalScope`] (#174) and clear
-/// the prompt. Captures a `propose_plan` handoff *before* approving clears the
-/// pending request — accepting a plan mints a fresh root `build` session whose
-/// first message is the plan (#141, ADR-0042; zero new protocol surface, the
-/// handoff is head policy). Scope is inert for `propose_plan` (the runtime
-/// records grants only on the generic tool path), so all three keys route here.
+/// the prompt. Scope is inert for `propose_plan` (the runtime records grants
+/// only on the generic tool path); the sponsored-build handoff is now runtime
+/// policy (ADR-0138), so the head just forwards the approval.
 async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: ApprovalScope) {
     let pending = app.pending_tool_request().cloned();
-    let handoff = pending.as_ref().and_then(|(_, tool, input)| {
-        (tool == crate::tool_names::PROPOSE_PLAN_TOOL)
-            .then(|| crate::propose_plan::parse_plan(input))
-    });
     let _ = holly
         .send(InMsg::Approve {
             session: app.active_session_id().clone(),
@@ -651,9 +645,6 @@ async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: 
     // call was ever approved.
     if let Some((_, tool, _)) = &pending {
         record_approved(app, tool, scope);
-    }
-    if let Some(plan) = handoff {
-        handoff_accepted_plan(app, holly, plan).await;
     }
 }
 
@@ -679,33 +670,6 @@ fn record_rejected(app: &mut App, tool: &str, reason: &Option<String>) {
         None => format!("✗ rejected {tool}"),
     };
     app.record_status("approval", message);
-}
-
-/// Perform the plan-acceptance handoff (#141, ADR-0042): mint a fresh **root**
-/// `build` session whose first user message is the accepted plan, then switch the
-/// view to it. Modelled as head policy — no new protocol surface — so pipe/WS
-/// heads implement the identical recipe. The build session is a root (not a child
-/// of the plan session) so it is never clamped to plan's read-only tool set nor
-/// charged against the plan root's spawn budget; accept is a transfer of authority
-/// *from the user*.
-async fn handoff_accepted_plan(app: &mut App, holly: &Holly, plan: String) {
-    let new_session = SessionId::new_uuid();
-    // Lazy session creation: SetAgent on a fresh id starts a root session under
-    // the requested profile (holly.rs); the Prompt then runs its first turn.
-    let _ = holly
-        .send(InMsg::SetAgent {
-            session: new_session.clone(),
-            agent: crate::propose_plan::HANDOFF_PROFILE.to_string(),
-        })
-        .await;
-    let text = crate::propose_plan::wrap_plan(&plan);
-    let _ = holly
-        .send(InMsg::prompt(new_session.clone(), text.clone()))
-        .await;
-    // Adopt the fresh id head-side and switch to it, then mirror the first user
-    // message locally (the engine never echoes `InMsg::Prompt` as an `OutEvent`).
-    app.adopt_session(new_session);
-    app.record_user_message(text);
 }
 
 /// Runs a `!bash` passthrough command head-side and injects the output into the
@@ -738,7 +702,7 @@ async fn run_bash_passthrough(app: &mut App, command: &str) {
 mod tests {
     use super::*;
     use crate::tui::session_view::TranscriptEntry;
-    use entanglement_core::{EngineConfig, OutEvent};
+    use entanglement_core::{EngineConfig, OutEvent, SessionId};
 
     fn engine() -> Holly {
         Holly::spawn(EngineConfig::default())

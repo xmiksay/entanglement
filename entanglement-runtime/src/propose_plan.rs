@@ -1,4 +1,5 @@
-//! `propose_plan` — the plan agent's *finalize* step (#141, ADR-0042).
+//! `propose_plan` — the plan agent's *finalize* step (#141, ADR-0042, amended
+//! by ADR-0138).
 //!
 //! `update_plan` (#140) records working snapshots; `propose_plan` asks the user
 //! to **accept** a finished plan. Acceptance rides the existing tool-approval
@@ -7,25 +8,30 @@
 //! the `Ask` path unconditionally**. A permission profile can never `Allow` it,
 //! because user approval *is* the tool's semantics.
 //!
-//! - **Approve** → [`run_propose_plan`] replies `ToolOutput("plan accepted by
-//!   the user")`, so the plan agent learns the outcome and can end its turn. The
-//!   working plan was already surfaced by the agent's `update_plan` snapshots
-//!   (#231, ADR-0049) — the engine holds no plan state to record. The head then
-//!   performs the *handoff*: mint a fresh root `build` session whose first user
-//!   message is the plan (see [`wrap_plan`]). The handoff is **head policy** —
-//!   zero new protocol surface — so pipe/WS heads implement the same recipe
-//!   (ADR-0042).
+//! - **Approve** → [`run_propose_plan`] spawns a **sponsored** `build` child of
+//!   the plan session (ADR-0138): a child with a parent-child link (so the
+//!   result flows back and the plan agent can cycle) but whose permission
+//!   resolution stops at the child — it runs with `build`'s own write-tool
+//!   permissions, no ancestor clamp. The plan agent parks on `WaitingAgent`
+//!   (ADR-0139) while the build runs; the build's answer folds back as the
+//!   `propose_plan` tool result, so the plan agent has the implementation
+//!   outcome in context and can revise + re-propose (cycle). The build child
+//!   sees the accepted plan in its outline via an `OutEvent::Plan` snapshot
+//!   (B6).
 //! - **Reject + reason** → the existing rejection fold-back (`tool
 //!   \`propose_plan\` rejected: <reason>`); the model revises and re-proposes in
 //!   the same turn, no new code.
 //!
-//! The build session is a fresh **root**, not a child of the plan session: a
-//! parent link would clamp build to plan's read-only tool set (#116) and drain
-//! the plan root's spawn budget (ADR-0023), and accept is a transfer of authority
-//! *from the user* — correctly modeled as a root (ADR-0042).
+//! The build session is a **sponsored child** of plan, not a fresh root (the
+//! pre-ADR-0138 shape): a parent link would historically clamp `build` to
+//! `plan`'s read-only tool set (ADR-0024) and drain the plan root's spawn
+//! budget (ADR-0023). Sponsorship exempts it from both — authorization is user
+//! plan approval, not inheritance — while preserving the link the cycle needs.
 
-use entanglement_core::{AgentProfile, AgentState, Holly, OutEvent, SessionId, ToolSpec};
+use entanglement_core::{AgentProfile, AgentState, Holly, InMsg, OutEvent, SessionId, ToolSpec};
+use tokio::sync::broadcast::Receiver;
 
+use crate::agent_poll::AgentRegistry;
 use crate::pending::{self, PendingDecisions};
 use crate::seam;
 use crate::tool_names::PROPOSE_PLAN_TOOL;
@@ -108,16 +114,32 @@ pub fn wrap_plan(plan: &str) -> String {
 /// than racing a per-task broadcast subscription that could lag and drop it. A
 /// `Stop` while parked unwinds silently: core's turn cancels on the same `Stop`,
 /// so no `ToolResult` is owed.
+///
+/// On **Approve**, launches the pre-resolved sponsored `build` `child`
+/// (ADR-0138): the tool executor already ran the SpawnGuard sponsor check and
+/// recorded the parent link, so this function only sends the `InMsg::Spawn`,
+/// parks the plan session on `WaitingAgent` (ADR-0139), and folds the build's
+/// answer back as the `propose_plan` tool result. The child runs with
+/// `build`'s own write-tool permissions (no ancestor clamp — authorization is
+/// user plan approval).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_propose_plan(
     holly: Holly,
     pending: PendingDecisions,
+    registry: AgentRegistry,
+    events_rx: Receiver<OutEvent>,
     session: SessionId,
     request_id: String,
     input: String,
+    child: SessionId,
 ) {
     // Register before emitting so the inbound router can never resolve the
     // decision ahead of this waiter (#156).
     let rx = pending.register(&session, &request_id);
+
+    // Parse the plan up front: the tool input is moved into the ToolRequest
+    // emit below, but the plan is needed only on the Approve branch.
+    let plan = parse_plan(&input);
 
     // A standard `ToolRequest` — the head renders the usual approve/reject prompt.
     // Mints a fresh per-session seq (#157) rather than reusing the `ToolExec` seq.
@@ -132,18 +154,9 @@ pub async fn run_propose_plan(
 
     match pending::await_decision(rx).await {
         seam::Decision::Approve { .. } => {
-            set_thinking(&holly, &session);
-            // Tell the model the plan was accepted so it can end its turn; the
-            // engine holds no plan state to record (#231, ADR-0049). The head
-            // performs the fresh-session handoff (ADR-0042) from the tool
-            // input — no new protocol surface.
-            seam::reply(
-                &holly,
-                session,
-                request_id,
-                "plan accepted by the user".to_string(),
-            )
-            .await;
+            // Launch the sponsored build child (ADR-0138).
+            launch_sponsored_build(holly, registry, events_rx, session, request_id, plan, child)
+                .await;
         }
         seam::Decision::Reject { reason } => {
             set_thinking(&holly, &session);
@@ -157,6 +170,82 @@ pub async fn run_propose_plan(
         // `propose_plan` request id.
         seam::Decision::Stop | seam::Decision::Answer { .. } => {}
     }
+}
+
+/// Launch the sponsored `build` `child` of the plan `session`, park until it
+/// finishes, and fold its answer back as the `propose_plan` tool result
+/// (ADR-0138). The `child` id and its sponsored parent link were already
+/// resolved by the tool executor's single-threaded loop (so the SpawnGuard
+/// mutation stays race-free); this function owns the async half — sending the
+/// `InMsg::Spawn`, parking the plan session on `WaitingAgent` (ADR-0139), and
+/// folding the answer back. Emits an `OutEvent::Plan` snapshot for the build
+/// child so it sees the accepted plan in its outline (B6).
+async fn launch_sponsored_build(
+    holly: Holly,
+    registry: AgentRegistry,
+    mut events_rx: Receiver<OutEvent>,
+    session: SessionId,
+    request_id: String,
+    plan: String,
+    child: SessionId,
+) {
+    let prompt = wrap_plan(&plan);
+    // Register the child in the agent-poll registry *before* sending Spawn so a
+    // poll can never precede the handle (mirrors `launch` in subagent.rs).
+    let (status_tx, started) = registry.register(child.clone());
+
+    if holly
+        .send(InMsg::Spawn {
+            session: child.clone(),
+            parent: Some(session.clone()),
+            predecessor: None,
+            agent: HANDOFF_PROFILE.to_string(),
+            prompt: prompt.clone(),
+        })
+        .await
+        .is_err()
+    {
+        registry.forget(&child);
+        set_thinking(&holly, &session);
+        seam::reply(
+            &holly,
+            session,
+            request_id,
+            "sponsored build spawn failed: engine inbox closed".to_string(),
+        )
+        .await;
+        return;
+    }
+
+    // B6: surface the accepted plan to the build child as an `OutEvent::Plan`
+    // snapshot, so its outline renders the plan it's implementing.
+    holly.emit_for_session(&child, |seq| OutEvent::Plan {
+        session: child.clone(),
+        seq,
+        content: plan.clone(),
+    });
+
+    // The plan session parks on the child's result — surface that as a distinct
+    // state (ADR-0139).
+    holly.emit_status(&session, AgentState::WaitingAgent);
+
+    // Watch the child's event stream and accumulate its answer.
+    let answer = crate::subagent::collect_child_answer(&mut events_rx, &child).await;
+    let elapsed = started.elapsed();
+    let _ = status_tx.send(crate::agent_poll::AgentStatus::Complete {
+        answer: answer.clone(),
+        elapsed,
+    });
+
+    // Fold the build's answer back as the propose_plan tool result, so the plan
+    // agent has the implementation outcome in context and can revise +
+    // re-propose (cycle, ADR-0138).
+    set_thinking(&holly, &session);
+    let output = format!(
+        "build completed in {:.1}s:\n\n{answer}",
+        elapsed.as_secs_f64()
+    );
+    seam::reply(&holly, session, request_id, output).await;
 }
 
 fn set_thinking(holly: &Holly, session: &SessionId) {

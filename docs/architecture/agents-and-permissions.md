@@ -558,7 +558,7 @@ below realize one model:
   `update_plan: allow` (authoring isn't an approval prompt) and stays physically
   read-only (`tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user,
   load_skill, update_plan, propose_plan]`), a clamp its spawned children inherit.
-- **Plan acceptance — `propose_plan` (✅ #141, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)):**
+- **Plan acceptance — `propose_plan` (✅ #141, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md), amended by [ADR-0138](../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)):**
   the plan agent's *finalize* step (`update_plan` stays for working snapshots). A
   runtime-owned tool `propose_plan { plan }`, advertised only to a profile that
   explicitly allowlists it (via the `profile_tool_specs` seam) — the same
@@ -568,12 +568,20 @@ below realize one model:
   as `ask_user`) and **force-parks it on the `Ask` path unconditionally** — a
   permission profile can never `Allow` it, since user approval *is* the tool's
   semantics. A standard `OutEvent::ToolRequest` reaches the head. **Approve** →
-  reply `ToolOutput("plan accepted by the user")` (the engine holds no plan state
-  to record; the working plan was already surfaced via `update_plan`), and the head
-  performs the **handoff** from the tool input (see §5c). **Reject + reason** → the
-  existing fold-back (`tool \`propose_plan\` rejected: <reason>`); the model revises
-  and re-proposes in the same turn. One-shot heads (`run`/`pipe`) can't park an
-  interactive approval, so they auto-reject with a "non-interactive head" reason.
+  spawns a **sponsored** `build` child of the plan session (ADR-0138): the
+  `SpawnGuard` mutation (sponsor check + `record_sponsored_start`) happens in the
+  tool executor's single-threaded loop before the detached task, so the child is
+  marked a permission root — its own profile stands, no ancestor clamp. The plan
+  text reaches the child via `wrap_plan` as its first prompt; the child also
+  receives an `OutEvent::Plan` snapshot so its outline renders the plan. The plan
+  session parks on `WaitingAgent` (ADR-0139) while the build runs; the build's
+  answer folds back as the `propose_plan` tool result, enabling plan/build
+  cycling. **Reject + reason** → the existing fold-back (`tool
+  \`propose_plan\` rejected: <reason>`); the model revises and re-proposes in the
+  same turn. One-shot heads (`run`/`pipe`) can't park an interactive approval, so
+  they auto-reject with a "non-interactive head" reason. The pre-ADR-0138
+  fresh-root head-policy handoff is deleted — all heads get the sponsored-build
+  behavior from the runtime.
 - **System-prompt assembly (✅ #113, [ADR-0035](../adr/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five

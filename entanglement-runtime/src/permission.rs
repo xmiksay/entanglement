@@ -129,6 +129,11 @@ pub fn effective_permission(
 /// session's own profile stands; `Some(id)` ⇒ that ancestor clamped it down.
 /// Split from [`effective_permission`] so the deciding source is unit-testable
 /// without capturing the trace it feeds.
+///
+/// A **sponsored child** (ADR-0138) is a permission root despite having a
+/// parent link: its authorization is user plan approval, not the ancestor
+/// chain, so the walk stops at the child and its own profile stands. This is
+/// what lets a `build` child of a read-only `plan` session run write tools.
 fn resolve_with_source(
     active: &HashMap<SessionId, AgentProfile>,
     guard: &SpawnGuard,
@@ -138,6 +143,11 @@ fn resolve_with_source(
     workdir: Option<&str>,
 ) -> (Permission, Option<SessionId>) {
     let mut perm = permission_for(active, session, tool, arg, workdir);
+    // A sponsored child (ADR-0138) is a permission root: no ancestor walk, no
+    // clamp. Authorization came from user plan approval, not inheritance.
+    if guard.is_sponsored(session) {
+        return (perm, None);
+    }
     let mut source: Option<SessionId> = None;
     let mut current = session.clone();
     // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
@@ -145,6 +155,18 @@ fn resolve_with_source(
     while visited.insert(current.clone()) {
         match guard.parent_of(&current) {
             Some(parent) => {
+                // A sponsored ancestor is itself a permission root — its own
+                // ancestors don't clamp this sub-tree either. Stop the walk at
+                // it, the same way a plain root's `None` parent does.
+                if guard.is_sponsored(&parent) {
+                    let clamped =
+                        min_permission(perm, permission_for(active, &parent, tool, arg, workdir));
+                    if clamped != perm {
+                        source = Some(parent.clone());
+                    }
+                    perm = clamped;
+                    break;
+                }
                 let clamped =
                     min_permission(perm, permission_for(active, &parent, tool, arg, workdir));
                 // Only a *strictly* lower ancestor changes the outcome (ties keep
@@ -172,6 +194,12 @@ fn resolve_with_source(
 /// this fires only for a genuinely-unknown session (matching the [`permission_for`]
 /// `Deny` fallback).
 ///
+/// A **sponsored child** (ADR-0138) is exempt from the ancestor mask walk — its
+/// advertised set is its own profile's (plus any sponsored ancestor's, since a
+/// sponsored sub-tree is itself a permission root). This is what lets a `build`
+/// child of a read-only `plan` session advertise `edit`/`write`/`bash` — without
+/// the exemption, the plan ancestor's read-only mask would erase them.
+///
 /// Orthogonal to permission: this decides a tool's *existence*, the `resolve`
 /// grade decides `Allow`/`Ask`/`Deny` among the tools that survive here.
 pub fn tool_masked(
@@ -181,6 +209,15 @@ pub fn tool_masked(
     tool: &str,
 ) -> bool {
     let mut current = session.clone();
+    // A sponsored session is a permission root (ADR-0138): only its own (and
+    // any sponsored ancestor's) advertised set masks it, not the chain above.
+    if guard.is_sponsored(&current) {
+        match active.get(&current) {
+            Some(profile) => return !profile.advertises_tool(tool),
+            // Unseen sponsored session ⇒ fail-closed (#156).
+            None => return true,
+        }
+    }
     // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
     let mut visited = HashSet::new();
     while visited.insert(current.clone()) {
@@ -191,7 +228,20 @@ pub fn tool_masked(
             None => return true,
         }
         match guard.parent_of(&current) {
-            Some(parent) => current = parent,
+            Some(parent) => {
+                // A sponsored ancestor (ADR-0138): check its mask too (it
+                // clamps this sub-tree) but stop the walk above it.
+                if guard.is_sponsored(&parent) {
+                    match active.get(&parent) {
+                        Some(profile) if !profile.advertises_tool(tool) => return true,
+                        // Unseen sponsored ancestor ⇒ fail-closed.
+                        None => return true,
+                        _ => {}
+                    }
+                    return false;
+                }
+                current = parent;
+            }
             None => break,
         }
     }
@@ -256,6 +306,14 @@ pub(crate) fn permission_chain(
 ) -> Vec<PermissionProfile> {
     let mut chain = Vec::new();
     let mut current = session.clone();
+    // A sponsored child (ADR-0138) is a permission root — its own profile
+    // stands, no ancestor walk.
+    if guard.is_sponsored(&current) {
+        if let Some(profile) = active.get(&current) {
+            chain.push(profile.permission.clone());
+        }
+        return chain;
+    }
     // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
     let mut visited = HashSet::new();
     while visited.insert(current.clone()) {
@@ -263,7 +321,18 @@ pub(crate) fn permission_chain(
             chain.push(profile.permission.clone());
         }
         match guard.parent_of(&current) {
-            Some(parent) => current = parent,
+            Some(parent) => {
+                // A sponsored ancestor (ADR-0138) is a permission root: include
+                // its own profile (it clamps this sub-tree) but stop the walk
+                // above it.
+                if guard.is_sponsored(&parent) {
+                    if let Some(profile) = active.get(&parent) {
+                        chain.push(profile.permission.clone());
+                    }
+                    break;
+                }
+                current = parent;
+            }
             None => break,
         }
     }
@@ -322,8 +391,17 @@ pub(crate) fn permission_for(
 /// pluggable tenant rule can never widen a child beyond its parent. The set
 /// matches the sessions [`effective_permission`] folds over, so the default
 /// profile resolver stays byte-identical.
+///
+/// A **sponsored child** (ADR-0138) is a permission root: the chain stops at
+/// it (no ancestors), and stops at any sponsored ancestor mid-walk — the
+/// sub-tree rooted at a sponsored session is authorized by user plan approval,
+/// not by the chain above it.
 pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<SessionId> {
     let mut chain = vec![session.clone()];
+    // A sponsored session is a permission root — no ancestors to clamp it.
+    if guard.is_sponsored(session) {
+        return chain;
+    }
     let mut visited = HashSet::new();
     visited.insert(session.clone());
     let mut current = session.clone();
@@ -331,6 +409,12 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
         match guard.parent_of(&current) {
             Some(parent) if visited.insert(parent.clone()) => {
                 chain.push(parent.clone());
+                // A sponsored ancestor is itself a permission root (ADR-0138):
+                // its own perms clamp this sub-tree, but the chain above it
+                // does not. Stop the walk at it.
+                if guard.is_sponsored(&parent) {
+                    break;
+                }
                 current = parent;
             }
             _ => break,
@@ -752,6 +836,85 @@ mod tests {
         assert_eq!(
             effective_permission(&active, &guard, &root, "edit", None, None),
             Permission::Allow
+        );
+    }
+
+    #[test]
+    fn sponsored_child_resolves_own_perms_ignoring_readonly_ancestor() {
+        // ADR-0138: a sponsored `build` child of a read-only `plan` session
+        // runs with its own profile's permissions — the ancestor clamp does
+        // not apply, since authorization is user plan approval, not
+        // inheritance. `edit` is Allow on the child and Ask on the parent; a
+        // plain child would clamp to Ask, a sponsored child stays Allow.
+        let plan = profile(
+            "plan",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
+        );
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+        );
+        let parent = SessionId::new("plan");
+        let child = SessionId::new("build");
+        let mut active = HashMap::new();
+        active.insert(parent.clone(), plan);
+        active.insert(child.clone(), build);
+
+        let mut guard = SpawnGuard::new();
+        guard.record_start(parent.clone(), None);
+        guard.record_sponsored_start(child.clone(), parent.clone());
+
+        // Sponsored: own profile stands, no ancestor clamp.
+        assert_eq!(
+            effective_permission(&active, &guard, &child, "edit", None, None),
+            Permission::Allow
+        );
+        assert_eq!(
+            resolve_with_source(&active, &guard, &child, "edit", None, None),
+            (Permission::Allow, None)
+        );
+        // `read` is Allow on both → stays Allow.
+        assert_eq!(
+            effective_permission(&active, &guard, &child, "read", None, None),
+            Permission::Allow
+        );
+        // The plan parent itself is unchanged (a root).
+        assert_eq!(
+            effective_permission(&active, &guard, &parent, "edit", None, None),
+            Permission::Ask
+        );
+    }
+
+    #[test]
+    fn non_sponsored_child_still_clamped_regression() {
+        // ADR-0024 regression: a plain (non-sponsored) child under a read-only
+        // parent is still clamped. Sponsorship is the *only* exemption.
+        let plan = profile(
+            "plan",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
+        );
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+        );
+        let parent = SessionId::new("plan");
+        let child = SessionId::new("build");
+        let mut active = HashMap::new();
+        active.insert(parent.clone(), plan);
+        active.insert(child.clone(), build);
+
+        let mut guard = SpawnGuard::new();
+        guard.record_start(parent.clone(), None);
+        guard.record_start(child.clone(), Some(parent.clone()));
+
+        // Plain child: ancestor clamp applies → edit clamps to Ask.
+        assert_eq!(
+            effective_permission(&active, &guard, &child, "edit", None, None),
+            Permission::Ask
         );
     }
 

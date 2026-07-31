@@ -495,17 +495,18 @@ pub fn spawn_tool_executor_with_policy(
                 }
                 // A `Stop` that lands while a batch is parked unwinds with no
                 // `ToolResult`/`ToolOutput` for its still-running calls (#448):
-                // core clears the parked turn state and emits this `Idle`
-                // without ever resolving them, so the #274 dedupe set above
-                // would otherwise leak their request ids for the rest of the
-                // session's life. Core only ever sends `Idle` on session start
-                // (before any `ToolExec`, so the set is already empty) or here
-                // on a `Stop` — never mid-turn — so dropping the session's
-                // whole set is exactly "no call is in flight any more", not an
-                // approximation.
+                // core clears the parked turn state and emits a terminal
+                // `Status` without ever resolving them, so the #274 dedupe set
+                // above would otherwise leak their request ids for the rest of
+                // the session's life. Core only ever sends `Idle` on session
+                // start (before any `ToolExec`, so the set is already empty) or
+                // — since ADR-0139 — `Done` on a `Stop` (never mid-turn), so
+                // dropping the session's whole set is exactly "no call is in
+                // flight any more", not an approximation. `Idle` is kept for
+                // the genuine start case; both states fold to the same cleanup.
                 Ok(OutEvent::Status {
                     session,
-                    state: AgentState::Idle,
+                    state: AgentState::Idle | AgentState::Done,
                     ..
                 }) => {
                     in_flight.remove(&session);
@@ -717,17 +718,50 @@ pub fn spawn_tool_executor_with_policy(
                             });
                         }
                         Intercept::ProposePlan => {
-                            // Approve just acks the model (no engine plan state,
-                            // #231); the head handles the fresh-`build`-session
-                            // handoff (head policy, no new protocol surface).
+                            // Approve spawns a sponsored `build` child of the
+                            // plan session (ADR-0138). The SpawnGuard mutation
+                            // (sponsor check + record) happens synchronously in
+                            // this single-threaded loop — race-free — and only
+                            // the resolved child id reaches the detached task.
+                            let child_events = holly.subscribe();
+                            let registry = registry.clone();
                             let pending = pending.clone();
                             let holly = holly.clone();
-                            tokio::spawn(async move {
-                                crate::propose_plan::run_propose_plan(
-                                    holly, pending, session, request_id, input,
-                                )
-                                .await;
-                            });
+                            // Bound the sponsored spawn (exempt from the per-root
+                            // fan-out cap, not from depth). A refusal folds back
+                            // as the tool result so the plan turn continues.
+                            let sponsored = match spawn_guard.try_sponsor_spawn(&session) {
+                                Ok(()) => {
+                                    let child = SessionId::new_uuid();
+                                    spawn_guard
+                                        .record_sponsored_start(child.clone(), session.clone());
+                                    Some(child)
+                                }
+                                Err(refusal) => {
+                                    let holly = holly.clone();
+                                    let sess = session.clone();
+                                    let rid = request_id.clone();
+                                    tokio::spawn(async move {
+                                        seam::reply(&holly, sess, rid, refusal).await;
+                                    });
+                                    None
+                                }
+                            };
+                            if let Some(child) = sponsored {
+                                tokio::spawn(async move {
+                                    crate::propose_plan::run_propose_plan(
+                                        holly,
+                                        pending,
+                                        registry,
+                                        child_events,
+                                        session,
+                                        request_id,
+                                        input,
+                                        child,
+                                    )
+                                    .await;
+                                });
+                            }
                         }
                         #[cfg(feature = "rhai")]
                         Intercept::Rhai => {
