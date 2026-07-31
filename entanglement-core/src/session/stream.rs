@@ -106,9 +106,11 @@ pub(super) async fn stream_round(
                         Some(SessionCmd::Stop) => {
                             tracing::debug!("turn interrupted during streaming");
                             drop(stream);
+                            // A cancelled turn is a completed interaction —
+                            // `Done`, not `Idle` (ADR-0139).
                             let _ = events.send(OutEvent::Status {
                                 session: session.clone(),
-                                state: AgentState::Idle,
+                                state: AgentState::Done,
                             });
                             return StreamedRound::Cancelled;
                         }

@@ -226,7 +226,10 @@ impl App {
     }
 
     pub fn tick_thinking(&mut self) {
-        let is_thinking = matches!(self.state(), AgentState::Thinking);
+        // The ship-cruise animation spins while the session is busy — generating
+        // (`Thinking`) or executing tools (`Working`) — but not while parked on
+        // an approval/question/sub-agent (ADR-0139).
+        let is_thinking = matches!(self.state(), AgentState::Thinking | AgentState::Working);
         match (self.thinking_since, is_thinking) {
             (None, true) => {
                 self.thinking_since = Some(Instant::now());

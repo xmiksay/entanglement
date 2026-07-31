@@ -54,10 +54,22 @@ impl std::fmt::Display for SessionId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentState {
-    /// Session is live but idle, waiting for the next prompt.
+    /// Session is live but idle, waiting for the next prompt. Only the
+    /// genuinely-never-run-yet state: emitted once at session start, and the
+    /// resting state everywhere else is [`Done`][AgentState::Done] (ADR-0139).
     Idle,
     /// Engine is actively reasoning / calling the model.
     Thinking,
+    /// A tool batch is parked (after `ToolExec` for all calls, before
+    /// `ToolResult`s resolve) — distinguishable from model-generation
+    /// [`Thinking`][AgentState::Thinking] so a head can show "running a
+    /// command" vs "LLM is generating" (ADR-0139).
+    Working,
+    /// Parked on a sub-agent result — the blocking `agent` tool, or a sponsored
+    /// build child spawned by an accepted `propose_plan` (ADR-0138). A
+    /// long-running build child otherwise looks identical to the plan agent
+    /// staring at the wall; this state makes the park visible (ADR-0139).
+    WaitingAgent,
     /// Engine emitted a tool request and is parked waiting for approval
     /// (`Approve`/`Reject`).
     WaitingApproval,
@@ -66,7 +78,9 @@ pub enum AgentState {
     /// [`WaitingApproval`][AgentState::WaitingApproval] (#160): a question is not
     /// a permission decision, and heads render the two differently.
     WaitingAnswer,
-    /// Last turn finished cleanly.
+    /// Last turn finished cleanly. The resting state after a turn ends or is
+    /// cancelled by `Stop` (ADR-0139) — the user prefers it over `Idle` so a
+    /// completed interaction is never rendered the same as never-run-yet.
     Done,
     /// Last turn ended with an error.
     Error,

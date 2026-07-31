@@ -47,7 +47,10 @@ fn describe(state: AgentState) -> &'static str {
         AgentState::WaitingAnswer => "waiting for answer",
         AgentState::Done => "turn complete",
         AgentState::Error => "turn failed",
-        AgentState::Idle | AgentState::Thinking => "",
+        AgentState::Idle
+        | AgentState::Thinking
+        | AgentState::Working
+        | AgentState::WaitingAgent => "",
     }
 }
 

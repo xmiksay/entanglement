@@ -58,7 +58,20 @@ pub(crate) async fn drive_turn(
         state: AgentState::Thinking,
     });
     match run_round(session, rx, s, events, stash, cfg).await {
-        RoundOutcome::Parked => {} // s.turn holds the pending batch
+        RoundOutcome::Parked => {
+            // The batch's `ToolExec`s have all been emitted and the turn is now
+            // parked on `ToolResult`s — distinguish this from model generation
+            // (`Thinking`) so a head can show "running a command" vs "LLM is
+            // generating" (ADR-0139). Covers both `Allow` tools (executing) and
+            // `Ask` tools (about to flip to `WaitingApproval`): the runtime's
+            // `WaitingApproval` emit lands just after this, so the user sees a
+            // brief flash of `Working` that correctly precedes the approval
+            // prompt.
+            let _ = events.send(OutEvent::Status {
+                session: session.clone(),
+                state: AgentState::Working,
+            });
+        }
         RoundOutcome::TurnEnded | RoundOutcome::Cancelled => s.turn = None,
     }
 }

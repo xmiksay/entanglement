@@ -26,7 +26,7 @@
 use std::collections::{HashMap, HashSet};
 
 use entanglement_core::{
-    AgentProfile, Holly, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec,
+    AgentProfile, AgentState, Holly, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec,
 };
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
@@ -50,12 +50,25 @@ const MAX_SPAWNS_PER_ROOT: usize = 16;
 /// (#76). Fed each `SessionStarted` (for the parent link) and consulted on every
 /// `agent_spawn`/`agent` call before a child is started. Lives in the tool executor's
 /// single-threaded event loop, so it needs no synchronization.
+///
+/// A **sponsored child** (ADR-0138) has a parent-child link but its permission
+/// resolution stops at the child — it runs with its own profile's permissions,
+/// no ancestor walk. Authorization is user approval of a plan (`propose_plan`
+/// accept), which spawns a `build` child of the read-only `plan` session.
+/// Sponsored spawns are exempt from `MAX_SPAWNS_PER_ROOT` (sequential,
+/// user-authorized) but still bounded by `MAX_SPAWN_DEPTH`.
 #[derive(Default)]
 pub struct SpawnGuard {
     /// child → parent, from `SessionStarted`. Absent or `None` ⇒ a root.
     parents: HashMap<SessionId, Option<SessionId>>,
     /// root → cumulative sub-agents spawned beneath it (never decremented).
     spawns_per_root: HashMap<SessionId, usize>,
+    /// Sessions spawned as **sponsored** (ADR-0138) — permission roots despite
+    /// having a parent link. Authorization is user plan approval, not the
+    /// ancestor chain, so [`crate::permission::effective_permission`] skips the
+    /// ancestor walk for these. Exempt from `MAX_SPAWNS_PER_ROOT` but not from
+    /// `MAX_SPAWN_DEPTH`.
+    sponsored: HashSet<SessionId>,
 }
 
 impl SpawnGuard {
@@ -72,6 +85,22 @@ impl SpawnGuard {
     /// child's ancestry to clamp its permissions to the parent chain (#77).
     pub fn parent_of(&self, session: &SessionId) -> Option<SessionId> {
         self.parents.get(session).cloned().flatten()
+    }
+
+    /// Record a sponsored spawn (ADR-0138): establishes the parent link and
+    /// marks `child` as a permission root, so [`effective_permission`][crate::permission::effective_permission]
+    /// resolves its own profile without walking ancestors. Called *before* the
+    /// `InMsg::Spawn` is sent so the link is in place by the time the child's
+    /// first `ToolExec` arrives.
+    pub fn record_sponsored_start(&mut self, child: SessionId, parent: SessionId) {
+        self.parents.insert(child.clone(), Some(parent));
+        self.sponsored.insert(child);
+    }
+
+    /// Whether `session` was spawned as a sponsored child (ADR-0138) — a
+    /// permission root despite having a parent link.
+    pub fn is_sponsored(&self, session: &SessionId) -> bool {
+        self.sponsored.contains(session)
     }
 
     /// Decide whether `parent` may spawn another sub-agent. On approval, charges
@@ -95,6 +124,26 @@ impl SpawnGuard {
             ));
         }
         *count += 1;
+        Ok(())
+    }
+
+    /// Decide whether `parent` may sponsor another sub-agent (ADR-0138).
+    /// Sponsored spawns are exempt from `MAX_SPAWNS_PER_ROOT` — they are
+    /// sequential and individually user-authorized (each `propose_plan`
+    /// approval spawns one build child), so a long plan/build cycle can't
+    /// exhaust the fan-out budget meant for unattended `agent_spawn` fan-out.
+    /// `MAX_SPAWN_DEPTH` still applies: a sponsored build nested three levels
+    /// deep still can't sponsor further. On approval records nothing — the
+    /// caller follows up with [`record_sponsored_start`] once the child id is
+    /// minted.
+    pub fn try_sponsor_spawn(&self, parent: &SessionId) -> Result<(), String> {
+        let child_depth = self.depth(parent) + 1;
+        if child_depth > MAX_SPAWN_DEPTH {
+            return Err(format!(
+                "sponsored spawn refused: max spawn depth ({MAX_SPAWN_DEPTH}) reached — \
+                 this sub-agent is too deeply nested to sponsor another."
+            ));
+        }
         Ok(())
     }
 
@@ -349,6 +398,11 @@ async fn launch(
             ),
         )
         .await;
+    } else {
+        // Blocking: the parent parks on the child's result — surface that as a
+        // distinct state so a head can show "waiting for sub-agent" instead of
+        // the ambiguous `Thinking` (ADR-0139).
+        holly.emit_status(&parent, AgentState::WaitingAgent);
     }
 
     // Keep accumulating the child's answer; publish it (with timing) for poll.
@@ -380,8 +434,10 @@ async fn launch(
 
 /// Watch the child's event stream, accumulating its assistant text until the
 /// child's turn finishes (`Done`). Returns the final answer, or an explanatory
-/// note when the child errored or produced nothing.
-async fn collect_child_answer(events: &mut Receiver<OutEvent>, child: &SessionId) -> String {
+/// note when the child errored or produced nothing. Public so the sponsored
+/// build launch in `propose_plan.rs` can reuse the exact same accumulation
+/// (ADR-0138).
+pub async fn collect_child_answer(events: &mut Receiver<OutEvent>, child: &SessionId) -> String {
     let mut text = String::new();
     let mut error: Option<String> = None;
     loop {
@@ -548,5 +604,58 @@ mod tests {
         let orphan = SessionId::new("orphan");
         // No `record_start`: depth 0, its own root — the spawn is allowed.
         assert!(guard.try_spawn(&orphan).is_ok());
+    }
+
+    #[test]
+    fn sponsored_spawn_records_parent_link_and_set() {
+        let mut guard = SpawnGuard::new();
+        let parent = SessionId::new("plan");
+        let child = SessionId::new("build");
+        guard.record_start(parent.clone(), None);
+        guard.record_sponsored_start(child.clone(), parent.clone());
+        assert_eq!(guard.parent_of(&child), Some(parent.clone()));
+        assert!(guard.is_sponsored(&child));
+        // The plan parent is not itself sponsored.
+        assert!(!guard.is_sponsored(&parent));
+    }
+
+    #[test]
+    fn try_sponsor_spawn_exceeds_depth_at_max() {
+        // root(0) → a(1) → b(2) → c(3): c is at MAX_SPAWN_DEPTH, so its
+        // sponsored spawn (which would be depth 4) is refused.
+        let (guard, ids) = guard_with_chain(&["root", "a", "b", "c"]);
+        let deepest = ids.last().unwrap();
+        let err = guard.try_sponsor_spawn(deepest).unwrap_err();
+        assert!(err.contains("max spawn depth"), "got: {err}");
+        // A shallower ancestor (depth 2 → child depth 3) is still allowed.
+        assert!(guard.try_sponsor_spawn(&ids[2]).is_ok());
+    }
+
+    #[test]
+    fn sponsored_spawns_exhaust_never_hit_fanout_cap() {
+        // N sequential sponsored spawns never trip MAX_SPAWNS_PER_ROOT —
+        // sponsorship is exempt from the fan-out budget (ADR-0138). Sponsoring
+        // far past the cap leaves the budget untouched, so plain spawns still
+        // succeed afterward.
+        let (mut guard, ids) = guard_with_chain(&["root"]);
+        for _ in 0..(MAX_SPAWNS_PER_ROOT + 5) {
+            assert!(
+                guard.try_sponsor_spawn(&ids[0]).is_ok(),
+                "sponsored spawns must not exhaust the fan-out budget"
+            );
+        }
+        // Sponsored spawns didn't charge the budget: a plain spawn still works.
+        assert!(
+            guard.try_spawn(&ids[0]).is_ok(),
+            "fan-out budget must be untouched by sponsored spawns"
+        );
+        // And exhausting it with plain spawns is still the ceiling for plain.
+        for _ in 1..MAX_SPAWNS_PER_ROOT {
+            guard.try_spawn(&ids[0]).unwrap();
+        }
+        let err = guard.try_spawn(&ids[0]).unwrap_err();
+        assert!(err.contains("per-root spawn budget"), "got: {err}");
+        // A sponsored spawn under an exhausted plain budget still succeeds.
+        assert!(guard.try_sponsor_spawn(&ids[0]).is_ok());
     }
 }

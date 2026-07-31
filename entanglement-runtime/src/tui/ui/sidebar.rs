@@ -63,6 +63,8 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
                 match view.state() {
                     AgentState::Idle => "idle",
                     AgentState::Thinking => "thinking",
+                    AgentState::Working => "working",
+                    AgentState::WaitingAgent => "waiting for agent",
                     AgentState::WaitingApproval => "waiting",
                     AgentState::WaitingAnswer => "waiting",
                     AgentState::Done => "done",

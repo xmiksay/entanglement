@@ -391,8 +391,10 @@ re-document them here):
   for these session-less queries) and `OutEvent::seq()` is `Option<u64>` (`None`
   for lifecycle/query events, so the real seq-`0` sentinel stays a distinct
   `Some(0)`). `AgentState::WaitingAnswer` marks a parked `ask_user` question
-  distinctly from `WaitingApproval`; every cancel path already acks with
-  `Status::Idle`. `msg_to_cmd` returns `Option<SessionCmd>` (log-and-drop) instead
+  distinctly from `WaitingApproval`; `Working` and `WaitingAgent` distinguish
+  tool execution and sub-agent parking from model generation (ADR-0139); a
+  cancelled turn acks with `Status::Done` (the resting state — `Idle` is
+  reserved for never-run-yet). `msg_to_cmd` returns `Option<SessionCmd>` (log-and-drop) instead
   of an `unreachable!` that would panic the whole supervisor. A wire-allowed
   `ReplayFrom { session, correlation_id, after_seq }` late-subscriber query is
   answered **out-of-core** by a runtime history responder (beside the persistence
