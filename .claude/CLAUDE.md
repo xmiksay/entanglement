@@ -189,7 +189,7 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
           | McpList | McpAdd | McpRemove
           | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status | AgentChanged | ModelChanged | GenerationChanged
-          | McpList | McpChanged | BashChanged
+          | McpList | McpChanged | BashChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
           | SkillActive | AmbiguousRetry | SearchResult
@@ -915,6 +915,27 @@ re-document them here):
   accumulator, and the stub `Llm` backends (`DummyLlm`/`EchoLlm`) report an
   honest `stop_reason` instead of bare `None`, since `None` is now
   load-bearing as "ambiguous, retry."
+- **Wire-visible LLM-endpoint throttle transitions** (#517,
+  [ADR-0141](../docs/adr/0141-wire-visible-throttle-transitions.md)): the
+  provider's per-endpoint resilience pool (ADR-0050/ADR-0111) was visible only
+  to the TUI, which polls `HttpClient::throttle_status()` directly — a stdio/
+  WS head saw an opaque `Thinking` stall for up to `rate_limit_max_elapsed`
+  (~15 min) under a 429. `ThrottleStatus` gains `next_request_in:
+  Option<Duration>` (the AIMD pacing gate's own next-slot countdown,
+  surfaced only while `penalized`), and a new
+  `HttpClient::throttle_statuses() -> Vec<ThrottleStatus>` snapshots every
+  endpoint (not just the most-throttled). `OutEvent::Throttle { endpoint,
+  throttled, in_flight, cap, retry_in_ms?, pacing_in_ms? }` joins the
+  protocol as an **engine-global, no-`seq`** lifecycle event (`session()` →
+  `None`, mirroring `McpChanged`/`BashChanged`) — per-endpoint, not
+  per-session, since the pool's whole point is that one throttled endpoint
+  never blocks another and many sessions can share one endpoint's budget.
+  `entanglement-runtime::throttle::spawn_throttle_responder` polls every
+  500ms and emits **only on a transition** (entering/leaving a 429 cool-down,
+  the pacing gate penalizing/relaxing, or clearing to rest), not every tick —
+  spawned and `.abort()`'d in `main.rs` alongside the other engine-global
+  runtime responders. `run --format text` renders it in full; `serve` relays
+  it like any other frame with no per-variant change needed.
 
 | Topic | Module |
 | --- | --- |

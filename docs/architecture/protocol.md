@@ -39,6 +39,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
          | BashChanged{enabled,grade?}   // bash/bash_output live-registered/unregistered, no seq; reply to BashEnable/BashDisable (#498, ADR-0133)
+         | Throttle{endpoint,throttled,in_flight,cap,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)

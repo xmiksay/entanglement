@@ -214,6 +214,28 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // Persisted provider-side web-search block (#481): already rendered
         // live via `ReasoningDelta`'s query/source lines — nothing new to show.
         OutEvent::SearchResult { .. } => {}
+        // LLM endpoint throttle transition (#517, ADR-0141): the wire-visible
+        // counterpart to the TUI's `throttle_status()` poll — this is the
+        // signal that reaches a non-TUI head, so it renders in full.
+        OutEvent::Throttle {
+            endpoint,
+            throttled,
+            in_flight,
+            cap,
+            retry_in_ms,
+            pacing_in_ms,
+        } => {
+            if *throttled {
+                let detail = match (retry_in_ms, pacing_in_ms) {
+                    (Some(ms), _) => format!("retry {:.1}s", *ms as f64 / 1000.0),
+                    (None, Some(ms)) => format!("pacing · next {:.1}s", *ms as f64 / 1000.0),
+                    (None, None) => "busy".to_string(),
+                };
+                writeln!(out, "⚠ {endpoint} throttled · {detail} · {in_flight}/{cap}")?
+            } else {
+                writeln!(out, "✓ {endpoint} throttle cleared")?
+            }
+        }
     }
     Ok(())
 }

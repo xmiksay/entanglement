@@ -239,11 +239,12 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// A compact one-line label for a throttled endpoint: `⚠ host throttled · retry
-/// Ns · in/cap` for an active 429/`Retry-After` cool-down, `pacing` when only
-/// the adaptive gate has slowed, or `busy` when just the in-flight cap is
-/// full. When a per-model cap (#521) is the binding constraint, the model id
-/// rides alongside the host so a saturated `GLM-4.7-Flash` slot doesn't read
-/// as a bare, unexplained endpoint-wide cap.
+/// Ns · in/cap` for an active 429/`Retry-After` cool-down, `pacing · next Ns`
+/// when only the adaptive gate has slowed (#517: the AIMD gate's next-slot
+/// countdown, previously computed but never surfaced), or `busy` when just the
+/// in-flight cap is full. When a per-model cap (#521) is the binding
+/// constraint, the model id rides alongside the host so a saturated
+/// `GLM-4.7-Flash` slot doesn't read as a bare, unexplained endpoint-wide cap.
 fn throttle_label(status: &entanglement_provider::ThrottleStatus) -> String {
     let host = short_host(&status.endpoint);
     let label = match &status.model {
@@ -257,7 +258,15 @@ fn throttle_label(status: &entanglement_provider::ThrottleStatus) -> String {
             let secs = remaining.as_millis().div_ceil(1000).max(1);
             format!("⚠ {label} throttled · retry {secs}s · {occupancy}")
         }
-        None if status.penalized => format!("⚠ {label} pacing · {occupancy}"),
+        None if status.penalized => match status.next_request_in {
+            Some(next) => {
+                format!(
+                    "⚠ {label} pacing · next {:.1}s · {occupancy}",
+                    next.as_secs_f64()
+                )
+            }
+            None => format!("⚠ {label} pacing · {occupancy}"),
+        },
         None => format!("⚠ {label} busy · {occupancy}"),
     }
 }
@@ -301,23 +310,36 @@ mod tests {
             backoff_remaining: Some(Duration::from_millis(7200)),
             penalized: true,
             model: None,
+            next_request_in: None,
         };
         assert_eq!(
             throttle_label(&parked),
             "⚠ api.z.ai throttled · retry 8s · 2/3"
         );
-        // Penalized pacing with no cool-down window.
+        // Penalized pacing with no cool-down window, and no live next-slot
+        // countdown (already elapsed) — falls back to the bare label (#517).
         let paced = ThrottleStatus {
             backoff_remaining: None,
             penalized: true,
+            next_request_in: None,
             ..parked.clone()
         };
         assert_eq!(throttle_label(&paced), "⚠ api.z.ai pacing · 2/3");
+        // Penalized pacing *with* a live next-slot countdown (#517).
+        let paced_with_countdown = ThrottleStatus {
+            next_request_in: Some(Duration::from_millis(1200)),
+            ..paced.clone()
+        };
+        assert_eq!(
+            throttle_label(&paced_with_countdown),
+            "⚠ api.z.ai pacing · next 1.2s · 2/3"
+        );
         // Only the in-flight cap is full (no 429, no penalty).
         let busy = ThrottleStatus {
             backoff_remaining: None,
             penalized: false,
             in_flight: 3,
+            next_request_in: None,
             ..parked.clone()
         };
         assert_eq!(throttle_label(&busy), "⚠ api.z.ai busy · 3/3");
@@ -328,6 +350,7 @@ mod tests {
             in_flight: 1,
             cap: 1,
             model: Some("glm-4.7-flash".to_string()),
+            next_request_in: None,
             ..parked
         };
         assert_eq!(

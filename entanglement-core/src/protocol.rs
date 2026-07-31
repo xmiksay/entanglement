@@ -1210,6 +1210,33 @@ pub enum OutEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         grade: Option<BashGrade>,
     },
+    /// An LLM endpoint's throttle posture changed (lifecycle event, no `seq`,
+    /// #517). The provider's per-endpoint resilience pool (`HttpClient`, ADR-0050/
+    /// ADR-0111) is **engine-global, not per-session** — many sessions can share
+    /// one endpoint, and one throttled endpoint never blocks another — so this
+    /// mirrors [`McpChanged`][OutEvent::McpChanged]/[`BashChanged`][OutEvent::BashChanged]'s
+    /// shape rather than naming a session. Emitted by the runtime's throttle
+    /// responder polling `HttpClient::throttle_statuses()` (it alone owns the
+    /// `HttpClient`), **only on a transition** — entering/leaving a 429 cool-down,
+    /// the adaptive pacing gate penalizing/relaxing, or clearing back to rest —
+    /// not on every poll tick, so a remote (stdio/WS) head isn't spammed while a
+    /// stall holds steady. `throttled` is `false` exactly when every other field
+    /// but `endpoint`/`in_flight`/`cap` is at rest — a head clears its indicator
+    /// on that transition. `retry_in_ms`/`pacing_in_ms` mirror
+    /// [`ThrottleStatus`][entanglement_provider::ThrottleStatus]'s
+    /// `backoff_remaining`/`next_request_in` (milliseconds, so the wire carries
+    /// no `serde`-dependent `Duration` representation); at most one is ever
+    /// `Some` at a time (a 429 cool-down always wins over pacing, ADR-0141).
+    Throttle {
+        endpoint: String,
+        throttled: bool,
+        in_flight: usize,
+        cap: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_in_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pacing_in_ms: Option<u64>,
+    },
     /// A session's persisted content history from a requested `after_seq`, in
     /// reply to [`InMsg::ReplayFrom`] (#160, ADR-0072). Answered by the runtime's
     /// history responder — which owns the event log — not the core supervisor.
@@ -1543,7 +1570,8 @@ impl OutEvent {
             OutEvent::SessionList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
-            | OutEvent::BashChanged { .. } => None,
+            | OutEvent::BashChanged { .. }
+            | OutEvent::Throttle { .. } => None,
         }
     }
 
@@ -1564,6 +1592,7 @@ impl OutEvent {
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::BashChanged { .. }
+            | OutEvent::Throttle { .. }
             | OutEvent::History { .. }
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }

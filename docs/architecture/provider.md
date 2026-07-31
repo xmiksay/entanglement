@@ -283,7 +283,17 @@ so); an idle or never-created model slot never shadows a genuine
 endpoint-wide cool-down. It feeds no request logic — the TUI polls it each
 frame to show a throttle indicator only while backing off (see heads doc),
 rendering the model id alongside the host when it is the binding constraint.
-`RetryConfig` (`max_attempts`, `initial_backoff`,
+`ThrottleStatus` also carries `next_request_in: Option<Duration>` — the AIMD
+pacing gate's own `next_slot` countdown, surfaced only while `penalized`
+(#517, [ADR-0141](../adr/0141-wire-visible-throttle-transitions.md)) — so the
+TUI's "pacing" label can show a live wait, not just the bare word.
+`HttpClient::throttle_statuses() -> Vec<ThrottleStatus>` is the sibling that
+snapshots **every** resolved endpoint (not just the most-throttled): the
+runtime's `throttle::spawn_throttle_responder` polls it every 500ms and emits
+a wire-visible `OutEvent::Throttle` on each endpoint's own enter/exit
+transition, so a stdio/WS head sees the same stall the TUI renders directly
+(ADR-0141 — engine-global, not per-session, matching this pool's own
+per-endpoint model). `RetryConfig` (`max_attempts`, `initial_backoff`,
 `max_backoff`, `rpm`) tunes the *failure* path; `HttpClient::with_config` +
 `RetryConfig::no_retry()` build variants (tests use the latter). This
 per-endpoint state is the reason a session carries **no** per-session connection
