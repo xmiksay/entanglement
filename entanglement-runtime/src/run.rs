@@ -129,6 +129,8 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::History { .. } => {}
         OutEvent::Status { state, .. } => match state {
             AgentState::Thinking => writeln!(out, "… thinking")?,
+            AgentState::Working => writeln!(out, "… working")?,
+            AgentState::WaitingAgent => writeln!(out, "… waiting for sub-agent")?,
             AgentState::WaitingApproval => writeln!(out, "… waiting for approval")?,
             AgentState::WaitingAnswer => writeln!(out, "… waiting for answer")?,
             AgentState::Error => writeln!(out, "! turn ended in error")?,

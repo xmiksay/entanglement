@@ -136,24 +136,25 @@ async fn stop_preempts_a_stalled_stream() {
     assert!(thinking, "turn should enter Thinking on the stalled stream");
 
     // Stop must interrupt the silent stream promptly (well under any HTTP
-    // timeout). Expect the Idle status the interrupt path emits.
+    // timeout). Expect the Done status the interrupt path emits (ADR-0139 — a
+    // cancelled turn is a completed interaction).
     holly
         .send(InMsg::Stop {
             session: sid.clone(),
         })
         .await
         .unwrap();
-    let mut went_idle = false;
+    let mut went_done = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
-        if matches!(&ev, OutEvent::Status { state, .. } if *state == entanglement_core::AgentState::Idle)
+        if matches!(&ev, OutEvent::Status { state, .. } if *state == entanglement_core::AgentState::Done)
         {
-            went_idle = true;
+            went_done = true;
             break;
         }
     }
     assert!(
-        went_idle,
-        "Stop must preempt the stalled stream and return the session to Idle"
+        went_done,
+        "Stop must preempt the stalled stream and return the session to Done"
     );
 
     // The session task survives the interrupt and answers a fresh prompt.

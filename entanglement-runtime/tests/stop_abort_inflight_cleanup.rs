@@ -130,12 +130,13 @@ async fn stop_aborted_request_id_is_not_stuck_in_flight_forever() {
         .await
         .unwrap();
 
-    // Wait for the Stop-abort to be acknowledged (core's `Idle` status).
+    // Wait for the Stop-abort to be acknowledged (core's `Done` status —
+    // ADR-0139: a cancelled turn is a completed interaction).
     let mut acked = false;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
         if let OutEvent::Status {
             session,
-            state: AgentState::Idle,
+            state: AgentState::Done,
         } = &ev
         {
             if session == &sid {
@@ -144,7 +145,7 @@ async fn stop_aborted_request_id_is_not_stuck_in_flight_forever() {
             }
         }
     }
-    assert!(acked, "the Stop must be acknowledged with an Idle status");
+    assert!(acked, "the Stop must be acknowledged with a Done status");
 
     // A fresh prompt starts a new round that reuses id "t1". If the executor
     // still thinks "t1" is in flight from the aborted first round, this call

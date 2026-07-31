@@ -483,9 +483,13 @@ pub(crate) async fn session_loop(
             }
             Some(SessionCmd::Stop) => {
                 if s.turn.take().is_some() {
+                    // A cancelled turn is still a completed interaction — `Done`
+                    // is the resting state, not `Idle` (which stays reserved for
+                    // the genuinely-never-run-yet case at session start,
+                    // ADR-0139).
                     let _ = events.send(OutEvent::Status {
                         session: session.clone(),
-                        state: AgentState::Idle,
+                        state: AgentState::Done,
                     });
                 }
             }

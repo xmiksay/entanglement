@@ -40,6 +40,8 @@ pub fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
     let state_color = match app.state() {
         AgentState::Idle => Color::Green,
         AgentState::Thinking => Color::Yellow,
+        AgentState::Working => Color::Yellow,
+        AgentState::WaitingAgent => Color::Magenta,
         AgentState::WaitingApproval => Color::Cyan,
         AgentState::WaitingAnswer => Color::Cyan,
         AgentState::Done => Color::Blue,
@@ -49,6 +51,8 @@ pub fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
     let state_text = match app.state() {
         AgentState::Idle => "Idle",
         AgentState::Thinking => "Thinking",
+        AgentState::Working => "Working",
+        AgentState::WaitingAgent => "WaitingAgent",
         AgentState::WaitingApproval => "WaitingApproval",
         AgentState::WaitingAnswer => "WaitingAnswer",
         AgentState::Done => "Done",
