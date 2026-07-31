@@ -5,6 +5,22 @@ use ratatui::{
 
 use crate::tui::wrap;
 
+/// Render a pending `ask_user` call: its current question while any remain
+/// unanswered, or the final review/submit step once every question has a
+/// draft (#518) — see [`render_review`].
+pub(super) fn render_question<'a>(
+    lines: &mut Vec<Line<'a>>,
+    q: &crate::tui::session_view::PendingQuestion,
+    input_text: &str,
+    available_width: u16,
+) {
+    if q.is_reviewing() {
+        render_review(lines, q, available_width);
+    } else {
+        render_current_question(lines, q, input_text, available_width);
+    }
+}
+
 /// Render a pending `ask_user` call's current question (#488, supersedes parts
 /// of ADR-0027) Claude-style: the prompt (with a "(i/n)" progress suffix when
 /// the call carries more than one question), a numbered list of labelled
@@ -12,7 +28,7 @@ use crate::tui::wrap;
 /// marker otherwise — an always-available "Other" free-text entry (showing the
 /// typed answer while active), and a key hint footer. Every line is wrapped to
 /// `available_width` so the box never overflows horizontally (#wrap).
-pub(super) fn render_question<'a>(
+fn render_current_question<'a>(
     lines: &mut Vec<Line<'a>>,
     q: &crate::tui::session_view::PendingQuestion,
     input_text: &str,
@@ -91,36 +107,118 @@ pub(super) fn render_question<'a>(
     }
 
     lines.push(Line::from(""));
+    // Answers are drafts (#518): `Enter` steps to the next question (or the
+    // review step, on the last one) rather than sending anything, and
+    // `[←]` steps back to revise an earlier question once there is one.
+    let back_hint = if q.current > 0 {
+        vec![
+            Span::styled("[←]", Style::default().fg(accent).bold()),
+            Span::raw(" back  "),
+        ]
+    } else {
+        vec![]
+    };
     let footer = if q.entering_free_form {
         vec![
             Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
-            Span::raw(" submit  "),
+            Span::raw(" next  "),
             Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
             Span::raw(" back"),
         ]
     } else if current.multi_select {
-        vec![
-            Span::styled("[↑/↓]", Style::default().fg(accent).bold()),
-            Span::raw(" select  "),
-            Span::styled("[Space/1-9]", Style::default().fg(accent).bold()),
-            Span::raw(" toggle  "),
-            Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
-            Span::raw(" submit  "),
-            Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
-            Span::raw(" interrupt"),
+        [
+            back_hint,
+            vec![
+                Span::styled("[↑/↓]", Style::default().fg(accent).bold()),
+                Span::raw(" select  "),
+                Span::styled("[Space/1-9]", Style::default().fg(accent).bold()),
+                Span::raw(" toggle  "),
+                Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
+                Span::raw(" next  "),
+                Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
+                Span::raw(" interrupt"),
+            ],
         ]
+        .concat()
     } else {
-        vec![
-            Span::styled("[↑/↓]", Style::default().fg(accent).bold()),
-            Span::raw(" select  "),
-            Span::styled("[1-9]", Style::default().fg(accent).bold()),
-            Span::raw(" pick  "),
-            Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
-            Span::raw(" choose  "),
-            Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
-            Span::raw(" interrupt"),
+        [
+            back_hint,
+            vec![
+                Span::styled("[↑/↓]", Style::default().fg(accent).bold()),
+                Span::raw(" select  "),
+                Span::styled("[1-9]", Style::default().fg(accent).bold()),
+                Span::raw(" pick  "),
+                Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
+                Span::raw(" next  "),
+                Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
+                Span::raw(" interrupt"),
+            ],
         ]
+        .concat()
     };
+    for wline in wrap::wrap_line(Line::from(footer), available_width) {
+        lines.push(wline);
+    }
+    lines.push(Line::from(rule).fg(accent));
+}
+
+/// Render the final review/submit step (#518): every question in the call
+/// paired with its drafted answer, and a footer whose `Enter` is the one
+/// explicit Submit that turns the drafts into a single `AnswerQuestion`
+/// frame — `Esc`/`←` steps back to revise the last question instead, sending
+/// nothing and leaving the call parked.
+fn render_review<'a>(
+    lines: &mut Vec<Line<'a>>,
+    q: &crate::tui::session_view::PendingQuestion,
+    available_width: u16,
+) {
+    let accent = Color::Cyan;
+    let rule_w = available_width.max(1) as usize;
+    let rule = "─".repeat(rule_w);
+    lines.push(Line::from(""));
+    lines.push(Line::from(rule.clone()).fg(accent));
+    push_wrapped_prefix(
+        lines,
+        "? ",
+        "Review your answers",
+        Style::default().fg(accent).bold(),
+        available_width,
+    );
+    lines.push(Line::from(""));
+
+    for (i, question) in q.questions.iter().enumerate() {
+        let answer = q
+            .answers
+            .get(i)
+            .and_then(|a| a.as_ref())
+            .map(|labels| labels.join(", "))
+            .unwrap_or_default();
+        push_wrapped_styled_prefix(
+            lines,
+            " • ",
+            &question.question,
+            Style::default().bold(),
+            available_width,
+            3,
+        );
+        push_wrapped_styled_prefix(
+            lines,
+            "   → ",
+            &answer,
+            Style::default().fg(accent),
+            available_width,
+            5,
+        );
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(""));
+    let footer = vec![
+        Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
+        Span::raw(" submit  "),
+        Span::styled("[←/Esc]", Style::default().fg(Color::Gray).bold()),
+        Span::raw(" back to revise"),
+    ];
     for wline in wrap::wrap_line(Line::from(footer), available_width) {
         lines.push(wline);
     }

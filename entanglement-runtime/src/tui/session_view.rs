@@ -54,21 +54,29 @@ pub enum ApprovalMode {
 }
 
 /// A model-driven `ask_user` **call** awaiting the user's answers (#488,
-/// supersedes parts of ADR-0027). One call can carry several `questions`,
-/// walked in order: `current` is the one on screen, `answers` buffers the
-/// ones already picked (parallel to `questions[0..current]`), and `picked`
-/// holds the current question's checked options while it's a multi-select.
-/// Distinct from [`ApprovalMode`]: approval is binary, this carries labelled
-/// choices plus an always-available free-text "Other" escape.
+/// supersedes parts of ADR-0027; draft-until-submit #518). One call can carry
+/// several `questions`, walked in order: `current` is the one on screen,
+/// `answers` holds a **draft** per question (parallel to `questions`, `None`
+/// until answered) that stays revisable — the user can step back with
+/// [`SessionView::question_retreat`] and recommit a different choice — and
+/// `picked` holds the current question's checked options while it's a
+/// multi-select. `current == questions.len()` is the terminal **review/submit**
+/// step: every question has a draft, nothing has been sent yet, and only an
+/// explicit Submit (`Enter` on that step) turns the drafts into the single
+/// `AnswerQuestion` frame. Distinct from [`ApprovalMode`]: approval is binary,
+/// this carries labelled choices plus an always-available free-text "Other"
+/// escape.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingQuestion {
     pub request_id: String,
     pub questions: Vec<Question>,
-    /// Index into `questions` of the one currently on screen.
+    /// Index into `questions` of the one currently on screen; `questions.len()`
+    /// once every question has a draft, meaning the review/submit step.
     pub current: usize,
-    /// Answers collected so far, one inner vec per completed question, in
-    /// `questions` order.
-    pub answers: Vec<Vec<String>>,
+    /// Draft answer per question, in `questions` order — `None` until that
+    /// question has been committed at least once. Revisable: stepping back and
+    /// recommitting overwrites the entry in place rather than appending.
+    pub answers: Vec<Option<Vec<String>>>,
     /// Options checked for the current question so far (multi-select only).
     pub picked: HashSet<usize>,
     /// Highlighted choice for the current question. Indices
@@ -82,20 +90,28 @@ pub struct PendingQuestion {
 
 impl PendingQuestion {
     pub fn new(request_id: String, questions: Vec<Question>) -> Self {
+        let answers = vec![None; questions.len()];
         Self {
             request_id,
             questions,
             current: 0,
-            answers: Vec::new(),
+            answers,
             picked: HashSet::new(),
             selected: 0,
             entering_free_form: false,
         }
     }
 
-    /// The question currently on screen.
+    /// The question currently on screen. Only valid while
+    /// [`Self::is_reviewing`] is false.
     pub fn current_question(&self) -> &Question {
         &self.questions[self.current]
+    }
+
+    /// Whether every question has a draft and the call is parked on the final
+    /// review/submit step rather than any individual question.
+    pub fn is_reviewing(&self) -> bool {
+        self.current >= self.questions.len()
     }
 
     /// Total selectable choices for the current question: its options plus
@@ -115,9 +131,59 @@ impl PendingQuestion {
     }
 
     /// 1-based `(position, total)` among the call's questions, for a
-    /// "(2/3)" progress indicator.
+    /// "(2/3)" progress indicator. Only meaningful while `!is_reviewing()`.
     pub fn progress(&self) -> (usize, usize) {
         (self.current + 1, self.questions.len())
+    }
+
+    /// The final answers, ready to send, once every question has a draft.
+    /// `None` while any question is still unanswered (i.e. before the review
+    /// step is reachable).
+    pub fn answers_for_submit(&self) -> Option<Vec<Vec<String>>> {
+        self.answers.iter().cloned().collect()
+    }
+
+    /// Restores the on-screen selection state (and free-form input text, if
+    /// any) from `current`'s existing draft, or resets to blank when it has
+    /// none. Called after navigating to a different question so a previously
+    /// answered one shows its answer instead of a blank slate. Returns the
+    /// free-text draft to load into the shared input box, when the draft was a
+    /// custom "Other" answer — the caller (which owns the input widget) must
+    /// load it; otherwise the caller should clear the input box.
+    fn sync_from_draft(&mut self) -> Option<String> {
+        self.picked.clear();
+        self.selected = 0;
+        self.entering_free_form = false;
+        if self.is_reviewing() {
+            return None;
+        }
+        let draft = self.answers[self.current].clone()?;
+        let options = &self.questions[self.current].options;
+        if self.questions[self.current].multi_select {
+            if draft.is_empty() {
+                // An explicit "nothing checked" submission — `picked` is
+                // already cleared above, not a free-form answer.
+                return None;
+            }
+            let idxs: HashSet<usize> = draft
+                .iter()
+                .filter_map(|label| options.iter().position(|o| &o.label == label))
+                .collect();
+            if idxs.len() == draft.len() {
+                self.picked = idxs;
+                return None;
+            }
+        } else if let Some(first) = draft.first() {
+            if let Some(idx) = options.iter().position(|o| &o.label == first) {
+                self.selected = idx;
+                return None;
+            }
+        }
+        // A free-form ("Other") answer isn't among the options — highlight
+        // "Other" and hand the text back so it reloads into the input box.
+        self.selected = options.len();
+        self.entering_free_form = true;
+        draft.into_iter().next()
     }
 }
 
@@ -434,30 +500,47 @@ impl SessionView {
         }
     }
 
-    /// Records `answer` as the current question's answer for the front call,
-    /// then advances to the next question with fresh selection state. Returns
-    /// the full per-question answers list once every question in the call has
-    /// been answered — `None` while more of the call's questions remain, in
-    /// which case the same call stays parked with the next question on screen.
-    /// The caller sends one `AnswerQuestion` frame with the `Some` result and
-    /// then calls [`Self::advance_question`] to promote the next queued call,
-    /// if any (#273, #488).
-    pub fn commit_question_answer(&mut self, answer: Vec<String>) -> Option<Vec<Vec<String>>> {
+    /// Records `answer` as a **draft** for the current question of the front
+    /// call (overwriting any prior draft in place) and steps forward — to the
+    /// next question if any remain, otherwise to the review/submit step
+    /// (#518: drafts are revisable and nothing is sent until an explicit
+    /// Submit — see [`Self::question_answers_for_submit`]). Returns the
+    /// free-text draft to reload into the shared input box, when stepping
+    /// onto a question last answered free-form (e.g. one revisited after an
+    /// earlier retreat); the caller should clear the input box otherwise.
+    /// Check [`Self::pending_question`]`().is_reviewing()` to tell whether the
+    /// call just reached the review step.
+    pub fn commit_question_answer(&mut self, answer: Vec<String>) -> Option<String> {
         let q = self.pending_questions.front_mut()?;
-        q.answers.push(answer);
+        q.answers[q.current] = Some(answer);
         q.current += 1;
-        q.selected = 0;
-        q.picked.clear();
-        q.entering_free_form = false;
-        if q.current >= q.questions.len() {
-            Some(q.answers.clone())
-        } else {
-            None
-        }
+        q.sync_from_draft()
     }
 
-    /// Pops the front call (fully answered) so the next queued one, if any,
-    /// surfaces with its own fresh selection state (#273).
+    /// Steps back to the previous question (a no-op on the first question),
+    /// restoring its existing draft into the on-screen selection state so it
+    /// stays revisable (#518). Also leaves the review/submit step, if that's
+    /// where the call was parked. Returns the free-text draft to reload into
+    /// the shared input box, when stepping onto a question last answered
+    /// free-form; the caller should clear the input box otherwise.
+    pub fn question_retreat(&mut self) -> Option<String> {
+        let q = self.pending_questions.front_mut()?;
+        if q.current == 0 {
+            return None;
+        }
+        q.current -= 1;
+        q.sync_from_draft()
+    }
+
+    /// The final answers, ready to send as one `AnswerQuestion`, once the
+    /// front call's review/submit step has been reached. `None` otherwise —
+    /// never sent implicitly; the caller must act on `Some` explicitly.
+    pub fn question_answers_for_submit(&self) -> Option<Vec<Vec<String>>> {
+        self.pending_questions.front()?.answers_for_submit()
+    }
+
+    /// Pops the front call (answered and submitted) so the next queued one, if
+    /// any, surfaces with its own fresh selection state (#273).
     pub fn advance_question(&mut self) {
         self.pending_questions.pop_front();
     }

@@ -67,15 +67,42 @@ impl App {
         self.mark_dirty();
     }
 
-    /// Records the current question's answer; `Some` once the whole call is
-    /// answered (#488).
-    pub fn commit_question_answer(&mut self, answer: Vec<String>) -> Option<Vec<Vec<String>>> {
-        let result = self
+    /// Records the current question's answer as a revisable **draft** and
+    /// steps forward — to the next question, or to the review/submit step
+    /// once every question in the call has a draft (#518: nothing is sent
+    /// here; see [`Self::question_answers_for_submit`]). Reloads the shared
+    /// input box when landing on a question last answered free-form.
+    pub fn commit_question_answer(&mut self, answer: Vec<String>) {
+        let restore = self
             .sessions
             .active_view_mut()
             .commit_question_answer(answer);
+        self.load_question_input(restore);
         self.mark_dirty();
-        result
+    }
+
+    /// Steps back to the previous question, restoring its draft — or leaves
+    /// the review/submit step to revise the last question (#518). A no-op on
+    /// the first question.
+    pub fn question_retreat(&mut self) {
+        let restore = self.sessions.active_view_mut().question_retreat();
+        self.load_question_input(restore);
+        self.mark_dirty();
+    }
+
+    /// The final per-question answers, ready to send as one `AnswerQuestion`,
+    /// once the front call's review/submit step has been reached (#518).
+    /// `None` otherwise — never sent implicitly.
+    pub fn question_answers_for_submit(&self) -> Option<Vec<Vec<String>>> {
+        self.sessions.active_view().question_answers_for_submit()
+    }
+
+    /// Loads `restore` into the shared input box (a free-text draft reloaded
+    /// while stepping between questions), or clears it when `None`. Uses
+    /// [`App::set_input_text`] rather than [`App::take_input_text`] so this
+    /// internal housekeeping never pollutes the user's input history.
+    fn load_question_input(&mut self, restore: Option<String>) {
+        self.set_input_text(restore.unwrap_or_default());
     }
 
     pub fn question_begin_free_form(&mut self) {

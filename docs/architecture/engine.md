@@ -428,7 +428,8 @@ supervisor `Error` instead of silently resolving to the `build` default. (The
 agents it may spawn.)
 
 **Ask-user prompt** (✅ #90, [ADR-0027](../adr/0027-ask-user-interactive-prompt.md);
-v2 #488, [ADR-0127](../adr/0127-ask-user-v2-multi-question-envelope.md)).
+v2 #488, [ADR-0127](../adr/0127-ask-user-v2-multi-question-envelope.md);
+draft-until-submit #518, [ADR-0143](../adr/0143-ask-user-draft-until-submit.md)).
 The model calls a runtime-owned `ask_user { questions: [{question, options,
 multi_select}] }` tool — one call can batch several questions, each optionally
 `multi_select`; a typed "Other" answer is unconditional (no `allow_free_form`
@@ -439,19 +440,28 @@ intercepts it on `ToolExec` — before permission resolution, like `agent_spawn`
 [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md): a question is not
 a permission decision, so it is distinct from the `WaitingApproval` an `Ask` tool
 raises). The head renders the labelled choices Claude-style (the TUI's
-`PendingQuestion` interaction state, alongside `ApprovalMode`, now models one
-*call* — it walks its `questions` in order, buffering answers, with checkboxes
-for a `multi_select` question and an always-available "Other" entry that opens
-free-text input) and, once every question in the call is answered, replies
+`PendingQuestion` interaction state, alongside `ApprovalMode`, models one
+*call* — it walks its `questions` in order with checkboxes for a `multi_select`
+question and an always-available "Other" entry that opens free-text input).
+Every answer is a **draft, revisable until an explicit Submit** (#518): committing
+a question (`Enter`/number-pick) writes that question's draft in place and steps
+to the next one, or — once every question has a draft — to a terminal
+review/submit step; `Left`/`Backspace` steps back to any earlier question to
+revise it (its draft, including free text, reloads on screen), and the review
+step's own `Enter` is the one explicit Submit that turns the drafts into
 `InMsg::AnswerQuestion { request_id, answers: [[string]] }` — one inner vec per
-question, in call order. Like `Approve`/`Reject`, the supervisor drops it off
-the inbound fan-out and the executor consumes it, then folds every answer
-(picked labels joined, or typed text, verbatim, one line per question) back as
-the `ask_user` `ToolOutput` — reusing the #58 round-trip, so core needs no new
-turn logic. A `Stop` while pending unwinds silently (core cancels the turn).
-The non-interactive `run` head auto-answers every question (first option, else
-a canned note) so it never parks; `pipe` forwards the questions and accepts the
-answers as-is.
+question, in call order (`Esc` on the review step just steps back to revise,
+sending nothing and leaving the call parked; a mid-question `Esc` still
+interrupts the turn, unchanged). Like `Approve`/`Reject`, the supervisor drops
+`AnswerQuestion` off the inbound fan-out and the executor consumes it, then folds
+every answer (picked labels joined, or typed text, verbatim, one line per
+question) back as the `ask_user` `ToolOutput` — reusing the #58 round-trip, so
+core needs no new turn logic and the draft/review walk is entirely head-side
+state with no wire change. A `Stop` while pending unwinds silently (core cancels
+the turn). The non-interactive `run` head auto-answers every question (first
+option, else a canned note) so it never parks; `pipe` forwards the questions and
+accepts the answers as-is — neither has a draft step, since both resolve the
+whole call in one shot.
 
 **Plan acceptance — `propose_plan` + the handoff recipe** (✅ #141,
 [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)). The
