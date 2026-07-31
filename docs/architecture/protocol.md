@@ -16,6 +16,8 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          //   content: text, or an image block when `read` opens an image (#221); legacy `output:"…"` still deserializes
          | AnswerQuestion{session,request_id,answers:[[string]],answer?}  // ask_user answer(s) → runtime (#90, #488); answers = one inner vec per question; legacy answer:"…" still deserializes, folds to [[answer]] in seam::Decision::from_inmsg
          | Stop{session}
+         | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0144)
+         | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0144)
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
@@ -166,6 +168,30 @@ An **optional idle-TTL sweep** now drives `HibernateSession` automatically
 (`None` by default — eviction stays embedder-driven when unset) arms a
 supervisor-level poll that auto-hibernates a **settled** root (and its whole
 spawn sub-tree) once idle past the TTL — see the engine doc for the mechanism.
+
+**Session pause** (#516, [ADR-0144](../adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md))
+is a hold `Stop` and `HibernateSession` don't cover: `Stop` destroys the
+in-flight round, `HibernateSession` evicts memory — neither is "hold this
+session's next piece of work without losing it or evicting it."
+`PauseSession{session}`/`ResumeSession{session}` (both wire-allowed, same
+trust tier as `Stop`) drive a `Session.paused: bool` that is **not**
+persisted/replayed (like `Stop`'s cancel — a hibernate/resume cycle always
+comes back unpaused). Two holds depending on what the session was doing when
+paused: an **idle** session defers its next `Prompt`/`SetAgent`/`SetModel`/
+`SetGeneration`/`Oneshot` onto the existing turn-stash queue; a **parked**
+batch keeps folding arriving `ToolResult`s into `Context` as normal (stashing
+them would deadlock — the stash only drains once the turn goes idle, which
+needs every pending result resolved first) but does not re-enter `drive_turn`
+once the batch drains, so the same round resumes with no new prompt once
+`ResumeSession` arrives. A session **mid-stream** when paused is unaffected
+until the round reaches its next safe point (turn end or park) — `Pause`/
+`Unpause` are ordinary `SessionCmd`s, so a mid-stream arrival rides the exact
+generic stash-and-replay mechanism `SetAgent`/`SetModel` already use
+(`session/stream.rs` needed no change). `Stop`/`HibernateSession` always take
+priority over a pause and neither clears it: a `Stop`'d-but-still-paused
+session reports `AgentState::Paused`, not `Done`, until an explicit
+`ResumeSession`. A new `AgentState::Paused` (ADR-0139's dedicated-state
+precedent) is never observed while genuinely streaming, for the reason above.
 
 **Late-subscriber history fetch** (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)).
 A head that connected after a turn started asks

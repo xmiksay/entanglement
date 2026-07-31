@@ -99,6 +99,13 @@ pub struct Session {
     /// (via the event log + replay) and resolve the pending calls against its
     /// own state.
     pub turn: Option<TurnState>,
+    /// Held by `InMsg::PauseSession`, lifted by `InMsg::ResumeSession` (#516,
+    /// ADR-0144). Deliberately **not** persisted/replayed — like `Stop`'s
+    /// cancel, a pause is ephemeral engine-loop state, not committed
+    /// conversation content, so `Session::replay` always reconstructs `false`
+    /// (a hibernate-then-resume cycle drops a pending pause, same as it drops
+    /// an uncommitted mid-stream tail).
+    pub paused: bool,
 }
 
 /// Running per-session usage tally (#192): the sum of every round-trip's
@@ -134,6 +141,7 @@ impl Session {
             predecessor: None,
             usage: SessionUsage::default(),
             turn: None,
+            paused: false,
         }
     }
 

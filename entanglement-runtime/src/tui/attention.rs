@@ -50,7 +50,8 @@ fn describe(state: AgentState) -> &'static str {
         AgentState::Idle
         | AgentState::Thinking
         | AgentState::Working
-        | AgentState::WaitingAgent => "",
+        | AgentState::WaitingAgent
+        | AgentState::Paused => "",
     }
 }
 

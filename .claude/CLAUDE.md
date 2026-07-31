@@ -185,6 +185,7 @@ content, bounded, core never sees it) instead of ending the turn (#481). Enablin
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
+          | PauseSession | ResumeSession
           | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove
           | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized)
@@ -962,6 +963,34 @@ re-document them here):
   spawned and `.abort()`'d in `main.rs` alongside the other engine-global
   runtime responders. `run --format text` renders it in full; `serve` relays
   it like any other frame with no per-variant change needed.
+- **`PauseSession`/`ResumeSession` — a hold between cancel and hibernate**
+  (#516, [ADR-0144](../docs/adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md)):
+  neither `Stop` (destroys the in-flight round) nor `HibernateSession` (evicts
+  memory) covers "hold this session's work without losing it or evicting it."
+  A new `AgentState::Paused` plus `Session.paused: bool` (never persisted/
+  replayed, like `Stop`'s cancel) gates two of the *existing* stash gates
+  rather than adding a new code path: every command already deferred by
+  `s.turn.is_some()` (`Prompt`/`SetAgent`/`SetModel`/`SetGeneration`/
+  `Oneshot`) now also defers on `s.paused`, so an **idle** paused session
+  holds its next prompt exactly like a live turn holds a mid-turn one (the
+  stash-pop condition gained a matching `&& !s.paused`, or a deferred command
+  would immediately busy-loop back off the queue). A **parked** batch's
+  arriving `ToolResult`s still resolve and fold into `Context` immediately —
+  stashing them would deadlock, since the stash only drains once the turn
+  goes idle, which needs every pending result resolved first — instead the
+  `drive_turn` call that would normally fire once the batch drains is
+  skipped while paused, leaving the turn "drained but undriven" until
+  `ResumeSession` continues it with **no re-prompt**. A session **mid-stream**
+  when paused needed **zero changes to `session/stream.rs`**: `Pause`/
+  `Unpause` are ordinary `SessionCmd`s, so a mid-stream arrival rides the
+  exact generic stash-and-replay-at-next-safe-point mechanism `SetAgent`/
+  `SetModel` already use — deferred-until-safe, not a true interrupt, so
+  `Paused` is never observed while genuinely streaming (documented scope
+  boundary, not a bug). `Stop`/`Hibernate` are unconditional regardless of
+  `paused` and neither clears it: `Stop` reports `Paused` (not `Done`) if the
+  session is still held; `Hibernate` tears down as always, and since
+  `paused` isn't persisted, a resumed-after-hibernate session always comes
+  back unpaused. Both variants are wire-allowed, same trust tier as `Stop`.
 
 | Topic | Module |
 | --- | --- |
