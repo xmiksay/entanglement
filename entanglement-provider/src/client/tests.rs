@@ -68,7 +68,7 @@ fn endpoint_uses_provided_concurrency_cap_over_pool_default() {
 async fn endpoint_concurrency_bounds_in_flight() {
     // With a cap of 1, a second owned permit can't be taken until the first
     // is dropped — the property that serializes a spawn-storm.
-    let ep = EndpointState::new(RPM_LIMIT, 1);
+    let ep = EndpointState::new(RPM_LIMIT, 1, "test");
     let first = ep.concurrency.clone().acquire_owned().await.unwrap();
     assert!(ep.concurrency.clone().try_acquire_owned().is_err());
     drop(first);
@@ -81,7 +81,7 @@ async fn model_slot_bounds_in_flight_per_model() {
     // that same model can't be taken until the first is dropped — the property
     // that serializes calls to a model z.ai only allows one in-flight for
     // (#521).
-    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY);
+    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
     let slot = ep.model_slot("glm-4.7-flash", 1);
     let first = slot.semaphore.clone().acquire_owned().await.unwrap();
     assert!(slot.semaphore.clone().try_acquire_owned().is_err());
@@ -94,7 +94,7 @@ async fn model_slot_is_independent_across_models_on_the_same_endpoint() {
     // GLM-5.2 (cap 5) and GLM-4.7-Flash (cap 1) share one endpoint but must
     // meter independently — one saturated model must never block another
     // (#521): the mixed-model scenario ADR-0140 exists to fix.
-    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY);
+    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
     let flash = ep.model_slot("glm-4.7-flash", 1);
     let glm52 = ep.model_slot("glm-5.2", 5);
     let _flash_permit = flash.semaphore.clone().acquire_owned().await.unwrap();
@@ -117,7 +117,7 @@ async fn model_permit_blocked_never_holds_the_endpoint_permit_hostage() {
     // the endpoint of admission, even with room to spare.
     use futures::FutureExt;
 
-    let ep = EndpointState::new(RPM_LIMIT, 2);
+    let ep = EndpointState::new(RPM_LIMIT, 2, "test");
     let flash = ep.model_slot("glm-4.7-flash", 1);
 
     // One in-flight Flash call: holds both its model permit and one of the
@@ -155,7 +155,7 @@ fn model_cap_wider_than_endpoint_cap_warns_but_is_still_honored() {
     // A model cap wider than its endpoint's own is a likely misconfiguration
     // (the narrower endpoint cap binds first, so the model cap can never
     // actually be reached) but must warn, not refuse to build the slot.
-    let ep = EndpointState::new(RPM_LIMIT, 2);
+    let ep = EndpointState::new(RPM_LIMIT, 2, "test");
     let slot = ep.model_slot("glm-5.2", 10);
     assert_eq!(slot.cap, 10);
     assert_eq!(slot.semaphore.available_permits(), 10);
@@ -163,7 +163,7 @@ fn model_cap_wider_than_endpoint_cap_warns_but_is_still_honored() {
 
 #[test]
 fn model_slot_is_stable_by_model_id_and_first_caller_sets_the_cap() {
-    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY);
+    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
     let a1 = ep.model_slot("glm-5.2", 5);
     let a2 = ep.model_slot("glm-5.2", 5);
     // Same model id → the same slot (and thus the same live semaphore state).
@@ -247,7 +247,7 @@ fn pool_key_partitions_by_endpoint_and_api_key() {
 
 #[test]
 fn retry_after_window_extends_never_shrinks() {
-    let state = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY);
+    let state = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
     state.set_retry_after(Duration::from_secs(10));
     let long = state.retry_after.lock().unwrap().unwrap();
     // A shorter window must not overwrite a longer one.

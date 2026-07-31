@@ -306,6 +306,38 @@ belongs to the endpoint, shared across sessions, not to the conversation. A
 the warm per-endpoint client, so switching mid-session neither restarts the engine
 nor cold-starts the pool.
 
+**Shared across processes, not just across sessions** (#523,
+[ADR-0144](../adr/0144-file-backed-shared-endpoint-state-across-instances.md)):
+everything above coordinates every session *within one `skutter` process* —
+but two processes talking to the same `(endpoint, api-key)` used to each run a
+fully independent `EndpointPool`, so N processes collectively sent up to N×
+the configured RPM and held N× the concurrency cap against a provider with no
+idea more than one client existed. `EndpointState` gains a
+`client::shared_state::SharedGate` — a file-backed cross-process ledger at
+`${data_dir}/entanglement/endpoints/<sha256(pool_key)>.state`, guarded by an
+advisory `fd-lock` read-modify-write exactly like the managed config files
+(#329, ADR-0084; independently re-implemented in `entanglement-provider`
+rather than depended on, since the provider crate is the leaf and takes no
+`entanglement-*` dependency, ADR-0053). Shared: the RPM token-bucket ledger, a
+lease-based in-flight concurrency count (each admitted request holds a lease —
+id, owning pid, expiry — renewed on a heartbeat and pruned by TTL if its
+process dies without releasing it, so a crash recovers the slot rather than
+leaking it permanently), and the `Retry-After` cool-down deadline (one
+process's 429 parks every sibling's next `acquire`). **Not** shared in v1: the
+AIMD pacing gate stays per-process — once the budget itself is bounded
+correctly in aggregate, per-process pacing converges on the same signal (see
+the ADR for the full reasoning). `execute_with_retry`'s loop calls
+`endpoint.shared.acquire(rpm, concurrency)` after its existing in-process
+`wait_for_retry_after`/`limiter.acquire`, holding the returned lease in
+`StreamGuard` alongside the endpoint/model permits and releasing all three
+together; a 429 also calls `endpoint.shared.mark_retry_after(delay)` so the
+cool-down reaches siblings, not just this process. Falls back silently to
+pure in-process gating (today's pre-#523 behavior) when the state directory
+is unwritable or disabled via `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` — an
+operator who wants genuinely separate per-instance budgets already gets that
+for free by giving each instance its own key/base URL, since the pool key
+itself isolates them.
+
 **Request-body logging is opt-in and symmetric** (#165): every client emits a
 `debug!` *summary* per request (model, message/tool counts — no payload). The
 full request body — system prompt, the **entire conversation**, tool schemas
