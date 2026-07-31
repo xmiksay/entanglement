@@ -30,7 +30,7 @@ mod summarize;
 mod turn;
 mod turn_state;
 
-pub use state::{Session, SessionUsage};
+pub use state::{Session, SessionUsage, TouchedFiles};
 pub use turn_state::TurnState;
 
 use std::collections::VecDeque;

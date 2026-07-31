@@ -14,6 +14,52 @@ use crate::protocol::{AgentProfile, OutEvent, SessionId};
 use crate::EngineConfig;
 use entanglement_provider::{GenerationParams, Llm, ResolvedModel};
 
+/// Tracks files an agent has seen in a session (the file-touch gate,
+/// ADR-0142). Maps canonical path -> modification timestamp (`None` means the
+/// file didn't exist when it was touched). A file is considered "touched" if:
+///
+/// 1. The `read` tool was called on it successfully (capturing its mtime), or
+/// 2. The agent modified it in this session via `edit`/`write`/`apply_patch`.
+///
+/// Write-eligible tools (`edit`/`write`/`apply_patch`) check this gate before
+/// executing: a file that hasn't been touched, or has been modified externally
+/// (mtime differs), is rejected with a clear error asking the agent to read
+/// first.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TouchedFiles {
+    /// Maps canonical path -> modification timestamp (None = file didn't exist when touched)
+    touched: HashMap<String, Option<u64>>,
+}
+
+impl TouchedFiles {
+    /// Mark a file as touched with its modification timestamp (milliseconds since
+    /// Unix epoch). `None` means the file didn't exist at the time of the touch.
+    pub fn mark_touched(&mut self, path: String, mtime: Option<u64>) {
+        self.touched.insert(path, mtime);
+    }
+
+    /// Whether the file has been touched in this session.
+    pub fn is_touched(&self, path: &str) -> bool {
+        self.touched.contains_key(path)
+    }
+
+    /// Get the known modification timestamp for a file, if any.
+    pub fn get_known_mtime(&self, path: &str) -> Option<u64> {
+        self.touched.get(path).copied().flatten()
+    }
+
+    /// Whether the file's current modification timestamp matches what we
+    /// recorded when it was touched. Returns true only if the timestamps match
+    /// exactly or both are `None` (file didn't exist then and still doesn't).
+    pub fn matches_current(&self, path: &str, current_mtime: Option<u64>) -> bool {
+        match (self.get_known_mtime(path), current_mtime) {
+            (Some(known), Some(current)) => known == current,
+            (None, None) => true, // Both didn't exist
+            _ => false,           // Existence changed
+        }
+    }
+}
+
 /// Mutable per-session loop + turn state (#61). Holds the conversation
 /// [`Context`], the provider LLM backend (`llm`, a plain `Box<dyn Llm>` — the
 /// resilience state it references is keyed per endpoint in the provider, not per
@@ -99,6 +145,10 @@ pub struct Session {
     /// (via the event log + replay) and resolve the pending calls against its
     /// own state.
     pub turn: Option<TurnState>,
+    /// Files this agent has seen or modified (the file-touch gate, ADR-0142).
+    /// Tracks what files the agent has read or modified so we can reject blind
+    /// writes to unchanged or externally-modified files.
+    pub touched_files: TouchedFiles,
 }
 
 /// Running per-session usage tally (#192): the sum of every round-trip's
@@ -134,7 +184,18 @@ impl Session {
             predecessor: None,
             usage: SessionUsage::default(),
             turn: None,
+            touched_files: TouchedFiles::default(),
         }
+    }
+
+    /// Accessor for this session's touched-files state (file-touch gate, ADR-0142).
+    pub fn touched_files(&self) -> &TouchedFiles {
+        &self.touched_files
+    }
+
+    /// Mutable accessor for this session's touched-files state (file-touch gate, ADR-0142).
+    pub fn touched_files_mut(&mut self) -> &mut TouchedFiles {
+        &mut self.touched_files
     }
 
     /// Apply a re-resolved model to this session and announce it (#323, ADR-0081
@@ -161,5 +222,96 @@ impl Session {
             model: resolved.model,
             context_window: resolved.context_window,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_touched_files_default_is_empty() {
+        let touched = TouchedFiles::default();
+        assert!(!touched.is_touched("any/path"));
+        assert!(touched.get_known_mtime("any/path").is_none());
+    }
+
+    #[test]
+    fn test_touched_files_mark_and_check() {
+        let mut touched = TouchedFiles::default();
+
+        assert!(!touched.is_touched("test/path"));
+
+        touched.mark_touched("test/path".to_string(), Some(12345));
+
+        assert!(touched.is_touched("test/path"));
+        assert_eq!(touched.get_known_mtime("test/path"), Some(12345));
+    }
+
+    #[test]
+    fn test_touched_files_matches_current_same_mtime() {
+        let mut touched = TouchedFiles::default();
+        touched.mark_touched("test/path".to_string(), Some(12345));
+
+        assert!(touched.matches_current("test/path", Some(12345)));
+    }
+
+    #[test]
+    fn test_touched_files_matches_current_different_mtime() {
+        let mut touched = TouchedFiles::default();
+        touched.mark_touched("test/path".to_string(), Some(12345));
+
+        assert!(!touched.matches_current("test/path", Some(99999)));
+    }
+
+    #[test]
+    fn test_touched_files_matches_current_both_none() {
+        let mut touched = TouchedFiles::default();
+        touched.mark_touched("nonexistent/path".to_string(), None);
+
+        assert!(touched.matches_current("nonexistent/path", None));
+    }
+
+    #[test]
+    fn test_touched_files_matches_current_existence_changed() {
+        let mut touched = TouchedFiles::default();
+
+        // File didn't exist when touched, now exists
+        touched.mark_touched("test/path".to_string(), None);
+        assert!(!touched.matches_current("test/path", Some(12345)));
+
+        // File existed when touched, now doesn't
+        touched.mark_touched("test/path2".to_string(), Some(12345));
+        assert!(!touched.matches_current("test/path2", None));
+    }
+
+    #[test]
+    fn test_touched_files_multiple_paths() {
+        let mut touched = TouchedFiles::default();
+
+        touched.mark_touched("path1".to_string(), Some(111));
+        touched.mark_touched("path2".to_string(), Some(222));
+        touched.mark_touched("path3".to_string(), None);
+
+        assert!(touched.is_touched("path1"));
+        assert!(touched.is_touched("path2"));
+        assert!(touched.is_touched("path3"));
+        assert!(!touched.is_touched("path4"));
+
+        assert_eq!(touched.get_known_mtime("path1"), Some(111));
+        assert_eq!(touched.get_known_mtime("path2"), Some(222));
+        assert_eq!(touched.get_known_mtime("path3"), None);
+    }
+
+    #[test]
+    fn test_touched_files_update_overwrites() {
+        let mut touched = TouchedFiles::default();
+
+        touched.mark_touched("test/path".to_string(), Some(12345));
+        assert_eq!(touched.get_known_mtime("test/path"), Some(12345));
+
+        // Overwrite with new mtime
+        touched.mark_touched("test/path".to_string(), Some(67890));
+        assert_eq!(touched.get_known_mtime("test/path"), Some(67890));
     }
 }

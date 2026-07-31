@@ -360,6 +360,16 @@ pub fn spawn_tool_executor_with_policy(
         // `load_skill`; this loop is the sole writer of the clear path.
         let active_skill: Arc<Mutex<HashMap<SessionId, ActiveSkill>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        // Per-session file-touch state (ADR-0142): the canonical paths each
+        // session has read or modified, keyed by `SessionId` because the runtime
+        // never holds core's `Session` object. Shared with the detached
+        // `dispatch`/`run_and_reply` tasks, which check the gate before a write
+        // and record a touch after a read/write — exactly mirroring how
+        // `active_skill` above is shared. Cleared on session end below. Inert
+        // when no `escape_root` is wired (every test/default wrapper), since
+        // canonicalization needs the project root.
+        let touch_state =
+            crate::touch_gate::TouchState::new(escape_root.as_ref().map(|er| er.root.as_path()));
         // Bounds the spawn tree (#76): tracks parent links from lifecycle events
         // and per-root spawn budgets. Lives in this single-threaded loop, so the
         // spawn decision below is race-free.
@@ -485,6 +495,8 @@ pub fn spawn_tool_executor_with_policy(
                     // The sandbox cache (#479) is equally moot — drop both maps.
                     sandbox.own.lock().unwrap().remove(&session);
                     sandbox.floor.lock().unwrap().remove(&session);
+                    // File-touch state (ADR-0142) is per-session too.
+                    touch_state.forget(&session);
                 }
                 // A skill's tool mask scopes one model turn (#400, ADR-0106):
                 // clear it here so a later turn can `load_skill` a different one
@@ -872,6 +884,7 @@ pub fn spawn_tool_executor_with_policy(
                             let holly = holly.clone();
                             let skills = skills.clone();
                             let active_skill = active_skill.clone();
+                            let touch_state = touch_state.clone();
                             let grants = grants.clone();
                             let hooks = hooks.clone();
                             let pending = pending.clone();
@@ -886,6 +899,7 @@ pub fn spawn_tool_executor_with_policy(
                                     &tools,
                                     &skills,
                                     &active_skill,
+                                    &touch_state,
                                     &*resolver,
                                     &chain,
                                     &*grants,
@@ -932,6 +946,7 @@ async fn dispatch(
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
     active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    touch_state: &crate::touch_gate::TouchState,
     resolver: &dyn PermissionResolver,
     chain: &[SessionId],
     grants: &dyn GrantStore,
@@ -992,8 +1007,9 @@ async fn dispatch(
                 tools,
                 skills,
                 active_skill,
+                touch_state,
                 hooks,
-                session,
+                session.clone(),
                 request_id,
                 tool,
                 input,
@@ -1035,6 +1051,7 @@ async fn dispatch(
                 tools,
                 skills,
                 active_skill,
+                touch_state,
                 grants,
                 hooks,
                 rx,
@@ -1064,6 +1081,7 @@ async fn await_decision(
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
     active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    touch_state: &crate::touch_gate::TouchState,
     grants: &dyn GrantStore,
     hooks: &Hooks,
     rx: tokio::sync::oneshot::Receiver<seam::Decision>,
@@ -1098,6 +1116,7 @@ async fn await_decision(
                 tools,
                 skills,
                 active_skill,
+                touch_state,
                 hooks,
                 session,
                 request_id,
@@ -1126,6 +1145,7 @@ async fn run_and_reply(
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
     active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    touch_state: &crate::touch_gate::TouchState,
     hooks: &Hooks,
     session: SessionId,
     request_id: String,
@@ -1147,25 +1167,34 @@ async fn run_and_reply(
         seam::reply(holly, session, request_id, ack).await;
         return;
     }
+    // File-touch gate (ADR-0142): before a write-eligible tool runs, require the
+    // agent to have read the file this session and that it hasn't changed since.
+    // Runs after permission/approval so an unauthorized call is never prompted
+    // for a read-first; the rejection is a plain `ToolResult` so the turn
+    // continues with an actionable message. Inert when no root is wired.
+    let call = ToolCall {
+        id: request_id.clone(),
+        name: tool.clone(),
+        input: input.clone(),
+        provider_meta: None,
+    };
+    if let Err(rejection) = touch_state.check(&session, &call) {
+        seam::reply(holly, session, request_id, rejection.to_string()).await;
+        return;
+    }
     // Every other tool executes against the host registry, returning multimodal
     // content (a text result, or an image block for `read` on an image, #221).
     // `edit`/`write` record their change into the capture scope (#202); the
     // executor mints a fresh `FileChange` seq (#157) and broadcasts the audit
     // event before replying with the `ToolResult`.
-    let content = crate::file_change::capture_and_emit(
-        holly,
-        &session,
-        tools.execute(
-            &ToolCall {
-                id: request_id.clone(),
-                name: tool.clone(),
-                input: input.clone(),
-                provider_meta: None,
-            },
-            &session,
-        ),
-    )
-    .await;
+    let content =
+        crate::file_change::capture_and_emit(holly, &session, tools.execute(&call, &session)).await;
+    // Record the touch *after* a successful read/write so the next write sees a
+    // matching mtime; a failed tool (error text) records nothing. The host tool's
+    // own success/failure is reflected in `content`'s text, but the gate only
+    // cares that the file's current mtime is captured — a failed `edit` that
+    // never wrote leaves the mtime unchanged, so re-marking is harmless.
+    touch_state.mark(&session, &call);
     let output_text = entanglement_core::content_text(&content);
     // #400, ADR-0106: a successful `load_skill` activates the session's
     // skill-scoped tool mask for the rest of this turn — parsed from the

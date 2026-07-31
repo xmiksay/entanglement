@@ -44,6 +44,7 @@ pub mod grep;
 pub mod jobs;
 pub mod read;
 pub mod sandbox;
+pub mod timestamp;
 pub mod unified_diff;
 mod walk;
 pub mod write;

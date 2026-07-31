@@ -4,17 +4,19 @@
 //! wiring from ADR-0008 + ADR-0009; `bash` is registered explicitly here to
 //! mirror a head's opt-in path (ADR-0010).
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use entanglement_core::protocol::FileChangeKind;
+use entanglement_core::protocol::{AgentProfile, FileChangeKind};
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    OutEvent, SessionId, ToolCall,
+    OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::host::{host_tools, BashTool, CallTool};
 use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tools::SharedRegistry;
 use sha2::{Digest, Sha256};
 
 /// Lowercase hex SHA-256, matching the `FileChange.hash` the executor emits.
@@ -673,4 +675,182 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
         output.contains(payload),
         "argv must be verbatim, got: {output}"
     );
+}
+
+// --- File-touch gate (ADR-0142) end-to-end -----------------------------------
+//
+// The gate is inert under the no-root `spawn_tool_executor` wrapper every test
+// above uses, so these exercise it through `spawn_tool_executor_with_policy`
+// with a real `EscapeRoot` rooted at the temp dir — the production wiring.
+
+use entanglement_runtime::extra_roots::ExtraRootStore;
+use entanglement_runtime::policy::{
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+};
+use entanglement_runtime::skills::SkillRegistry;
+use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, EscapeRoot};
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+/// A root-scoped, Allow-everything executor — the minimal production-shaped
+/// wiring that activates the file-touch gate (needs an `EscapeRoot` so paths
+/// canonicalize against `root`).
+fn rooted_executor(holly: &Holly, root: &Path, tools: SharedRegistry) {
+    let active = Arc::new(Mutex::new(HashMap::<SessionId, AgentProfile>::new()));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        active.clone(),
+        PermissionProfile::new(Permission::Allow),
+        Some(root.to_path_buf()),
+    ));
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let escape_root = EscapeRoot {
+        root: root.to_path_buf(),
+        store: Arc::new(ExtraRootStore::ephemeral()),
+    };
+    spawn_tool_executor_with_policy(
+        holly,
+        tools,
+        Arc::new(RwLock::new(
+            entanglement_runtime::agents::built_in_registry(),
+        )),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+        PermissionProfile::new(Permission::Allow),
+        active,
+        resolver,
+        grants,
+        entanglement_runtime::hooks::Hooks::default(),
+        Some(escape_root),
+        SandboxConfig::none(),
+    );
+}
+
+#[tokio::test]
+async fn touch_gate_rejects_edit_to_unread_file_end_to_end() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-touch-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    // A pre-existing file the agent never reads.
+    std::fs::write(root.join("unread.txt"), "original\n").unwrap();
+    struct Drop_(PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let edit_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "e1".into(),
+            name: "edit".into(),
+            input: r#"{"path":"unread.txt","oldString":"original","newString":"changed"}"#.into(),
+            provider_meta: None,
+        }],
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![edit_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        profiles: entanglement_runtime::agents::built_in_registry(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    rooted_executor(&holly, &root, tools.shared());
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "edit it"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    let output = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .expect("expected a ToolOutput");
+    assert!(
+        output.contains("was not read in this session"),
+        "gate should reject the unread edit, got: {output}"
+    );
+    // The file is unchanged — the edit never ran.
+    assert_eq!(
+        std::fs::read_to_string(root.join("unread.txt")).unwrap(),
+        "original\n"
+    );
+}
+
+#[tokio::test]
+async fn touch_gate_allows_edit_after_read_end_to_end() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-touch-ok-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("readme.txt"), "hello\n").unwrap();
+    struct Drop_(PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let read_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "r1".into(),
+            name: "read".into(),
+            input: r#"{"path":"readme.txt"}"#.into(),
+            provider_meta: None,
+        }],
+    };
+    let edit_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "e1".into(),
+            name: "edit".into(),
+            input: r#"{"path":"readme.txt","oldString":"hello","newString":"world"}"#.into(),
+            provider_meta: None,
+        }],
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+    };
+    // ScriptedLlm pops from the back, so the order is read → edit → finish.
+    let scripted = Arc::new(vec![read_call, edit_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        profiles: entanglement_runtime::agents::built_in_registry(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    rooted_executor(&holly, &root, tools.shared());
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "read then edit"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    // No rejection — the edit ran and changed the file.
+    assert_eq!(
+        std::fs::read_to_string(root.join("readme.txt")).unwrap(),
+        "world\n"
+    );
+    let _ = events;
 }

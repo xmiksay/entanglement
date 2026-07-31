@@ -75,6 +75,7 @@ pub mod subagent;
 pub mod system_prompt;
 pub mod tool_names;
 pub mod tool_runner;
+pub mod touch_gate;
 // The host-tool vocabulary (`Tool` trait + `ToolRegistry`) lives here, not in
 // core: core holds no executable tools, only advertises schemas and round-trips
 // each call back to the runtime (#206, ADR-0006/0010/0053).

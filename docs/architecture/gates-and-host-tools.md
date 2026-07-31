@@ -4,6 +4,40 @@
 
 ## 7. Hygiene gates — [ADR-0006](../adr/0006-core-dependency-hygiene-gate.md) + [ADR-0053](../adr/0053-invert-core-provider-seam.md) (`tree`), [ADR-0025](../adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../adr/0053-invert-core-provider-seam.md) (`check-lean`)
 
+### File-touch gate — [ADR-0142](../adr/0142-file-touch-gate.md)
+
+Prevents blind edits to files that an agent has never read or that have been modified externally. The gate tracks what files an agent has seen in a session and requires re-reading before allowing modifications.
+
+**Mechanism:**
+
+- A file is considered **touched** when the `read` tool is called on it successfully, capturing its modification timestamp
+- Write-eligible tools (`edit`/`write`/`apply_patch`) check the gate before execution:
+  1. If the file doesn't exist → allowed (creation)
+  2. If the file exists but was never touched → rejected with "Read the file first"
+  3. If the file was touched but its modification time differs → rejected with "Re-read the file"
+  4. If the file was touched and the timestamp matches → allowed
+
+**Implementation (split along the core↔runtime seam):**
+
+- `TouchedFiles` (a plain `serde` struct in `entanglement-core/src/session/state.rs`) maps canonical path → mtime; `Session` carries a copy as a serializable home, but the live gate does not read/write it.
+- The **live** gate state is runtime-owned: `TouchState { root, files: HashMap<SessionId, TouchedFiles> }` in `tool_runner`, mirroring `active`/`active_skill`/the sandbox caches — the executor only ever holds a `SessionId`, never core's `Session` (ADR-0001/0002).
+- `get_file_mtime()` in `host/timestamp.rs` reads filesystem metadata.
+- `check_touch_gate()` / `mark_touched()` in `touch_gate.rs` run inside `run_and_reply` (after permission + any approval): check before a write, mark after a read/write. Dropped on `SessionEnded`/`SessionHibernated`.
+- **Inert without an `EscapeRoot`** (every test/default wrapper): no root ⇒ no canonicalization ⇒ no-op. In production (`main.rs`) the root is always wired, so the gate is always active.
+
+**Subagent behavior:**
+
+- Each session maintains its own `TouchedFiles` state
+- Spawned subagents do **not** inherit their parent's touched files
+- Each agent must explicitly establish context by reading files
+
+**Why timestamps instead of hashing:**
+
+- Simpler: No need to read entire file content for hashing
+- Faster: `fs::metadata()` is much faster than reading and hashing file content
+- Sufficient: Detects external modifications in practice
+- Standard: Uses filesystem's built-in modification tracking
+
 `entanglement-core` must stay free of UI/web-server deps. Enforced by
 `make tree`, which runs `cargo tree -e normal -p entanglement-core` and **fails**
 if a forbidden crate appears — ADR-0053's named set
