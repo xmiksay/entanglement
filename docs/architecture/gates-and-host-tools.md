@@ -194,6 +194,27 @@ guessing again:
   profile may `Allow` `call` while keeping `bash` at `Ask`/`Deny` — and, since
   [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md),
   `call` is registered regardless of whether `bash` is even opted in.
+- **The trusted scratch dir is exempt from the escape-root prompt** (#524,
+  [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md),
+  amends ADR-0109): the runtime-owned per-project scratch dir
+  (`session_store::scratch_dir`, already the default `call`-output target)
+  needs no approval and no prior grant, for `read`/`edit`/`write`/
+  `apply_patch`, `glob`/`grep`, and a `bash`/`call` `workdir` — in every
+  profile. `ExtraRootStore` gains an optional `scratch: Option<PathBuf>`
+  (`.with_scratch`, set once at startup), consulted by `is_durably_allowed`
+  and `take_allowance` **before** the ordinary per-`(tool, path)` grant
+  lookup: a `starts_with` check against the canonicalized scratch path, not
+  the exact-match key every other grant in the store uses, so every file
+  under it is covered with no per-file approval. It composes for free with
+  the `is_durably_allowed_under` search-widening above (ADR-0132) — no
+  separate wiring for `glob`/`grep`. Not per-tool (a trusted *location*, not a
+  one-off tool approval) and never persisted (re-derived from the cwd at
+  every startup, nothing to revoke). Only the escape-root tax disappears — a
+  profile's own permission grade for the tool (e.g. `explore`'s `bash: ask`)
+  is untouched, since the scratch dir being the `workdir` says nothing about
+  the command being run there. The generated `<env>` system-prompt block
+  (`system_prompt::EnvBlock`) names the scratch dir and steers the model to
+  prefer it over `/tmp`.
 - **The trust boundary for exec, stated plainly:** root containment applies to
   a `bash`/`call` invocation's **`workdir` only, never its command body** —
   `escape_root_target` inspects no command line, so `bash: allow` (or a live

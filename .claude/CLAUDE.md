@@ -865,6 +865,32 @@ re-document them here):
   no `request_id`/`SessionId` needed (no `Once` token to consume).
   `host/mod.rs`'s `list_files`/`FileList` moved into a new `host/walk.rs` to
   stay under the 400-line file cap.
+  **The runtime's own scratch dir is pre-trusted, no approval needed** (#524,
+  [ADR-0142](../docs/adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)):
+  `ExtraRootStore` gains an optional `scratch: Option<PathBuf>`
+  (`.with_scratch`, wired once at startup from `session_store::scratch_dir` —
+  the same path `call`'s default output already used), consulted **before**
+  the ordinary per-`(tool, path)` grant lookup in both `is_durably_allowed`
+  and `take_allowance`: a directory-prefix (`starts_with`) check, not the
+  exact-path key every other grant uses, so every file under the scratch dir
+  is covered with no per-file approval, for `read`/`edit`/`write`/
+  `apply_patch`, `glob`/`grep` (composes for free with the #482 widening
+  above), and a `bash`/`call` `workdir` — in every profile, with no prior
+  grant. Not per-tool and never persisted (re-derived from the cwd at every
+  startup). Only the escape-root tax disappears; a profile's own `Ask`/`Deny`
+  grade for the tool is untouched. The generated `<env>` system-prompt block
+  (`system_prompt::EnvBlock`) now names the scratch dir, steering the model
+  off `/tmp`. **Separately**, the built-in `plan` profile's mask gains a
+  plans-folder carve-out: `write`/`edit` join its `tools:` allowlist, and its
+  permission rules add `write: deny` / `write(.entanglement/plans/*.md):
+  allow` — the `write` capability key (#418) fans both forms out to
+  `edit`/`apply_patch` too, so one YAML rule lets `plan` write the durable
+  plan file the unified plan tool (#513) needs while every other write stays
+  `Deny` — otherwise physically unreachable, exactly as before. The
+  plans-folder carve-out still clamps under the config permission ceiling
+  (#172) like any other rule; the scratch-dir carve-out lives inside escape-root
+  containment, which the ceiling's `clamp_to_base` never touches, so a ceiling
+  can still deny the tool outright but can't re-impose the escape-root prompt.
 - **Per-profile sandbox scoping for `bash`/`call`, with a spawn-chain clamp**
   (#479, [ADR-0134](../docs/adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)
   amending [ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)):

@@ -1143,17 +1143,40 @@ mod tests {
 
         let plan = reg.get("plan").expect("plan built-in");
         assert_eq!(plan.permission.for_tool("read"), Permission::Allow);
-        assert_eq!(plan.permission.for_tool("edit"), Permission::Ask);
+        // #524, ADR-0142: `write`'s bare grade is a hard `deny` (fanning out to
+        // `edit`/`write`/`apply_patch` via the capability key, #418) — the
+        // plans-folder carve-out below is the only crack in an otherwise
+        // physically read-only agent.
+        assert_eq!(plan.permission.for_tool("edit"), Permission::Deny);
+        assert_eq!(plan.permission.for_tool("write"), Permission::Deny);
+        // #524: the plans-folder carve-out (opencode-style) — `write`/`edit`
+        // succeed for `.entanglement/plans/*.md` even though the bare grade is
+        // `deny`, but nowhere else.
+        assert_eq!(
+            plan.permission
+                .resolve("write", Some(".entanglement/plans/foo.md")),
+            Permission::Allow
+        );
+        assert_eq!(
+            plan.permission
+                .resolve("edit", Some(".entanglement/plans/foo.md")),
+            Permission::Allow
+        );
+        assert_eq!(
+            plan.permission.resolve("write", Some("src/main.rs")),
+            Permission::Deny
+        );
         // #418: `plan.md`'s `read: allow` is now a capability key, so it fans
         // out to `grep`/`glob` too (both are read-only and already advertised)
         // — an intentional, pinned flip from the pre-#418 `ask` default rather
         // than a silent diff.
         assert_eq!(plan.permission.for_tool("grep"), Permission::Allow);
         assert_eq!(plan.permission.for_tool("glob"), Permission::Allow);
-        // Plan authors the plan (#231, ADR-0049) and is physically read-only: its
-        // tool mask carries the read trio + delegation/skill tools + the plan
-        // tools, no `edit`/`write`/`bash`. Children spawned under it inherit the
-        // clamp. Its allowlist explicitly opts into plan authorship.
+        // Plan authors the plan (#231, ADR-0049): its tool mask carries the read
+        // trio + delegation/skill tools + the plan tools, plus `write`/`edit`
+        // scoped to the plans folder (#524) — no `bash`. Children spawned under
+        // it inherit the clamp. Its allowlist explicitly opts into plan
+        // authorship.
         assert!(crate::plan_tasks::explicitly_allowlists(
             plan,
             "update_plan"
@@ -1167,8 +1190,8 @@ mod tests {
         assert!(plan.advertises_tool("load_skill"));
         assert!(plan.advertises_tool("update_plan"));
         assert!(plan.advertises_tool("propose_plan"));
-        assert!(!plan.advertises_tool("edit"));
-        assert!(!plan.advertises_tool("write"));
+        assert!(plan.advertises_tool("edit"));
+        assert!(plan.advertises_tool("write"));
         assert!(!plan.advertises_tool("bash"));
 
         let explore = reg.get("explore").expect("explore built-in");

@@ -336,7 +336,7 @@ below realize one model:
   | Profile | mode | tools mask | permission | spawn |
   | --- | --- | --- | --- | --- |
   | `build` (default) | primary | none — every registered tool exists | `default: allow` — everything Allow | may spawn `explore`/`debug` |
-  | `plan` | primary | `read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, update_plan, propose_plan` — no edit/write/exec | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `update_plan: allow` | may spawn |
+  | `plan` | primary | `read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, update_plan, propose_plan, write, edit` — no exec | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `update_plan: allow`; `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
   | `explore` | subagent | `read, glob, grep, call, bash, rhai` | `default: deny`; read triad Allow, exec triad at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
 
@@ -556,8 +556,16 @@ below realize one model:
   rides the shared `tool_specs` (general bookkeeping, no cross-agent authority).
   Built-in `plan` names `update_plan`/`propose_plan` in its allowlist + carries
   `update_plan: allow` (authoring isn't an approval prompt) and stays physically
-  read-only (`tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user,
-  load_skill, update_plan, propose_plan]`), a clamp its spawned children inherit.
+  read-only apart from one carve-out (#524,
+  [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)):
+  `tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user,
+  load_skill, update_plan, propose_plan, write, edit]` unmasks `write`/`edit`,
+  but its permission rules (`write: deny` plus the argument-scoped
+  `write(.entanglement/plans/*.md): allow`, fanned out to `edit`/`apply_patch`
+  by the `write` capability key, #418) grade every write outside
+  `.entanglement/plans/*.md` as `Deny` — the opencode-style plans-folder
+  exception the unified plan tool (#513) writes into, everything else stays
+  physically unreachable. A clamp its spawned children inherit.
 - **Plan acceptance — `propose_plan` (✅ #141, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md), amended by [ADR-0138](../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)):**
   the plan agent's *finalize* step (`update_plan` stays for working snapshots). A
   runtime-owned tool `propose_plan { plan }`, advertised only to a profile that

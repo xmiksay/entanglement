@@ -727,6 +727,44 @@ mod tests {
         );
     }
 
+    /// #524, ADR-0142: the trusted scratch dir resolves with **no grant at
+    /// all** — for `read`/`write` paths and a `bash`/`call` `workdir` alike —
+    /// unlike every other out-of-root path, which is refused until a grant
+    /// exists (see `escape_root_grant_permits_only_the_granted_tool_and_path`
+    /// above).
+    #[test]
+    fn scratch_dir_resolves_with_no_grant_for_any_tool_or_workdir() {
+        use crate::extra_roots::ExtraRootStore;
+        use std::sync::Arc;
+        let dir = TempDir::new();
+        let scratch = TempDir::new();
+        std::fs::write(scratch.join("f.txt"), "x\n").unwrap();
+        let target = scratch.join("f.txt");
+        let target_str = target.to_string_lossy().into_owned();
+
+        let store = Arc::new(ExtraRootStore::ephemeral().with_scratch(scratch.path.clone()));
+
+        // `read`/`write` — no prior grant of any kind.
+        let canon = escaping_path(&dir.path, &target_str).expect("escapes root");
+        for tool in ["read", "write"] {
+            let ok =
+                resolve_under_root_or_grant(&dir.path, Some(&store), tool, "req-1", &target_str)
+                    .unwrap();
+            assert_eq!(ok, canon);
+        }
+
+        // A `bash`/`call` `workdir` pointing at the scratch dir resolves too.
+        let workdir = resolve_workdir_or_grant(
+            &dir.path,
+            Some(&store),
+            "bash",
+            "req-1",
+            Some(&scratch.path.to_string_lossy()),
+        )
+        .unwrap();
+        assert_eq!(workdir, scratch.path.canonicalize().unwrap());
+    }
+
     /// #449: a `Once` grant approved for one request id can't be consumed by a
     /// different concurrently-running call to the same `(tool, path)` — the
     /// "loser" still sees the strict-containment refusal, and only the call the
