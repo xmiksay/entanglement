@@ -196,6 +196,11 @@ pub struct SessionView {
     state: AgentState,
     transcript: Vec<TranscriptEntry>,
     plan: Option<String>,
+    /// Root-relative location of the session's bound plan file (#513), from
+    /// the same `OutEvent::Plan` snapshot as `plan` — empty-string logs
+    /// pre-513 replay carry no real path, so `plan_path()` treats `""` as
+    /// `None` too.
+    plan_path: Option<String>,
     task_list: Option<String>,
     last_seen_seq: u64,
     /// Top-anchored vertical offset (line index of the first visible row).
@@ -256,6 +261,7 @@ impl SessionView {
             state: AgentState::Idle,
             transcript: Vec::new(),
             plan: None,
+            plan_path: None,
             task_list: None,
             last_seen_seq: 0,
             scroll_offset: 0,
@@ -344,6 +350,12 @@ impl SessionView {
 
     pub fn plan(&self) -> Option<&String> {
         self.plan.as_ref()
+    }
+
+    /// The bound plan file's root-relative location (#513), or `None` when no
+    /// plan has been proposed yet (or a pre-513 log carried no path).
+    pub fn plan_path(&self) -> Option<&str> {
+        self.plan_path.as_deref().filter(|p| !p.is_empty())
     }
 
     pub fn task_list(&self) -> Option<&String> {

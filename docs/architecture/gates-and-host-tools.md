@@ -107,9 +107,10 @@ tools and makes no policy decision.
 **Unknown-tool short-circuit (#437).** A hallucinated tool name is checked
 against the freshly-snapshotted registry at the **top** of `dispatch`, before
 permission resolution or the `pre_tool_use` hook (§9) run — a name the registry
-doesn't hold (and isn't a state tool — `update_plan`/`update_tasks`, exempt
-since they're never registered, [ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md))
-can never execute, so it would be
+doesn't hold (and isn't a state tool — `update_tasks`, exempt since it's never
+registered, [ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md);
+`propose_plan` never reaches `dispatch` at all, intercepted earlier like
+`ask_user`/the spawn family) can never execute, so it would be
 pointless to prompt the user for `Ask` approval, run a hook that could veto it,
 or let an `Always`-scoped approval record a grant for it. `ToolRegistry::
 unknown_tool_message` backs both this short-circuit and `execute`'s own

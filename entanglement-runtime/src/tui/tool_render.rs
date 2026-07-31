@@ -39,8 +39,8 @@ pub fn render_tool_output(
 /// by the output body. Every arm above must render *something* — an approval
 /// preview (called with an empty `output`) must never be left blank (#519).
 ///
-/// `md` renders the plan/task markdown for `propose_plan`/`update_plan`/
-/// `update_tasks`; it is ignored by the other arms. Wired into the live
+/// `md` renders the plan/task markdown for `propose_plan`/`update_tasks`; it
+/// is ignored by the other arms. Wired into the live
 /// transcript by `flush_tool_call`'s expanded branch (#340) and into the
 /// approval tail by `transcript.rs` (#487/#519).
 pub fn render_expansion(
@@ -94,10 +94,24 @@ pub fn render_expansion(
         Some("propose_plan") => {
             let v: serde_json::Value =
                 serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            let plan = v.get("plan").and_then(|s| s.as_str()).unwrap_or("");
-            render_markdown_body(md, plan, available_width)
+            // The approval prompt's `ToolRequest.input` always carries the
+            // *resolved* `content` (#513) regardless of whether the model
+            // called `content` or `path`; a raw `ToolCall`'s input (rendered
+            // in the transcript before resolution) may carry only `path` — no
+            // file content to show without a disk read, so name the file
+            // instead of leaving the block blank (#519).
+            match v.get("content").and_then(|s| s.as_str()) {
+                Some(content) => render_markdown_body(md, content, available_width),
+                None => {
+                    let path = v
+                        .get("path")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("(unknown)");
+                    render_markdown_body(md, &format!("_plan file: `{path}`_"), available_width)
+                }
+            }
         }
-        Some("update_plan") | Some("update_tasks") => {
+        Some("update_tasks") => {
             let v: serde_json::Value =
                 serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
             let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
@@ -520,7 +534,7 @@ mod tests {
     fn test_expansion_propose_plan_renders_markdown_not_json() {
         let result = render_expansion(
             Some("propose_plan"),
-            r##"{"plan":"# Goal\nDo X"}"##,
+            r##"{"content":"# Goal\nDo X","path":".entanglement/plans/s1.md"}"##,
             "",
             Theme::default(),
             80,
@@ -536,15 +550,35 @@ mod tests {
             "propose_plan expansion must not dump raw JSON braces: {text:?}"
         );
         assert!(
-            !text.contains("\"plan\""),
+            !text.contains("\"content\""),
             "propose_plan expansion must not dump the JSON field name: {text:?}"
         );
     }
 
     #[test]
-    fn test_expansion_update_plan_renders_markdown() {
+    fn test_expansion_propose_plan_path_only_names_the_file() {
+        // A raw `ToolCall`'s `path`-mode input carries no inline content —
+        // nothing to render as markdown without a disk read, so the file is
+        // named instead of leaving the block blank (#519).
         let result = render_expansion(
-            Some("update_plan"),
+            Some("propose_plan"),
+            r#"{"path":".entanglement/plans/s1.md"}"#,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(
+            text.contains(".entanglement/plans/s1.md"),
+            "propose_plan path-only expansion should name the file: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_expansion_update_tasks_renders_markdown() {
+        let result = render_expansion(
+            Some("update_tasks"),
             r##"{"content":"# Step 1"}"##,
             "",
             Theme::default(),
@@ -554,11 +588,11 @@ mod tests {
         let text = flatten(&result);
         assert!(
             text.contains("Step 1"),
-            "update_plan expansion should render the content heading"
+            "update_tasks expansion should render the content heading"
         );
         assert!(
             !text.contains('{'),
-            "update_plan expansion must not dump raw JSON braces: {text:?}"
+            "update_tasks expansion must not dump raw JSON braces: {text:?}"
         );
     }
 

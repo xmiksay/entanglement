@@ -16,8 +16,8 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          //   content: text, or an image block when `read` opens an image (#221); legacy `output:"…"` still deserializes
          | AnswerQuestion{session,request_id,answers:[[string]],answer?}  // ask_user answer(s) → runtime (#90, #488); answers = one inner vec per question; legacy answer:"…" still deserializes, folds to [[answer]] in seam::Decision::from_inmsg
          | Stop{session}
-         | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0144)
-         | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0144)
+         | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0145)
+         | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0145)
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
@@ -302,7 +302,10 @@ Two artifacts the engine owns and re-emits as **full snapshots** on every change
 (the `agent`/`design` "snapshot on change" pattern — idempotent, trivial to
 render/dedupe):
 
-- **Plan** — markdown strategy prose (`OutEvent::Plan`).
+- **Plan** — markdown strategy prose (`OutEvent::Plan { content, path }`, `path`
+  added #513/[ADR-0145](../adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) —
+  the plan is a **file** now, `.entanglement/plans/<short-id>.md` by default;
+  `#[serde(default)]` on `path` keeps a pre-#513 persisted log replayable).
 - **TaskList** — markdown task outline, typically a `- [ ]`/`- [x]` checklist
   (`OutEvent::TaskList`). Plain `content` like the plan (✅ #142,
   [ADR-0039](../adr/0039-markdown-task-list.md), supersedes ADR-0004's structured
@@ -310,17 +313,23 @@ render/dedupe):
   never consumed the item structure and the list is not fed back to the model,
   so the per-item id/status JSON envelope was pure model overhead.
 
-Both are written by **runtime state tools** the model calls — `update_plan
-{ content }` and `update_tasks { content }` (both markdown, ✅ #231,
-[ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)). They are
-**not** engine built-ins: they round-trip via `ToolExec`/`ToolResult` like any
-host tool, resolve through the ordinary `Allow`/`Ask`/`Deny` path + #116 mask, and
-the runtime executor emits the `OutEvent::Plan`/`OutEvent::TaskList` snapshot after
-handling the result (the engine holds no plan/task state). Plan authorship is
-default-closed via explicit tool-mask allowlist membership: `update_plan` is
-advertised only to a profile that names it (an inherit-all profile never gets it);
-`update_tasks` rides the shared specs. A read-only agent can mutate neither (mask
-+ permission), which is the #175 fix.
+Both are written by **runtime state/orchestration tools** the model calls —
+`propose_plan(content: Option<String>, path: Option<String>)` (✅ #141/#513,
+exactly one of the two — file-backed, not an in-memory snapshot; see the
+engine doc's "Plan acceptance" section) and `update_tasks { content }`
+(markdown, ✅ #231,
+[ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)). Neither is
+an engine built-in: `update_tasks` round-trips via `ToolExec`/`ToolResult`
+like any host tool, resolving through the ordinary `Allow`/`Ask`/`Deny` path +
+#116 mask, and the runtime executor emits its `OutEvent::TaskList` snapshot
+after handling the result (the engine holds no task state) — `propose_plan`
+additionally force-parks on `Ask` unconditionally (see the engine doc), since
+its `OutEvent::Plan` snapshot is only one part of a larger approval +
+sponsored-build-child flow. Plan authorship is default-closed via explicit
+tool-mask allowlist membership: `propose_plan` is advertised only to a
+profile that names it (an inherit-all profile never gets it); `update_tasks`
+rides the shared specs. A read-only agent can mutate neither (mask +
+permission), which is the #175 fix.
 
 This is why `entanglement` has *both* the opencode agent-profile axis *and* structured
 events: profiles control **what the agent is instructed/permitted to do**;

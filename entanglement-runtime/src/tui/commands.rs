@@ -61,7 +61,7 @@ impl Command {
             Command::Agent => "Pick agent profile",
             Command::Model => "Pick model",
             Command::Key => "Set a provider API key",
-            Command::Plan => "Show the plan outline in the sidebar",
+            Command::Plan => "Open the bound plan file in $EDITOR",
             Command::Tasks => "Show the task list in the sidebar",
             Command::Inspect => "Inspect prompt, agents & skills",
             Command::Editor => "Open editor",

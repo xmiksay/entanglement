@@ -64,7 +64,7 @@ below realize one model:
   executable* (the #116 mask), not a persona told not to write.
 - **Enforcement-locus split** — a gate lives where it can see the call: the tool
   mask, spawn control, permission clamp, and (since #231) plan authorship are all
-  **runtime** — every tool, including `update_plan`/`update_tasks`, round-trips
+  **runtime** — every tool, including `propose_plan`/`update_tasks`, round-trips
   there. See ADR-0044 for the full principle→enforcement map and the deferred
   follow-ups (skill provenance, skill-index masking, child-root isolation).
 
@@ -320,8 +320,8 @@ below realize one model:
   target-side: a profile must `may_spawn` and its *target* must be spawnable-mode
   (`subagent`/`all`) and on its `spawnable_agents` allowlist — so `build`/`plan`
   (primaries) are unreachable spawn targets from mode defaults alone. Plan
-  authorship (`update_plan`, ✅ #231, below) and the plan-accept handoff (#141)
-  complete the agent hierarchy. The built-ins are defined **once**, here as
+  authorship (`propose_plan`, ✅ #231/#513, below) and the plan-accept handoff
+  (#141) complete the agent hierarchy. The built-ins are defined **once**, here as
   markdown (#201): core carries only the `build` profile its `resolve()` fallback
   needs (it can't parse frontmatter, so it holds no `plan`/`explore`/`debug` copy
   to drift from these files). Embedders using core directly get that single
@@ -336,7 +336,7 @@ below realize one model:
   | Profile | mode | tools mask | permission | spawn |
   | --- | --- | --- | --- | --- |
   | `build` (default) | primary | none — every registered tool exists | `default: allow` — everything Allow | may spawn `explore`/`debug` |
-  | `plan` | primary | `read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, update_plan, propose_plan, write, edit` — no exec | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `update_plan: allow`; `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
+  | `plan` | primary | `read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, propose_plan, write, edit` — no exec | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
   | `explore` | subagent | `read, glob, grep, call, bash, rhai` | `default: deny`; read triad Allow, exec triad at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
 
@@ -457,10 +457,10 @@ below realize one model:
   (`tools`/`disallowed_tools` + `advertises_tool`), so it travels per session with
   no new protocol surface. **(a) Advertisement:** core's turn loop (`run_round`) filters both
   `EngineConfig.tool_specs` and the active profile's `profile_tool_specs` entry by
-  the mask — a masked tool's schema never reaches the model. `update_plan`/
-  `update_tasks` are ordinary runtime state tools now (✅ #231, below): they ride
-  those specs and this mask like any host tool, no plan-authority special casing in
-  core. **Per-session base specs (✅ #308, [ADR-0076](../adr/0076-per-session-dynamic-tool-specs.md)):**
+  the mask — a masked tool's schema never reaches the model. `propose_plan`/
+  `update_tasks` are ordinary runtime state/orchestration tools now (✅ #231/#513,
+  below): they ride those specs and this mask like any host tool, no
+  plan-authority special casing in core. **Per-session base specs (✅ #308, [ADR-0076](../adr/0076-per-session-dynamic-tool-specs.md)):**
   an optional `EngineConfig.tool_spec_resolver: Option<Arc<dyn Fn(&SessionId) ->
   Vec<ToolSpec> + Send + Sync>>` (alias `ToolSpecResolver`) lets one `Holly`
   advertise a **different base tool surface per session** — the seam multi-tenant
@@ -538,58 +538,85 @@ below realize one model:
   ring falls back to the whole entry list so Tab is never empty. Explicit
   selection stays unrestricted: `--agent`, `user_config.agent`, and `SetAgent`
   accept any registered name; the filter governs only the implicit cycle.
-- **Plan/task state tools (✅ #231, [ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)):**
-  `update_plan` and `update_tasks` are **runtime** state tools, not core built-ins.
-  Each replaces the session's *display* plan/task outline; the runtime executor
-  emits the `OutEvent::Plan`/`OutEvent::TaskList` snapshot (reusing the `ToolExec`
-  seq) and acks the model — the engine holds no plan/task state. They round-trip
-  via `ToolExec`/`ToolResult` and resolve through the **ordinary** `Allow`/`Ask`/
-  `Deny` path + #116 mask, with **no** plan-authority special casing (they fall
-  through `tool_runner`'s generic `dispatch`; `run_and_reply` emits the snapshot
-  instead of hitting the host `ToolRegistry`, since they touch no host resource).
-  This closes **#175**: a read-only `explore` has `update_tasks` outside its
-  allowlist (mask refusal) *and* permission-denied, so it can't mutate task state.
-  **Plan authorship is default-closed via the tool mask** — `update_plan`/
-  `propose_plan` are advertised (in `profile_tool_specs`) only to a profile that
-  *explicitly* allowlists them; an inherit-all (`tools: None`) profile never gains
-  them by accident (the replacement for the old `owns_plan` flag). `update_tasks`
-  rides the shared `tool_specs` (general bookkeeping, no cross-agent authority).
-  Built-in `plan` names `update_plan`/`propose_plan` in its allowlist + carries
-  `update_plan: allow` (authoring isn't an approval prompt) and stays physically
-  read-only apart from one carve-out (#524,
+- **Task state tool (✅ #231, [ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)):**
+  `update_tasks` is a **runtime** state tool, not a core built-in. It replaces
+  the session's *display* task outline; the runtime executor emits the
+  `OutEvent::TaskList` snapshot (a fresh per-session seq, #157) and acks the
+  model — the engine holds no task state. It round-trips via `ToolExec`/
+  `ToolResult` and resolves through the **ordinary** `Allow`/`Ask`/`Deny` path
+  + #116 mask, with **no** special casing (it falls through `tool_runner`'s
+  generic `dispatch`; `run_and_reply` emits the snapshot instead of hitting
+  the host `ToolRegistry`, since it touches no host resource). This closes
+  **#175**: a read-only `explore` has `update_tasks` outside its allowlist
+  (mask refusal) *and* permission-denied, so it can't mutate task state.
+  `update_tasks` rides the shared `tool_specs` (general bookkeeping, no
+  cross-agent authority) — unlike plan authorship below, every unmasked
+  profile advertises it.
+- **One plan tool — `propose_plan` (✅ #141/#513, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md),
+  amended by [ADR-0138](../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)
+  and [ADR-0145](../adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)):**
+  `update_plan` is **gone** — `propose_plan(content: Option<String>, path:
+  Option<String>)` is the sole plan-authorship tool, still gated by the same
+  default-closed explicit-allowlist membership ADR-0049 established
+  (`plan_tasks::explicitly_allowlists`, now generic over any tool name).
+  **Exactly one** of `content`/`path`; both/neither, a non-`.md`/missing
+  `path`, or a stale `path` (see below) replies **immediately with no
+  approval prompt** — a self-correctable model error, not a decision for the
+  human. `content` **materializes** (or overwrites) a file at
+  `.entanglement/plans/<short-session-id>.md`; `path` **binds** an existing
+  in-root `.md` file. Either way the resolved content rides an
+  `OutEvent::Plan { content, path }` snapshot for the plan session itself
+  (before the approval prompt — plans are files now, so this always resolves
+  a real location) and the `ToolRequest.input` JSON `{content, path}`, so a
+  `path`-mode approval still shows the full text.
+  A **staleness guard** (`path` mode only, `entanglement-runtime/src/plan_files.rs`)
+  refuses a resubmit of a file the *user* edited out of band since the
+  session last touched it: tracked as a session-scoped content hash, kept
+  fresh both by `propose_plan`'s own reads/writes and passively by a
+  background listener on the executor's `OutEvent::FileChange` audit (#202,
+  ADR-0060) — so the agent's own `write`/`edit` between build phases (the
+  intended review loop) never trips it, while an edit the runtime never saw
+  execute does. `content` mode is exempt (an explicit full overwrite is
+  "last writer wins" by construction); a first touch of a `path` (no prior
+  binding, e.g. a user-seeded file, #514) is never stale.
+  Acceptance rides the **existing tool-approval round-trip** (#59): the
+  executor (`propose_plan.rs`) intercepts it on `ToolExec` after the #116
+  mask check (same interception family as `ask_user`) and **force-parks it
+  on the `Ask` path unconditionally, every phase** — a permission profile can
+  never `Allow` it, since user approval *is* the tool's semantics. **Approve**
+  → spawns a **sponsored** `build` child of the plan session (ADR-0138): the
+  `SpawnGuard` mutation (sponsor check + `record_sponsored_start`) happens in
+  the tool executor's single-threaded loop before the detached task, so the
+  child is marked a permission root — its own profile stands, no ancestor
+  clamp. The plan text reaches the child via `wrap_plan` as its first prompt;
+  the child also receives an `OutEvent::Plan` snapshot so its outline renders
+  the plan. The plan session parks on `WaitingAgent` (ADR-0139) while the
+  build runs — this whole task (the Ask-wait *and* the blocking build-wait)
+  is now registered with `crate::cancel::CancelRegistry`, so a `Stop` on the
+  plan session detaches (aborts the wait; the sponsored child, an
+  independent session, keeps running untouched) instead of being ignored
+  once past the Ask phase; a head wanting the child stopped too just sends
+  it a second, ordinary `Stop` (cascade — no new protocol). The build's
+  **full final report** (prefixed with the plan file's location) folds back
+  as the `propose_plan` tool result, so the plan agent can review it, update
+  the plan file via `write`/`edit`, and `propose_plan` the next phase —
+  a multi-phase plan → build → review loop. **Reject + reason** → the
+  existing fold-back (`tool \`propose_plan\` rejected (plan file: <path>):
+  <reason>`); the model revises and re-proposes in the same turn. One-shot
+  heads (`run`/`pipe`) can't park an interactive approval, so they
+  auto-reject with a "non-interactive head" reason.
+  Built-in `plan` names only `propose_plan` in its allowlist (no `update_plan`
+  entry — see #524's carve-out below) and stays physically read-only apart
+  from one carve-out (#524,
   [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)):
   `tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user,
-  load_skill, update_plan, propose_plan, write, edit]` unmasks `write`/`edit`,
+  load_skill, propose_plan, write, edit]` unmasks `write`/`edit`,
   but its permission rules (`write: deny` plus the argument-scoped
   `write(.entanglement/plans/*.md): allow`, fanned out to `edit`/`apply_patch`
   by the `write` capability key, #418) grade every write outside
   `.entanglement/plans/*.md` as `Deny` — the opencode-style plans-folder
-  exception the unified plan tool (#513) writes into, everything else stays
-  physically unreachable. A clamp its spawned children inherit.
-- **Plan acceptance — `propose_plan` (✅ #141, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md), amended by [ADR-0138](../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)):**
-  the plan agent's *finalize* step (`update_plan` stays for working snapshots). A
-  runtime-owned tool `propose_plan { plan }`, advertised only to a profile that
-  explicitly allowlists it (via the `profile_tool_specs` seam) — the same
-  default-closed plan-authorship gate as the state tools (#231). Acceptance rides
-  the **existing tool-approval round-trip** (#59): the executor (`propose_plan.rs`)
-  intercepts it on `ToolExec` after the #116 mask check (same interception family
-  as `ask_user`) and **force-parks it on the `Ask` path unconditionally** — a
-  permission profile can never `Allow` it, since user approval *is* the tool's
-  semantics. A standard `OutEvent::ToolRequest` reaches the head. **Approve** →
-  spawns a **sponsored** `build` child of the plan session (ADR-0138): the
-  `SpawnGuard` mutation (sponsor check + `record_sponsored_start`) happens in the
-  tool executor's single-threaded loop before the detached task, so the child is
-  marked a permission root — its own profile stands, no ancestor clamp. The plan
-  text reaches the child via `wrap_plan` as its first prompt; the child also
-  receives an `OutEvent::Plan` snapshot so its outline renders the plan. The plan
-  session parks on `WaitingAgent` (ADR-0139) while the build runs; the build's
-  answer folds back as the `propose_plan` tool result, enabling plan/build
-  cycling. **Reject + reason** → the existing fold-back (`tool
-  \`propose_plan\` rejected: <reason>`); the model revises and re-proposes in the
-  same turn. One-shot heads (`run`/`pipe`) can't park an interactive approval, so
-  they auto-reject with a "non-interactive head" reason. The pre-ADR-0138
-  fresh-root head-policy handoff is deleted — all heads get the sponsored-build
-  behavior from the runtime.
+  exception `propose_plan`'s `content` mode writes into, everything else
+  stays physically unreachable. A clamp its spawned children inherit.
 - **System-prompt assembly (✅ #113, [ADR-0035](../adr/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five

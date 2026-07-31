@@ -232,9 +232,9 @@ pub(crate) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
 /// shapes are confirmed in source (#89/#90/#120/#124/#140/#141):
 /// `agent`/`agent_spawn` → the agent target (+ a truncated prompt);
 /// `agent_poll` → the `agent_id`; `ask_user` → a truncated `question`;
-/// `propose_plan` → `"plan"`; `update_plan`/`update_tasks` → `"snapshot"`;
-/// `load_skill` → the `skill_name`. Returns `None` for every other tool or on
-/// malformed input, so the header falls back to the bare tool name.
+/// `propose_plan` → `"plan"`; `update_tasks` → `"snapshot"`; `load_skill` → the
+/// `skill_name`. Returns `None` for every other tool or on malformed input, so
+/// the header falls back to the bare tool name.
 fn orchestration_primary_arg(tool: &str, value: &serde_json::Value) -> Option<String> {
     match tool {
         "agent" | "agent_spawn" => {
@@ -251,7 +251,7 @@ fn orchestration_primary_arg(tool: &str, value: &serde_json::Value) -> Option<St
             .as_str()
             .map(|q| truncate_to_width(q, 40)),
         "propose_plan" => Some("plan".to_string()),
-        "update_plan" | "update_tasks" => Some("snapshot".to_string()),
+        "update_tasks" => Some("snapshot".to_string()),
         "load_skill" => value.get("skill_name")?.as_str().map(String::from),
         _ => None,
     }
@@ -455,17 +455,13 @@ mod tests {
     #[test]
     fn propose_plan_returns_label() {
         assert_eq!(
-            tool_primary_arg("propose_plan", r##"{"plan":"# Goal"}"##).as_deref(),
+            tool_primary_arg("propose_plan", r##"{"content":"# Goal"}"##).as_deref(),
             Some("plan")
         );
     }
 
     #[test]
-    fn update_plan_and_tasks_return_snapshot_label() {
-        assert_eq!(
-            tool_primary_arg("update_plan", r##"{"content":"# Step 1"}"##).as_deref(),
-            Some("snapshot")
-        );
+    fn update_tasks_returns_snapshot_label() {
         assert_eq!(
             tool_primary_arg("update_tasks", r#"{"content":"- [ ] a"}"#).as_deref(),
             Some("snapshot")

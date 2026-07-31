@@ -21,7 +21,7 @@
 //!
 //! Because they only orchestrate sessions (they touch no host resource), the
 //! executor runs them *before* permission resolution — they bypass the permission
-//! profile exactly like core's `update_plan` / `update_tasks` built-ins.
+//! profile exactly like the runtime's `propose_plan` / `update_tasks` state tools.
 
 use std::collections::{HashMap, HashSet};
 

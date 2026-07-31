@@ -10,6 +10,10 @@ pub enum UiEffect {
     OpenEditor,
     /// Export the transcript to Markdown and open it in `$EDITOR`.
     Export,
+    /// Open the active session's bound plan file in `$EDITOR` (#513) — the
+    /// `/plan` command, now that the plan side panel is gone. A no-op (with a
+    /// transcript notice) when no plan has been proposed yet.
+    OpenPlanFile,
     /// Copy the given text to the system clipboard (OSC 52). Deferred to the
     /// event loop because it writes to the terminal the loop owns.
     CopyToClipboard(String),

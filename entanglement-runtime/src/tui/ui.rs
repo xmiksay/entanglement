@@ -20,8 +20,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
     let (main_area, sidebar_area) = if app.showing_sidebar() {
-        // The sidebar is at least 25% of the usable width so its Plan /
-        // Tasks sections stay readable, but never below a floor so it
+        // The sidebar is at least 25% of the usable width so its session
+        // list / Tasks section stay readable, but never below a floor so it
         // doesn't collapse to nothing on a narrow terminal. A stored
         // `sidebar_width` overrides up when the user has grown it.
         let pct = size.width / 4;

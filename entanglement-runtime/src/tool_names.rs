@@ -28,8 +28,9 @@ pub const RHAI_TOOL: &str = "rhai";
 /// whether the engine bound the function.
 pub const BINDING_TOOLS: [&str; 7] = ["read", "glob", "grep", "edit", "write", "call", "bash"];
 
-/// Tool name the plan agent calls to finalize and submit its plan for approval
-/// (#141, ADR-0042).
+/// Tool name the plan agent calls to submit its plan (`content` XOR `path`)
+/// for approval (#141, ADR-0042; #513, ADR-0145 — the sole plan-authorship
+/// tool, `update_plan` removed).
 pub const PROPOSE_PLAN_TOOL: &str = "propose_plan";
 
 /// Tool name the model calls to spawn a sub-agent (non-blocking; renamed from
@@ -38,9 +39,6 @@ pub const AGENT_SPAWN_TOOL: &str = "agent_spawn";
 
 /// Tool name the model calls to spawn a sub-agent and block for its answer (#120).
 pub const AGENT_TOOL: &str = "agent";
-
-/// Records the working strategy plan (plan authorship, advertised per-profile).
-pub const UPDATE_PLAN_TOOL: &str = "update_plan";
 
 /// Records the user-facing task checklist (shared, general bookkeeping).
 pub const UPDATE_TASKS_TOOL: &str = "update_tasks";

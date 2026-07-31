@@ -1129,13 +1129,9 @@ mod tests {
         assert_eq!(build.mode, AgentMode::Primary);
         assert_eq!(build.permission.for_tool("edit"), Permission::Allow);
         assert!(build.system_prompt.starts_with("You are a coding agent"));
-        // Plan authorship is default-closed (#231, ADR-0049): inherit-all `build`
-        // does not explicitly allowlist the plan tools, so it authors no plan.
-        assert!(!build.advertises_tool("update_plan") || build.tools.is_none());
-        assert!(!crate::plan_tasks::explicitly_allowlists(
-            build,
-            "update_plan"
-        ));
+        // Plan authorship is default-closed (#231, ADR-0049; #513): inherit-all
+        // `build` does not explicitly allowlist `propose_plan`, so it authors
+        // no plan.
         assert!(!crate::plan_tasks::explicitly_allowlists(
             build,
             "propose_plan"
@@ -1172,15 +1168,11 @@ mod tests {
         // than a silent diff.
         assert_eq!(plan.permission.for_tool("grep"), Permission::Allow);
         assert_eq!(plan.permission.for_tool("glob"), Permission::Allow);
-        // Plan authors the plan (#231, ADR-0049): its tool mask carries the read
-        // trio + delegation/skill tools + the plan tools, plus `write`/`edit`
-        // scoped to the plans folder (#524) — no `bash`. Children spawned under
-        // it inherit the clamp. Its allowlist explicitly opts into plan
-        // authorship.
-        assert!(crate::plan_tasks::explicitly_allowlists(
-            plan,
-            "update_plan"
-        ));
+        // Plan authors the plan (#231, ADR-0049; #513, ADR-0145): its tool mask
+        // carries the read trio + delegation/skill tools + `propose_plan`, plus
+        // `write`/`edit` scoped to the plans folder (#524) — no `bash`.
+        // Children spawned under it inherit the clamp. Its allowlist explicitly
+        // opts into plan authorship.
         assert!(crate::plan_tasks::explicitly_allowlists(
             plan,
             "propose_plan"
@@ -1188,7 +1180,6 @@ mod tests {
         assert!(plan.advertises_tool("read"));
         assert!(plan.advertises_tool("agent_spawn"));
         assert!(plan.advertises_tool("load_skill"));
-        assert!(plan.advertises_tool("update_plan"));
         assert!(plan.advertises_tool("propose_plan"));
         assert!(plan.advertises_tool("edit"));
         assert!(plan.advertises_tool("write"));
@@ -1199,8 +1190,8 @@ mod tests {
         assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
         assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);
         // Read-only `explore` never authors a plan and cannot mutate tasks (#175):
-        // its allowlist omits `update_plan`/`update_tasks` and permission denies.
-        assert!(!explore.advertises_tool("update_plan"));
+        // its allowlist omits `propose_plan`/`update_tasks` and permission denies.
+        assert!(!explore.advertises_tool("propose_plan"));
         assert!(!explore.advertises_tool("update_tasks"));
         assert_eq!(
             explore.permission.for_tool("update_tasks"),
@@ -1240,7 +1231,7 @@ mod tests {
         // Plan authorship is default-closed (#231, ADR-0049), same as `build`.
         assert!(!crate::plan_tasks::explicitly_allowlists(
             debug,
-            "update_plan"
+            "propose_plan"
         ));
     }
 

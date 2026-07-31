@@ -48,8 +48,9 @@ a stale, duplicate, or unknown `ToolResult` is dropped with a debug trace.
 **Every** tool call takes the runtime round-trip; core holds no executable tools
 and runs nothing inline — the built-ins were removed in #231
 ([ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)), and the
-former plan-authority tools (`update_plan`/`update_tasks`) are now ordinary
-permission-gated runtime state tools carried on `tool_specs`/`profile_tool_specs`.
+former plan-authority tools (`propose_plan`/`update_tasks`, #513) are now
+ordinary permission-gated runtime state/orchestration tools carried on
+`tool_specs`/`profile_tool_specs`.
 Each round-trip's `Finish` is priced against
 `EngineConfig.pricing` (effective model = `session.model` (a live switch) else
 `profile.model` else `default_model`),
@@ -489,34 +490,57 @@ option, else a canned note) so it never parks; `pipe` forwards the questions and
 accepts the answers as-is — neither has a draft step, since both resolve the
 whole call in one shot.
 
-**Plan acceptance — `propose_plan` + the handoff recipe** (✅ #141,
-[ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)). The
-plan agent calls a runtime-owned `propose_plan { plan }` to finalize. The executor
-(`propose_plan.rs`) intercepts it on `ToolExec` — after the #116 mask check, same
-family as `ask_user` — and **force-parks it on the `Ask` path unconditionally** (a
-profile can never `Allow` it; user approval *is* the semantics), emitting a
-standard `OutEvent::ToolRequest`. **Approve** folds `ToolOutput("plan accepted by
-the user")` back (the engine holds no plan state to record now, #231 — the working
-plan was already surfaced via `update_plan`); **reject + reason** folds `tool
-\`propose_plan\` rejected: <reason>` back. On
-approve the head *additionally* runs the **handoff** — pure head policy, zero new
-protocol surface, so pipe/WS heads implement it identically:
+**Plan acceptance, file-backed with a blocking review loop — `propose_plan`**
+(✅ #141/#513, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md),
+amended by [ADR-0138](../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)
+and [ADR-0145](../adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)).
+The plan agent calls a runtime-owned `propose_plan(content: Option<String>,
+path: Option<String>)` — **exactly one** of the two. `content` materializes
+(or overwrites) `.entanglement/plans/<short-session-id>.md`; `path` binds an
+existing in-root `.md` file, refused if it's changed since the session last
+touched it (a session-scoped content-hash staleness guard,
+`entanglement-runtime/src/plan_files.rs`, kept fresh by `propose_plan` itself
+plus a passive listener on the executor's `FileChange` audit for the
+session's own `edit`/`write`). A malformed or stale call replies immediately
+with **no** approval prompt. Otherwise the executor (`propose_plan.rs`)
+intercepts it on `ToolExec` — after the #116 mask check, same family as
+`ask_user` — and **force-parks it on the `Ask` path unconditionally, every
+phase** (a profile can never `Allow` it; user approval *is* the semantics),
+first emitting an `OutEvent::Plan { content, path }` snapshot for the plan
+session's own display, then a standard `OutEvent::ToolRequest` carrying the
+resolved `{content, path}` JSON regardless of which the model sent.
 
-1. mint a fresh `SessionId::new_uuid()`;
-2. `SetAgent { session: new, agent: "build" }` — lazy session creation starts a
-   **root** `build` session;
-3. `Prompt { session: new, content: [text wrap(plan)] }` (via `InMsg::prompt`) —
-   the accepted plan verbatim as the first user message;
-4. switch the head's active view to the new session.
+**Approve** spawns a **sponsored** `build` child of the plan session
+(ADR-0138) — a parent-child link (result return, session-tree visibility)
+whose permission resolution **stops at the child**: its own profile stands,
+no ADR-0024 ancestor clamp, no ADR-0023 fan-out budget drain (sponsored
+spawns are exempt, sequential and user-authorized). The `SpawnGuard`
+mutation (sponsor check + `record_sponsored_start`) happens in the tool
+executor's single-threaded loop before the detached task. The accepted plan
+reaches the child verbatim as its first prompt (`wrap_plan`) and as its own
+`OutEvent::Plan` snapshot; the plan session parks on `WaitingAgent`
+(ADR-0139) and the task `.await`s the child's full completion
+(`collect_child_answer`) — registered with `crate::cancel::CancelRegistry`
+(#513), so a `Stop` on the plan session aborts this wait with no reply owed
+and the child (an independent session) keeps running untouched — "detach" by
+default; a head wanting the child stopped too sends it an ordinary second
+`Stop` ("cascade", no new protocol surface). The build's answer folds back —
+prefixed with the plan file's location — as the `propose_plan` tool result,
+so the plan agent has the implementation outcome in context: it reviews it,
+updates the plan file's checkboxes via `write`/`edit`, and `propose_plan`s
+the next phase (`path`, reusing the same file) or stops. **Reject + reason**
+folds `tool \`propose_plan\` rejected (plan file: <path>): <reason>` back,
+still naming the file (materialized either way — rejection is about the
+*proposal*, not the file). One-shot `run`/`pipe` can't park an approval, so
+they auto-reject `propose_plan` with a "non-interactive head" reason (the
+plan agent still learns the outcome in-band and can revise).
 
-The build session is a **root, not a child** of the plan session: a parent link
-would clamp `build` to `plan`'s read-only tool set (#116) + the ADR-0024 permission
-ceiling (it could never `edit`/`write`), drain the plan root's ADR-0023 spawn
-budget, and mis-model accept — which is a transfer of authority *from the user*, a
-root. The plan session stays alive after accept; a later re-propose mints another
-fresh build session. One-shot `run`/`pipe` can't park an approval, so they
-auto-reject `propose_plan` with a "non-interactive head" reason (the plan agent
-still learns the outcome in-band and can revise).
+The build session is a sponsored **child**, not the pre-ADR-0138 disconnected
+root: the parent link is what lets the answer fold back and the plan agent
+cycle, and sponsorship (not inheritance) is what keeps it able to
+`edit`/`write` despite `plan`'s own read-only mask. The handoff is entirely
+**runtime** policy now — no head-side recipe, so pipe/WS heads get it for
+free with zero head-specific code.
 
 **Sandboxed script tool — `rhai`** (✅ #122,
 [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md)). The model calls

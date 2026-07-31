@@ -228,8 +228,9 @@ impl App {
         self.mark_dirty();
     }
 
-    /// Reveals the sidebar (idempotent) — backs `/plan` and `/tasks`, which
-    /// jump to the sidebar's Plan Outline / Tasks sections (#325).
+    /// Reveals the sidebar (idempotent) — backs `/tasks`, which jumps to the
+    /// sidebar's Tasks section (#325). `/plan` no longer uses this: it opens
+    /// the bound plan file in `$EDITOR` instead (#513).
     pub fn show_sidebar(&mut self) {
         if !self.sidebar_visible {
             self.sidebar_visible = true;

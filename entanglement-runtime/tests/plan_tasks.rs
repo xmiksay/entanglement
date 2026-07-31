@@ -1,11 +1,12 @@
-//! Integration test for the runtime-owned `update_plan`/`update_tasks` state
-//! tools (#231, ADR-0049).
+//! Integration test for the runtime-owned `update_tasks` state tool (#231,
+//! ADR-0049). `propose_plan` — the sole plan-authorship tool since #513,
+//! ADR-0145 — has its own coverage in `tests/propose_plan.rs`.
 //!
-//! They round-trip via `ToolExec`/`ToolResult` like every host tool: the runtime
-//! executor resolves the ordinary `Allow`/`Ask`/`Deny` permission (plus the #116
-//! tool mask), emits the `Plan`/`TaskList` snapshot on success, and acks the
-//! model. A read-only profile cannot mutate task state (#175) — refused by the
-//! mask or by permission before any snapshot is emitted.
+//! `update_tasks` round-trips via `ToolExec`/`ToolResult` like every host tool:
+//! the runtime executor resolves the ordinary `Allow`/`Ask`/`Deny` permission
+//! (plus the #116 tool mask), emits the `TaskList` snapshot on success, and
+//! acks the model. A read-only profile cannot mutate task state (#175) —
+//! refused by the mask or by permission before any snapshot is emitted.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -149,26 +150,6 @@ async fn update_tasks_allow_emits_tasklist_and_acks() {
                 if tool == "update_tasks" && output == "tasks updated"
         )),
         "update_tasks must fold a 'tasks updated' ack; got {events:?}"
-    );
-}
-
-#[tokio::test]
-async fn update_plan_allow_emits_plan_snapshot() {
-    let mut reg = entanglement_runtime::agents::built_in_registry();
-    reg.insert(perm_profile(
-        "author",
-        PermissionProfile::new(Permission::Allow),
-    ));
-    let holly = spawn_calling("update_plan", r##"{"content":"# Plan\n1. do"}"##, reg);
-    let sid = SessionId::new("s1");
-    let events = collect_until_done(&holly, &sid, Some("author")).await;
-
-    assert!(
-        events.iter().any(|e| matches!(
-            e,
-            OutEvent::Plan { content, .. } if content == "# Plan\n1. do"
-        )),
-        "update_plan must emit a Plan snapshot; got {events:?}"
     );
 }
 

@@ -1335,12 +1335,19 @@ pub enum OutEvent {
         generation: GenerationParams,
     },
     /// The agent's strategy plan (markdown prose), full snapshot on every change.
-    /// Emitted by the runtime when it handles an `update_plan` state tool call
-    /// (#231, ADR-0049); the engine never stores or consumes the plan.
+    /// Emitted by the runtime when it resolves a `propose_plan` call (#513,
+    /// ADR-0145, superseding ADR-0049's `update_plan` half); the engine never
+    /// stores or consumes the plan. `path` is the plan file's location
+    /// root-relative to the project (e.g. `.entanglement/plans/<id>.md`) — the
+    /// runtime always resolves one, since #513 makes a plan a file. `#[serde(default)]`
+    /// so a pre-#513 persisted log (no `path` field) still deserializes, with an
+    /// empty string standing in for "unknown".
     Plan {
         session: SessionId,
         seq: u64,
         content: String,
+        #[serde(default)]
+        path: String,
     },
     /// Incremental assistant text.
     TextDelta {
@@ -1974,10 +1981,21 @@ mod tests {
             session: SessionId::new("s1"),
             seq: 2,
             content: "# Plan\n1. ...".into(),
+            path: ".entanglement/plans/s1.md".into(),
         };
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn plan_deserializes_a_pre_513_log_with_no_path_field() {
+        let json = "{\"kind\":\"plan\",\"session\":\"s1\",\"seq\":2,\"content\":\"# Plan\"}";
+        let ev: OutEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            ev,
+            OutEvent::Plan { content, path, .. } if content == "# Plan" && path.is_empty()
+        ));
     }
 
     #[test]
