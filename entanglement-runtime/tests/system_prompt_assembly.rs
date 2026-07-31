@@ -76,6 +76,7 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
             root: PathBuf::from("/work/root"),
             platform: "test-os".into(),
             date: "2026-07-10".into(),
+            scratch: None,
         }),
         skills: vec![SkillDisclosure {
             name: "git".into(),

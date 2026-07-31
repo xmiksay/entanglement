@@ -147,8 +147,14 @@ async fn build_config(
     // Escape-root approval store (ADR-0109): shared by the host tools (which
     // consult it to relax containment for an approved out-of-root path) and the
     // tool executor (which forces an approval prompt on a first out-of-root
-    // access and records the grant here).
-    let extra_root_store = Arc::new(extra_roots::ExtraRootStore::load());
+    // access and records the grant here). The scratch dir itself is
+    // pre-trusted (#524, ADR-0142): every path under it is durably allowed with
+    // no grant, for every tool, in every profile.
+    let mut extra_root_store = extra_roots::ExtraRootStore::load();
+    if let Some(scratch) = &scratch_base {
+        extra_root_store = extra_root_store.with_scratch(scratch.clone());
+    }
+    let extra_root_store = Arc::new(extra_root_store);
     let mut tools = register_default_tools(
         root.clone(),
         scratch_base,

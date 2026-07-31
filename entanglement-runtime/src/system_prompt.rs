@@ -34,7 +34,6 @@
 //! that ships `system_prompt` verbatim as `LlmRequest.system`.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use entanglement_core::AgentMode;
 
@@ -66,28 +65,38 @@ pub struct SkillDisclosure {
 }
 
 /// Generated environment facts, rendered into the `<env>` block. Never
-/// model-guessed: the harness fills these in at composition time.
+/// model-guessed: the harness fills these in at composition time. `scratch`
+/// (#524, ADR-0142) is the pre-trusted per-project scratch dir — steers the
+/// model off `/tmp`, which still pays the escape-root approval tax.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvBlock {
     pub root: PathBuf,
     pub platform: String,
     pub date: String,
+    pub scratch: Option<PathBuf>,
 }
 
 impl EnvBlock {
-    /// Snapshot the environment for `root`: platform from the compile target,
-    /// date from the wall clock (UTC, `YYYY-MM-DD`).
+    /// Snapshot the environment for `root` (platform/date always known; the
+    /// scratch dir is best-effort, `None` if the data dir is unavailable).
     pub fn detect(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
             platform: std::env::consts::OS.to_string(),
-            date: today_utc(),
+            date: crate::date::today_utc(),
+            scratch: crate::session_store::scratch_dir(root).ok(),
         }
     }
 
     fn render(&self) -> String {
+        let scratch = self.scratch.as_ref().map_or(String::new(), |s| {
+            format!(
+                "\nScratch directory: {} (writable, no approval prompt — prefer over /tmp)",
+                s.display()
+            )
+        });
         format!(
-            "<env>\nWorking directory: {}\nPlatform: {}\nDate: {}\n</env>",
+            "<env>\nWorking directory: {}\nPlatform: {}\nDate: {}{scratch}\n</env>",
             self.root.display(),
             self.platform,
             self.date,
@@ -369,33 +378,6 @@ fn read_non_empty(path: &Path) -> Option<String> {
     }
 }
 
-/// Current UTC date as `YYYY-MM-DD`. Uses the wall clock; a system clock before
-/// the epoch degrades to `1970-01-01` rather than panicking.
-fn today_utc() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// Convert a count of days since 1970-01-01 into `(year, month, day)`.
-/// Howard Hinnant's `civil_from_days` — exact, no leap-second/timezone handling
-/// (UTC calendar date), and no external date crate.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +390,7 @@ mod tests {
                 root: PathBuf::from("/work"),
                 platform: "linux".into(),
                 date: "2026-07-10".into(),
+                scratch: None,
             }),
             skills: vec![
                 SkillDisclosure {
@@ -469,6 +452,31 @@ mod tests {
             ..ctx_full()
         };
         assert!(!assemble("BODY", true, AgentMode::Primary, &ctx, &[]).contains("Available skills"));
+    }
+
+    /// #524, ADR-0142: the env block names the scratch dir (steering the model
+    /// off `/tmp`) when known, and omits the line entirely when not.
+    #[test]
+    fn env_block_names_the_scratch_dir_when_known() {
+        let mut ctx = ctx_full();
+        ctx.env = Some(EnvBlock {
+            root: PathBuf::from("/work"),
+            platform: "linux".into(),
+            date: "2026-07-10".into(),
+            scratch: Some(PathBuf::from("/data/entanglement/sessions/work/tmp")),
+        });
+        let out = assemble("BODY", true, AgentMode::Primary, &ctx, &[]);
+        assert!(
+            out.contains("Scratch directory: /data/entanglement/sessions/work/tmp"),
+            "got: {out}"
+        );
+        assert!(out.contains("no approval prompt"), "got: {out}");
+
+        // No scratch dir known (e.g. data dir unavailable) ⇒ no scratch line,
+        // rest of the block unaffected.
+        let out_no_scratch = assemble("BODY", true, AgentMode::Primary, &ctx_full(), &[]);
+        assert!(!out_no_scratch.contains("Scratch directory"));
+        assert!(out_no_scratch.contains("Working directory: /work"));
     }
 
     #[test]
@@ -602,12 +610,5 @@ mod tests {
         let parts = assemble_parts("BODY", false, AgentMode::Primary, &ctx, &[]);
         let preamble = parts.iter().find(|p| p.label == "preamble").unwrap();
         assert_eq!(preamble.source, "/etc/preamble.md");
-    }
-
-    #[test]
-    fn civil_from_days_matches_known_dates() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(19_723), (2024, 1, 1)); // 1704067200 / 86400
-        assert_eq!(civil_from_days(-1), (1969, 12, 31));
     }
 }

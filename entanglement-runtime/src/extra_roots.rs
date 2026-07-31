@@ -26,6 +26,21 @@
 //! that as "spending" a `Once` grant would let one approval cover arbitrarily
 //! many reads with no further confirmation.
 //!
+//! # The trusted scratch dir (#524, ADR-0142, amends ADR-0109)
+//!
+//! The runtime-owned per-project scratch dir (`session_store::scratch_dir` —
+//! already the default `call` output target) is **pre-trusted**: any path
+//! under it (or the dir itself) needs no approval and no prior grant, for
+//! every tool, in every profile. [`with_scratch`][ExtraRootStore::with_scratch]
+//! records it once at startup; [`is_durably_allowed`]/[`take_allowance`] check
+//! it *before* the ordinary per-`(tool, path)` grant lookup, so it composes for
+//! free with the search-widening above (an ancestor walk that reaches the
+//! scratch dir short-circuits true) with no separate wiring. Unlike an
+//! ordinary escape-root grant this is **not** per-tool — the scratch dir is a
+//! trusted *location*, not a one-off approval for one tool — and it is never
+//! persisted: it is re-derived from the cwd at every startup, exactly like
+//! `session_store::scratch_dir` itself.
+//!
 //! # Scopes
 //!
 //! - **Once** — a single-use allowance bound to the specific `request_id` it was
@@ -85,6 +100,11 @@ struct Inner {
 pub struct ExtraRootStore {
     inner: Mutex<Inner>,
     path: Option<PathBuf>,
+    /// The trusted per-project scratch dir (#524, ADR-0142), if wired.
+    /// Canonicalized at construction so it compares equal to the
+    /// symlink-resolved targets `resolve_and_contained` produces. `None`
+    /// (every pre-#524 constructor) disables the carve-out entirely.
+    scratch: Option<PathBuf>,
 }
 
 fn key(tool: &str, path: &Path) -> GrantKey {
@@ -106,6 +126,7 @@ impl ExtraRootStore {
                 ..Inner::default()
             }),
             path,
+            scratch: None,
         }
     }
 
@@ -114,13 +135,37 @@ impl ExtraRootStore {
         Self {
             inner: Mutex::new(Inner::default()),
             path: None,
+            scratch: None,
         }
     }
 
-    /// Whether `(tool, path)` has a **durable** (session/always) grant. Does not
-    /// consume a one-shot — the executor uses this to decide whether an
-    /// out-of-root access can skip the approval prompt entirely.
+    /// Trust `scratch` (and every path under it) for every tool, with no
+    /// approval and no per-`(tool, path)` grant (#524, ADR-0142) — the
+    /// runtime-owned per-project scratch dir. Canonicalized here so it matches
+    /// the symlink-resolved form `resolve_and_contained` compares against;
+    /// falls back to the given path verbatim if it doesn't yet exist.
+    pub fn with_scratch(mut self, scratch: PathBuf) -> Self {
+        self.scratch = Some(scratch.canonicalize().unwrap_or(scratch));
+        self
+    }
+
+    /// Whether `path` is the trusted scratch dir or a descendant of it (#524).
+    /// Tool-independent by design — the scratch dir is a trusted *location*,
+    /// not a per-tool approval.
+    fn is_trusted_scratch(&self, path: &Path) -> bool {
+        self.scratch
+            .as_deref()
+            .is_some_and(|s| path == s || path.starts_with(s))
+    }
+
+    /// Whether `(tool, path)` has a **durable** (session/always) grant, *or*
+    /// `path` falls under the trusted scratch dir (#524). Does not consume a
+    /// one-shot — the executor uses this to decide whether an out-of-root
+    /// access can skip the approval prompt entirely.
     pub fn is_durably_allowed(&self, tool: &str, path: &Path) -> bool {
+        if self.is_trusted_scratch(path) {
+            return true;
+        }
         let k = key(tool, path);
         let g = self.inner.lock().expect("extra-roots mutex poisoned");
         g.always.contains(&k) || g.session.contains(&k)
@@ -156,6 +201,9 @@ impl ExtraRootStore {
     /// was approved for** (#449); a different concurrent call to the same
     /// `(tool, path)` cannot consume someone else's single-use token.
     pub fn take_allowance(&self, tool: &str, path: &Path, request_id: &str) -> bool {
+        if self.is_trusted_scratch(path) {
+            return true;
+        }
         let k = key(tool, path);
         let mut g = self.inner.lock().expect("extra-roots mutex poisoned");
         if g.always.contains(&k) || g.session.contains(&k) {
@@ -264,6 +312,54 @@ fn write_file(path: &Path, file: &PersistedFile) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #524: a trusted scratch dir is durably allowed for any tool, with no
+    /// prior grant of any kind.
+    #[test]
+    fn scratch_dir_is_durably_allowed_with_no_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = ExtraRootStore::ephemeral().with_scratch(dir.path().to_path_buf());
+        assert!(s.is_durably_allowed("read", dir.path()));
+        assert!(s.is_durably_allowed("write", dir.path()));
+        assert!(s.is_durably_allowed("bash", dir.path()));
+    }
+
+    /// #524: the carve-out covers descendants of the scratch dir too, not just
+    /// the exact directory.
+    #[test]
+    fn scratch_dir_carve_out_covers_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a/b");
+        std::fs::create_dir_all(&nested).unwrap();
+        let s = ExtraRootStore::ephemeral().with_scratch(dir.path().to_path_buf());
+        assert!(s.is_durably_allowed("write", &nested.join("out.txt")));
+        assert!(s.take_allowance("write", &nested.join("out.txt"), "req-1"));
+    }
+
+    /// #524: a sibling directory outside the scratch dir is unaffected — the
+    /// carve-out doesn't widen to the scratch dir's parent.
+    #[test]
+    fn scratch_dir_carve_out_does_not_cover_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path().join("scratch");
+        let sibling = dir.path().join("sibling");
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let s = ExtraRootStore::ephemeral().with_scratch(scratch);
+        assert!(!s.is_durably_allowed("write", &sibling));
+        assert!(!s.take_allowance("write", &sibling, "req-1"));
+    }
+
+    /// #524: `take_allowance` under the scratch dir never consumes a `Once`
+    /// token — there's nothing to spend, it's just always allowed.
+    #[test]
+    fn scratch_dir_take_allowance_does_not_consume_once_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = ExtraRootStore::ephemeral().with_scratch(dir.path().to_path_buf());
+        let target = dir.path().join("file.txt");
+        assert!(s.take_allowance("read", &target, "req-1"));
+        assert!(s.take_allowance("read", &target, "req-2"), "repeatable");
+    }
 
     #[test]
     fn once_is_single_use_per_tool() {

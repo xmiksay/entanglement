@@ -1,6 +1,6 @@
 # 0109. Access outside the project root via per-tool approval — containment becomes subordinate to an explicit grant
 
-- Status: Amended by [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) (rhai bindings route through the same gate), [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) (`Once` grants bound to the approving `request_id`), and [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) (`glob`/`grep` ride an existing durable `read` grant to search outside root)
+- Status: Amended by [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) (rhai bindings route through the same gate), [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) (`Once` grants bound to the approving `request_id`), [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) (`glob`/`grep` ride an existing durable `read` grant to search outside root), and [0142](0142-trusted-scratch-dir-and-plans-folder-carve-outs.md) (the runtime's own scratch dir is pre-trusted, no approval needed)
 - Date: 2026-07-17
 
 ## Context

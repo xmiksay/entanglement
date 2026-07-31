@@ -446,11 +446,11 @@ async fn write_tool_denied_under_explore_profile() {
 }
 
 #[tokio::test]
-async fn write_tool_masked_under_plan_profile() {
-    // The built-in `plan` is now physically read-only (#140, ADR-0041): its tool
-    // mask carries only the read trio + delegation/skill tools, so `write` is
-    // masked out and refused as "not available" before permission resolves — the
-    // plan agent authors the plan, it never mutates the tree.
+async fn write_tool_denied_outside_plans_folder_under_plan_profile() {
+    // #524, ADR-0142: `plan` now advertises `write` (unmasked), but only to
+    // carve out `.entanglement/plans/*.md` for the plan tool (#513) — its bare
+    // grade is `deny`, so a write anywhere else resolves through the permission
+    // ladder and is refused there, not masked out as "not available".
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-write-plan-mask-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -512,11 +512,90 @@ async fn write_tool_masked_under_plan_profile() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            OutEvent::ToolOutput { output, .. } if output.contains("not available")
+            OutEvent::ToolOutput { output, .. } if output.contains("denied by permission profile")
         )),
-        "plan should refuse write as unavailable; got {events:?}"
+        "plan should deny a write outside the plans folder; got {events:?}"
     );
     assert!(!root.join("blocked.txt").exists(), "write must not land");
+}
+
+#[tokio::test]
+async fn write_tool_allowed_in_plans_folder_under_plan_profile() {
+    // #524, ADR-0142: the opencode-style plans-folder carve-out — `plan` may
+    // write `.entanglement/plans/*.md` even though it is otherwise physically
+    // read-only.
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-write-plan-plans-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let write_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            input: serde_json::json!({
+                "path": ".entanglement/plans/scratch.md",
+                "content": "# Plan\n",
+            })
+            .to_string(),
+            provider_meta: None,
+        }],
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![write_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        profiles: entanglement_runtime::agents::built_in_registry(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        entanglement_runtime::agents::built_in_registry(),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "plan".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "write the plan"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { output, .. }
+                if output.contains("denied") || output.contains("not available")
+        )),
+        "plan should be able to write the plans folder; got {events:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".entanglement/plans/scratch.md")).unwrap(),
+        "# Plan\n"
+    );
 }
 
 #[tokio::test]
