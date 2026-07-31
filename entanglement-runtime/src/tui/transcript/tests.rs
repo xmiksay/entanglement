@@ -379,6 +379,181 @@ fn approval_tail_edit_shows_a_diff_not_raw_json() {
 }
 
 #[test]
+fn approval_tail_write_diffs_against_disk_content() {
+    // #519: a `write` approval must show what an overwrite destroys, not just
+    // the new content blind — read the on-disk file at render time and diff.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join("a.txt"), "old content\n").expect("seed file");
+    app.init_head_context(
+        dir.path().to_path_buf(),
+        crate::bash_live::LiveBashState::new(false),
+    );
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        "write",
+        r#"{"path":"a.txt","content":"new content\n"}"#,
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let has_delete = body
+        .lines
+        .iter()
+        .any(|l| l.spans.iter().any(|s| s.content == "- "));
+    let has_insert = body
+        .lines
+        .iter()
+        .any(|l| l.spans.iter().any(|s| s.content == "+ "));
+    assert!(
+        has_delete && has_insert,
+        "write approval body must render a `-`/`+` diff against disk content"
+    );
+    let text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(text.contains("old content"), "{text:?}");
+    assert!(text.contains("new content"), "{text:?}");
+}
+
+#[test]
+fn approval_tail_write_new_file_shows_full_content_no_diff() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let dir = tempfile::tempdir().expect("temp dir");
+    app.init_head_context(
+        dir.path().to_path_buf(),
+        crate::bash_live::LiveBashState::new(false),
+    );
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        "write",
+        r#"{"path":"brand-new.txt","content":"hello world"}"#,
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(text.contains("new file"), "{text:?}");
+    assert!(text.contains("hello world"), "{text:?}");
+}
+
+#[test]
+fn approval_tail_apply_patch_renders_a_diff_not_raw_json() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        "apply_patch",
+        r#"{"path":"a.rs","patch":"@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n"}"#,
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let has_delete = body
+        .lines
+        .iter()
+        .any(|l| l.spans.iter().any(|s| s.content == "- "));
+    let has_insert = body
+        .lines
+        .iter()
+        .any(|l| l.spans.iter().any(|s| s.content == "+ "));
+    assert!(
+        has_delete && has_insert,
+        "apply_patch approval body must render a `-`/`+` diff pair"
+    );
+    assert!(
+        !body
+            .lines
+            .iter()
+            .any(|l| line_text(l).contains("\"patch\"")),
+        "apply_patch approval body must not dump raw JSON"
+    );
+}
+
+#[test]
+fn approval_tail_bash_shows_full_multiline_command() {
+    // #519: the command must be fully visible in the body, not left to the
+    // truncated one-line header.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        "bash",
+        r#"{"command":"echo one\necho two","workdir":"sub"}"#,
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(text.contains("echo one"), "{text:?}");
+    assert!(text.contains("echo two"), "{text:?}");
+    assert!(text.contains("workdir: sub"), "{text:?}");
+}
+
+#[test]
+fn approval_tail_read_shows_structured_path_not_empty() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(&mut app, &sid, 1, "t1", "read", r#"{"path":"src/main.rs"}"#);
+
+    let body = render_body_lines(&mut app, 80);
+    let text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(text.contains("path: src/main.rs"), "{text:?}");
+}
+
+#[test]
+fn approval_tail_grep_shows_structured_pattern_and_path() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        "grep",
+        r#"{"pattern":"TODO","path":"src/*.rs"}"#,
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(text.contains("pattern: TODO"), "{text:?}");
+    assert!(text.contains("path: src/*.rs"), "{text:?}");
+}
+
+#[test]
 fn approval_tail_lines_carry_the_left_bar_decoration() {
     // #487: the tail now goes through `Theme::decorate`, so its header/body
     // lines get the same left-bar treatment as any other transcript block,

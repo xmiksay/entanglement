@@ -88,14 +88,23 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
             // already lives in the header above, so it's never re-dumped
             // (mirrors `flush_tool_call`'s expanded branch, #487). No output
             // yet — the call hasn't run.
-            let rendered = tool_render::render_expansion(
-                Some(&tool),
-                &input,
-                "",
-                theme,
-                available_width,
-                app.markdown_renderer(),
-            );
+            //
+            // `write` is the one tool whose approval body diverges from its
+            // post-execution expansion: only *before* the call runs does the
+            // on-disk file still hold the pre-image, so only here can it be
+            // diffed against the proposed content (#519).
+            let rendered = if tool == "write" {
+                tool_render::render_write_approval_body(&input, app.root())
+            } else {
+                tool_render::render_expansion(
+                    Some(&tool),
+                    &input,
+                    "",
+                    theme,
+                    available_width,
+                    app.markdown_renderer(),
+                )
+            };
             for line in rendered.lines {
                 lines.push(theme.decorate(line, approval_colors, available_width));
             }
