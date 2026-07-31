@@ -8,6 +8,10 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::Theme;
 use crate::tui::wrap;
 
+mod expansion;
+
+pub use expansion::render_write_approval_body;
+
 pub fn render_tool_output(
     tool_name: Option<&str>,
     output: &str,
@@ -26,16 +30,19 @@ pub fn render_tool_output(
 
 /// Build the expanded body of a tool block from **both** the call `input` and
 /// its `output` (#341). Each operation gets a body that means something:
-/// `read` → the file body, `edit` → a real diff, `write` → the new content,
-/// `bash`/`call` → the command output (the command is already in the header),
-/// the orchestration tools (`agent`/`ask_user`/`propose_plan`/…) → readable
-/// prose instead of raw JSON, and every unknown tool → pretty-printed input
-/// followed by the output body. The filename/command lives in the block header
-/// (#340), never re-printed here.
+/// `read` → the full path + the file body, `edit` → the full path + a real
+/// diff, `write` → the full path + the new content, `apply_patch` → the full
+/// path + the patch rendered as a real diff, `bash`/`call` → the full command
+/// (+ `workdir`) + its output, `glob`/`grep` → the full pattern/filter, the
+/// orchestration tools (`agent`/`ask_user`/`propose_plan`/…) → readable prose
+/// instead of raw JSON, and every unknown tool → pretty-printed input followed
+/// by the output body. Every arm above must render *something* — an approval
+/// preview (called with an empty `output`) must never be left blank (#519).
 ///
 /// `md` renders the plan/task markdown for `propose_plan`/`update_plan`/
 /// `update_tasks`; it is ignored by the other arms. Wired into the live
-/// transcript by `flush_tool_call`'s expanded branch (#340).
+/// transcript by `flush_tool_call`'s expanded branch (#340) and into the
+/// approval tail by `transcript.rs` (#487/#519).
 pub fn render_expansion(
     tool: Option<&str>,
     input: &str,
@@ -45,26 +52,24 @@ pub fn render_expansion(
     md: &MarkdownRenderer,
 ) -> Text<'static> {
     match tool {
-        Some("read") => render_read_output(output, theme, available_width),
+        Some("read") => expansion::render_read_expansion(input, output, theme, available_width),
         Some("edit") => {
             let v: serde_json::Value =
                 serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
             let old = v.get("oldString").and_then(|s| s.as_str()).unwrap_or("");
             let new = v.get("newString").and_then(|s| s.as_str()).unwrap_or("");
-            DiffRenderer::render_change(old, new)
+            let mut lines = Vec::new();
+            lines.extend(expansion::location_line("edit", input, "path"));
+            lines.extend(DiffRenderer::render_change(old, new).lines);
+            Text::from(lines)
         }
-        Some("write") => {
-            let v: serde_json::Value =
-                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
-            Text::from(
-                content
-                    .lines()
-                    .map(|line| Line::from(format!("  {line}")))
-                    .collect::<Vec<_>>(),
-            )
+        Some("write") => expansion::render_write_expansion(input),
+        Some("apply_patch") => expansion::render_apply_patch_expansion(input),
+        Some(t @ ("bash" | "call")) => {
+            expansion::render_command_expansion(t, input, output, theme, available_width)
         }
-        Some("bash") | Some("call") => render_plain_output(output, theme, available_width),
+        Some("glob") => expansion::render_glob_expansion(input, output, theme, available_width),
+        Some("grep") => expansion::render_grep_expansion(input, output, theme, available_width),
         Some("agent") | Some("agent_spawn") => {
             let v: serde_json::Value =
                 serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
@@ -216,8 +221,9 @@ fn render_markdown_body(
 
 /// Flatten a `Line`'s spans into a single owned `String` for the indentation
 /// helpers above (they re-wrap into a fresh `Line` with the 2-space indent
-/// applied uniformly, which is all these orchestration bodies need).
-fn collect_line(line: &Line<'_>) -> String {
+/// applied uniformly, which is all these orchestration bodies need). Also
+/// used by `expansion`'s `render_wrapped_labeled` for the same reason.
+pub(super) fn collect_line(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
@@ -243,7 +249,12 @@ fn render_edit_output(output: &str, _theme: Theme, _available_width: u16) -> Tex
 
 /// The file body of a `read`. The filename lives in the block header (#340), so
 /// the expanded body is just the contents — indented like other tool output.
-fn render_read_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+/// Also used by `expansion::render_read_expansion` for the same reason.
+pub(super) fn render_read_output(
+    output: &str,
+    _theme: Theme,
+    _available_width: u16,
+) -> Text<'static> {
     Text::from(
         output
             .lines()
@@ -252,7 +263,11 @@ fn render_read_output(output: &str, _theme: Theme, _available_width: u16) -> Tex
     )
 }
 
-fn render_glob_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+pub(super) fn render_glob_output(
+    output: &str,
+    _theme: Theme,
+    _available_width: u16,
+) -> Text<'static> {
     let mut lines = Vec::new();
 
     let mut file_count = 0;
@@ -299,7 +314,11 @@ fn render_glob_output(output: &str, _theme: Theme, _available_width: u16) -> Tex
     Text::from(result)
 }
 
-fn render_grep_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+pub(super) fn render_grep_output(
+    output: &str,
+    _theme: Theme,
+    _available_width: u16,
+) -> Text<'static> {
     let mut lines = Vec::new();
     let mut match_count = 0;
 
@@ -327,7 +346,11 @@ fn render_grep_output(output: &str, _theme: Theme, _available_width: u16) -> Tex
     Text::from(result)
 }
 
-fn render_plain_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
+pub(super) fn render_plain_output(
+    output: &str,
+    _theme: Theme,
+    _available_width: u16,
+) -> Text<'static> {
     let mut lines = Vec::new();
     for line in output.lines() {
         lines.push(Line::from(format!("  {}", line)));

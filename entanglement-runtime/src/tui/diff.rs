@@ -16,7 +16,11 @@ impl DiffRenderer {
         Self::render_hunks(&patch)
     }
 
-    #[allow(dead_code)]
+    /// Render a raw unified-diff patch (`apply_patch`'s `patch` field) as a
+    /// real diff instead of the escaped-JSON-string fallback (#519). `diffy`'s
+    /// own parser accepts the bare `@@ ... @@` hunks `apply_patch`'s
+    /// hand-rolled `host::unified_diff` parser does — no `---`/`+++` file
+    /// header required.
     pub fn render_unified(diff: &str) -> Text<'static> {
         if diff.is_empty() {
             return Text::default();
