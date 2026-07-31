@@ -73,6 +73,10 @@ pub mod session_store;
 pub mod skills;
 pub mod subagent;
 pub mod system_prompt;
+// Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141). Behind
+// `provider` since it polls `entanglement_provider::HttpClient` directly.
+#[cfg(feature = "provider")]
+pub mod throttle;
 pub mod tool_names;
 pub mod tool_runner;
 // The host-tool vocabulary (`Tool` trait + `ToolRegistry`) lives here, not in

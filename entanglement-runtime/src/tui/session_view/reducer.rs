@@ -81,6 +81,10 @@ impl SessionView {
             OutEvent::McpList { .. } => false,
             OutEvent::McpChanged { .. } => false,
             OutEvent::BashChanged { .. } => false,
+            // LLM endpoint throttle transitions (#517) are engine-global too —
+            // the TUI already renders them directly via `HttpClient::throttle_status()`
+            // polling (`input_panel.rs`), never through this per-session fold.
+            OutEvent::Throttle { .. } => false,
             OutEvent::History { .. } => false,
             OutEvent::Status { state, .. } => {
                 // Known cosmetic flap (#273): with two parked Asks, resolving

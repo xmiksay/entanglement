@@ -30,6 +30,22 @@ pub struct ThrottleStatus {
     /// (#521, ADR-0140). `None` when the endpoint-wide cap is binding — which
     /// is always the case for a model that carries no per-model cap.
     pub model: Option<String>,
+    /// Remaining time until the pacing gate's next reserved slot, when
+    /// [`penalized`][Self::penalized] is set — i.e. how long until this
+    /// endpoint's next request may fire (#517). `None` when not penalized, or
+    /// when the slot has already elapsed (nothing to wait for right now).
+    pub next_request_in: Option<Duration>,
+}
+
+impl ThrottleStatus {
+    /// Whether this endpoint is currently throttled: parked in a cool-down
+    /// window, slowed by the pacing gate, or already at its in-flight cap.
+    /// Public so a caller outside this crate (the runtime's wire-facing
+    /// throttle responder, #517) can classify a [`throttle_statuses`][HttpClient::throttle_statuses]
+    /// snapshot the same way [`throttle_status`][HttpClient::throttle_status] does internally.
+    pub fn is_throttled(&self) -> bool {
+        self.backoff_remaining.is_some() || self.penalized || self.in_flight >= self.cap
+    }
 }
 
 impl EndpointState {
@@ -49,9 +65,14 @@ impl EndpointState {
             .expect("retry_after poisoned")
             .and_then(|until| until.checked_duration_since(Instant::now()))
             .filter(|d| !d.is_zero());
-        let penalized = {
+        let (penalized, next_request_in) = {
             let st = self.limiter.state.lock().expect("rate limiter poisoned");
-            st.interval > self.limiter.base
+            let penalized = st.interval > self.limiter.base;
+            let next_request_in = penalized
+                .then(|| st.next_slot.checked_duration_since(Instant::now()))
+                .flatten()
+                .filter(|d| !d.is_zero());
+            (penalized, next_request_in)
         };
 
         let ep_ratio = occupancy_ratio(ep_in_flight, self.concurrency_cap);
@@ -85,13 +106,8 @@ impl EndpointState {
             backoff_remaining,
             penalized,
             model,
+            next_request_in,
         }
-    }
-
-    /// Whether this endpoint is currently throttled: parked in a cool-down
-    /// window, slowed by the pacing gate, or already at its in-flight cap.
-    fn is_throttled(status: &ThrottleStatus) -> bool {
-        status.backoff_remaining.is_some() || status.penalized || status.in_flight >= status.cap
     }
 }
 
@@ -109,8 +125,21 @@ impl HttpClient {
         let map = self.pool.endpoints.lock().expect("endpoint pool poisoned");
         map.iter()
             .map(|(key, state)| state.status(host_label(key)))
-            .filter(EndpointState::is_throttled)
+            .filter(ThrottleStatus::is_throttled)
             .max_by_key(|s| s.backoff_remaining.unwrap_or_default())
+    }
+
+    /// A snapshot of **every** endpoint this pool has ever resolved, throttled
+    /// or not (#517). Unlike [`throttle_status`][Self::throttle_status] — which
+    /// narrows to the single most-throttled endpoint for a compact one-line
+    /// indicator — this is for a caller (the runtime's wire-facing throttle
+    /// responder) that needs to track each endpoint's *own* posture over time,
+    /// so one busy endpoint never masks a transition on another.
+    pub fn throttle_statuses(&self) -> Vec<ThrottleStatus> {
+        let map = self.pool.endpoints.lock().expect("endpoint pool poisoned");
+        map.iter()
+            .map(|(key, state)| state.status(host_label(key)))
+            .collect()
     }
 }
 
@@ -252,5 +281,61 @@ mod tests {
         let http = HttpClient::new();
         let _ = http.endpoint("https://api.rest/v1", None, None);
         assert!(http.throttle_status().is_none());
+    }
+
+    #[test]
+    fn penalized_pacing_surfaces_next_request_in() {
+        let http = HttpClient::new();
+        let ep = http.endpoint("https://api.paced/v1", None, None);
+        ep.limiter.penalize();
+        // Reserve a slot in the future so `next_request_in` has something to
+        // report (a fresh `acquire` would otherwise already be in the past).
+        {
+            let mut st = ep.limiter.state.lock().expect("rate limiter poisoned");
+            st.next_slot = Instant::now() + Duration::from_secs(2);
+        }
+        let status = http
+            .throttle_status()
+            .expect("penalized endpoint is throttled");
+        let next = status
+            .next_request_in
+            .expect("pacing countdown present while penalized");
+        assert!(
+            next > Duration::from_millis(500) && next <= Duration::from_secs(2),
+            "got {next:?}"
+        );
+    }
+
+    #[test]
+    fn unpenalized_endpoint_has_no_next_request_in() {
+        let http = HttpClient::new();
+        let ep = http.endpoint("https://api.rest2/v1", None, None);
+        // No 429, no penalty — even though every `acquire` reserves a slot, the
+        // countdown is only surfaced while actually paced.
+        let _ = ep;
+        let status = http.throttle_statuses();
+        assert_eq!(status.len(), 1);
+        assert!(!status[0].penalized);
+        assert!(status[0].next_request_in.is_none());
+    }
+
+    #[test]
+    fn throttle_statuses_reports_every_endpoint_independent_of_others() {
+        let http = HttpClient::new();
+        http.endpoint("https://api.busy.example/v1", None, None)
+            .set_retry_after(Duration::from_secs(10));
+        http.endpoint("https://api.calm.example/v1", None, None);
+        let statuses = http.throttle_statuses();
+        assert_eq!(statuses.len(), 2);
+        let busy = statuses
+            .iter()
+            .find(|s| s.endpoint == "https://api.busy.example/v1")
+            .expect("busy endpoint present");
+        let calm = statuses
+            .iter()
+            .find(|s| s.endpoint == "https://api.calm.example/v1")
+            .expect("calm endpoint present");
+        assert!(busy.is_throttled());
+        assert!(!calm.is_throttled());
     }
 }

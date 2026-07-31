@@ -24,7 +24,7 @@ use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, bash_live, config, extra_roots, history, host, inspect, logging, mcp,
     permission_path, persistence, plan_tasks, policy, propose_plan, session_store, skills,
-    subagent, system_prompt, tool_names, tool_runner, watch, ToolRegistry,
+    subagent, system_prompt, throttle, tool_names, tool_runner, watch, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -1200,6 +1200,12 @@ async fn main() -> Result<()> {
     let bash_responder_handle =
         bash_live::spawn_bash_responder(&holly, tools.clone(), live_bash.clone(), bash_tool_config);
 
+    // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141): polls
+    // the shared `HttpClient` (the same one injected into the TUI at
+    // `tui::mod::run`) and emits `OutEvent::Throttle` so stdio/WS heads see a
+    // 429 cool-down or pacing slowdown too, not just the TUI's direct poll.
+    let throttle_handle = throttle::spawn_throttle_responder(&holly, http_client.clone());
+
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
     // Answer `ReplayFrom` late-subscriber history queries from that same log
@@ -1376,6 +1382,7 @@ async fn main() -> Result<()> {
     tool_executor.abort();
     mcp_responder_handle.abort();
     bash_responder_handle.abort();
+    throttle_handle.abort();
     history_handle.abort();
     if let Some(h) = watcher_handle {
         h.abort();

@@ -131,9 +131,17 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   (or via the leader `t` key, which toggles the most recent block of either kind).
   The bottom **info line** (`draw_input_info`) shows `provider · model | tokens`
   and — *only while an endpoint is backing off* — a red throttle indicator
-  (`⚠ host throttled · retry Ns · in/cap`) polled from
+  (`⚠ host throttled · retry Ns · in/cap`, or `⚠ host pacing · next Ns · in/cap`
+  while the adaptive gate alone has slowed, #517) polled from
   `HttpClient::throttle_status()`; it no longer duplicates the keybinding hints
-  (those live in the input-box placeholder). **Attention signals** (issue #14, `tui::attention`):
+  (those live in the input-box placeholder). The same throttle state also
+  reaches **stdio/WS heads**, which have no direct `HttpClient` handle: the
+  runtime's `throttle::spawn_throttle_responder` polls every endpoint and
+  emits a wire-visible `OutEvent::Throttle` on each one's own enter/exit
+  transition (#517, [ADR-0141](../adr/0141-wire-visible-throttle-transitions.md)) —
+  engine-global, not per-session, since the resilience pool is per-endpoint
+  (ADR-0050). `run --format text` renders it in full; `serve` relays it like
+  any other frame. **Attention signals** (issue #14, `tui::attention`):
   a `Status` transition into `WaitingApproval`, `Done`, or `Error` rings the
   terminal bell — and, opt-in via `ENTANGLEMENT_TUI_NOTIFY=1`, emits an OSC 9
   desktop notification (iTerm2/kitty/WezTerm; silently dropped elsewhere). Core

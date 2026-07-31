@@ -257,6 +257,29 @@ impl Holly {
         let _ = self.events.send(OutEvent::BashChanged { enabled, grade });
     }
 
+    /// Broadcast a runtime-authored [`OutEvent::Throttle`] transition (#517,
+    /// ADR-0141). No `seq` — a point-in-time engine-global lifecycle event, not
+    /// session content, exactly like [`emit_bash_changed`][Self::emit_bash_changed].
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_throttle(
+        &self,
+        endpoint: String,
+        throttled: bool,
+        in_flight: usize,
+        cap: usize,
+        retry_in_ms: Option<u64>,
+        pacing_in_ms: Option<u64>,
+    ) {
+        let _ = self.events.send(OutEvent::Throttle {
+            endpoint,
+            throttled,
+            in_flight,
+            cap,
+            retry_in_ms,
+            pacing_in_ms,
+        });
+    }
+
     /// Mint the next seq for `session` from the shared registry, or `0` when the
     /// session has no live counter (ended / never started). Shared by
     /// [`emit_for_session`][Self::emit_for_session] and the supervisor's
