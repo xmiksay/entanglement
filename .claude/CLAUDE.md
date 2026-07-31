@@ -1105,9 +1105,13 @@ background approvals/questions surfaced above the input box with `Ctrl+G`/click
 jump, short session ids + first-prompt descriptions, click-to-select sidebar),
 web-search post-MVP follow-ups (#481, persisted `ProviderSearch` blocks +
 `pause_turn` continuation), session-scoped directory grants (#486), `ask_user`
-v2 (#488), root-relative permission-arg grading (#485), `glob`/`grep`
-escape-root search via durable grant (#482), live bash enablement (#498),
-per-profile sandbox scoping (#479), and the build-speed trims (#502).
+v2 (#488) and its TUI draft-until-submit follow-up (#518,
+[ADR-0143](../docs/adr/0143-ask-user-draft-until-submit.md): answers are
+revisable drafts across the batch, with back navigation and an explicit
+Submit step, until sent), root-relative permission-arg grading (#485),
+`glob`/`grep` escape-root search via durable grant (#482), live bash
+enablement (#498), per-profile sandbox scoping (#479), and the build-speed
+trims (#502).
 Since 0.5.0, per-model concurrency caps (#521,
 [ADR-0140](../docs/adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md))
 layer a second, tighter admission gate on top of the per-endpoint one — z.ai

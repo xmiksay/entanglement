@@ -309,7 +309,7 @@ fn user_question_sets_pending_then_status_clears() {
 }
 
 #[test]
-fn multi_question_call_walks_sequentially_and_returns_answers_on_last() {
+fn multi_question_call_walks_sequentially_then_reviews_before_submit() {
     use entanglement_core::{Question, QuestionOption, Questions};
     let mut v = SessionView::new();
     v.apply_event(OutEvent::UserQuestion {
@@ -343,21 +343,28 @@ fn multi_question_call_walks_sequentially_and_returns_answers_on_last() {
     });
 
     assert_eq!(v.pending_question().unwrap().progress(), (1, 2));
-    // Answering the first question doesn't complete the call yet.
-    assert_eq!(v.commit_question_answer(vec!["Postgres".into()]), None);
+    // Answering the first question doesn't complete the call yet, and
+    // nothing is ready to submit (#518).
+    v.commit_question_answer(vec!["Postgres".into()]);
     assert!(v.is_asking(), "the call stays parked on its next question");
+    assert!(!v.pending_question().unwrap().is_reviewing());
+    assert_eq!(v.question_answers_for_submit(), None);
     let q = v.pending_question().unwrap();
     assert_eq!(q.progress(), (2, 2));
     assert!(q.is_multi_select());
     assert_eq!(q.selected, 0, "selection state resets for the new question");
 
-    // Toggle both regions, then submit — this is the last question.
+    // Toggle both regions, then commit the last question — this reaches the
+    // review step, not an immediate send.
     v.question_toggle();
     v.question_move(1);
     v.question_toggle();
+    v.commit_question_answer(vec!["us-east".into(), "eu-west".into()]);
+    assert!(v.pending_question().unwrap().is_reviewing());
+    assert!(v.is_asking(), "still parked — nothing sent before Submit");
     let answers = v
-        .commit_question_answer(vec!["us-east".into(), "eu-west".into()])
-        .expect("last question's commit returns the full answers list");
+        .question_answers_for_submit()
+        .expect("every question has a draft, so the batch is ready to submit");
     assert_eq!(
         answers,
         vec![
@@ -365,6 +372,121 @@ fn multi_question_call_walks_sequentially_and_returns_answers_on_last() {
             vec!["us-east".to_string(), "eu-west".to_string()]
         ]
     );
+}
+
+#[test]
+fn revising_an_earlier_draft_after_stepping_back_changes_the_final_submission() {
+    // Draft-until-submit (#518): the user answers both questions, steps back
+    // to the first, changes their mind, then steps forward again — the
+    // review step must reflect the revised answer, not the original one.
+    use entanglement_core::{Question, QuestionOption, Questions};
+    let mut v = SessionView::new();
+    v.apply_event(OutEvent::UserQuestion {
+        session: sid(),
+        seq: 1,
+        request_id: "q1".into(),
+        questions: Questions(vec![
+            Question {
+                question: "Which DB?".into(),
+                options: vec![
+                    QuestionOption {
+                        label: "Postgres".into(),
+                        description: None,
+                    },
+                    QuestionOption {
+                        label: "MySQL".into(),
+                        description: None,
+                    },
+                ],
+                multi_select: false,
+            },
+            Question {
+                question: "Which region?".into(),
+                options: vec![QuestionOption {
+                    label: "us-east".into(),
+                    description: None,
+                }],
+                multi_select: false,
+            },
+        ]),
+    });
+
+    v.commit_question_answer(vec!["Postgres".into()]);
+    v.commit_question_answer(vec!["us-east".into()]);
+    assert!(v.pending_question().unwrap().is_reviewing());
+
+    // Step back from the review step, then back again to the first question.
+    v.question_retreat();
+    assert!(!v.pending_question().unwrap().is_reviewing());
+    assert_eq!(v.pending_question().unwrap().progress(), (2, 2));
+    v.question_retreat();
+    let q = v.pending_question().unwrap();
+    assert_eq!(q.progress(), (1, 2));
+    assert_eq!(
+        q.selected, 0,
+        "the previous draft (Postgres) is restored on screen"
+    );
+
+    // A retreat on the very first question is a no-op.
+    v.question_retreat();
+    assert_eq!(v.pending_question().unwrap().progress(), (1, 2));
+
+    // Revise: pick MySQL instead, then walk forward again — the second
+    // question's untouched draft rides along unchanged.
+    v.commit_question_answer(vec!["MySQL".into()]);
+    assert_eq!(
+        v.pending_question().unwrap().selected,
+        0,
+        "us-east restored"
+    );
+    v.commit_question_answer(vec!["us-east".into()]);
+
+    assert_eq!(
+        v.question_answers_for_submit(),
+        Some(vec![vec!["MySQL".to_string()], vec!["us-east".to_string()]]),
+        "the revised answer replaces the original draft in place"
+    );
+}
+
+#[test]
+fn retreating_to_an_empty_multi_select_draft_does_not_reopen_free_form() {
+    // An explicit "nothing checked" multi-select submission is a valid draft
+    // (`Vec::new()`, not a custom free-text answer) — stepping back to it must
+    // not be mistaken for a free-form answer and reopen text entry (#518).
+    use entanglement_core::{Question, QuestionOption, Questions};
+    let mut v = SessionView::new();
+    v.apply_event(OutEvent::UserQuestion {
+        session: sid(),
+        seq: 1,
+        request_id: "q1".into(),
+        questions: Questions(vec![
+            Question {
+                question: "Which regions?".into(),
+                options: vec![QuestionOption {
+                    label: "us-east".into(),
+                    description: None,
+                }],
+                multi_select: true,
+            },
+            Question {
+                question: "Confirm?".into(),
+                options: vec![QuestionOption {
+                    label: "yes".into(),
+                    description: None,
+                }],
+                multi_select: false,
+            },
+        ]),
+    });
+
+    v.commit_question_answer(vec![]); // nothing checked
+    v.commit_question_answer(vec!["yes".into()]);
+    assert!(v.pending_question().unwrap().is_reviewing());
+
+    v.question_retreat();
+    let q = v.pending_question().unwrap();
+    assert!(!q.entering_free_form, "not treated as a free-form answer");
+    assert!(q.picked.is_empty(), "no option was checked");
 }
 
 #[test]
@@ -385,8 +507,12 @@ fn question_toggle_is_a_no_op_for_single_select() {
         }]),
     });
     v.question_toggle();
+    v.commit_question_answer(vec!["A".into()]);
+    // A single-question call also lands on the review step rather than
+    // sending immediately (#518: consistency with multi-question batches).
+    assert!(v.pending_question().unwrap().is_reviewing());
     assert_eq!(
-        v.commit_question_answer(vec!["A".into()]),
+        v.question_answers_for_submit(),
         Some(vec![vec!["A".into()]])
     );
 }

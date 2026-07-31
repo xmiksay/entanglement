@@ -549,19 +549,23 @@ pub(super) async fn handle_resume_modal_event(
     Ok(false)
 }
 
-/// Submits `answer` for the pending call's current question. If that
-/// completes every question in the call, sends the buffered per-question
-/// answers as one [`InMsg::AnswerQuestion`] and promotes the next queued call,
-/// if any (#273, #488) — otherwise the same call stays parked on its next
-/// question.
-async fn submit_current_answer(
+/// Records `answer` as a draft for the pending call's current question and
+/// steps forward — to its next question, or to the review/submit step once
+/// every question in the call has a draft (#518). Nothing is sent here.
+fn commit_current_answer(app: &mut App, answer: Vec<String>) {
+    app.commit_question_answer(answer);
+}
+
+/// Sends the front call's drafted answers as one [`InMsg::AnswerQuestion`] and
+/// promotes the next queued call, if any (#273, #488, #518) — the explicit
+/// Submit action, only reachable once every question has a draft.
+async fn submit_pending_question(
     app: &mut App,
     holly: &Holly,
     session: &entanglement_core::SessionId,
     request_id: &str,
-    answer: Vec<String>,
 ) {
-    if let Some(answers) = app.commit_question_answer(answer) {
+    if let Some(answers) = app.question_answers_for_submit() {
         let _ = holly
             .send(InMsg::answer_question(
                 session.clone(),
@@ -573,13 +577,17 @@ async fn submit_current_answer(
     }
 }
 
-/// Drive a pending `ask_user` call (#488, supersedes parts of ADR-0027):
-/// arrow/number selection over the labelled options (checkboxes + `Space`
-/// toggle for a multi-select question), plus an always-available "Other"
-/// entry that opens the shared input box for a free-text answer. Once every
-/// question in the call is answered, the buffered per-question answers return
-/// as one [`InMsg::AnswerQuestion`]; `Esc` interrupts the turn like an
-/// approval.
+/// Drive a pending `ask_user` call (#488, supersedes parts of ADR-0027; #518
+/// draft-until-submit): arrow/number selection over the labelled options
+/// (checkboxes + `Space` toggle for a multi-select question), plus an
+/// always-available "Other" entry that opens the shared input box for a
+/// free-text answer. Answers are drafts — `Left`/`Backspace` steps back to any
+/// earlier question in the batch to revise it, and once every question has a
+/// draft the call parks on a review step whose own `Enter` is the one explicit
+/// Submit that sends the batch as a single [`InMsg::AnswerQuestion`]. `Esc`
+/// while editing a question interrupts the turn like an approval; `Esc` on
+/// the review step just steps back to revise instead (sends nothing, keeps
+/// the call parked).
 pub(super) async fn handle_question_event(
     app: &mut App,
     holly: &Holly,
@@ -589,9 +597,28 @@ pub(super) async fn handle_question_event(
         return Ok(false);
     };
     let request_id = q.request_id.clone();
+    let session = app.active_session_id().clone();
+
+    if q.is_reviewing() {
+        match key.code {
+            KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
+                return Ok(true);
+            }
+            KeyCode::Enter => {
+                submit_pending_question(app, holly, &session, &request_id).await;
+            }
+            KeyCode::Left | KeyCode::Backspace | KeyCode::Esc => {
+                app.question_retreat();
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
     let entering = q.entering_free_form;
     let free_form_selected = q.free_form_selected();
     let multi_select = q.is_multi_select();
+    let can_retreat = q.current > 0;
     let selected_label = q
         .current_question()
         .options
@@ -605,8 +632,6 @@ pub(super) async fn handle_question_event(
             .filter_map(|i| options.get(i).map(|o| o.label.clone()))
             .collect()
     };
-
-    let session = app.active_session_id().clone();
 
     if entering {
         // Shared input-edit keys (Ctrl+arrows, Home/End, doc jumps, Alt+Enter
@@ -622,7 +647,7 @@ pub(super) async fn handle_question_event(
             KeyCode::Enter => {
                 let text = app.take_input_text();
                 if !text.is_empty() {
-                    submit_current_answer(app, holly, &session, &request_id, vec![text]).await;
+                    commit_current_answer(app, vec![text]);
                 }
             }
             KeyCode::Char(c) => app.input().insert_char(c),
@@ -643,8 +668,13 @@ pub(super) async fn handle_question_event(
         KeyCode::PageUp => app.question_page(-(DIALOG_PAGE_SIZE as isize)),
         KeyCode::PageDown => app.question_page(DIALOG_PAGE_SIZE as isize),
         KeyCode::Char(' ') => app.question_toggle(),
+        // Back to the previous question to revise it (#518) — a no-op on the
+        // batch's first question.
+        KeyCode::Left | KeyCode::Backspace if can_retreat => {
+            app.question_retreat();
+        }
         // Quick-pick by number: options are 1-based; the "Other" entry follows.
-        // Multi-select toggles the option; single-select submits immediately.
+        // Multi-select toggles the option; single-select commits immediately.
         KeyCode::Char(c @ '1'..='9') => {
             let idx = (c as u8 - b'1') as usize;
             let opt_count = app
@@ -660,7 +690,7 @@ pub(super) async fn handle_question_event(
                         .get(idx)
                         .map(|o| o.label.clone())
                 }) {
-                    submit_current_answer(app, holly, &session, &request_id, vec![label]).await;
+                    commit_current_answer(app, vec![label]);
                 }
             } else if idx == opt_count {
                 app.question_begin_free_form();
@@ -670,9 +700,9 @@ pub(super) async fn handle_question_event(
             if free_form_selected {
                 app.question_begin_free_form();
             } else if multi_select {
-                submit_current_answer(app, holly, &session, &request_id, picked_labels).await;
+                commit_current_answer(app, picked_labels);
             } else if let Some(label) = selected_label {
-                submit_current_answer(app, holly, &session, &request_id, vec![label]).await;
+                commit_current_answer(app, vec![label]);
             }
         }
         KeyCode::Esc => {
@@ -687,8 +717,156 @@ pub(super) async fn handle_question_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::{OutEvent, SessionId};
+    use entanglement_core::{
+        EngineConfig, OutEvent, Question, QuestionOption, Questions, SessionId,
+    };
     use ratatui::{backend::TestBackend, Terminal};
+
+    fn engine() -> Holly {
+        Holly::spawn(EngineConfig::default())
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn two_question_call(request_id: &str, session: &SessionId) -> OutEvent {
+        OutEvent::UserQuestion {
+            session: session.clone(),
+            seq: 1,
+            request_id: request_id.into(),
+            questions: Questions(vec![
+                Question {
+                    question: "Which DB?".into(),
+                    options: vec![
+                        QuestionOption {
+                            label: "Postgres".into(),
+                            description: None,
+                        },
+                        QuestionOption {
+                            label: "MySQL".into(),
+                            description: None,
+                        },
+                    ],
+                    multi_select: false,
+                },
+                Question {
+                    question: "Which region?".into(),
+                    options: vec![QuestionOption {
+                        label: "us-east".into(),
+                        description: None,
+                    }],
+                    multi_select: false,
+                },
+            ]),
+        }
+    }
+
+    /// #518: answers are drafts across the batch — revising the first question
+    /// after stepping back changes what the eventual `AnswerQuestion` carries,
+    /// and nothing is sent to the engine until the explicit Submit at the
+    /// review step. Neither `commit_current_answer` nor `question_retreat`
+    /// take a `Holly` handle at all, so this isn't a timing race: no `send`
+    /// call can have happened before the assertion.
+    #[tokio::test]
+    async fn draft_revise_then_submit_sends_only_the_final_answers() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut inbound = holly.subscribe_inbound();
+        app.handle_out_event(two_question_call("q1", &sid));
+
+        // Answer both questions, reaching the review step.
+        handle_question_event(&mut app, &holly, key(KeyCode::Char('1')))
+            .await
+            .unwrap(); // Postgres
+        handle_question_event(&mut app, &holly, key(KeyCode::Char('1')))
+            .await
+            .unwrap(); // us-east
+        assert!(app.pending_question().unwrap().is_reviewing());
+        assert!(
+            inbound.try_recv().is_err(),
+            "no AnswerQuestion before Submit"
+        );
+
+        // Step back to the first question and change the answer.
+        handle_question_event(&mut app, &holly, key(KeyCode::Left))
+            .await
+            .unwrap(); // back to the review step's last question
+        handle_question_event(&mut app, &holly, key(KeyCode::Left))
+            .await
+            .unwrap(); // back to the first question
+        handle_question_event(&mut app, &holly, key(KeyCode::Char('2')))
+            .await
+            .unwrap(); // MySQL instead
+        handle_question_event(&mut app, &holly, key(KeyCode::Char('1')))
+            .await
+            .unwrap(); // us-east again, reaching review
+        assert!(app.pending_question().unwrap().is_reviewing());
+        assert!(
+            inbound.try_recv().is_err(),
+            "still nothing sent — revising a draft never sends by itself"
+        );
+
+        // The explicit Submit sends the one AnswerQuestion frame, reflecting
+        // the revised first answer.
+        handle_question_event(&mut app, &holly, key(KeyCode::Enter))
+            .await
+            .unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), inbound.recv())
+            .await
+            .expect("AnswerQuestion arrives on the inbound fan-out")
+            .unwrap();
+        match msg {
+            InMsg::AnswerQuestion {
+                request_id,
+                answers,
+                ..
+            } => {
+                assert_eq!(request_id, "q1");
+                assert_eq!(
+                    answers,
+                    vec![vec!["MySQL".to_string()], vec!["us-east".to_string()]]
+                );
+            }
+            other => panic!("expected AnswerQuestion, got {other:?}"),
+        }
+        assert!(!app.is_asking(), "the call is popped once submitted");
+    }
+
+    /// #518: cancelling out of the review step (`Esc`) must not send anything
+    /// and must leave the call parked, revisable — distinct from a mid-question
+    /// `Esc`, which still interrupts the turn (unchanged by this issue).
+    #[tokio::test]
+    async fn esc_at_the_review_step_sends_nothing_and_keeps_the_call_parked() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut inbound = holly.subscribe_inbound();
+        app.handle_out_event(two_question_call("q1", &sid));
+
+        handle_question_event(&mut app, &holly, key(KeyCode::Char('1')))
+            .await
+            .unwrap();
+        handle_question_event(&mut app, &holly, key(KeyCode::Char('1')))
+            .await
+            .unwrap();
+        assert!(app.pending_question().unwrap().is_reviewing());
+
+        handle_question_event(&mut app, &holly, key(KeyCode::Esc))
+            .await
+            .unwrap();
+
+        assert!(
+            inbound.try_recv().is_err(),
+            "Esc at the review step sends nothing"
+        );
+        assert!(app.is_asking(), "the call stays parked, not cleared");
+        assert!(
+            !app.pending_question().unwrap().is_reviewing(),
+            "Esc stepped back to revise rather than cancelling the whole call"
+        );
+    }
 
     /// A bare left click (down + up, no drag) on a sidebar session row must
     /// switch the active session; the attention panel must route a click to

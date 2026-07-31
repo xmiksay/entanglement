@@ -46,7 +46,11 @@ pub(crate) fn background_attention(app: &App) -> Vec<AttentionItem> {
                     .unwrap_or_default();
                 format!("{word}: {tool}{arg}")
             } else if let Some(q) = view.pending_question() {
-                format!("{word}: {}", q.current_question().question)
+                if q.is_reviewing() {
+                    format!("{word}: review your answers")
+                } else {
+                    format!("{word}: {}", q.current_question().question)
+                }
             } else {
                 word.to_string()
             };
