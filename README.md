@@ -66,19 +66,24 @@ filtered out of the primary cycle and only reachable via spawn. Built-ins:
 
 The permission profile (`Allow | Ask | Deny` per tool, name-or-`*` or
 argument-scoped `tool(pattern)`) drives the approval flow. `build` allows
-everything; `plan` **asks** by default and, since #140, its `tools:` allowlist
-masks `edit`/`write` out of the toolset entirely (so it plans without touching
-files) — `explore` is the deny profile (read-only), the default spawn target;
-`debug` carries `build`'s own allow-everything permission (read/write/execute)
-for a spawned sub-agent that actually needs to reproduce, fix, and verify a
-bug. Permission resolution and approval live entirely in the runtime (#59).
+everything; `plan` **asks** by default and stays physically read-only apart
+from one carve-out — `write`/`edit` succeed only under `.entanglement/plans/`
+(#524, ADR-0142), the file a plan lives in (#513, ADR-0145) — `explore` is
+the deny profile (read-only), the default spawn target; `debug` carries
+`build`'s own allow-everything permission (read/write/execute) for a spawned
+sub-agent that actually needs to reproduce, fix, and verify a bug. Permission
+resolution and approval live entirely in the runtime (#59).
 
-Session snapshots (`OutEvent::Plan`, `OutEvent::TaskList` — both markdown
-`content`) are orthogonal — emitted by the runtime's `update_plan` /
-`update_tasks` state tools: permission-gated but carrying no host resource, so
-the runtime intercepts them out of the tool registry and emits the snapshot
-instead of dispatching (#231, ADR-0049). Every head renders plan/task panels
-natively.
+A plan is a **file** (`.entanglement/plans/<id>.md`), not an in-memory
+snapshot: the plan agent's one tool, `propose_plan(content | path)`,
+materializes or binds one, force-parks on approval every phase, and — on
+approve — spawns the sponsored `build` child *blocking*, folding its full
+report back so the plan agent can review, edit the file, and re-propose the
+next phase (#513, ADR-0145). `OutEvent::TaskList` (markdown `content`) is a
+separate, simpler snapshot from `update_tasks`: permission-gated but carrying
+no host resource, so the runtime intercepts it out of the tool registry and
+emits the snapshot instead of dispatching (#231, ADR-0049). Every head
+renders both natively.
 
 **Definitions are data, layered** (embedded < user < project, later wins).
 Agents (`ENTANGLEMENT_AGENTS_DIR`) and skills (`ENTANGLEMENT_SKILLS_DIR`) are

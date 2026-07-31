@@ -40,9 +40,11 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
     // changed re-parses markdown; an idle redraw clones owned lines (#342).
     let (mut lines, mut line_blocks) = app.render_cached_body(available_width, theme, user);
 
-    // Plan and task-list snapshots now live in the sidebar's "Plan Outline" /
-    // "Tasks" sections (Ctrl+X s, or /plan · /tasks), not inline at the top of
-    // the chat transcript (#325).
+    // The task-list snapshot lives in the sidebar's "Tasks" section (Ctrl+X s,
+    // or /tasks), not inline at the top of the chat transcript (#325). The
+    // plan itself renders full-width in the transcript at propose time (the
+    // approval prompt below already shows it) — the side-panel outline is
+    // gone (#513); `/plan` opens the bound file in `$EDITOR` instead.
 
     // The approval/question tail is small and changes every frame while parked,
     // so it renders fresh after the cached body rather than through the cache.

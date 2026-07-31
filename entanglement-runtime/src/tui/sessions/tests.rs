@@ -84,7 +84,11 @@ fn propose_plan_request_renders_accept_prompt_and_handoff_switches_session() {
         seq: 1,
         request_id: "pp1".to_string(),
         tool: crate::tool_names::PROPOSE_PLAN_TOOL.to_string(),
-        input: r##"{"plan":"# Do it"}"##.to_string(),
+        input: serde_json::json!({
+            "content": "# Do it",
+            "path": ".entanglement/plans/plan-s.md",
+        })
+        .to_string(),
     });
     assert!(matches!(
         reg.active_view().approval_mode(),
@@ -95,7 +99,8 @@ fn propose_plan_request_renders_accept_prompt_and_handoff_switches_session() {
         .pending_tool_request()
         .expect("pending propose_plan request");
     assert_eq!(tool, crate::tool_names::PROPOSE_PLAN_TOOL);
-    assert_eq!(crate::propose_plan::parse_plan(input), "# Do it");
+    let v: serde_json::Value = serde_json::from_str(input).unwrap();
+    assert_eq!(v["content"], "# Do it");
 
     // The handoff mints a fresh root build session and switches to it.
     let build_session = SessionId::new("build-fresh");

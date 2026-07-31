@@ -8,6 +8,29 @@ Versioning is [Semantic Versioning](https://semver.org/). The *why* and rejected
 alternatives behind each design decision live in the ADRs under
 [`docs/adr/`](docs/adr/); the referenced `ADR-####` tags link there.
 
+## [Unreleased]
+
+> **Wire-shape change:** `OutEvent::Plan` gains a `path: String` field
+> (`#[serde(default)]`, so a pre-#513 persisted log still replays).
+
+### Changed
+
+- **One plan tool, file-backed, with a blocking review loop** (#513,
+  ADR-0145, superseding ADR-0049's `update_plan` half and amending ADR-0138):
+  `update_plan` is removed — `propose_plan(content | path)` is the sole
+  plan-authorship tool. `content` materializes (or overwrites)
+  `.entanglement/plans/<short-session-id>.md`; `path` binds an existing
+  in-root `.md` file, refused with a re-read-required error if it changed
+  out of band since the session last touched it (a content-hash staleness
+  guard that never trips on the agent's own `write`/`edit` between build
+  phases). Every `propose_plan` force-parks on approval, every phase; on
+  approve, the sponsored `build` child spawn (#511/ADR-0138) is now
+  registered for cancellation, so `Stop` on the plan session actually
+  detaches from the blocking wait (the child keeps running; a second `Stop`
+  on the child cascades). The TUI's "Plan Outline" side panel is dropped for
+  a one-line `Plan: <path> (pending|accepted)` indicator, and `/plan` now
+  opens the bound file in `$EDITOR` instead of revealing the sidebar.
+
 ## [0.5.0] - 2026-07-24
 
 The TUI attention panel + session-panel overhaul (background approvals are no

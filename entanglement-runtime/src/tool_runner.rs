@@ -54,6 +54,7 @@ use crate::permission::{
 #[cfg(feature = "rhai")]
 use crate::permission::{clamp_to_base, effective_permission};
 use crate::permission_path::grading_arg;
+use crate::plan_files::PlanFileRegistry;
 use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver};
 use crate::seam;
 use crate::skills::load_skill::parse_skill_id;
@@ -360,6 +361,49 @@ pub fn spawn_tool_executor_with_policy(
         // `load_skill`; this loop is the sole writer of the clear path.
         let active_skill: Arc<Mutex<HashMap<SessionId, ActiveSkill>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        // The project root `propose_plan` materializes/resolves plan files
+        // against (#513): the same canonical root `escape_root` carries when
+        // wired (every full head). A wrapper with no escape-root policy (test
+        // helpers, a lean embedder) falls back to the process cwd — fine there
+        // since none of those callers exercise `propose_plan` against a shared
+        // working tree.
+        let plan_root: std::path::PathBuf = escape_root
+            .as_ref()
+            .map(|er| er.root.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        // Per-session plan-file staleness tracking (#513): kept fresh by
+        // `propose_plan` itself (below) and passively by the `FileChange`
+        // listener spawned right after this loop starts.
+        let plan_files: Arc<PlanFileRegistry> = Arc::new(PlanFileRegistry::new());
+        {
+            let mut file_changes = holly.subscribe();
+            let plan_files = plan_files.clone();
+            let plan_root = plan_root.clone();
+            tokio::spawn(async move {
+                loop {
+                    match file_changes.recv().await {
+                        Ok(OutEvent::FileChange {
+                            session,
+                            path,
+                            hash,
+                            ..
+                        }) => {
+                            let rel =
+                                crate::permission_path::rooted_arg(&plan_root, "write", &path);
+                            plan_files.note_file_change(&session, &rel, &hash);
+                        }
+                        Ok(_) => {}
+                        Err(RecvError::Lagged(_)) => {
+                            // Best-effort: a missed `FileChange` just means the
+                            // registry's next staleness check treats an
+                            // in-session edit as if it were external — fails
+                            // closed (asks the agent to re-read), never open.
+                        }
+                        Err(RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
         // Bounds the spawn tree (#76): tracks parent links from lifecycle events
         // and per-root spawn budgets. Lives in this single-threaded loop, so the
         // spawn decision below is race-free.
@@ -485,6 +529,8 @@ pub fn spawn_tool_executor_with_policy(
                     // The sandbox cache (#479) is equally moot — drop both maps.
                     sandbox.own.lock().unwrap().remove(&session);
                     sandbox.floor.lock().unwrap().remove(&session);
+                    // The plan-file staleness binding (#513) is moot too.
+                    plan_files.forget_session(&session);
                 }
                 // A skill's tool mask scopes one model turn (#400, ADR-0106):
                 // clear it here so a later turn can `load_skill` a different one
@@ -727,6 +773,8 @@ pub fn spawn_tool_executor_with_policy(
                             let registry = registry.clone();
                             let pending = pending.clone();
                             let holly = holly.clone();
+                            let plan_files = plan_files.clone();
+                            let plan_root = plan_root.clone();
                             // Bound the sponsored spawn (exempt from the per-root
                             // fan-out cap, not from depth). A refusal folds back
                             // as the tool result so the plan turn continues.
@@ -748,12 +796,26 @@ pub fn spawn_tool_executor_with_policy(
                                 }
                             };
                             if let Some(child) = sponsored {
-                                tokio::spawn(async move {
+                                // Registered with `CancelRegistry` (#513): a
+                                // `Stop` targeting the plan session aborts this
+                                // whole task at any point — the Ask-wait *and*
+                                // the post-approval blocking build-wait — with
+                                // no reply owed (core cancels the turn on the
+                                // same `Stop`). The sponsored build child is a
+                                // separate session with its own tasks, so
+                                // aborting this one never touches it: "detach"
+                                // is simply what an unregistered Stop already
+                                // does here. A head wanting to stop the child
+                                // too sends it a second, explicit `Stop`.
+                                let reg_session = session.clone();
+                                let handle = tokio::spawn(async move {
                                     crate::propose_plan::run_propose_plan(
                                         holly,
                                         pending,
                                         registry,
                                         child_events,
+                                        plan_files,
+                                        plan_root,
                                         session,
                                         request_id,
                                         input,
@@ -761,6 +823,10 @@ pub fn spawn_tool_executor_with_policy(
                                     )
                                     .await;
                                 });
+                                cancels.register(
+                                    &reg_session,
+                                    TaskCanceller::task(handle.abort_handle()),
+                                );
                             }
                         }
                         #[cfg(feature = "rhai")]
@@ -949,10 +1015,10 @@ async fn dispatch(
     // executable, and an `Always`-scoped approval could record a grant for a
     // tool that doesn't exist. Uses the same freshly-snapshotted `tools`
     // `dispatch` already received, so a live `McpAdd`/`McpRemove` (#372) is
-    // honored exactly as execution itself would see it. `update_plan`/
-    // `update_tasks` are runtime state tools with no registry entry (#231,
-    // ADR-0049) — `run_and_reply` handles them separately — so they're exempt
-    // from this registry check.
+    // honored exactly as execution itself would see it. `update_tasks` is a
+    // runtime state tool with no registry entry (#231, ADR-0049) —
+    // `run_and_reply` handles it separately — so it's exempt from this
+    // registry check.
     if !tools.contains(&tool) && !crate::plan_tasks::is_state_tool(&tool) {
         let output = tools.unknown_tool_message(&tool);
         seam::reply(holly, session, request_id, output).await;
@@ -1132,11 +1198,11 @@ async fn run_and_reply(
     tool: String,
     input: String,
 ) {
-    // `update_plan`/`update_tasks` carry no host resource (#231, ADR-0049): they
-    // are not in the registry. The runtime emits their `Plan`/`TaskList` snapshot
-    // — minting a **fresh** per-session seq (#157) so it takes an ordered place in
-    // the content stream instead of colliding with the parked `ToolExec` seq — and
-    // acks (text), instead of dispatching.
+    // `update_tasks` carries no host resource (#231, ADR-0049): it is not in
+    // the registry. The runtime emits its `TaskList` snapshot — minting a
+    // **fresh** per-session seq (#157) so it takes an ordered place in the
+    // content stream instead of colliding with the parked `ToolExec` seq —
+    // and acks (text), instead of dispatching.
     if crate::plan_tasks::is_state_tool(&tool) {
         holly.emit_for_session(&session, |seq| {
             crate::plan_tasks::state_event(&session, seq, &tool, &input)
@@ -1243,7 +1309,6 @@ fn set_thinking(holly: &Holly, session: &SessionId) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool_names::UPDATE_PLAN_TOOL;
 
     #[test]
     fn classify_maps_each_orchestration_tool_to_its_route() {
@@ -1268,7 +1333,7 @@ mod tests {
             "edit",
             "bash",
             "call",
-            UPDATE_PLAN_TOOL,
+            crate::tool_names::UPDATE_TASKS_TOOL,
             "",
         ] {
             assert_eq!(

@@ -1,22 +1,19 @@
-//! `update_plan` / `update_tasks` — runtime state tools (#231, ADR-0049).
+//! `update_tasks` — a runtime state tool (#231, ADR-0049).
 //!
-//! Migrated out of core, where they were engine built-ins. They carry no engine
-//! state: each call replaces the session's *display* plan/task outline and the
-//! runtime emits the corresponding [`OutEvent::Plan`]/[`OutEvent::TaskList`]
-//! snapshot. They round-trip via `ToolExec`/`ToolResult` like every host tool
-//! and resolve through the ordinary `Allow`/`Ask`/`Deny` permission path with no
-//! plan-authority special casing — the #175 read-only-mutation bug is closed by
-//! that gate together with the #116 tool mask (a read-only profile's allowlist
-//! omits them and its permission denies them).
+//! Migrated out of core, where it was an engine built-in. It carries no engine
+//! state: each call replaces the session's *display* task outline and the
+//! runtime emits the corresponding [`OutEvent::TaskList`] snapshot. It rides
+//! the ordinary `Allow`/`Ask`/`Deny` permission path with no special casing —
+//! the #175 read-only-mutation bug is closed by that gate together with the
+//! #116 tool mask (a read-only profile's allowlist omits it and its permission
+//! denies it).
 //!
-//! Plan authorship is default-closed: `update_plan` (and `propose_plan`) is
-//! advertised only to a profile that *explicitly* allowlists it (see
-//! [`plan_specs_for`] / [`explicitly_allowlists`]), so an inherit-all profile
-//! never gets it by accident — the replacement for the old `owns_plan` flag.
-//! `update_tasks` is general bookkeeping and rides the shared `tool_specs`.
+//! `update_tasks` is general bookkeeping and rides the shared `tool_specs`, so
+//! every unmasked profile advertises it (unlike plan authorship, which is
+//! default-closed — see `propose_plan::specs_for`, #513, ADR-0145).
 //!
-//! Seq note (#157): the runtime emits the `Plan`/`TaskList` snapshot with a
-//! **fresh** per-session seq minted from the session's shared counter via
+//! Seq note (#157): the runtime emits the `TaskList` snapshot with a **fresh**
+//! per-session seq minted from the session's shared counter via
 //! [`Holly::emit_for_session`][entanglement_core::Holly] — it no longer reuses
 //! the parked `ToolExec` seq — so the snapshot takes its own ordered place in the
 //! content stream and `(session, seq)` stays unique across authored events.
@@ -25,12 +22,12 @@
 
 use entanglement_core::{AgentProfile, OutEvent, SessionId, ToolSpec};
 
-use crate::tool_names::{UPDATE_PLAN_TOOL, UPDATE_TASKS_TOOL};
+use crate::tool_names::UPDATE_TASKS_TOOL;
 
-/// Whether `tool` is one of the state tools handled here — the runtime executor
-/// emits an event + acks instead of dispatching to the host [`ToolRegistry`].
+/// Whether `tool` is the state tool handled here — the runtime executor emits
+/// an event + acks instead of dispatching to the host [`ToolRegistry`].
 pub fn is_state_tool(tool: &str) -> bool {
-    tool == UPDATE_PLAN_TOOL || tool == UPDATE_TASKS_TOOL
+    tool == UPDATE_TASKS_TOOL
 }
 
 /// `update_tasks` schema, registered into `EngineConfig::tool_specs` so every
@@ -53,40 +50,10 @@ pub fn update_tasks_spec() -> ToolSpec {
     )
 }
 
-/// `update_plan` schema — plan authorship, advertised only per-profile.
-pub fn update_plan_spec() -> ToolSpec {
-    ToolSpec::with_schema(
-        UPDATE_PLAN_TOOL,
-        "Replace the strategy plan (markdown prose).",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The full plan document, in markdown."
-                }
-            },
-            "required": ["content"]
-        }),
-    )
-}
-
-/// The per-profile `update_plan` spec (#231): advertised only to a profile that
-/// *explicitly* allowlists `update_plan` — the default-closed plan-authority
-/// gate replacing the old core `owns_plan` flag. Empty otherwise. Appended to
-/// `EngineConfig::profile_tool_specs` and filtered again through core's #116
-/// mask, so the same allowlist entry keeps it advertised.
-pub fn plan_specs_for(profile: &AgentProfile) -> Vec<ToolSpec> {
-    if explicitly_allowlists(profile, UPDATE_PLAN_TOOL) {
-        vec![update_plan_spec()]
-    } else {
-        Vec::new()
-    }
-}
-
 /// Whether `profile` *explicitly* names `tool` in its `tools` allowlist. An
-/// inherit-all (`tools: None`) profile does **not** count: that keeps plan
-/// authorship default-closed for a profile that never opted in (#231, ADR-0049).
+/// inherit-all (`tools: None`) profile does **not** count — the default-closed
+/// gate `propose_plan::specs_for` uses for plan authorship (#231, ADR-0049;
+/// #513, ADR-0145).
 pub fn explicitly_allowlists(profile: &AgentProfile, tool: &str) -> bool {
     matches!(&profile.tools, Some(list) if list.iter().any(|t| t == tool))
 }
@@ -94,28 +61,19 @@ pub fn explicitly_allowlists(profile: &AgentProfile, tool: &str) -> bool {
 /// The snapshot `OutEvent` a state-tool call emits, parsed from its `content`
 /// input at `seq`. `None` when `tool` is not a state tool.
 pub fn state_event(session: &SessionId, seq: u64, tool: &str, input: &str) -> Option<OutEvent> {
-    let content = parse_content(input);
-    match tool {
-        UPDATE_PLAN_TOOL => Some(OutEvent::Plan {
-            session: session.clone(),
-            seq,
-            content,
-        }),
-        UPDATE_TASKS_TOOL => Some(OutEvent::TaskList {
-            session: session.clone(),
-            seq,
-            content,
-        }),
-        _ => None,
+    if tool != UPDATE_TASKS_TOOL {
+        return None;
     }
+    Some(OutEvent::TaskList {
+        session: session.clone(),
+        seq,
+        content: parse_content(input),
+    })
 }
 
 /// The tool-result acknowledgement folded back into the model's context.
-pub fn ack(tool: &str) -> String {
-    match tool {
-        UPDATE_PLAN_TOOL => "plan updated".to_string(),
-        _ => "tasks updated".to_string(),
-    }
+pub fn ack(_tool: &str) -> String {
+    "tasks updated".to_string()
 }
 
 /// Extract the `content` field from a state-tool input, degrading to the raw
@@ -161,26 +119,26 @@ mod tests {
     }
 
     #[test]
-    fn state_event_maps_tool_to_variant() {
+    fn state_event_maps_update_tasks_to_tasklist() {
         let s = SessionId::new("s");
-        assert!(matches!(
-            state_event(&s, 3, UPDATE_PLAN_TOOL, r#"{"content":"p"}"#),
-            Some(OutEvent::Plan { content, seq: 3, .. }) if content == "p"
-        ));
         assert!(matches!(
             state_event(&s, 4, UPDATE_TASKS_TOOL, r#"{"content":"t"}"#),
             Some(OutEvent::TaskList { content, seq: 4, .. }) if content == "t"
         ));
         assert!(state_event(&s, 5, "read", "{}").is_none());
+        assert!(state_event(&s, 5, "propose_plan", "{}").is_none());
     }
 
     #[test]
-    fn plan_authorship_is_default_closed() {
-        // Inherit-all never opts in; only an explicit allowlist entry grants it.
-        assert!(plan_specs_for(&profile(None)).is_empty());
-        assert!(plan_specs_for(&profile(Some(vec!["read"]))).is_empty());
-        let specs = plan_specs_for(&profile(Some(vec!["read", "update_plan"])));
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, UPDATE_PLAN_TOOL);
+    fn explicitly_allowlists_requires_exact_membership() {
+        assert!(!explicitly_allowlists(&profile(None), "propose_plan"));
+        assert!(!explicitly_allowlists(
+            &profile(Some(vec!["read"])),
+            "propose_plan"
+        ));
+        assert!(explicitly_allowlists(
+            &profile(Some(vec!["read", "propose_plan"])),
+            "propose_plan"
+        ));
     }
 }

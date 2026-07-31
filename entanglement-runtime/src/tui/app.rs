@@ -248,6 +248,12 @@ impl App {
         self.sessions.active_view().plan()
     }
 
+    /// The active session's bound plan file location (#513), for the
+    /// compact status-line indicator and the "open in $EDITOR" command.
+    pub fn plan_path(&self) -> Option<&str> {
+        self.sessions.active_view().plan_path()
+    }
+
     pub fn task_list(&self) -> Option<&String> {
         self.sessions.active_view().task_list()
     }
@@ -277,6 +283,16 @@ impl App {
         self.sessions
             .active_view_mut()
             .record_status("reload", message);
+        self.mark_dirty();
+    }
+
+    /// Records a head-side status line under `label` into the active
+    /// session's transcript — the generic form of [`Self::record_reload_status`]
+    /// for a one-off notice (e.g. `/plan` with no plan proposed yet, #513).
+    pub fn record_notice(&mut self, label: &str, message: String) {
+        self.sessions
+            .active_view_mut()
+            .record_status(label, message);
         self.mark_dirty();
     }
 

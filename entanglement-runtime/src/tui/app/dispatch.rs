@@ -28,7 +28,9 @@ impl App {
                 false
             }
             Command::Plan => {
-                self.show_sidebar();
+                // The plan side panel is dropped (#513): the bound plan file
+                // opens directly in `$EDITOR` instead.
+                self.request_effect(UiEffect::OpenPlanFile);
                 false
             }
             Command::Tasks => {
@@ -156,9 +158,12 @@ mod tests {
     }
 
     #[test]
-    fn plan_command_shows_the_sidebar() {
+    fn plan_command_requests_open_plan_file_effect() {
+        // #513: the plan side panel is dropped — `/plan` opens the bound plan
+        // file in `$EDITOR` instead of revealing a sidebar section.
         let mut app = App::new_for_test(SessionId::new("s1"));
-        app.execute_command(Command::Plan);
-        assert!(app.showing_sidebar(), "/plan reveals the sidebar");
+        let quit = app.execute_command(Command::Plan);
+        assert!(!quit, "/plan does not quit");
+        assert_eq!(app.take_pending_effect(), Some(UiEffect::OpenPlanFile));
     }
 }

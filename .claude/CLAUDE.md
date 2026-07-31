@@ -1166,6 +1166,28 @@ no daemon, no live cross-process semaphore), and the `Retry-After` cool-down;
 the AIMD pacing gate stays per-process (v1). Falls back to pure in-process
 gating when the state directory is unwritable or via the explicit
 `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` opt-out.
+Also since 0.5.0, a session can be explicitly **paused** — a hold distinct
+from both cancel and hibernate (#516,
+[ADR-0144](../docs/adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md)):
+`InMsg::PauseSession`/`ResumeSession` add a `Paused` `AgentState` that defers
+until the current stream/tool batch is safely parked, then holds with no
+cancel and no memory eviction; `ResumeSession` continues a drained-but-undriven
+parked batch with no re-prompt.
+Also since 0.5.0, the plan tool is unified and file-backed (#513,
+[ADR-0145](../docs/adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md),
+superseding [ADR-0049](../docs/adr/0049-plan-task-tools-as-runtime-state-tools.md)'s
+`update_plan` half): `propose_plan(content | path)` is the sole plan-authorship
+tool — `content` materializes `.entanglement/plans/<short-id>.md`, `path`
+binds an existing one, refused if changed out of band since the session last
+touched it (a content-hash staleness guard, `plan_files.rs`, kept fresh by a
+passive `FileChange`-broadcast listener so the agent's own edits between
+build phases never trip it). Every `propose_plan` force-parks on `Ask`; on
+approve the sponsored `build` child spawn (#511/ADR-0138) — already
+structurally blocking — is now registered with `CancelRegistry`, so `Stop` on
+the plan session actually detaches (the child keeps running; cascading to it
+too is just a second `Stop`, no new protocol). The TUI's truncated "Plan
+Outline" side panel is gone, replaced by a one-line `Plan: <path>
+(pending|accepted)` indicator and `/plan` opening the file in `$EDITOR`.
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,

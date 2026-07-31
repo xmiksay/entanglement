@@ -226,18 +226,18 @@ async fn build_config(
     // spawn, and a non-spawning profile gets nothing — so it lives in
     // `profile_tool_specs` (appended by core for the active profile), not the
     // shared `tool_specs`. Empty entries are simply omitted.
-    // Plan authorship (#231, ADR-0049): `update_plan` and the `propose_plan`
-    // finalize step are advertised only to a profile that *explicitly* allowlists
-    // them — the default-closed gate that replaces the old `owns_plan` flag, so
-    // they never leak to an inherit-all profile. They ride the same per-profile
-    // seam as the spawn family; core's #116 mask filters them again at turn time.
+    // Plan authorship (#231, ADR-0049; #513, ADR-0145): `propose_plan` — the
+    // sole plan-authorship tool, `update_plan` removed — is advertised only to
+    // a profile that *explicitly* allowlists it — the default-closed gate that
+    // replaces the old `owns_plan` flag, so it never leaks to an inherit-all
+    // profile. It rides the same per-profile seam as the spawn family; core's
+    // #116 mask filters it again at turn time.
     let profile_tool_specs = cfg
         .profiles
         .iter()
         .filter_map(|p| {
             let mut specs = subagent::spawn_specs_for(p, &cfg.profiles);
             specs.extend(propose_plan::specs_for(p));
-            specs.extend(plan_tasks::plan_specs_for(p));
             (!specs.is_empty()).then(|| (p.name.clone(), specs))
         })
         .collect();
@@ -245,7 +245,7 @@ async fn build_config(
     // `update_tasks` is a runtime state tool (#231): general progress bookkeeping,
     // no cross-agent authority, so it rides the shared specs (a read-only profile
     // masks it out via its allowlist + permission). The runtime executor
-    // intercepts it — and `update_plan` — to emit the `Plan`/`TaskList` snapshot.
+    // intercepts it to emit the `TaskList` snapshot.
     cfg.tool_specs.push(plan_tasks::update_tasks_spec());
     // `ask_user` is likewise runtime-owned (#90) but not a spawn tool: every
     // profile may surface a decision prompt, so it stays in the shared specs.

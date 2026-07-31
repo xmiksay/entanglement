@@ -1,5 +1,4 @@
 use entanglement_core::{AgentState, SessionId};
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span, Text},
@@ -106,33 +105,23 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
 
     lines.push(Line::from(""));
 
-    if let Some(plan_content) = app.plan() {
-        lines.push(Line::from("Plan Outline").bold());
-
-        let mut current_level = 0;
-        let parser = Parser::new(plan_content);
-
-        for event in parser {
-            match event {
-                Event::Start(Tag::Heading { level, .. }) => {
-                    current_level = level as usize;
-                }
-                Event::End(TagEnd::Heading(_)) => {
-                    current_level = 0;
-                }
-                Event::Text(text) if current_level > 0 => {
-                    let indent = "  ".repeat(current_level.min(3));
-                    let prefix = match current_level {
-                        1 => "# ",
-                        2 => "## ",
-                        _ => "• ",
-                    };
-                    let content = format!("{}{}{}", indent, prefix, text);
-                    lines.push(Line::from(crate::tui::wrap::truncate(&content, 40)));
-                }
-                _ => {}
-            }
-        }
+    // Compact one-line plan indicator (#513) — the side panel's full plan
+    // outline is dropped; the plan renders full-width in the transcript at
+    // propose time instead (the approval prompt already shows it). This line
+    // just names the bound file so `/plan` (open in $EDITOR) has a visible
+    // target, plus a pending/accepted hint from the approval queue.
+    if let Some(path) = app.plan_path() {
+        let pending = app
+            .sessions()
+            .into_iter()
+            .find(|(id, _)| id.0 == active_id.0)
+            .and_then(|(_, view)| view.pending_tool_request())
+            .map(|(_, tool, _)| tool == crate::tool_names::PROPOSE_PLAN_TOOL)
+            .unwrap_or(false);
+        let status = if pending { "pending" } else { "accepted" };
+        let text = crate::tui::wrap::truncate(&format!("Plan: {path} ({status})"), inner_width);
+        lines.push(Line::from(Span::styled(text, Style::default().dim())));
+        lines.push(Line::from(""));
     }
 
     if let Some(tasks) = app.task_list() {
@@ -196,26 +185,59 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_truncates_multibyte_heading_without_panic() {
-        // A plan heading whose bytes exceed 40 but whose chars are multibyte
-        // (CJK): a fixed byte slice at offset 37 lands mid-codepoint and panics.
-        // Width-based truncation must render it and cap it with an ellipsis.
+    fn sidebar_truncates_a_long_plan_path_without_panic() {
+        // A plan path with multibyte chars long enough to need truncation: a
+        // fixed byte slice would land mid-codepoint and panic. Width-based
+        // truncation must render it and cap it with an ellipsis.
         let sid = SessionId::new("s1");
         let mut app = App::new_for_test(sid.clone());
         app.handle_out_event(OutEvent::Plan {
             session: sid.clone(),
             seq: 1,
-            content: "# 日本語のとても長い見出しテキストで四十バイトを優に超える長さ".to_string(),
+            content: "# Plan".to_string(),
+            path: ".entanglement/plans/日本語のとても長いファイル名になっている.md".to_string(),
         });
 
-        // Draw wide enough for the sidebar column; the assertion is that this
-        // does not panic while building the truncated outline line.
         let text = render_sidebar(&mut app, 44, 12);
-        assert!(text.contains("..."), "long heading should be truncated");
+        assert!(text.contains("..."), "long plan path should be truncated");
         assert!(
-            text.contains("Plan Outline"),
-            "sidebar should show the plan outline section"
+            text.contains("Plan:"),
+            "sidebar should show the plan indicator"
         );
+    }
+
+    #[test]
+    fn sidebar_shows_plan_indicator_with_path_and_status() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        app.handle_out_event(OutEvent::Plan {
+            session: sid.clone(),
+            seq: 1,
+            content: "# Plan".to_string(),
+            path: ".entanglement/plans/s1.md".to_string(),
+        });
+
+        let text = render_sidebar(&mut app, 60, 12);
+        assert!(
+            text.contains("Plan: .entanglement/plans/s1.md"),
+            "sidebar should name the bound plan file: {text}"
+        );
+        assert!(
+            text.contains("accepted"),
+            "no pending approval yet, so the indicator should read accepted: {text}"
+        );
+        assert!(
+            !text.contains("Plan Outline"),
+            "the plan outline panel must be removed (#513): {text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_omits_plan_indicator_when_no_plan_is_bound() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let text = render_sidebar(&mut app, 44, 12);
+        assert!(!text.contains("Plan:"), "no plan bound yet: {text}");
     }
 
     #[test]

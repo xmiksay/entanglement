@@ -114,9 +114,12 @@ impl SessionView {
             // Generation-parameter changes (#374) have no dedicated TUI surface
             // yet (#376 owns the `/set`/`/show` display) — no view state to fold.
             OutEvent::GenerationChanged { .. } => false,
-            OutEvent::Plan { seq, content, .. } => {
+            OutEvent::Plan {
+                seq, content, path, ..
+            } => {
                 if seq > self.last_seen_seq {
                     self.plan = Some(content);
+                    self.plan_path = Some(path);
                     self.last_seen_seq = seq;
                     true
                 } else {

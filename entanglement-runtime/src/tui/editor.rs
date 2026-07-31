@@ -55,6 +55,14 @@ pub fn run_effect(terminal: &mut Term, app: &mut App, effect: UiEffect) -> Resul
             tracing::info!("exported transcript to {}", path.display());
             suspended(terminal, || launch_editor(&path, &editor))?;
         }
+        UiEffect::OpenPlanFile => {
+            let Some(plan_path) = app.plan_path().map(str::to_string) else {
+                app.record_notice("plan", "no plan proposed yet in this session".to_string());
+                return Ok(());
+            };
+            let path = app.root().join(&plan_path);
+            suspended(terminal, || launch_editor(&path, &editor))?;
+        }
         // Clipboard write needs no terminal suspend (OSC 52 is a control string,
         // not a visible cursor move) — just write it to the backend in place.
         UiEffect::CopyToClipboard(text) => {

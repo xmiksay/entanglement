@@ -1,10 +1,16 @@
 # 0049. `update_plan`/`update_tasks` as runtime state tools
 
-- Status: Accepted
+- Status: Partially superseded by [ADR-0145](0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) (the `update_plan` half only — `update_tasks` is unaffected and stays as described here)
 - Date: 2026-07-12
 - Supersedes: [ADR-0041](0041-update-plan-ownership-default-closed.md) (in full);
   the core-side halves of [ADR-0004](0004-structured-plan-and-task-events.md) and
   [ADR-0039](0039-markdown-task-list.md) (plan/task state living on `Session`)
+
+> **Partially superseded (2026-07-31, #513).** `update_plan` is removed
+> entirely — `propose_plan` (schema now `content`/`path`, file-backed) is the
+> sole plan-authorship tool. `update_tasks` is untouched: still a runtime
+> state tool, still gated exactly as described below. See
+> [ADR-0145](0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md).
 
 ## Context
 
