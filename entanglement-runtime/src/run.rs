@@ -133,6 +133,7 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
             AgentState::WaitingAgent => writeln!(out, "… waiting for sub-agent")?,
             AgentState::WaitingApproval => writeln!(out, "… waiting for approval")?,
             AgentState::WaitingAnswer => writeln!(out, "… waiting for answer")?,
+            AgentState::Paused => writeln!(out, "‖ paused")?,
             AgentState::Error => writeln!(out, "! turn ended in error")?,
             _ => {}
         },

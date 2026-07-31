@@ -359,6 +359,32 @@ task pairs the abort with a cooperative stop flag the (un-abortable
 `spawn_blocking`) engine's progress callback polls, terminating it with an
 uncatchable `ErrorTerminated` the script can't `try`/`catch` and continue past.
 
+**Pause is a hold, not a cancel** (#516, [ADR-0144](../adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md)).
+`Session.paused: bool` (never persisted/replayed) is set by
+`SessionCmd::Pause`/cleared by `SessionCmd::Unpause`. It gates two of the
+existing gates rather than adding a new code path: every command that already
+checks `s.turn.is_some()` to decide "defer onto the stash" (`Prompt`,
+`SetAgent`, `SetModel`, `SetGeneration`, `Oneshot`) now checks
+`s.turn.is_some() || s.paused` — so an *idle* paused session defers its next
+`Prompt` exactly like a live turn defers a mid-turn one. The stash-pop
+condition at the top of the loop gained a matching `&& !s.paused` guard, or a
+deferred command would be immediately popped back off the queue and
+re-stashed (the same busy-loop the pre-existing "pop only when idle" comment
+already warns about). A **parked** batch's `ToolResult` handling is not
+gated the same way — an arriving result still resolves and folds into
+`Context` immediately (gating it would deadlock: the stash only drains once
+`s.turn` goes back to `None`, which needs every pending result resolved
+first) — instead, the `drive_turn` call that would normally fire once the
+batch drains (`TurnState::is_drained`) is skipped while paused, leaving
+`s.turn` "drained but undriven" until `Unpause` drives it. A session
+mid-stream when `Pause` arrives needs **no special handling in `stream.rs`**:
+`Pause`/`Unpause` are ordinary `SessionCmd`s, so a mid-stream arrival is
+`stash.push_back`'d by the same generic non-`Stop` branch `SetAgent`/
+`SetModel` already ride, and applied once the round reaches its next safe
+point. `Stop` and `Hibernate` are both unconditional regardless of `paused`
+and neither clears it — `Stop`'s resting-state emit reports `Paused` (not
+`Done`) if the session is still held.
+
 **Sub-agent spawn** (✅ #60, [ADR-0022](../adr/0022-subagent-spawn.md), builds on the
 [ADR-0021](../adr/0021-hierarchical-session-model.md) tree). The model calls a
 runtime-owned `agent_spawn { agent, prompt }` tool (renamed from `spawn_agent`,

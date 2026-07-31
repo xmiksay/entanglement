@@ -129,6 +129,8 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
             ..
         } => SessionCmd::ToolResult(request_id, content),
         InMsg::Stop { .. } => SessionCmd::Stop,
+        InMsg::PauseSession { .. } => SessionCmd::Pause,
+        InMsg::ResumeSession { .. } => SessionCmd::Unpause,
         InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
         InMsg::SetModel {
             provider, model, ..

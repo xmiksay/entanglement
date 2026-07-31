@@ -69,6 +69,13 @@ pub(crate) enum SessionCmd {
     /// Single out-of-band LLM op (`op`, `args`, #324) — `"compact"` today.
     Oneshot(String, serde_json::Value),
     Stop,
+    /// Hold the session at `AgentState::Paused` (#516, ADR-0144) — never
+    /// interrupts an in-flight round (a mid-stream arrival is stashed by the
+    /// existing generic mechanism in `stream.rs` and applied at the next round
+    /// boundary, exactly like a mid-stream `SetAgent`). Idempotent.
+    Pause,
+    /// Lift a hold placed by `Pause` (#516, ADR-0144). A no-op if not paused.
+    Unpause,
     /// Evict this session from memory without tombstoning its id (#318,
     /// ADR-0077). The task emits [`OutEvent::SessionHibernated`], drops its shared
     /// seq counter, and exits — dropping `Session` (the `Context`/history). The
@@ -242,15 +249,22 @@ pub(crate) async fn session_loop(
                 s.turn.is_none().then(tokio::time::Instant::now),
             );
 
-        // Pop the stash only when idle: a command stashed during a live turn
-        // replays after the turn ends (ADR-0018). While parked, popping a
-        // stashed `Prompt` here would only re-stash it below — a busy loop.
+        // Pop the stash only when idle *and not paused* (#516, ADR-0144): a
+        // command stashed during a live turn replays after the turn ends
+        // (ADR-0018). While parked, or while paused, popping a stashed command
+        // here would only re-stash it below — a busy loop.
         let cmd = if s.turn.is_none() {
-            if let Some(c) = stash.pop_front() {
+            if s.paused {
+                rx.recv().await
+            } else if let Some(c) = stash.pop_front() {
                 Some(c)
             } else {
                 rx.recv().await
             }
+        } else if s.paused {
+            // Parked and held (#516): suspend the reoffer timer too — a paused
+            // session shouldn't keep nagging the runtime executor while held.
+            rx.recv().await
         } else {
             // Parked on unresolved tool calls (#274, ADR-0071). Bound the wait:
             // after `reoffer_interval` of silence (no `ToolResult` arriving)
@@ -278,10 +292,11 @@ pub(crate) async fn session_loop(
         };
         match cmd {
             Some(SessionCmd::Prompt(content)) => {
-                if s.turn.is_some() {
-                    // Mid-turn steering (#182, ADR-0058): stash it — the next
-                    // round folds stashed prompts into the live context before
-                    // the model request.
+                if s.turn.is_some() || s.paused {
+                    // Mid-turn steering (#182, ADR-0058) or a paused idle
+                    // session (#516, ADR-0144): stash it — the next round, or
+                    // `Unpause`'s resulting idle pop, folds a stashed prompt
+                    // into the live context before the model request.
                     stash.push_back(SessionCmd::Prompt(content));
                 } else {
                     s.ctx.push_user_content(content);
@@ -299,9 +314,10 @@ pub(crate) async fn session_loop(
                 }
             }
             Some(SessionCmd::SetAgent(name)) => {
-                if s.turn.is_some() {
+                if s.turn.is_some() || s.paused {
                     // Applied once the turn ends (stash replay), same as when
-                    // it arrived mid-stream before #270.
+                    // it arrived mid-stream before #270; likewise deferred
+                    // while paused (#516, ADR-0144).
                     stash.push_back(SessionCmd::SetAgent(name));
                     continue;
                 }
@@ -378,7 +394,7 @@ pub(crate) async fn session_loop(
             // request model + generation + context-window budget — no restart.
             // Deferred during a live turn (stash replay), like `SetAgent`.
             Some(SessionCmd::SetModel(provider, model)) => {
-                if s.turn.is_some() {
+                if s.turn.is_some() || s.paused {
                     stash.push_back(SessionCmd::SetModel(provider, model));
                     continue;
                 }
@@ -416,7 +432,7 @@ pub(crate) async fn session_loop(
             // succeeds. Deferred during a live turn (stash replay), like
             // `SetAgent`/`SetModel`.
             Some(SessionCmd::SetGeneration(overrides)) => {
-                if s.turn.is_some() {
+                if s.turn.is_some() || s.paused {
                     stash.push_back(SessionCmd::SetGeneration(overrides));
                     continue;
                 }
@@ -433,7 +449,7 @@ pub(crate) async fn session_loop(
                 });
             }
             Some(SessionCmd::Oneshot(op, args)) => {
-                if s.turn.is_some() {
+                if s.turn.is_some() || s.paused {
                     stash.push_back(SessionCmd::Oneshot(op, args));
                     continue;
                 }
@@ -443,7 +459,13 @@ pub(crate) async fn session_loop(
             // arrival — arrival order, matching replay's `ToolOutput`-order
             // fold — and continue the turn once the batch drains. No match:
             // stale (late result after a cancel), duplicate, or unknown id —
-            // drop it rather than corrupt context.
+            // drop it rather than corrupt context. While paused (#516,
+            // ADR-0144) the fold still happens — a resolver isn't blocked by a
+            // hold, and stashing this would deadlock (the batch could never
+            // drain if its own resolution waited on `s.turn` going idle) — but
+            // the drained batch does *not* re-enter `drive_turn`: the next
+            // model round-trip is exactly what `Paused` holds back, and
+            // `Unpause` continues it without a fresh prompt.
             Some(SessionCmd::ToolResult(id, content)) => {
                 match s.turn.as_mut().and_then(|t| t.resolve(&id)) {
                     Some(call) => {
@@ -456,7 +478,7 @@ pub(crate) async fn session_loop(
                             &s.seq,
                         );
                         s.ctx.push_tool_content(&call.id, content);
-                        if s.turn.as_ref().is_some_and(TurnState::is_drained) {
+                        if !s.paused && s.turn.as_ref().is_some_and(TurnState::is_drained) {
                             drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
                         }
                     }
@@ -486,11 +508,55 @@ pub(crate) async fn session_loop(
                     // A cancelled turn is still a completed interaction — `Done`
                     // is the resting state, not `Idle` (which stays reserved for
                     // the genuinely-never-run-yet case at session start,
-                    // ADR-0139).
+                    // ADR-0139). `Stop` always cancels regardless of a pause
+                    // (#516, ADR-0144) — but doesn't lift one: pause and cancel
+                    // are orthogonal holds, so a still-paused session reports
+                    // `Paused`, not `Done`, until an explicit `ResumeSession`.
+                    let state = if s.paused {
+                        AgentState::Paused
+                    } else {
+                        AgentState::Done
+                    };
                     let _ = events.send(OutEvent::Status {
                         session: session.clone(),
-                        state: AgentState::Done,
+                        state,
                     });
+                }
+            }
+            // Hold the session at `Paused` (#516, ADR-0144) — see
+            // `SessionCmd::Pause`'s doc for what this defers. Idempotent: no
+            // duplicate `Status` for an already-paused session.
+            Some(SessionCmd::Pause) => {
+                if !s.paused {
+                    s.paused = true;
+                    let _ = events.send(OutEvent::Status {
+                        session: session.clone(),
+                        state: AgentState::Paused,
+                    });
+                }
+            }
+            // Lift a hold placed by `Pause` (#516, ADR-0144). A drained-but-
+            // undriven parked batch (every `ToolResult` already folded while
+            // paused) continues the turn immediately — no new prompt needed;
+            // otherwise report the state the session is actually resting in
+            // now (`Working` if still parked on unresolved calls, `Done` if
+            // idle — matching `Stop`'s resting-state convention, ADR-0139).
+            Some(SessionCmd::Unpause) => {
+                if s.paused {
+                    s.paused = false;
+                    if s.turn.as_ref().is_some_and(TurnState::is_drained) {
+                        drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
+                    } else {
+                        let state = if s.turn.is_some() {
+                            AgentState::Working
+                        } else {
+                            AgentState::Done
+                        };
+                        let _ = events.send(OutEvent::Status {
+                            session: session.clone(),
+                            state,
+                        });
+                    }
                 }
             }
             // Memory eviction without tombstoning (#318, ADR-0077). Drop `Session`

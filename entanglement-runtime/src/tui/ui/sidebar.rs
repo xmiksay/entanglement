@@ -67,6 +67,7 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
                     AgentState::WaitingAgent => "waiting for agent",
                     AgentState::WaitingApproval => "waiting",
                     AgentState::WaitingAnswer => "waiting",
+                    AgentState::Paused => "paused",
                     AgentState::Done => "done",
                     AgentState::Error => "error",
                 },

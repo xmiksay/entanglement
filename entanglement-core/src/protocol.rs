@@ -78,6 +78,21 @@ pub enum AgentState {
     /// [`WaitingApproval`][AgentState::WaitingApproval] (#160): a question is not
     /// a permission decision, and heads render the two differently.
     WaitingAnswer,
+    /// Explicitly held by `InMsg::PauseSession` (#516, ADR-0144) — distinct from
+    /// every wait state above, which are all waiting on *something specific*
+    /// ([`WaitingApproval`][AgentState::WaitingApproval]/
+    /// [`WaitingAnswer`][AgentState::WaitingAnswer]/
+    /// [`WaitingAgent`][AgentState::WaitingAgent] resolve themselves once their
+    /// event arrives). `Paused` never self-resolves: a new turn is deferred (an
+    /// idle session) and a parked batch's already-arrived results still fold
+    /// into `Context`, but the turn does not continue past the drained batch,
+    /// until `InMsg::ResumeSession` lifts the hold. A session mid-stream when
+    /// `PauseSession` arrives is not interrupted — the pause takes effect at the
+    /// next round boundary (turn end or tool-call park), the same "deferred until
+    /// safe" mechanism `SetAgent`/`SetModel` already use mid-stream — so this
+    /// state is never observed while actively streaming; send `Stop` for an
+    /// immediate interrupt.
+    Paused,
     /// Last turn finished cleanly. The resting state after a turn ends or is
     /// cancelled by `Stop` (ADR-0139) — the user prefers it over `Idle` so a
     /// completed interaction is never rendered the same as never-run-yet.
@@ -787,6 +802,30 @@ pub enum InMsg {
     },
     /// Cancel the current turn and park the session at idle.
     Stop { session: SessionId },
+    /// Hold a live session at [`AgentState::Paused`] (#516, ADR-0144) without
+    /// cancelling anything or evicting memory — the middle ground `Stop`
+    /// (destroys the in-flight round) and `HibernateSession` (evicts memory)
+    /// don't cover. An idle session defers its next `Prompt` (and
+    /// `SetAgent`/`SetModel`/`SetGeneration`/`Oneshot`) until
+    /// [`ResumeSession`][InMsg::ResumeSession]; a session parked on a tool-call
+    /// batch keeps folding arriving `ToolResult`s into `Context` as normal, but
+    /// the turn does not continue past a drained batch until resumed — so the
+    /// same round picks up again with no re-prompt needed. A session actively
+    /// streaming when this arrives is unaffected until the round reaches its
+    /// next safe point (turn end or park) — mirroring how a mid-stream
+    /// `SetAgent`/`SetModel` is deferred, *not* raced via `tokio::select!` like
+    /// `Stop` — so `PauseSession` never interrupts an in-flight model
+    /// round-trip; use `Stop` for that. `Stop`/`HibernateSession` always take
+    /// priority: both apply regardless of `paused`, and neither clears it.
+    /// Idempotent; wire-allowed like `Stop` (no elevated capability).
+    PauseSession { session: SessionId },
+    /// Lift a hold placed by [`PauseSession`][InMsg::PauseSession] (#516,
+    /// ADR-0144). A deferred idle `Prompt`/`SetAgent`/`SetModel`/
+    /// `SetGeneration`/`Oneshot` now applies; a parked turn whose batch already
+    /// drained while paused continues immediately with no new model request
+    /// needed to re-enter it. A no-op on a session that isn't paused.
+    /// Wire-allowed like `PauseSession`.
+    ResumeSession { session: SessionId },
     /// Enumerate the engine's currently-live sessions. The supervisor answers
     /// with a single [`OutEvent::SessionList`] snapshot (ADR-0028); this message
     /// is supervisor-global, not routed to a session task. `correlation_id` is an
@@ -1029,6 +1068,8 @@ impl InMsg {
             | InMsg::ToolResult { session, .. }
             | InMsg::AnswerQuestion { session, .. }
             | InMsg::Stop { session }
+            | InMsg::PauseSession { session }
+            | InMsg::ResumeSession { session }
             | InMsg::ReplayFrom { session, .. }
             | InMsg::CloseSession { session }
             | InMsg::HibernateSession { session }
@@ -1092,6 +1133,8 @@ impl InMsg {
             | InMsg::Reject { .. }
             | InMsg::AnswerQuestion { .. }
             | InMsg::Stop { .. }
+            | InMsg::PauseSession { .. }
+            | InMsg::ResumeSession { .. }
             | InMsg::ListSessions { .. }
             | InMsg::McpList { .. }
             | InMsg::ReplayFrom { .. }
@@ -1121,6 +1164,8 @@ impl InMsg {
             InMsg::ToolResult { .. } => "tool_result",
             InMsg::AnswerQuestion { .. } => "answer_question",
             InMsg::Stop { .. } => "stop",
+            InMsg::PauseSession { .. } => "pause_session",
+            InMsg::ResumeSession { .. } => "resume_session",
             InMsg::ListSessions { .. } => "list_sessions",
             InMsg::McpList { .. } => "mcp_list",
             InMsg::McpAdd { .. } => "mcp_add",
@@ -1697,6 +1742,8 @@ mod tests {
             },
             InMsg::answer_question(s.clone(), "r", vec![vec!["a".into()]]),
             InMsg::Stop { session: s.clone() },
+            InMsg::PauseSession { session: s.clone() },
+            InMsg::ResumeSession { session: s.clone() },
             InMsg::ListSessions {
                 correlation_id: "c1".into(),
             },
