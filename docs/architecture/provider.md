@@ -233,12 +233,19 @@ established env-name mangling). `EndpointState` gains a second,
 lazily-created `Semaphore` per `(endpoint, model)`
 (`model_concurrency: Mutex<HashMap<String, Arc<ModelSlot>>>`);
 `HttpClient::execute_with_retry` takes `model`/`model_concurrency` params and,
-when the latter is `Some`, acquires that model's permit *after* the
-endpoint-wide one — a model-saturated caller still queues behind the
-endpoint's own cap too. Both permits ride the same `StreamGuard` and release
-together when the streamed body ends. A model with no catalog cap never
-acquires a model permit at all — byte-identical to pre-#521. The
-`{name}_factory`/`{Name}Llm::new` constructors each gained a
+when the latter is `Some`, acquires **that model's permit first, then the
+endpoint-wide one** (released in reverse) — the endpoint cap is unchanged as
+the ceiling on the *sum* of in-flight requests across every model on it
+(every call still takes an endpoint permit regardless of model), but a
+caller blocked on its own saturated model never holds that scarce endpoint
+permit hostage while it waits, which would otherwise starve unrelated
+sibling models sharing the endpoint even with room to spare. Both permits
+ride the same `StreamGuard` and release together when the streamed body
+ends. A model with no catalog cap never acquires a model permit at all —
+byte-identical to pre-#521; a model cap configured *wider* than its
+endpoint's own is legal (the narrower endpoint cap simply binds first) but
+logs a `tracing::warn!` as a likely misconfiguration rather than erroring.
+The `{name}_factory`/`{Name}Llm::new` constructors each gained a
 `model_concurrency: Option<usize>` parameter, resolved once per `(entry,
 model)` at the same point `resolve_rpm`/`resolve_concurrency` already resolve
 the provider-level knobs (so a live `SetModel` switch re-resolves it exactly

@@ -36,14 +36,19 @@
 //! # Per-model concurrency (#521, ADR-0140)
 //! Some providers cap concurrency **per model**, not just per endpoint — z.ai
 //! allows only 1 in-flight `GLM-4.7-Flash` request but 5 for `GLM-5.2`, on the
-//! same base URL and key. A request acquires the endpoint's own permit first,
-//! then — when the model carries a catalog `concurrency` cap — a second permit
-//! from that model's own semaphore, scoped to this endpoint (`EndpointState::
-//! model_concurrency`). Both are held for the whole streamed body via
-//! `StreamGuard` and released together. The endpoint-wide `Retry-After`/pacing
-//! stay shared across every model on it (a 429 may well be host-wide); a model
-//! carrying no cap admits solely through the endpoint gate, unchanged from
-//! before this layer existed.
+//! same base URL and key. The endpoint-wide cap stays as the ceiling on the
+//! **sum** of in-flight requests across every model sharing it; when a model
+//! carries its own catalog `concurrency` cap, a request also acquires a second
+//! permit from that model's own semaphore, scoped to this endpoint
+//! (`EndpointState::model_concurrency`) and never allowed to admit more than
+//! its own cap regardless of how much endpoint headroom exists. Permits
+//! acquire **model first, then endpoint** — a caller blocked on its own
+//! model's slot must never hold the scarce endpoint slot hostage, which would
+//! starve sibling models sharing the endpoint — and release in the reverse
+//! order. Both are held for the whole streamed body via `StreamGuard`. The
+//! endpoint-wide `Retry-After`/pacing stay shared across every model on it (a
+//! 429 may well be host-wide); a model carrying no cap admits solely through
+//! the endpoint gate, unchanged from before this layer existed.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -264,14 +269,30 @@ impl EndpointState {
 
     /// Resolve (creating on first use) this endpoint's slot for `model`. Only
     /// the *first* caller for a given model sets its cap — mirrors
-    /// `HttpClient::endpoint`'s own "first caller wins" sizing.
+    /// `HttpClient::endpoint`'s own "first caller wins" sizing. A model cap
+    /// wider than the endpoint's own is legal — the endpoint cap simply binds
+    /// first as the ceiling on the sum across every model — but is almost
+    /// certainly a misconfiguration (the model cap can then never be the
+    /// binding constraint), so it warns rather than errors.
     fn model_slot(&self, model: &str, cap: usize) -> Arc<ModelSlot> {
         let mut map = self
             .model_concurrency
             .lock()
             .expect("model concurrency poisoned");
         map.entry(model.to_string())
-            .or_insert_with(|| Arc::new(ModelSlot::new(cap)))
+            .or_insert_with(|| {
+                if cap > self.concurrency_cap {
+                    tracing::warn!(
+                        model,
+                        model_concurrency = cap,
+                        endpoint_concurrency = self.concurrency_cap,
+                        "model concurrency cap exceeds the endpoint's own — \
+                         the endpoint cap binds first, so this model can never \
+                         reach its configured cap"
+                    );
+                }
+                Arc::new(ModelSlot::new(cap))
+            })
             .clone()
     }
 }
@@ -408,6 +429,11 @@ impl HttpClient {
     /// `model`/`model_concurrency` (#521) are the requested model's id and its
     /// optional tighter per-model in-flight cap on this same endpoint — `None`
     /// admits solely through the endpoint-wide cap, byte-identical to pre-#521.
+    /// The endpoint cap is the ceiling on the *sum* of in-flight requests across
+    /// every model sharing it; each model's own cap bounds only itself. Permits
+    /// acquire **model first, then endpoint** — a caller blocked on its model's
+    /// slot never holds the scarce endpoint slot hostage, which would otherwise
+    /// starve sibling models — and release in the reverse order.
     ///
     /// Returns the response **plus a [`StreamGuard`]** the caller must keep alive
     /// for the whole streamed body — it holds the per-endpoint concurrency permit
@@ -448,18 +474,14 @@ impl HttpClient {
         loop {
             endpoint.wait_for_retry_after().await;
             endpoint.limiter.acquire().await;
-            // Bound in-flight requests to this endpoint. The permit is held until
-            // the returned `StreamGuard` drops (i.e. the stream is consumed);
-            // dropped here on any retry so a queued caller can take the slot.
-            let permit = endpoint
-                .concurrency
-                .clone()
-                .acquire_owned()
-                .await
-                .expect("endpoint concurrency semaphore never closed");
-            // Second, tighter admission gate for this model (#521) — acquired
-            // *after* the endpoint permit so a model-saturated caller still
-            // counts against (and queues behind) the endpoint's own cap.
+            // Model permit **first** (#521 refinement): a caller blocked on its
+            // model's own slot must never hold the scarce endpoint-wide slot
+            // hostage while it waits — that would let one saturated model
+            // starve every *other* model sharing the endpoint of admission,
+            // even though the endpoint itself has room. Acquiring in this
+            // fixed order (model, then endpoint) everywhere is also
+            // deadlock-free. Released in the reverse order below/in
+            // `StreamGuard`'s field order.
             let model_permit = match &model_slot {
                 Some(slot) => Some(
                     slot.semaphore
@@ -470,6 +492,16 @@ impl HttpClient {
                 ),
                 None => None,
             };
+            // Bound in-flight requests to this endpoint — the ceiling on the
+            // *sum* across every model sharing it. The permit is held until the
+            // returned `StreamGuard` drops (i.e. the stream is consumed);
+            // dropped here on any retry so a queued caller can take the slot.
+            let permit = endpoint
+                .concurrency
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("endpoint concurrency semaphore never closed");
 
             match request_fn().await {
                 Ok(response) => {

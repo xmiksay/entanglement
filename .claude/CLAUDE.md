@@ -1067,7 +1067,10 @@ layer a second, tighter admission gate on top of the per-endpoint one — z.ai
 enforces concurrency per model (e.g. `glm-4.7-flash: 1` vs `glm-5.2: 5`), not
 just per endpoint, so a mixed-model workload on one endpoint (normal since
 per-profile model pinning, #323) no longer has to pick one number that's
-wrong for every model but one.
+wrong for every model but one. The endpoint cap stays the ceiling on the
+*sum* across every model; permits acquire **model first, then endpoint**
+(released in reverse) so a caller blocked on its own saturated model never
+holds the shared endpoint slot hostage and starves sibling models.
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,

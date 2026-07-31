@@ -61,7 +61,7 @@ turning an arbitrary id into an env-safe token. Rather than invent one
 half-considered, this ADR keeps the model level YAML-only; env-override
 support is a well-scoped future addition if a real need shows up.
 
-### Client: a per-model `Semaphore`, scoped to its endpoint, acquired second
+### Client: a per-model `Semaphore`, scoped to its endpoint, acquired *first*
 
 `EndpointState` (`entanglement-provider/src/client/mod.rs`) gains
 `model_concurrency: Mutex<HashMap<String, Arc<ModelSlot>>>` — lazily created
@@ -69,13 +69,41 @@ per model id on first use, exactly like `EndpointPool::endpoints` itself
 lazily creates each `EndpointState`. `HttpClient::execute_with_retry` gains
 `model: &str, model_concurrency: Option<usize>` parameters; when the latter
 is `Some`, it resolves (and acquires an owned permit from) that model's own
-`Semaphore` *after* acquiring the endpoint-wide permit — so a model-saturated
-caller still counts against, and queues behind, the endpoint's own cap too.
-Both permits are held for the whole streamed body via a `StreamGuard` that
-now wraps `(OwnedSemaphorePermit, Option<OwnedSemaphorePermit>)`, and both are
-released together when the body ends. `model_concurrency: None` means no
-model permit is ever acquired — a model with no catalog cap behaves
-byte-identically to the pre-#521 client.
+`Semaphore`. Both permits are held for the whole streamed body via a
+`StreamGuard` that now wraps `(OwnedSemaphorePermit,
+Option<OwnedSemaphorePermit>)`, and both are released together when the body
+ends. `model_concurrency: None` means no model permit is ever acquired — a
+model with no catalog cap behaves byte-identically to the pre-#521 client.
+
+**The endpoint-wide cap is the ceiling on the *sum* across every model
+sharing it** — every request still acquires the endpoint permit regardless of
+model, exactly as before this ADR; a model's own cap only ever tightens its
+own admission further, never loosens the endpoint's. Example: endpoint cap
+10, `glm-5.1: 4`, `glm-4.7: 6` — 4 and 6 may run together (10 total); a 5th
+`glm-5.1` call queues on its own model semaphore even with endpoint room to
+spare; an 11th call of any mix queues on the endpoint semaphore.
+
+**Acquisition order is model permit first, then endpoint permit** (revised
+from an earlier draft of this ADR, which had it the other way around) —
+release in the reverse order. This matters for a subtle starvation case: if
+the endpoint permit were acquired first, a caller that goes on to block on
+its own (saturated) model semaphore would sit there **holding a scarce
+endpoint permit** for as long as it waits — starving *every other model*
+sharing the endpoint of admission, even though the endpoint itself has spare
+capacity and the blocked model is irrelevant to them. Acquiring the model
+permit first means a caller blocked on its own model's slot holds nothing
+endpoint-wide; only once it actually has room to proceed on the model side
+does it compete for the shared endpoint slot. The fixed order (model, then
+endpoint) is applied uniformly on every call path, so it introduces no
+deadlock risk.
+
+**Validation, not rejection, when a model's cap exceeds its endpoint's.** A
+model `concurrency` wider than its provider's `concurrency` is legal — the
+narrower endpoint cap simply binds first, so the model cap can never actually
+be reached — but it is almost certainly a misconfiguration, so
+`EndpointState::model_slot` logs a `tracing::warn!` (once, the first time
+that model's slot is created) rather than erroring or refusing to build the
+client.
 
 Each of the three wire clients (`OpenAiLlm`, `AnthropicLlm`, `GeminiLlm`)
 gains a `model_concurrency: Option<usize>` field, resolved once when the
@@ -120,6 +148,10 @@ Flash slot doesn't read as an unexplained, seemingly-wrong endpoint cap.
 - The mixed-model scenario the issue reports is fixed: Flash and GLM-5.2 each
   meter against their own real ceiling on one shared endpoint, with neither
   429-storming nor needlessly serializing the other.
+- The model-first acquisition order additionally prevents a queued caller of
+  one saturated model from starving *every other* model on the same endpoint
+  of admission — a failure mode an endpoint-first order would have
+  reintroduced at exactly the moment this ADR exists to fix.
 - No wire, protocol, or session-visible change — this is entirely inside the
   provider layer's existing per-endpoint pool. A model with no per-model cap
   is provably unaffected (the `Option::map` that would create its slot never
@@ -160,6 +192,16 @@ Flash slot doesn't read as an unexplained, seemingly-wrong endpoint cap.
   precedent in this codebase for mangling an arbitrary model id into an env
   var name; YAML-only is simpler and sufficient for v1 (recommended by the
   issue itself).
+- **Endpoint permit acquired before the model permit.** An earlier draft of
+  this ADR had this order; rejected once the starvation case above was
+  identified — it would let a caller queued on a saturated model hold a
+  scarce endpoint permit hostage, starving unrelated sibling models on the
+  same endpoint even with room to spare.
+- **Reject a model cap wider than its endpoint's at load time.** Rejected:
+  the configuration isn't unsound (the narrower cap still binds correctly,
+  the wider one is just inert), so refusing to start over it would be overly
+  strict for what is at worst a no-op setting; a warning gives the same
+  visibility without the availability cost.
 
 ## References
 
