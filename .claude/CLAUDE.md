@@ -117,6 +117,8 @@ reads it; this table is the one-place index):
 | `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_API_BASE` | per-provider key/model/base (the catalog `key_env`, e.g. `ZAI_API_KEY`); the base also accepts the legacy `<NAME>_BASE` spelling (`_API_BASE` wins) |
 | `<NAME>_RPM` / `<NAME>_CONCURRENCY` | per-provider endpoint RPM / in-flight cap (#414), overriding the catalog `rpm`/`concurrency`; `None` ⇒ client default |
 | `ENTANGLEMENT_MAX_CONCURRENCY` | last-resort process-wide concurrency override (default 3) |
+| `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` | opt out of cross-process RPM/concurrency/cool-down sharing (#523), reverting to pure in-process gating |
+| `ENTANGLEMENT_SHARED_STATE_DIR` | override the shared endpoint-state directory (default `${data_dir}/entanglement/endpoints`) |
 | `ENTANGLEMENT_LOG_BODIES=1` | opt-in symmetric LLM request-body logging (#165) |
 | `ENTANGLEMENT_PROVIDERS_FILE` | override the provider-catalog user file path |
 | `ENTANGLEMENT_CONFIG_FILE` | override the layered user config file path (`config.yml`) |
@@ -1122,6 +1124,19 @@ wrong for every model but one. The endpoint cap stays the ceiling on the
 *sum* across every model; permits acquire **model first, then endpoint**
 (released in reverse) so a caller blocked on its own saturated model never
 holds the shared endpoint slot hostage and starves sibling models.
+Also since 0.5.0, endpoint resilience state is **shared across `skutter`
+processes**, not just across sessions within one (#523,
+[ADR-0144](../docs/adr/0144-file-backed-shared-endpoint-state-across-instances.md)):
+two instances talking to the same `(endpoint, API key)` used to each apply
+the full RPM/concurrency budget, together sending up to N× the configured
+rate. `EndpointState` now also consults a file-backed cross-process gate
+(`client::shared_state::SharedGate`, `${data_dir}/entanglement/endpoints/<sha256(pool_key)>.state`,
+`fd-lock`-guarded like the managed config files, #329/ADR-0084) covering the
+RPM ledger, a lease-based in-flight concurrency count (crash-safe via TTL —
+no daemon, no live cross-process semaphore), and the `Retry-After` cool-down;
+the AIMD pacing gate stays per-process (v1). Falls back to pure in-process
+gating when the state directory is unwritable or via the explicit
+`ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` opt-out.
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,
