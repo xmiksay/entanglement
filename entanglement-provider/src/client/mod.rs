@@ -32,6 +32,23 @@
 //! This is why spawning many sessions can't leave "one running, the rest 429" —
 //! or hang the parent: they all meter through one gate, and a 429 that never
 //! clears within the budget surfaces as an error rather than waiting forever.
+//!
+//! # Per-model concurrency (#521, ADR-0140)
+//! Some providers cap concurrency **per model**, not just per endpoint — z.ai
+//! allows only 1 in-flight `GLM-4.7-Flash` request but 5 for `GLM-5.2`, on the
+//! same base URL and key. The endpoint-wide cap stays as the ceiling on the
+//! **sum** of in-flight requests across every model sharing it; when a model
+//! carries its own catalog `concurrency` cap, a request also acquires a second
+//! permit from that model's own semaphore, scoped to this endpoint
+//! (`EndpointState::model_concurrency`) and never allowed to admit more than
+//! its own cap regardless of how much endpoint headroom exists. Permits
+//! acquire **model first, then endpoint** — a caller blocked on its own
+//! model's slot must never hold the scarce endpoint slot hostage, which would
+//! starve sibling models sharing the endpoint — and release in the reverse
+//! order. Both are held for the whole streamed body via `StreamGuard`. The
+//! endpoint-wide `Retry-After`/pacing stay shared across every model on it (a
+//! 429 may well be host-wide); a model carrying no cap admits solely through
+//! the endpoint gate, unchanged from before this layer existed.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -164,11 +181,39 @@ struct EndpointPool {
     config: RetryConfig,
 }
 
-/// A held permit bounding the number of in-flight requests to one endpoint. It
-/// is kept for the whole request **and its streamed body** (moved into the byte
-/// pump), so the concurrency cap counts open streams — the real unit a provider
+/// A held permit bounding the number of in-flight requests to one endpoint —
+/// and, when the requested model carries its own tighter cap (#521), also one
+/// bounding in-flight requests to that model on this endpoint. Both are kept
+/// for the whole request **and its streamed body** (moved into the byte pump),
+/// so the concurrency cap counts open streams — the real unit a provider
 /// limits — not just POSTs. Dropping it frees a slot for a queued caller.
-pub struct StreamGuard(#[allow(dead_code)] OwnedSemaphorePermit);
+pub struct StreamGuard(
+    #[allow(dead_code)] OwnedSemaphorePermit,
+    #[allow(dead_code)] Option<OwnedSemaphorePermit>,
+);
+
+/// One model's live in-flight cap on a given endpoint (#521, ADR-0140) — a
+/// second, tighter admission gate layered *underneath* the endpoint-wide
+/// [`EndpointState::concurrency`] permit. z.ai enforces concurrency per model
+/// (e.g. GLM-4.7-Flash: 1, GLM-5.2: 5) rather than only per endpoint, so one
+/// endpoint-wide cap can't express a mixed-model workload without either
+/// 429-storming the tighter model or needlessly serializing the looser one.
+struct ModelSlot {
+    semaphore: Arc<Semaphore>,
+    /// The configured cap (initial permit count) — see `EndpointState::
+    /// concurrency_cap`'s doc for why this is tracked alongside the semaphore.
+    cap: usize,
+}
+
+impl ModelSlot {
+    fn new(cap: usize) -> Self {
+        let cap = cap.max(1);
+        Self {
+            semaphore: Arc::new(Semaphore::new(cap)),
+            cap,
+        }
+    }
+}
 
 /// One endpoint's live rate-limit + backoff state.
 struct EndpointState {
@@ -183,6 +228,11 @@ struct EndpointState {
     /// Instant before which no request to this endpoint may proceed, set from a
     /// `Retry-After` header. `None` = no active cool-down.
     retry_after: Mutex<Option<Instant>>,
+    /// Per-model in-flight caps on this endpoint (#521), lazily created on
+    /// first use like `EndpointPool::endpoints` itself — keyed by model id,
+    /// scoped to this one endpoint since a per-model cap is meaningless
+    /// detached from the provider that enforces it.
+    model_concurrency: Mutex<HashMap<String, Arc<ModelSlot>>>,
 }
 
 impl EndpointState {
@@ -193,6 +243,7 @@ impl EndpointState {
             concurrency: Arc::new(Semaphore::new(cap)),
             concurrency_cap: cap,
             retry_after: Mutex::new(None),
+            model_concurrency: Mutex::new(HashMap::new()),
         }
     }
 
@@ -214,6 +265,35 @@ impl EndpointState {
                 sleep(until - now).await;
             }
         }
+    }
+
+    /// Resolve (creating on first use) this endpoint's slot for `model`. Only
+    /// the *first* caller for a given model sets its cap — mirrors
+    /// `HttpClient::endpoint`'s own "first caller wins" sizing. A model cap
+    /// wider than the endpoint's own is legal — the endpoint cap simply binds
+    /// first as the ceiling on the sum across every model — but is almost
+    /// certainly a misconfiguration (the model cap can then never be the
+    /// binding constraint), so it warns rather than errors.
+    fn model_slot(&self, model: &str, cap: usize) -> Arc<ModelSlot> {
+        let mut map = self
+            .model_concurrency
+            .lock()
+            .expect("model concurrency poisoned");
+        map.entry(model.to_string())
+            .or_insert_with(|| {
+                if cap > self.concurrency_cap {
+                    tracing::warn!(
+                        model,
+                        model_concurrency = cap,
+                        endpoint_concurrency = self.concurrency_cap,
+                        "model concurrency cap exceeds the endpoint's own — \
+                         the endpoint cap binds first, so this model can never \
+                         reach its configured cap"
+                    );
+                }
+                Arc::new(ModelSlot::new(cap))
+            })
+            .clone()
     }
 }
 
@@ -346,15 +426,25 @@ impl HttpClient {
     /// same endpoint each get their own budget — different keys have different
     /// limits (#217). `rpm`/`concurrency` are the endpoint's catalog-provided
     /// per-minute budget / in-flight cap (`None` → the pool defaults, #414).
+    /// `model`/`model_concurrency` (#521) are the requested model's id and its
+    /// optional tighter per-model in-flight cap on this same endpoint — `None`
+    /// admits solely through the endpoint-wide cap, byte-identical to pre-#521.
+    /// The endpoint cap is the ceiling on the *sum* of in-flight requests across
+    /// every model sharing it; each model's own cap bounds only itself. Permits
+    /// acquire **model first, then endpoint** — a caller blocked on its model's
+    /// slot never holds the scarce endpoint slot hostage, which would otherwise
+    /// starve sibling models — and release in the reverse order.
     ///
     /// Returns the response **plus a [`StreamGuard`]** the caller must keep alive
     /// for the whole streamed body — it holds the per-endpoint concurrency permit
-    /// (the storm guard for many spawned sub-agents). A **429 parks the whole
-    /// endpoint and retries** on a growing wait until it clears *or*
-    /// `rate_limit_max_elapsed` is exceeded, then surfaces as `Ok` for the caller
-    /// to error (so a saturated endpoint fails a turn rather than hanging its
-    /// parent). Transient transport faults and 5xx retry up to `max_attempts`; a
-    /// permanent 4xx or an exhausted retryable is returned as `Ok`.
+    /// (the storm guard for many spawned sub-agents) and, when set, the per-model
+    /// permit too. A **429 parks the whole endpoint and retries** on a growing
+    /// wait until it clears *or* `rate_limit_max_elapsed` is exceeded, then
+    /// surfaces as `Ok` for the caller to error (so a saturated endpoint fails a
+    /// turn rather than hanging its parent) — the cool-down stays endpoint-wide
+    /// (v1; see ADR-0140), not scoped to just the offending model. Transient
+    /// transport faults and 5xx retry up to `max_attempts`; a permanent 4xx or an
+    /// exhausted retryable is returned as `Ok`.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_with_retry<F, Fut>(
         &self,
@@ -362,6 +452,8 @@ impl HttpClient {
         api_key: Option<&str>,
         rpm: Option<u32>,
         concurrency: Option<usize>,
+        model: &str,
+        model_concurrency: Option<usize>,
         request_fn: F,
     ) -> Result<(reqwest::Response, StreamGuard), RetryError>
     where
@@ -369,6 +461,7 @@ impl HttpClient {
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     {
         let endpoint = self.endpoint(&pool_key(endpoint, api_key), rpm, concurrency);
+        let model_slot = model_concurrency.map(|cap| endpoint.model_slot(model, cap));
         let config = self.pool.config;
         // `attempt` bounds only *genuine failures* (5xx / transport faults). A
         // 429 is "wait your turn": it retries until it clears (not counted here),
@@ -381,8 +474,27 @@ impl HttpClient {
         loop {
             endpoint.wait_for_retry_after().await;
             endpoint.limiter.acquire().await;
-            // Bound in-flight requests to this endpoint. The permit is held until
-            // the returned `StreamGuard` drops (i.e. the stream is consumed);
+            // Model permit **first** (#521 refinement): a caller blocked on its
+            // model's own slot must never hold the scarce endpoint-wide slot
+            // hostage while it waits — that would let one saturated model
+            // starve every *other* model sharing the endpoint of admission,
+            // even though the endpoint itself has room. Acquiring in this
+            // fixed order (model, then endpoint) everywhere is also
+            // deadlock-free. Released in the reverse order below/in
+            // `StreamGuard`'s field order.
+            let model_permit = match &model_slot {
+                Some(slot) => Some(
+                    slot.semaphore
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .expect("model concurrency semaphore never closed"),
+                ),
+                None => None,
+            };
+            // Bound in-flight requests to this endpoint — the ceiling on the
+            // *sum* across every model sharing it. The permit is held until the
+            // returned `StreamGuard` drops (i.e. the stream is consumed);
             // dropped here on any retry so a queued caller can take the slot.
             let permit = endpoint
                 .concurrency
@@ -395,20 +507,20 @@ impl HttpClient {
                 Ok(response) => {
                     let status = response.status();
                     // Success: recover the endpoint's pacing a notch, hand back
-                    // the response together with the held concurrency permit.
+                    // the response together with the held concurrency permits.
                     if status.is_success() {
                         endpoint.limiter.relax();
-                        return Ok((response, StreamGuard(permit)));
+                        return Ok((response, StreamGuard(permit, model_permit)));
                     }
                     // Permanent 4xx: hand it straight back — the caller inspects
-                    // `!is_success()`. (Permit drops as the guard is dropped by
+                    // `!is_success()`. (Permits drop as the guard is dropped by
                     // the caller after reading the body.)
                     if !is_retryable_status(status) {
-                        return Ok((response, StreamGuard(permit)));
+                        return Ok((response, StreamGuard(permit, model_permit)));
                     }
                     let retry_after = parse_retry_after(response.headers());
 
-                    // 429 "too many requests": release the in-flight slot, park
+                    // 429 "too many requests": release the in-flight slots, park
                     // the *whole* endpoint (every concurrent caller backs off
                     // together), slow the pacing gate, and retry on a growing wait
                     // — until it clears or the overall `rate_limit_max_elapsed`
@@ -419,16 +531,17 @@ impl HttpClient {
                             .unwrap_or_else(|| rl_backoff.min(config.rate_limit_max_backoff));
                         endpoint.set_retry_after(delay);
                         // Give up once another wait would exceed the overall
-                        // budget: surface the 429 (permit still held) so the
+                        // budget: surface the 429 (permits still held) so the
                         // caller errors instead of the parent hanging forever.
                         if Instant::now() + delay >= rl_deadline {
                             tracing::error!(
                                 status = %status,
                                 "rate limited (429): giving up after exhausting the retry budget"
                             );
-                            return Ok((response, StreamGuard(permit)));
+                            return Ok((response, StreamGuard(permit, model_permit)));
                         }
-                        drop(permit); // free the slot while we back off
+                        drop(permit); // free the slots while we back off
+                        drop(model_permit);
                         tracing::warn!(
                             status = %status,
                             backoff = ?delay,
@@ -446,9 +559,10 @@ impl HttpClient {
                         endpoint.set_retry_after(server_delay);
                     }
                     if attempt >= config.max_attempts {
-                        return Ok((response, StreamGuard(permit)));
+                        return Ok((response, StreamGuard(permit, model_permit)));
                     }
                     drop(permit);
+                    drop(model_permit);
                     let delay = retry_after.unwrap_or(backoff);
                     tracing::warn!(
                         attempt,
@@ -463,6 +577,7 @@ impl HttpClient {
                 Err(e) if !is_transient_error(&e) => return Err(RetryError::Permanent(e)),
                 Err(e) => {
                     drop(permit);
+                    drop(model_permit);
                     attempt += 1;
                     if attempt >= config.max_attempts {
                         return Err(RetryError::Exhausted(attempt, e));

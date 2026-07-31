@@ -14,9 +14,10 @@ pub struct ThrottleStatus {
     /// The endpoint's base URL (the pool key with any API-key hash stripped),
     /// used as a compact human label.
     pub endpoint: String,
-    /// Requests currently in flight to this endpoint (held concurrency permits).
+    /// Requests currently in flight against the **binding** cap (see `model`)
+    /// — either this endpoint's own, or a tighter per-model cap (#521).
     pub in_flight: usize,
-    /// The configured in-flight cap.
+    /// The configured cap for whichever is binding (endpoint or model).
     pub cap: usize,
     /// Remaining time on an active `Retry-After` / 429 cool-down window, or
     /// `None` when the endpoint is not parked.
@@ -24,13 +25,22 @@ pub struct ThrottleStatus {
     /// Whether the adaptive pacing gate has slowed below its base rate (a 429
     /// penalized the interval), independent of an explicit cool-down window.
     pub penalized: bool,
+    /// The model id whose own per-model cap is the binding (most-constrained)
+    /// one, when a model's occupancy ratio is tighter than the endpoint's own
+    /// (#521, ADR-0140). `None` when the endpoint-wide cap is binding — which
+    /// is always the case for a model that carries no per-model cap.
+    pub model: Option<String>,
 }
 
 impl EndpointState {
     /// Snapshot this endpoint's throttle posture. `endpoint` is the human label
-    /// (base URL); the caller strips the pool-key hash suffix.
+    /// (base URL); the caller strips the pool-key hash suffix. When a
+    /// per-model slot (#521) is currently *more* saturated (by occupancy
+    /// ratio) than the endpoint-wide cap, its in-flight/cap and id are
+    /// reported instead — the binding constraint is whichever is actually
+    /// closest to blocking the next request.
     fn status(&self, endpoint: String) -> ThrottleStatus {
-        let in_flight = self
+        let ep_in_flight = self
             .concurrency_cap
             .saturating_sub(self.concurrency.available_permits());
         let backoff_remaining = self
@@ -43,12 +53,38 @@ impl EndpointState {
             let st = self.limiter.state.lock().expect("rate limiter poisoned");
             st.interval > self.limiter.base
         };
+
+        let ep_ratio = occupancy_ratio(ep_in_flight, self.concurrency_cap);
+        let tightest_model = {
+            let map = self
+                .model_concurrency
+                .lock()
+                .expect("model concurrency poisoned");
+            map.iter()
+                .map(|(model, slot)| {
+                    let in_flight = slot.cap.saturating_sub(slot.semaphore.available_permits());
+                    (model.clone(), in_flight, slot.cap)
+                })
+                .max_by(|a, b| {
+                    occupancy_ratio(a.1, a.2)
+                        .partial_cmp(&occupancy_ratio(b.1, b.2))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        };
+        let (in_flight, cap, model) = match tightest_model {
+            Some((model, in_flight, cap)) if occupancy_ratio(in_flight, cap) > ep_ratio => {
+                (in_flight, cap, Some(model))
+            }
+            _ => (ep_in_flight, self.concurrency_cap, None),
+        };
+
         ThrottleStatus {
             endpoint,
             in_flight,
-            cap: self.concurrency_cap,
+            cap,
             backoff_remaining,
             penalized,
+            model,
         }
     }
 
@@ -76,6 +112,17 @@ impl HttpClient {
             .filter(EndpointState::is_throttled)
             .max_by_key(|s| s.backoff_remaining.unwrap_or_default())
     }
+}
+
+/// Fraction of `cap` currently occupied, for comparing an endpoint's own
+/// saturation against a per-model slot's (#521) on a common scale. `cap == 0`
+/// (never constructed in practice — `ModelSlot::new`/`EndpointState::new` both
+/// floor at 1) reads as fully saturated rather than dividing by zero.
+fn occupancy_ratio(in_flight: usize, cap: usize) -> f64 {
+    if cap == 0 {
+        return 1.0;
+    }
+    in_flight as f64 / cap as f64
 }
 
 /// Strip the API-key hash suffix (`"{endpoint}#{hash}"`, see `pool_key`) from a
@@ -164,5 +211,46 @@ mod tests {
             .set_retry_after(Duration::from_secs(120));
         let status = http.throttle_status().expect("some endpoint is throttled");
         assert_eq!(status.endpoint, "https://api.b/v1");
+    }
+
+    #[test]
+    fn saturated_model_slot_surfaces_as_the_binding_cap() {
+        // The endpoint itself is nowhere near its (default 3) cap, but a
+        // model-level slot (#521) at 1/1 is more constrained — it must be the
+        // one `throttle_status` reports.
+        let http = HttpClient::new();
+        let ep = http.endpoint("https://api.zai/v1", None, None);
+        let flash = ep.model_slot("glm-4.7-flash", 1);
+        let _permit = flash.semaphore.clone().try_acquire_owned().unwrap();
+        let status = http
+            .throttle_status()
+            .expect("a saturated model slot is throttled");
+        assert_eq!(status.in_flight, 1);
+        assert_eq!(status.cap, 1);
+        assert_eq!(status.model.as_deref(), Some("glm-4.7-flash"));
+    }
+
+    #[test]
+    fn an_idle_model_slot_never_shadows_a_throttled_endpoint() {
+        // A registered-but-empty model slot (0/5, e.g. GLM-5.2) must not hide
+        // the endpoint's own genuine cool-down — the endpoint stays binding.
+        let http = HttpClient::new();
+        let ep = http.endpoint("https://api.zai/v1", None, None);
+        let _glm52 = ep.model_slot("glm-5.2", 5);
+        ep.set_retry_after(Duration::from_secs(10));
+        let status = http.throttle_status().expect("endpoint is parked");
+        assert_eq!(status.model, None);
+        assert!(status.backoff_remaining.is_some());
+    }
+
+    #[test]
+    fn a_model_with_no_cap_never_appears_as_binding() {
+        // A request for a model with no per-model cap never creates a slot
+        // (`execute_with_retry` only calls `model_slot` when `Some`), so
+        // `throttle_status` reports the endpoint alone — byte-identical to
+        // before #521.
+        let http = HttpClient::new();
+        let _ = http.endpoint("https://api.rest/v1", None, None);
+        assert!(http.throttle_status().is_none());
     }
 }

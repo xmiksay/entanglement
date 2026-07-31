@@ -64,16 +64,23 @@ pub struct GeminiLlm {
     /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
     /// client default). Threaded into the per-endpoint concurrency permit (#414).
     concurrency: Option<usize>,
+    /// Catalog-provided in-flight concurrency cap for this specific model on
+    /// this endpoint (`None` = no tighter cap than the endpoint's own).
+    /// Threaded into the per-model concurrency permit layered under the
+    /// endpoint permit (#521, ADR-0140).
+    model_concurrency: Option<usize>,
     http: HttpClient,
 }
 
 impl GeminiLlm {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: impl Into<String>,
         api_key: impl Into<String>,
         default_model: impl Into<String>,
         rpm: Option<u32>,
         concurrency: Option<usize>,
+        model_concurrency: Option<usize>,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -82,22 +89,35 @@ impl GeminiLlm {
             default_model: default_model.into(),
             rpm,
             concurrency,
+            model_concurrency,
             http,
         }
     }
 }
 
 /// Build an [`LlmFactory`] wired to Gemini. Each session gets its own cloned
-/// [`GeminiLlm`]. `rpm`/`concurrency = None` use the client's defaults.
+/// [`GeminiLlm`]. `rpm`/`concurrency`/`model_concurrency = None` use the
+/// client's (or endpoint's) defaults — `model_concurrency` layers a tighter
+/// per-model cap on top (#521).
+#[allow(clippy::too_many_arguments)]
 pub fn gemini_factory(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
+    model_concurrency: Option<usize>,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = GeminiLlm::new(base_url, api_key, default_model, rpm, concurrency, http);
+    let llm = GeminiLlm::new(
+        base_url,
+        api_key,
+        default_model,
+        rpm,
+        concurrency,
+        model_concurrency,
+        http,
+    );
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -126,6 +146,8 @@ impl Llm for GeminiLlm {
                 Some(&self.api_key),
                 self.rpm,
                 self.concurrency,
+                &model,
+                self.model_concurrency,
                 || {
                     self.http
                         .client()

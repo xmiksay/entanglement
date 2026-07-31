@@ -126,6 +126,15 @@ pub struct ModelEntry {
     /// fallback. Anthropic-wire only; ignored for every other wire.
     #[serde(default)]
     pub web_search_tool_version: Option<String>,
+    /// Max simultaneously in-flight requests to **this model** on its provider's
+    /// endpoint, layered on top of (never looser than) the provider-level
+    /// `ProviderEntry::concurrency` (#521, ADR-0140). Some providers — z.ai in
+    /// particular — cap concurrency *per model*, not just per endpoint (e.g.
+    /// GLM-4.7-Flash allows only 1 in-flight request while GLM-5.2 allows 5, on
+    /// the same base URL/key). `None` (the default) means this model has no
+    /// tighter cap than its endpoint's own.
+    #[serde(default)]
+    pub concurrency: Option<usize>,
     #[serde(default)]
     pub pricing: Option<ModelPricing>,
 }
@@ -652,5 +661,54 @@ mod tests {
         let c = merge_str("providers:\n  - name: zai\n    concurrency: 8\n");
         assert_eq!(c.provider("zai").unwrap().concurrency, Some(8));
         assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
+    }
+
+    #[test]
+    fn model_concurrency_ships_the_known_zai_tiers() {
+        // z.ai enforces these two documented tiers per model, distinct from the
+        // provider-level endpoint cap (#521): GLM-4.7-Flash serializes at 1,
+        // GLM-5.2 allows 5 concurrent streams.
+        let c = Catalog::builtin();
+        assert_eq!(
+            c.model("zai", "glm-4.7-flash").unwrap().concurrency,
+            Some(1)
+        );
+        assert_eq!(c.model("zai", "glm-5.2").unwrap().concurrency, Some(5));
+        // A model with no documented per-model tier stays unset — falls back to
+        // the provider/client cap rather than an invented guess.
+        assert_eq!(c.model("zai", "glm-4.7").unwrap().concurrency, None);
+    }
+
+    #[test]
+    fn model_concurrency_is_optional_and_user_overridable() {
+        assert_eq!(
+            Catalog::builtin()
+                .model("zai", "glm-4.6")
+                .unwrap()
+                .concurrency,
+            None
+        );
+        // A user file can set/override a per-model concurrency without touching
+        // sibling fields on that model or other models.
+        let c = merge_str(
+            "providers:\n\
+             \x20 - name: zai\n\
+             \x20   models:\n\
+             \x20     - id: glm-4.6\n\
+             \x20       concurrency: 2\n\
+             \x20     - id: glm-5.2\n\
+             \x20       concurrency: 10\n",
+        );
+        assert_eq!(c.model("zai", "glm-4.6").unwrap().concurrency, Some(2));
+        assert_eq!(
+            c.model("zai", "glm-4.6").unwrap().context_window,
+            Some(204800)
+        );
+        assert_eq!(c.model("zai", "glm-5.2").unwrap().concurrency, Some(10));
+        // The untouched z.ai-documented default survives when not overridden.
+        assert_eq!(
+            c.model("zai", "glm-4.7-flash").unwrap().concurrency,
+            Some(1)
+        );
     }
 }

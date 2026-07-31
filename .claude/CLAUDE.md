@@ -89,7 +89,10 @@ endpoint (proxy, vLLM, new vendor) with zero code change; `ENTANGLEMENT_PROVIDER
 resolves against the catalog, so custom providers are selectable. `ModelEntry`
 adds capability flags (`supports_thinking`/`supports_temperature`/
 `default_temperature`/`max_output_tokens`/`thinking_budget_tokens`/
-`default_reasoning_effort`) + **pricing** (USD/M: input/output/cached_input/cache_write).
+`default_reasoning_effort`) + **pricing** (USD/M: input/output/cached_input/cache_write)
++ an optional per-model `concurrency` cap (#521,
+[ADR-0140](../docs/adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md)),
+layered under the provider-level one below — YAML-only, no env override.
 Those flags are no longer write-only (✅ #191): `ModelEntry::generation_params()`
 gates them into a `GenerationParams { temperature, max_output_tokens,
 thinking_budget_tokens, reasoning_effort }` the runtime resolves onto
@@ -1058,6 +1061,16 @@ web-search post-MVP follow-ups (#481, persisted `ProviderSearch` blocks +
 v2 (#488), root-relative permission-arg grading (#485), `glob`/`grep`
 escape-root search via durable grant (#482), live bash enablement (#498),
 per-profile sandbox scoping (#479), and the build-speed trims (#502).
+Since 0.5.0, per-model concurrency caps (#521,
+[ADR-0140](../docs/adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md))
+layer a second, tighter admission gate on top of the per-endpoint one — z.ai
+enforces concurrency per model (e.g. `glm-4.7-flash: 1` vs `glm-5.2: 5`), not
+just per endpoint, so a mixed-model workload on one endpoint (normal since
+per-profile model pinning, #323) no longer has to pick one number that's
+wrong for every model but one. The endpoint cap stays the ceiling on the
+*sum* across every model; permits acquire **model first, then endpoint**
+(released in reverse) so a caller blocked on its own saturated model never
+holds the shared endpoint slot hostage and starves sibling models.
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,

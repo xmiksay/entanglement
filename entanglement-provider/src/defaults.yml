@@ -21,6 +21,14 @@
 # `{NAME}_CONCURRENCY` (falls back to the global `ENTANGLEMENT_MAX_CONCURRENCY`
 # when neither is set).
 #
+# `concurrency` on a *model* (#521, ADR-0140) layers a tighter, model-specific
+# in-flight cap on top of the provider's own — some providers (z.ai) limit
+# concurrency per model, not just per endpoint. Only set where documented;
+# left unset elsewhere so an unknown model falls back to the provider/client
+# cap instead of an invented guess. No env override at this level (v1;
+# YAML-only, see ADR-0140) — model ids contain `.`/`-` so there is no clean
+# `{NAME}_{MODEL}_CONCURRENCY` env spelling yet.
+#
 # Capability flags gate the generation-parameter channel (#191): the head sends a
 # model's `default_temperature` only when `supports_temperature`, and extended
 # thinking only when `supports_thinking` AND a `thinking_budget_tokens` is set.
@@ -48,6 +56,8 @@ providers:
         max_output_tokens: 131072
         supports_thinking: true
         default_temperature: 0.7
+        # z.ai-documented per-model in-flight cap (#521): 5 concurrent streams.
+        concurrency: 5
         pricing:
           input: 1.4
           output: 4.4
@@ -108,6 +118,9 @@ providers:
         max_output_tokens: 131072
         supports_thinking: true
         default_temperature: 0.7
+        # z.ai-documented per-model in-flight cap (#521): only 1 concurrent
+        # stream — far tighter than the endpoint-level default.
+        concurrency: 1
         pricing:
           input: 0.0
           output: 0.0

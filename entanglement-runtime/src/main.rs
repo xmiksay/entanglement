@@ -459,6 +459,16 @@ fn resolve_concurrency(entry: &ProviderEntry) -> Option<usize> {
         .or(entry.concurrency)
 }
 
+/// A model's own tighter in-flight cap on its provider's endpoint (#521,
+/// ADR-0140) — the catalog `ModelEntry::concurrency`, e.g. z.ai's documented
+/// 1-in-flight limit for GLM-4.7-Flash vs 5 for GLM-5.2. `None` when the model
+/// is absent from the catalog or carries no per-model cap; YAML-only for v1 —
+/// no env override (model ids contain `.`/`-`, so there is no clean
+/// `{NAME}_{MODEL}_CONCURRENCY` env spelling yet).
+fn resolve_model_concurrency(catalog: &Catalog, provider: &str, model: &str) -> Option<usize> {
+    catalog.model(provider, model).and_then(|m| m.concurrency)
+}
+
 /// Summarize the chosen model against the catalog (context window, display name).
 fn model_info_for(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> ModelInfo {
     ModelInfo::from_catalog(catalog.model(&entry.name, model), model)
@@ -507,8 +517,14 @@ fn openai_wire_config(
     let model = resolve_model(entry, user_config);
     // Reuse the mid-session builder so startup and a live switch resolve the
     // wire/base/key identically (#218); a keyed provider missing its key → skip.
-    let llm_factory =
-        openai_factory_for(entry, &model, http_client, web_search_config(user_config)).ok()?;
+    let llm_factory = openai_factory_for(
+        entry,
+        &model,
+        http_client,
+        catalog,
+        web_search_config(user_config),
+    )
+    .ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -547,6 +563,7 @@ fn anthropic_wire_config(
         entry,
         &model,
         http_client,
+        catalog,
         web_search_config(user_config),
         web_search_tool_version(entry, &model, catalog),
     )
@@ -574,7 +591,7 @@ fn gemini_wire_config(
     user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
     let model = resolve_model(entry, user_config);
-    let llm_factory = gemini_factory_for(entry, &model, http_client).ok()?;
+    let llm_factory = gemini_factory_for(entry, &model, http_client, catalog).ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -596,6 +613,7 @@ fn gemini_factory_for(
     entry: &ProviderEntry,
     model: &str,
     http_client: &HttpClient,
+    catalog: &Catalog,
 ) -> Result<LlmFactory, String> {
     let key_env = entry
         .key_env
@@ -613,6 +631,7 @@ fn gemini_factory_for(
         model.to_string(),
         resolve_rpm(entry),
         resolve_concurrency(entry),
+        resolve_model_concurrency(catalog, &entry.name, model),
         http_client.clone(),
     ))
 }
@@ -625,6 +644,7 @@ fn openai_factory_for(
     entry: &ProviderEntry,
     model: &str,
     http_client: &HttpClient,
+    catalog: &Catalog,
     web_search: Option<WebSearchConfig>,
 ) -> Result<LlmFactory, String> {
     let key = match &entry.key_env {
@@ -645,6 +665,7 @@ fn openai_factory_for(
         model.to_string(),
         resolve_rpm(entry),
         resolve_concurrency(entry),
+        resolve_model_concurrency(catalog, &entry.name, model),
         web_search,
         http_client.clone(),
     ))
@@ -654,10 +675,12 @@ fn openai_factory_for(
 /// Shared by startup and the live-switch resolver (#218). Always keyed;
 /// `Err(message)` when the key env is absent/unset. `web_search_tool_version`
 /// selects the server-tool type (#481) when web search is enabled.
+#[allow(clippy::too_many_arguments)]
 fn anthropic_factory_for(
     entry: &ProviderEntry,
     model: &str,
     http_client: &HttpClient,
+    catalog: &Catalog,
     web_search: Option<WebSearchConfig>,
     web_search_tool_version: Option<String>,
 ) -> Result<LlmFactory, String> {
@@ -671,6 +694,7 @@ fn anthropic_factory_for(
         model.to_string(),
         resolve_rpm(entry),
         resolve_concurrency(entry),
+        resolve_model_concurrency(catalog, &entry.name, model),
         web_search,
         web_search_tool_version,
         http_client.clone(),
@@ -695,15 +719,18 @@ fn build_model_resolver(
             .provider(provider)
             .ok_or_else(|| format!("unknown provider `{provider}`"))?;
         let llm_factory = match entry.wire {
-            Wire::Openai => openai_factory_for(entry, model, &http_client, web_search.clone())?,
+            Wire::Openai => {
+                openai_factory_for(entry, model, &http_client, &catalog, web_search.clone())?
+            }
             Wire::Anthropic => anthropic_factory_for(
                 entry,
                 model,
                 &http_client,
+                &catalog,
                 web_search.clone(),
                 web_search_tool_version(entry, model, &catalog),
             )?,
-            Wire::Gemini => gemini_factory_for(entry, model, &http_client)?,
+            Wire::Gemini => gemini_factory_for(entry, model, &http_client, &catalog)?,
         };
         Ok(ResolvedModel {
             provider: entry.name.clone(),

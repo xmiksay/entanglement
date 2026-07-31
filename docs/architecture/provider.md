@@ -67,14 +67,16 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
   exist, but the *default* base per provider now comes from the catalog (below);
-  `openai_factory(base, key, model, rpm, concurrency, web_search)` builds an
-  `LlmFactory`. Split into `openai/{mod,request,sse}.rs` (#481) to stay under the
-  400-line file cap — `mod.rs` owns the client + streaming loop, `request.rs`
-  request-body construction, `sse.rs` chunk parsing.
+  `openai_factory(base, key, model, rpm, concurrency, model_concurrency,
+  web_search)` builds an `LlmFactory`. Split into `openai/{mod,request,sse}.rs`
+  (#481) to stay under the 400-line file cap — `mod.rs` owns the client +
+  streaming loop, `request.rs` request-body construction, `sse.rs` chunk
+  parsing.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
-  fragments). `anthropic_factory(key, model, rpm, concurrency, web_search,
-  web_search_tool_version)`. Split into `anthropic/{mod,request,sse}.rs` (#481)
+  fragments). `anthropic_factory(key, model, rpm, concurrency,
+  model_concurrency, web_search, web_search_tool_version)`. Split into
+  `anthropic/{mod,request,sse}.rs` (#481)
   the same way as `openai/` — `mod.rs` additionally owns the `pause_turn`
   continuation loop (below).
 - `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
@@ -95,7 +97,7 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   `parameters` schema (Gemini rejects `$schema`/`additionalProperties`/
   union-`type`/dangling `required`), and stashes/restores the signature via
   `ToolCall.provider_meta` (below). `gemini_factory(base, key, model, rpm,
-  concurrency, http)` — no web-search knob.
+  concurrency, model_concurrency, http)` — no web-search knob.
   Request-body assembly lives in the `gemini::request` submodule.
 - **Opaque `provider_meta`** (#309) — `ToolCall.provider_meta: Option<Value>` is a
   provider-private slot that must round-trip **verbatim** through history persistence
@@ -218,6 +220,39 @@ is spent** — then it surfaces as an error, so a saturated endpoint *fails* a
 sub-agent's turn rather than hanging its parent forever. Genuine failures
 (transport faults, retryable 5xx) stay bounded by `max_attempts`.
 
+**Per-model concurrency, layered on top of the endpoint cap** (#521,
+[ADR-0140](../adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md)):
+some providers — z.ai in particular — cap concurrency **per model**, not just
+per endpoint (documented: `GLM-4.7-Flash` allows only 1 in-flight request,
+`GLM-5.2` allows 5, on the same base URL/key), and per-profile model pinning
+([ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md))
+makes a mixed-model workload on one endpoint the normal case. `ModelEntry`
+gains an optional `concurrency` (catalog data, mirroring `ProviderEntry`'s;
+YAML-only, no env override in v1 — model ids contain `.`/`-` with no
+established env-name mangling). `EndpointState` gains a second,
+lazily-created `Semaphore` per `(endpoint, model)`
+(`model_concurrency: Mutex<HashMap<String, Arc<ModelSlot>>>`);
+`HttpClient::execute_with_retry` takes `model`/`model_concurrency` params and,
+when the latter is `Some`, acquires **that model's permit first, then the
+endpoint-wide one** (released in reverse) — the endpoint cap is unchanged as
+the ceiling on the *sum* of in-flight requests across every model on it
+(every call still takes an endpoint permit regardless of model), but a
+caller blocked on its own saturated model never holds that scarce endpoint
+permit hostage while it waits, which would otherwise starve unrelated
+sibling models sharing the endpoint even with room to spare. Both permits
+ride the same `StreamGuard` and release together when the streamed body
+ends. A model with no catalog cap never acquires a model permit at all —
+byte-identical to pre-#521; a model cap configured *wider* than its
+endpoint's own is legal (the narrower endpoint cap simply binds first) but
+logs a `tracing::warn!` as a likely misconfiguration rather than erroring.
+The `{name}_factory`/`{Name}Llm::new` constructors each gained a
+`model_concurrency: Option<usize>` parameter, resolved once per `(entry,
+model)` at the same point `resolve_rpm`/`resolve_concurrency` already resolve
+the provider-level knobs (so a live `SetModel` switch re-resolves it exactly
+like the others). The endpoint-wide `Retry-After` cool-down and pacing gate
+stay shared across every model on the endpoint (v1) — a 429 still parks the
+whole endpoint regardless of which model triggered it.
+
 **Timeouts — connect + idle-gap, not whole-request** (#241): the shared
 `reqwest::Client` is built with `connect_timeout` only (30s to establish TCP+TLS).
 A fixed whole-request `.timeout()` would abort a long *healthy* LLM stream
@@ -241,8 +276,14 @@ all retry; anything else is permanent.
 **Throttle visibility.** `HttpClient::throttle_status() -> Option<ThrottleStatus>`
 is a read-only snapshot over the live pool (in-flight/cap, `Retry-After` remaining,
 whether the pacing gate is penalized) for the most-throttled endpoint, or `None`
-when every endpoint is at rest. It feeds no request logic — the TUI polls it each
-frame to show a throttle indicator only while backing off (see heads doc). `RetryConfig` (`max_attempts`, `initial_backoff`,
+when every endpoint is at rest. Since #521 the reported in-flight/cap is
+whichever is **binding** — the endpoint's own, or a per-model slot whose
+occupancy ratio is currently tighter (`model: Option<String>` names it when
+so); an idle or never-created model slot never shadows a genuine
+endpoint-wide cool-down. It feeds no request logic — the TUI polls it each
+frame to show a throttle indicator only while backing off (see heads doc),
+rendering the model id alongside the host when it is the binding constraint.
+`RetryConfig` (`max_attempts`, `initial_backoff`,
 `max_backoff`, `rpm`) tunes the *failure* path; `HttpClient::with_config` +
 `RetryConfig::no_retry()` build variants (tests use the latter). This
 per-endpoint state is the reason a session carries **no** per-session connection

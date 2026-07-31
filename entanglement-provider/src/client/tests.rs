@@ -75,6 +75,112 @@ async fn endpoint_concurrency_bounds_in_flight() {
     assert!(ep.concurrency.clone().try_acquire_owned().is_ok());
 }
 
+#[tokio::test]
+async fn model_slot_bounds_in_flight_per_model() {
+    // With a per-model cap of 1 (e.g. GLM-4.7-Flash), a second owned permit for
+    // that same model can't be taken until the first is dropped — the property
+    // that serializes calls to a model z.ai only allows one in-flight for
+    // (#521).
+    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY);
+    let slot = ep.model_slot("glm-4.7-flash", 1);
+    let first = slot.semaphore.clone().acquire_owned().await.unwrap();
+    assert!(slot.semaphore.clone().try_acquire_owned().is_err());
+    drop(first);
+    assert!(slot.semaphore.clone().try_acquire_owned().is_ok());
+}
+
+#[tokio::test]
+async fn model_slot_is_independent_across_models_on_the_same_endpoint() {
+    // GLM-5.2 (cap 5) and GLM-4.7-Flash (cap 1) share one endpoint but must
+    // meter independently — one saturated model must never block another
+    // (#521): the mixed-model scenario ADR-0140 exists to fix.
+    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY);
+    let flash = ep.model_slot("glm-4.7-flash", 1);
+    let glm52 = ep.model_slot("glm-5.2", 5);
+    let _flash_permit = flash.semaphore.clone().acquire_owned().await.unwrap();
+    // Flash is now saturated (cap 1), but GLM-5.2's independent semaphore is
+    // untouched — up to 5 concurrent GLM-5.2 permits are still available.
+    assert!(flash.semaphore.clone().try_acquire_owned().is_err());
+    let permits: Vec<_> = (0..5)
+        .map(|_| glm52.semaphore.clone().try_acquire_owned().unwrap())
+        .collect();
+    assert!(glm52.semaphore.clone().try_acquire_owned().is_err());
+    drop(permits);
+}
+
+#[tokio::test]
+async fn model_permit_blocked_never_holds_the_endpoint_permit_hostage() {
+    // Regression for the #521 refinement: `execute_with_retry` acquires the
+    // model permit *before* the endpoint permit specifically so a caller
+    // blocked on its own saturated model never sits holding a scarce
+    // endpoint-wide permit — which would starve every *other* model sharing
+    // the endpoint of admission, even with room to spare.
+    use futures::FutureExt;
+
+    let ep = EndpointState::new(RPM_LIMIT, 2);
+    let flash = ep.model_slot("glm-4.7-flash", 1);
+
+    // One in-flight Flash call: holds both its model permit and one of the
+    // endpoint's two permits, exactly as `execute_with_retry` would.
+    let _flash_model_permit = flash.semaphore.clone().acquire_owned().await.unwrap();
+    let _flash_endpoint_permit = ep.concurrency.clone().acquire_owned().await.unwrap();
+
+    // A second Flash call queues on the now-exhausted model semaphore — it
+    // must not complete, and critically must never have touched the endpoint
+    // semaphore to get there.
+    let second_flash_model_attempt = flash.semaphore.clone().acquire_owned();
+    assert!(
+        second_flash_model_attempt.now_or_never().is_none(),
+        "a second call to a saturated model must block on the model semaphore"
+    );
+    assert_eq!(
+        ep.concurrency.available_permits(),
+        1,
+        "the endpoint's spare permit must stay free while a caller is \
+         blocked purely on its own model's semaphore"
+    );
+
+    // A *different* model, sharing the same endpoint, must still get that
+    // spare endpoint permit immediately — it is not starved by Flash's
+    // internally-queued caller.
+    assert!(
+        ep.concurrency.clone().try_acquire_owned().is_ok(),
+        "a sibling model must not be starved of endpoint room by another \
+         model's queued caller"
+    );
+}
+
+#[test]
+fn model_cap_wider_than_endpoint_cap_warns_but_is_still_honored() {
+    // A model cap wider than its endpoint's own is a likely misconfiguration
+    // (the narrower endpoint cap binds first, so the model cap can never
+    // actually be reached) but must warn, not refuse to build the slot.
+    let ep = EndpointState::new(RPM_LIMIT, 2);
+    let slot = ep.model_slot("glm-5.2", 10);
+    assert_eq!(slot.cap, 10);
+    assert_eq!(slot.semaphore.available_permits(), 10);
+}
+
+#[test]
+fn model_slot_is_stable_by_model_id_and_first_caller_sets_the_cap() {
+    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY);
+    let a1 = ep.model_slot("glm-5.2", 5);
+    let a2 = ep.model_slot("glm-5.2", 5);
+    // Same model id → the same slot (and thus the same live semaphore state).
+    assert!(Arc::ptr_eq(&a1, &a2));
+    assert_eq!(a1.cap, 5);
+    // A later call for the same model with a different requested cap does not
+    // resize an already-created slot — mirrors `HttpClient::endpoint`'s own
+    // "only the first caller sizes the bucket" contract.
+    let a3 = ep.model_slot("glm-5.2", 1);
+    assert!(Arc::ptr_eq(&a1, &a3));
+    assert_eq!(a3.cap, 5);
+    // A different model id gets its own independent slot.
+    let flash = ep.model_slot("glm-4.7-flash", 1);
+    assert!(!Arc::ptr_eq(&a1, &flash));
+    assert_eq!(flash.cap, 1);
+}
+
 #[test]
 fn rate_limiter_penalize_doubles_and_caps() {
     let rl = RateLimiter::new(60); // base = 1s

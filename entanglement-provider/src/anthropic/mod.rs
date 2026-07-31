@@ -67,6 +67,11 @@ pub struct AnthropicLlm {
     /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
     /// client default). Threaded into the per-endpoint concurrency permit (#414).
     concurrency: Option<usize>,
+    /// Catalog-provided in-flight concurrency cap for this specific model on
+    /// this endpoint (`None` = no tighter cap than the endpoint's own).
+    /// Threaded into the per-model concurrency permit layered under the
+    /// endpoint permit (#521, ADR-0140).
+    model_concurrency: Option<usize>,
     /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
     /// the web-search server tool. Bound at construction, invisible to core.
     web_search: Option<WebSearchConfig>,
@@ -85,6 +90,7 @@ impl AnthropicLlm {
         default_model: impl Into<String>,
         rpm: Option<u32>,
         concurrency: Option<usize>,
+        model_concurrency: Option<usize>,
         web_search: Option<WebSearchConfig>,
         web_search_tool_version: Option<String>,
         http: HttpClient,
@@ -95,6 +101,7 @@ impl AnthropicLlm {
             default_max_tokens: DEFAULT_MAX_TOKENS,
             rpm,
             concurrency,
+            model_concurrency,
             web_search,
             web_search_tool_version,
             http,
@@ -103,15 +110,18 @@ impl AnthropicLlm {
 }
 
 /// Build an [`LlmFactory`] wired to Anthropic. Each session gets its own cloned
-/// [`AnthropicLlm`]. `rpm`/`concurrency = None` use the client's defaults;
-/// `web_search = Some(..)` requests provider-side web search (#305);
-/// `web_search_tool_version` selects the server-tool type when set (#481).
+/// [`AnthropicLlm`]. `rpm`/`concurrency`/`model_concurrency = None` use the
+/// client's (or endpoint's) defaults — `model_concurrency` layers a tighter
+/// per-model cap on top (#521); `web_search = Some(..)` requests provider-side
+/// web search (#305); `web_search_tool_version` selects the server-tool type
+/// when set (#481).
 #[allow(clippy::too_many_arguments)]
 pub fn anthropic_factory(
     api_key: impl Into<String>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
+    model_concurrency: Option<usize>,
     web_search: Option<WebSearchConfig>,
     web_search_tool_version: Option<String>,
     http: HttpClient,
@@ -121,6 +131,7 @@ pub fn anthropic_factory(
         default_model,
         rpm,
         concurrency,
+        model_concurrency,
         web_search,
         web_search_tool_version,
         http,
@@ -180,6 +191,11 @@ impl Llm for AnthropicLlm {
         let api_key = self.api_key.clone();
         let rpm = self.rpm;
         let concurrency = self.concurrency;
+        let model_concurrency = self.model_concurrency;
+        // A separate clone for the stream body below: `model` itself is still
+        // read after the block builds (the "stream started" trace), and
+        // `try_stream!` captures by move.
+        let request_model = model.clone();
         let mut body = body;
 
         let stream = try_stream! {
@@ -194,6 +210,8 @@ impl Llm for AnthropicLlm {
                         Some(&api_key),
                         rpm,
                         concurrency,
+                        &request_model,
+                        model_concurrency,
                         || {
                             http.client()
                                 .post(ANTHROPIC_API_URL)

@@ -6,7 +6,8 @@
 //! Covers the full path the unit tests in `src/openai.rs` can't: HTTP POST →
 //! SSE frame parse → [`LlmEvent`] assembly, over the real `reqwest` transport.
 
-use std::time::Duration;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
 use entanglement_provider::{HttpClient, OpenAiLlm, RetryConfig};
 use entanglement_provider::{Llm, LlmEvent, LlmRequest, Message};
@@ -131,6 +132,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         base_url,
         Some("test-key".into()),
         "glm-5.2",
+        None,
         None,
         None,
         None,
@@ -302,6 +304,7 @@ async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEven
         None,
         None,
         None,
+        None,
         HttpClient::with_config(config),
     );
     let messages = vec![Message::user("hi")];
@@ -450,4 +453,274 @@ async fn tool_call_argument_survives_multibyte_char_split_across_chunks() {
         })
         .expect("a ToolCall event, not dropped as malformed JSON");
     assert_eq!(call.input, r#"{"city": "Curaçao"}"#);
+}
+
+// ── per-model concurrency admission (#521, ADR-0140) ────────────────────────
+//
+// z.ai enforces concurrency per *model*, not just per endpoint — GLM-4.7-Flash
+// allows only 1 in-flight stream, GLM-5.2 allows 5, on the same base URL/key.
+// The per-model semaphore permit is held for the whole streamed body exactly
+// like the endpoint-wide one, so a second caller of a model already at its
+// cap must not even open its TCP connection until the first's stream ends.
+// These tests drive that over the real transport (unlike the semaphore-level
+// unit tests in `src/client/tests.rs`), asserting on *when the mock server
+// sees each connection arrive*.
+
+/// A `RetryConfig` with pacing effectively disabled (a huge `rpm`), so the
+/// adaptive spacing gate can't introduce its own inter-request delay and
+/// confound a timing assertion aimed at the per-model semaphore alone.
+fn no_pacing_config() -> RetryConfig {
+    RetryConfig {
+        rpm: 60_000,
+        ..RetryConfig::default()
+    }
+}
+
+/// Serve exactly `n` connections **one at a time**: `listener.accept()` for
+/// the next connection only happens after the previous one's response has
+/// been written and its socket dropped (closing the stream). Records each
+/// connection's accept time so a test can assert on the gap between them.
+async fn serve_sequential_with_delay(
+    body: String,
+    n: usize,
+    delay_before_first: Duration,
+) -> (String, Arc<StdMutex<Vec<Instant>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let accept_times = Arc::new(StdMutex::new(Vec::new()));
+    let times = accept_times.clone();
+    tokio::spawn(async move {
+        for i in 0..n {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            times.lock().unwrap().push(Instant::now());
+            let _ = read_http_request(&mut stream).await;
+            if i == 0 {
+                tokio::time::sleep(delay_before_first).await;
+            }
+            let _ = stream.write_all(&sse_response(&body)).await;
+            let _ = stream.flush().await;
+            // `stream` drops at the end of this iteration, closing the
+            // socket — the client's streamed body (and held permit) ends
+            // here, before the next connection is even accepted.
+        }
+    });
+    (format!("http://{addr}"), accept_times)
+}
+
+/// Serve `n` connections **concurrently**: every connection is accepted and
+/// handled by its own task, so two in-flight streams never block each
+/// other's TCP-level admission (only their respective semaphores do).
+async fn serve_concurrent(bodies_and_delays: Vec<(String, Duration)>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        for (body, delay) in bodies_and_delays {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            tokio::spawn(async move {
+                let _ = read_http_request(&mut stream).await;
+                tokio::time::sleep(delay).await;
+                let _ = stream.write_all(&sse_response(&body)).await;
+                let _ = stream.flush().await;
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+fn ok_body() -> String {
+    sse_body(&[
+        r#"{"choices":[{"delta":{"content":"ok"}}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+    ])
+}
+
+#[tokio::test]
+async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
+    // GLM-4.7-Flash's documented cap is 1: a second concurrent call to the
+    // *same* model must queue behind the first, not race it.
+    let delay = Duration::from_millis(300);
+    let (base_url, accept_times) = serve_sequential_with_delay(ok_body(), 2, delay).await;
+
+    let http = HttpClient::with_config(no_pacing_config());
+    let mut llm_a = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-4.7-flash",
+        None,
+        None,
+        Some(1),
+        None,
+        http.clone(),
+    );
+    let mut llm_b = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-4.7-flash",
+        None,
+        None,
+        Some(1),
+        None,
+        http,
+    );
+    let messages = vec![Message::user("hi")];
+    let req = || LlmRequest {
+        system: "s",
+        model: None,
+        messages: &messages,
+        tools: &[],
+        generation: None,
+    };
+
+    let (a, b) = tokio::join!(
+        async {
+            llm_a
+                .stream(req())
+                .await
+                .expect("a starts")
+                .collect::<Vec<_>>()
+                .await
+        },
+        async {
+            llm_b
+                .stream(req())
+                .await
+                .expect("b starts")
+                .collect::<Vec<_>>()
+                .await
+        },
+    );
+    assert!(a.iter().all(|r| r.is_ok()) && b.iter().all(|r| r.is_ok()));
+
+    let times = accept_times.lock().unwrap().clone();
+    assert_eq!(times.len(), 2, "both calls must eventually connect");
+    let gap = times[1].duration_since(times[0]);
+    assert!(
+        gap >= delay - Duration::from_millis(50),
+        "the second Flash call must not connect until the first's stream \
+         (holding the model=1 permit) finished, gap={gap:?}"
+    );
+}
+
+#[tokio::test]
+async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
+    // The mixed-model scenario ADR-0140 exists to fix: GLM-4.7-Flash (cap 1)
+    // occupies its one slot for `delay`, but a concurrent GLM-5.2 (cap 5) call
+    // on the *same endpoint* must not wait behind it.
+    let delay = Duration::from_millis(300);
+    let base_url = serve_concurrent(vec![
+        (ok_body(), delay),                    // the Flash call
+        (ok_body(), Duration::from_millis(0)), // the GLM-5.2 call
+    ])
+    .await;
+
+    let http = HttpClient::with_config(no_pacing_config());
+    let mut flash = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-4.7-flash",
+        None,
+        None,
+        Some(1),
+        None,
+        http.clone(),
+    );
+    let mut glm52 = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-5.2",
+        None,
+        None,
+        Some(5),
+        None,
+        http,
+    );
+    let messages = vec![Message::user("hi")];
+    let req = || LlmRequest {
+        system: "s",
+        model: None,
+        messages: &messages,
+        tools: &[],
+        generation: None,
+    };
+
+    let flash_events = flash.stream(req()).await.expect("flash starts");
+    let start = Instant::now();
+    let glm52_events = glm52.stream(req()).await.expect("glm-5.2 starts");
+    let (_flash, glm52_result) = tokio::join!(
+        flash_events.collect::<Vec<_>>(),
+        glm52_events.collect::<Vec<_>>(),
+    );
+    assert!(glm52_result.iter().all(|r| r.is_ok()));
+    assert!(
+        start.elapsed() < delay / 2,
+        "GLM-5.2 must complete promptly, not wait behind Flash's in-flight \
+         call — elapsed {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
+    // A model with no catalog `concurrency` entry (`model_concurrency: None`)
+    // must behave byte-identically to pre-#521: two concurrent calls admit
+    // together, bounded only by the (generous, default) endpoint cap.
+    let delay = Duration::from_millis(200);
+    let base_url = serve_concurrent(vec![(ok_body(), delay), (ok_body(), delay)]).await;
+
+    let http = HttpClient::with_config(no_pacing_config());
+    let mut llm_a = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-4.6",
+        None,
+        None,
+        None, // no per-model cap
+        None,
+        http.clone(),
+    );
+    let mut llm_b = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-4.6",
+        None,
+        None,
+        None,
+        None,
+        http,
+    );
+    let messages = vec![Message::user("hi")];
+    let req = || LlmRequest {
+        system: "s",
+        model: None,
+        messages: &messages,
+        tools: &[],
+        generation: None,
+    };
+
+    let start = Instant::now();
+    let (a, b) = tokio::join!(
+        async {
+            llm_a
+                .stream(req())
+                .await
+                .expect("a starts")
+                .collect::<Vec<_>>()
+                .await
+        },
+        async {
+            llm_b
+                .stream(req())
+                .await
+                .expect("b starts")
+                .collect::<Vec<_>>()
+                .await
+        },
+    );
+    assert!(a.iter().all(|r| r.is_ok()) && b.iter().all(|r| r.is_ok()));
+    assert!(
+        start.elapsed() < delay * 2,
+        "two calls with no per-model cap must run concurrently, not \
+         serialize — elapsed {:?}",
+        start.elapsed()
+    );
 }

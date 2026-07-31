@@ -240,18 +240,25 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
 
 /// A compact one-line label for a throttled endpoint: `⚠ host throttled · retry
 /// Ns · in/cap` for an active 429/`Retry-After` cool-down, `pacing` when only
-/// the adaptive gate has slowed, or `busy` when just the in-flight cap is full.
+/// the adaptive gate has slowed, or `busy` when just the in-flight cap is
+/// full. When a per-model cap (#521) is the binding constraint, the model id
+/// rides alongside the host so a saturated `GLM-4.7-Flash` slot doesn't read
+/// as a bare, unexplained endpoint-wide cap.
 fn throttle_label(status: &entanglement_provider::ThrottleStatus) -> String {
     let host = short_host(&status.endpoint);
+    let label = match &status.model {
+        Some(model) => format!("{host} ({model})"),
+        None => host,
+    };
     let occupancy = format!("{}/{}", status.in_flight, status.cap);
     match status.backoff_remaining {
         // Round the wait up to whole seconds so a sub-second tail never shows "0s".
         Some(remaining) => {
             let secs = remaining.as_millis().div_ceil(1000).max(1);
-            format!("⚠ {host} throttled · retry {secs}s · {occupancy}")
+            format!("⚠ {label} throttled · retry {secs}s · {occupancy}")
         }
-        None if status.penalized => format!("⚠ {host} pacing · {occupancy}"),
-        None => format!("⚠ {host} busy · {occupancy}"),
+        None if status.penalized => format!("⚠ {label} pacing · {occupancy}"),
+        None => format!("⚠ {label} busy · {occupancy}"),
     }
 }
 
@@ -293,6 +300,7 @@ mod tests {
             cap: 3,
             backoff_remaining: Some(Duration::from_millis(7200)),
             penalized: true,
+            model: None,
         };
         assert_eq!(
             throttle_label(&parked),
@@ -310,9 +318,22 @@ mod tests {
             backoff_remaining: None,
             penalized: false,
             in_flight: 3,
-            ..parked
+            ..parked.clone()
         };
         assert_eq!(throttle_label(&busy), "⚠ api.z.ai busy · 3/3");
+        // A binding per-model cap (#521) rides alongside the host.
+        let model_busy = ThrottleStatus {
+            backoff_remaining: None,
+            penalized: false,
+            in_flight: 1,
+            cap: 1,
+            model: Some("glm-4.7-flash".to_string()),
+            ..parked
+        };
+        assert_eq!(
+            throttle_label(&model_busy),
+            "⚠ api.z.ai (glm-4.7-flash) busy · 1/1"
+        );
     }
 
     #[test]
