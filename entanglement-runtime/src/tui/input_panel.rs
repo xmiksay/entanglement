@@ -132,16 +132,20 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let input_text = app.input_text();
 
     // Issue 2 whisper: when the input starts with `/`, show a dimmed one-line
-    // usage hint for the best-matching command (the prefix filter from
-    // `filter_commands`) instead of the generic placeholder. When input is
-    // empty, keep the current placeholder. When input is `/` alone or `/xyz`
-    // with no match, show nothing extra (the slash popup handles "no match").
+    // usage hint for the best-matching command (preferring a name-prefix match
+    // over a looser description match, so `/co` hints `compact` not `resume`)
+    // instead of the generic placeholder. When input is empty, keep the current
+    // placeholder. When input is `/` alone or `/xyz` with no match, show nothing
+    // extra (the slash popup handles "no match").
     let slash_whisper = if !input_text.is_empty() && input_text.starts_with('/') {
         // The prefix is the text after `/` up to the first space.
         let prefix = input_text[1..].split_whitespace().next().unwrap_or("");
         let best = crate::tui::commands::filter_commands(prefix)
             .into_iter()
-            .next()
+            // Name-prefix matches win over description-only matches so `/co`
+            // hints `compact` (name starts with "co") not `resume` (whose
+            // description merely contains "co").
+            .min_by_key(|cmd| !cmd.name().starts_with(prefix))
             .map(|cmd| cmd.help_text());
         best.and_then(|help| help.lines().next().map(|line| line.trim().to_string()))
             .filter(|line| !line.is_empty())
@@ -477,5 +481,57 @@ mod tests {
         let pos = terminal.backend().cursor_position();
         assert_eq!(pos.y, 1, "cursor on row 1 must render on the second row");
         assert_eq!(pos.x, 2, "cursor X tracks its column");
+    }
+
+    /// Issue 2 whisper: typing `/co` renders a dimmed usage hint for the
+    /// best-matching command (`compact`) alongside the typed text. Draw into a
+    /// TestBackend and read back the buffer to confirm the hint text landed.
+    #[test]
+    fn slash_input_renders_whisper_for_best_match() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.input().insert_str("/co");
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 80, 1);
+                draw_input(f, area, &mut app);
+            })
+            .unwrap();
+
+        // The rendered line contains the typed `/co` plus the compact usage
+        // hint's first line (which names --keep).
+        let buf = terminal.backend().buffer();
+        let line: String = (0..80)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap())
+            .collect();
+        assert!(
+            line.contains("--keep"),
+            "expected --keep whisper in /co render: {line:?}"
+        );
+    }
+
+    /// Issue 2 whisper: an empty input shows the generic placeholder, not a
+    /// slash hint (the whisper only fires for `/…` input).
+    #[test]
+    fn empty_input_shows_generic_placeholder_not_whisper() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 80, 1);
+                draw_input(f, area, &mut app);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let line: String = (0..80)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap())
+            .collect();
+        assert!(
+            line.contains("Type a message"),
+            "expected generic placeholder: {line:?}"
+        );
     }
 }

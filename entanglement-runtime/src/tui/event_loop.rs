@@ -1453,4 +1453,121 @@ mod tests {
             "/help <unknown> opens the keybindings dialog"
         );
     }
+
+    // --- Issue 2: slash popup (Tab/Up/Down/Enter) ---------------------------
+    //
+    // The live prefix-filter popup mirrors the mention popup: typing `/co`
+    // opens it, Tab/Enter inserts the selected command, Up/Down navigate.
+
+    #[tokio::test]
+    async fn typing_slash_opens_the_popup() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        let mut attention = Attention::from_env();
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Char('/'))),
+        )
+        .await
+        .unwrap();
+        assert!(app.slash_visible(), "typing / opened the slash popup");
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Char('c'))),
+        )
+        .await
+        .unwrap();
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Char('o'))),
+        )
+        .await
+        .unwrap();
+        assert!(app.slash_visible(), "popup stays open while typing /co");
+        // `/co` narrows to compact/continue (both name-prefix matches).
+        let names: Vec<&str> = app.slash().matches().iter().map(|c| c.name()).collect();
+        assert!(names.contains(&"compact"), "names={names:?}");
+    }
+
+    #[tokio::test]
+    async fn tab_accepts_the_selected_slash_command() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        // Type `/comp` → first match is Compact.
+        app.set_input_text("/comp".to_string());
+        app.update_popups();
+        assert!(app.slash_visible());
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Tab)),
+        )
+        .await
+        .unwrap();
+
+        assert!(!app.slash_visible(), "Tab closed the popup");
+        assert_eq!(
+            app.input_text(),
+            "/compact ",
+            "Tab inserted the selected command with a trailing space"
+        );
+    }
+
+    #[tokio::test]
+    async fn esc_closes_the_slash_popup() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        app.set_input_text("/comp".to_string());
+        app.update_popups();
+        assert!(app.slash_visible());
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Esc)),
+        )
+        .await
+        .unwrap();
+
+        assert!(!app.slash_visible(), "Esc closed the slash popup");
+    }
+
+    #[tokio::test]
+    async fn down_arrow_navigates_the_slash_popup() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        app.set_input_text("/".to_string());
+        app.update_popups();
+        assert!(app.slash_visible());
+        let first = app.slash().selected().cloned();
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Down)),
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(
+            app.slash().selected().cloned(),
+            first,
+            "Down moved the selection"
+        );
+    }
 }
