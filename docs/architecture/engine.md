@@ -457,9 +457,21 @@ bound, ADR-0123 — the same indefinite-wait path the blocking `agent` tool take
 For the single-delegation case, a third tool `agent { agent, prompt }` (✅ #120,
 [ADR-0033](../adr/0033-agent-tool-family-and-blocking-agent.md)) **blocks**: it runs
 the exact `agent_spawn` launch path (same guard, clamp, `Spawn`), then parks on
-the child's `Done` and folds its answer directly into the `ToolOutput` — one call
-instead of launch-then-poll. It still records into the `AgentRegistry`, so a
-parent `Stop` while parked leaves the child collectable via `agent_poll`.
+the child's genuine completion and folds its answer directly into the
+`ToolOutput` — one call instead of launch-then-poll. It still records into the
+`AgentRegistry`, so a parent `Stop` while parked leaves the child collectable
+via `agent_poll`. Both routes share `subagent::collect_child_answer`, which
+does **not** treat a bare `Done` as final (✅ #562,
+[ADR-0155](../adr/0155-errored-subagent-turn-parks-for-steering.md)): the
+engine emits `Done` even for a turn that ended in `Error`
+(`emit_turn_error`), so a `Done` with no accumulated text and an `Error` on
+that turn clears the per-turn state and keeps watching instead of unblocking
+the parent on a failed child — the child session is still alive and
+steerable (prompting it "continue" starts a new turn), and the wait ends only
+on a `Done` that carries a usable answer or the child's `SessionEnded`/
+`SessionHibernated`. Each re-arm emits an explanatory `OutEvent::Error` on the
+*parent* naming the child, so the user knows to steer it; `AgentState` stays
+`WaitingAgent` throughout (no new lifecycle state).
 Refusals (depth, budget, capability) are identical across `agent` and
 `agent_spawn` — one shared guard path.
 All three reuse the #58 round-trip, so core's turn loop needs no notion of a
@@ -563,8 +575,10 @@ mutation (sponsor check + `record_sponsored_start`) happens in the tool
 executor's single-threaded loop before the detached task. The accepted plan
 reaches the child verbatim as its first prompt (`wrap_plan`) and as its own
 `OutEvent::Plan` snapshot; the plan session parks on `WaitingAgent`
-(ADR-0139) and the task `.await`s the child's full completion
-(`collect_child_answer`) — registered with `crate::cancel::CancelRegistry`
+(ADR-0139) and the task `.await`s the child's *genuine* completion
+(`collect_child_answer`, which keeps waiting past an errored build turn with
+no usable answer instead of concluding on top of a failed build — ADR-0155,
+#562) — registered with `crate::cancel::CancelRegistry`
 (#513), so a `Stop` on the plan session aborts this wait with no reply owed
 and the child (an independent session) keeps running untouched — "detach" by
 default; a head wanting the child stopped too sends it an ordinary second

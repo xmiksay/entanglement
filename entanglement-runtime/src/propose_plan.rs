@@ -310,11 +310,14 @@ async fn launch_sponsored_build(
     // state (ADR-0139).
     holly.emit_status(&session, AgentState::WaitingAgent);
 
-    // Watch the child's event stream and accumulate its answer. A `Stop` on
+    // Watch the child's event stream and accumulate its answer — parked past an
+    // errored build turn with no usable answer instead of concluding on top of a
+    // failed build (#562, see `collect_child_answer`'s doc). A `Stop` on
     // `session` aborts this whole task (the caller registers it with
     // `CancelRegistry`) — the child keeps running untouched, i.e. "detach" is
     // this function simply never resuming.
-    let answer = crate::subagent::collect_child_answer(&mut events_rx, &child).await;
+    let answer =
+        crate::subagent::collect_child_answer(&holly, &session, &mut events_rx, &child).await;
     let elapsed = started.elapsed();
     let _ = status_tx.send(crate::agent_poll::AgentStatus::Complete {
         answer: answer.clone(),
