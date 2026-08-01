@@ -1183,12 +1183,22 @@ pub enum InMsg {
     /// change mid-turn — and it always acks with
     /// [`OutEvent::SessionMetaChanged`] carrying the full merged values.
     /// Wire-allowed: cosmetic, session-scoped, no privilege.
+    ///
+    /// `if_unset` (#553): when `true`, `name` is applied only if the session
+    /// has no name yet — a no-op (still acked, with the unchanged state) once
+    /// the session already carries one, whether set by an earlier `/name` or
+    /// restored by resume. Never clears an existing name. The auto session-title
+    /// generator (`entanglement-runtime::session_title`) always sets this so a
+    /// late-arriving generated title can never race a user-set `/name`; a
+    /// user-authored rename leaves it `false` (default) so it always wins.
     SetSessionMeta {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        if_unset: bool,
     },
     /// Replace this session's live **tool overlay** (#539, ADR-0149): the full
     /// list of [`ToolOverlayEntry`] patterns whose matching tools exist for
@@ -2152,6 +2162,7 @@ mod tests {
                 session: s.clone(),
                 name: Some("my session".into()),
                 action: None,
+                if_unset: false,
             },
             InMsg::Oneshot {
                 session: s.clone(),

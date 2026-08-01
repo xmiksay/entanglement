@@ -70,8 +70,10 @@ pub(crate) enum SessionCmd {
     /// untouched, `Some("")` clears it. Applied immediately — never stashed —
     /// like [`ChildSpawned`][SessionCmd::ChildSpawned], since `action` exists
     /// precisely to change mid-turn. Always acks with
-    /// [`OutEvent::SessionMetaChanged`] carrying the full merged values.
-    SetSessionMeta(Option<String>, Option<String>),
+    /// [`OutEvent::SessionMetaChanged`] carrying the full merged values. The
+    /// third field is `if_unset` (#553): when `true`, `name` only applies if
+    /// the session has no name yet.
+    SetSessionMeta(Option<String>, Option<String>, bool),
     /// Replace the session's live tool overlay (#539, ADR-0149): the full
     /// [`ToolOverlayEntry`] list whose matching tools exist for this session
     /// regardless of the profile mask. Always succeeds and emits
@@ -473,10 +475,17 @@ pub(crate) async fn session_loop(
             // since `action` ("what the agent is doing now") is only useful if
             // it can change while a turn runs. Pure state + ack, no engine
             // behavior reads it.
-            Some(SessionCmd::SetSessionMeta(name, action)) => {
+            Some(SessionCmd::SetSessionMeta(name, action, if_unset)) => {
                 // `None` leaves a field untouched; `Some("")` clears it.
+                // `if_unset` (#553, the auto-title generator's path): a
+                // session that already has a name — set via `/name`, or
+                // restored on resume before this command was ever sent —
+                // keeps it; the generator's write silently no-ops instead of
+                // racing (and losing to) a user-set name.
                 if let Some(name) = name {
-                    s.name = (!name.is_empty()).then_some(name);
+                    if !if_unset || s.name.is_none() {
+                        s.name = (!name.is_empty()).then_some(name);
+                    }
                 }
                 if let Some(action) = action {
                     s.action = (!action.is_empty()).then_some(action);

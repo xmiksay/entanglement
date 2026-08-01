@@ -23,7 +23,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
-         | SetSessionMeta{session,name?,action?}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151)
+         | SetSessionMeta{session,name?,action?,if_unset=false}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151); if_unset=true applies `name` only when the session has none yet — the session-title generator's guard against clobbering a `/name` or a name restored by resume (#553)
          | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow), deny entries withdraw even profile-advertised tools (#539, ADR-0149); full replacement, empty clears; trusted-only, wire-refused
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110)
@@ -343,9 +343,9 @@ per-profile persisted store.
 
 **Settable session display metadata — `InMsg::SetSessionMeta`**
 ([ADR-0151](../adr/0151-settable-session-metadata.md)).
-`SetSessionMeta{session,name?,action?}` merges a human-readable display
-`name` (a session title, e.g. derived from the first prompt by an external
-namer) and/or the current `action` ("what the agent is doing now") onto
+`SetSessionMeta{session,name?,action?,if_unset=false}` merges a
+human-readable display `name` (a session title, e.g. derived from the first
+prompt) and/or the current `action` ("what the agent is doing now") onto
 `Session.name`/`Session.action` — a `None` field leaves the stored value
 untouched, `Some("")` clears it. Pure metadata: nothing in the engine reads
 it. Unlike `SetGeneration` it is applied **immediately, never stashed** (the
@@ -365,7 +365,15 @@ over the short id and `action` over the first-prompt snippet in the sidebar
 and sessions modal; `skutter sessions` and the resume modal recover the name
 from the log's last `SessionMetaChanged` record. `action` has no in-tree
 producer yet — the intended consumer is an external namer/status writer
-sending the wire message.
+sending the wire message. `if_unset` (#553) is the auto session-title
+generator's guard: it always sets it `true`, so the fold applies `name` only
+when `Session.name` is still `None` — a late generated title silently no-ops
+(still acking, with the unchanged state) against a name set by `/name` (in
+either arrival order) or restored on `Resume` from a prior process's log; the
+generator itself also folds a `Resume`'s replayed `SessionMetaChanged`
+history off the inbound fan-out to seed its per-process "already titled" set,
+so an already-named resumed session skips the aux call on its next prompt too
+(see [heads & persistence §6d](heads-and-persistence.md)).
 
 **Live tool overlay — `InMsg::SetToolOverlay`** (#539,
 [ADR-0149](../adr/0149-per-session-tool-overlay.md)).

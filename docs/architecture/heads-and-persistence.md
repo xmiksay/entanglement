@@ -316,13 +316,20 @@ transformation). Two consumers reach it by deliberately different routes:
   feature): a background task off `holly.subscribe_inbound()` that, on the
   **first `Prompt` of an unnamed session**, spawns a detached one-shot call to
   the `session_title` aux LLM (prompt capped ~2k chars, output capped 80) and
-  sets the result via an ordinary `InMsg::SetSessionMeta`
+  sets the result via an `InMsg::SetSessionMeta` with **`if_unset: true`**
   ([ADR-0151](../adr/0151-settable-session-metadata.md)) — best-effort
   throughout (a failed/empty generation is logged and dropped), idempotent per
-  session (a titled-set guards late second prompts), and never touching an
-  already-named or resumed session; a user `/name` always overrides. It has no
-  session backend to fall back to, so it calls `AuxLlmRegistry::resolve`
-  directly and an unset pin yields the primary model.
+  session (a titled-set guards late second prompts), and never clobbering an
+  already-named session (#553): `if_unset` makes the engine's fold a no-op
+  once `Session.name` is already `Some(_)`, so a late generated title can
+  never win a race against — or overwrite — a `/name` set (in either arrival
+  order) or a name a resumed process's replay already restored. The generator
+  also folds a `Resume`'s replayed `SessionMetaChanged` history (per session
+  id, last-write-wins) off the same inbound fan-out to pre-seed its
+  in-process titled-set, so an already-named resumed session skips the aux
+  call on its next prompt too, not just the write. It has no session backend
+  to fall back to, so it calls `AuxLlmRegistry::resolve` directly and an unset
+  pin yields the primary model.
 - **Session compaction** runs *inside core*, which reaches the pin through the
   `EngineConfig::aux_llm_resolver` seam built by `AuxLlmRegistry::resolver`
   (see the engine doc's *Auxiliary models* section): there `None` means "use
