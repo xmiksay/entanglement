@@ -32,11 +32,13 @@
 //!   tool execution (`pre_`/`post_tool_use`) and on prompt ingress
 //!   (`user_prompt_submit`). See [`crate::hooks`]. Empty by default.
 //! - general settings — `agent` / `provider` / `model` / `verbose` / `max_turns`
-//!   / `idle_ttl_secs`. Each is a *fallback*: an explicit CLI flag or
-//!   environment variable wins over the file (env > config > embedded
+//!   / `idle_ttl_secs` / `auto_compact`. Each is a *fallback*: an explicit CLI
+//!   flag or environment variable wins over the file (env > config > embedded
 //!   default). `idle_ttl_secs` (#401, ADR-0090) maps onto
 //!   `EngineConfig::idle_ttl`; `None` (the default) leaves auto-hibernation
-//!   off, exactly as before this setting existed.
+//!   off, exactly as before this setting existed. `auto_compact` (ADR-0103)
+//!   maps onto `EngineConfig::auto_compact` the same way — `None` keeps the
+//!   engine default (`true`), `false` restores prune-then-refuse.
 //!
 //! # First-run scaffold (#219)
 //!
@@ -157,6 +159,11 @@ struct RawConfig {
     /// [ADR-0105]: ../../../docs/adr/0105-expose-idle-ttl-via-runtime-config.md
     #[serde(default)]
     idle_ttl_secs: Option<u64>,
+    /// Try an LLM summary before the prune-only fallback when a turn's history
+    /// overflows the context budget (ADR-0103). Absent ⇒ `None` ⇒ the engine
+    /// default (`true`).
+    #[serde(default)]
+    auto_compact: Option<bool>,
     /// Editor command for the TUI `$EDITOR` round-trip (`/editor`). When set it
     /// **wins over** `$VISUAL`/`$EDITOR`, so the persisted choice is the default
     /// regardless of the shell env; absent ⇒ fall back to `$VISUAL` → `$EDITOR`
@@ -204,6 +211,14 @@ pub struct Config {
     /// memory growth; the CLI/TUI (single session, process-bound) rarely need
     /// it but sharing the one engine-global `EngineConfig` costs them nothing.
     pub idle_ttl: Option<Duration>,
+    /// Auto-summarize on context overflow (#398, ADR-0103). `None` (the
+    /// default) leaves `EngineConfig::auto_compact` at its engine default
+    /// (`true`): an over-budget turn first tries an LLM summary in place, then
+    /// falls back to the prune-only `Context::compact`. `Some(false)` restores
+    /// the pre-#398 prune-then-refuse behavior — useful when the summarization
+    /// round-trip is unwanted (a metered endpoint, an offline model, or a
+    /// workload that would rather refuse than continue on a lossy summary).
+    pub auto_compact: Option<bool>,
     /// Editor command for the TUI `$EDITOR` round-trip; `Some` wins over
     /// `$VISUAL`/`$EDITOR`. `None` ⇒ resolve from env then `vi`.
     pub editor: Option<String>,
@@ -352,6 +367,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
+        auto_compact: raw.auto_compact,
         editor: raw.editor.filter(|s| !s.trim().is_empty()),
         // Precedence: env > config > embedded default (30). Env must be the
         // last-resort fallback `parse` itself computes (not a layer), since the
@@ -381,6 +397,7 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "web_search",
         "max_turns",
         "idle_ttl_secs",
+        "auto_compact",
         "editor",
         "session_retention_days",
     ];

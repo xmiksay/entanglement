@@ -65,6 +65,14 @@ max_turns: 200
 # process-bound, so they rarely need it.
 idle_ttl_secs: null
 
+# Auto-summarize on context overflow (#398, ADR-0103). When a turn's history no
+# longer fits the model's input budget (85% of its context window), the engine
+# first asks the model for a summary and continues the turn on the compacted
+# context. `false` skips that LLM round-trip and falls straight to the
+# prune-only fallback (oldest tool outputs collapsed to a placeholder), then
+# refuses the turn if even that doesn't fit — the pre-#398 behavior.
+auto_compact: true
+
 # Editor command the TUI opens for the `/editor` ($EDITOR round-trip). When set,
 # this WINS OVER $VISUAL/$EDITOR, so the persisted choice is the default no
 # matter the shell env. `null` (the default) falls back to $VISUAL → $EDITOR →

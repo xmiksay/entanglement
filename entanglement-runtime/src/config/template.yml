@@ -123,6 +123,15 @@
 # never touches a session mid-turn, so this can't cancel in-flight work.
 #idle_ttl_secs: 1800
 
+# Auto-summarize on context overflow (#398, ADR-0103). Leave commented for the
+# default (enabled): when a turn's history outgrows the model's input budget
+# (85% of its context window), the engine summarizes the oldest history in
+# place — keeping the last few messages verbatim — and continues the same turn.
+# Set to false to skip that extra LLM round-trip: the engine then only prunes
+# the oldest tool outputs to placeholders and, if that still doesn't fit,
+# refuses the turn ("start a new session or shorten the request").
+#auto_compact: false
+
 # Editor the TUI opens for `/editor` (the $EDITOR round-trip). When set, this
 # WINS OVER $VISUAL/$EDITOR — the persisted choice is the default regardless of
 # the shell env. Leave commented to fall back to $VISUAL → $EDITOR → vi.

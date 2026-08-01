@@ -711,7 +711,10 @@ re-document them here):
   [ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)):** the
   turn loop's overflow guard (`session/turn.rs`, #178) no longer falls straight
   to the lossy prune-only `Context::compact` — gated by
-  `EngineConfig::auto_compact` (default `true`), it first tries the same
+  `EngineConfig::auto_compact` (default `true`, user-tunable as `config.yml`'s
+  `auto_compact:` — wired in `build_config` beside `max_turns`/`idle_ttl_secs`
+  per [ADR-0105](../docs/adr/0105-expose-idle-ttl-via-runtime-config.md)'s
+  shape; unset keeps the engine default), it first tries the same
   `session/summarize.rs::summarize` core `compact_op` uses (requesting a small
   fixed keep-tail, clamped by `safe_kept` exactly as #397 does) and, on
   success, mutates the session's `Context` **in place** via

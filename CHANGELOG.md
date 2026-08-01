@@ -47,6 +47,14 @@ alternatives behind each design decision live in the ADRs under
   model than the turn loop. Core knows only the purpose string; an unset or
   unresolvable pin falls back to the session's own backend, so a live `/model`
   switch keeps applying. TUI: `/aux-model <purpose> <provider>/<model>`.
+- **`auto_compact` exposed as a `config.yml` setting**: auto-summarize on
+  context overflow (ADR-0103) was engine-default-`true` with no user-facing
+  switch — only an embedder could turn it off. `config.yml`'s `auto_compact:`
+  now maps onto `EngineConfig::auto_compact`, copied over in `build_config`
+  beside `max_turns`/`idle_ttl_secs` (ADR-0105's wiring shape); unset keeps the
+  engine default, so behavior is unchanged unless you set it. `false` restores
+  the pre-#398 path: prune the oldest tool outputs to placeholders, then refuse
+  the turn if that still doesn't fit — no summarization round-trip.
 - **Multi-user mode — embedder library API** (#522, ADR-0147): one running
   engine can now serve multiple users, each with their own provider catalog,
   API keys, RPM/concurrency budgets, permission ceiling, and grants. A new

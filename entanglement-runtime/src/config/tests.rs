@@ -54,6 +54,7 @@ pub(super) fn merge_user(user: &str) -> Config {
         web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(std::time::Duration::from_secs),
+        auto_compact: raw.auto_compact,
         editor: raw.editor.filter(|s| !s.trim().is_empty()),
         session_retention_days: super::resolve_session_retention(raw.session_retention_days),
     }
@@ -79,6 +80,21 @@ fn max_turns_override_parses_and_defaults_to_200() {
     // A user override parses through the merge and replaces the default.
     let c = merge_user("max_turns: 400\n");
     assert_eq!(c.max_turns, Some(400));
+
+    // And it keeps siblings intact.
+    assert_eq!(c.agent.as_deref(), Some("build"));
+}
+
+#[test]
+fn auto_compact_defaults_to_enabled_and_can_be_turned_off() {
+    // The embedded default matches `EngineConfig::auto_compact` (ADR-0103), so
+    // the visible file never contradicts the engine.
+    let c = defaults();
+    assert_eq!(c.auto_compact, Some(true));
+
+    // A user override parses through the merge and restores prune-then-refuse.
+    let c = merge_user("auto_compact: false\n");
+    assert_eq!(c.auto_compact, Some(false));
 
     // And it keeps siblings intact.
     assert_eq!(c.agent.as_deref(), Some("build"));

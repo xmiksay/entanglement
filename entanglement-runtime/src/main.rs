@@ -127,6 +127,11 @@ async fn build_config(
     // Idle-TTL auto-hibernation (#401, ADR-0090): config file → engine, `None`
     // (unset) keeps the sweep disabled — the pre-#401 default for every head.
     cfg.idle_ttl = user_config.idle_ttl;
+    // Auto-summarize on context overflow (ADR-0103): config file → engine,
+    // unset keeps the engine default (`true`).
+    if let Some(auto) = user_config.auto_compact {
+        cfg.auto_compact = auto;
+    }
     // Canonicalize the working root once at startup (#163, ADR-0054): host-tool
     // containment checks against this, so a symlinked cwd must resolve to its
     // real path here or every resolved target would look like an escape.

@@ -272,7 +272,9 @@ back to the flat `CONTEXT_LIMIT_TOKENS` (180k). Over budget, core now tries thre
 recovery steps in order (#398,
 [ADR-0103](../adr/0103-auto-summarize-on-context-overflow.md)):
 1. **Auto-summarize in place**, gated by `EngineConfig::auto_compact` (default
-   `true`): `try_auto_compact` calls the same `session/summarize.rs::summarize`
+   `true`, exposed to users as `config.yml`'s `auto_compact:` — copied onto the
+   engine config in `build_config` beside `max_turns`/`idle_ttl_secs`, the
+   ADR-0105 wiring shape): `try_auto_compact` calls the same `session/summarize.rs::summarize`
    the manual `"compact"` op below uses, requesting a small fixed keep-tail
    (`AUTO_COMPACT_KEEP_TAIL`, clamped to a safe turn boundary by
    `Context::safe_kept` exactly as #397/ADR-0102 does), then applies the result
