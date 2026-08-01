@@ -25,6 +25,55 @@ alternatives behind each design decision live in the ADRs under
   parked question's content in place, re-emitting `OutEvent::UserQuestion`
   under the same `request_id` rather than resolving the call. All four
   variants are wire-allowed.
+- **`PauseSession`/`ResumeSession` — a hold between cancel and hibernate**
+  (#516, ADR-0144): a new `AgentState::Paused` plus a `Session.paused` flag
+  (never persisted) holds a session's next turn without cancelling in-flight
+  work or evicting memory. An idle paused session defers its next
+  `Prompt`/`SetAgent`/`SetModel`/`SetGeneration`/`Oneshot` on the existing
+  turn-stash queue; a parked tool batch still resolves `ToolResult`s
+  immediately, but its continuation into the next model round-trip waits for
+  `ResumeSession`, which continues with no re-prompt. `Stop`/`HibernateSession`
+  always win regardless of `paused` — `Stop` reports `Paused` instead of
+  `Done` if the hold is still in effect. Both variants are wire-allowed.
+- **Wire-visible throttle transitions** (#517, ADR-0141): a stdio/WS head
+  used to see an opaque stall of up to ~15 minutes under a 429, since only
+  the TUI polled `HttpClient::throttle_status()` directly. `OutEvent::Throttle
+  { endpoint, throttled, in_flight, cap, retry_in_ms?, pacing_in_ms? }` joins
+  the protocol as an engine-global, no-`seq` lifecycle event, emitted by a new
+  `entanglement-runtime::throttle::spawn_throttle_responder` only on a state
+  transition (entering/leaving a 429 cool-down, the AIMD pacing gate
+  penalizing/relaxing) — not on every 500ms poll tick.
+- **Per-model concurrency cap, layered on the endpoint cap** (#521,
+  ADR-0140): z.ai enforces concurrency per model (e.g. `glm-4.7-flash: 1` vs
+  `glm-5.2: 5`), not just per endpoint, so a mixed-model workload sharing one
+  endpoint could 429-storm the tighter model or needlessly serialize the
+  looser one. `ModelEntry` gains an optional `concurrency` (catalog data,
+  YAML-only); `EndpointState` now acquires a model permit before the
+  endpoint-wide one (released in reverse), so a caller blocked on its own
+  saturated model never holds the endpoint permit hostage. The endpoint cap
+  stays the ceiling on the sum across every model.
+- **Shared endpoint resilience state across `skutter` instances** (#523,
+  ADR-0144 — note: this ADR number collides with #516's above; both merged
+  from independent PRs on the same day and were left as-is rather than
+  renumbering an already-accepted ADR, see `docs/adr/README.md`): two
+  processes talking to the same `(endpoint, API key)` used to each apply the
+  full RPM/concurrency budget, together sending up to N× the configured
+  rate. A file-backed cross-process gate (`client::shared_state::SharedGate`,
+  `fd-lock`-guarded under `${data_dir}/entanglement/endpoints/`) now covers
+  the RPM ledger, a lease-based in-flight concurrency count, and the
+  `Retry-After` cool-down; the AIMD pacing gate stays per-process. Falls back
+  to pure in-process gating when the state directory is unwritable, or via
+  `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1`.
+- **Trusted scratch dir + plans-folder carve-outs** (#524, ADR-0142): the
+  runtime's own scratch dir (the default `call`-output target) no longer
+  forces an escape-root approval prompt for `read`/`edit`/`write`/
+  `apply_patch`, `glob`/`grep`, or a `bash`/`call` workdir, in any profile —
+  a directory-prefix check consulted before the ordinary per-path grant
+  lookup, not persisted. The generated `<env>` system-prompt block now names
+  the scratch dir, steering the model off `/tmp`. Separately, the built-in
+  `plan` profile's mask gains a plans-folder carve-out
+  (`write(.entanglement/plans/*.md): allow`) so the unified plan tool (#513)
+  can write its plan file while the rest of the read-only mask stays intact.
 
 ### Changed
 
@@ -43,9 +92,28 @@ alternatives behind each design decision live in the ADRs under
   on the child cascades). The TUI's "Plan Outline" side panel is dropped for
   a one-line `Plan: <path> (pending|accepted)` indicator, and `/plan` now
   opens the bound file in `$EDITOR` instead of revealing the sidebar.
+- **TUI: `ask_user` answers are drafts until an explicit Submit** (#518,
+  ADR-0143): each question's `Enter`/number-pick used to commit and send
+  immediately once it was the batch's last question, with no way to revise
+  an earlier answer short of aborting the turn. Answers are now written in
+  place as drafts; reaching the end of the batch opens a review/submit step
+  listing every question with its draft, whose `Enter` is the one explicit
+  Submit and whose `Esc`/`←`/`Backspace` steps back to revise instead of
+  sending. A single-question call gets the same review step. No wire/
+  protocol change.
 
 ### Fixed
 
+- **TUI approval prompts showed an empty or truncated body for several
+  tools** (#519): approval bodies fell back to raw JSON, a truncated
+  header-only arg, or nothing at all — an approval you can't inspect isn't
+  meaningful consent. `render_expansion` now gives every tool a real body:
+  `read`/`edit` show the full untruncated path (+ offset/limit for `read`),
+  `write` diffs against the on-disk file at approval time, `apply_patch`
+  renders its patch as a real unified diff instead of escaped JSON,
+  `bash`/`call` show the full multiline/wrapped command plus workdir, and
+  `glob`/`grep` get a structured pattern/path/exclude body instead of raw
+  JSON.
 - **TUI `grep`/`glob` output rendering was lossy** (#520): `render_grep_output`
   kept only lines containing `:`, silently dropping `host/grep.rs`'s skip/cap
   notices (ADR-0091) and the `truncate_output` truncation marker;
