@@ -253,6 +253,13 @@ impl Session {
                         .profile_generation
                         .insert(session.profile.name.clone(), *generation);
                 }
+                // Restore the live tool overlay (#539, ADR-0149): the logged
+                // value is the full effective list, so replay overwrites it —
+                // last write wins, same as the live engine's full-replacement
+                // semantics.
+                OutEvent::ToolOverlayChanged { entries, .. } => {
+                    session.tool_overlay = entries.clone();
+                }
                 // `Plan`/`TaskList` are the runtime's display state now (#231,
                 // ADR-0049): they carry nothing the engine's `Context` needs, so
                 // replay ignores them. A resuming head folds them from the log

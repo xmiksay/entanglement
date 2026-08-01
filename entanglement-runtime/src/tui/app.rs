@@ -24,6 +24,7 @@ mod bash;
 mod compact;
 mod construct;
 mod dispatch;
+mod enable;
 mod generation;
 mod input;
 mod inspect;
@@ -113,6 +114,15 @@ pub struct App {
     // `/mcp list` result panel (#373): the last snapshot + the correlation id
     // of any outstanding query.
     mcp_panel: crate::tui::mcp_panel::McpPanel,
+
+    // Per-session live tool overlays (#539, ADR-0149), folded from
+    // `OutEvent::ToolOverlayChanged` — the head-side mirror `/enable`/`/disable`
+    // read to compute the full-replacement list `InMsg::SetToolOverlay` needs.
+    tool_overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
+    // Bare `/enable`'s session-tools checklist dialog (#539): toggle any
+    // advertised tool's availability for the active session; the overlay is
+    // the diff against the profile mask.
+    session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog,
 
     // `/agent` picker's `e` tools-checklist dialog (#330): the full advertised
     // tool roster (host + MCP + runtime-owned specs, from
@@ -353,6 +363,12 @@ impl App {
         // Live bash enablement (#498) is likewise engine-global.
         if let OutEvent::BashChanged { enabled, grade } = &event {
             self.handle_bash_changed(*enabled, grade.as_ref());
+        }
+        // A session's live tool overlay changed (#539): track the head-side
+        // mirror + render the confirmation (the per-session reducer folds no
+        // view state for it).
+        if let OutEvent::ToolOverlayChanged { session, entries } = &event {
+            self.handle_tool_overlay_changed(session, entries.clone());
         }
         // Compaction forks (ADR-0101): intercept before routing, so the source
         // view renders a fork notice, a new view is minted + switched to, and a

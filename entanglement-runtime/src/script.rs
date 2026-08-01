@@ -59,7 +59,7 @@ use std::time::{Duration, Instant};
 
 use entanglement_core::{
     AgentProfile, AgentState, ApprovalScope, Holly, OutEvent, Permission, PermissionProfile,
-    SessionId, ToolCall, ToolSpec,
+    SessionId, ToolCall, ToolOverlayEntry, ToolSpec,
 };
 
 use crate::tools::ToolRegistry;
@@ -215,14 +215,20 @@ impl BindingPolicy {
     pub fn capture(
         active: &HashMap<SessionId, AgentProfile>,
         guard: &SpawnGuard,
+        overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
         session: &SessionId,
         base: &PermissionProfile,
         root: Option<&Path>,
         active_skill: &HashMap<SessionId, ActiveSkill>,
     ) -> Self {
+        // The session's live tool overlay (#539, ADR-0149) reaches the binding
+        // *mask* through `tool_masked` below (an overlay-admitted `bash` binding
+        // exists); its Ask/Allow grade override applies only to the generic
+        // dispatch route — a binding's grade still resolves through the profile
+        // chain (documented ADR-0149 deferral).
         let masked: HashSet<&'static str> = BINDING_TOOLS
             .into_iter()
-            .filter(|tool| tool_masked(active, guard, session, tool))
+            .filter(|tool| tool_masked(active, guard, overlays, session, tool))
             .collect();
         let skill_masked = BINDING_TOOLS
             .into_iter()
@@ -1194,8 +1200,15 @@ mod tests {
         let guard = SpawnGuard::new();
         // Allow-all base = the embedded config default: a no-op ceiling.
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
+        let policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &session,
+            &base,
+            None,
+            &HashMap::new(),
+        );
 
         // `edit` is not in the allowlist → masked.
         assert!(matches!(policy.decide("edit", "{}"), Decision::Masked));
@@ -1248,7 +1261,15 @@ mod tests {
                 allowed_tools: Some(vec!["read".into()]),
             },
         );
-        let policy = BindingPolicy::capture(&active, &guard, &session, &base, None, &active_skill);
+        let policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &session,
+            &base,
+            None,
+            &active_skill,
+        );
 
         // `write` survives the agent mask but is excluded by the skill.
         assert!(matches!(
@@ -1295,8 +1316,15 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow).with("read", Permission::Ask);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
+        let policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &session,
+            &base,
+            None,
+            &HashMap::new(),
+        );
 
         // The base ceiling clamps the `read` binding to Ask despite the agent's
         // allow-all; `write` (base-silent) stays Allow.
@@ -1335,8 +1363,15 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
+        let policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &session,
+            &base,
+            None,
+            &HashMap::new(),
+        );
 
         // Same tool, two inputs, two grades — resolved live against the path.
         assert!(matches!(
@@ -1376,8 +1411,15 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
+        let policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &session,
+            &base,
+            None,
+            &HashMap::new(),
+        );
 
         assert!(matches!(
             policy.decide("call", "{}"),
@@ -1414,8 +1456,15 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
+        let policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &session,
+            &base,
+            None,
+            &HashMap::new(),
+        );
 
         assert!(matches!(policy.decide("call", "{}"), Decision::Masked));
         assert!(matches!(policy.decide("bash", "{}"), Decision::Masked));
@@ -1448,8 +1497,15 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
+        let policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &session,
+            &base,
+            None,
+            &HashMap::new(),
+        );
 
         assert!(matches!(
             policy.decide("call", r#"{"command":"git","args":["status"]}"#),
@@ -1534,8 +1590,15 @@ mod tests {
         active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &session, &base, None, &HashMap::new());
+        let policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &session,
+            &base,
+            None,
+            &HashMap::new(),
+        );
 
         assert!(matches!(
             policy.decide("bash", r#"{"command":"ls","workdir":"/tmp/scratch"}"#),

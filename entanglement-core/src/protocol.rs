@@ -316,6 +316,76 @@ pub enum BashGrade {
     },
 }
 
+/// One entry of a session's live tool overlay (#539, ADR-0149): a `*`/`?`
+/// wildcard `pattern` (the ADR-0148 mask semantics — `mcp__chessbase__*` for a
+/// server, `bash` for one tool) a trusted head injected via
+/// [`InMsg::SetToolOverlay`] to make matching tools exist — or, with `deny:
+/// true`, **not** exist — for **this session** regardless of the active agent
+/// profile's `tools:`/`disallowed_tools:` mask. For an enable entry, `allow:
+/// false` (the default, mirroring [`BashGrade::Ask`]) still routes every
+/// matching call through the approval prompt; `allow: true` grants permission
+/// outright — both runtime-side and still clamped by the config ceiling
+/// (#172), exactly like a live bash grade (#498). A deny entry withdraws
+/// matching tools from the session (its `allow` is meaningless and ignored);
+/// deny beats enable beats the profile, mirroring the mask's own
+/// denylist-first rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolOverlayEntry {
+    pub pattern: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deny: bool,
+}
+
+impl ToolOverlayEntry {
+    pub fn ask(pattern: impl Into<String>) -> Self {
+        Self {
+            pattern: pattern.into(),
+            allow: false,
+            deny: false,
+        }
+    }
+
+    pub fn deny(pattern: impl Into<String>) -> Self {
+        Self {
+            pattern: pattern.into(),
+            allow: false,
+            deny: true,
+        }
+    }
+
+    /// Whether this entry's pattern matches `tool` (same matcher as the
+    /// ADR-0148 agent mask).
+    pub fn matches(&self, tool: &str) -> bool {
+        glob_match(&self.pattern, tool)
+    }
+
+    /// The overlay's opinion on `tool`: `Some(false)` — a deny entry matches
+    /// (the tool does not exist for this session, even if the profile
+    /// advertises it); `Some(true)` — an enable entry matches (it exists even
+    /// if the profile masks it); `None` — no opinion, the profile mask stands.
+    /// Deny entries win over enable entries regardless of list order — the
+    /// session-overlay lookup the advertisement filter and the runtime's
+    /// mask override share.
+    pub fn disposition(entries: &[Self], tool: &str) -> Option<bool> {
+        if entries.iter().any(|e| e.deny && e.matches(tool)) {
+            return Some(false);
+        }
+        entries
+            .iter()
+            .any(|e| !e.deny && e.matches(tool))
+            .then_some(true)
+    }
+
+    /// The first **enable** entry matching `tool`, if any — the grade-override
+    /// lookup (a deny entry has no grade; it removes the tool ahead of any
+    /// permission decision).
+    pub fn find<'a>(entries: &'a [Self], tool: &str) -> Option<&'a Self> {
+        entries.iter().find(|e| !e.deny && e.matches(tool))
+    }
+}
+
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Agent profiles (opencode-style: system prompt + permission profile)
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -466,11 +536,13 @@ fn split_rule_key(key: &str) -> (&str, RuleScope<'_>) {
     (key, RuleScope::None)
 }
 
-/// Minimal `*`/`?` wildcard match for argument-scoped permission rules (#173):
-/// `*` matches any run of characters (including `/` and the empty string), `?`
-/// matches exactly one, everything else is literal. Deliberately
-/// separator-agnostic and free of `**`/character-classes — so `bash(git *)` and
-/// `edit(src/*)` both read naturally and core stays dependency-free (ADR-0006).
+/// Minimal `*`/`?` wildcard match for argument-scoped permission rules (#173)
+/// and the agent tool mask's `tools:`/`disallowed_tools:` entries (#537,
+/// ADR-0148): `*` matches any run of characters (including `/` and the empty
+/// string), `?` matches exactly one, everything else is literal. Deliberately
+/// separator-agnostic and free of `**`/character-classes — so `bash(git *)`,
+/// `edit(src/*)` and `mcp__docs__*` all read naturally and core stays
+/// dependency-free (ADR-0006).
 fn glob_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
@@ -590,16 +662,23 @@ pub struct AgentProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     pub permission: PermissionProfile,
-    /// Tool allowlist (#116, ADR-0038). `Some` ⇒ only these tools are
-    /// advertised to the model and accepted at dispatch (the registry is
+    /// Tool allowlist (#116, ADR-0038). `Some` ⇒ only tools matching an entry
+    /// are advertised to the model and accepted at dispatch (the registry is
     /// intersected with this set); `None` ⇒ inherit every advertised tool.
+    /// Each entry is a `*`/`?` wildcard pattern (#537, ADR-0148) matched with
+    /// the same [`glob_match`] the #173 argument scopes use — a literal entry
+    /// degenerates to exact equality, so `read` behaves as before while
+    /// `"mcp__*"` admits every MCP tool and `"mcp__docs__*"` one server's,
+    /// names unknowable at profile-parse time (servers connect later).
     /// Distinct from [`permission`][Self::permission]: this controls a tool's
     /// *existence*, not `Allow`/`Ask`/`Deny` among tools that exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
     /// Tool denylist (#116, ADR-0038), applied *after* the allowlist. A tool
-    /// named here is never advertised nor accepted, even if the allowlist (or an
-    /// inherit-all `None`) would otherwise include it.
+    /// matching an entry — same wildcard-pattern semantics as
+    /// [`tools`][Self::tools] (#537, ADR-0148) — is never advertised nor
+    /// accepted, even if the allowlist (or an inherit-all `None`) would
+    /// otherwise include it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
@@ -629,14 +708,6 @@ pub struct AgentProfile {
 }
 
 impl AgentProfile {
-    /// Whether `tool` is in this profile's advertised set: present unless the
-    /// denylist removes it, or an allowlist is set and omits it. This is the
-    /// *physical* restriction of #116 — orthogonal to
-    /// [`PermissionProfile::for_tool`], which grades `Allow`/`Ask`/`Deny` among
-    /// the tools that survive this mask. Plan authorship rides this mask now
-    /// (#231, ADR-0049): the runtime advertises `update_plan`/`propose_plan` only
-    /// to a profile that *explicitly* allowlists them, so plan authority is
-    /// default-closed without a dedicated flag.
     /// The profile's model pin (#323, ADR-0081): `Some((provider, model))` only
     /// when **both** [`provider`][Self::provider] and [`model`][Self::model] are
     /// set, so the runtime can re-bind the session's backend to that endpoint on
@@ -649,12 +720,33 @@ impl AgentProfile {
         }
     }
 
+    /// Whether `tool` is in this profile's advertised set: present unless the
+    /// denylist removes it, or an allowlist is set and omits it. This is the
+    /// *physical* restriction of #116 — orthogonal to
+    /// [`PermissionProfile::for_tool`], which grades `Allow`/`Ask`/`Deny` among
+    /// the tools that survive this mask. Plan authorship rides this mask now
+    /// (#231, ADR-0049): the runtime advertises `update_plan`/`propose_plan` only
+    /// to a profile that *explicitly* allowlists them (literal name, never a
+    /// pattern — `plan_tasks::explicitly_allowlists`), so plan authority is
+    /// default-closed without a dedicated flag.
+    /// Entries are `*`/`?` wildcard patterns (#537, ADR-0148) matched by
+    /// [`glob_match`], evaluated dynamically here at advertisement/dispatch time
+    /// — which is what lets a mask cover MCP tools (`mcp__<server>__<tool>`)
+    /// whose names don't exist yet when profiles are parsed.
     pub fn advertises_tool(&self, tool: &str) -> bool {
-        if self.disallowed_tools.iter().any(|t| t == tool) {
+        Self::mask_allows(self.tools.as_deref(), &self.disallowed_tools, tool)
+    }
+
+    /// The mask predicate behind [`advertises_tool`][Self::advertises_tool],
+    /// callable on a projection of the mask (a head holding only
+    /// `tools`/`disallowed_tools`, e.g. the TUI's profile info) so no caller
+    /// re-implements the pattern semantics.
+    pub fn mask_allows(tools: Option<&[String]>, disallowed: &[String], tool: &str) -> bool {
+        if disallowed.iter().any(|t| glob_match(t, tool)) {
             return false;
         }
-        match &self.tools {
-            Some(allow) => allow.iter().any(|t| t == tool),
+        match tools {
+            Some(allow) => allow.iter().any(|t| glob_match(t, tool)),
             None => true,
         }
     }
@@ -1018,6 +1110,23 @@ pub enum InMsg {
         session: SessionId,
         overrides: GenerationParams,
     },
+    /// Replace this session's live **tool overlay** (#539, ADR-0149): the full
+    /// list of [`ToolOverlayEntry`] patterns whose matching tools exist for
+    /// this session *regardless* of the active profile's #116 mask — the
+    /// per-session injection a head uses to enable an MCP server/tool (or any
+    /// registered tool) without editing agent definitions. Full replacement,
+    /// not a merge (an empty list clears the overlay); the head computes the
+    /// new list from the previous [`OutEvent::ToolOverlayChanged`] it holds.
+    /// Always succeeds and always emits `ToolOverlayChanged` with the full
+    /// effective list (mirroring [`SetGeneration`][InMsg::SetGeneration]);
+    /// deferred while a turn is live (stash replay), like `SetAgent`.
+    /// **Trusted-only** (not wire-allowed), same rationale as
+    /// [`BashEnable`][InMsg::BashEnable]: it can hand the model tools with no
+    /// restart and — with `allow: true` — no approval prompt.
+    SetToolOverlay {
+        session: SessionId,
+        entries: Vec<ToolOverlayEntry>,
+    },
     /// Run a single out-of-band LLM op outside the turn loop (#324, ADR-0082).
     /// The generic surface is the **wire shape** — an opaque `op` string plus
     /// `args` — not a plugin registry: `session::ops::run_oneshot` matches on
@@ -1159,6 +1268,7 @@ impl InMsg {
             | InMsg::SetAgent { session, .. }
             | InMsg::SetModel { session, .. }
             | InMsg::SetGeneration { session, .. }
+            | InMsg::SetToolOverlay { session, .. }
             | InMsg::Oneshot { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => Some(session),
@@ -1199,6 +1309,9 @@ impl InMsg {
     ///   (#498, ADR-0133, same rationale as `McpAdd`/`McpRemove`): live-enabling
     ///   `bash` hands the model a full shell, optionally graded `Allow` with no
     ///   approval prompt at all — a wire frame must never grant that.
+    /// - [`SetToolOverlay`][InMsg::SetToolOverlay] (#539, ADR-0149, same
+    ///   rationale as `BashEnable`): injects tools past the agent mask,
+    ///   optionally graded `allow` with no approval prompt.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -1244,7 +1357,8 @@ impl InMsg {
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
             | InMsg::BashEnable { .. }
-            | InMsg::BashDisable => false,
+            | InMsg::BashDisable
+            | InMsg::SetToolOverlay { .. } => false,
         }
     }
 
@@ -1275,6 +1389,7 @@ impl InMsg {
             InMsg::SetAgent { .. } => "set_agent",
             InMsg::SetModel { .. } => "set_model",
             InMsg::SetGeneration { .. } => "set_generation",
+            InMsg::SetToolOverlay { .. } => "set_tool_overlay",
             InMsg::Oneshot { .. } => "oneshot",
             InMsg::Spawn { .. } => "spawn",
             InMsg::Resume { .. } => "resume",
@@ -1447,6 +1562,17 @@ pub enum OutEvent {
     GenerationChanged {
         session: SessionId,
         generation: GenerationParams,
+    },
+    /// The session's live tool overlay changed (point-in-time, no `seq`), in
+    /// reply to [`InMsg::SetToolOverlay`] (#539, ADR-0149). Carries the **full**
+    /// effective entry list — not a delta — so a head can render/track the
+    /// overlay directly and replay restores it by overwriting
+    /// [`Session::tool_overlay`][crate::session::Session] verbatim (the
+    /// `GenerationChanged` pattern). The runtime's tool executor also folds it
+    /// to honor the overlay at dispatch (mask + grade override).
+    ToolOverlayChanged {
+        session: SessionId,
+        entries: Vec<ToolOverlayEntry>,
     },
     /// The agent's strategy plan (markdown prose), full snapshot on every change.
     /// Emitted by the runtime when it resolves a `propose_plan` call (#513,
@@ -1715,6 +1841,7 @@ impl OutEvent {
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::ModelChanged { session, .. }
             | OutEvent::GenerationChanged { session, .. }
+            | OutEvent::ToolOverlayChanged { session, .. }
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }
             | OutEvent::ReasoningDelta { session, .. }
@@ -1766,7 +1893,8 @@ impl OutEvent {
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }
             | OutEvent::ModelChanged { .. }
-            | OutEvent::GenerationChanged { .. } => None,
+            | OutEvent::GenerationChanged { .. }
+            | OutEvent::ToolOverlayChanged { .. } => None,
             OutEvent::Plan { seq, .. }
             | OutEvent::TextDelta { seq, .. }
             | OutEvent::ReasoningDelta { seq, .. }
@@ -1852,6 +1980,14 @@ mod tests {
         }
         .wire_allowed());
         assert!(!InMsg::McpRemove { name: "srv".into() }.wire_allowed());
+        // The live tool overlay is trusted-only (#539, ADR-0149, the BashEnable
+        // rationale): it injects tools past the agent mask, optionally graded
+        // `allow` with no approval prompt — never wire-grantable.
+        assert!(!InMsg::SetToolOverlay {
+            session: s.clone(),
+            entries: vec![ToolOverlayEntry::ask("mcp__*")],
+        }
+        .wire_allowed());
         // Every head-authored frame stays acceptable off the wire.
         for msg in [
             InMsg::prompt(s.clone(), "hi"),
@@ -2795,5 +2931,82 @@ mod tests {
         let p = masked_profile(None, vec!["bash"]);
         assert!(p.advertises_tool("read"));
         assert!(!p.advertises_tool("bash"));
+    }
+
+    #[test]
+    fn advertises_tool_glob_allowlist_matches_mcp_namespace() {
+        // #537: `mcp__*` admits every MCP tool from every server, nothing else.
+        let p = masked_profile(Some(vec!["read", "mcp__*"]), vec![]);
+        assert!(p.advertises_tool("mcp__docs__search"));
+        assert!(p.advertises_tool("mcp__jira__create_issue"));
+        assert!(p.advertises_tool("read"));
+        assert!(!p.advertises_tool("edit"));
+    }
+
+    #[test]
+    fn advertises_tool_glob_server_scoped() {
+        let p = masked_profile(Some(vec!["mcp__docs__*"]), vec![]);
+        assert!(p.advertises_tool("mcp__docs__search"));
+        assert!(!p.advertises_tool("mcp__jira__create_issue"));
+    }
+
+    #[test]
+    fn advertises_tool_glob_denylist_subtracts_from_inherit_all() {
+        // Strip MCP from an otherwise-unmasked profile.
+        let p = masked_profile(None, vec!["mcp__*"]);
+        assert!(p.advertises_tool("read"));
+        assert!(!p.advertises_tool("mcp__docs__search"));
+    }
+
+    #[test]
+    fn advertises_tool_deny_glob_beats_allow_glob() {
+        // All MCP except one server: deny is applied last, patterns included.
+        let p = masked_profile(Some(vec!["mcp__*"]), vec!["mcp__docs__*"]);
+        assert!(p.advertises_tool("mcp__jira__create_issue"));
+        assert!(!p.advertises_tool("mcp__docs__search"));
+    }
+
+    #[test]
+    fn advertises_tool_star_is_inherit_all_and_empty_is_nothing() {
+        let all = masked_profile(Some(vec!["*"]), vec![]);
+        assert!(all.advertises_tool("read"));
+        assert!(all.advertises_tool("mcp__docs__search"));
+        let none = masked_profile(Some(vec![]), vec![]);
+        assert!(!none.advertises_tool("read"));
+    }
+
+    #[test]
+    fn overlay_disposition_deny_beats_enable_beats_none() {
+        // #539: deny entries win regardless of list order; enable entries win
+        // over "no opinion"; an unmatched tool leaves the profile mask to
+        // decide (None).
+        let entries = vec![
+            ToolOverlayEntry::ask("mcp__*"),
+            ToolOverlayEntry::deny("mcp__jira__*"),
+        ];
+        assert_eq!(
+            ToolOverlayEntry::disposition(&entries, "mcp__docs__search"),
+            Some(true)
+        );
+        assert_eq!(
+            ToolOverlayEntry::disposition(&entries, "mcp__jira__create"),
+            Some(false),
+            "deny beats the broader enable"
+        );
+        assert_eq!(ToolOverlayEntry::disposition(&entries, "edit"), None);
+        // The grade lookup skips deny entries entirely.
+        assert!(ToolOverlayEntry::find(&entries, "mcp__docs__search").is_some());
+        assert!(
+            ToolOverlayEntry::find(&entries, "mcp__jira__create").is_some(),
+            "find returns the enable entry; existence was already refused by disposition"
+        );
+    }
+
+    #[test]
+    fn advertises_tool_literal_entry_stays_exact() {
+        // No implicit prefixing: a literal never matches a longer name.
+        let p = masked_profile(Some(vec!["mcp__docs"]), vec![]);
+        assert!(!p.advertises_tool("mcp__docs__search"));
+        assert!(p.advertises_tool("mcp__docs"));
     }
 }

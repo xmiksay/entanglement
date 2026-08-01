@@ -290,6 +290,36 @@ pub(super) async fn handle_tools_dialog_event(app: &mut App, key: KeyEvent) -> R
     Ok(false)
 }
 
+/// Bare `/enable`'s session-tools checklist (#539): `Space` toggles a tool's
+/// availability for the active session, `a` toggles auto-allow on an enabled
+/// override row, `Enter` sends the computed overlay diff, `Esc` discards.
+pub(super) async fn handle_session_tools_dialog_event(
+    app: &mut App,
+    holly: &Holly,
+    key: KeyEvent,
+) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => app.close_session_tools_dialog(),
+        KeyCode::Enter => {
+            let entries = app.session_tools_dialog().to_entries();
+            let session = app.active_session_id().clone();
+            app.close_session_tools_dialog();
+            crate::tui::enable_command::send_overlay(holly, session, entries).await;
+        }
+        KeyCode::Char(' ') => app.session_tools_dialog_mut().toggle_selected(),
+        KeyCode::Char('a') => app.session_tools_dialog_mut().toggle_allow_selected(),
+        KeyCode::Down | KeyCode::Char('j') => app.session_tools_dialog_mut().select_next(),
+        KeyCode::Up | KeyCode::Char('k') => app.session_tools_dialog_mut().select_prev(),
+        KeyCode::PageDown => app.session_tools_dialog_mut().page_down(DIALOG_PAGE_SIZE),
+        KeyCode::PageUp => app.session_tools_dialog_mut().page_up(DIALOG_PAGE_SIZE),
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 pub(super) async fn handle_sessions_modal_event(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Esc => {
@@ -374,6 +404,16 @@ pub(super) async fn handle_command_palette_event(
                     // presses Enter, which routes through the typed path
                     // (`event_loop`'s Enter handler → `allow_command::send_allow`).
                     app.set_input_text("/allow ".to_string());
+                } else if cmd == crate::tui::commands::Command::Enable {
+                    // The palette carries no trailing args (#539), so a picked
+                    // `/enable` opens the session-tools checklist — the same
+                    // default a bare typed `/enable` falls back to.
+                    app.open_session_tools_dialog();
+                } else if cmd == crate::tui::commands::Command::Disable {
+                    // A bare `/disable` clears the whole overlay — prefill the
+                    // input instead so a palette pick can't wipe it by accident
+                    // (the `/allow` "no sensible default" reasoning, #486).
+                    app.set_input_text("/disable ".to_string());
                 } else if cmd == crate::tui::commands::Command::Bash {
                     // The palette carries no trailing `on`/`off` args (#498), so
                     // a picked `/bash` always live-enables with the shared safe

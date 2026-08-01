@@ -188,10 +188,10 @@ content, bounded, core never sees it) instead of ending the turn (#481). Enablin
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
-          | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
+          | SetAgent | SetModel | SetGeneration | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove
           | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged | ToolOverlayChanged
           | McpList | McpChanged | BashChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
@@ -638,8 +638,52 @@ re-document them here):
   picker's highlighted profile opens a checklist dialog
   (`tui::tools_dialog::ToolsDialog`) over the full advertised tool roster
   (`EngineConfig.tool_specs`, captured before `Holly::spawn` consumes it) seeded
-  from the profile's current mask; `Space` toggles, `Enter` saves, `Esc`
-  discards. Applies on next restart — no live registry reload yet.
+  from the profile's current mask via `AgentProfile::mask_allows` (#537 — a
+  wildcard entry shows its matches checked; saving still emits the concrete
+  checked set, so a glob doesn't survive the round-trip); `Space` toggles,
+  `Enter` saves, `Esc` discards. Applies on next restart — no live registry
+  reload yet.
+- **Per-session tool overlay — live injection past the agent mask** (#539,
+  [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md), builds on #537
+  below): `InMsg::SetToolOverlay { session, entries: [ToolOverlayEntry {
+  pattern, allow, deny }] }` (**trusted-only**, the `BashEnable` rationale)
+  replaces a session's live overlay — ADR-0148-style patterns overriding the
+  active profile's mask in both directions: an enable entry makes matching
+  tools *exist* regardless of the mask (`mcp__chessbase__*` = one server, a
+  literal name = one tool), a deny entry withdraws even profile-advertised
+  ones (deny > enable > profile, `ToolOverlayEntry::disposition`). Full
+  replacement, empty clears; always acks with `OutEvent::ToolOverlayChanged`
+  (full effective list, persisted + replay-folded by overwrite like
+  `GenerationChanged`); survives `SetAgent` by design, stash-deferred during
+  a live turn. Enforcement: core's advertisement filter and `tool_masked`
+  apply the same disposition — per chain link (a parent's overlay covers its
+  spawn sub-tree); the generic dispatch route replaces the chain grade with
+  an enable entry's `Ask` (default)/`Allow`, still ceiling-clamped (#172) —
+  resolver seam (#311) untouched. TUI: `/enable mcp <server> | tool <name>
+  [--allow]` (upsert enable), `/disable mcp|tool <x>` (upsert deny; bare =
+  reset to profile defaults), bare `/enable` opens the session-tools
+  checklist dialog (checkboxes over the full roster seeded from effective
+  availability; `Enter` submits the overlay as a diff against the profile
+  mask), and the `/mcp` panel's `e`/`d` keys toggle the highlighted server
+  per session.
+- **Agent tool-mask entries are glob patterns** (#537,
+  [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md),
+  superseding ADR-0038's "no globbing" consequence): `tools:`/
+  `disallowed_tools:` entries match with the same `*`/`?` `glob_match` the #173
+  argument scopes use — a literal entry stays exact (zero migration), while
+  `"mcp__*"` / `"mcp__<server>__*"` finally let a `tools:`-restricted profile
+  hold MCP tools whose namespaced names don't exist at profile-parse time
+  (servers connect later; live `McpAdd` mints names mid-process), and
+  `disallowed_tools: ["mcp__*"]` strips MCP from an inherit-all profile.
+  Matching is dynamic at advertisement/dispatch time, confined to
+  `advertises_tool` (now delegating to the public `AgentProfile::mask_allows`),
+  so core's spec filter, `tool_masked`'s ancestor clamp, and the rhai binding
+  mirror inherit it from one place and core stays MCP-unaware. Carve-out:
+  `plan_tasks::explicitly_allowlists` stays literal-exact (`tools: ["*"]`
+  never grants plan authorship, mirroring `tools: None`); skill
+  `allowed_tools`, permission tool-name keys, and `spawnable_agents` stay
+  exact; built-in `plan`/`explore` masks unchanged — enabling MCP for them is
+  a user-layer override.
 - **Session hibernation is eviction, not termination** (#318,
   [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)): a third
   lifecycle state between `live` and the terminal tombstone. `HibernateSession {

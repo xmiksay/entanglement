@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 
 use super::TurnState;
 use crate::context::Context;
-use crate::protocol::{AgentProfile, OutEvent, SessionId};
+use crate::protocol::{AgentProfile, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 
@@ -65,6 +65,15 @@ pub struct Session {
     /// [`GenerationChanged`][crate::protocol::OutEvent::GenerationChanged]
     /// records.
     pub profile_generation: HashMap<String, GenerationParams>,
+    /// The session's live tool overlay (#539, ADR-0149): patterns a trusted
+    /// head injected via [`SetToolOverlay`][super::SessionCmd::SetToolOverlay]
+    /// whose matching tools are advertised **in addition to** (and regardless
+    /// of) the active profile's #116 mask. Session-scoped — it survives a
+    /// `SetAgent` profile switch by design (that is its whole point) and is
+    /// reconstructed on replay from
+    /// [`ToolOverlayChanged`][crate::protocol::OutEvent::ToolOverlayChanged]
+    /// records. Empty by default (no overlay).
+    pub tool_overlay: Vec<ToolOverlayEntry>,
     /// Monotonic per-session emit counter, shared (`Arc<AtomicU64>`, #157) with
     /// the supervisor's seq registry so runtime-authored events minted while this
     /// session is parked (an approval `ToolRequest`, a `Plan`/`TaskList` snapshot,
@@ -144,6 +153,7 @@ impl Session {
             profile_models: HashMap::new(),
             generation: cfg.generation,
             profile_generation: HashMap::new(),
+            tool_overlay: Vec::new(),
             seq: Arc::new(AtomicU64::new(0)),
             parent: None,
             children: Vec::new(),

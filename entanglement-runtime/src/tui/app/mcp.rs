@@ -33,6 +33,30 @@ impl App {
         self.mark_dirty();
     }
 
+    /// The highlighted server row index (#539) the panel's `e`/`d` keys act on.
+    pub fn mcp_selected(&self) -> usize {
+        self.mcp_panel.selected()
+    }
+
+    /// The highlighted server's name, if any.
+    pub fn mcp_selected_server(&self) -> Option<String> {
+        self.mcp_panel.selected_server().map(str::to_string)
+    }
+
+    /// Move the panel selection and keep it in view: each server renders as
+    /// two lines, so the scroll follows the selection with a small margin.
+    pub fn mcp_select_next(&mut self) {
+        self.mcp_panel.select_next();
+        self.mcp_scroll = (self.mcp_panel.selected() as u16 * 2).saturating_sub(4);
+        self.mark_dirty();
+    }
+
+    pub fn mcp_select_prev(&mut self) {
+        self.mcp_panel.select_prev();
+        self.mcp_scroll = (self.mcp_panel.selected() as u16 * 2).saturating_sub(4);
+        self.mark_dirty();
+    }
+
     /// Records the correlation id of a just-sent `/mcp list` query so the
     /// matching (and only the matching) `OutEvent::McpList` opens the panel.
     pub fn record_pending_mcp_list(&mut self, correlation_id: String) {

@@ -476,7 +476,45 @@ below realize one model:
   orthogonal to `permission` (which grades `Allow`/`Ask`/`Deny` among the tools
   that survive the mask). The mask rides the core `AgentProfile`
   (`tools`/`disallowed_tools` + `advertises_tool`), so it travels per session with
-  no new protocol surface. **(a) Advertisement:** core's turn loop (`run_round`) filters both
+  no new protocol surface. **Mask entries are `*`/`?` wildcard patterns**
+  (✅ #537, [ADR-0148](../adr/0148-glob-patterns-in-the-agent-tool-mask.md),
+  superseding ADR-0038's "no globbing" consequence): matched by the same
+  `glob_match` the #173/#425 permission scopes use, a literal entry degenerating
+  to exact equality — so a masked profile can finally hold MCP tools whose
+  `mcp__<server>__<tool>` names are unknowable at authoring time and don't even
+  exist at parse time (`tools: [read, "mcp__*"]` for all servers,
+  `"mcp__docs__*"` for one, `disallowed_tools: ["mcp__*"]` to strip MCP from an
+  inherit-all profile; quote `*` entries in YAML). Matching is dynamic at
+  advertisement/dispatch time (never parse-time expansion), confined to
+  `advertises_tool` — which now delegates to the public associated
+  `AgentProfile::mask_allows(tools, disallowed, tool)` so heads holding only a
+  mask projection reuse the predicate — and therefore covers the spec filter,
+  `tool_masked`'s ancestor clamp (a parent's `"mcp__*"` admits a child's MCP
+  call, per profile per link), and the rhai binding mirror from one place.
+  `tools: ["*"]` ≡ inherit-all, with one carve-out: plan authorship
+  (`plan_tasks::explicitly_allowlists`) stays literal-exact, so a wildcard
+  widens the mask without granting `propose_plan`, mirroring `tools: None`.
+  Skill `allowed_tools` (#400), permission tool-name keys, and
+  `spawnable_agents` deliberately stay exact; built-in `plan`/`explore` masks
+  are unchanged (an MCP tool can be arbitrarily write-capable) — enabling MCP
+  for them is a user/project-layer override adding a pattern to `tools:`.
+  **A session-scoped escape hatch layers on top** (✅ #539,
+  [ADR-0149](../adr/0149-per-session-tool-overlay.md)): the live **tool
+  overlay** — `InMsg::SetToolOverlay` (trusted-only) replaces a per-session
+  list of `ToolOverlayEntry { pattern, allow, deny }` overriding the
+  profile's mask in both directions (an enable entry makes matching tools
+  exist past allowlist *and* denylist; a deny entry withdraws even
+  profile-advertised ones — deny > enable > profile), surviving `SetAgent`
+  and replay. Core's advertisement filter and `tool_masked` apply the same
+  disposition — per chain link, so a parent's overlay covers its spawn
+  sub-tree; the generic dispatch route replaces the chain's grade with an
+  enable entry's `Ask` (default)/`Allow`, still ceiling-clamped. The TUI
+  drives it via `/enable mcp <server>` / `/enable tool <name>` [`--allow`]
+  and `/disable` (upserts a deny; bare = reset), the bare-`/enable`
+  session-tools checklist dialog (checkboxes over the full roster seeded
+  from effective availability; `Enter` submits the overlay as a diff
+  against the profile), and the `/mcp` panel's `e`/`d` keys on the
+  highlighted server; see the protocol doc for the wire shape. **(a) Advertisement:** core's turn loop (`run_round`) filters both
   `EngineConfig.tool_specs` and the active profile's `profile_tool_specs` entry by
   the mask — a masked tool's schema never reaches the model. `propose_plan`/
   `update_tasks` are ordinary runtime state/orchestration tools now (✅ #231/#513,
@@ -527,9 +565,12 @@ below realize one model:
   advertised tool roster — captured from `EngineConfig.tool_specs` in the
   runtime head (so it also covers runtime-owned specs like
   `update_tasks`/`ask_user`/`rhai`, not just `ToolRegistry` names), seeded from
-  the profile's current effective mask; `Space` toggles, `Enter` saves +
-  records a transcript status line, `Esc` discards. The write applies on the
-  next restart — there is no live registry reload yet (a separate watcher
+  the profile's current effective mask via `AgentProfile::mask_allows` itself
+  (#537 — a wildcard entry shows its matches checked; saving still emits the
+  concrete checked set, so a glob does not survive the checklist round-trip —
+  hand-edit the frontmatter to keep a live pattern); `Space` toggles, `Enter`
+  saves + records a transcript status line, `Esc` discards. The write applies
+  on the next restart — there is no live registry reload yet (a separate watcher
   issue); `skutter inspect agents` still reports the winning layer and what it
   shadowed, so provenance stays visible.
 - **Per-profile spawn control (✅ #119, [ADR-0040](../adr/0040-per-profile-spawn-control.md)):**

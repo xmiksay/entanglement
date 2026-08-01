@@ -48,11 +48,12 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::cancel::{CancelRegistry, TaskCanceller};
 use crate::hooks::Hooks;
-use crate::permission::{
-    ancestor_chain, min_permission, skill_masked, spawn_refusal, tool_masked, ActiveSkill,
-};
 #[cfg(feature = "rhai")]
-use crate::permission::{clamp_to_base, effective_permission};
+use crate::permission::effective_permission;
+use crate::permission::{
+    ancestor_chain, clamp_to_base, min_permission, skill_masked, spawn_refusal, tool_masked,
+    ActiveSkill,
+};
 use crate::permission_path::grading_arg;
 use crate::plan_files::PlanFileRegistry;
 use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver};
@@ -307,9 +308,7 @@ pub fn spawn_tool_executor_with_policy(
     tools: SharedRegistry,
     profiles: Arc<RwLock<ProfileRegistry>>,
     skills: Arc<RwLock<Arc<SkillRegistry>>>,
-    // Only consulted inside the `rhai` intercept arm's own clamp below — a
-    // lean build without that feature never reads it.
-    #[cfg_attr(not(feature = "rhai"), allow(unused_variables))] base: PermissionProfile,
+    base: PermissionProfile,
     active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
     resolver: Arc<dyn PermissionResolver>,
     grants: Arc<dyn GrantStore>,
@@ -352,6 +351,16 @@ pub fn spawn_tool_executor_with_policy(
         // order), so the check is race-free without a lock. Cleared per session on
         // `SessionEnded`.
         let mut in_flight: HashMap<SessionId, HashSet<String>> = HashMap::new();
+        // Per-session live tool overlay (#539, ADR-0149), folded from
+        // `ToolOverlayChanged` — the dispatch-side mirror of core's
+        // `Session::tool_overlay`. Consulted by `tool_masked` (a matching entry
+        // makes the tool exist regardless of the profile mask, per link) and
+        // for the Ask/Allow grade override the generic route applies in
+        // `dispatch`. Loop-owned: the per-call overlay entry is resolved before
+        // the detached task is spawned, so no sharing is needed. Cleared on
+        // `SessionEnded`/`SessionHibernated`.
+        let mut overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>> =
+            HashMap::new();
         // The session's active-skill tool mask (#400, ADR-0106): set when a
         // `load_skill` call resolves with an `allowed_tools` list, layered after
         // the #116 agent mask below (`skill_masked`). Cleared on the turn's
@@ -531,11 +540,25 @@ pub fn spawn_tool_executor_with_policy(
                 // A hibernated session (#318) tore down just like an ended one, so
                 // its executor-side bookkeeping is equally moot — release it. Its
                 // persisted "always" grants survive; a resume rebuilds the rest.
+                // The session's live tool overlay changed (#539, ADR-0149):
+                // mirror core's full-replacement semantics — an empty list
+                // clears the entry entirely.
+                Ok(OutEvent::ToolOverlayChanged { session, entries }) => {
+                    if entries.is_empty() {
+                        overlays.remove(&session);
+                    } else {
+                        overlays.insert(session, entries);
+                    }
+                }
                 Ok(OutEvent::SessionEnded { session, .. })
                 | Ok(OutEvent::SessionHibernated { session, .. }) => {
                     // Drop the closed session's in-memory grants (#174); persisted
                     // "always" grants survive.
                     grants.forget_session(&session);
+                    // The live tool overlay dies with the session (#539) — a
+                    // resume replays core's `ToolOverlayChanged` records, which
+                    // re-emit on the broadcast and re-fold here.
+                    overlays.remove(&session);
                     // Its in-flight tool bookkeeping is moot once the session ends.
                     cancels.forget_session(&session);
                     // Drop the re-offer dedupe set (#274): its request ids can
@@ -650,7 +673,7 @@ pub fn spawn_tool_executor_with_policy(
                     // the schema; this closes the gap if the model calls it anyway.
                     let masked = {
                         let active = active.lock().unwrap();
-                        tool_masked(&active, &spawn_guard, &session, &tool)
+                        tool_masked(&active, &spawn_guard, &overlays, &session, &tool)
                     };
                     if masked {
                         let holly = holly.clone();
@@ -904,6 +927,7 @@ pub fn spawn_tool_executor_with_policy(
                                 let policy = crate::script::BindingPolicy::capture(
                                     &active,
                                     &spawn_guard,
+                                    &overlays,
                                     &session,
                                     &base,
                                     escape_root.as_ref().map(|er| er.root.as_path()),
@@ -958,6 +982,21 @@ pub fn spawn_tool_executor_with_policy(
                             // The DB-backed resolver runs in the task, never the loop.
                             let chain = ancestor_chain(&spawn_guard, &session);
                             let resolver = resolver.clone();
+                            // The session's live overlay grade for this call
+                            // (#539, ADR-0149), resolved before spawning like the
+                            // chain snapshot above: a matching entry replaces the
+                            // profile chain's grade with Ask (default) or Allow —
+                            // still ceiling-clamped inside `dispatch`.
+                            let overlay_grade = overlays.get(&session).and_then(|entries| {
+                                entanglement_core::ToolOverlayEntry::find(entries, &tool).map(|e| {
+                                    if e.allow {
+                                        Permission::Allow
+                                    } else {
+                                        Permission::Ask
+                                    }
+                                })
+                            });
+                            let ceiling = base.clone();
                             // Snapshot before spawning (#372) — see the Rhai arm above.
                             let tools = tools.read().unwrap().clone();
                             let holly = holly.clone();
@@ -983,6 +1022,8 @@ pub fn spawn_tool_executor_with_policy(
                                     &hooks,
                                     &pending,
                                     escape_root.as_ref(),
+                                    overlay_grade,
+                                    &ceiling,
                                     session,
                                     request_id,
                                     tool,
@@ -1029,6 +1070,13 @@ async fn dispatch(
     hooks: &Hooks,
     pending: &crate::pending::PendingDecisions,
     escape_root: Option<&EscapeRoot>,
+    // The session's live overlay grade for this call (#539, ADR-0149): `Some`
+    // when a `ToolOverlayEntry` matched the tool — it replaces the profile
+    // chain's grade (that override is the overlay's point; the injecting head
+    // is trusted), clamped against `ceiling` below so the config permission
+    // ceiling (#172) still wins.
+    overlay_grade: Option<Permission>,
+    ceiling: &PermissionProfile,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -1059,7 +1107,16 @@ async fn dispatch(
     // grant lookup (`apply_grant`) and grant record (on approval) provably
     // share one key.
     let arg = grading_arg(&tool, &input, escape_root.map(|er| er.root.as_path()));
-    let base_perm = resolve_effective(resolver, chain, &tool, &input).await;
+    let base_perm = match overlay_grade {
+        Some(grade) => clamp_to_base(
+            grade,
+            ceiling,
+            &tool,
+            arg.as_deref(),
+            crate::permission::permission_workdir(&tool, &input).as_deref(),
+        ),
+        None => resolve_effective(resolver, chain, &tool, &input).await,
+    };
     let perm = apply_grant(grants, &session, &tool, arg.as_deref(), base_perm);
     if let Some(reason) = hooks.run_pre_tool_use(&session, &tool, &input).await {
         seam::reply(holly, session, request_id, reason).await;

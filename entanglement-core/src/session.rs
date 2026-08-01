@@ -39,7 +39,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::holly::{ActivityRegistry, SeqRegistry};
-use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
+use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::{ContentPart, UserId};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -66,6 +66,11 @@ pub(crate) enum SessionCmd {
     /// Live-adjust generation knobs (#374, ADR-0094): partial overrides merged
     /// onto `Session::generation` via `GenerationParams::apply_overrides`.
     SetGeneration(entanglement_provider::GenerationParams),
+    /// Replace the session's live tool overlay (#539, ADR-0149): the full
+    /// [`ToolOverlayEntry`] list whose matching tools exist for this session
+    /// regardless of the profile mask. Always succeeds and emits
+    /// [`OutEvent::ToolOverlayChanged`] with the effective list.
+    SetToolOverlay(Vec<ToolOverlayEntry>),
     /// Single out-of-band LLM op (`op`, `args`, #324) — `"compact"` today.
     Oneshot(String, serde_json::Value),
     Stop,
@@ -455,6 +460,22 @@ pub(crate) async fn session_loop(
                 let _ = events.send(OutEvent::GenerationChanged {
                     session: session.clone(),
                     generation: merged,
+                });
+            }
+            // Live tool-overlay replacement (#539, ADR-0149): like
+            // `SetGeneration` there is nothing to fail against — always
+            // succeeds, always confirms with the full effective list. Deferred
+            // during a live turn (stash replay) so the advertised tool surface
+            // never changes under a round already in flight.
+            Some(SessionCmd::SetToolOverlay(entries)) => {
+                if s.turn.is_some() || s.paused {
+                    stash.push_back(SessionCmd::SetToolOverlay(entries));
+                    continue;
+                }
+                s.tool_overlay = entries.clone();
+                let _ = events.send(OutEvent::ToolOverlayChanged {
+                    session: session.clone(),
+                    entries,
                 });
             }
             Some(SessionCmd::Oneshot(op, args)) => {

@@ -145,6 +145,8 @@ impl App {
             configured_editor: None,
             key_dialog: crate::tui::key_dialog::KeyDialog::new(key_providers),
             mcp_panel: crate::tui::mcp_panel::McpPanel::default(),
+            tool_overlays: HashMap::new(),
+            session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog::new(),
             tool_roster,
             tools_dialog: crate::tui::tools_dialog::ToolsDialog::new(),
             model_info: ModelInfo {

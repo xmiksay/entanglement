@@ -18,7 +18,7 @@ use super::emit::{emit_turn_error, emit_usage, next_seq};
 use super::round::{run_attempt, RoundAttempt, RoundSetup};
 use super::summarize::{summarize, SummarizeOutcome};
 use super::{Session, SessionCmd};
-use crate::protocol::{AgentState, OutEvent, SessionId};
+use crate::protocol::{AgentState, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::ToolSpec;
 
@@ -111,9 +111,19 @@ async fn run_round(
         Some(resolve) => resolve(session),
         None => cfg.tool_specs.clone(),
     };
+    // The session's live tool overlay (#539, ADR-0149) overrides the profile
+    // mask in both directions: a deny entry withdraws a tool the profile
+    // advertises, an enable entry injects one the profile masks — that
+    // override is the overlay's whole point (a trusted head explicitly set
+    // it), and the runtime's dispatch gate applies the identical predicate.
+    // No opinion ⇒ the profile mask stands.
+    let advertised = |name: &str| match ToolOverlayEntry::disposition(&s.tool_overlay, name) {
+        Some(v) => v,
+        None => s.profile.advertises_tool(name),
+    };
     let mut specs: Vec<ToolSpec> = base_specs
         .into_iter()
-        .filter(|spec| s.profile.advertises_tool(&spec.name))
+        .filter(|spec| advertised(&spec.name))
         .collect();
     // Per-profile specs (#119, ADR-0040): the active profile's spawnable roster
     // (the `agent_*` family with a target enum scoped to who *this* profile may
@@ -126,7 +136,7 @@ async fn run_round(
         specs.extend(
             profile_specs
                 .iter()
-                .filter(|spec| s.profile.advertises_tool(&spec.name))
+                .filter(|spec| advertised(&spec.name))
                 .cloned(),
         );
     }

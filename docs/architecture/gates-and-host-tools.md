@@ -505,6 +505,15 @@ the same permission profiles as `read`/`bash`.
   (v1 is text-only — a non-text block is noted, an `isError` result prefixed).
   Advertised name **`mcp__<server>__<tool>`**, sanitized to the providers'
   `^[A-Za-z0-9_-]+$` rule, so it can't collide with a host tool or another server.
+  Governed by the same #116 agent tool mask as any host tool — and since a
+  profile author can't know (or keep current) the namespaced names, mask entries
+  are wildcard patterns (✅ #537,
+  [ADR-0148](../adr/0148-glob-patterns-in-the-agent-tool-mask.md)): a
+  `tools:`-restricted profile opts into MCP with `"mcp__*"` (every server) or
+  `"mcp__<server>__*"` (one server), an inherit-all profile opts out with
+  `disallowed_tools: ["mcp__*"]`. Existence (the mask, per-name via glob) and
+  grading (`capabilities:` fan-out below, ADR-0117) now compose: a profile can
+  both *hold* an MCP tool and grade it through a bare capability rule.
 - **Config:** the `mcp:` section of the layered user config (§ADR-0047/#172), a map
   of server name → `McpServerConfig`. A block is one transport XOR the other —
   `{command, args, env}` (stdio) **or** `{url, headers}` (HTTP), plus a shared

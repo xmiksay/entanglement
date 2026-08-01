@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, Permission, PermissionProfile, SessionId, ToolSpec,
+    LlmResponse, LlmStream, Permission, PermissionProfile, SessionId, ToolOverlayEntry, ToolSpec,
 };
 
 /// The read-only `explore` profile the runtime ships as `explore.md` — core no
@@ -133,6 +133,114 @@ async fn explore_profile_hides_edit_via_set_agent() {
             .iter()
             .any(|n| n == "update_tasks" || n == "update_plan"),
         "core must not advertise plan/task built-ins; got {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn tool_overlay_injects_past_the_profile_mask() {
+    // #539, ADR-0149: a trusted head's `SetToolOverlay` makes matching tools
+    // exist for the session regardless of the profile's allowlist — the
+    // per-session MCP enablement path. Clearing the overlay reverts it.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut cfg = recording_config(seen.clone());
+    cfg.tool_specs
+        .push(ToolSpec::new("mcp__docs__search", "search the docs server"));
+    let holly = Holly::spawn(cfg);
+    let mut events = holly.subscribe();
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    holly
+        .send(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![ToolOverlayEntry::ask("mcp__docs__*")],
+        })
+        .await
+        .unwrap();
+    // The replacement is confirmed with the full effective list.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        tokio::select! {
+            ev = events.recv() => {
+                if let Ok(entanglement_core::OutEvent::ToolOverlayChanged { entries, .. }) = ev {
+                    assert_eq!(entries, vec![ToolOverlayEntry::ask("mcp__docs__*")]);
+                    break;
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => panic!("no ToolOverlayChanged seen"),
+        }
+    }
+    holly
+        .send(InMsg::prompt(sid.clone(), "search the docs"))
+        .await
+        .unwrap();
+    let names = first_recorded(&seen).await;
+    assert!(
+        names.iter().any(|n| n == "mcp__docs__search"),
+        "overlay must inject the MCP tool past explore's mask; got {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "edit"),
+        "the overlay widens only matching tools; got {names:?}"
+    );
+
+    // An empty replacement clears the overlay: the next turn is masked again.
+    holly
+        .send(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![],
+        })
+        .await
+        .unwrap();
+    holly
+        .send(InMsg::prompt(sid.clone(), "search again"))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let cleared = loop {
+        let all = seen.lock().unwrap().clone();
+        if all.len() >= 2 {
+            break all.last().cloned().unwrap();
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("second request never recorded");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert!(
+        !cleared.iter().any(|n| n == "mcp__docs__search"),
+        "a cleared overlay reverts to the profile mask; got {cleared:?}"
+    );
+}
+
+#[tokio::test]
+async fn tool_overlay_deny_withdraws_a_profile_advertised_tool() {
+    // #539 (deny half): a deny entry removes a tool the profile advertises —
+    // per-session disable without touching the agent definition.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let holly = Holly::spawn(recording_config(seen.clone()));
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![ToolOverlayEntry::deny("edit")],
+        })
+        .await
+        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let names = first_recorded(&seen).await;
+    assert!(
+        names.iter().any(|n| n == "read"),
+        "unmatched tools keep the profile default; got {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "edit"),
+        "a deny entry withdraws a profile-advertised tool; got {names:?}"
     );
 }
 
