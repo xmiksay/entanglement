@@ -275,7 +275,11 @@ recovery steps in order (#398,
    `true`, exposed to users as `config.yml`'s `auto_compact:` — copied onto the
    engine config in `build_config` beside `max_turns`/`idle_ttl_secs`, the
    ADR-0105 wiring shape): `try_auto_compact` calls the same `session/summarize.rs::summarize`
-   the manual `"compact"` op below uses, requesting a small fixed keep-tail
+   the manual `"compact"` op below uses — on the same aux-resolved backend too
+   (`summarize::AuxBackend::for_summarize(cfg)` then
+   `aux.resolve(&mut *s.llm, model, s.generation)`; see *Auxiliary models*
+   below): an overflow recovery is a side transformation, so it runs on the
+   pinned `summarize` model when one is set — requesting a small fixed keep-tail
    (`AUTO_COMPACT_KEEP_TAIL`, clamped to a safe turn boundary by
    `Context::safe_kept` exactly as #397/ADR-0102 does), then applies the result
    via `Context::apply_compaction` — **mutating the live session's `Context` in
@@ -317,10 +321,16 @@ Separate from the turn loop above: `run_oneshot` never streams tool calls and
 never parks — it either completes in one round-trip or fails cleanly. Routed
 like `SetAgent`/`SetModel` (`SessionCmd::Oneshot`, deferred via the stash gate
 while `s.turn.is_some()`), so it only ever runs with no turn in flight — the
-invariant that lets `compact_op` call `s.llm.stream(...)` directly (via
+invariant that lets `compact_op` drive a bare `llm.stream(...)` (via
 `session/summarize.rs`'s small `oneshot_text` helper that drains the stream for
 `Text` chunks + the `Finish` usage) instead of going through
-`session/stream.rs`'s inbox-racing `tokio::select!`. `"compact"` renders the
+`session/stream.rs`'s inbox-racing `tokio::select!`. The backend it drives is
+**aux-resolved**, not necessarily the session's own: `compact_op` first
+resolves `summarize::AuxBackend::for_summarize(cfg)` and then
+`aux.resolve(&mut *s.llm, model, s.generation)` — a `summarize` aux-model pin
+([ADR-0154](../adr/0154-per-purpose-auxiliary-models.md), next section) routes
+the call to a one-shot pinned client; unset, the triple resolves straight back
+to the session's own `llm`/`model`/`generation`. `"compact"` renders the
 history as a plain-text transcript (each `Tool`-role message truncated
 head+tail past ~2k chars so one oversized tool output can't blow the
 summarizer's own context window), optionally appends `args.instructions`, and
@@ -338,6 +348,32 @@ overflows `s.ctx.limit()`) is rejected before shipping a request the provider
 would 4xx. On failure, the ordinary `emit_turn_error` triple runs and `Context`
 is untouched. Model resolution and pricing mirror the turn loop: `s.model` →
 `s.profile.model` → (pricing only) `cfg.default_model`.
+
+**Auxiliary models — the `aux_llm_resolver` seam** (Issue 5,
+[ADR-0154](../adr/0154-per-purpose-auxiliary-models.md)). A side
+transformation (compaction is core's only consumer today; the runtime's
+session-title generator runs outside core entirely) may run on a
+cheaper/faster model than the session's own. `EngineConfig.aux_llm_resolver:
+Option<AuxLlmResolver>` (`Arc<dyn Fn(&str) -> Option<ResolvedModel>>`,
+shaped like `generation_resolver`) resolves a **purpose string** to the
+provider/model pinned for it — core knows only the string
+(`session/summarize.rs::AUX_PURPOSE_SUMMARIZE`), never the runtime's
+`AuxLlmRegistry` or the managed `aux-models.yml` behind the closure (see the
+heads/persistence doc §6d). Reusing `ResolvedModel` is deliberate: the
+one-shot client is built from the same `llm_factory` a `SetModel` switch
+would use, so it inherits the warm per-endpoint pool (ADR-0050) instead of
+opening its own. Both compaction paths — the manual `"compact"` op
+(`session/ops.rs`) and the auto-summarize overflow path
+(`session/turn.rs::try_auto_compact`) — resolve
+`summarize::AuxBackend::for_summarize(cfg)` and then
+`aux.resolve(&mut *s.llm, model, s.generation)`: `AuxBackend` owns the built
+`Box<dyn Llm>` (one-shot, dropped when it goes out of scope), which is what
+lets both call sites hand `summarize` a `&mut dyn Llm` outliving the borrow.
+A `None` from the resolver — no resolver wired, an unset pin, or a pin the
+catalog no longer knows — falls back **field-by-field to the session's own
+`llm`/`model`/`generation`**: byte-identical to the pre-ADR-0154 behavior,
+and strictly better than a fixed primary model, since a live `/model` switch
+keeps applying to compaction whenever no pin is set.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop *races* it via `tokio::select!` so a

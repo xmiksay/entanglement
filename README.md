@@ -21,14 +21,16 @@ table below.
 ## The contract (one set of types, every head)
 
 ```
-InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
-          | McpList | McpAdd | McpRemove
+InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
+          | PauseSession | ResumeSession
+          | SetAgent | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
+          | McpList | McpAdd | McpRemove | McpAuth
           | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status
-          | AgentChanged | ModelChanged | GenerationChanged | Plan | TextDelta | ReasoningDelta
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status
+          | AgentChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
+          | McpList | McpChanged | McpAuthChanged | BashChanged | Throttle
+          | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
-          | McpList | McpChanged | BashChanged
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
           | SkillActive | AmbiguousRetry | SearchResult (engine → harness)
 ```
@@ -138,6 +140,7 @@ in `.cargo/config.toml`.
 make run          # one dummy turn, text output
 make run-json     # one dummy turn, NDJSON events
 make run-tui      # launch the terminal UI
+make pipe         # stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
 make serve        # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
 make test         # unit + integration
 make lint         # clippy --all-targets -D warnings

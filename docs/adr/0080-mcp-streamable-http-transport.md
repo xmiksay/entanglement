@@ -1,6 +1,6 @@
 # 0080. MCP streamable-HTTP transport with per-server headers/auth
 
-- Status: Amended by [0128](0128-mcp-http-var-header-expansion-leak-surface.md)
+- Status: Amended by [0128](0128-mcp-http-var-header-expansion-leak-surface.md) and [0153](0153-mcp-server-oauth.md) (the MCP client mechanism — the HTTP transport, JSON-RPC helpers, and OAuth — moved into `entanglement-provider::mcp`)
 - Date: 2026-07-15
 - Extends the stdio MCP client ([0067](0067-mcp-client-as-runtime-tool-provider.md)/#198); rides the feature-gate discipline of [0025](0025-runtime-cargo-feature-gates.md) and the local trust boundary of [0047](0047-local-trust-boundary.md); part of the multi-tenant embedding epic #307 (#312).
 

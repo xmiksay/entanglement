@@ -563,8 +563,10 @@ the same permission profiles as `read`/`bash`.
   both *hold* an MCP tool and grade it through a bare capability rule.
 - **Config:** the `mcp:` section of the layered user config (§ADR-0047/#172), a map
   of server name → `McpServerConfig`. A block is one transport XOR the other —
-  `{command, args, env}` (stdio) **or** `{url, headers}` (HTTP), plus a shared
-  `disabled` — resolved by `McpServerConfig::transport()`, which rejects both-set or
+  `{command, args, env}` (stdio) **or** `{url, headers, oauth}` (HTTP; `oauth` is
+  the ADR-0153 block above), plus a shared
+  `disabled` and the three-state `state` (ADR-0152, below) — resolved by
+  `McpServerConfig::transport()`, which rejects both-set or
   neither-set. `deny_unknown_fields`-validated by the same loader as
   `permissions`/`hooks`. Empty ⇒ no servers (the norm). `skutter inspect config`
   lists the configured servers and their resolved transport. An optional

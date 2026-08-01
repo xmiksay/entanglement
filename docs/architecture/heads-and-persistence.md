@@ -11,9 +11,11 @@ boundary — the real seam is `entanglement-core` ↔ everything else (ADR-0006,
 ADR-0010).
 
 The heads (and the `skutter` binary that carries them) need the crate's
-**default features** — `default = ["tui", "serve", "mcp-http"]` pulls clap +
-the providers + the render stack + the axum WS server + the streamable-HTTP
-MCP transport (ADR-0080), and `[[bin]] skutter` declares
+**default features** — `default = ["tui", "serve", "mcp-http", "rhai"]` pulls
+clap + the providers + the render stack + the axum WS server + the
+streamable-HTTP MCP transport (ADR-0080) + the sandboxed script tool
+([ADR-0135](../adr/0135-deferred-build-speed-trims-tokio-rhai-syntect.md)),
+and `[[bin]] skutter` declares
 `required-features = ["cli","provider","tui"]` (the `provider` feature was split
 out of `cli` in #208 so the `ws` `serve` head — added in #153 behind its own
 `serve` feature, `serve = ["cli","provider","dep:axum","dep:futures"]` — pulls
@@ -201,6 +203,31 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `App::handle_quit_key` path, so an out-of-band signal can never leave the
   terminal "half killed" (raw mode / alternate screen / mouse capture left on);
   the panic hook already covered crashes, this covers the signal path.
+  **Turn/session lifecycle controls** (#6, #516): bare `Esc` in Normal mode
+  sends `InMsg::Stop` for the active session — **a deliberate behavior
+  change** (ee85bc5): `Esc` used to quit the app; interrupting the in-flight
+  turn is what it means now (matching the `Esc` an approval/`ask_user` park
+  already sent), and quitting is `/exit`, two-stage `Ctrl+C`, or `Ctrl+Q`.
+  `/stop [--all]`, `/pause [--all]`, `/continue [--all]` send the matching
+  `Stop`/`PauseSession`/`ResumeSession` frame to the active session (or fan
+  out to every live one), and `Ctrl+Space` toggles pause/resume on the active
+  session (safe because the engine treats `PauseSession` on an idle session
+  and `ResumeSession` on a non-paused one as idempotent no-ops,
+  [ADR-0144](../adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md)).
+  The sessions modal adds lifecycle **quick keys** on the highlighted row
+  (`tui/modal_events.rs`) — `s` stops its turn, `p` pauses, `r` resumes — the
+  modal staying open so several sessions can be acted on in a row, plus
+  `d`/`Delete` to delete the highlighted session's log (§6b below; a live
+  session is refused with a status line). `/name <text>` sets the session's
+  display name via `InMsg::SetSessionMeta`
+  ([ADR-0151](../adr/0151-settable-session-metadata.md)); the sidebar and
+  sessions modal prefer the name over the short id and the live `action` over
+  the first-prompt description line. **Modals and popups are mouse-clickable**
+  (f48cec5, `tui/modal_events.rs::click_modal`): with a modal or the
+  slash/`@file` popup open, a left click on a row selects it and fires the
+  same action `Enter` would, a click outside the open modal's rect closes it
+  (matching `Esc`), and the wheel moves the modal's selection — the
+  transcript-selection path runs only when no modal/popup is open.
   **External editor + export** (✅ #13,
   [ADR-0029](../adr/0029-external-editor-and-markdown-export.md), `tui::editor` +
   `tui::export`): `<leader>e` / `/editor` suspends the TUI and opens the resolved
@@ -267,6 +294,46 @@ Result<PathBuf>` (loud error with no managed path; create from `template` when
 missing; atomic temp-file-in-dir + rename; `0o600` on unix; reject empty/`\n`
 values). `env_key` is pure std + `anyhow` (lean/gate-clean); only the `keys`
 handler (rpassword + catalog) is feature-gated behind `cli`+`provider`.
+
+## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../adr/0154-per-purpose-auxiliary-models.md) (`aux_llm` + `config::aux_models` + `session_title`)
+
+Side transformations (a compaction summary, an auto session title) can run on
+a cheaper/faster model than the session's own. The pin store is a managed
+`${config_dir}/entanglement/aux-models.yml` (override
+`ENTANGLEMENT_AUX_MODELS_FILE`, sibling of `agent-models.yml`, same
+`with_locked_file`+`atomic_write` discipline) mapping a closed `Purpose` enum
+(`summarize` | `session_title`) to a `{provider, model}` pin.
+`aux_llm::AuxLlmRegistry` resolves a `Purpose` → fresh `Box<dyn Llm>` by
+reusing the catalog `ModelResolver` the runtime already builds at startup (the
+same closure `SetModel` calls, capturing the catalog + the warm per-endpoint
+client, so an aux client rides the shared pool — and a second provider is just
+a second endpoint pool/key, already supported), **falling back to the primary
+model's `LlmFactory`** when a purpose is unset or its pin no longer resolves
+(unknown to the catalog, missing key — logged at debug, never wedging the
+transformation). Two consumers reach it by deliberately different routes:
+
+- **The session-title generator** (`session_title.rs`, behind the `provider`
+  feature): a background task off `holly.subscribe_inbound()` that, on the
+  **first `Prompt` of an unnamed session**, spawns a detached one-shot call to
+  the `session_title` aux LLM (prompt capped ~2k chars, output capped 80) and
+  sets the result via an ordinary `InMsg::SetSessionMeta`
+  ([ADR-0151](../adr/0151-settable-session-metadata.md)) — best-effort
+  throughout (a failed/empty generation is logged and dropped), idempotent per
+  session (a titled-set guards late second prompts), and never touching an
+  already-named or resumed session; a user `/name` always overrides. It has no
+  session backend to fall back to, so it calls `AuxLlmRegistry::resolve`
+  directly and an unset pin yields the primary model.
+- **Session compaction** runs *inside core*, which reaches the pin through the
+  `EngineConfig::aux_llm_resolver` seam built by `AuxLlmRegistry::resolver`
+  (see the engine doc's *Auxiliary models* section): there `None` means "use
+  the session's own backend" — strictly better than a fixed primary, since a
+  live `/model` switch keeps applying to compaction.
+
+The TUI surface is `/aux-model <purpose> <provider>/<model>`
+(`parse_aux_model_args` — the raw-text re-parse pattern; `title` is accepted
+as an alias for `session_title`; bare `/aux-model` or `/aux-model list`
+renders the current pins), writing the pin through the shared store handle so
+the live registry sees it with no restart.
 
 ## 6b. Session persistence & resume — [ADR-0020](../adr/0020-event-sourced-session-persistence.md) (`persistence` + `session_store`)
 
@@ -412,3 +479,15 @@ assistant/tool messages and the model appears to forget the conversation.
   crash-truncated *tail* line (tolerated with a warning) from *interior*
   corruption (a hole → hard error), and `list_sessions` skips-and-warns per bad
   file instead of aborting the whole enumeration.
+- **Deletion + startup auto-prune** (Issue 4, 15175e0). Session logs can be
+  deleted explicitly — `d`/`Delete` on the TUI sessions modal removes the
+  highlighted session's `.jsonl` (a **live** session is refused with a status
+  line: the modal lists the live set, and deleting under one would orphan its
+  view) — and age out automatically: `session_store::prune(cwd,
+  retention_days)` runs **best-effort at startup** (`main.rs`, before any head
+  spawns, so the resume modal and `skutter sessions` both reflect the pruned
+  set), removing root files older by mtime than the retention window from
+  **the current project's session dir only**. The window resolves env >
+  config > default: `ENTANGLEMENT_SESSION_RETENTION_DAYS` >
+  `config.yml`'s `session_retention_days` > the embedded default `30`; an
+  unreadable dir/entry is a warn-and-skip, never fatal.

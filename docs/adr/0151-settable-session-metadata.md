@@ -1,6 +1,6 @@
 # 0151. Settable session display metadata (name + action)
 
-- Status: Accepted
+- Status: Amended by [0154](0154-per-purpose-auxiliary-models.md) (the in-tree auto session-title generator 0151 deferred shipped, driving `SetSessionMeta` off the aux `session_title` model)
 - Date: 2026-08-01
 
 ## Context

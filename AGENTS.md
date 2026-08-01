@@ -14,7 +14,7 @@ This is a hard project rule, not a style preference. The Makefile wraps every
 command and `make help` lists them. Key targets:
 
 - **`make verify`** — the pre-"done" gate. Equals `check-fmt + tree + check-lean + file-cap + lint + test`. Run it before declaring a task complete or pushing.
-- **`make tree`** — the **non-obvious** one. It's the dependency-hygiene gate (ADR-0006): `entanglement-core` must pull in **zero** UI/transport crates. Adding `clap`/`axum`/`tower`/`tonic`/`crossterm`/`ratatui`/`reqwest`/`hyper` to `entanglement-core` will make `make verify` fail here even though `cargo build` is green.
+- **`make tree`** — the **non-obvious** one. It's the dependency-hygiene gate (ADR-0006, amended by ADR-0053): `entanglement-core` must pull in **zero** UI/web-server crates. Adding `clap`/`axum`/`warp`/`actix`/`rocket`/`tonic`/`tungstenite`/`crossterm`/`ratatui`/`ureq` to `entanglement-core` will make `make verify` fail here even though `cargo build` is green. `reqwest`/`hyper`/`tower` are **not** forbidden — they ride in legitimately via provider (ADR-0053).
 - **`make file-cap`** — enforces the 400-line file cap below (issue #451). A currently-over-cap file must be listed in `scripts/file-cap-allowlist.txt` (grandfathered debt) or the gate fails; splitting a file below the cap requires deleting its row in the same change, or the gate fails the other way (a stale allowlist entry).
 - `make test-unit` / `make test-integration` — split suites (`--lib --bins` vs `--test '*'`).
 - `make run` / `make run-json` / `make run-tui` — build + run the `skutter` binary one turn (text / NDJSON / TUI). `make inspect ARGS=…` prints the resolved prompt/agents/skills with no engine; `make sessions` lists past sessions.
@@ -26,22 +26,22 @@ Build jobs are capped at 4 via `.cargo/config.toml`; don't override unless asked
 
 ## The one crate boundary that matters
 
-Workspace = `entanglement-core`, `entanglement-provider`, `entanglement-runtime`. The seam
-is **core ↔ everything else**:
+Workspace = `entanglement-core`, `entanglement-provider`, `entanglement-runtime`. Dependency
+direction is `provider (leaf) ← core ← runtime` (ADR-0053, inverting ADR-0006/0007):
 
-- **`entanglement-core`** — the actor engine. **Zero UI/transport deps** (enforced by `make tree`). This is where `reqwest`/`clap`/`axum`/`crossterm` are *forbidden*. The `Llm` *trait* lives here; concrete backends do not.
-- **`entanglement-provider`** — concrete LLM backends over `reqwest` (may depend on transport). Implements `entanglement_core::Llm`.
-- **`entanglement-runtime`** — the only head crate, binary **`skutter`**. All transports (stdio + `tui` today; `serve` next) live here (ADR-0010). Note the binary name differs from the crate name.
+- **`entanglement-provider`** — the **leaf** crate (no `entanglement-*` deps): owns the LLM ABI — the `Llm` *trait* + DTOs — plus all concrete backends over `reqwest`. Usable standalone.
+- **`entanglement-core`** — the actor engine. Depends on provider, drives `dyn Llm`, and re-exports the ABI. **Zero UI/web-server deps** (enforced by `make tree`): `clap`/`axum`/`crossterm`/`ratatui` are *forbidden*, but `reqwest`/`hyper`/`tower` ride in transitively via provider and are allowed (ADR-0053).
+- **`entanglement-runtime`** — the only head crate, binary **`skutter`**. All transports (stdio, `tui`, and the WebSocket `serve` head — all shipped) live here (ADR-0010). Note the binary name differs from the crate name.
 
 Heads depend on core, **never the reverse.**
 
 ## Code conventions (this repo-specific)
 
 - **Files must not exceed 400 lines of code.** Split long files into modules when they exceed this limit. Enforced by `make file-cap` (issue #451) — see `scripts/file-cap-allowlist.txt` for the shrinking list of grandfathered violations.
-- **Tests ship with the change.** Pure logic → in-module `#[cfg(test)] mod tests`; actor/protocol behavior → `entanglement-core/tests/` (`actor.rs`, `host_tools.rs`).
+- **Tests ship with the change.** Pure logic → in-module `#[cfg(test)] mod tests`; actor/protocol behavior → `entanglement-core/tests/` (e.g. `actor.rs`, `turn_loop.rs`); runtime/host-tool behavior → `entanglement-runtime/tests/`.
 - **No panicking operators on I/O / user / network / config paths** in `entanglement-core`. Propagate with `?` + `.context()`. `.unwrap()`/`.expect()` only in tests or provably-unreachable spots (then `.expect("invariant …")`).
 - **Comments: WHY, not WHAT.**
-- Rust stable, edition 2021, MSRV 1.82 (pinned via `rust-toolchain.toml`).
+- Rust stable, edition 2021, MSRV 1.82 (`rust-version` in the workspace `Cargo.toml`; `rust-toolchain.toml` pins only `channel = "stable"`).
 
 ## Commit & PR workflow
 
@@ -56,6 +56,6 @@ Heads depend on core, **never the reverse.**
 With no provider configured, the engine runs on an `EchoLlm` (no network) — this
 is the default and is fine for most dev loops. To hit a real backend:
 
-- `ENTANGLEMENT_PROVIDER` = `zai` (primary) | `openai` | `ollama` | `anthropic`; or auto-detected by key presence (z.ai first).
-- `<PROV>_API_KEY` / `<PROV>_MODEL` / `<PROV>_BASE` (Ollama is keyless).
-- `ENTANGLEMENT_ENABLE_BASH=1` — **opt-in**: registers the exec pair `bash` + `call` (both **unsandboxed**, the engine's full privileges — ADR-0009/0010). Off by default. The sandboxed `rhai` script tool needs no opt-in.
+- `ENTANGLEMENT_PROVIDER` = `zai` (primary) | `openai` | `ollama` | `anthropic` | `gemini` | `echo`; or auto-detected by key presence (z.ai first).
+- `<PROV>_API_KEY` / `<PROV>_MODEL` / `<PROV>_API_BASE` (legacy `<PROV>_BASE` still accepted; Ollama is keyless).
+- `ENTANGLEMENT_ENABLE_BASH=1` — **opt-in**: registers the exec pair `bash` + `bash_output`. Off by default. `call` (argv exec, no shell) is registered **unconditionally** (ADR-0093). Both run unsandboxed by default but can be bubblewrap-confined via `ENTANGLEMENT_SANDBOX=bwrap` (ADR-0104/0134). The sandboxed `rhai` script tool needs no opt-in.

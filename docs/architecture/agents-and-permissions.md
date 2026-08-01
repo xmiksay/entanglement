@@ -444,9 +444,11 @@ below realize one model:
   definitions edit lands for the *next* `SetAgent`/new session/picker pick — a
   turn already in flight keeps its already-resolved system prompt/tool mask
   unchanged. A directory that doesn't exist at watch-start needs a restart to be
-  picked up once created (known v1 limit). Separately, the three managed files
-  (`grants.yml`, `agent-models.yml`, the provider-key `.env`) are now
-  advisory-locked across concurrent `skutter` instances via
+  picked up once created (known v1 limit). Separately, every managed file —
+  `grants.yml`, `agent-models.yml`, `agent-generation.yml`, `aux-models.yml`,
+  `mcp-tokens.yml`, `extra-roots.yml`, the provider-key `.env`, and
+  `config.yml` itself for the surgical `mcp:` edits (`config::mcp_persist`) —
+  is advisory-locked across concurrent `skutter` instances via
   `config::lock::with_locked_file` (an `fd-lock` on a sibling `.lock` file): each
   write re-reads the current on-disk state under the lock and merges before
   writing, so a second instance's own concurrent update survives instead of being

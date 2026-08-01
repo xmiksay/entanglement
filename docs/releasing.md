@@ -7,6 +7,19 @@ per crate by whoever owns them on crates.io.
 
 ## Cutting a tag
 
+Two mandatory steps come first, committed before tagging:
+
+1. **Bump the version** in the workspace `Cargo.toml` — `workspace.package.version`
+   **and** the two `workspace.dependencies` pins for `entanglement-core` /
+   `entanglement-provider` (they carry an explicit `version` alongside `path` so
+   `cargo publish` resolves the registry dep). All three must agree, or `make tag`
+   refuses on the mismatch.
+2. **Promote the changelog**: in `CHANGELOG.md`, rename the `[Unreleased]`
+   section to `[X.Y.Z] - YYYY-MM-DD` and add the version's link reference in the
+   footer.
+
+Then:
+
 ```bash
 make tag VERSION=v0.1.1   # refuses on a dirty tree, red `make verify`, or a
                            # VERSION that doesn't match workspace.package.version

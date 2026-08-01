@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean coverage tag
+.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean file-cap coverage tag
 
 # Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
 # amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
@@ -28,7 +28,7 @@ LEAN_FORBIDDEN ?= clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|tracing-su
 COV_MIN ?= 60
 
 help: ## show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-17s\033[0m %s\n", $$1, $$2}'
 
 build: ## cargo build --workspace
 	$(CARGO) build --workspace
@@ -54,7 +54,7 @@ serve: build ## WebSocket serve head — local loopback HTTP+WS on 127.0.0.1 (AR
 sessions: build ## list past (resumable) sessions
 	$(CARGO) run -p entanglement-runtime -- sessions
 
-inspect: build ## inspect resolved prompt/agents/skills, no engine (ARGS='prompt --agent build' | agents | 'skills --disclosures')
+inspect: build ## inspect resolved prompt/agents/skills/config, no engine (ARGS='prompt --agent build' | agents | 'skills --disclosures' | config)
 	$(CARGO) run -p entanglement-runtime -- inspect $(ARGS)
 
 check: ## cargo check --workspace (fast typecheck)

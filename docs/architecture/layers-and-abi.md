@@ -17,7 +17,7 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
 ┌──────────── entanglement-runtime (head, binary `skutter`) ─────────────┐
 │ user sessions · `Tool` trait + `ToolRegistry` · host tools · tool exec │
 │ permission dispatch · approval UX · persistence · transports           │
-│ (stdio ✅, TUI ✅, WS 🚧) · selects the concrete provider · glues core   │
+│ (stdio ✅, TUI ✅, WS ✅) · selects the concrete provider · glues core   │
 └─────────▲──────────────────────────────────────────────▲───────────────┘
           │ send()/subscribe() (ABI)      tool exec + approval (protocol)
 ┌─────────┴──────────────── entanglement-core (engine) ───┴───────────────┐
@@ -27,8 +27,9 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
           │ depends on provider; consumes the `Llm` trait + DTOs
  ┌─────────▼──────────── entanglement-provider (leaf, LLM ABI + I/O) ────────┐
 │ OWNS the `Llm` trait, LlmRequest/Response/Event/Stream, LlmFactory,       │
-│ ToolCall/ToolSpec, Message/MessageRole · OpenAI-compat +                  │
-│ Anthropic clients · pool · retry · rate-limit · reasoning stream          │
+│ ToolCall/ToolSpec, Message/MessageRole · OpenAI-compat + Anthropic +      │
+│ native Gemini clients (#309) · pool · retry · rate-limit · reasoning      │
+│ stream · MCP client mechanism + OAuth stack (ADR-0153)                    │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -48,7 +49,8 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
   ([ADR-0059](../adr/0059-tool-trait-and-registry-live-in-the-runtime.md), #206),
   host tools + their execution, permission dispatch +
   approval, user sessions, every transport (§6, §8). Feature-gated
-  ([ADR-0025](../adr/0025-runtime-cargo-feature-gates.md)): `default = ["tui"]` is
+  ([ADR-0025](../adr/0025-runtime-cargo-feature-gates.md)): `default = ["tui",
+  "serve", "mcp-http", "rhai"]` is
   the full `skutter` binary, while `--no-default-features` is a **lean library**
   — `host` + `tool_runner` + `permission` + `subagent` + `persistence` +
   `session_store` (+ `config` + `inspect`, #208) over core + tokio + glob/regex,
@@ -57,8 +59,9 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
   the lean library is CLI/TUI-free rather than transport-free — `reqwest` rides
   in transitively via core → provider. The `cli` feature (clap + log init) and
   the `provider` feature (the LLM providers, split out of `cli` in #208) sit
-  between the two, leaving room for a `ws = ["provider", …]` sibling that pulls
-  providers without clap. `main.rs` now imports the library modules from the lib
+  between the two; the WebSocket sibling they left room for shipped as
+  `serve = ["cli", "provider", …]` (#153, ADR-0048), keeping `axum` behind its
+  own gate. `main.rs` now imports the library modules from the lib
   crate instead of re-declaring `mod`, so only the bin heads (`pipe`/`run`/`tui`)
   live in the binary (#208).
 

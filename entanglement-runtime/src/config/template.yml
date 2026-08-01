@@ -67,6 +67,12 @@
 #   http (remote, streamable-HTTP transport — needs the `mcp-http` build feature):
 #     url       — the server's endpoint (e.g. https://example.com/mcp)
 #     headers   — static request headers; values may use ${VAR} from the env
+#     oauth     — (ADR-0153) present — even empty ({}) — it switches the server
+#                 from static headers to a browser-obtained bearer token, with
+#                 full endpoint discovery + dynamic client registration; fields
+#                 inside are overrides (authorization_url + token_url skips
+#                 discovery). Authenticate with `/mcp connect <name>`; tokens
+#                 persist in the managed mcp-tokens.yml.
 #
 #   disabled     — skip this server without deleting the block (both transports)
 #   state        — (#542) three-state activation: `enabled` (connect at startup,
@@ -94,6 +100,9 @@
 #    url: https://example.com/mcp
 #    headers:
 #      Authorization: "Bearer ${MY_MCP_TOKEN}"
+#  my-oauth:
+#    url: https://example.com/mcp
+#    oauth: {}
 
 # Web search — opt-in, provider-side (#305). When enabled, the provider runs a
 # web search MID-TURN, server-side (z.ai and Anthropic only), and cites the

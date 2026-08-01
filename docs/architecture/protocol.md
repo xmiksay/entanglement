@@ -18,8 +18,8 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | RetractQuestion{session,request_id}   // withdraw an open ask_user question without cancelling the turn (#515, ADR-0146) — the orchestrator still replies (withdrawal note), unlike Stop's silent unwind
          | ReplaceQuestion{session,request_id,questions:[Question]}   // swap an open ask_user question's content in place; re-parks under the same request_id, not terminal (#515, ADR-0146)
          | Stop{session}
-         | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0145)
-         | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0145)
+         | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0144)
+         | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0144)
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
@@ -32,6 +32,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | McpList{correlation_id}   // supervisor-global query; live MCP servers → McpList reply (#375)
          | McpAdd{name,config:McpServerSpec}   // hot-connect + persist to config.yml → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | McpRemove{name}   // hot-disconnect + persist removal → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
+         | McpAuth{name,action}   // OAuth Connect|Check|Disconnect for an MCP server → McpAuthChanged (ADR-0153); trusted-only, wire-refused — a forged Connect opens a browser and mints a durable credential
          | BashEnable{grade:BashGrade}   // hot-register bash/bash_output, graded Ask|Allow{pattern?} → BashChanged (#498, ADR-0133); trusted-only, wire-refused
          | BashDisable   // hot-unregister bash/bash_output → BashChanged (#498, ADR-0133); trusted-only, wire-refused
          | ReplayFrom{session,correlation_id,after_seq}   // late-subscriber history fetch → History (#160, ADR-0072)
@@ -46,6 +47,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
+         | McpAuthChanged{status}   // MCP OAuth state change, no seq/session; reply to McpAuth — a Connect emits twice, interim authorize_url then outcome (ADR-0153)
          | BashChanged{enabled,grade?}   // bash/bash_output live-registered/unregistered, no seq; reply to BashEnable/BashDisable (#498, ADR-0133)
          | Throttle{endpoint,throttled,in_flight,cap,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
@@ -128,7 +130,12 @@ reversing #375's wire tier: an unapproved `McpAdd` spawns an arbitrary local
 subprocess, and with the `serve` origin gate opt-in-off a hostile web page
 could drive it cross-origin — the read-only `McpList` stays wire-allowed, and
 the TUI `/mcp` path is unaffected since it sends over the privileged
-`Holly::send`), and `BashEnable`/`BashDisable`
+`Holly::send`), `McpAuth`
+([ADR-0153](../adr/0153-mcp-server-oauth.md), sharpening ADR-0124: a forged
+`Connect` opens a browser and mints a durable credential, a forged
+`Disconnect` destroys one, and even `Check` mutates state by refreshing — so
+unlike the read-only `McpList`, none of the three actions is wire-allowed),
+and `BashEnable`/`BashDisable`
 ([ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md), #498,
 same rationale as `McpAdd`/`McpRemove`: a blanket-`Allow` live-enable hands the
 model a full shell with no approval prompt, so a wire frame must never grant
