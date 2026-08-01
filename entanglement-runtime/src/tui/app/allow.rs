@@ -36,11 +36,9 @@ impl App {
         } else {
             " (path does not exist yet)"
         };
-        self.record_status(
-            "allow",
-            format!("granted read/grep/glob under '{stored}' for this session{note}"),
-        );
-        self.mark_dirty();
+        self.set_toast(format!(
+            "granted read/grep/glob under '{stored}' for this session{note}"
+        ));
     }
 
     /// Records an `/allow` parse or outside-root error (#486) as a transcript
@@ -58,15 +56,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn apply_allow_grant_records_a_transcript_status_line() {
+    fn apply_allow_grant_toasts_the_grant() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         app.set_grants(Arc::new(DefaultGrantStore::load()));
         app.apply_allow_grant("src");
-        let rendered = app
-            .transcript()
-            .iter()
-            .any(|e| format!("{e:?}").contains("granted read/grep/glob under 'src'"));
-        assert!(rendered, "expected a transcript entry noting the grant");
+        assert!(
+            app.toast()
+                .is_some_and(|t| t.contains("granted read/grep/glob under 'src'")),
+            "expected a toast noting the grant"
+        );
     }
 
     #[test]

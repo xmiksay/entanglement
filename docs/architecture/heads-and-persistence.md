@@ -118,7 +118,9 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   span (`apply_highlight` re-splits the rendered `Line` spans at the selection
   bounds) and, on release, copies the selected text to the system clipboard via
   an **OSC 52** escape (works over SSH/tmux, no clipboard-crate dep) with a
-  "Copied N chars" status line; the write is deferred through a
+  "Copied N chars" **info-line toast** (`App::set_toast`, ~3s TTL — never a
+  transcript entry, which would hard-split a streaming Thinking block at the
+  insert point); the write is deferred through a
   `UiEffect::CopyToClipboard` so the event loop (which owns the terminal) emits
   it. A bare **click** (press+release, no drag) instead resolves its target by
   surface: a sidebar session row (or its description line) switches to that
@@ -130,7 +132,14 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `request_id`, so batch results still pair correctly), both expanded on click
   (or via the leader `t` key, which toggles the most recent block of either kind).
   The bottom **info line** (`draw_input_info`) shows `provider · model | tokens`
-  and — *only while an endpoint is backing off* — a red throttle indicator
+  plus one transient status slot — a pending two-stage quit hint, else the
+  **toast** (`tui/app/toast.rs`, ~3s TTL, expired eagerly by the render loop
+  like `quit_pending`): the copy notice and app/config state-change
+  confirmations (definitions reload #329, `/key` save, `/model`/generation
+  persistence, `/mcp`·`/bash`·`/enable`·`/allow` acks, tools-dialog save,
+  modal session deletion) surface here instead of as transcript status lines;
+  errors, help text, and approval decisions stay in the transcript — else
+  — *only while an endpoint is backing off* — a red throttle indicator
   (`⚠ host throttled · retry Ns · in/cap`, or `⚠ host pacing · next Ns · in/cap`
   while the adaptive gate alone has slowed, #517) polled from
   `HttpClient::throttle_status()`; it no longer duplicates the keybinding hints

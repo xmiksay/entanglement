@@ -113,10 +113,7 @@ impl App {
                 // key without a restart. `set_var` is the same channel `load()`
                 // fills at startup.
                 std::env::set_var(&provider.key_env, &value);
-                self.record_status(
-                    "/key",
-                    format!("Saved {} to {}", provider.key_env, path.display()),
-                );
+                self.set_toast(format!("Saved {} to {}", provider.key_env, path.display()));
                 self.key_dialog.hide();
                 self.mark_dirty();
                 KeySubmit::Saved

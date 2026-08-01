@@ -88,7 +88,7 @@ impl App {
     }
 
     /// Folds an `OutEvent::ToolOverlayChanged` (#539): updates the head-side
-    /// mirror and renders a confirmation status line on the session's view.
+    /// mirror and surfaces a confirmation as a transient info-line toast.
     pub(super) fn handle_tool_overlay_changed(
         &mut self,
         session: &SessionId,
@@ -100,10 +100,7 @@ impl App {
         } else {
             self.tool_overlays.insert(session.clone(), entries);
         }
-        if let Some(view) = self.sessions.view_for_mut(session) {
-            view.record_status("enable", message);
-        }
-        self.mark_dirty();
+        self.set_toast(message);
     }
 }
 
@@ -136,11 +133,10 @@ mod tests {
         let session = app.active_session_id().clone();
         app.handle_tool_overlay_changed(&session, vec![ToolOverlayEntry::ask("mcp__docs__*")]);
         assert_eq!(app.overlay_entries(&session).len(), 1);
-        let rendered = app
-            .transcript()
-            .iter()
-            .any(|e| format!("{e:?}").contains("mcp__docs__*"));
-        assert!(rendered, "expected a transcript entry with the overlay");
+        assert!(
+            app.toast().is_some_and(|t| t.contains("mcp__docs__*")),
+            "expected a toast with the overlay"
+        );
         // An empty replacement clears the tracked entry.
         app.handle_tool_overlay_changed(&session, Vec::new());
         assert!(app.overlay_entries(&session).is_empty());
@@ -151,11 +147,10 @@ mod tests {
         let mut app = App::new_for_test(SessionId::new("s1"));
         let session = app.active_session_id().clone();
         app.handle_tool_overlay_changed(&session, vec![ToolOverlayEntry::deny("bash")]);
-        let rendered = app
-            .transcript()
-            .iter()
-            .any(|e| format!("{e:?}").contains("bash (off)"));
-        assert!(rendered, "expected the deny entry rendered as off");
+        assert!(
+            app.toast().is_some_and(|t| t.contains("bash (off)")),
+            "expected the deny entry toasted as off"
+        );
     }
 
     #[test]

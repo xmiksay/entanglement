@@ -82,17 +82,14 @@ impl App {
         }
     }
 
-    /// Folds an `OutEvent::McpChanged` reply (#375) into the active session's
-    /// transcript as a status line.
+    /// Folds an `OutEvent::McpChanged` reply (#375) as a transient info-line
+    /// toast — a state-change confirmation, not transcript content.
     pub(super) fn handle_mcp_changed(&mut self, name: &str, action: McpAction) {
         let verb = match action {
             McpAction::Added => "added",
             McpAction::Removed => "removed",
         };
-        self.sessions
-            .active_view_mut()
-            .record_status("mcp", format!("server '{name}' {verb}"));
-        self.mark_dirty();
+        self.set_toast(format!("MCP server '{name}' {verb}"));
     }
 }
 
@@ -130,14 +127,14 @@ mod tests {
     }
 
     #[test]
-    fn mcp_changed_records_a_transcript_status_line() {
+    fn mcp_changed_toasts_the_confirmation() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         app.handle_mcp_changed("srv", McpAction::Added);
-        let rendered = app
-            .transcript()
-            .iter()
-            .any(|e| format!("{e:?}").contains("srv") && format!("{e:?}").contains("added"));
-        assert!(rendered, "expected a transcript entry noting srv added");
+        assert_eq!(app.toast(), Some("MCP server 'srv' added"));
+        assert!(
+            app.transcript().is_empty(),
+            "a state-change confirmation must not become transcript content"
+        );
     }
 
     #[test]

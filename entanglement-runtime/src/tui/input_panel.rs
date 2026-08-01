@@ -211,8 +211,9 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
 
     // The keybinding hints that used to sit here duplicated the input-box
     // placeholder, so this segment now carries only transient status: a pending
-    // two-stage quit (ADR-0087), else a rate-limit throttle indicator that shows
-    // *only* while an endpoint is backing off (quiet otherwise).
+    // two-stage quit (ADR-0087), else a short-lived toast (e.g. the drag-copy
+    // notice), else a rate-limit throttle indicator that shows *only* while an
+    // endpoint is backing off (quiet otherwise).
     let mut spans: Vec<Span> = pm_spans;
     spans.push(Span::raw(" | "));
     spans.push(Span::styled(
@@ -224,6 +225,12 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(
             "Press Ctrl+C again to quit",
             Style::default().fg(Color::Yellow).bold(),
+        ));
+    } else if let Some(msg) = app.toast() {
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(
+            msg.to_string(),
+            Style::default().fg(Color::Green),
         ));
     } else if let Some(status) = app.throttle_status() {
         spans.push(Span::raw(" | "));

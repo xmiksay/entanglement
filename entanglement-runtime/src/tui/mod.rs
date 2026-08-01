@@ -144,6 +144,10 @@ pub async fn tui(
             app.clear_quit_pending();
             app.mark_dirty();
         }
+        // Same eager expiry for the transient info-line toast.
+        if app.toast_expired() {
+            app.clear_toast();
+        }
         if app.is_dirty() {
             let wait = FRAME_INTERVAL.saturating_sub(last_draw.elapsed());
             if !wait.is_zero() {

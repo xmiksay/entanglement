@@ -34,6 +34,7 @@ mod mention;
 mod pickers;
 mod quit;
 mod state;
+mod toast;
 mod tools;
 mod types;
 mod view;
@@ -209,6 +210,11 @@ pub struct App {
     // key — or expiry — disarms.
     quit_pending: bool,
     quit_pending_at: Option<Instant>,
+
+    // Transient input-info toast (`toast.rs`): non-transcript feedback (e.g.
+    // the drag-copy notice) with a short TTL, expired eagerly by the render
+    // loop like `quit_pending`.
+    toast: Option<(String, Instant)>,
 }
 
 impl App {
@@ -286,19 +292,20 @@ impl App {
         self.mark_dirty();
     }
 
-    /// Records a head-side status line into the active session's transcript
-    /// (#329) — the definitions watcher's one-line notice after a debounced
-    /// reload, mirroring the `/key`/`/model` status pattern.
+    /// Surfaces the definitions watcher's one-line notice after a debounced
+    /// reload (#329) as a transient info-line toast — app-level state changes
+    /// are feedback, not transcript content (a mid-stream transcript insert
+    /// would split a streaming Thinking block).
     pub fn record_reload_status(&mut self, message: String) {
-        self.sessions
-            .active_view_mut()
-            .record_status("reload", message);
-        self.mark_dirty();
+        self.set_toast(message);
     }
 
     /// Records a head-side status line under `label` into the active
-    /// session's transcript — the generic form of [`Self::record_reload_status`]
-    /// for a one-off notice (e.g. `/plan` with no plan proposed yet, #513).
+    /// session's transcript — for durable notices that must stay reviewable
+    /// (multi-line help text, errors); transient confirmations use
+    /// [`Self::set_toast`]. Caller-less between features — kept as the
+    /// designated durable-notice entry point.
+    #[allow(dead_code)]
     pub fn record_notice(&mut self, label: &str, message: String) {
         self.sessions
             .active_view_mut()

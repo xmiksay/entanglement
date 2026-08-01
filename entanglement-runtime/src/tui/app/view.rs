@@ -214,10 +214,11 @@ impl App {
         }
     }
 
-    /// The selected text (from this frame's rendered lines), recording a
-    /// "Copied N chars" status line. `None`/empty selection ⇒ `None`, nothing
-    /// recorded. The selection is left in place so its highlight persists until
-    /// the next click.
+    /// The selected text (from this frame's rendered lines), surfacing a
+    /// "Copied N chars" toast on the input info line — never a transcript
+    /// entry, which would split a streaming Thinking block at the insert
+    /// point. `None`/empty selection ⇒ `None`, nothing shown. The selection is
+    /// left in place so its highlight persists until the next click.
     pub fn take_selection_text(&mut self) -> Option<String> {
         let sel = self.selection?;
         let text = crate::tui::selection::selection_text(&self.chat_line_text, &sel);
@@ -225,7 +226,7 @@ impl App {
             return None;
         }
         let chars = text.chars().count();
-        self.record_status("copy", format!("Copied {chars} chars to clipboard"));
+        self.set_toast(format!("Copied {chars} chars to clipboard"));
         Some(text)
     }
 

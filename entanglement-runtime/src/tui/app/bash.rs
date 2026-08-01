@@ -18,20 +18,19 @@ impl App {
         self.mark_dirty();
     }
 
-    /// Folds an `OutEvent::BashChanged` reply (#498) into the active session's
-    /// transcript as a status line.
+    /// Folds an `OutEvent::BashChanged` reply (#498) as a transient info-line
+    /// toast — a state-change confirmation, not transcript content.
     pub(super) fn handle_bash_changed(&mut self, enabled: bool, grade: Option<&BashGrade>) {
         let message = match (enabled, grade) {
-            (true, Some(BashGrade::Ask)) => "enabled (ask)".to_string(),
-            (true, Some(BashGrade::Allow { pattern: None })) => "enabled (allow)".to_string(),
-            (true, Some(BashGrade::Allow { pattern: Some(p) })) => format!("enabled (allow {p})"),
-            (true, None) => "enabled".to_string(),
-            (false, _) => "disabled".to_string(),
+            (true, Some(BashGrade::Ask)) => "bash enabled (ask)".to_string(),
+            (true, Some(BashGrade::Allow { pattern: None })) => "bash enabled (allow)".to_string(),
+            (true, Some(BashGrade::Allow { pattern: Some(p) })) => {
+                format!("bash enabled (allow {p})")
+            }
+            (true, None) => "bash enabled".to_string(),
+            (false, _) => "bash disabled".to_string(),
         };
-        self.sessions
-            .active_view_mut()
-            .record_status("bash", message);
-        self.mark_dirty();
+        self.set_toast(message);
     }
 }
 
@@ -42,25 +41,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn handle_bash_changed_renders_the_grade() {
+    fn handle_bash_changed_toasts_the_grade() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         app.handle_bash_changed(true, Some(&BashGrade::Allow { pattern: None }));
-        let rendered = app
-            .transcript()
-            .iter()
-            .any(|e| format!("{e:?}").contains("enabled (allow)"));
-        assert!(rendered, "expected a transcript entry noting bash enabled");
+        assert_eq!(app.toast(), Some("bash enabled (allow)"));
+        assert!(
+            app.transcript().is_empty(),
+            "a state-change confirmation must not become transcript content"
+        );
     }
 
     #[test]
-    fn handle_bash_changed_renders_disabled() {
+    fn handle_bash_changed_toasts_disabled() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         app.handle_bash_changed(false, None);
-        let rendered = app
-            .transcript()
-            .iter()
-            .any(|e| format!("{e:?}").contains("disabled"));
-        assert!(rendered, "expected a transcript entry noting bash disabled");
+        assert_eq!(app.toast(), Some("bash disabled"));
     }
 
     #[test]

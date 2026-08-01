@@ -79,9 +79,9 @@ impl App {
                 .is_some_and(|(pending_agent, overrides)| {
                     *pending_agent == agent && reflects(overrides, &generation)
                 });
-        let status = if persisted {
+        if persisted {
             self.pending_generation_persist = None;
-            match self.agent_generation.as_ref() {
+            let status = match self.agent_generation.as_ref() {
                 Some(store) => {
                     match store.lock().unwrap().set(&agent, generation) {
                         Ok(()) => format!(
@@ -96,13 +96,16 @@ impl App {
                     }
                 }
                 None => format!("generation: {generation:?}"),
-            }
+            };
+            // A `/set` confirmation is transient feedback → toast; the `/show`
+            // branch below stays in the transcript so the queried values remain
+            // reviewable.
+            self.set_toast(status);
         } else {
-            format!("generation: {generation:?}")
-        };
-        self.sessions
-            .active_view_mut()
-            .record_status("generation", status);
+            self.sessions
+                .active_view_mut()
+                .record_status("generation", format!("generation: {generation:?}"));
+        }
         self.mark_dirty();
     }
 

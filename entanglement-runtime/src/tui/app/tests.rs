@@ -398,6 +398,27 @@ fn drag_selection_extracts_text_across_lines() {
     assert_eq!(app.take_selection_text().as_deref(), Some("world\nsecond"));
 }
 
+/// A drag-copy surfaces its "Copied N chars" notice as an info-line toast and
+/// never as a transcript entry — a mid-stream transcript insert would split a
+/// streaming Thinking block at the insert point.
+#[test]
+fn drag_copy_toasts_and_leaves_the_transcript_alone() {
+    let sid = SessionId::new("test");
+    let mut app = App::new_for_test(sid);
+    let area = Rect::new(0, 0, 20, 3);
+    let line_text = vec!["hello world".to_string()];
+    app.set_chat_hit_test(area, 0, vec![None], line_text);
+    app.start_selection(0, 0);
+    app.update_selection(5, 0);
+    assert_eq!(app.take_selection_text().as_deref(), Some("hello"));
+    assert_eq!(app.toast(), Some("Copied 5 chars to clipboard"));
+    assert!(
+        app.transcript().is_empty(),
+        "copy feedback must not become transcript content: {:?}",
+        app.transcript()
+    );
+}
+
 #[test]
 fn bare_click_yields_no_selection_text() {
     let sid = SessionId::new("test");
@@ -665,7 +686,7 @@ fn seed_session_log(cwd: &std::path::Path, id: &SessionId) {
 }
 
 /// The sessions modal lists only the live set, so `d` on its highlighted row
-/// (always a live session) must refuse with a status line — never delete the
+/// (always a live session) must refuse with a toast — never delete the
 /// on-disk log underneath a session the engine still holds.
 #[test]
 fn sessions_modal_d_refuses_a_live_session() {
@@ -679,16 +700,9 @@ fn sessions_modal_d_refuses_a_live_session() {
 
     app.delete_session_from_modal();
 
-    // Refused: a status line was recorded, and the file is untouched.
-    let refused = app.transcript().iter().any(|e| {
-        matches!(e, TranscriptEntry::ToolOutput { tool: Some(t), output }
-            if t == "/sessions" && output.contains("cannot delete a live session"))
-    });
-    assert!(
-        refused,
-        "expected a refuse status line: {:?}",
-        app.transcript()
-    );
+    // Refused: a toast surfaced (the modal covers the transcript), and the
+    // file is untouched.
+    assert_eq!(app.toast(), Some("cannot delete a live session"));
     let path = crate::session_store::session_path(dir.path(), &live).unwrap();
     assert!(path.exists(), "live session's log must not be deleted");
 }
@@ -722,15 +736,7 @@ fn sessions_modal_delete_would_remove_a_non_live_id() {
 
     app.delete_resume_session();
 
-    let deleted_log = app.transcript().iter().any(|e| {
-        matches!(e, TranscriptEntry::ToolOutput { tool: Some(t), output }
-            if t == "/resume" && output.contains("deleted session past"))
-    });
-    assert!(
-        deleted_log,
-        "expected a deleted status line: {:?}",
-        app.transcript()
-    );
+    assert_eq!(app.toast(), Some("deleted session past"));
     let path = crate::session_store::session_path(dir.path(), &past).unwrap();
     assert!(!path.exists(), "past session's log must be deleted");
 }

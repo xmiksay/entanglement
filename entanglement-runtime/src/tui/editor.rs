@@ -57,7 +57,7 @@ pub fn run_effect(terminal: &mut Term, app: &mut App, effect: UiEffect) -> Resul
         }
         UiEffect::OpenPlanFile => {
             let Some(plan_path) = app.plan_path().map(str::to_string) else {
-                app.record_notice("plan", "no plan proposed yet in this session".to_string());
+                app.set_toast("no plan proposed yet in this session".to_string());
                 return Ok(());
             };
             let path = app.root().join(&plan_path);

@@ -185,6 +185,7 @@ impl App {
             mention: MentionPopup::new(FileIndex::default()),
             quit_pending: false,
             quit_pending_at: None,
+            toast: None,
         }
     }
 }

@@ -315,10 +315,7 @@ impl App {
             },
             None => return,
         };
-        self.sessions
-            .active_view_mut()
-            .record_status("model", status);
-        self.mark_dirty();
+        self.set_toast(status);
     }
 
     /// Drop a pending persist on an `Error` for the active session (#323): the
@@ -565,16 +562,15 @@ impl App {
         // modal's `order` is the live set (`SessionRegistry::order`).
         let is_live = self.sessions().iter().any(|(sid, _)| **sid == id);
         if is_live {
-            self.record_notice("/sessions", "cannot delete a live session".to_string());
+            // Toast, not a transcript line: the modal covers the transcript, so
+            // the info line is the only visible feedback surface.
+            self.set_toast("cannot delete a live session".to_string());
             return;
         }
         let cwd = self.root().to_path_buf();
         match crate::session_store::delete(&cwd, &id) {
-            Ok(()) => self.record_notice("/sessions", format!("deleted session {}", id.0)),
-            Err(e) => self.record_notice(
-                "/sessions",
-                format!("could not delete session {}: {e:#}", id.0),
-            ),
+            Ok(()) => self.set_toast(format!("deleted session {}", id.0)),
+            Err(e) => self.set_toast(format!("could not delete session {}: {e:#}", id.0)),
         }
     }
 
@@ -604,12 +600,9 @@ impl App {
                         self.resume_state.select(None);
                     }
                 }
-                self.record_notice("/resume", format!("deleted session {}", id.0));
+                self.set_toast(format!("deleted session {}", id.0));
             }
-            Err(e) => self.record_notice(
-                "/resume",
-                format!("could not delete session {}: {e:#}", id.0),
-            ),
+            Err(e) => self.set_toast(format!("could not delete session {}: {e:#}", id.0)),
         }
     }
 }

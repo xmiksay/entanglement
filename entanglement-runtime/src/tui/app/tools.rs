@@ -100,13 +100,10 @@ impl App {
         match crate::agents::save_tools_override(&self.root, &agent, allowed.as_deref()) {
             Ok(path) => {
                 self.tools_dialog.hide();
-                self.sessions.active_view_mut().record_status(
-                    "/agent",
-                    format!(
-                        "Saved tool allowlist for '{agent}' to {} (applies on next restart)",
-                        path.display()
-                    ),
-                );
+                self.set_toast(format!(
+                    "Saved tool allowlist for '{agent}' to {} (applies on next restart)",
+                    path.display()
+                ));
                 self.mark_dirty();
                 ToolsSubmit::Saved
             }
