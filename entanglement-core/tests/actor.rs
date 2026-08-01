@@ -209,6 +209,7 @@ async fn close_session_cascades_to_descendants() {
             predecessor: None,
             agent: "build".into(),
             prompt: "subtask".into(),
+            user: None,
         })
         .await
         .unwrap();
@@ -224,6 +225,7 @@ async fn close_session_cascades_to_descendants() {
             predecessor: None,
             agent: "build".into(),
             prompt: "sub-subtask".into(),
+            user: None,
         })
         .await
         .unwrap();
@@ -522,6 +524,7 @@ async fn spawn_starts_child_with_parent_link() {
             predecessor: None,
             agent: "build".into(),
             prompt: "do the subtask".into(),
+            user: None,
         })
         .await
         .unwrap();
@@ -560,6 +563,7 @@ async fn spawn_of_unknown_agent_errors_instead_of_falling_back_to_build() {
             predecessor: None,
             agent: "does-not-exist".into(),
             prompt: "go".into(),
+            user: None,
         })
         .await
         .unwrap();
@@ -608,6 +612,7 @@ async fn duplicate_spawn_is_ignored() {
                 predecessor: None,
                 agent: "build".into(),
                 prompt: "go".into(),
+                user: None,
             })
             .await
             .unwrap();

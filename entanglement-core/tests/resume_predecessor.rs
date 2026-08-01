@@ -31,6 +31,7 @@ async fn resumed_successor_reannounces_its_predecessor() {
             model: None,
             root: true,
             ts: 0,
+            user: None,
         },
     )];
 

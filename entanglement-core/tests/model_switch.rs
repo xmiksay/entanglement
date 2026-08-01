@@ -45,7 +45,7 @@ fn recording_factory(seen: &Seen) -> entanglement_core::LlmFactory {
 /// both. Any other pair is an error, mirroring an unknown provider.
 fn switch_resolver(seen: &Seen) -> ModelResolver {
     let seen = seen.clone();
-    Arc::new(move |provider: &str, model: &str| {
+    Arc::new(move |_user, provider: &str, model: &str| {
         if provider == "anthropic" && model == "claude-x" {
             Ok(ResolvedModel {
                 provider: provider.to_string(),

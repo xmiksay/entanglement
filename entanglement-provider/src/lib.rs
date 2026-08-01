@@ -43,7 +43,7 @@ pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
     stream_from_response, DummyLlm, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmEvent,
     LlmFactory, LlmRequest, LlmResponse, LlmStream, ModelResolver, ReasoningEffort, ResolvedModel,
-    StopReason, ToolCall, ToolSpec, Usage,
+    StopReason, ToolCall, ToolSpec, Usage, UserId,
 };
 pub use message::{
     content_has_image, content_text, ContentPart, ImageSource, Message, MessageRole,

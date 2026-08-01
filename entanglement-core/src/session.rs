@@ -41,7 +41,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::holly::{ActivityRegistry, SeqRegistry};
 use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::ContentPart;
+use entanglement_provider::{ContentPart, UserId};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use emit::{emit_tool_exec, emit_tool_output, next_seq};
@@ -113,6 +113,7 @@ pub(crate) async fn session_loop(
     initial_session: Option<Session>,
     parent: Option<SessionId>,
     predecessor: Option<SessionId>,
+    user: Option<UserId>,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
 ) {
@@ -135,6 +136,13 @@ pub(crate) async fn session_loop(
     // would wrongly blank out the lineage on the next replay.
     let effective_predecessor = s.predecessor.clone().or_else(|| predecessor.clone());
     s.predecessor = effective_predecessor.clone();
+    // Same resumed-takes-precedence rule as `predecessor` above: a replayed
+    // session already reconstructed `s.user` from its own `SessionStarted` log
+    // record, which must win over the `user` param (`Holly::resume` passes
+    // `None`) so a resumed session's re-announced event can't blank out its
+    // multi-user identity.
+    let effective_user = s.user.clone().or_else(|| user.clone());
+    s.user = effective_user.clone();
 
     let _ = events.send(OutEvent::SessionStarted {
         session: session.clone(),
@@ -144,6 +152,7 @@ pub(crate) async fn session_loop(
         model: profile_model,
         root,
         ts,
+        user: effective_user,
     });
     // Publish this session's shared seq counter so the runtime can mint a fresh
     // seq for events it authors while the session is parked (#157). Registered
@@ -178,7 +187,7 @@ pub(crate) async fn session_loop(
             .map(|(p, m)| (p.to_string(), m.to_string()))
         {
             if let Some(resolver) = cfg.model_resolver.as_ref() {
-                match resolver(&provider, &model) {
+                match resolver(s.user.as_ref(), &provider, &model) {
                     Ok(resolved) => s.rebind(&session, resolved, &events),
                     Err(e) => tracing::warn!(
                         provider, model, error = %e,
@@ -346,7 +355,7 @@ pub(crate) async fn session_loop(
                                 && s.model.as_deref() == Some(model.as_str());
                             if !unchanged {
                                 if let Some(resolver) = cfg.model_resolver.as_ref() {
-                                    match resolver(&provider, &model) {
+                                    match resolver(s.user.as_ref(), &provider, &model) {
                                         Ok(resolved) => s.rebind(&session, resolved, &events),
                                         Err(e) => {
                                             let _ = events.send(OutEvent::Error {
@@ -406,7 +415,7 @@ pub(crate) async fn session_loop(
                     });
                     continue;
                 };
-                match resolver(&provider, &model) {
+                match resolver(s.user.as_ref(), &provider, &model) {
                     Ok(resolved) => {
                         s.rebind(&session, resolved, &events);
                         // Record the choice as this profile's session memory (#323):

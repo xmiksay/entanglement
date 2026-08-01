@@ -563,6 +563,7 @@ async fn supervisor(
             predecessor,
             agent,
             prompt,
+            user,
         } = &msg
         {
             // A duplicate spawn for a live child is a no-op (the child already runs).
@@ -602,6 +603,24 @@ async fn supervisor(
             // sub-tree, so a `CloseSession` on the source never cascades onto it.
             let parent = parent.clone();
             let is_root = parent.is_none();
+            // A user is a spawn-time fact inherited from the lineage, never
+            // re-specified by the spawning caller (#522): a child inherits its
+            // live parent's user, a fresh root successor (predecessor set, no
+            // parent — the `/compact` fork, ADR-0110) inherits the source's, and
+            // only a genuine fresh root (neither set) takes the message's own
+            // `user` field — the multi-user embedder's session-creation entry
+            // point.
+            let inherited_user = parent
+                .as_ref()
+                .and_then(|p| session_meta.get(p))
+                .and_then(|m| m.user.clone())
+                .or_else(|| {
+                    predecessor
+                        .as_ref()
+                        .and_then(|p| session_meta.get(p))
+                        .and_then(|m| m.user.clone())
+                });
+            let effective_user = inherited_user.or_else(|| user.clone());
             // Record the parent link *before* spawning so it's in place for any
             // later lazy path, and so the child starts under the requested profile.
             parent_links.insert(child.clone(), parent.clone());
@@ -613,6 +632,7 @@ async fn supervisor(
                     profile: profile.name.clone(),
                     root: is_root,
                     profile_detail: Some(profile.detail()),
+                    user: effective_user.clone(),
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -633,6 +653,7 @@ async fn supervisor(
                     None,
                     parent_for_loop,
                     predecessor,
+                    effective_user,
                     seqs2,
                     activity2,
                 )
@@ -680,6 +701,15 @@ async fn supervisor(
             }
             let profile = cfg.profiles.resolve(DEFAULT_PROFILE);
             let parent = parent_links.get(&session_id).cloned().flatten();
+            // The lazy-Prompt path has no `InMsg::Spawn.user` to consult — it's
+            // the single-user convenience entry point (an unknown session id
+            // auto-creates a blank root). A child spawned under a known parent
+            // (e.g. re-created after the parent task raced ahead) still inherits
+            // (#522); a genuine fresh root here has no user (single-user mode).
+            let user = parent
+                .as_ref()
+                .and_then(|p| session_meta.get(p))
+                .and_then(|m| m.user.clone());
             session_meta.insert(
                 session_id.clone(),
                 SessionInfo {
@@ -688,6 +718,7 @@ async fn supervisor(
                     profile: profile.name.clone(),
                     root: parent.is_none(),
                     profile_detail: Some(profile.detail()),
+                    user: user.clone(),
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -698,7 +729,7 @@ async fn supervisor(
             let activity2 = activity.clone();
             tokio::spawn(async move {
                 session_loop(
-                    sid, srx, ev, cfg2, profile, None, parent, None, seqs2, activity2,
+                    sid, srx, ev, cfg2, profile, None, parent, None, user, seqs2, activity2,
                 )
                 .await
             });
@@ -784,8 +815,10 @@ fn spawn_resumed(
             profile,
             Some(initial_session),
             parent,
-            // Resume reconstructs `predecessor` from the log (replay); pass
-            // `None` so it isn't overwritten.
+            // Resume reconstructs `predecessor`/`user` from the log (replay);
+            // pass `None` for both so neither is overwritten (session.rs's
+            // resumed-takes-precedence rule).
+            None,
             None,
             seqs2,
             activity2,

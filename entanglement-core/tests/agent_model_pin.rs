@@ -53,7 +53,7 @@ fn recording_factory(seen: &Seen) -> entanglement_core::LlmFactory {
 /// an unknown provider / missing key.
 fn resolver(seen: &Seen) -> ModelResolver {
     let seen = seen.clone();
-    Arc::new(move |provider: &str, model: &str| {
+    Arc::new(move |_user, provider: &str, model: &str| {
         let known = matches!(
             (provider, model),
             ("anthropic", "claude-x") | ("zai", "glm-b") | ("zai", "glm-c")
@@ -479,6 +479,7 @@ fn replay_rebinds_and_reconstructs_memory() {
                 model: None,
                 root: true,
                 ts: 0,
+                user: None,
             },
         ),
         (

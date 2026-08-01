@@ -105,6 +105,7 @@ mod tests {
                 model: None,
                 root: true,
                 ts: 0,
+                user: None,
             }),
             out(text(1)),
             out(text(2)),

@@ -87,6 +87,7 @@ impl App {
             predecessor: Some(fork.source.clone()),
             agent: fork.agent.clone(),
             prompt: fork.summary.clone(),
+            user: None,
         }
     }
 
@@ -197,6 +198,7 @@ mod tests {
                 predecessor,
                 agent,
                 prompt,
+                user: _,
             } => {
                 assert_eq!(session, active);
                 assert_eq!(parent, None, "successor is a root, not a child");

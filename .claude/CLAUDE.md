@@ -1214,6 +1214,33 @@ Also since 0.5.0, an open `ask_user` question is no longer write-once (#515,
 `InMsg::ListQuestions`/`RetractQuestion`/`ReplaceQuestion` let a head
 enumerate, withdraw, or revise a question it already surfaced, tracked by a
 new runtime-owned `OpenQuestions` registry alongside `PendingDecisions`.
+Also since 0.5.0, a **multi-user mode** — per-user providers, API keys, RPM
+budgets, permission ceiling, and grants in one running engine — ships as the
+**embedder library API** (#522, [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md);
+`serve` stays exactly ADR-0048-scoped, local/single-user — an authenticated
+multi-user wire head is a future ADR). A `UserId` newtype
+(`entanglement-provider`, re-exported by core) rides `Session.user`/
+`InMsg::Spawn.user`/`OutEvent::SessionStarted.user`/`SessionInfo.user`,
+spawn-time-fixed like `parent` — a child or `/compact` successor inherits its
+parent's/predecessor's user from `session_meta` rather than being re-told, so
+every existing spawn call site needed only the new field, not new logic.
+`ModelResolver` widened to `Fn(Option<&UserId>, &str, &str) -> Result<ResolvedModel, String>`
+(the three `session.rs` call sites already had the session in scope; the
+single-user `main.rs::build_model_resolver` ignores the parameter, unchanged
+behavior). `entanglement-runtime::multi_user::provider` (behind the
+`provider` feature) gives each user their own `Catalog` (so per-user RPM/
+concurrency is just per-user catalog data) + API keys held only in memory —
+**never** `std::env` — via an embedder-implemented `UserProviderStore`;
+ADR-0050's pool (keyed by base URL + API-key hash) gives per-user rate-limit
+isolation for free once a per-user key reaches the request path.
+`entanglement-runtime::multi_user::permission` builds `PerUserPermissionResolver`/
+`PerUserGrantStore` on the existing #311 `PermissionResolver`/`GrantStore`
+seams with no core change: a per-user ceiling composes (least-privilege) on
+top of any process-global one via the same `clamp_to_base` #172 uses, and
+`Always`-scope grants are keyed by `UserId` so one user's grant structurally
+cannot leak to another's session. Both consult a `SessionUserRegistry` the
+embedder populates itself (it already knows the session→user mapping, having
+chosen `user` when it sent the session's `Spawn`).
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,

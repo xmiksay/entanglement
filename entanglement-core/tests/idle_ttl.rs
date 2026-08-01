@@ -304,6 +304,7 @@ async fn parked_child_pins_settled_root_live() {
             predecessor: None,
             agent: "build".into(),
             prompt: "do the subtask".into(),
+            user: None,
         })
         .await
         .unwrap();

@@ -158,6 +158,7 @@ async fn spawned_explore_child_request_carries_no_edit_spec() {
             predecessor: None,
             agent: "explore".into(),
             prompt: "explore the tree".into(),
+            user: None,
         })
         .await
         .unwrap();

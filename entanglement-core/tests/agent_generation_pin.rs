@@ -290,6 +290,7 @@ fn replay_reconstructs_generation_and_profile_generation() {
                 model: None,
                 root: true,
                 ts: 0,
+                user: None,
             },
         ),
         (
@@ -338,6 +339,7 @@ fn replay_a_later_model_changed_still_wins_generation_stays() {
                 model: None,
                 root: true,
                 ts: 0,
+                user: None,
             },
         ),
         (

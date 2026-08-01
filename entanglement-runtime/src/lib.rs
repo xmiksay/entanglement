@@ -53,6 +53,13 @@ pub mod layers;
 // CLI/TUI/transport dep; the streamable-HTTP transport rides the `mcp-http`
 // feature (reqwest), keeping the lean build transport-free (ADR-0025).
 pub mod mcp;
+// Multi-user mode (#522, ADR-0147): per-user providers/keys/RPM budgets +
+// permission ceiling/grants, the embedder-library-API v1. `multi_user::provider`
+// is behind `provider` since it builds `entanglement_provider::HttpClient`-backed
+// `Llm` factories directly, exactly like `throttle` below;
+// `multi_user::permission` is lean-library-safe (only entanglement-core + this
+// crate's own `policy`/`permission` modules).
+pub mod multi_user;
 pub mod pending;
 pub mod permission;
 pub mod permission_path;

@@ -16,6 +16,7 @@ fn list_sessions_skips_one_bad_file() {
                 model: None,
                 root: true,
                 ts,
+                user: None,
             }),
         )
     };
@@ -253,6 +254,7 @@ fn list_sessions_captures_first_prompt_content_and_legacy_text() {
                 model: None,
                 root: true,
                 ts: 1000,
+                user: None,
             }),
         )
     };
@@ -314,6 +316,7 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
             model: None,
             root: true,
             ts: 1000,
+            user: None,
         }),
     );
 
@@ -327,6 +330,7 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
             model: None,
             root: false,
             ts: 2000,
+            user: None,
         }),
     );
 
@@ -340,6 +344,7 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
             model: None,
             root: false,
             ts: 3000,
+            user: None,
         }),
     );
 

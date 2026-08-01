@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 
-use entanglement_provider::{ContentPart, GenerationParams};
+use entanglement_provider::{ContentPart, GenerationParams, UserId};
 use serde::{Deserialize, Serialize};
 
 /// Stable identifier for a conversation session. Serialized transparently as a
@@ -131,6 +131,12 @@ pub struct SessionInfo {
     /// path, where only the profile *name* survives in the replay log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_detail: Option<ProfileDetail>,
+    /// The session's owning user in a multi-user deployment (#522). `None` in
+    /// single-user mode (the default) or for a session an embedder spawned
+    /// without a `user`. Set once at spawn, inherited by every child — see
+    /// [`InMsg::Spawn`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<UserId>,
 }
 
 /// One labelled choice in a model-driven [`OutEvent::UserQuestion`] prompt
@@ -1049,6 +1055,15 @@ pub enum InMsg {
         predecessor: Option<SessionId>,
         agent: String,
         prompt: String,
+        /// Owning user for a multi-user deployment (#522, ADR-0147). Only
+        /// consulted for a true root spawn (`parent` and `predecessor` both
+        /// `None`) — the multi-user embedder's session-creation entry point. A
+        /// child spawn (`parent: Some(_)`) or a compaction successor
+        /// (`predecessor: Some(_)`) always inherits its parent's/predecessor's
+        /// user instead, so this field is ignored there (an embedder need not
+        /// re-specify it). `None` (single-user mode) is the default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<UserId>,
     },
     /// Resume a session from replayed log records (internal, not serialized).
     #[serde(skip)]
@@ -1295,6 +1310,13 @@ pub enum OutEvent {
         model: Option<String>,
         root: bool,
         ts: u64,
+        /// Owning user in a multi-user deployment (#522), resolved from
+        /// [`InMsg::Spawn`]'s `user` (root spawn) or inherited from the
+        /// parent/predecessor. `None` in single-user mode. Persisted so replay
+        /// reconstructs [`Session::user`][crate::session::Session] without an
+        /// embedder re-supplying it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<UserId>,
     },
     /// Session ended (lifecycle event, no `seq`). Emits when a session exits.
     SessionEnded { session: SessionId, ts: u64 },
@@ -1803,6 +1825,7 @@ mod tests {
             predecessor: None,
             agent: "build".into(),
             prompt: "go".into(),
+            user: None,
         }
         .wire_allowed());
         assert!(!InMsg::Resume {
@@ -2214,12 +2237,14 @@ mod tests {
                     profile: "build".into(),
                     root: true,
                     profile_detail: None,
+                    user: None,
                 },
                 SessionInfo {
                     session: SessionId::new("child"),
                     parent: Some(SessionId::new("root")),
                     profile: "explore".into(),
                     root: false,
+                    user: None,
                     profile_detail: Some(ProfileDetail {
                         mode: AgentMode::Subagent,
                         tools: Some(vec!["read".into(), "glob".into()]),

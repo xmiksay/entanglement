@@ -280,6 +280,7 @@ async fn launch_sponsored_build(
             predecessor: None,
             agent: HANDOFF_PROFILE.to_string(),
             prompt: prompt.clone(),
+            user: None,
         })
         .await
         .is_err()
