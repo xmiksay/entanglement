@@ -6,6 +6,7 @@ mod bash_command;
 mod clipboard;
 mod command_args;
 mod command_palette;
+mod command_specs;
 mod commands;
 mod diff;
 mod editor;

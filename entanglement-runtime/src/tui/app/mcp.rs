@@ -4,7 +4,7 @@
 //! ([`crate::tui::mcp_panel::McpPanel`]); `add`/`remove` confirmations render as
 //! a transcript status line, mirroring `/key`'s save notice.
 
-use entanglement_core::{McpAction, McpServerStatus};
+use entanglement_core::{McpAction, McpAuthAction, McpAuthStatus, McpServerStatus};
 
 use super::App;
 
@@ -102,11 +102,48 @@ impl App {
         };
         self.set_toast(format!("MCP server '{name}' {verb}"));
     }
+
+    /// Render an MCP progress/status line as transcript content (ADR-0153).
+    ///
+    /// Unlike `handle_mcp_changed`'s transient toast, an authorization line has
+    /// to *persist*: the authorize URL is the thing the user copies when the
+    /// browser launch failed, and a toast that vanishes would take it with it.
+    pub fn record_mcp_status(&mut self, message: String) {
+        self.sessions
+            .active_view_mut()
+            .record_status("mcp", message);
+        self.mark_dirty();
+    }
+
+    /// Fold an `OutEvent::McpAuthChanged` (ADR-0153). A `Connect` produces two:
+    /// the interim one carrying `authorize_url`, then the terminal outcome.
+    pub(super) fn handle_mcp_auth_changed(&mut self, status: &McpAuthStatus) {
+        let name = &status.name;
+        if let Some(url) = &status.authorize_url {
+            // Always transcript content, never a toast — this is the URL a
+            // headless/SSH session must be able to select and copy.
+            self.record_mcp_status(format!("mcp: open this URL to authorize `{name}`: {url}"));
+            return;
+        }
+        if let Some(err) = &status.error {
+            self.record_mcp_status(format!("mcp: `{name}` authorization failed: {err}"));
+            return;
+        }
+        if let Some(state) = &status.state {
+            let verb = match status.action {
+                McpAuthAction::Connect => "connect",
+                McpAuthAction::Check => "check",
+                McpAuthAction::Disconnect => "disconnect",
+            };
+            self.record_mcp_status(format!("mcp: {verb} `{name}` — {state}"));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use entanglement_core::SessionId;
+    use entanglement_core::{McpAuthAction, McpAuthStatus};
 
     use super::*;
 
@@ -118,6 +155,7 @@ mod tests {
             tools: vec!["mcp__srv__tool".to_string()],
             error: None,
             state: None,
+            auth: None,
         }
     }
 
@@ -147,6 +185,49 @@ mod tests {
             app.transcript().is_empty(),
             "a state-change confirmation must not become transcript content"
         );
+    }
+
+    /// The authorize URL must land in the *transcript*, not a toast: it is what
+    /// the user copies when the browser launch failed, and a toast would take
+    /// it away before they could (ADR-0153).
+    #[test]
+    fn mcp_auth_url_is_transcript_content_not_a_toast() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.handle_mcp_auth_changed(&McpAuthStatus {
+            name: "remote".into(),
+            action: McpAuthAction::Connect,
+            state: None,
+            error: None,
+            authorize_url: Some("https://as.example/authorize?x=1".into()),
+        });
+        let rendered = app
+            .transcript()
+            .iter()
+            .any(|e| format!("{e:?}").contains("https://as.example/authorize?x=1"));
+        assert!(rendered, "the authorize URL must persist in the transcript");
+        assert_eq!(app.toast(), None);
+    }
+
+    #[test]
+    fn mcp_auth_reports_outcome_and_error() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.handle_mcp_auth_changed(&McpAuthStatus {
+            name: "remote".into(),
+            action: McpAuthAction::Check,
+            state: Some("already valid".into()),
+            error: None,
+            authorize_url: None,
+        });
+        app.handle_mcp_auth_changed(&McpAuthStatus {
+            name: "remote".into(),
+            action: McpAuthAction::Connect,
+            state: None,
+            error: Some("registration failed".into()),
+            authorize_url: None,
+        });
+        let text: String = app.transcript().iter().map(|e| format!("{e:?}")).collect();
+        assert!(text.contains("check `remote` — already valid"));
+        assert!(text.contains("authorization failed: registration failed"));
     }
 
     #[test]

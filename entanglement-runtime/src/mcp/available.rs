@@ -291,6 +291,7 @@ fn bundled_config(b: &ProviderMcpServer) -> McpServerConfig {
         headers: b.headers.clone(),
         disabled: false,
         capabilities: b.capabilities.clone(),
+        oauth: None,
         state: b.state,
     }
 }
@@ -323,6 +324,12 @@ fn merge_user_over_bundled(mut base: McpServerConfig, user: &McpServerConfig) ->
     }
     if !user.capabilities.is_empty() {
         base.capabilities = user.capabilities.clone();
+    }
+    // A bundled server authenticates with its provider key (a static header), so
+    // the bundle never sets `oauth` — but a user may add it to point a bundled
+    // URL at an OAuth-protected deployment (ADR-0153).
+    if user.oauth.is_some() {
+        base.oauth = user.oauth.clone();
     }
     if user.disabled {
         base.disabled = true;

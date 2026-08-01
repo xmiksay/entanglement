@@ -82,6 +82,10 @@ impl SessionView {
             // them out, same as SessionList).
             OutEvent::McpList { .. } => false,
             OutEvent::McpChanged { .. } => false,
+            // MCP OAuth progress (ADR-0153) is engine-global like `McpChanged`;
+            // the TUI renders it as a toast/status line from the event loop, not
+            // through this per-session fold.
+            OutEvent::McpAuthChanged { .. } => false,
             OutEvent::BashChanged { .. } => false,
             // LLM endpoint throttle transitions (#517) are engine-global too —
             // the TUI already renders them directly via `HttpClient::throttle_status()`

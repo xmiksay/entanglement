@@ -401,6 +401,10 @@ impl App {
         if let OutEvent::McpChanged { name, action } = &event {
             self.handle_mcp_changed(name, *action);
         }
+        // MCP OAuth progress (ADR-0153) — engine-global like `McpChanged`.
+        if let OutEvent::McpAuthChanged { status } = &event {
+            self.handle_mcp_auth_changed(status);
+        }
         // Live bash enablement (#498) is likewise engine-global.
         if let OutEvent::BashChanged { enabled, grade } = &event {
             self.handle_bash_changed(*enabled, grade.as_ref());

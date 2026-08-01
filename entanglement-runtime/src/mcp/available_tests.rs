@@ -15,6 +15,7 @@ fn user_entry(url: &str, state: Option<McpServerState>) -> McpServerConfig {
         headers: HashMap::new(),
         disabled: false,
         capabilities: HashMap::new(),
+        oauth: None,
         state,
     }
 }

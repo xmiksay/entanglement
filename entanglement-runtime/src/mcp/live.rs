@@ -87,6 +87,59 @@ pub async fn mcp_add(
     Ok(tools)
 }
 
+/// Connect (or reconnect) a server **without touching `config.yml`** — the
+/// OAuth counterpart to [`mcp_add`] (ADR-0153).
+///
+/// `/mcp connect` authorizes a server that is *already configured*, so the
+/// config must not be rewritten: doing so would round-trip the user's hand-
+/// authored `mcp:` block through serde and drop its comments for no reason.
+/// Otherwise identical to `mcp_add`'s upsert — old tools unregistered, old
+/// connection dropped, new tools registered — with the awaits kept outside
+/// every lock (#372).
+pub async fn mcp_reconnect(
+    name: &str,
+    cfg: &McpServerConfig,
+    registry: &SharedRegistry,
+    active: &ActiveServers,
+    secret_env: &[String],
+) -> Result<Vec<String>> {
+    let (client, defs) = connect_client(name, cfg, secret_env).await?;
+    let prefix = format!("mcp__{name}__");
+    let tools = {
+        let mut reg = registry.write().unwrap();
+        reg.unregister_prefix(&prefix);
+        register_tools(&mut reg, &client, name, defs)
+    };
+    let transport = transport_label(cfg);
+    active.lock().unwrap().insert(
+        name.to_string(),
+        ActiveServer {
+            client,
+            tools: tools.clone(),
+            transport,
+        },
+    );
+    tracing::info!("MCP server `{name}`: reconnected, {} tool(s)", tools.len());
+    Ok(tools)
+}
+
+/// Drop a server's live connection and tools **without touching `config.yml`**
+/// (ADR-0153) — what `/mcp disconnect` needs after revoking a credential: the
+/// server stays configured, it simply has no usable session any more. A name
+/// that was never connected is a no-op.
+pub fn mcp_disconnect_only(
+    name: &str,
+    registry: &SharedRegistry,
+    active: &ActiveServers,
+) -> Result<()> {
+    registry
+        .write()
+        .unwrap()
+        .unregister_prefix(&format!("mcp__{name}__"));
+    active.lock().unwrap().remove(name);
+    Ok(())
+}
+
 /// Disconnect a server: unregister its `mcp__{name}__*` tools, drop it from
 /// `active` (releasing the last `Arc<McpClient>` kills the subprocess/closes
 /// the HTTP session), and persist the removal. Errors only if `name` is not in
@@ -128,6 +181,8 @@ pub fn mcp_list(active: &ActiveServers) -> Vec<entanglement_core::McpServerStatu
             // Filled by the MCP responder (#542), which alone knows whether a
             // connected server is startup-`enabled` or lazily `allowed`.
             state: None,
+            // Likewise filled by the responder, which holds the token store.
+            auth: None,
         })
         .collect();
     list.sort_by(|a, b| a.name.cmp(&b.name));
@@ -154,6 +209,7 @@ mod tests {
             headers: HashMap::new(),
             disabled: false,
             capabilities: HashMap::new(),
+            oauth: None,
             state: None,
         }
     }

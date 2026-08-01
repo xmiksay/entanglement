@@ -136,7 +136,8 @@ pub(super) async fn handle_event(
                 // `/mcp list` panel (#373, selectable since #539):
                 // `Up`/`Down`/`j`/`k` move the server selection, `e`/`d`
                 // enable/disable the highlighted server for the active session
-                // (a `mcp__<name>__*` tool-overlay entry),
+                // (a `mcp__<name>__*` tool-overlay entry), `c`/`t` run the
+                // OAuth connect/check for it (ADR-0153),
                 // `PageUp`/`PageDown` scroll, `Esc` closes.
                 if app.showing_mcp_panel() {
                     match key.code {
@@ -160,6 +161,36 @@ pub(super) async fn handle_event(
                                     app,
                                     holly,
                                     format!("mcp__{name}__*"),
+                                )
+                                .await;
+                            }
+                        }
+                        // OAuth row actions (ADR-0153). The panel is closed
+                        // first: `connect` parks on the browser and reports
+                        // through transcript status lines, which the panel
+                        // would otherwise cover.
+                        KeyCode::Char('c') => {
+                            if let Some(name) = app.mcp_selected_server() {
+                                let name = name.to_string();
+                                app.close_mcp_panel();
+                                crate::tui::mcp_command::send_mcp_auth(
+                                    app,
+                                    holly,
+                                    name,
+                                    entanglement_core::McpAuthAction::Connect,
+                                )
+                                .await;
+                            }
+                        }
+                        KeyCode::Char('t') => {
+                            if let Some(name) = app.mcp_selected_server() {
+                                let name = name.to_string();
+                                app.close_mcp_panel();
+                                crate::tui::mcp_command::send_mcp_auth(
+                                    app,
+                                    holly,
+                                    name,
+                                    entanglement_core::McpAuthAction::Check,
                                 )
                                 .await;
                             }

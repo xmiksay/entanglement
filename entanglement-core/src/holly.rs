@@ -264,6 +264,14 @@ impl Holly {
         let _ = self.events.send(OutEvent::McpChanged { name, action });
     }
 
+    /// Broadcast a runtime-authored [`OutEvent::McpAuthChanged`] reply to
+    /// [`InMsg::McpAuth`] (ADR-0153). No `seq` — a point-in-time engine-global
+    /// lifecycle event, not session content. A `Connect` emits twice: an interim
+    /// event carrying the authorize URL, then the terminal outcome.
+    pub fn emit_mcp_auth_changed(&self, status: crate::protocol::McpAuthStatus) {
+        let _ = self.events.send(OutEvent::McpAuthChanged { status });
+    }
+
     /// Broadcast a runtime-authored [`OutEvent::BashChanged`] reply to
     /// [`InMsg::BashEnable`]/[`InMsg::BashDisable`] (#498, ADR-0133). No `seq` —
     /// a point-in-time engine-global lifecycle event, not session content.

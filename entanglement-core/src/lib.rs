@@ -38,9 +38,13 @@ pub use entanglement_provider::mcp::{
     },
     jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef,
 };
+// Renamed on the way through: bare `check`/`disconnect` would be far too
+// generic at the core crate root, where they sit beside the engine's own API.
+pub use entanglement_provider::mcp::auth::check as mcp_auth_check;
+pub use entanglement_provider::mcp::auth::disconnect as mcp_auth_disconnect;
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, BashGrade, FileChangeKind, InMsg,
-    McpAction, McpServerSpec, McpServerStatus, OutEvent, PendingQuestion, Permission,
-    PermissionProfile, ProfileDetail, Question, QuestionOption, Questions, SessionId, SessionInfo,
-    ToolOverlayEntry,
+    McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, OutEvent,
+    PendingQuestion, Permission, PermissionProfile, ProfileDetail, Question, QuestionOption,
+    Questions, SessionId, SessionInfo, ToolOverlayEntry,
 };

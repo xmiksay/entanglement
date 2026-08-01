@@ -160,6 +160,7 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         | InMsg::McpList { .. }
         | InMsg::McpAdd { .. }
         | InMsg::McpRemove { .. }
+        | InMsg::McpAuth { .. }
         | InMsg::BashEnable { .. }
         | InMsg::BashDisable
         | InMsg::ReplayFrom { .. }

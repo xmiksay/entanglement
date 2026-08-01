@@ -17,7 +17,8 @@ use crate::tui::app::App;
 /// servers, transport, status, and tools. `Up`/`Down`/`j`/`k` move the server
 /// selection (`▶`), `e`/`d` enable/disable the selected server for the active
 /// session (a `mcp__<name>__*` overlay entry — the tag after the status shows
-/// the session's current override), `PageUp`/`PageDown` scroll, `Esc` closes.
+/// the session's current override), `c`/`t` run the OAuth connect/check for it
+/// (ADR-0153), `PageUp`/`PageDown` scroll, `Esc` closes.
 pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
     let servers = app.mcp_servers();
     let overlay = app.overlay_entries(app.active_session_id());
@@ -37,6 +38,7 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
             "  /mcp add <name> --url <url> [--header KEY:VALUE]...",
             "  /mcp add <name> -- <command> [args...]",
             "List/remove:  /mcp list   /mcp remove <name>",
+            "Sign in:      /mcp connect <name>   (check/disconnect too)",
         ];
         lines.push(Line::from(""));
         for u in usage {
@@ -50,7 +52,14 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
             // Three-state display (#542): an `allowed` server that isn't
             // connected is *available* (enable it with `e` / `/enable mcp
             // <name>`), not broken — don't paint it red.
-            let status = if s.connected {
+            let status = if s.auth.as_deref() == Some("needs auth") {
+                // An OAuth server awaiting sign-in (ADR-0153) is not broken
+                // either — it just needs `c`. Say so instead of "disconnected".
+                Span::styled(
+                    "needs auth (sign in with c)",
+                    Style::default().fg(Color::Yellow),
+                )
+            } else if s.connected {
                 Span::styled("connected", Style::default().fg(Color::Green))
             } else if s.state.as_deref() == Some("allowed") {
                 Span::styled(
@@ -108,7 +117,7 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
     let para = Paragraph::new(lines).scroll((app.mcp_scroll(), 0)).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("MCP Servers (e: enable for session, d: disable, ↑↓: select, Esc: close)"),
+            .title("MCP Servers (e/d: enable/disable, c/t: sign in/check, ↑↓: select, Esc: close)"),
     );
 
     let area = centered_rect(70, 60, f.area());

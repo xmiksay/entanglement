@@ -278,6 +278,12 @@ pub struct McpServerStatus {
     /// runtime MCP responder always fills it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    /// OAuth posture (ADR-0153): `"authenticated"` (a credential is stored) or
+    /// `"needs auth"` (the server declares `oauth:` but has none yet, so it was
+    /// skipped at startup — run `/mcp connect <name>`). `None` for a server that
+    /// does not use OAuth at all, and from a pre-ADR-0153 peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
 }
 
 /// What changed in reply to [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375),
@@ -287,6 +293,45 @@ pub struct McpServerStatus {
 pub enum McpAction {
     Added,
     Removed,
+}
+
+/// Which OAuth operation [`InMsg::McpAuth`] requests (ADR-0153).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthAction {
+    /// Run the full authorization-code flow — discovery, dynamic client
+    /// registration if needed, browser consent, token exchange — then persist
+    /// the credential and (re)connect the server.
+    Connect,
+    /// Report whether the stored credential would work right now, refreshing it
+    /// if it is merely expired. Never opens a browser.
+    Check,
+    /// Revoke the credential upstream when the server supports it, then delete
+    /// it locally and disconnect.
+    Disconnect,
+}
+
+/// The result of an [`InMsg::McpAuth`] operation, carried by
+/// [`OutEvent::McpAuthChanged`] (ADR-0153).
+///
+/// `state` is the provider's own outcome label (`authorized`, `already valid`,
+/// `refreshed`, `disconnected`, `not authorized`); `error` is set instead when
+/// the operation failed, so a head can render one line either way without
+/// knowing which action ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpAuthStatus {
+    pub name: String,
+    pub action: McpAuthAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The URL the user must visit, emitted as an interim event while a
+    /// [`Connect`][McpAuthAction::Connect] waits on the browser. A head prints
+    /// it so a headless/SSH session can copy it even when the browser launch
+    /// could not happen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorize_url: Option<String>,
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1022,6 +1067,19 @@ pub enum InMsg {
     /// (#472, ADR-0124) like [`McpAdd`][InMsg::McpAdd]: it mutates engine-global
     /// config and tears down live tools.
     McpRemove { name: String },
+    /// Manage a server's OAuth authorization (ADR-0153): sign in, validate the
+    /// stored credential, or drop it. Engine-global like
+    /// [`McpAdd`][InMsg::McpAdd] — MCP config and its credentials are
+    /// process-wide, not per-session — and answered by the runtime's MCP
+    /// responder, which alone holds the server configs and the token store.
+    /// Emits [`OutEvent::McpAuthChanged`].
+    ///
+    /// **Trusted-only** (#472, ADR-0124, the `McpAdd` rationale sharpened): a
+    /// [`Connect`][McpAuthAction::Connect] opens a browser window and mints a
+    /// durable credential on the user's behalf, and a
+    /// [`Disconnect`][McpAuthAction::Disconnect] destroys one — neither may be
+    /// driven by an untrusted wire peer.
+    McpAuth { name: String, action: McpAuthAction },
     /// Hot-register the `bash`/`bash_output` pair in the running process,
     /// graded by `grade` (#498, ADR-0133) — the live counterpart to the
     /// startup-only `ENTANGLEMENT_ENABLE_BASH` env var. Engine-global like
@@ -1301,6 +1359,7 @@ impl InMsg {
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
             | InMsg::BashEnable { .. }
+            | InMsg::McpAuth { .. }
             | InMsg::BashDisable => None,
         }
     }
@@ -1380,6 +1439,7 @@ impl InMsg {
             | InMsg::HibernateSession { .. }
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
+            | InMsg::McpAuth { .. }
             | InMsg::BashEnable { .. }
             | InMsg::BashDisable
             | InMsg::SetToolOverlay { .. } => false,
@@ -1405,6 +1465,7 @@ impl InMsg {
             InMsg::McpList { .. } => "mcp_list",
             InMsg::McpAdd { .. } => "mcp_add",
             InMsg::McpRemove { .. } => "mcp_remove",
+            InMsg::McpAuth { .. } => "mcp_auth",
             InMsg::BashEnable { .. } => "bash_enable",
             InMsg::BashDisable => "bash_disable",
             InMsg::ReplayFrom { .. } => "replay_from",
@@ -1499,6 +1560,11 @@ pub enum OutEvent {
     /// An MCP server was hot-added or removed (lifecycle event, no `seq`), in
     /// reply to [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375).
     McpChanged { name: String, action: McpAction },
+    /// Engine-global (no `session`, no `seq`), in reply to
+    /// [`InMsg::McpAuth`] (ADR-0153). A `Connect` emits this twice: once
+    /// carrying `authorize_url` while the browser consent is pending, then
+    /// again with the terminal `state` or `error`.
+    McpAuthChanged { status: McpAuthStatus },
     /// `bash`/`bash_output` were live-registered or unregistered (lifecycle
     /// event, no `seq`), in reply to
     /// [`InMsg::BashEnable`]/[`InMsg::BashDisable`] (#498, ADR-0133).
@@ -1905,6 +1971,7 @@ impl OutEvent {
             | OutEvent::QuestionList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
+            | OutEvent::McpAuthChanged { .. }
             | OutEvent::BashChanged { .. }
             | OutEvent::Throttle { .. } => None,
         }
@@ -1928,6 +1995,7 @@ impl OutEvent {
             | OutEvent::QuestionList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
+            | OutEvent::McpAuthChanged { .. }
             | OutEvent::BashChanged { .. }
             | OutEvent::Throttle { .. }
             | OutEvent::History { .. }
@@ -2573,6 +2641,7 @@ mod tests {
                 tools: vec!["mcp__everything__echo".into()],
                 error: None,
                 state: None,
+                auth: None,
             }],
         };
         assert_eq!(list_ev.seq(), None);

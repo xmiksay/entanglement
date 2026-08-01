@@ -68,8 +68,10 @@ pub mod env_file;
 pub mod env_key;
 pub mod lock;
 pub mod mcp_persist;
+pub mod mcp_tokens;
 
 pub use mcp_persist::save_mcp;
+pub use mcp_tokens::McpTokenStore;
 
 /// The CLI `skutter config set-key` handler (rpassword prompt + catalog lookup).
 /// Behind `cli`+`provider`: it prompts (rpassword, a `cli`-feature dep) and looks

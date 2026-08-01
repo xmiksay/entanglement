@@ -13,8 +13,11 @@
 //! Two transports back a server, chosen by config (`command` XOR `url`):
 //!
 //! - [`stdio`] — a spawned subprocess speaking JSON-RPC over its stdio (#198).
-//! - [`http`] — a remote server over the streamable-HTTP transport with per-server
-//!   auth headers (#312), behind the `mcp-http` feature.
+//! - The streamable-HTTP transport — a remote server with per-server auth
+//!   headers (#312) and optionally OAuth (ADR-0153), behind the `mcp-http`
+//!   feature. Since ADR-0153 it lives in `entanglement-provider::mcp` and is
+//!   re-exported here as [`HttpClient`]; what stays runtime-side is policy —
+//!   config, the registry, permissions, the token store.
 //!
 //! [`client`] wraps both behind [`McpClient`]; [`tool`]'s [`McpTool`] proxy adapts
 //! whichever transport backs it.
@@ -34,12 +37,14 @@ use crate::tools::{Tool, ToolRegistry};
 
 // Via core's re-export (ADR-0053), not `entanglement_provider` directly —
 // that dep is optional (`provider` feature) and absent from the lean build.
-pub use entanglement_core::McpServerState;
+pub use entanglement_core::{McpServerState, OauthConfig};
 
 pub mod available;
+pub mod browser;
 pub mod client;
 pub mod enable_tool;
 pub mod live;
+pub mod oauth_ops;
 pub mod responder;
 pub mod stdio;
 pub mod tool;
@@ -94,6 +99,13 @@ pub struct McpServerConfig {
     /// Values may reference `${VAR}` from the environment.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// OAuth for the HTTP transport (ADR-0153). Present (even empty) ⇒ this
+    /// server authenticates with a browser-obtained bearer token from the
+    /// managed `mcp-tokens.yml` instead of a static header; every field inside
+    /// is an override on what metadata discovery and dynamic client registration
+    /// resolve on their own. Absent ⇒ pre-ADR-0153 behavior exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<OauthConfig>,
     /// Skip this server without deleting its block.
     #[serde(default)]
     pub disabled: bool,
@@ -185,6 +197,7 @@ impl From<entanglement_core::McpServerSpec> for McpServerConfig {
             headers: spec.headers,
             disabled: spec.disabled,
             capabilities: HashMap::new(),
+            oauth: None,
             state: None,
         }
     }
@@ -261,6 +274,16 @@ pub async fn connect(
             tracing::info!("MCP server `{name}` is not enabled at startup; skipping");
             continue;
         }
+        // An OAuth server with no stored credential is skipped *quietly* and
+        // reported as "needs auth" by `/mcp list` (ADR-0153) — attempting the
+        // connect would only produce a 401 and a scarier log line, and startup
+        // must never open a browser (that is `/mcp connect`'s job).
+        if needs_auth(name, cfg) {
+            tracing::info!(
+                "MCP server `{name}` needs authorization; run `/mcp connect {name}` to sign in"
+            );
+            continue;
+        }
         match connect_one(name, cfg, registry, secret_env).await {
             Ok((client, tools)) => {
                 active.insert(
@@ -287,9 +310,42 @@ async fn connect_client(
     cfg: &McpServerConfig,
     secret_env: &[String],
 ) -> Result<(std::sync::Arc<McpClient>, Vec<McpToolDef>)> {
+    #[cfg(feature = "mcp-http")]
+    let client =
+        McpClient::connect_with_auth(name, cfg, secret_env, oauth_token_source(name, cfg)).await?;
+    #[cfg(not(feature = "mcp-http"))]
     let client = McpClient::connect(name, cfg, secret_env).await?;
     let defs = client.list_tools().await?;
     Ok((client, defs))
+}
+
+/// The OAuth bearer source for a server that declares an `oauth:` block
+/// (ADR-0153), or `None` for one authenticated by static headers (or not at
+/// all) — in which case the transport behaves exactly as it did pre-ADR-0153.
+///
+/// The store is built per call rather than held in a process-wide handle: it is
+/// only a resolved path (no I/O until a load), connects are rare, and building
+/// it here keeps `ENTANGLEMENT_MCP_TOKENS_FILE` honoured at the moment of use.
+#[cfg(feature = "mcp-http")]
+fn oauth_token_source(
+    name: &str,
+    cfg: &McpServerConfig,
+) -> Option<std::sync::Arc<dyn entanglement_core::AccessTokenSource>> {
+    cfg.oauth.as_ref()?;
+    let store: std::sync::Arc<dyn entanglement_core::TokenStore> =
+        std::sync::Arc::new(crate::config::McpTokenStore::load());
+    Some(std::sync::Arc::new(
+        entanglement_core::StoredTokenSource::new(name, store),
+    ))
+}
+
+/// Does this server want OAuth but have no stored credential yet (ADR-0153)?
+///
+/// Drives the "needs auth" state in `/mcp list` and the non-fatal startup skip:
+/// an unauthenticated OAuth server is a normal, recoverable condition (run
+/// `/mcp connect <name>`), not a transport failure worth alarming about.
+pub fn needs_auth(name: &str, cfg: &McpServerConfig) -> bool {
+    cfg.oauth.is_some() && !crate::config::McpTokenStore::load().has(name)
 }
 
 /// Register every discovered tool def into `registry`, synchronous (no
@@ -406,6 +462,7 @@ headers:
                 headers: HashMap::new(),
                 disabled: true,
                 capabilities: HashMap::new(),
+                oauth: None,
                 state: None,
             },
         )]);
@@ -426,6 +483,7 @@ headers:
                 headers: HashMap::new(),
                 disabled: false,
                 capabilities: HashMap::new(),
+                oauth: None,
                 state: None,
             },
         )]);
@@ -448,6 +506,7 @@ headers:
                 headers: HashMap::new(),
                 disabled: false,
                 capabilities: HashMap::new(),
+                oauth: None,
                 state: None,
             },
         )]);

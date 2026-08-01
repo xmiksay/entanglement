@@ -173,3 +173,27 @@ async fn forged_wire_spawn_is_refused() {
         .expect_err("Spawn must be refused from the wire");
     assert!(matches!(err, WireError::Privileged("spawn")));
 }
+
+/// `McpAuth` is trusted-only (ADR-0153), sharpening the `McpAdd`/`McpRemove`
+/// rationale (#472/ADR-0124): a forged `Connect` would open a browser window on
+/// the user's desktop and mint a durable OAuth credential on their behalf, and a
+/// forged `Disconnect` would destroy one. Neither may cross an untrusted wire.
+#[tokio::test]
+async fn forged_wire_mcp_auth_is_refused_for_every_action() {
+    use entanglement_core::McpAuthAction;
+    let holly = engine(vec![]);
+    for action in [
+        McpAuthAction::Connect,
+        McpAuthAction::Check,
+        McpAuthAction::Disconnect,
+    ] {
+        let err = holly
+            .send_from_wire(InMsg::McpAuth {
+                name: "remote".into(),
+                action,
+            })
+            .await
+            .expect_err("McpAuth must be refused from the wire");
+        assert!(matches!(err, WireError::Privileged("mcp_auth")));
+    }
+}

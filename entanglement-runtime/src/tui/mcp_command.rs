@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use entanglement_core::{Holly, InMsg, McpServerSpec, SessionId};
+use entanglement_core::{Holly, InMsg, McpAuthAction, McpServerSpec, SessionId};
 
 use super::app::App;
 use super::command_args::{parse_mcp_via_clap, McpSub};
@@ -20,12 +20,24 @@ use super::command_args::{parse_mcp_via_clap, McpSub};
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpCommand {
     List,
-    Add { name: String, spec: McpServerSpec },
-    Remove { name: String },
+    Add {
+        name: String,
+        spec: McpServerSpec,
+    },
+    Remove {
+        name: String,
+    },
+    /// OAuth management (ADR-0153) — `connect`/`check`/`disconnect`, all three
+    /// carried by the single trusted-only `InMsg::McpAuth`.
+    Auth {
+        name: String,
+        action: McpAuthAction,
+    },
 }
 
 const MCP_USAGE: &str = "usage: /mcp list | /mcp add <name> -- <command> [args...] | \
-     /mcp add <name> --url <url> [--header KEY:VALUE]... | /mcp remove <name>";
+     /mcp add <name> --url <url> [--header KEY:VALUE]... | /mcp remove <name> | \
+     /mcp connect|check|disconnect <name>";
 
 /// Parse `/mcp <subcommand> ...` — Issue 2 delegates to clap
 /// ([`parse_mcp_via_clap`]) and maps the parsed [`McpSub`] onto [`McpCommand`],
@@ -41,6 +53,18 @@ pub fn parse_mcp_args(text: &str) -> Result<McpCommand, String> {
         None | Some(McpSub::List) => Ok(McpCommand::List),
         Some(McpSub::Remove { name }) => Ok(McpCommand::Remove { name }),
         Some(McpSub::Add(add)) => build_mcp_add_spec(add),
+        Some(McpSub::Connect { name }) => Ok(McpCommand::Auth {
+            name,
+            action: McpAuthAction::Connect,
+        }),
+        Some(McpSub::Check { name }) => Ok(McpCommand::Auth {
+            name,
+            action: McpAuthAction::Check,
+        }),
+        Some(McpSub::Disconnect { name }) => Ok(McpCommand::Auth {
+            name,
+            action: McpAuthAction::Disconnect,
+        }),
     }
 }
 
@@ -129,8 +153,29 @@ pub(super) async fn send_mcp(app: &mut App, holly: &Holly, text: &str) {
         Ok(McpCommand::Remove { name }) => {
             let _ = holly.send(InMsg::McpRemove { name }).await;
         }
+        Ok(McpCommand::Auth { name, action }) => send_mcp_auth(app, holly, name, action).await,
         Err(message) => app.record_mcp_error(message),
     }
+}
+
+/// Send an `InMsg::McpAuth` (ADR-0153) over the **privileged** `Holly::send` —
+/// the variant is wire-refused, and the TUI is in-process/trusted exactly like
+/// the existing `/mcp add`/`remove` path.
+///
+/// A `connect` renders an immediate "opening browser…" line: discovery and
+/// dynamic client registration happen before the authorize URL exists, so
+/// several seconds can pass before the first `McpAuthChanged` arrives, and
+/// silence would read as a hang. Every later update comes from the event.
+pub(super) async fn send_mcp_auth(
+    app: &mut App,
+    holly: &Holly,
+    name: String,
+    action: McpAuthAction,
+) {
+    if action == McpAuthAction::Connect {
+        app.record_mcp_status(format!("mcp: authorizing `{name}` — opening your browser…"));
+    }
+    let _ = holly.send(InMsg::McpAuth { name, action }).await;
 }
 
 /// Send an `InMsg::McpList` query. Shared by the typed `/mcp list` path above
@@ -221,6 +266,31 @@ mod tests {
                 name: "myserver".to_string()
             })
         );
+    }
+
+    #[test]
+    fn parse_mcp_args_oauth_subcommands() {
+        for (text, action) in [
+            ("/mcp connect remote", McpAuthAction::Connect),
+            ("/mcp check remote", McpAuthAction::Check),
+            ("/mcp disconnect remote", McpAuthAction::Disconnect),
+        ] {
+            assert_eq!(
+                parse_mcp_args(text),
+                Ok(McpCommand::Auth {
+                    name: "remote".to_string(),
+                    action,
+                }),
+                "parsing {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_mcp_args_oauth_requires_a_server_name() {
+        assert!(parse_mcp_args("/mcp connect").is_err());
+        assert!(parse_mcp_args("/mcp check").is_err());
+        assert!(parse_mcp_args("/mcp disconnect").is_err());
     }
 
     #[test]

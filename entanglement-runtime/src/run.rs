@@ -126,6 +126,18 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // render.
         OutEvent::McpList { .. } => {}
         OutEvent::McpChanged { .. } => {}
+        // MCP OAuth progress (ADR-0153). The authorize URL is always printed —
+        // a one-shot/headless run may have no browser to open, and the URL is
+        // the only way to complete the flow there.
+        OutEvent::McpAuthChanged { status } => {
+            if let Some(url) = &status.authorize_url {
+                writeln!(out, "→ {} · open to authorize: {url}", status.name)?
+            } else if let Some(err) = &status.error {
+                writeln!(out, "✗ {} · {err}", status.name)?
+            } else if let Some(state) = &status.state {
+                writeln!(out, "✓ {} · {state}", status.name)?
+            }
+        }
         OutEvent::BashChanged { .. } => {}
         // History is a late-subscriber query reply (#160); the one-shot head
         // never issues `ReplayFrom`, so nothing to render.
