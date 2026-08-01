@@ -61,6 +61,7 @@ pub mod plan_files;
 pub mod plan_tasks;
 pub mod policy;
 pub mod propose_plan;
+pub mod questions;
 // Sandboxed `rhai` script tool (#122, ADR-0046). Behind the `rhai` feature
 // (default-on, #502/ADR-0135) so a lean embedder can drop the dep via
 // `--no-default-features`.

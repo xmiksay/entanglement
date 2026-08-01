@@ -1,27 +1,41 @@
 //! `ask_user` — model-driven user-decision prompt (#90, ADR-0027; #488 v2:
 //! several questions per call, an always-available free-text answer, and
-//! per-question multi-select — supersedes parts of ADR-0027).
+//! per-question multi-select — supersedes parts of ADR-0027; #515: list/
+//! retract/replace an open question).
 //!
 //! Like `agent_spawn` (ADR-0022), `ask_user` is a runtime-owned tool intercepted
 //! on [`OutEvent::ToolExec`] *before* permission resolution: it touches no host
 //! resource, so it bypasses the permission profile. When the model calls it,
 //! [`run_ask_user`] surfaces the questions to the head via a dedicated
 //! [`OutEvent::UserQuestion`] (a plain `ToolRequest` can't carry labelled
-//! choices), parks for the head's [`InMsg::AnswerQuestion`], and folds every
-//! answer back as the tool's [`InMsg::ToolResult`] — reusing the #58 round-trip
-//! so the parent turn sees an ordinary tool result and core needs no new
-//! semantics.
+//! choices), parks for the head's decision, and folds the outcome back as the
+//! tool's [`InMsg::ToolResult`] — reusing the #58 round-trip so the parent turn
+//! sees an ordinary tool result and core needs no new semantics. Three
+//! decisions resolve the park:
 //!
-//! The answer fed to the model is, per question, the picked option label(s)
-//! (joined for a multi-select) or the free-form text verbatim. A `Stop` for the
-//! session while parked unwinds silently: core's turn cancels on the same
-//! `Stop`, so no `ToolResult` is owed (mirrors approval).
+//! - [`InMsg::AnswerQuestion`] — the answer fed to the model is, per question,
+//!   the picked option label(s) (joined for a multi-select) or the free-form
+//!   text verbatim. Terminal: the call is done.
+//! - [`InMsg::RetractQuestion`] (#515) — withdraws the question *without*
+//!   cancelling the turn: unlike a session-wide `Stop`, the call must still
+//!   reply, so the model sees a withdrawal note instead of hanging forever.
+//!   Terminal.
+//! - [`InMsg::ReplaceQuestion`] (#515) — swaps the parked question's content
+//!   in place: re-emits `UserQuestion` under the same `request_id` and loops
+//!   back to parking, rather than replying. Not terminal.
+//!
+//! A `Stop` for the session while parked unwinds silently: core's turn cancels
+//! on the same `Stop`, so no `ToolResult` is owed (mirrors approval). Every
+//! call registers into [`OpenQuestions`] before its first emit and is removed
+//! on every terminal outcome, so [`InMsg::ListQuestions`] always sees exactly
+//! the calls still genuinely parked.
 
 use entanglement_core::{
     AgentState, Holly, OutEvent, Question, QuestionOption, Questions, SessionId, ToolSpec,
 };
 
 use crate::pending::{self, PendingDecisions};
+use crate::questions::OpenQuestions;
 use crate::seam;
 use crate::tool_names::ASK_USER_TOOL;
 
@@ -175,46 +189,88 @@ fn fold_answers(questions: &[Question], answers: &[Vec<String>]) -> String {
 }
 
 /// Orchestrate one `ask_user` call: surface the questions, await the head's
-/// answers, and reply to the model with them.
+/// decision, and reply to the model once it reaches a terminal outcome
+/// (answered or retracted) — looping back to park again on a replace (#515).
 ///
 /// Registers the waiter with the lag-proof [`PendingDecisions`] registry (#156)
 /// *before* emitting the questions, so a fast answer routes to this park rather
 /// than racing a per-task broadcast subscription that could lag and drop it.
+/// Mirrors that discipline into [`OpenQuestions`] so a concurrent
+/// `InMsg::ListQuestions` never observes a call between "about to emit" and
+/// "registered".
 pub async fn run_ask_user(
     holly: Holly,
     pending: PendingDecisions,
+    open: OpenQuestions,
     session: SessionId,
     request_id: String,
     input: String,
 ) {
-    let questions = parse_input(&input);
+    let mut questions = parse_input(&input);
+    loop {
+        open.insert(&session, &request_id, questions.clone());
 
-    // Register before emitting so the inbound router can never resolve the answer
-    // ahead of this waiter (#156).
-    let rx = pending.register(&session, &request_id);
+        // Register before emitting so the inbound router can never resolve the
+        // decision ahead of this waiter (#156).
+        let rx = pending.register(&session, &request_id);
 
-    // Mint a fresh per-session seq (#157) so the questions take an ordered place
-    // in the content stream rather than reusing the parked `ToolExec` seq. Moved
-    // into the closure since `emit_for_session` builds the event with the seq.
-    let questions_for_emit = questions.clone();
-    holly.emit_for_session(&session, |seq| OutEvent::UserQuestion {
-        session: session.clone(),
-        seq,
-        request_id: request_id.clone(),
-        questions: Questions(questions_for_emit),
-    });
-    // A question is not a permission decision (#160): surface `WaitingAnswer`,
-    // not `WaitingApproval`, so heads render "waiting for answer" distinctly.
-    holly.emit_status(&session, AgentState::WaitingAnswer);
+        // Mint a fresh per-session seq (#157) so the questions take an ordered
+        // place in the content stream rather than reusing the parked `ToolExec`
+        // seq. Moved into the closure since `emit_for_session` builds the event
+        // with the seq.
+        let questions_for_emit = questions.clone();
+        holly.emit_for_session(&session, |seq| OutEvent::UserQuestion {
+            session: session.clone(),
+            seq,
+            request_id: request_id.clone(),
+            questions: Questions(questions_for_emit),
+        });
+        // A question is not a permission decision (#160): surface `WaitingAnswer`,
+        // not `WaitingApproval`, so heads render "waiting for answer" distinctly.
+        holly.emit_status(&session, AgentState::WaitingAnswer);
 
-    // Only an `AnswerQuestion` for this request folds an answer back; `Stop`
-    // (and a dropped registry) unwind silently — core cancels the turn on the same
-    // `Stop`, so no `ToolResult` is owed. Approve/Reject never target an
-    // `ask_user` request id.
-    if let seam::Decision::Answer { answers } = pending::await_decision(rx).await {
-        holly.emit_status(&session, AgentState::Thinking);
-        let output = fold_answers(&questions, &answers);
-        seam::reply(&holly, session, request_id, output).await;
+        // `Stop` (and a dropped registry) unwind silently — core cancels the
+        // turn on the same `Stop`, so no `ToolResult` is owed. Approve/Reject
+        // never target an `ask_user` request id.
+        match pending::await_decision(rx).await {
+            seam::Decision::Answer { answers } => {
+                open.remove(&session, &request_id);
+                holly.emit_status(&session, AgentState::Thinking);
+                let output = fold_answers(&questions, &answers);
+                seam::reply(&holly, session, request_id, output).await;
+                return;
+            }
+            // #515: withdraw without cancelling the rest of the turn — unlike
+            // `Stop`, this call's `ToolResult` is still owed, so the model
+            // sees a withdrawal note rather than a call that never resolves.
+            seam::Decision::Retract => {
+                open.remove(&session, &request_id);
+                holly.emit_status(&session, AgentState::Thinking);
+                seam::reply(
+                    &holly,
+                    session,
+                    request_id,
+                    "The user withdrew this question without answering.".to_string(),
+                )
+                .await;
+                return;
+            }
+            // #515: swap the content and re-park under the same request id —
+            // not terminal, so the loop re-emits `UserQuestion` instead of
+            // replying.
+            seam::Decision::Replace { questions: revised } => {
+                questions = revised;
+            }
+            seam::Decision::Stop => {
+                open.remove(&session, &request_id);
+                return;
+            }
+            seam::Decision::Approve { .. } | seam::Decision::Reject { .. } => {
+                // Never targets an `ask_user` request id; treat like `Stop`.
+                open.remove(&session, &request_id);
+                return;
+            }
+        }
     }
 }
 

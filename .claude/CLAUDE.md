@@ -186,12 +186,12 @@ content, bounded, core never sees it) instead of ending the turn (#481). Enablin
 `entanglement-core/src/protocol.rs` is the single set of types every head uses:
 
 ```
-InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
+InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
-          | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ReplayFrom | CloseSession
+          | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove
           | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | History | Status | AgentChanged | ModelChanged | GenerationChanged
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged
           | McpList | McpChanged | BashChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
@@ -993,6 +993,27 @@ re-document them here):
   session is still held; `Hibernate` tears down as always, and since
   `paused` isn't persisted, a resumed-after-hibernate session always comes
   back unpaused. Both variants are wire-allowed, same trust tier as `Stop`.
+- **`ask_user` gains list/retract/replace of open questions** (#515,
+  [ADR-0146](../docs/adr/0146-ask-user-list-retract-replace.md)):
+  `InMsg::ListQuestions { correlation_id, session? }` → `OutEvent::QuestionList`
+  mirrors `ListSessions`/`McpList` — a session-less snapshot query (`session`
+  is a result filter, not a routing target) answered by a new runtime-owned
+  `OpenQuestions` registry (`entanglement-runtime/src/questions.rs`), since
+  the generic `PendingDecisions` map (used by permission `Ask`/`propose_plan`/
+  `rhai` bindings too) carries no question content to answer the query with.
+  `InMsg::RetractQuestion { session, request_id }` withdraws one question
+  *without* cancelling the turn: a first-class `seam::Decision::Retract` the
+  `ask_user` orchestrator replies to with a withdrawal note, not the silent
+  unwind `Stop` gets (sound there only because the whole turn is cancelled
+  regardless). `InMsg::ReplaceQuestion { session, request_id, questions }`
+  swaps content in place — `Decision::Replace` is **not terminal**:
+  `run_ask_user` loops, re-emitting `UserQuestion` under the same
+  `request_id` and re-parking rather than replying, so core never sees a
+  second round-trip for what is, from its perspective, one unchanged tool
+  call. All four variants are wire-allowed (list is read-only; retract/
+  replace are no more privileged than `AnswerQuestion`, already wire-allowed);
+  the `serve` head's per-connection approval-ownership gate (#402, ADR-0107)
+  covers all three decision variants alike.
 
 | Topic | Module |
 | --- | --- |
@@ -1188,6 +1209,11 @@ the plan session actually detaches (the child keeps running; cascading to it
 too is just a second `Stop`, no new protocol). The TUI's truncated "Plan
 Outline" side panel is gone, replaced by a one-line `Plan: <path>
 (pending|accepted)` indicator and `/plan` opening the file in `$EDITOR`.
+Also since 0.5.0, an open `ask_user` question is no longer write-once (#515,
+[ADR-0146](../docs/adr/0146-ask-user-list-retract-replace.md)):
+`InMsg::ListQuestions`/`RetractQuestion`/`ReplaceQuestion` let a head
+enumerate, withdraw, or revise a question it already surfaced, tracked by a
+new runtime-owned `OpenQuestions` registry alongside `PendingDecisions`.
 The 0.2.0 backlog covered
 #209 (docs), the parked-turn-state epic #276 (turns park as explicit serde
 `TurnState`, batch-parallel tool resolution, mid-turn replay/resume,

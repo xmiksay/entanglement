@@ -75,6 +75,8 @@ impl SessionView {
             // view updates — `handle_out_event` filters them out before they
             // reach a view, so these arms only keep the match exhaustive.
             OutEvent::SessionList { .. } => false,
+            // `ListQuestions` reply (#515) — session-less like `SessionList`.
+            OutEvent::QuestionList { .. } => false,
             // MCP ops (#375) and the bash-live ops (#498) are engine-global —
             // never routed to a per-session view (`handle_out_event` filters
             // them out, same as SessionList).

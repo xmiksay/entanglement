@@ -229,6 +229,20 @@ impl Holly {
         });
     }
 
+    /// Broadcast a runtime-authored [`OutEvent::QuestionList`] reply to an
+    /// [`InMsg::ListQuestions`] query (#515). Engine-global like
+    /// [`emit_mcp_list`][Self::emit_mcp_list]: no `seq`, no counter touched.
+    pub fn emit_question_list(
+        &self,
+        correlation_id: String,
+        questions: Vec<crate::protocol::PendingQuestion>,
+    ) {
+        let _ = self.events.send(OutEvent::QuestionList {
+            correlation_id,
+            questions,
+        });
+    }
+
     /// Broadcast a runtime-authored [`OutEvent::McpList`] reply to an
     /// [`InMsg::McpList`] query (#375). Engine-global like
     /// [`emit_history`][Self::emit_history]: no `seq`, no counter touched.
@@ -393,13 +407,16 @@ async fn supervisor(
 
         // Runtime-consumed off the inbound fan-out above, never routed to a
         // session task: approval decisions (`Approve`/`Reject`, #59),
-        // `AnswerQuestion` for `ask_user` (ADR-0027), and the `ReplayFrom`
-        // history query answered by the runtime's log-owning responder (#160).
+        // `AnswerQuestion`/`RetractQuestion`/`ReplaceQuestion` for `ask_user`
+        // (ADR-0027, #515), and the `ReplayFrom` history query answered by the
+        // runtime's log-owning responder (#160).
         if matches!(
             msg,
             InMsg::Approve { .. }
                 | InMsg::Reject { .. }
                 | InMsg::AnswerQuestion { .. }
+                | InMsg::RetractQuestion { .. }
+                | InMsg::ReplaceQuestion { .. }
                 | InMsg::ReplayFrom { .. }
         ) {
             continue;
@@ -419,10 +436,12 @@ async fn supervisor(
         }
 
         // Every remaining variant is session-scoped except `ListSessions`
-        // (handled above) and the MCP ops `McpList`/`McpAdd`/`McpRemove` (#375):
-        // MCP config is engine-global, so they carry no session either — they
-        // are answered by a runtime service off the `inbound` fan-out above,
-        // never routed here, so they simply fall through to this `continue`.
+        // (handled above), `ListQuestions` (#515), and the MCP ops
+        // `McpList`/`McpAdd`/`McpRemove` (#375): each carries no session either
+        // (`ListQuestions`'s optional filter is a data field, not a routing
+        // target) — they are answered by a runtime service off the `inbound`
+        // fan-out above, never routed here, so they simply fall through to
+        // this `continue`.
         let Some(session_id) = msg.session().cloned() else {
             continue;
         };
