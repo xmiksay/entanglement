@@ -31,6 +31,7 @@ pub mod catalog;
 pub mod client;
 pub mod gemini;
 pub mod llm;
+pub mod mcp;
 pub mod message;
 pub mod openai;
 pub mod provider_mcp;
@@ -47,6 +48,16 @@ pub use llm::{
     stream_from_response, DummyLlm, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmEvent,
     LlmFactory, LlmRequest, LlmResponse, LlmStream, ModelResolver, ReasoningEffort, ResolvedModel,
     StopReason, ToolCall, ToolSpec, Usage, UserId,
+};
+// The MCP client mechanism (ADR-0153). `HttpClient` above is the *LLM* endpoint
+// client, so the MCP transport keeps its qualified `McpHttpClient` name rather
+// than colliding with it at the crate root.
+pub use mcp::{
+    auth::{
+        auth_required_of, is_auth_required, AccessTokenSource, AuthFlow, AuthOutcome, AuthRequired,
+        OauthConfig, StoredAuth, StoredTokenSource, TokenSet, TokenStore,
+    },
+    jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef,
 };
 pub use message::{
     content_has_image, content_text, ContentPart, ImageSource, Message, MessageRole,

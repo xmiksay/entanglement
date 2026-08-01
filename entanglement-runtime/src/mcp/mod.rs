@@ -39,8 +39,6 @@ pub use entanglement_core::McpServerState;
 pub mod available;
 pub mod client;
 pub mod enable_tool;
-#[cfg(feature = "mcp-http")]
-pub mod http;
 pub mod live;
 pub mod responder;
 pub mod stdio;
@@ -59,8 +57,11 @@ pub struct McpHandles {
     pub registry: crate::tools::SharedRegistry,
     pub active: ActiveServers,
 }
+// The streamable-HTTP transport moved to `entanglement-provider` (ADR-0153).
+// Kept exported under its historical runtime name so embedders building a
+// per-tenant client (`mcp::HttpClient::connect`) are unaffected by the move.
 #[cfg(feature = "mcp-http")]
-pub use http::HttpClient;
+pub use entanglement_core::McpHttpClient as HttpClient;
 pub use live::{mcp_add, mcp_list, mcp_remove, ActiveServer, ActiveServers, ServerConfigs};
 pub use responder::spawn_mcp_responder;
 pub use stdio::StdioClient;

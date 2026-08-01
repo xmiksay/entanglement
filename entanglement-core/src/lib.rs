@@ -26,6 +26,18 @@ pub use entanglement_provider::{
     McpServerState, Message, MessageRole, ModelPricing, ModelResolver, ProviderMcpServer,
     ReasoningEffort, ResolvedModel, StopReason, ToolCall, ToolSpec, Usage, UserId, WebSearchConfig,
 };
+// The MCP client mechanism — transport + OAuth (ADR-0153) — also lives in the
+// leaf crate. Core carries no MCP *logic* (ADR-0067): this is a pass-through so
+// the runtime reaches these types on the same path `McpServerState` already
+// takes, including in the lean build that names no provider dependency of its
+// own. Nothing in core calls them.
+pub use entanglement_provider::mcp::{
+    auth::{
+        auth_required_of, is_auth_required, AccessTokenSource, AuthFlow, AuthOutcome, AuthRequired,
+        OauthConfig, PendingAuthorization, StoredAuth, StoredTokenSource, TokenSet, TokenStore,
+    },
+    jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef,
+};
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, BashGrade, FileChangeKind, InMsg,
     McpAction, McpServerSpec, McpServerStatus, OutEvent, PendingQuestion, Permission,

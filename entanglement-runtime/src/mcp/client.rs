@@ -3,41 +3,46 @@
 //! [`McpClient`] is a thin enum over the concrete transports — the stdio
 //! subprocess session ([`StdioClient`][super::stdio::StdioClient]) and, behind
 //! the `mcp-http` feature, the streamable-HTTP session
-//! ([`HttpClient`][super::http::HttpClient]). [`McpTool`][super::tool::McpTool]
-//! holds an `Arc<McpClient>` and only ever calls [`list_tools`][McpClient::list_tools]
-//! / [`call_tool`][McpClient::call_tool], so it adapts whatever transport backs a
+//! ([`McpHttpClient`]). [`McpTool`][super::tool::McpTool] holds an
+//! `Arc<McpClient>` and only ever calls [`list_tools`][McpClient::list_tools] /
+//! [`call_tool`][McpClient::call_tool], so it adapts whatever transport backs a
 //! server without knowing which one.
+//!
+//! Since ADR-0153 the HTTP transport, the shared JSON-RPC helpers, and the whole
+//! OAuth mechanism live in `entanglement-provider` and are reached through
+//! core's re-export (ADR-0053) — the same path `McpServerState` takes, so the
+//! lean `--no-default-features` build gets them without naming the optional
+//! provider dependency. What stays here is policy: config, the registry, the
+//! permission-governed tool wrapper, and the stdio transport's key scrub.
 //!
 //! Embedders that build tools programmatically (per-tenant remote servers with
 //! per-user tokens) can construct a transport directly — see
-//! [`HttpClient::connect`][super::http::HttpClient::connect] — wrap it in the
-//! matching [`McpClient`] variant, and hand it to `McpTool::new`, bypassing the
-//! YAML config path entirely.
+//! [`McpHttpClient::connect`] — wrap it in the matching [`McpClient`] variant,
+//! and hand it to `McpTool::new`, bypassing the YAML config path entirely.
 
 use std::sync::Arc;
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::stdio::StdioClient;
 use super::McpServerConfig;
 
-/// A single tool as advertised by a server's `tools/list`.
-#[derive(Debug, Clone)]
-pub struct McpToolDef {
-    pub name: String,
-    pub description: String,
-    pub input_schema: Value,
-}
+// Re-exported so the rest of the runtime (and existing embedders) keep importing
+// these from `mcp::client`, unchanged by the ADR-0153 relocation.
+pub use entanglement_core::{jsonrpc_payload, parse_tool_def, McpToolDef};
+#[cfg(feature = "mcp-http")]
+pub use entanglement_core::{AccessTokenSource, McpHttpClient};
 
 /// A live MCP session over one of the supported transports. Dispatches
 /// `tools/list` / `tools/call` to the concrete client.
 pub enum McpClient {
     /// JSON-RPC over a spawned subprocess's stdio (#198).
     Stdio(StdioClient),
-    /// Streamable HTTP — `POST`ed JSON-RPC with per-server headers (#312).
+    /// Streamable HTTP — `POST`ed JSON-RPC with per-server headers (#312) and,
+    /// optionally, an OAuth bearer token (ADR-0153).
     #[cfg(feature = "mcp-http")]
-    Http(super::http::HttpClient),
+    Http(McpHttpClient),
 }
 
 impl McpClient {
@@ -50,15 +55,50 @@ impl McpClient {
         cfg: &McpServerConfig,
         secret_env: &[String],
     ) -> Result<Arc<Self>> {
+        #[cfg(feature = "mcp-http")]
+        {
+            Self::connect_with_auth(server, cfg, secret_env, None).await
+        }
+        #[cfg(not(feature = "mcp-http"))]
+        {
+            Self::connect_inner(server, cfg, secret_env).await
+        }
+    }
+
+    /// Connect, supplying an OAuth token source for the HTTP transport
+    /// (ADR-0153). `auth` is ignored by the stdio transport, which authenticates
+    /// (if at all) through its own environment.
+    #[cfg(feature = "mcp-http")]
+    pub async fn connect_with_auth(
+        server: &str,
+        cfg: &McpServerConfig,
+        secret_env: &[String],
+        auth: Option<Arc<dyn AccessTokenSource>>,
+    ) -> Result<Arc<Self>> {
         let client = match cfg.transport()? {
             super::Transport::Stdio { command, args, env } => McpClient::Stdio(
                 StdioClient::spawn(server, &command, &args, &env, secret_env).await?,
             ),
-            #[cfg(feature = "mcp-http")]
-            super::Transport::Http { url, headers } => {
-                McpClient::Http(super::http::HttpClient::connect(server, &url, &headers).await?)
-            }
-            #[cfg(not(feature = "mcp-http"))]
+            super::Transport::Http { url, headers } => McpClient::Http(match auth {
+                Some(auth) => {
+                    McpHttpClient::connect_authenticated(server, &url, &headers, auth).await?
+                }
+                None => McpHttpClient::connect(server, &url, &headers).await?,
+            }),
+        };
+        Ok(Arc::new(client))
+    }
+
+    #[cfg(not(feature = "mcp-http"))]
+    async fn connect_inner(
+        server: &str,
+        cfg: &McpServerConfig,
+        secret_env: &[String],
+    ) -> Result<Arc<Self>> {
+        let client = match cfg.transport()? {
+            super::Transport::Stdio { command, args, env } => McpClient::Stdio(
+                StdioClient::spawn(server, &command, &args, &env, secret_env).await?,
+            ),
             super::Transport::Http { .. } => anyhow::bail!(
                 "MCP server `{server}` uses the HTTP transport, but this build was compiled \
                  without the `mcp-http` feature"
@@ -83,41 +123,5 @@ impl McpClient {
             #[cfg(feature = "mcp-http")]
             McpClient::Http(c) => c.call_tool(name, arguments).await,
         }
-    }
-}
-
-/// Parse one `tools/list` entry, tolerating a missing description or schema. A
-/// tool with no `name` is skipped (it can't be called). Shared by every
-/// transport.
-pub(super) fn parse_tool_def(v: &Value) -> Option<McpToolDef> {
-    let name = v.get("name").and_then(Value::as_str)?.to_string();
-    let description = v
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let input_schema = v
-        .get("inputSchema")
-        .cloned()
-        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-    Some(McpToolDef {
-        name,
-        description,
-        input_schema,
-    })
-}
-
-/// Split a parsed JSON-RPC response object into its `result` (`Ok`) or `error`
-/// message (`Err`). Shared by every transport's demultiplexer.
-pub(super) fn jsonrpc_payload(msg: &Value) -> std::result::Result<Value, String> {
-    if let Some(err) = msg.get("error") {
-        let message = err
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| err.to_string());
-        Err(message)
-    } else {
-        Ok(msg.get("result").cloned().unwrap_or(Value::Null))
     }
 }

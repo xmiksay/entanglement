@@ -62,11 +62,14 @@ serve = ["cli", "provider", "dep:axum", "dep:futures"]
 # (ModelInfo, models_for, HttpClient in tui/app.rs + tui/mod.rs).
 tui = ["cli", "provider", "dep:ratatui", "dep:crossterm", "dep:pulldown-cmark", "dep:syntect", "dep:diffy", "dep:unicode-width"]
 # Streamable-HTTP MCP transport (#312, ADR-0080): remote MCP servers over
-# `POST /mcp` with per-server headers/auth. Pulls `reqwest` + `futures` as direct
-# deps behind this gate so the lean library / `--no-default-features` build carries
-# no HTTP-MCP transport (matching how `serve` gates axum — ADR-0025). stdio MCP
-# stays feature-free (tokio process only).
-mcp-http = ["dep:reqwest", "dep:futures"]
+# `POST /mcp` with per-server headers/auth, plus the OAuth flow that authenticates
+# them (ADR-0153). Since ADR-0153 the transport and the OAuth mechanism live in
+# `entanglement-provider` and are reached through core's re-export, so this gate
+# no longer pulls `reqwest`/`futures` as direct runtime deps — it now only decides
+# whether the lean library compiles the HTTP-MCP code paths in at all (matching
+# how `serve` gates axum — ADR-0025). stdio MCP stays feature-free (tokio process
+# only).
+mcp-http = []
 # The sandboxed `rhai` script tool (#122, ADR-0046; default-on, #502/ADR-0135
 # amending ADR-0025): one of the heaviest always-compiled deps, so a lean
 # embedder that never registers `rhai` can now drop it via
@@ -101,10 +104,11 @@ ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
 # WebSocket `serve` head (behind the `serve` feature — ADR-0025/ADR-0048)
 axum = { workspace = true, optional = true }
-# `futures` backs SSE streaming for both `serve` (WS) and the HTTP MCP transport.
+# `futures` backs SSE streaming for `serve` (WS) and the `provider` feature's
+# one-shot aux-LLM drain. The HTTP MCP transport no longer needs it here — that
+# code moved to `entanglement-provider` (ADR-0153), which owns `reqwest` too, so
+# the runtime names neither directly any more.
 futures = { workspace = true, optional = true }
-# Streamable-HTTP MCP transport (behind the `mcp-http` feature — #312/ADR-0080).
-reqwest = { workspace = true, optional = true }
 pulldown-cmark = { workspace = true, optional = true }
 syntect = { workspace = true, optional = true }
 diffy = { workspace = true, optional = true }

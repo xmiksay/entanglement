@@ -29,6 +29,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
+# base64url encoding for the MCP OAuth PKCE challenge/verifier (ADR-0153).
+base64 = { workspace = true }
 dirs = { workspace = true }
 fd-lock = { workspace = true }
 async-trait = { workspace = true }
@@ -36,6 +38,10 @@ async-stream = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
 httpdate = "1"
+# CSPRNG for the MCP OAuth PKCE verifier + `state` (ADR-0153). Same crate (and
+# `getrandom` backing) `entanglement-core` already uses for session ids, so this
+# adds no new dependency tree to the workspace.
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"
