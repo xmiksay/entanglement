@@ -45,7 +45,10 @@ use std::collections::BTreeMap;
 
 use crate::client::HttpClient;
 use crate::web_search::WebSearchConfig;
-use crate::{Llm, LlmEvent, LlmRequest, LlmStream, MessageRole, StopReason, ToolCall, Usage};
+use crate::{
+    Llm, LlmEvent, LlmRequest, LlmStream, MessageRole, ModelConcurrencyResolver, StopReason,
+    ToolCall, Usage,
+};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -78,11 +81,11 @@ pub struct OpenAiLlm {
     /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
     /// client default). Threaded into the per-endpoint concurrency permit (#414).
     concurrency: Option<usize>,
-    /// Catalog-provided in-flight concurrency cap for this specific model on
-    /// this endpoint (`None` = no tighter cap than the endpoint's own).
-    /// Threaded into the per-model concurrency permit layered under the
-    /// endpoint permit (#521, ADR-0140).
-    model_concurrency: Option<usize>,
+    /// Resolves the in-flight concurrency cap for whichever model a given
+    /// request actually names, re-run per request rather than baked in at
+    /// construction (#521/#550, ADR-0140) — threaded into the per-model
+    /// concurrency permit layered under the endpoint permit.
+    model_concurrency: ModelConcurrencyResolver,
     /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
     /// the z.ai `web_search` tool. Bound at construction, invisible to core.
     web_search: Option<WebSearchConfig>,
@@ -91,9 +94,9 @@ pub struct OpenAiLlm {
 
 impl OpenAiLlm {
     /// `api_key = None` sends no `Authorization` header (Ollama). A `Some` key is
-    /// sent as `Bearer`. `rpm`/`concurrency`/`model_concurrency = None` use the
-    /// client's (or the endpoint's) defaults. `web_search = Some(..)` requests
-    /// provider-side web search (#305).
+    /// sent as `Bearer`. `rpm`/`concurrency = None` use the client's (or the
+    /// endpoint's) defaults; `model_concurrency` is consulted per request (#550).
+    /// `web_search = Some(..)` requests provider-side web search (#305).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: impl Into<String>,
@@ -101,7 +104,7 @@ impl OpenAiLlm {
         default_model: impl Into<String>,
         rpm: Option<u32>,
         concurrency: Option<usize>,
-        model_concurrency: Option<usize>,
+        model_concurrency: ModelConcurrencyResolver,
         web_search: Option<WebSearchConfig>,
         http: HttpClient,
     ) -> Self {
@@ -120,8 +123,9 @@ impl OpenAiLlm {
 
 /// Factory for one per-session [`OpenAiLlm`]. Pass the provider's base URL, an
 /// optional key, the default model id, the endpoint's rpm budget, the endpoint's
-/// concurrency cap (#414), the model's own tighter concurrency cap on that
-/// endpoint (`None` disables the extra gate, #521), and the opt-in
+/// concurrency cap (#414), a resolver for the model's own tighter concurrency
+/// cap on that endpoint (`|_| None` disables the extra gate, #521; resolved
+/// per request rather than once at construction, #550), and the opt-in
 /// [`WebSearchConfig`] (`None` disables provider-side web search, #305).
 #[allow(clippy::too_many_arguments)]
 pub fn openai_factory(
@@ -130,7 +134,7 @@ pub fn openai_factory(
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
-    model_concurrency: Option<usize>,
+    model_concurrency: ModelConcurrencyResolver,
     web_search: Option<WebSearchConfig>,
     http: HttpClient,
 ) -> crate::LlmFactory {
@@ -151,6 +155,10 @@ pub fn openai_factory(
 impl Llm for OpenAiLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         let model = req.model.unwrap_or(&self.default_model).to_string();
+        // Resolved against *this* request's model, not baked in at
+        // construction (#550) — a profile's `model:`-only pin can send a
+        // request under a different model than `default_model`.
+        let model_concurrency = (self.model_concurrency)(&model);
         let body = request::build_body(
             &model,
             req.system,
@@ -179,7 +187,7 @@ impl Llm for OpenAiLlm {
                 self.rpm,
                 self.concurrency,
                 &model,
-                self.model_concurrency,
+                model_concurrency,
                 || {
                     let mut request = self.http.client().post(&url);
                     if let Some(key) = &self.api_key {

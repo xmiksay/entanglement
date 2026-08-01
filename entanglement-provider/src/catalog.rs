@@ -265,6 +265,24 @@ impl Catalog {
         self.provider(provider)?.models.iter().find(|m| m.id == id)
     }
 
+    /// Build a [`crate::ModelConcurrencyResolver`] that looks `provider`'s
+    /// per-model `concurrency` cap up **at request time**, against whatever
+    /// model id it is called with (#550) — instead of baking one model's cap
+    /// into the client at construction, which then goes stale the moment a
+    /// request's actual model diverges from the one the client was built for
+    /// (a `model:`-only profile pin, the documented request-level fallback
+    /// that skips a client rebind). Clones `self` into the closure so the
+    /// resolver stays `'static` and cheap to clone thereafter (it is
+    /// `Arc`-wrapped) even though every session's `Llm` backend clone carries
+    /// one.
+    pub fn model_concurrency_resolver(&self, provider: &str) -> crate::ModelConcurrencyResolver {
+        let catalog = self.clone();
+        let provider = provider.to_string();
+        std::sync::Arc::new(move |model: &str| {
+            catalog.model(&provider, model).and_then(|m| m.concurrency)
+        })
+    }
+
     /// Find a model by id across *all* providers (the model picker only carries
     /// the id, not which provider it came from).
     pub fn model_by_id(&self, id: &str) -> Option<&ModelEntry> {
@@ -665,10 +683,12 @@ mod tests {
 
     #[test]
     fn concurrency_is_optional_and_user_overridable() {
-        // Unset in the embedded defaults → None (falls back to the client default).
+        // zai ships its own documented endpoint ceiling (#550) — it must be at
+        // least glm-5.2's model-level cap (5) or that model's cap can never
+        // bind (`model_slot` would warn on every process's first request).
         assert_eq!(
             Catalog::builtin().provider("zai").unwrap().concurrency,
-            None
+            Some(5)
         );
         // A user file can set a per-provider concurrency without touching siblings.
         let c = merge_str("providers:\n  - name: zai\n    concurrency: 8\n");

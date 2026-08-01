@@ -351,6 +351,25 @@ pub struct LlmRequest<'a> {
 /// loop can hold it across `.await` points without borrowing the backend.
 pub type LlmStream = BoxStream<'static, anyhow::Result<LlmEvent>>;
 
+/// Resolves a model id to its per-model in-flight concurrency cap on a given
+/// provider's endpoint (#521, ADR-0140), re-run **on every request** rather
+/// than baked in once at client construction (#550): a backend's
+/// `default_model` and a given [`LlmRequest::model`] can diverge — a
+/// profile's `model:` set without `provider:` is the documented
+/// request-level fallback (`AgentProfile::model_pin` returns `None`, so
+/// `SetAgent` doesn't rebind the client) — and resolving the cap once from
+/// the client's construction-time model would then pair the *wrong* model's
+/// cap with the *actual* request's model. `None` ⇒ no per-model cap; the
+/// request admits solely through the endpoint-wide gate.
+pub type ModelConcurrencyResolver = std::sync::Arc<dyn Fn(&str) -> Option<usize> + Send + Sync>;
+
+/// A [`ModelConcurrencyResolver`] that ignores the model and always returns
+/// `cap` — for callers with no catalog to resolve against (tests, or a
+/// backend that only ever serves one fixed model).
+pub fn fixed_model_concurrency(cap: Option<usize>) -> ModelConcurrencyResolver {
+    std::sync::Arc::new(move |_: &str| cap)
+}
+
 /// Anything that can stream a conversation turn for the engine.
 #[async_trait]
 pub trait Llm: Send {

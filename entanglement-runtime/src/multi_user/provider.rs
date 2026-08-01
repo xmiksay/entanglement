@@ -144,10 +144,10 @@ fn resolve_for_user(
     let key = ctx.key_for(entry);
     let rpm = entry.rpm;
     let concurrency = entry.concurrency;
-    let model_concurrency = ctx
-        .catalog
-        .model(provider, model)
-        .and_then(|m| m.concurrency);
+    // Resolved per request against the user's own catalog (#550), not once
+    // here against just this call's `model` — see `Catalog::
+    // model_concurrency_resolver`.
+    let model_concurrency = ctx.catalog.model_concurrency_resolver(provider);
 
     let llm_factory = match entry.wire {
         Wire::Openai => {

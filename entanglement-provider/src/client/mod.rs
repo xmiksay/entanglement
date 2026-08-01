@@ -48,7 +48,14 @@
 //! order. Both are held for the whole streamed body via `StreamGuard`. The
 //! endpoint-wide `Retry-After`/pacing stay shared across every model on it (a
 //! 429 may well be host-wide); a model carrying no cap admits solely through
-//! the endpoint gate, unchanged from before this layer existed.
+//! the endpoint gate, unchanged from before this layer existed. The cap
+//! passed in is resolved by the caller **per request**, against the
+//! request's own model rather than baked in once at client construction
+//! (#550, `ModelConcurrencyResolver`) — and `EndpointState::model_slot`
+//! corrects an already-cached slot's cap if a later caller supplies a
+//! different one, rather than latching the first value seen for the rest of
+//! the process (ADR-0140's whole point is a *correct* per-model cap; a
+//! silently-wrong one that can never self-heal defeats it).
 //!
 //! # Shared cross-process lease ordering (#546)
 //! The cross-process gate (below) is scarcer still than either in-process
@@ -342,33 +349,54 @@ impl EndpointState {
         Ok(())
     }
 
-    /// Resolve (creating on first use) this endpoint's slot for `model`. Only
-    /// the *first* caller for a given model sets its cap — mirrors
-    /// `HttpClient::endpoint`'s own "first caller wins" sizing. A model cap
-    /// wider than the endpoint's own is legal — the endpoint cap simply binds
-    /// first as the ceiling on the sum across every model — but is almost
-    /// certainly a misconfiguration (the model cap can then never be the
-    /// binding constraint), so it warns rather than errors.
+    /// Resolve (creating on first use) this endpoint's slot for `model`. Unlike
+    /// `HttpClient::endpoint`'s "first caller wins" endpoint sizing, a later
+    /// caller supplying a *different* cap **corrects** the cached slot rather
+    /// than being ignored (#550): the per-request [`ModelConcurrencyResolver`]
+    /// resolves the right model's cap on every call now, but a stale/wrong
+    /// value could still reach here first (a config reload, or simply the
+    /// very first caller racing ahead of a correction) — and with the old
+    /// first-caller-wins semantics that mistake stuck for the rest of the
+    /// process, exactly the "permanent wrong cap" failure ADR-0140 exists to
+    /// prevent. Replacing the map entry is safe: any permit already checked
+    /// out against the old `Arc<Semaphore>` remains valid and simply releases
+    /// into a semaphore no longer referenced by new callers, who all pick up
+    /// the corrected one instead. A model cap wider than the endpoint's own is
+    /// legal — the endpoint cap simply binds first as the ceiling on the sum
+    /// across every model — but is almost certainly a misconfiguration (the
+    /// model cap can then never be the binding constraint), so it warns rather
+    /// than errors.
     fn model_slot(&self, model: &str, cap: usize) -> Arc<ModelSlot> {
         let mut map = self
             .model_concurrency
             .lock()
             .expect("model concurrency poisoned");
-        map.entry(model.to_string())
-            .or_insert_with(|| {
-                if cap > self.concurrency_cap {
-                    tracing::warn!(
-                        model,
-                        model_concurrency = cap,
-                        endpoint_concurrency = self.concurrency_cap,
-                        "model concurrency cap exceeds the endpoint's own — \
-                         the endpoint cap binds first, so this model can never \
-                         reach its configured cap"
-                    );
-                }
-                Arc::new(ModelSlot::new(cap))
-            })
-            .clone()
+        if let Some(slot) = map.get(model) {
+            if slot.cap == cap {
+                return slot.clone();
+            }
+            tracing::warn!(
+                model,
+                previous_cap = slot.cap,
+                corrected_cap = cap,
+                "model concurrency cap changed for this model — correcting the \
+                 cached slot instead of keeping the stale cap for the rest of \
+                 the process"
+            );
+        }
+        if cap > self.concurrency_cap {
+            tracing::warn!(
+                model,
+                model_concurrency = cap,
+                endpoint_concurrency = self.concurrency_cap,
+                "model concurrency cap exceeds the endpoint's own — \
+                 the endpoint cap binds first, so this model can never \
+                 reach its configured cap"
+            );
+        }
+        let slot = Arc::new(ModelSlot::new(cap));
+        map.insert(model.to_string(), slot.clone());
+        slot
     }
 }
 

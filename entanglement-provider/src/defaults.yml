@@ -42,6 +42,12 @@ providers:
     base_url: https://api.z.ai/api/coding/paas/v4
     key_env: ZAI_API_KEY
     default_model: glm-5.2
+    # z.ai's own documented endpoint-wide ceiling (#550) — without this the
+    # endpoint fell back to the client's generic default of 3, *below*
+    # glm-5.2's own model-level cap of 5 below, so `model_slot` warned "model
+    # concurrency cap exceeds the endpoint's own" on every process's first
+    # request and the model cap could never actually be reached.
+    concurrency: 5
     # Provider-bundled MCP servers (#542): z.ai's first-party tool servers,
     # reachable with the same ZAI_API_KEY (docs.z.ai/devpack/mcp, fetched
     # 2026-08-01). Default state is `allowed` — available for per-session
