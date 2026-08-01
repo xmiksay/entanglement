@@ -249,6 +249,11 @@ fn try_admit(path: &Path, rpm: u32, concurrency: usize, pid: u32) -> Result<Admi
             return Admission::Wait(Duration::from_millis(wait_ms));
         }
 
+        // Stamps the RPM ledger at admission, which the caller (`execute_with_retry`,
+        // #546) treats as "at send": it acquires this lease only after both
+        // in-process permits, immediately before firing the request — so
+        // nothing can queue between this timestamp and the actual send the
+        // way a caller stuck on its model semaphore used to.
         let lease_id = next_lease_id();
         state.request_times_ms.push(now);
         state.leases.push(Lease {

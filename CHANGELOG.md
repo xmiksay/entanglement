@@ -160,6 +160,17 @@ alternatives behind each design decision live in the ADRs under
 
 ### Fixed
 
+- **Shared endpoint gate acquired before the model permit — cross-process
+  starvation of sibling instances** (#546): `execute_with_retry` acquired the
+  cross-process shared lease *before* the in-process model permit, violating
+  ADR-0140's own ordering rule. With the shipped z.ai config (endpoint cap 3,
+  `glm-4.7-flash` model cap 1), three flash requests each took a shared lease
+  and then queued on the model semaphore — holding and renewing those leases
+  for as long as they waited — starving a sibling `skutter` process sharing
+  the same endpoint+key even though the provider itself had room. The shared
+  lease is now the innermost gate, acquired only after both the model and
+  endpoint permits, which also fixes the shared RPM ledger being stamped at
+  admission instead of effectively at send.
 - **`skutter run`/`tui`/`serve` never exited — untracked detached tasks held
   `Holly` clones open forever** (#545, a regression from #515/33992db): the
   shutdown block aborts the top-level responder handles then blocks on the
