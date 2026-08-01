@@ -306,6 +306,28 @@ mod tests {
     }
 
     #[test]
+    fn test_expansion_grep_shows_all_three_inputs_and_full_response() {
+        // #520: pattern, path filter, and exclude — every request input, each
+        // on its own untruncated line — plus the full match list.
+        let result = super::super::render_expansion(
+            Some("grep"),
+            r#"{"pattern":"TODO","path":"src/**/*.rs","exclude":["target/*","*.bak"]}"#,
+            "src/main.rs:10:// TODO fix\nsrc/lib.rs:20:// TODO later\n",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(text.contains("pattern: TODO"), "{text:?}");
+        assert!(text.contains("path: src/**/*.rs"), "{text:?}");
+        assert!(text.contains("target/*"), "{text:?}");
+        assert!(text.contains("*.bak"), "{text:?}");
+        assert!(text.contains("src/main.rs:10:"), "{text:?}");
+        assert!(text.contains("src/lib.rs:20:"), "{text:?}");
+        assert!(text.contains("2 matches found"), "{text:?}");
+    }
+
+    #[test]
     fn test_expansion_glob_shows_pattern_and_exclude() {
         let result = super::super::render_expansion(
             Some("glob"),
