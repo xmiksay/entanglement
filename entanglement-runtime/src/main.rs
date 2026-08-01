@@ -1191,6 +1191,26 @@ async fn main() -> Result<()> {
     engine_config.generation_resolver = Some(
         config::agent_generation::AgentGenerationStore::resolver(live_agent_generation.clone()),
     );
+    // Per-purpose aux-model pins (Issue 5): a managed `aux-models.yml` sibling
+    // of `agent-models.yml`, consulted by the `AuxLlmRegistry` to route a side
+    // transformation (session-title generation today; compaction summary once
+    // wired) to a separate provider/model, falling back to the primary when a
+    // purpose is unset or its pin won't resolve. Threaded into the TUI so
+    // `/aux-model` persists back to disk.
+    let live_aux_models = Arc::new(Mutex::new(config::aux_models::AuxModelStore::load()));
+    // The registry reuses the same catalog resolver the engine calls on
+    // `SetModel` (capturing the warm per-endpoint pool) + the primary
+    // `LlmFactory` as the no-pin fallback, so an unset purpose is byte-identical
+    // to "use the main model".
+    let aux_registry = entanglement_runtime::aux_llm::AuxLlmRegistry::new(
+        live_aux_models.clone(),
+        build_model_resolver(
+            catalog.clone(),
+            http_client.clone(),
+            web_search_config(&user_config),
+        ),
+        engine_config.llm_factory.clone(),
+    );
     // Dynamic `ToolRegistry` (#372, ADR-0096): shared mutably so a live
     // registration change (MCP add/remove, #375) is visible without a restart.
     // `engine_config.tool_specs` stays the static snapshot baked above (still
@@ -1316,6 +1336,14 @@ async fn main() -> Result<()> {
     // 429 cool-down or pacing slowdown too, not just the TUI's direct poll.
     let throttle_handle = throttle::spawn_throttle_responder(&holly, http_client.clone());
 
+    // Auto session-title generator (Issue 5): on the first prompt of an
+    // unnamed session, spawns a background task that asks the aux
+    // `session_title` LLM for a short title and sets it via `SetSessionMeta`.
+    // Purely runtime-side; best-effort (a failure is logged + dropped). Aborted
+    // at shutdown alongside the other responders.
+    let session_title_handle =
+        entanglement_runtime::session_title::spawn_session_title_generator(&holly, aux_registry);
+
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
     // Answer `ReplayFrom` late-subscriber history queries from that same log
@@ -1420,6 +1448,7 @@ async fn main() -> Result<()> {
                 live_profiles,
                 live_agent_models,
                 live_agent_generation,
+                live_aux_models.clone(),
                 reload_rx,
                 cwd.clone(),
                 live_bash,
@@ -1462,6 +1491,7 @@ async fn main() -> Result<()> {
                     live_profiles,
                     live_agent_models,
                     live_agent_generation,
+                    live_aux_models.clone(),
                     reload_rx,
                     cwd.clone(),
                     live_bash,
@@ -1503,6 +1533,7 @@ async fn main() -> Result<()> {
     mcp_responder_handle.abort();
     bash_responder_handle.abort();
     throttle_handle.abort();
+    session_title_handle.abort();
     history_handle.abort();
     if let Some(h) = watcher_handle {
         h.abort();

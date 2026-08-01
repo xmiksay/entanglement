@@ -33,6 +33,7 @@ pub enum Command {
     Continue,
     Stop,
     Name,
+    AuxModel,
 }
 
 impl Command {
@@ -62,6 +63,7 @@ impl Command {
             Command::Continue => "continue",
             Command::Stop => "stop",
             Command::Name => "name",
+            Command::AuxModel => "aux-model",
         }
     }
 
@@ -107,6 +109,9 @@ impl Command {
                 "Stop/cancel the current session's in-flight turn (--all for every live session)"
             }
             Command::Name => "Set a display name for the current session",
+            Command::AuxModel => {
+                "Pin a provider/model for an auxiliary purpose (summarize | session_title) <provider>/<model>"
+            }
         }
     }
 
@@ -141,6 +146,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Continue,
         Command::Stop,
         Command::Name,
+        Command::AuxModel,
     ]
 }
 
@@ -194,6 +200,43 @@ pub fn parse_all_flag(text: &str, cmd: Command) -> Result<bool, String> {
 pub fn parse_name_args(text: &str) -> Option<String> {
     let rest = text.trim().strip_prefix("/name").unwrap_or("").trim();
     (!rest.is_empty()).then(|| rest.to_string())
+}
+
+/// Parse `/aux-model <purpose> <provider>/<model>` (Issue 5). `text` is the
+/// raw input including the leading `/aux-model` (the raw-text re-parse pattern,
+/// like [`parse_name_args`] — [`parse_command`] drops everything after the
+/// command name). The model half is `<provider>/<model>`; a missing slash, an
+/// unrecognized purpose, or an empty model id is a friendly `Err` message.
+///
+/// `/aux-model` with no args (or `/aux-model list`) returns `Ok(None)` so the
+/// caller can render the current pins as a status line instead of erroring —
+/// the discoverability affordance the `/show` command uses for generation.
+pub fn parse_aux_model_args(
+    text: &str,
+) -> Result<Option<(crate::config::aux_models::Purpose, String, String)>, String> {
+    let rest = text.trim().strip_prefix("/aux-model").unwrap_or("").trim();
+    if rest.is_empty() || rest == "list" {
+        return Ok(None);
+    }
+    let mut parts = rest.split_whitespace();
+    let purpose_str = parts
+        .next()
+        .ok_or("usage: /aux-model <purpose> <provider>/<model>")?;
+    let purpose = crate::config::aux_models::Purpose::parse(purpose_str).ok_or_else(|| {
+        format!("unknown purpose `{purpose_str}` (expected summarize | session_title)")
+    })?;
+    let pair = parts
+        .next()
+        .ok_or("usage: /aux-model <purpose> <provider>/<model>")?;
+    let (provider, model) = pair
+        .split_once('/')
+        .ok_or_else(|| format!("`{pair}` is not <provider>/<model> (missing `/`)"))?;
+    let provider = provider.trim();
+    let model = model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return Err("provider and model must both be non-empty".to_string());
+    }
+    Ok(Some((purpose, provider.to_string(), model.to_string())))
 }
 
 pub fn parse_command(input: &str) -> Option<Command> {
@@ -438,6 +481,50 @@ mod tests {
         );
         assert_eq!(parse_name_args("/name   "), None, "bare /name → usage");
         assert_eq!(parse_name_args("/name"), None);
+    }
+
+    #[test]
+    fn parse_aux_model_command_and_args() {
+        assert_eq!(parse_command("/aux-model"), Some(Command::AuxModel));
+        assert_eq!(
+            parse_command("/aux-model summarize zai/glm-4.5-flash"),
+            Some(Command::AuxModel)
+        );
+        // Happy path: purpose + provider/model split on the slash.
+        let (p, prov, model) = parse_aux_model_args("/aux-model summarize zai/glm-4.5-flash")
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, crate::config::aux_models::Purpose::Summarize);
+        assert_eq!(prov, "zai");
+        assert_eq!(model, "glm-4.5-flash");
+        // `title` is accepted as the friendly alias of `session_title`.
+        let (p, _, _) = parse_aux_model_args("/aux-model title ollama/llama3.1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, crate::config::aux_models::Purpose::SessionTitle);
+        // Bare /aux-model and /aux-model list → Ok(None) (render current pins).
+        assert_eq!(parse_aux_model_args("/aux-model").unwrap(), None);
+        assert_eq!(parse_aux_model_args("/aux-model list").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_aux_model_rejects_malformed() {
+        // Unknown purpose.
+        assert!(parse_aux_model_args("/aux-model narrate zai/x")
+            .unwrap_err()
+            .contains("unknown purpose"));
+        // Missing slash.
+        assert!(parse_aux_model_args("/aux-model summarize zaiglm")
+            .unwrap_err()
+            .contains("<provider>/<model>"));
+        // Empty model after slash.
+        assert!(parse_aux_model_args("/aux-model summarize zai/")
+            .unwrap_err()
+            .contains("non-empty"));
+        // Missing pair entirely.
+        assert!(parse_aux_model_args("/aux-model summarize")
+            .unwrap_err()
+            .contains("usage"));
     }
 
     #[test]

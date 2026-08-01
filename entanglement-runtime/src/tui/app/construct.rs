@@ -140,6 +140,7 @@ impl App {
             pending_model_persist: None,
             agent_generation: None,
             pending_generation_persist: None,
+            aux_models: None,
             http_client: None,
             grants: None,
             configured_editor: None,

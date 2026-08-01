@@ -62,6 +62,7 @@ use crate::mcp::McpServerConfig;
 pub mod agent_generation;
 pub mod agent_models;
 pub mod atomic;
+pub mod aux_models;
 mod ceiling_warn;
 pub mod env_file;
 pub mod env_key;

@@ -1,6 +1,7 @@
 mod allow_command;
 mod app;
 mod attention;
+mod aux_command;
 mod bash_command;
 mod clipboard;
 mod command_args;
@@ -74,6 +75,7 @@ pub async fn tui(
     agent_generation: std::sync::Arc<
         std::sync::Mutex<crate::config::agent_generation::AgentGenerationStore>,
     >,
+    aux_models: std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>,
     mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     root: std::path::PathBuf,
     live_bash: std::sync::Arc<crate::bash_live::LiveBashState>,
@@ -130,6 +132,7 @@ pub async fn tui(
     app.set_active_provider(provider_name);
     app.set_agent_models(agent_models);
     app.set_agent_generation(agent_generation);
+    app.set_aux_models(aux_models);
     app.set_http_client(http_client);
     app.set_configured_editor(configured_editor);
     app.set_grants(grants);

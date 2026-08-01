@@ -20,6 +20,7 @@ use crate::tui::theme::Theme;
 // cohesive slice of the `impl App` surface. Fields stay private here — child
 // modules reach them through their descendant visibility.
 mod allow;
+mod aux;
 mod bash;
 mod compact;
 mod construct;
@@ -96,6 +97,11 @@ pub struct App {
     >,
     /// `(agent, overrides)` awaiting its matching `GenerationChanged` confirmation.
     pending_generation_persist: Option<(String, entanglement_provider::GenerationParams)>,
+
+    // Per-purpose aux-model pins (Issue 5): the managed `aux-models.yml` store,
+    // threaded in from the head so `/aux-model <purpose> <provider>/<model>`
+    // persists back to disk. `None` store in tests / when no config dir.
+    aux_models: Option<std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>>,
 
     // Shared HTTP transport (#rate-limit-status): the same per-endpoint pool the
     // provider clients meter through, so the bottom info line can surface a

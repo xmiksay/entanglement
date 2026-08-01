@@ -124,7 +124,7 @@ reads it; this table is the one-place index):
 | `ENTANGLEMENT_CONFIG_FILE` | override the layered user config file path (`config.yml`) |
 | `ENTANGLEMENT_ENV_FILE` | override the managed provider-key env file path (`.env`) |
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` | replace the whole user agents/skills layer (also the cross-vendor opt-out) |
-| `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the four managed runtime files |
+| `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_AUX_MODELS_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the five managed runtime files |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
 | `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register the `bash`/`bash_output` exec pair at startup (the TUI `/bash on` command, #498, live-registers it mid-session instead) |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide (default when a profile sets no `sandbox:` override); opt-in to keep network (#399, #479) |
@@ -591,9 +591,27 @@ re-document them here):
   (cosmetic); **not** mirrored into `SessionInfo` (creation-only directory) —
   heads fold it like `AgentChanged`, and `skutter sessions`/the resume modal
   recover the name from the log scan. TUI: `/name <text>`; sidebar/modal
-  prefer name over short id and action over the first-prompt line. No LLM
-  auto-namer in-tree yet — an external namer is the intended `action`/`name`
-  writer.
+  prefer name over short id and action over the first-prompt line. **Auto
+  session-title generator (Issue 5):** on the first prompt of an unnamed
+  session, a runtime background task calls the aux `session_title` LLM (see
+  below) for a short title and sets it via `SetSessionMeta` — purely
+  runtime-side, best-effort; `/name` always overrides it.
+- **Per-purpose model/provider for side transformations (Issue 5):** a managed
+  `aux-models.yml` (sibling of `agent-models.yml`, override
+  `ENTANGLEMENT_AUX_MODELS_FILE`) maps a `purpose ∈ { summarize, session_title }`
+  to a `{ provider, model }`. A runtime-owned `AuxLlmRegistry` resolves a
+  purpose → `Box<dyn Llm>` by reusing the catalog `ModelResolver` (the same
+  closure `SetModel` uses), **falling back to the session's primary model** when
+  a purpose is unset or its pin won't resolve against the catalog. Core never
+  sees it — a caller builds its own one-shot `Box<dyn Llm>` and drops it.
+  Consumed today by the session-title generator (`session_title` purpose); the
+  `summarize` purpose's wiring into the compact path (`InMsg::Oneshot { op:
+  "compact" }`, which the *engine* drives with its own `&mut s.llm`) is the
+  documented next step — routing it runtime-side needs a compaction intercept or
+  a new seam, deferred to avoid threading an aux `Llm` through the protocol in
+  the first batch. TUI: `/aux-model <purpose> <provider>/<model>`; a second
+  provider means a second endpoint pool/key (already supported — per-endpoint
+  pooling is keyed by base+key).
 - **Single-shot session ops + persisted compaction** (#324,
   [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)):
   `InMsg::Oneshot { session, op: String, args: Value }` is a generic **wire

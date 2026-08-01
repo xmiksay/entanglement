@@ -87,6 +87,10 @@ impl App {
             // Same shape again: `/name <text>` needs `holly` plus the trailing
             // text — both call sites intercept it before reaching this dispatch.
             Command::Name => false,
+            // Same shape again (Issue 5): `/aux-model <purpose> <provider>/<model>`
+            // needs the trailing text — both call sites intercept it before
+            // reaching this dispatch.
+            Command::AuxModel => false,
         }
     }
 

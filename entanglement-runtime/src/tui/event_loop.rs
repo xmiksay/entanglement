@@ -518,6 +518,10 @@ pub(super) async fn handle_event(
                                                 send_name(app, holly, &text).await;
                                                 return Ok(false);
                                             }
+                                            if cmd == crate::tui::commands::Command::AuxModel {
+                                                crate::tui::aux_command::send_aux_model(app, &text);
+                                                return Ok(false);
+                                            }
                                             // Lifecycle commands (#6): `/stop`,
                                             // `/pause`, `/continue` need `holly`
                                             // and the optional `--all` text.

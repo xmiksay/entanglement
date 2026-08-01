@@ -30,6 +30,7 @@
 pub mod agent_poll;
 pub mod agents;
 pub mod ask_user;
+pub mod aux_llm;
 // Live bash enablement (#498, ADR-0133): register `bash`/`bash_output` in a
 // running process, graded by a `BashGrade` — mirrors the MCP `SharedRegistry`
 // live-management seam (#372/#375). Lean-library-safe: only entanglement-core
@@ -80,6 +81,8 @@ pub mod seam;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod session_store;
+#[cfg(feature = "provider")]
+pub mod session_title;
 pub mod skills;
 pub mod subagent;
 pub mod system_prompt;

@@ -47,7 +47,11 @@ default = ["tui", "serve", "mcp-http", "rhai"]
 cli = ["dep:clap", "dep:tracing-subscriber", "dep:rpassword"]
 # LLM providers (reqwest via entanglement-provider). Split from `cli` (#208) so a
 # future `serve`/`ws` head can pull providers without dragging in clap.
-provider = ["dep:entanglement-provider"]
+# LLM providers (reqwest via entanglement-provider). Split from `cli` (#208) so a
+# future `serve`/ws head can pull providers without dragging in clap. Pulls
+# `futures` too: the session-title generator (Issue 5) drains a provider
+# `LlmStream` for a one-shot call, and `futures::StreamExt` is the iterator.
+provider = ["dep:entanglement-provider", "dep:futures"]
 # WebSocket `serve` head (#153, ADR-0048): a loopback-bound axum HTTP+WS server,
 # the browser twin of the TUI. Implies `cli` + `provider` (reached through the
 # clap CLI, drives a real provider); `axum`/`futures` stay behind it so the lean
