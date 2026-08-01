@@ -9,6 +9,7 @@
 //! no `entanglement-*` dependency, ADR-0053).
 
 use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -161,6 +162,11 @@ fn prune(state: &mut SharedState, now: u64) {
 /// (unwritable directory, permissions, a read-only filesystem) uniformly —
 /// the caller's only reaction is "fall back to in-process gating," so the
 /// specific cause isn't threaded through.
+///
+/// The temp file is `fsync`ed before the rename and the parent directory after
+/// it, mirroring `entanglement-runtime::config::atomic::atomic_write` (#549) —
+/// without both syncs a crash between write and rename can leave `path`
+/// zero-length rather than either the old or new content.
 fn with_locked_state<T>(path: &Path, f: impl FnOnce(&mut SharedState) -> T) -> Result<T, ()> {
     let dir = path.parent().ok_or(())?;
     fs::create_dir_all(dir).map_err(|_| ())?;
@@ -181,9 +187,34 @@ fn with_locked_state<T>(path: &Path, f: impl FnOnce(&mut SharedState) -> T) -> R
     let result = f(&mut state);
     let bytes = serde_json::to_vec(&state).map_err(|_| ())?;
     let tmp_path = path.with_extension("state.tmp");
-    fs::write(&tmp_path, bytes).map_err(|_| ())?;
+    {
+        let mut tmp_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .map_err(|_| ())?;
+        tmp_file.write_all(&bytes).map_err(|_| ())?;
+        tmp_file.sync_all().map_err(|_| ())?;
+    }
     fs::rename(&tmp_path, path).map_err(|_| ())?;
+    sync_dir(dir).map_err(|_| ())?;
     Ok(result)
+}
+
+/// Flush a directory's own metadata (the rename that just landed in it) to
+/// disk. Windows has no directory handle to fsync — NTFS journals the rename
+/// itself, so this is a no-op there.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::File::open(dir)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
 }
 
 pub(super) fn now_ms() -> u64 {
