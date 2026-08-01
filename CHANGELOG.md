@@ -10,11 +10,26 @@ alternatives behind each design decision live in the ADRs under
 
 ## [Unreleased]
 
-> **Wire-shape change:** `OutEvent::Plan` gains a `path: String` field
+> **Wire-shape changes:** `OutEvent::Plan` gains a `path: String` field
 > (`#[serde(default)]`, so a pre-#513 persisted log still replays).
+> `OutEvent::Throttle` gains `waiters: usize` and
+> `shared_leases: Option<usize>` (both `#[serde(default)]`, same replay
+> guarantee).
 
 ### Added
 
+- **Cross-process throttle state is now visible** (#552): `ThrottleStatus`/
+  `OutEvent::Throttle` used to read only in-process state, so a peer
+  process's parked 429, a cross-process lease it held, or a caller queued in
+  `SharedGate::acquire` all showed as "at rest" — exactly the incidents that
+  most needed surfacing. `backoff_remaining` now folds in a peer's shared
+  cool-down (read lock-free straight off the shared state file,
+  `SharedGate::peek`); a new `shared_leases: Option<usize>` reports live
+  cross-process lease occupancy and factors into `is_throttled`/the TUI's
+  "busy" classification; a new `waiters: usize` (deferred-work-ledger row 5)
+  counts callers currently queued behind the endpoint's own concurrency
+  permit. The TUI's throttle indicator gains `(shared X/cap)` and `· Nq`
+  suffixes when either disagrees with the local view.
 - **MCP server OAuth** (ADR-0153): an MCP server entry gains an optional
   `oauth:` block — present *even empty*, it switches that server from
   static-header auth to a browser-obtained bearer token. Most remote MCP
@@ -188,6 +203,19 @@ alternatives behind each design decision live in the ADRs under
   `LEASE_TTL` is also tightened from 180s to ~2× `LEASE_RENEW_INTERVAL`
   (120s) as the backstop for the one case synchronous release can't cover: a
   `SIGKILL`.
+- **Cancelled permits could stay held for up to the 120s idle timeout**
+  (#552): `spawn_byte_stream`'s detached pump task only released its
+  `StreamGuard` (the endpoint/model permits and the cross-process lease) on
+  its *next* chunk-send failure or the `STREAM_IDLE_TIMEOUT` watchdog —
+  neither of which fires while the body is silently paused. A `Stop` mid
+  silent reasoning pause, or the OpenAI-compat parser's `[DONE]`-triggered
+  `break 'outer` while a keep-alive proxy holds the connection open, both
+  dropped the consumer's `mpsc::Receiver` without ever hitting either path,
+  so the permits stayed held for up to two minutes — with the default
+  concurrency cap of 3, cancelling three turns could lock a user out of
+  their own endpoint. The pump now races each read against the receiver
+  closing (`tx.closed()`) and releases the guard the moment the consumer is
+  gone.
 - **Shared endpoint gate acquired before the model permit — cross-process
   starvation of sibling instances** (#546): `execute_with_retry` acquired the
   cross-process shared lease *before* the in-process model permit, violating

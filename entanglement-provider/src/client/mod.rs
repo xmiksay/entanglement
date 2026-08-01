@@ -64,6 +64,7 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -72,6 +73,7 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 
 mod shared_state;
+mod shared_store;
 mod status;
 pub use status::ThrottleStatus;
 
@@ -215,6 +217,26 @@ pub struct StreamGuard(
     #[allow(dead_code)] Option<shared_state::SharedLease>,
 );
 
+/// RAII bump of an [`EndpointState::waiters`] counter — display-only queue
+/// depth (#552, deferred-work-ledger row 5). Decrements on `Drop` rather than
+/// after a plain `await` so a caller cancelled mid-wait (e.g. `Stop` dropping
+/// the whole `execute_with_retry` future) still releases its count instead of
+/// leaking it forever.
+struct WaiterGuard<'a>(&'a AtomicUsize);
+
+impl<'a> WaiterGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter)
+    }
+}
+
+impl Drop for WaiterGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// One model's live in-flight cap on a given endpoint (#521, ADR-0140) — a
 /// second, tighter admission gate layered *underneath* the endpoint-wide
 /// [`EndpointState::concurrency`] permit. z.ai enforces concurrency per model
@@ -248,6 +270,11 @@ struct EndpointState {
     /// semaphore because `Semaphore` exposes only *available* permits, so a
     /// status reader needs this to compute in-flight = cap − available.
     concurrency_cap: usize,
+    /// Count of callers currently queued on [`concurrency`][Self::concurrency]'s
+    /// `acquire_owned()` — incremented just before the call, decremented right
+    /// after (deferred-work-ledger row 5, #552), purely for display via
+    /// `status()`; nothing on the request path reads it.
+    waiters: AtomicUsize,
     /// Instant before which no request to this endpoint may proceed, set from a
     /// `Retry-After` header. `None` = no active cool-down.
     retry_after: Mutex<Option<Instant>>,
@@ -274,6 +301,7 @@ impl EndpointState {
             limiter: RateLimiter::new(rpm),
             concurrency: Arc::new(Semaphore::new(cap)),
             concurrency_cap: cap,
+            waiters: AtomicUsize::new(0),
             retry_after: Mutex::new(None),
             model_concurrency: Mutex::new(HashMap::new()),
             shared: shared_state::SharedGate::new(pool_key),
@@ -561,12 +589,18 @@ impl HttpClient {
             // *sum* across every model sharing it. The permit is held until the
             // returned `StreamGuard` drops (i.e. the stream is consumed);
             // dropped here on any retry so a queued caller can take the slot.
+            // `_waiter` counts this caller as queued for display only
+            // (deferred-work-ledger row 5, #552) — released the instant the
+            // permit is granted, via `WaiterGuard`'s `Drop` so a cancelled
+            // await (Stop) still decrements it.
+            let _waiter = WaiterGuard::new(&endpoint.waiters);
             let permit = endpoint
                 .concurrency
                 .clone()
                 .acquire_owned()
                 .await
                 .expect("endpoint concurrency semaphore never closed");
+            drop(_waiter);
             // Cross-process gate (#523, ADR-0144), acquired **last** (#546):
             // admitted only once every `skutter` process sharing this
             // endpoint+key agrees there's combined RPM/concurrency room and no
@@ -731,6 +765,18 @@ impl Default for HttpClient {
 /// [`HttpClient::execute_with_retry`]) is moved into the pump task and dropped
 /// when the body ends, so an endpoint's in-flight cap counts open streams for
 /// their full lifetime — not just until the response headers arrive.
+///
+/// Races each read against the consumer dropping its [`mpsc::Receiver`]
+/// (`tx.closed()`), not just against the idle-gap timeout (#552): a `Stop`
+/// mid silent reasoning pause, or the OpenAI-compat parser's `break 'outer` on
+/// `[DONE]` while a keep-alive proxy holds the connection open, both drop the
+/// receiver without this task ever attempting (and failing) another `send` —
+/// it was stuck awaiting the *next* chunk, which may never come. Without
+/// racing the drop, the guard — and with it the endpoint/model permits and
+/// the cross-process lease — stayed held for up to the full
+/// [`STREAM_IDLE_TIMEOUT`] after the caller had already stopped wanting them;
+/// with cap 3 that could lock a user out of their own endpoint for two
+/// minutes after cancelling three turns.
 pub fn spawn_byte_stream(
     response: reqwest::Response,
     label: &'static str,
@@ -741,23 +787,29 @@ pub fn spawn_byte_stream(
         let _guard = guard; // release the concurrency slot when the body ends
         let mut bytes = response.bytes_stream();
         loop {
-            match tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()).await {
-                Ok(Some(item)) => {
-                    let chunk = item
-                        .map(|c| c.to_vec())
-                        .map_err(|e| anyhow::anyhow!("{label} stream read: {e}"));
-                    if tx.send(chunk).await.is_err() {
-                        break; // consumer dropped
+            tokio::select! {
+                biased;
+                _ = tx.closed() => break, // consumer gone: release the guard now, not on the next idle tick
+                next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()) => {
+                    match next {
+                        Ok(Some(item)) => {
+                            let chunk = item
+                                .map(|c| c.to_vec())
+                                .map_err(|e| anyhow::anyhow!("{label} stream read: {e}"));
+                            if tx.send(chunk).await.is_err() {
+                                break; // consumer dropped
+                            }
+                        }
+                        Ok(None) => break, // stream ended cleanly
+                        Err(_) => {
+                            let _ = tx
+                                .send(Err(anyhow::anyhow!(
+                                    "{label} stream stalled: no data for {STREAM_IDLE_TIMEOUT:?}"
+                                )))
+                                .await;
+                            break;
+                        }
                     }
-                }
-                Ok(None) => break, // stream ended cleanly
-                Err(_) => {
-                    let _ = tx
-                        .send(Err(anyhow::anyhow!(
-                            "{label} stream stalled: no data for {STREAM_IDLE_TIMEOUT:?}"
-                        )))
-                        .await;
-                    break;
                 }
             }
         }

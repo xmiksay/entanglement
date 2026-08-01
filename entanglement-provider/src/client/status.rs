@@ -3,6 +3,7 @@
 //! endpoint is actually backing off). A child module of `client` so it can read
 //! the otherwise-private pool/endpoint state without widening its visibility.
 
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::{Duration, Instant};
 
 use super::{EndpointState, HttpClient};
@@ -35,16 +36,33 @@ pub struct ThrottleStatus {
     /// endpoint's next request may fire (#517). `None` when not penalized, or
     /// when the slot has already elapsed (nothing to wait for right now).
     pub next_request_in: Option<Duration>,
+    /// Count of callers currently queued behind this endpoint's own
+    /// concurrency permit — waiting to be admitted, not yet holding a slot
+    /// (deferred-work-ledger row 5, #552). `0` when nobody is queued; never
+    /// `None` — the counter always exists, sharing or no.
+    pub waiters: usize,
+    /// Count of live cross-process leases (#523) against this endpoint+key
+    /// across every `skutter` sharing it, read straight from the shared
+    /// state file (`SharedGate::peek`, #552) — so a peer's held lease (or one
+    /// this process leaked and hasn't yet reconciled) is visible even when
+    /// this process's own `in_flight` reads low. `None` when cross-process
+    /// sharing is disabled or its state file isn't readable.
+    pub shared_leases: Option<usize>,
 }
 
 impl ThrottleStatus {
     /// Whether this endpoint is currently throttled: parked in a cool-down
-    /// window, slowed by the pacing gate, or already at its in-flight cap.
+    /// window (in-process or, since #552, a peer's cross-process one),
+    /// slowed by the pacing gate, already at its in-flight cap, or a sibling
+    /// process is holding enough shared leases to saturate the same cap.
     /// Public so a caller outside this crate (the runtime's wire-facing
     /// throttle responder, #517) can classify a [`throttle_statuses`][HttpClient::throttle_statuses]
     /// snapshot the same way [`throttle_status`][HttpClient::throttle_status] does internally.
     pub fn is_throttled(&self) -> bool {
-        self.backoff_remaining.is_some() || self.penalized || self.in_flight >= self.cap
+        self.backoff_remaining.is_some()
+            || self.penalized
+            || self.in_flight >= self.cap
+            || self.shared_leases.is_some_and(|leases| leases >= self.cap)
     }
 }
 
@@ -59,12 +77,27 @@ impl EndpointState {
         let ep_in_flight = self
             .concurrency_cap
             .saturating_sub(self.concurrency.available_permits());
-        let backoff_remaining = self
+        let waiters = self.waiters.load(AtomicOrdering::Relaxed);
+        let in_process_backoff = self
             .retry_after
             .lock()
             .expect("retry_after poisoned")
             .and_then(|until| until.checked_duration_since(Instant::now()))
             .filter(|d| !d.is_zero());
+        // A peer's 429 parked only in the shared file (#552) is otherwise
+        // invisible until *this* process's own request happens to touch it —
+        // fold it in so the longer of the two always wins.
+        let shared_snapshot = self.shared.peek();
+        let backoff_remaining = match (
+            in_process_backoff,
+            shared_snapshot.and_then(|s| s.cool_down_remaining),
+        ) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        let shared_leases = shared_snapshot.map(|s| s.leases);
         let (penalized, next_request_in) = {
             let st = self.limiter.state.lock().expect("rate limiter poisoned");
             let penalized = st.interval > self.limiter.base;
@@ -107,6 +140,8 @@ impl EndpointState {
             penalized,
             model,
             next_request_in,
+            waiters,
+            shared_leases,
         }
     }
 }
@@ -337,5 +372,92 @@ mod tests {
             .expect("calm endpoint present");
         assert!(busy.is_throttled());
         assert!(!calm.is_throttled());
+    }
+
+    #[test]
+    fn waiters_counter_reflects_queued_callers() {
+        // `waiters` is bumped/dropped around `execute_with_retry`'s own
+        // `acquire_owned().await` via `WaiterGuard` (#552); exercised directly
+        // here since `WaiterGuard` itself is tested alongside `spawn_byte_stream`
+        // in `client::tests`.
+        let http = HttpClient::new();
+        let ep = http.endpoint("https://api.queued/v1", None, None);
+        ep.waiters.fetch_add(2, AtomicOrdering::Relaxed);
+        let statuses = http.throttle_statuses();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].waiters, 2);
+    }
+
+    #[tokio::test]
+    async fn a_peers_shared_cool_down_surfaces_even_without_a_local_one() {
+        // #552: instance A's 429 only ever touched the shared file — this
+        // process's own in-process `retry_after` was never set locally.
+        // `throttle_status` must still report the cool-down instead of
+        // reading "at rest".
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("ENTANGLEMENT_SHARED_STATE_DIR", dir.path());
+        let http = HttpClient::new();
+        let ep = http.endpoint("https://api.peer-parked/v1", None, None);
+        std::env::remove_var("ENTANGLEMENT_SHARED_STATE_DIR");
+
+        ep.shared.mark_retry_after(Duration::from_secs(20)).await;
+
+        let status = http
+            .throttle_status()
+            .expect("a peer's shared cool-down is still throttled");
+        let remaining = status
+            .backoff_remaining
+            .expect("cool-down surfaced from the shared file alone");
+        assert!(
+            remaining > Duration::from_secs(15) && remaining <= Duration::from_secs(20),
+            "got {remaining:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_leases_are_surfaced_and_saturate_is_throttled() {
+        // A lease held only in the shared file (a peer process, or one this
+        // process's own semaphore has no record of) must still show up: the
+        // in-process semaphore alone can under-report occupancy (#552).
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("ENTANGLEMENT_SHARED_STATE_DIR", dir.path());
+        let http = HttpClient::with_config(RetryConfig {
+            concurrency: 1,
+            ..RetryConfig::default()
+        });
+        let ep = http.endpoint("https://api.leased/v1", None, None);
+        std::env::remove_var("ENTANGLEMENT_SHARED_STATE_DIR");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let _peer_lease = ep
+            .shared
+            .acquire(100, 1, deadline)
+            .await
+            .expect("deadline generous enough not to be hit")
+            .expect("shared state dir is writable in this test");
+
+        let status = http
+            .throttle_status()
+            .expect("a saturated shared lease is throttled");
+        assert_eq!(status.in_flight, 0, "the local semaphore holds nothing");
+        assert_eq!(status.shared_leases, Some(1));
+        assert!(status.is_throttled());
+    }
+
+    #[test]
+    fn shared_leases_is_none_when_the_state_file_does_not_exist_yet() {
+        // Nobody (this process or a peer) has ever admitted a request against
+        // this endpoint through the shared gate, so no state file exists —
+        // `peek` must degrade to `None`, not panic or report a phantom lease
+        // count, and a purely local cool-down must still surface on its own.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("ENTANGLEMENT_SHARED_STATE_DIR", dir.path());
+        let http = HttpClient::new();
+        let ep = http.endpoint("https://api.unwritten/v1", None, None);
+        std::env::remove_var("ENTANGLEMENT_SHARED_STATE_DIR");
+        ep.set_retry_after(Duration::from_secs(5));
+
+        let status = http.throttle_status().expect("local cool-down present");
+        assert_eq!(status.shared_leases, None);
     }
 }

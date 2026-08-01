@@ -796,3 +796,74 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         start.elapsed()
     );
 }
+
+// ── permit release after the connection stays open past `[DONE]` (#552) ────
+
+#[tokio::test]
+async fn endpoint_permit_frees_promptly_when_a_keep_alive_proxy_holds_the_body_open() {
+    // A keep-alive proxy can hold the connection open after `[DONE]` without
+    // ever sending another byte. The consumer (`OpenAiLlm`'s SSE loop) sees
+    // `[DONE]`, stops reading, and returns — but before #552 the endpoint's
+    // concurrency permit was held by a detached pump task that only noticed
+    // on its *next* chunk-send attempt or the 120s idle timeout, neither of
+    // which the held-open, byte-silent connection ever triggers. Assert the
+    // permit is free again almost immediately, not "eventually".
+    let body = sse_body(&[r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}"#]);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept");
+        let _ = read_http_request(&mut stream).await;
+        // Chunked framing (no `Content-Length`, no `Connection: close`) with
+        // the SSE body as one chunk, but no terminating `0\r\n\r\n` — the
+        // client has no way to know the body is complete except by waiting
+        // for bytes that (in this test) never come.
+        let head =
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let framed = format!("{:x}\r\n{body}\r\n", body.len());
+        stream.write_all(head.as_bytes()).await.expect("write head");
+        stream
+            .write_all(framed.as_bytes())
+            .await
+            .expect("write chunk");
+        stream.flush().await.expect("flush");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        // `stream` drops here, well after the assertion below has already run.
+    });
+    let base_url = format!("http://{addr}");
+
+    let http = HttpClient::with_config(RetryConfig {
+        concurrency: 1,
+        ..RetryConfig::default()
+    });
+    let mut llm = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("test-key".into()),
+        "glm-5.2",
+        None,
+        None,
+        None,
+        None,
+        http.clone(),
+    );
+    let messages = vec![Message::user("hello")];
+    let req = LlmRequest {
+        system: "be helpful",
+        model: None,
+        messages: &messages,
+        tools: &[],
+        generation: None,
+    };
+    let stream = llm.stream(req).await.expect("stream should start");
+    let events: Vec<_> = stream.collect().await;
+    assert!(events.iter().all(|r| r.is_ok()));
+
+    // Give the pump task's `tokio::select!` a moment to notice the dropped
+    // receiver — near-instant, nowhere close to the 120s idle timeout.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        http.throttle_status().is_none(),
+        "the endpoint's concurrency permit must be released promptly, not held \
+         while the connection sits open past [DONE]"
+    );
+}

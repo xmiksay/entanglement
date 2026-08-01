@@ -459,3 +459,115 @@ fn next_backoff_caps_at_max() {
     let d = next_backoff(Duration::from_secs(100), max);
     assert!(d >= max && d < max * 2, "got {d:?}");
 }
+
+#[test]
+fn waiter_guard_increments_on_construction_and_decrements_on_drop() {
+    let counter = AtomicUsize::new(0);
+    {
+        let _guard = WaiterGuard::new(&counter);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
+}
+
+// ── spawn_byte_stream guard release (#552) ──────────────────────────────────
+
+/// Write a bare HTTP/1.1 response (no framing that lets the client know the
+/// body is complete) to `sock`, then hold the connection open and silent for
+/// a while — standing in for a keep-alive proxy that never closes after
+/// `[DONE]`, or a provider connection sitting through a silent reasoning
+/// pause. Blocking (runs on its own `std::thread`) since it must hold the
+/// socket open independent of the async client under test.
+fn serve_one_response_then_hold_open(listener: std::net::TcpListener, body: &'static [u8]) {
+    use std::io::{Read, Write};
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf); // drain the request
+            let mut head = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n".to_vec();
+            head.extend_from_slice(body);
+            let _ = sock.write_all(&head);
+            let _ = sock.flush();
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
+}
+
+#[tokio::test]
+async fn spawn_byte_stream_releases_the_guard_promptly_when_the_consumer_drops() {
+    // Before #552 the pump task only noticed a gone consumer on its *next*
+    // chunk-send attempt or the 120s idle timeout — neither of which fires
+    // while the body is silently paused. A `Stop` mid reasoning pause, or
+    // `[DONE]` under a keep-alive proxy, dropped the receiver without either
+    // ever happening, so the guard (endpoint/model permits, cross-process
+    // lease) stayed held for up to the full idle timeout. Racing the read
+    // against `tx.closed()` must free it right away instead.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    serve_one_response_then_hold_open(listener, b"data: some event\n\n");
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{addr}/"))
+        .send()
+        .await
+        .expect("connect");
+
+    let sem = Arc::new(Semaphore::new(1));
+    let permit = sem.clone().try_acquire_owned().expect("only permit");
+    let guard = StreamGuard(permit, None, None);
+
+    let rx = spawn_byte_stream(response, "test", guard);
+    // No one ever reads from `rx` — simulates `Stop` dropping the whole
+    // `LlmStream` (and the mpsc receiver inside it) mid silent pause.
+    drop(rx);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        sem.available_permits(),
+        1,
+        "the permit must be released promptly, not held for the idle timeout"
+    );
+}
+
+#[tokio::test]
+async fn spawn_byte_stream_still_forwards_chunks_and_ends_cleanly_on_close() {
+    // Guards against the fix above breaking the ordinary path: a normally
+    // draining consumer must still see every chunk and a clean end when the
+    // server actually closes the connection.
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf);
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhello",
+            );
+            let _ = sock.flush();
+            // Dropping `sock` here (end of scope) closes the connection.
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{addr}/"))
+        .send()
+        .await
+        .expect("connect");
+
+    let sem = Arc::new(Semaphore::new(1));
+    let permit = sem.clone().try_acquire_owned().expect("only permit");
+    let guard = StreamGuard(permit, None, None);
+
+    let mut rx = spawn_byte_stream(response, "test", guard);
+    let mut collected = Vec::new();
+    while let Some(chunk) = rx.recv().await {
+        collected.extend_from_slice(&chunk.expect("no read error"));
+    }
+    assert_eq!(collected, b"hello");
+    // The pump task drops its guard as it exits; give it a beat to run.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(sem.available_permits(), 1);
+}

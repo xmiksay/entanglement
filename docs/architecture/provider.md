@@ -277,8 +277,17 @@ ceiling was also what capped `Stop` cancel latency (#179). Instead liveness on
 the streamed body is enforced per chunk: `client::spawn_byte_stream` forwards the
 SSE bytes over an mpsc channel under a `tokio::time::timeout(STREAM_IDLE_TIMEOUT,
 …)` watchdog (120s idle gap), so a slow-but-alive stream runs to completion while
-a hung one dies fast. Both `OpenAiLlm` and `AnthropicLlm` use this one helper.
-**Retry** classifies the *response* status inside the loop — a 429/5xx response
+a hung one dies fast. Both `OpenAiLlm`, `AnthropicLlm`, and `GeminiLlm` use this
+one helper. **The pump also races every read against the consumer dropping its
+receiver** (`tokio::select!` against `tx.closed()`, #552): before this, the
+`StreamGuard` it holds (the endpoint/model permits and the cross-process lease)
+released only on the pump's *next* chunk-send failure or the idle-gap timeout
+— neither of which fires while the body is silently paused, so a `Stop` mid
+reasoning pause, or the OpenAI-compat parser's `[DONE]`-triggered `break 'outer`
+while a keep-alive proxy holds the connection open, both left the consumer's
+receiver dropped with the pump none the wiser, holding the guard for up to the
+full 120s. Racing the read against `tx.closed()` frees it the moment the
+consumer is gone. **Retry** classifies the *response* status inside the loop — a 429/5xx response
 (not just a `reqwest::Error`) is retried, not silently dropped; before #217 those
 responses came back as `reqwest::Ok` and were never retried (#193). A 5xx retries
 with exponential backoff + jitter up to `max_attempts`; a 429 retries until clear
@@ -303,6 +312,26 @@ rendering the model id alongside the host when it is the binding constraint.
 pacing gate's own `next_slot` countdown, surfaced only while `penalized`
 (#517, [ADR-0141](../adr/0141-wire-visible-throttle-transitions.md)) — so the
 TUI's "pacing" label can show a live wait, not just the bare word.
+**Cross-process facts are folded in too (#552):** before this, `ThrottleStatus`
+read only in-process state, so a peer process's parked 429, a lease it held
+via the shared gate, or a caller of *this* process blocked inside
+`SharedGate::acquire` all read as "at rest" — the incidents that most needed
+surfacing showed as nothing wrong. `backoff_remaining` now takes the max of
+this process's own cool-down and whatever `SharedGate::peek` reads back from
+the shared state file (a lock-free `fs::read` — the file is always replaced
+via an atomic rename, so a concurrent writer is never observed mid-write,
+only up to one write cycle stale, which is fine for a status label though not
+for `acquire`'s admission decision). `shared_leases: Option<usize>` reports
+the live cross-process lease count (`None` when sharing is disabled or the
+file is unreadable) and factors into both `is_throttled()` and the runtime
+throttle responder's `classify()`, so a sibling saturating the shared cap
+reads as busy even while this process's own semaphore has room. `waiters:
+usize` (deferred-work-ledger row 5) is a display-only counter — bumped just
+before, and dropped via a `WaiterGuard` right after, this endpoint's own
+`concurrency.acquire_owned().await` — reporting how many callers are queued
+behind the permit, not yet admitted. The TUI's `throttle_label` gains a
+`(shared X/cap)` suffix when the shared lease count disagrees with the local
+`in_flight`, and a `· Nq` suffix while callers are queued.
 `HttpClient::throttle_statuses() -> Vec<ThrottleStatus>` is the sibling that
 snapshots **every** resolved endpoint (not just the most-throttled): the
 runtime's `throttle::spawn_throttle_responder` polls it every 500ms and emits
@@ -334,7 +363,11 @@ idea more than one client existed. `EndpointState` gains a
 advisory `fd-lock` read-modify-write exactly like the managed config files
 (#329, ADR-0084; independently re-implemented in `entanglement-provider`
 rather than depended on, since the provider crate is the leaf and takes no
-`entanglement-*` dependency, ADR-0053). Shared: the RPM token-bucket ledger, a
+`entanglement-*` dependency, ADR-0053). The on-disk shape and locked
+read-modify-write mechanics live in a sibling `client::shared_store` module
+(split out from `shared_state` purely to keep both under the 400-line file
+cap, #552); `shared_state` owns `SharedGate`/`SharedLease` and the admission
+policy. Shared: the RPM token-bucket ledger, a
 lease-based in-flight concurrency count (each admitted request holds a lease —
 id, owning pid, expiry — renewed on a heartbeat and pruned by TTL if its
 process dies without releasing it, so a crash recovers the slot rather than

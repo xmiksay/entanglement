@@ -261,6 +261,8 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
             cap,
             retry_in_ms,
             pacing_in_ms,
+            waiters,
+            shared_leases,
         } => {
             if *throttled {
                 let detail = match (retry_in_ms, pacing_in_ms) {
@@ -268,7 +270,22 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
                     (None, Some(ms)) => format!("pacing · next {:.1}s", *ms as f64 / 1000.0),
                     (None, None) => "busy".to_string(),
                 };
-                writeln!(out, "⚠ {endpoint} throttled · {detail} · {in_flight}/{cap}")?
+                // `shared_leases` (#552) is surfaced only when it disagrees
+                // with this process's own `in_flight` — otherwise it's just
+                // noise repeating the same number.
+                let shared = shared_leases
+                    .filter(|leases| leases != in_flight)
+                    .map(|leases| format!(" · shared {leases}/{cap}"))
+                    .unwrap_or_default();
+                let queued = if *waiters > 0 {
+                    format!(" · {waiters} queued")
+                } else {
+                    String::new()
+                };
+                writeln!(
+                    out,
+                    "⚠ {endpoint} throttled · {detail} · {in_flight}/{cap}{shared}{queued}"
+                )?
             } else {
                 writeln!(out, "✓ {endpoint} throttle cleared")?
             }

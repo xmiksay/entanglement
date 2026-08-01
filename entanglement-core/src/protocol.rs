@@ -1592,6 +1592,13 @@ pub enum OutEvent {
     /// `backoff_remaining`/`next_request_in` (milliseconds, so the wire carries
     /// no `serde`-dependent `Duration` representation); at most one is ever
     /// `Some` at a time (a 429 cool-down always wins over pacing, ADR-0141).
+    /// `retry_in_ms` already folds in a peer process's shared cool-down, not
+    /// just this process's own (#552). `waiters`/`shared_leases` surface the
+    /// two other gaps #552 closed: how many callers are queued behind this
+    /// endpoint's own permit (deferred-work-ledger row 5), and how many
+    /// cross-process leases (#523) are live against it — `shared_leases` is
+    /// `None` when cross-process sharing is disabled or unreadable. Both are
+    /// `#[serde(default)]` so a pre-#552 persisted log still replays.
     Throttle {
         endpoint: String,
         throttled: bool,
@@ -1601,6 +1608,10 @@ pub enum OutEvent {
         retry_in_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pacing_in_ms: Option<u64>,
+        #[serde(default)]
+        waiters: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shared_leases: Option<usize>,
     },
     /// A session's persisted content history from a requested `after_seq`, in
     /// reply to [`InMsg::ReplayFrom`] (#160, ADR-0072). Answered by the runtime's

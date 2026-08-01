@@ -296,19 +296,33 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// A compact one-line label for a throttled endpoint: `⚠ host throttled · retry
-/// Ns · in/cap` for an active 429/`Retry-After` cool-down, `pacing · next Ns`
-/// when only the adaptive gate has slowed (#517: the AIMD gate's next-slot
-/// countdown, previously computed but never surfaced), or `busy` when just the
-/// in-flight cap is full. When a per-model cap (#521) is the binding
-/// constraint, the model id rides alongside the host so a saturated
-/// `GLM-4.7-Flash` slot doesn't read as a bare, unexplained endpoint-wide cap.
+/// Ns · in/cap` for an active 429/`Retry-After` cool-down (in-process or, since
+/// #552, a peer's own — `backoff_remaining` already folds in the shared file),
+/// `pacing · next Ns` when only the adaptive gate has slowed (#517: the AIMD
+/// gate's next-slot countdown, previously computed but never surfaced), or
+/// `busy` when just the in-flight cap is full. When a per-model cap (#521) is
+/// the binding constraint, the model id rides alongside the host so a
+/// saturated `GLM-4.7-Flash` slot doesn't read as a bare, unexplained
+/// endpoint-wide cap. `occupancy` gains a `shared X/cap` suffix (#552) only
+/// when the cross-process lease count disagrees with this process's own
+/// `in_flight` — otherwise it would just repeat the same number — and a
+/// `· Nq` suffix while callers are queued behind this endpoint's own permit
+/// (deferred-work-ledger row 5).
 fn throttle_label(status: &entanglement_provider::ThrottleStatus) -> String {
     let host = short_host(&status.endpoint);
     let label = match &status.model {
         Some(model) => format!("{host} ({model})"),
         None => host,
     };
-    let occupancy = format!("{}/{}", status.in_flight, status.cap);
+    let mut occupancy = format!("{}/{}", status.in_flight, status.cap);
+    if let Some(shared) = status.shared_leases {
+        if shared != status.in_flight {
+            occupancy = format!("{occupancy} (shared {shared}/{})", status.cap);
+        }
+    }
+    if status.waiters > 0 {
+        occupancy = format!("{occupancy} · {}q", status.waiters);
+    }
     match status.backoff_remaining {
         // Round the wait up to whole seconds so a sub-second tail never shows "0s".
         Some(remaining) => {
@@ -368,6 +382,8 @@ mod tests {
             penalized: true,
             model: None,
             next_request_in: None,
+            waiters: 0,
+            shared_leases: None,
         };
         assert_eq!(
             throttle_label(&parked),
@@ -414,6 +430,43 @@ mod tests {
             throttle_label(&model_busy),
             "⚠ api.z.ai (glm-4.7-flash) busy · 1/1"
         );
+    }
+
+    #[test]
+    fn throttle_label_surfaces_shared_leases_and_queued_waiters() {
+        use entanglement_provider::ThrottleStatus;
+        let base = ThrottleStatus {
+            endpoint: "https://api.z.ai/v4".to_string(),
+            in_flight: 1,
+            cap: 3,
+            backoff_remaining: None,
+            penalized: false,
+            model: None,
+            next_request_in: None,
+            waiters: 0,
+            shared_leases: None,
+        };
+        // A peer holds leases this process's own in-flight count can't see
+        // (#552) — shown as a `(shared X/cap)` suffix.
+        let shared_ahead = ThrottleStatus {
+            shared_leases: Some(3),
+            ..base.clone()
+        };
+        assert_eq!(
+            throttle_label(&shared_ahead),
+            "⚠ api.z.ai busy · 1/3 (shared 3/3)"
+        );
+        // A shared lease count that just repeats `in_flight` is redundant —
+        // no suffix.
+        let shared_agrees = ThrottleStatus {
+            shared_leases: Some(1),
+            ..base.clone()
+        };
+        assert_eq!(throttle_label(&shared_agrees), "⚠ api.z.ai busy · 1/3");
+        // Callers queued behind this endpoint's own permit (deferred-work-ledger
+        // row 5) show as a `· Nq` suffix.
+        let queued = ThrottleStatus { waiters: 2, ..base };
+        assert_eq!(throttle_label(&queued), "⚠ api.z.ai busy · 1/3 · 2q");
     }
 
     #[test]
