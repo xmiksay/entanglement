@@ -10,10 +10,16 @@
 //!
 //! Best-effort throughout: a failed/empty/truncated generation is logged and
 //! dropped (the session keeps its default name). A session that already has a
-//! name (set via `/name`, or a resumed session) is left alone — the generator
-//! only titles the *first* prompt of an unnamed session. Idempotent per session:
-//! a `HashSet` of already-titled session ids guards against a late second
-//! `Prompt` (a mid-turn follow-up) re-triggering.
+//! name (set via `/name`, or a resumed session) is left alone (#553), two ways:
+//! the `SetSessionMeta` this generator sends always carries `if_unset: true`,
+//! so a late generated title can never win a race against — or clobber — a
+//! name set (or already set before this process started) any other way; and on
+//! `Resume` the generator folds the replayed log's `SessionMetaChanged` history
+//! per session id and seeds `titled` with every session that already has a
+//! name, so an already-named resumed session skips the aux call on its next
+//! prompt too, not just the write. Idempotent per session: a `HashSet` of
+//! already-titled session ids guards against a late second `Prompt` (a
+//! mid-turn follow-up) re-triggering.
 //!
 //! Behind the `provider` feature: the aux `Llm` is a provider-backed client, so
 //! a lean-library build (no providers) compiles the generator out — there is no
@@ -21,7 +27,9 @@
 
 use std::collections::HashSet;
 
-use entanglement_core::{content_text, Holly, InMsg, LlmEvent, LlmRequest, Message, SessionId};
+use entanglement_core::{
+    content_text, Holly, InMsg, LlmEvent, LlmRequest, Message, OutEvent, SessionId,
+};
 use futures::StreamExt;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -116,10 +124,39 @@ pub fn spawn_session_title_generator(
                                             session,
                                             name: Some(title),
                                             action: None,
+                                            if_unset: true,
                                         })
                                         .await;
                                 }
                             });
+                        }
+                        // A resumed session's replay log carries its own
+                        // history — including any earlier `SetSessionMeta`
+                        // fold (`/name`, or a title this generator already
+                        // set in a prior process). Seed `titled` from it so
+                        // the first post-resume prompt of an already-named
+                        // session skips the aux call entirely, rather than
+                        // firing one this generator's own `if_unset` guard
+                        // would just discard downstream (#553). The records
+                        // may interleave a whole spawned sub-tree, so this
+                        // folds per session id, last-write-wins, exactly like
+                        // core's own `Session::replay`.
+                        Ok(InMsg::Resume { records, .. }) => {
+                            let mut last_name: std::collections::HashMap<
+                                SessionId,
+                                Option<String>,
+                            > = std::collections::HashMap::new();
+                            for (_, ev) in &records {
+                                if let OutEvent::SessionMetaChanged { session, name, .. } = ev {
+                                    last_name.insert(session.clone(), name.clone());
+                                }
+                            }
+                            titled.extend(
+                                last_name
+                                    .into_iter()
+                                    .filter(|(_, name)| name.is_some())
+                                    .map(|(session, _)| session),
+                            );
                         }
                         Ok(_) => {}
                         Err(RecvError::Lagged(_)) => continue,

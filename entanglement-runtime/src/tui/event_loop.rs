@@ -813,6 +813,7 @@ async fn send_name(app: &mut App, holly: &Holly, text: &str) {
             session: app.active_session_id().clone(),
             name: Some(name),
             action: None,
+            if_unset: false,
         })
         .await;
 }
