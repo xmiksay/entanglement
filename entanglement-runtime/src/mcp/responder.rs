@@ -43,73 +43,93 @@ pub fn spawn_mcp_responder(
     let mut inbound = holly.subscribe_inbound();
 
     tokio::spawn(async move {
+        // Tracks the detached `McpAuth` ops below so they're reachable at
+        // shutdown (#545): a `Connect` can hold its own `Holly` clone (`emitter`)
+        // for up to five minutes waiting on the user's browser, and aborting
+        // *this* task never reaches a child it already spawned via a bare
+        // `tokio::spawn` — only dropping this `JoinSet` does.
+        let mut auth_ops: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         loop {
-            match inbound.recv().await {
-                Ok(InMsg::McpList { correlation_id }) => {
-                    let servers = full_list(&active, &avail, &configs);
-                    emitter.emit_mcp_list(correlation_id, servers);
-                }
-                Ok(InMsg::McpAdd { name, config }) => {
-                    match mcp_add(
-                        name.clone(),
-                        config.into(),
-                        &registry,
-                        &active,
-                        &configs,
-                        &secret_env,
-                    )
-                    .await
-                    {
-                        Ok(tools) => {
-                            tracing::info!(server = %name, tools = tools.len(), "MCP: live-added");
-                            emitter.emit_mcp_changed(name, McpAction::Added);
+            tokio::select! {
+                // Reap finished auth ops so `auth_ops` doesn't grow unbounded;
+                // guarded so this branch never busy-loops while empty.
+                Some(_) = auth_ops.join_next(), if !auth_ops.is_empty() => {}
+                msg = inbound.recv() => {
+                    match msg {
+                        Ok(InMsg::McpList { correlation_id }) => {
+                            let servers = full_list(&active, &avail, &configs);
+                            emitter.emit_mcp_list(correlation_id, servers);
                         }
-                        Err(e) => tracing::warn!(server = %name, "MCP add failed: {e:#}"),
+                        Ok(InMsg::McpAdd { name, config }) => {
+                            match mcp_add(
+                                name.clone(),
+                                config.into(),
+                                &registry,
+                                &active,
+                                &configs,
+                                &secret_env,
+                            )
+                            .await
+                            {
+                                Ok(tools) => {
+                                    tracing::info!(server = %name, tools = tools.len(), "MCP: live-added");
+                                    emitter.emit_mcp_changed(name, McpAction::Added);
+                                }
+                                Err(e) => tracing::warn!(server = %name, "MCP add failed: {e:#}"),
+                            }
+                        }
+                        Ok(InMsg::McpRemove { name }) => {
+                            // A bundled/`allowed` server (#542) has no config-map
+                            // entry to remove — disconnect it (it stays
+                            // *available*) instead of erroring halfway through
+                            // `mcp_remove`.
+                            if avail.is_lazy(&name) || avail.get(&name).is_some() {
+                                super::available::disconnect(&avail, &name, &registry, &active);
+                                emitter.emit_mcp_changed(name, McpAction::Removed);
+                            } else {
+                                match mcp_remove(&name, &registry, &active, &configs) {
+                                    Ok(()) => emitter.emit_mcp_changed(name, McpAction::Removed),
+                                    Err(e) => {
+                                        tracing::warn!(server = %name, "MCP remove failed: {e:#}")
+                                    }
+                                }
+                            }
+                        }
+                        Ok(InMsg::McpAuth { name, action }) => {
+                            // Tracked (not bare-detached, #545): a `Connect`
+                            // parks for up to five minutes on the user's
+                            // browser, and blocking the responder would stall
+                            // every later `/mcp` op (and every other MCP frame)
+                            // behind it. Each op is independent, so concurrency
+                            // is safe; `auth_ops` keeps it reachable for abort
+                            // at shutdown instead of leaking its `Holly` clone.
+                            let emitter = emitter.clone();
+                            let (registry, active, configs) =
+                                (registry.clone(), active.clone(), configs.clone());
+                            let secret_env = secret_env.clone();
+                            auth_ops.spawn(async move {
+                                run_auth_op(
+                                    &emitter,
+                                    name,
+                                    action,
+                                    &registry,
+                                    &active,
+                                    &configs,
+                                    &secret_env,
+                                )
+                                .await;
+                            });
+                        }
+                        Ok(_) => {}
+                        // A dropped inbound frame under lag can only lose a
+                        // query/command — the head times out and re-asks; keep
+                        // serving.
+                        Err(RecvError::Lagged(n)) => {
+                            tracing::warn!("MCP responder lagged, skipped {n} inbound messages");
+                        }
+                        Err(RecvError::Closed) => break,
                     }
                 }
-                Ok(InMsg::McpRemove { name }) => {
-                    // A bundled/`allowed` server (#542) has no config-map entry
-                    // to remove — disconnect it (it stays *available*) instead
-                    // of erroring halfway through `mcp_remove`.
-                    if avail.is_lazy(&name) || avail.get(&name).is_some() {
-                        super::available::disconnect(&avail, &name, &registry, &active);
-                        emitter.emit_mcp_changed(name, McpAction::Removed);
-                    } else {
-                        match mcp_remove(&name, &registry, &active, &configs) {
-                            Ok(()) => emitter.emit_mcp_changed(name, McpAction::Removed),
-                            Err(e) => tracing::warn!(server = %name, "MCP remove failed: {e:#}"),
-                        }
-                    }
-                }
-                Ok(InMsg::McpAuth { name, action }) => {
-                    // Detached: a `Connect` parks for up to five minutes on the
-                    // user's browser, and blocking the responder would stall
-                    // every later `/mcp` op (and every other MCP frame) behind
-                    // it. Each op is independent, so concurrency is safe.
-                    let emitter = emitter.clone();
-                    let (registry, active, configs) =
-                        (registry.clone(), active.clone(), configs.clone());
-                    let secret_env = secret_env.clone();
-                    tokio::spawn(async move {
-                        run_auth_op(
-                            &emitter,
-                            name,
-                            action,
-                            &registry,
-                            &active,
-                            &configs,
-                            &secret_env,
-                        )
-                        .await;
-                    });
-                }
-                Ok(_) => {}
-                // A dropped inbound frame under lag can only lose a query/command —
-                // the head times out and re-asks; keep serving.
-                Err(RecvError::Lagged(n)) => {
-                    tracing::warn!("MCP responder lagged, skipped {n} inbound messages");
-                }
-                Err(RecvError::Closed) => break,
             }
         }
     })

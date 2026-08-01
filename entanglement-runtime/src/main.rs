@@ -1537,7 +1537,12 @@ async fn main() -> Result<()> {
     // still holds broadcast-buffered events it hasn't written. The tool executor
     // and history responder each hold a `Holly` clone (an inbox + event sender),
     // so aborting them is required for the channels to actually close and the
-    // persistence subscriber to drain + exit.
+    // persistence subscriber to drain + exit. Aborting each of these top-level
+    // handles also drops every task it spawned in turn (a `JoinSet` local to its
+    // future, or the `CancelAllOnDrop` guard for the tool executor's per-call
+    // dispatch/rhai tasks, #545) — a bare detached `tokio::spawn` from inside one
+    // of these would otherwise keep its own `Holly` clone alive indefinitely and
+    // this whole shutdown would never observe the channels close.
     tool_executor.abort();
     mcp_responder_handle.abort();
     bash_responder_handle.abort();
@@ -1548,7 +1553,18 @@ async fn main() -> Result<()> {
         h.abort();
     }
     drop(holly);
-    let _ = persistence_handle.await;
+    // Backstop (#545): the drain above should now complete promptly, but a
+    // future oversight in a detached task (or a sink write that never returns)
+    // must not hang the process forever — a bounded wait beats an unkillable
+    // `skutter run` again.
+    if tokio::time::timeout(std::time::Duration::from_secs(5), persistence_handle)
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            "persistence subscriber did not shut down within 5s; exiting without a full drain"
+        );
+    }
 
     result
 }
