@@ -123,8 +123,8 @@ guessing again:
 | tool | input | output |
 | --- | --- | --- |
 | `read` | `{path, offset?, limit?}` | text file → contents as `{lineno}: {line}`, 1-based, line-ranged; an **image file** (`.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`, by extension) → a base64 **image content block** the provider renders natively (Anthropic `image` / OpenAI `image_url`), routed through the `ToolResult` `content` path (`offset`/`limit` ignored) — #221 |
-| `glob` | `{pattern, exclude?}` | matching paths (relative to root), one per line; `.git` is always excluded (path-component check, can't be disabled), `exclude` adds caller glob patterns on top ([ADR-0099](../adr/0099-glob-grep-exclude-and-default-git-exclusion.md)) |
-| `grep` | `{pattern, path?, exclude?}` | matches as `path:lineno:line` over files matched by `path` (default `**/*`) minus `exclude` and the always-on `.git` exclusion ([ADR-0099](../adr/0099-glob-grep-exclude-and-default-git-exclusion.md)); a file over the 1 MiB **scan** cap (independent of the 32 KiB output cap, [ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)) or sniffed as binary (a NUL byte in its content) is skipped and named in a labeled notice appended to the result — regardless of match count |
+| `glob` | `{pattern, path?, exclude?}` | matching paths (relative to root), one per line; a metachar-free `pattern` naming an existing directory lists it recursively (`dir/**/*`, containment-gated), `{a,b}` brace sets expand (both [ADR-0150](../adr/0150-search-tool-cli-ergonomics.md)), `path` is an optional base dir the pattern resolves under; `.git` is always excluded (path-component check, can't be disabled), `exclude` adds caller glob patterns on top ([ADR-0099](../adr/0099-glob-grep-exclude-and-default-git-exclusion.md)); unknown input fields are refused (`deny_unknown_fields`) and a zero-result call always returns a one-line explanation, never the empty string |
+| `grep` | `{pattern, path?, exclude?, case_insensitive?}` | matches as `path:lineno:line` over files matched by `path` — a **directory (searched recursively)** or a glob filter, brace sets included (default `**/*`, [ADR-0150](../adr/0150-search-tool-cli-ergonomics.md)) — minus `exclude` and the always-on `.git` exclusion ([ADR-0099](../adr/0099-glob-grep-exclude-and-default-git-exclusion.md)); `case_insensitive` (serde alias `"-i"`) complements the inline `(?i)`; unknown input fields are refused; a zero-match call names its cause (*"path filter matched no files — nothing was searched"* vs *"no matches for `X` in N file(s) scanned"*); a file over the 1 MiB **scan** cap (independent of the 32 KiB output cap, [ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)) or sniffed as binary (a NUL byte in its content) is skipped and named in a labeled notice appended to the result — regardless of match count |
 | `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists → hints `write`); non-unique match errors unless `replaceAll` |
 | `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
 | `apply_patch` | `{path, patch}` | apply a unified diff (one or more `@@ -oldStart,oldLen +newStart,newLen @@` hunks) against the current file; each hunk's context/deleted lines are matched **exactly** at the position its header declares (offset by the net line-count delta of hunks already applied in the same patch) — no fuzzy alternate-position search, a mismatch hard-errors before any write and leaves the file untouched; emits `FileChangeKind::ApplyDiff` (#455, the first producer of that previously-reserved variant). Parsing/applying is a small hand-rolled module (`host::unified_diff`), not the `diffy` crate — `diffy` is `tui`-feature-gated and named in `LEAN_FORBIDDEN` above, and `apply_patch` is unconditional lean-library code alongside `edit`/`write` |
@@ -266,7 +266,10 @@ guessing again:
   spawn path), so the scrub applies to script-issued exec identically — no
   separate wiring needed.
 - **Bounded output:** 32 KiB byte cap with a truncation notice; `read` defaults
-  to 2000 lines; `glob`/`grep` cap at 1000 results. Prevents a huge file/tree
+  to 2000 lines; `glob`/`grep` cap at 1000 results **with a one-line notice
+  when the cap fires** (`FileList.capped`, [ADR-0150](../adr/0150-search-tool-cli-ergonomics.md)
+  — a silently truncated broad search used to read as a clean no-match past
+  the first 1000 files). Prevents a huge file/tree
   from blowing the context window. `bash`/`bash_output` cap **head + tail**
   (`truncate_head_tail`) rather than head-only — build/test output puts the
   load-bearing error at the end (#170). `grep`'s per-file **scan** cap (how
@@ -274,22 +277,28 @@ guessing again:
   MiB bound (`MAX_SCAN_BYTES`), not the 32 KiB output cap — conflating the two
   meant any file over 32 KiB was silently skipped regardless of the
   match-output size ([ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md), #380).
-- **Empty-result contract (ADR-0016):** a host tool may not return a silent
-  zero-output when multiple distinguishable underlying states produce it.
-  `list_files` returns `FileList { files, matched_dirs, skipped_errors }`;
-  per-entry walk errors are `warn!`-logged and counted, not swallowed. When
-  `glob`'s result would be empty but the pattern matched something (the common
-  bare-`**` trap, which matches only directories), it returns a hint like
-  *"`**` matched 7 directories but no files — try `**/*`"* so the model can
-  self-correct mechanically. `grep` consumes the same `FileList` but stays
-  silent on zero matches (a clean no-match is a single well-defined state);
-  it is **not** silent, however, about files it excluded from the scan — a
-  file over `MAX_SCAN_BYTES` or sniffed as binary (NUL byte in its content) is
-  tracked by skip reason (`TooLarge`/`Binary`) and, whenever that list is
-  non-empty, surfaced as a labeled notice (capped preview, `... and N more`
-  past 20 entries per reason) appended to the result regardless of match
-  count — otherwise a match that exists only in an excluded file would look
-  identical to a genuine no-match ([ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)).
+- **Empty-result contract (ADR-0016, extended by [ADR-0150](../adr/0150-search-tool-cli-ergonomics.md)):**
+  a host tool may not return a silent zero-output — **`glob`/`grep` never
+  return the empty string at all**. `list_files` returns `FileList { files,
+  matched_dirs, skipped_errors, capped, out_of_root }`; per-entry walk errors
+  are `warn!`-logged and counted, not swallowed, and containment drops are
+  counted (`out_of_root`) so an absolute-path typo doesn't read as a clean
+  no-match. When `glob`'s result would be empty but the pattern matched
+  something (the bare-`**` trap, which matches only directories), it returns
+  a hint like *"`**` matched 7 directories but no files — try `**/*`"*; a
+  clean no-match returns *"pattern `X` matched no files."*. `grep`'s
+  zero-match reply distinguishes *"path filter `X` matched no files — nothing
+  was searched"* (with the same dir-glob suggestion when the filter matched
+  only directories) from *"no matches for `X` in N file(s) scanned"* —
+  ADR-0016 originally exempted `grep` from any hint; ADR-0150 supersedes that
+  after 57% of real grep calls returned the empty string. `grep` is also
+  **not** silent about files it excluded from the scan — a file over
+  `MAX_SCAN_BYTES` or sniffed as binary (NUL byte in its content) is tracked
+  by skip reason (`TooLarge`/`Binary`) and, whenever that list is non-empty,
+  surfaced as a labeled notice (capped preview, `... and N more` past 20
+  entries per reason) appended to the result regardless of match count —
+  otherwise a match that exists only in an excluded file would look identical
+  to a genuine no-match ([ADR-0091](../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)).
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
 - **Wiring (ADR-0010, amended by [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md)):**

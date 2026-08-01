@@ -1,5 +1,6 @@
 //! `glob` — list files matching a glob pattern (e.g. `**/*.rs`), paths
-//! relative to the working directory.
+//! relative to the working directory. A bare directory pattern lists it
+//! recursively and a zero-result call always explains itself (ADR-0150).
 
 use super::{list_files_with_extra_roots, truncate_output};
 use crate::extra_roots::ExtraRootStore;
@@ -34,8 +35,13 @@ impl GlobTool {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GlobInput {
     pattern: String,
+    /// Base directory the pattern is resolved under (Claude-Code `Glob.path`
+    /// compat, ADR-0150). Absent → the working root.
+    #[serde(default)]
+    path: Option<String>,
     #[serde(default)]
     exclude: Vec<String>,
 }
@@ -47,9 +53,10 @@ impl Tool for GlobTool {
     }
     fn description(&self) -> &str {
         "List files matching a glob pattern (e.g. `**/*.rs`) relative to the \
-         working directory. Returns matching paths, one per line. `.git` is \
-         always excluded; an optional `exclude` list of glob patterns filters \
-         out additional paths."
+         working directory. A bare directory path lists it recursively; brace \
+         sets like `**/*.{rs,md}` expand. Returns matching paths, one per \
+         line. `.git` is always excluded; an optional `exclude` list of glob \
+         patterns filters out additional paths."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -57,7 +64,11 @@ impl Tool for GlobTool {
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Glob pattern, e.g. `**/*.rs` or `src/**/*.toml`."
+                    "description": "Glob pattern (`**/*.rs`, `src/**/*.{toml,yml}`) or a bare directory path (listed recursively)."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Optional base directory to resolve `pattern` under (default: the working root)."
                 },
                 "exclude": {
                     "type": "array",
@@ -71,10 +82,11 @@ impl Tool for GlobTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: GlobInput = serde_json::from_str(input)
             .context("invalid input to glob: expected {\"pattern\": string, ...}")?;
-        tracing::debug!(pattern = %parsed.pattern, root = %self.root.display(), "glob tool executing");
+        let pattern = joined_pattern(parsed.path.as_deref(), &parsed.pattern);
+        tracing::debug!(pattern = %pattern, root = %self.root.display(), "glob tool executing");
         let list = list_files_with_extra_roots(
             &self.root,
-            &parsed.pattern,
+            &pattern,
             &parsed.exclude,
             self.extra_roots.as_deref(),
         )?;
@@ -82,6 +94,7 @@ impl Tool for GlobTool {
             files = list.files.len(),
             matched_dirs = list.matched_dirs,
             skipped_errors = list.skipped_errors,
+            out_of_root = list.out_of_root,
             "glob tool enumerated entries",
         );
         let mut out = String::new();
@@ -91,35 +104,56 @@ impl Tool for GlobTool {
             out.push('\n');
         }
         if out.is_empty() {
-            // The glob crate's bare `**` yields directory paths only, which
-            // list_files filters out — to the model that looks identical to a
-            // typo'd pattern. Surface an actionable hint so it can retry with
-            // `**/*` instead of guessing. See ADR-0016.
+            // A zero-result call always explains itself (ADR-0016, extended by
+            // ADR-0150): to the model an empty string is indistinguishable
+            // from a typo'd pattern, so name the cause instead.
             if list.matched_dirs > 0 {
                 let dirs_word = if list.matched_dirs == 1 {
                     "directory"
                 } else {
                     "directories"
                 };
-                let suggested = suggest_files_pattern(&parsed.pattern);
+                let suggested = suggest_files_pattern(&pattern);
                 return Ok(format!(
                     "pattern `{}` matched {} {} but no files (files are filtered out). \
                      Try `{}` to list files inside those directories.",
-                    parsed.pattern, list.matched_dirs, dirs_word, suggested,
+                    pattern, list.matched_dirs, dirs_word, suggested,
                 ));
             }
             if list.skipped_errors > 0 {
                 return Ok(format!(
                     "pattern `{}` matched no files; {} entries were skipped due to read errors \
                      (see engine logs with `RUST_LOG=entanglement_core::host=warn`).",
-                    parsed.pattern, list.skipped_errors,
+                    pattern, list.skipped_errors,
                 ));
             }
-            // Clean no-match: fall through and return the empty string.
+            let mut msg = format!("pattern `{pattern}` matched no files.");
+            if list.out_of_root > 0 {
+                msg.push_str(&format!(
+                    " {} match(es) outside the project root were excluded.",
+                    list.out_of_root,
+                ));
+            }
+            return Ok(msg);
         }
-        let result = truncate_output(out);
+        // Truncate first so the cap notice survives the head-only byte cut.
+        let mut result = truncate_output(out);
+        if list.capped {
+            result.push_str("\n[capped at 1000 results — narrow the pattern]");
+        }
         tracing::debug!(output_len = result.len(), "glob tool result");
         Ok(result)
+    }
+}
+
+/// Resolve the optional `path` base directory onto `pattern` — the same string
+/// the permission layer grades (ADR-0150). An empty/blank base is ignored
+/// rather than joined: a leading `/` would re-root the walk at the filesystem
+/// root via `Path::join`.
+pub(crate) fn joined_pattern(base: Option<&str>, pattern: &str) -> String {
+    match base.map(|b| b.trim_end_matches('/')) {
+        Some(b) if !b.is_empty() => format!("{b}/{pattern}"),
+        _ => pattern.to_string(),
     }
 }
 
@@ -127,7 +161,7 @@ impl Tool for GlobTool {
 /// matched only directories. Appends `/*` unless the pattern already ends in
 /// `/*` (a `dir/*` or `**/*` shape — already trying to list files, so the
 /// "matched only dirs" outcome is a real finding we just echo back).
-fn suggest_files_pattern(pattern: &str) -> String {
+pub(crate) fn suggest_files_pattern(pattern: &str) -> String {
     if pattern.ends_with("/*") {
         pattern.to_string()
     } else {
@@ -137,7 +171,7 @@ fn suggest_files_pattern(pattern: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::suggest_files_pattern;
+    use super::{joined_pattern, suggest_files_pattern};
 
     #[test]
     fn suggest_appends_slash_star_for_bare_doublestar() {
@@ -153,5 +187,18 @@ mod tests {
     fn suggest_leaves_existing_glob_alone() {
         assert_eq!(suggest_files_pattern("**/*"), "**/*");
         assert_eq!(suggest_files_pattern("src/**/*"), "src/**/*");
+    }
+
+    #[test]
+    fn joined_pattern_prefixes_base_dir() {
+        assert_eq!(joined_pattern(Some("src"), "**/*.rs"), "src/**/*.rs");
+        assert_eq!(joined_pattern(Some("src/"), "*.rs"), "src/*.rs");
+    }
+
+    #[test]
+    fn joined_pattern_ignores_blank_base() {
+        assert_eq!(joined_pattern(None, "**/*.rs"), "**/*.rs");
+        assert_eq!(joined_pattern(Some(""), "**/*.rs"), "**/*.rs");
+        assert_eq!(joined_pattern(Some("/"), "**/*.rs"), "**/*.rs");
     }
 }

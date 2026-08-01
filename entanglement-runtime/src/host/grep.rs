@@ -1,13 +1,16 @@
 //! `grep` — search file contents for a regex. Returns matching lines as
-//! `path:lineno:line`. An optional `path` glob filters which files to search
-//! (default: all files under the working directory).
+//! `path:lineno:line`. An optional `path` — a directory (searched
+//! recursively) or a glob filter — limits which files to search (default: all
+//! files under the working directory). A zero-result call always explains
+//! itself (ADR-0150).
 
-use super::{list_files_with_extra_roots, truncate_output};
+use super::glob::suggest_files_pattern;
+use super::{list_files_with_extra_roots, truncate_output, FileList};
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use regex::Regex;
+use regex::RegexBuilder;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -117,12 +120,17 @@ fn append_skip_notice(mut out: String, skipped: &[(PathBuf, SkipReason)], root: 
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GrepInput {
     pattern: String,
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
     exclude: Vec<String>,
+    /// The `-i` alias catches the literal CLI spelling models keep sending
+    /// (ADR-0150).
+    #[serde(default, alias = "-i")]
+    case_insensitive: bool,
 }
 
 #[async_trait]
@@ -132,10 +140,11 @@ impl Tool for GrepTool {
     }
     fn description(&self) -> &str {
         "Search file contents for a regular expression. Returns matching lines \
-         as `path:lineno:line`. Optional `path` glob filters which files to \
-         search (default: all files under the working directory). `.git` is \
-         always excluded; an optional `exclude` list of glob patterns filters \
-         out additional paths."
+         as `path:lineno:line`. Optional `path` limits which files to search: \
+         a directory (searched recursively) or a glob filter (default: all \
+         files under the working directory). `.git` is always excluded; an \
+         optional `exclude` list of glob patterns filters out additional \
+         paths."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -143,16 +152,20 @@ impl Tool for GrepTool {
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Regular expression (Rust regex syntax)."
+                    "description": "Regular expression (Rust regex syntax; case-sensitive unless `case_insensitive` or an inline `(?i)` is used)."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Optional glob filter limiting which files to search, e.g. `**/*.rs` (default `**/*`)."
+                    "description": "Optional: a directory to search recursively (`src/tui`) or a glob filter (`**/*.rs`, `src/**/*.{rs,md}`). Default: `**/*`."
                 },
                 "exclude": {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Glob patterns to exclude from the search, e.g. `[\"target/**\", \"node_modules/**\"]`. `.git` is always excluded regardless of this list."
+                },
+                "case_insensitive": {
+                    "type": "boolean",
+                    "description": "Match case-insensitively (default false)."
                 }
             },
             "required": ["pattern"]
@@ -161,19 +174,22 @@ impl Tool for GrepTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: GrepInput = serde_json::from_str(input)
             .context("invalid input to grep: expected {\"pattern\": string, ...}")?;
-        let re = Regex::new(&parsed.pattern)
+        let re = RegexBuilder::new(&parsed.pattern)
+            .case_insensitive(parsed.case_insensitive)
+            .build()
             .with_context(|| format!("invalid regex: {}", parsed.pattern))?;
         let filter = parsed.path.as_deref().unwrap_or("**/*");
-        let list = list_files_with_extra_roots(
+        let mut list = list_files_with_extra_roots(
             &self.root,
             filter,
             &parsed.exclude,
             self.extra_roots.as_deref(),
         )?;
+        let scanned = list.files.len();
         let mut out = String::new();
         let mut matches = 0usize;
         let mut skipped: Vec<(PathBuf, SkipReason)> = Vec::new();
-        for p in list.files {
+        for p in list.files.drain(..) {
             // Bound per-file work independent of the output cap (ADR-0091):
             // skip files over MAX_SCAN_BYTES rather than the far smaller
             // result-string cap.
@@ -204,17 +220,63 @@ impl Tool for GrepTool {
                     ));
                     matches += 1;
                     if matches >= super::MAX_RESULTS {
-                        return Ok(truncate_output(append_skip_notice(
-                            out, &skipped, &self.root,
-                        )));
+                        // Truncate before appending so the cap notice
+                        // survives the head-only byte cut.
+                        let mut result =
+                            truncate_output(append_skip_notice(out, &skipped, &self.root));
+                        result.push_str("\n[match cap: first 1000 matches shown]");
+                        return Ok(result);
                     }
                 }
             }
         }
-        Ok(truncate_output(append_skip_notice(
-            out, &skipped, &self.root,
-        )))
+        if out.is_empty() {
+            // A zero-result call always explains itself (ADR-0150): name the
+            // cause — nothing scanned vs scanned-but-no-match — instead of
+            // returning an empty string the model can't act on.
+            let mut msg = zero_match_message(&parsed.pattern, filter, scanned, &list);
+            if !skipped.is_empty() {
+                msg = append_skip_notice(msg, &skipped, &self.root);
+            }
+            return Ok(msg);
+        }
+        let mut result = truncate_output(append_skip_notice(out, &skipped, &self.root));
+        if list.capped {
+            result.push_str("\n[file walk capped at 1000 files — narrow `path`]");
+        }
+        Ok(result)
     }
+}
+
+/// One-line explanation for a zero-match round (ADR-0150). Distinguishes "the
+/// `path` filter selected no files" (the call shape was wrong — nothing was
+/// searched) from "N files were scanned and none matched" (a real no-match).
+fn zero_match_message(pattern: &str, filter: &str, scanned: usize, list: &FileList) -> String {
+    if scanned == 0 {
+        if list.matched_dirs > 0 {
+            let dirs_word = if list.matched_dirs == 1 {
+                "directory"
+            } else {
+                "directories"
+            };
+            return format!(
+                "path filter `{}` matched {} {} but no files — try `{}`",
+                filter,
+                list.matched_dirs,
+                dirs_word,
+                suggest_files_pattern(filter),
+            );
+        }
+        let mut msg = format!("path filter `{filter}` matched no files — nothing was searched");
+        if list.out_of_root > 0 {
+            msg.push_str(&format!(
+                " ({} match(es) outside the project root were excluded)",
+                list.out_of_root,
+            ));
+        }
+        return msg;
+    }
+    format!("no matches for `{pattern}` in {scanned} file(s) scanned")
 }
 
 #[cfg(test)]
@@ -268,13 +330,150 @@ mod tests {
         assert!(format!("{err}").contains("invalid regex"), "{err}");
     }
 
+    /// ADR-0150 (supersedes the ADR-0016 empty-string allowance): a clean
+    /// no-match names the pattern and how many files were scanned, so the
+    /// model can tell "searched and found nothing" from "searched nothing".
     #[tokio::test]
-    async fn no_match_yields_empty_output() {
+    async fn no_match_reports_pattern_and_scanned_count() {
         let dir = tmp();
         std::fs::write(dir.path().join("f.txt"), "hello\n").unwrap();
         let tool = GrepTool::new(dir.path().to_path_buf());
         let out = tool.run(r#"{"pattern":"zzz"}"#).await.unwrap();
-        assert!(out.is_empty(), "got: {out:?}");
+        assert!(
+            out.contains("no matches for `zzz`") && out.contains("1 file(s) scanned"),
+            "got: {out:?}"
+        );
+    }
+
+    /// ADR-0150: the exact shape behind 451 of 550 observed empty results —
+    /// a directory `path` is searched recursively like `grep -r`.
+    #[tokio::test]
+    async fn path_directory_is_searched_recursively() {
+        let dir = tmp();
+        std::fs::create_dir_all(dir.path().join("src/tui")).unwrap();
+        std::fs::write(dir.path().join("src/tui/app.rs"), "needle here\n").unwrap();
+        std::fs::write(dir.path().join("elsewhere.rs"), "needle too\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"pattern":"needle","path":"src/tui"}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("src/tui/app.rs:1:"), "got: {out}");
+        assert!(!out.contains("elsewhere.rs"), "got: {out}");
+    }
+
+    /// ADR-0150: a filter that selects no files says so instead of returning
+    /// an empty string indistinguishable from a real no-match.
+    #[tokio::test]
+    async fn path_matching_no_files_says_so() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"pattern":"needle","path":"**/*.py"}"#)
+            .await
+            .unwrap();
+        assert!(
+            out.contains("matched no files") && out.contains("nothing was searched"),
+            "got: {out}"
+        );
+    }
+
+    /// ADR-0150: a glob-y filter that matched only directories gets the
+    /// files-pattern suggestion (mirrors glob's ADR-0016 hint).
+    #[tokio::test]
+    async fn path_dir_glob_gets_files_hint() {
+        let dir = tmp();
+        std::fs::create_dir_all(dir.path().join("src/nested")).unwrap();
+        std::fs::write(dir.path().join("src/nested/a.rs"), "x\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"pattern":"x","path":"src/**"}"#)
+            .await
+            .unwrap();
+        assert!(
+            out.contains("director") && out.contains("src/**/*"),
+            "got: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn case_insensitive_flag_matches() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("f.txt"), "DRAGON\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"pattern":"dragon","case_insensitive":true}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("DRAGON"), "got: {out}");
+    }
+
+    /// The literal CLI spelling models keep sending is accepted as an alias.
+    #[tokio::test]
+    async fn dash_i_alias_accepted() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("f.txt"), "DRAGON\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"pattern":"dragon","-i":true}"#).await.unwrap();
+        assert!(out.contains("DRAGON"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn inline_i_flag_still_works() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("f.txt"), "DRAGON\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"pattern":"(?i)dragon"}"#).await.unwrap();
+        assert!(out.contains("DRAGON"), "got: {out}");
+    }
+
+    /// ADR-0150: an unknown field errors loudly instead of being silently
+    /// dropped — a silently-ignored `output_mode` is indistinguishable from an
+    /// honored one, so the model can't self-correct.
+    #[tokio::test]
+    async fn unknown_field_errors_actionably() {
+        let dir = tmp();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let err = tool
+            .run(r#"{"pattern":"x","output_mode":"content"}"#)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("output_mode"), "should name the field: {msg}");
+    }
+
+    /// ADR-0150: hitting the match cap is announced instead of silently
+    /// truncating the result.
+    #[tokio::test]
+    async fn match_cap_appends_notice() {
+        let dir = tmp();
+        let line = "needle\n".repeat(super::super::MAX_RESULTS + 10);
+        std::fs::write(dir.path().join("f.txt"), line).unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool.run(r#"{"pattern":"needle"}"#).await.unwrap();
+        assert!(
+            out.contains("match cap"),
+            "got tail: {}",
+            &out[out.len().saturating_sub(200)..]
+        );
+    }
+
+    /// ADR-0150: a brace-set path filter searches every alternative.
+    #[tokio::test]
+    async fn brace_path_filter_searches_both() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("c.txt"), "needle\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"pattern":"needle","path":"*.{rs,md}"}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("a.rs"), "got: {out}");
+        assert!(out.contains("b.md"), "got: {out}");
+        assert!(!out.contains("c.txt"), "got: {out}");
     }
 
     #[tokio::test]

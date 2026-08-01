@@ -130,6 +130,7 @@ reads it; this table is the one-place index):
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide (default when a profile sets no `sandbox:` override); opt-in to keep network (#399, #479) |
 | `ENTANGLEMENT_ECHO_FULL=1` | `EchoLlm` appends the full system text (debugging) |
 | `ENTANGLEMENT_TUI_NOTIFY=1` / `ENTANGLEMENT_TUI_NO_MOUSE` | TUI desktop-notification opt-in / mouse opt-out |
+| `ENTANGLEMENT_SESSION_RETENTION_DAYS` | session-log retention in days for the startup auto-prune (env > `config.yml`'s `session_retention_days` > embedded default `30`); scope is the current project's session dir only, best-effort (Issue 4) |
 | `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child's env by the runtime (read-only context, not user-set; note the latter two carry no `HOOK` infix) |
 
 z.ai/OpenAI/Ollama share one `entanglement-provider::OpenAiLlm`; Anthropic has its own client (distinct content-block
@@ -223,8 +224,11 @@ re-document them here):
   `Approve`/`Reject` off `Holly::subscribe_inbound()`. Core never reads
   `PermissionProfile`. Rule keys are name-or-`*` **or** argument-scoped
   `tool(pattern)` (#173: command for `bash`/`call`, path for `edit`/`write`/
-  `read`/`glob`, optional file filter for `grep` (#417 — a path, distinct from
-  its regex `pattern`; absent → no match)), matched against the call input the
+  `read`; for `glob` the `pattern` with its optional `path` base dir joined
+  (#540/ADR-0150 — the same string the walk uses), optional file filter for
+  `grep` (#417 — a path or directory, distinct from its regex `pattern`;
+  absent → no match; graded raw — the walk's `dir/**/*` auto-expansion never
+  reaches grading)), matched against the call input the
   runtime extracts (`permission::permission_arg`) — the
   `PermissionProfile::resolve(name, arg)` glob is the only core surface. **Path
   tools grade root-relative** (#485,

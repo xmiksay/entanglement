@@ -36,6 +36,7 @@ use crate::tools::ToolRegistry;
 pub mod apply_patch;
 pub mod bash;
 pub mod bash_output;
+mod brace;
 pub mod call;
 pub mod edit;
 pub mod exec;
@@ -435,6 +436,86 @@ mod tests {
         );
     }
 
+    /// ADR-0150: a bare directory pattern lists it recursively (tool level).
+    #[tokio::test]
+    async fn glob_dir_pattern_lists_recursively() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/nested/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("other.txt"), "x\n").unwrap();
+        let tool = GlobTool::new(dir.path.clone());
+        let out = tool.run(r#"{"pattern":"src"}"#).await.unwrap();
+        assert!(out.contains("src/nested/a.rs"), "got: {out}");
+        assert!(!out.contains("other.txt"), "got: {out}");
+    }
+
+    /// ADR-0150: the Claude-Code-style `path` base dir scopes the pattern.
+    #[tokio::test]
+    async fn glob_path_param_scopes_pattern() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("docs/b.rs"), "x\n").unwrap();
+        let tool = GlobTool::new(dir.path.clone());
+        let out = tool
+            .run(r#"{"pattern":"**/*.rs","path":"src"}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("src/a.rs"), "got: {out}");
+        assert!(!out.contains("docs/b.rs"), "got: {out}");
+    }
+
+    /// ADR-0150 (supersedes the ADR-0016 empty-string allowance): a clean
+    /// no-match returns a message, never the empty string.
+    #[tokio::test]
+    async fn glob_clean_no_match_returns_message() {
+        let dir = TempDir::new();
+        fs::write(dir.join("a.rs"), "x\n").unwrap();
+        let tool = GlobTool::new(dir.path.clone());
+        let out = tool.run(r#"{"pattern":"*.py"}"#).await.unwrap();
+        assert!(
+            out.starts_with("pattern `") && out.contains("matched no files"),
+            "got: {out:?}"
+        );
+    }
+
+    /// ADR-0150: brace sets expand (tool level).
+    #[tokio::test]
+    async fn glob_brace_pattern_matches_both_extensions() {
+        let dir = TempDir::new();
+        fs::write(dir.join("a.rs"), "x\n").unwrap();
+        fs::write(dir.join("b.md"), "x\n").unwrap();
+        fs::write(dir.join("c.txt"), "x\n").unwrap();
+        let tool = GlobTool::new(dir.path.clone());
+        let out = tool.run(r#"{"pattern":"*.{rs,md}"}"#).await.unwrap();
+        assert!(out.contains("a.rs"), "got: {out}");
+        assert!(out.contains("b.md"), "got: {out}");
+        assert!(!out.contains("c.txt"), "got: {out}");
+    }
+
+    /// ADR-0150: hitting the walk cap is announced (tool level).
+    #[tokio::test]
+    async fn glob_capped_appends_notice() {
+        let dir = TempDir::new();
+        for i in 0..(MAX_RESULTS + 1) {
+            fs::write(dir.join(&format!("f{i:04}.txt")), "x").unwrap();
+        }
+        let tool = GlobTool::new(dir.path.clone());
+        let out = tool.run(r#"{"pattern":"**/*"}"#).await.unwrap();
+        assert!(out.contains("capped at 1000 results"), "cap notice missing");
+    }
+
+    /// ADR-0150: an unknown field errors loudly, naming the field.
+    #[tokio::test]
+    async fn glob_unknown_field_errors_actionably() {
+        let dir = TempDir::new();
+        let tool = GlobTool::new(dir.path.clone());
+        let err = tool
+            .run(r#"{"pattern":"*.rs","limit":5}"#)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("limit"), "should name the field: {msg}");
+    }
+
     /// `list_files` distinguishes no-files-but-matched-dirs from no-match-at-all
     /// so callers can produce the right diagnostic.
     #[test]
@@ -459,7 +540,169 @@ mod tests {
         assert!(list.files.is_empty());
         assert_eq!(list.matched_dirs, 0);
         assert_eq!(list.skipped_errors, 0);
+        assert!(!list.capped);
+        assert_eq!(list.out_of_root, 0);
         assert!(!list.matched_anything());
+    }
+
+    /// ADR-0150: a metachar-free pattern naming an existing directory is the
+    /// `grep -r DIR` shape — it expands to `DIR/**/*` instead of matching only
+    /// the (filtered-out) directory entry.
+    #[test]
+    fn list_files_expands_directory_pattern_recursively() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/nested/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("src/b.rs"), "x\n").unwrap();
+        fs::write(dir.join("other.rs"), "x\n").unwrap();
+        let list = list_files(&dir.path, "src", &[]).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("src/nested/a.rs")),
+            "{names:?}"
+        );
+        assert!(names.iter().any(|n| n.ends_with("src/b.rs")), "{names:?}");
+        assert!(!names.iter().any(|n| n.ends_with("other.rs")), "{names:?}");
+    }
+
+    #[test]
+    fn list_files_dir_expansion_accepts_trailing_slash() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        let list = list_files(&dir.path, "src/", &[]).unwrap();
+        assert_eq!(list.files.len(), 1, "{:?}", list.files);
+    }
+
+    /// A pattern with glob metachars is never dir-expanded — bare `**` keeps
+    /// its matched-dirs semantics (and the ADR-0016 hint built on it).
+    #[test]
+    fn list_files_does_not_expand_glob_patterns() {
+        let dir = TempDir::new();
+        fs::write(dir.join("nested/a.rs"), "x\n").unwrap();
+        let list = list_files(&dir.path, "**", &[]).unwrap();
+        assert!(list.files.is_empty(), "{:?}", list.files);
+        assert!(list.matched_dirs > 0);
+    }
+
+    /// ADR-0150: dir expansion is containment-gated — an ungranted absolute
+    /// directory must not be expanded into a walk outside the root.
+    #[test]
+    fn list_files_no_expansion_for_ungranted_absolute_dir() {
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("leak.txt"), "x\n").unwrap();
+        let pattern = outside.path.display().to_string();
+        let list = list_files(&dir.path, &pattern, &[]).unwrap();
+        assert!(list.files.is_empty(), "{:?}", list.files);
+    }
+
+    /// ADR-0150 × ADR-0132: a durably granted external directory expands like
+    /// an in-root one, so `{"path": "/granted/dir"}` searches it recursively.
+    #[test]
+    fn list_files_dir_expansion_under_durable_extra_root() {
+        use crate::extra_roots::ExtraRootStore;
+
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("nested/lib.rs"), "x\n").unwrap();
+        let canon_outside = outside.path.canonicalize().unwrap();
+
+        let store = ExtraRootStore::ephemeral();
+        store.record(
+            "read",
+            &canon_outside,
+            entanglement_core::ApprovalScope::Session,
+            "req-1",
+        );
+
+        let pattern = outside.path.display().to_string();
+        let list = list_files_with_extra_roots(&dir.path, &pattern, &[], Some(&store)).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("nested/lib.rs")),
+            "{names:?}"
+        );
+    }
+
+    /// ADR-0150: `{a,b}` brace sets expand into alternatives.
+    #[test]
+    fn list_files_brace_set_expands_alternatives() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("docs/b.md"), "x\n").unwrap();
+        fs::write(dir.join("src/c.txt"), "x\n").unwrap();
+        let list = list_files(&dir.path, "**/*.{rs,md}", &[]).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with("a.rs")), "{names:?}");
+        assert!(names.iter().any(|n| n.ends_with("b.md")), "{names:?}");
+        assert!(!names.iter().any(|n| n.ends_with("c.txt")), "{names:?}");
+    }
+
+    /// Overlapping alternatives must not duplicate a file in the result.
+    #[test]
+    fn list_files_brace_overlap_deduped() {
+        let dir = TempDir::new();
+        fs::write(dir.join("a.rs"), "x\n").unwrap();
+        let list = list_files(&dir.path, "{*.rs,a.*}", &[]).unwrap();
+        assert_eq!(list.files.len(), 1, "{:?}", list.files);
+    }
+
+    #[test]
+    fn list_files_excludes_accept_braces() {
+        let dir = TempDir::new();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("target/b.rs"), "x\n").unwrap();
+        fs::write(dir.join("node_modules/c.rs"), "x\n").unwrap();
+        let list = list_files(
+            &dir.path,
+            "**/*.rs",
+            &["{target,node_modules}/**".to_string()],
+        )
+        .unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with("a.rs")), "{names:?}");
+        assert_eq!(names.len(), 1, "{names:?}");
+    }
+
+    /// ADR-0150: hitting MAX_RESULTS is recorded instead of silently breaking.
+    #[test]
+    fn list_files_sets_capped_flag() {
+        let dir = TempDir::new();
+        for i in 0..(MAX_RESULTS + 1) {
+            fs::write(dir.join(&format!("f{i:04}.txt")), "x").unwrap();
+        }
+        let list = list_files(&dir.path, "**/*", &[]).unwrap();
+        assert_eq!(list.files.len(), MAX_RESULTS);
+        assert!(list.capped);
+    }
+
+    /// ADR-0150: containment drops are counted so an absolute-path typo does
+    /// not read as a clean no-match.
+    #[cfg(unix)]
+    #[test]
+    fn list_files_counts_out_of_root() {
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        std::fs::write(outside.join("leak.txt"), "x\n").unwrap();
+        std::os::unix::fs::symlink(&outside.path, dir.join("escape")).unwrap();
+        let list = list_files(&dir.path, "escape/*", &[]).unwrap();
+        assert!(list.files.is_empty(), "{:?}", list.files);
+        assert!(list.out_of_root > 0, "{list:?}");
     }
 
     /// `.git` is excluded unconditionally — no `excludes` entry required, and

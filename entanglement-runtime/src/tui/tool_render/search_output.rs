@@ -46,7 +46,9 @@ pub(super) fn render_glob_output(
         if line.trim().is_empty() {
             continue;
         }
-        if line.starts_with("... [truncated:") {
+        if line.starts_with("... [truncated:") || line.starts_with('[') {
+            // `[`-prefixed lines are host notices (the ADR-0150 walk-cap
+            // notice), never matched paths.
             notice_lines.push(line);
         } else {
             file_lines.push(line);
@@ -202,6 +204,43 @@ mod tests {
             text.contains("truncated: 99999 bytes total"),
             "truncation notice must survive verbatim: {text}"
         );
+    }
+
+    #[test]
+    fn test_glob_cap_notice_not_counted_as_file() {
+        let output = "a.rs\nb.rs\n[capped at 1000 results — narrow the pattern]";
+        let result = render_glob_output(output, Theme::default(), 80);
+        let text = flatten(&result);
+        assert!(text.contains("2 files matched"), "{text}");
+        assert!(
+            text.contains("capped at 1000 results"),
+            "cap notice must survive: {text}"
+        );
+    }
+
+    #[test]
+    fn test_glob_clean_no_match_renders_as_hint() {
+        // ADR-0150: the clean-no-match message keeps the `pattern `` prefix so
+        // it rides the existing hint arm, not the file-list arm.
+        let output = "pattern `*.py` matched no files.";
+        let result = render_glob_output(output, Theme::default(), 80);
+        let text = flatten(&result);
+        assert!(text.contains(output), "should render verbatim: {text}");
+        assert!(
+            !text.contains("1 files matched"),
+            "must not misparse as a file: {text}"
+        );
+    }
+
+    #[test]
+    fn test_grep_no_match_message_passes_through_verbatim() {
+        // ADR-0150: grep's zero-match explanation has no path:lineno: shape —
+        // it falls to the verbatim arm under a "0 matches found" header.
+        let output = "no matches for `zzz` in 42 file(s) scanned";
+        let result = render_grep_output(output, Theme::default(), 80);
+        let text = flatten(&result);
+        assert!(text.contains("0 matches found"), "{text}");
+        assert!(text.contains(output), "message must survive: {text}");
     }
 
     #[test]

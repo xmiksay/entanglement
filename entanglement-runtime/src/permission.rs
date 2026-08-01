@@ -467,7 +467,14 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
             Some(line)
         }
         "edit" | "write" | "read" | "apply_patch" => value.get("path")?.as_str().map(String::from),
-        "glob" => value.get("pattern")?.as_str().map(String::from),
+        "glob" => {
+            let pattern = value.get("pattern")?.as_str()?;
+            // ADR-0150: the optional `path` base dir joins onto the pattern
+            // exactly as the tool resolves it, so an argument-scoped rule or
+            // grant like `glob(src/**)` sees the same string the walk uses.
+            let base = value.get("path").and_then(|p| p.as_str());
+            Some(crate::host::glob::joined_pattern(base, pattern))
+        }
         "grep" => value.get("path").and_then(|p| p.as_str()).map(String::from),
         _ => None,
     }
@@ -1140,6 +1147,27 @@ mod tests {
         assert_eq!(permission_arg("grep", r#"{"pattern":"foo"}"#), None);
         // Tools without a meaningful argument, and malformed input, yield None.
         assert_eq!(permission_arg("bash", "not json"), None);
+    }
+
+    /// ADR-0150: glob's optional `path` base dir joins onto the pattern for
+    /// grading, matching what the tool actually walks.
+    #[test]
+    fn glob_path_plus_pattern_grades_joined() {
+        assert_eq!(
+            permission_arg("glob", r#"{"pattern":"**/*.rs","path":"src"}"#).as_deref(),
+            Some("src/**/*.rs")
+        );
+    }
+
+    /// ADR-0150 regression: grep's graded arg stays the raw `path` even when
+    /// it names a directory — the walk's `dir/**/*` auto-expansion happens
+    /// after grading and must never leak into it.
+    #[test]
+    fn grep_graded_arg_is_raw_path_even_for_directory() {
+        assert_eq!(
+            permission_arg("grep", r#"{"pattern":"foo","path":"src/tui"}"#).as_deref(),
+            Some("src/tui")
+        );
     }
 
     #[test]
