@@ -523,6 +523,32 @@ re-document them here):
   confirmations (`OutEvent::McpChanged`) and parse errors render as a
   transcript status line on the active session, mirroring `/key`'s save
   notice. No new wire surface.
+- **Provider-bundled MCP servers + three-state activation** (#542,
+  [ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)):
+  a provider catalog entry can **bundle MCP servers** as data
+  (`ProviderEntry.mcp_servers`) — the embedded defaults ship z.ai's
+  `web_search_prime`/`web_reader`/`zread` (streamable HTTP,
+  `Bearer ${ZAI_API_KEY}`, #426 `read` hints), unlocked by **live key
+  presence** (a `/key` save surfaces them with no restart; keyless ⇒ silently
+  absent). Every MCP server (bundled or user `mcp:`) now resolves a
+  three-state `McpServerState` via `effective_state()` — `enabled`
+  (startup-connect; the user-entry/legacy-`disabled: false` default),
+  `allowed` (*available*: lazily connected + session-scoped on demand — the
+  bundled default), `disabled` (invisible). Enabling an `allowed` server
+  (TUI `/enable mcp <name>`, the `/mcp` panel's `e` key, or the agent's new
+  **`mcp_enable` tool** — profile-graded, `load_skill`-shaped, its schema
+  `enum`s the live available roster) runs `available::enable_for_session`:
+  the `mcp_add` machinery **minus persistence** (bundled servers never touch
+  `ServerConfigs`/`config.yml`; a same-name user entry field-merges over the
+  bundle), marking the session in `mcp::AvailableMcp` — the runtime's
+  `tool_spec_resolver` filters a lazily-connected server's specs to its
+  enabling sessions, so enablement is **session-ephemeral**; `/disable mcp
+  <name>` unmarks (the connection stays up for other sessions). `McpServerStatus`
+  gains an optional `state` (`"enabled"`/`"allowed"`); `McpList` appends
+  available-unconnected entries; `McpRemove` of a bundled name disconnects
+  it (still available) instead of erroring. Deferred edges in the ledger
+  (row 10): child sessions don't inherit visibility, marks survive
+  `SessionEnded`, inspect/bare-`/enable`-dialog don't cover bundles.
 - **Live bash enablement, graded by the permission model** (#498,
   [ADR-0133](../docs/adr/0133-live-bash-enablement-graded-by-permission.md),
   built on the `SharedRegistry`/live-MCP pattern above): `bash`/`bash_output`

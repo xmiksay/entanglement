@@ -33,6 +33,7 @@ mod mcp;
 mod mention;
 mod pickers;
 mod quit;
+mod slash;
 mod state;
 mod toast;
 mod tools;
@@ -115,6 +116,11 @@ pub struct App {
     // `/mcp list` result panel (#373): the last snapshot + the correlation id
     // of any outstanding query.
     mcp_panel: crate::tui::mcp_panel::McpPanel,
+
+    // Per-session enablement of `allowed` MCP servers (#542): the handles
+    // `/enable mcp <name>` needs to lazily connect an available server the
+    // same way the `mcp_enable` tool does. `None` in tests.
+    mcp_handles: Option<crate::mcp::McpHandles>,
 
     // Per-session live tool overlays (#539, ADR-0149), folded from
     // `OutEvent::ToolOverlayChanged` — the head-side mirror `/enable`/`/disable`
@@ -204,6 +210,9 @@ pub struct App {
     root: PathBuf,
     live_bash: std::sync::Arc<crate::bash_live::LiveBashState>,
     mention: MentionPopup,
+    /// Prefix-filter slash-command completion popup (Issue 2). Mirrors
+    /// `mention`: persistent across frames, recompute via `update_slash`.
+    slash: crate::tui::slash_popup::SlashPopup,
 
     // Two-stage Ctrl+C (ADR-0087): first press clears transient input + arms a
     // pending quit; a second press within `quit::QUIT_TIMEOUT` quits. Any other

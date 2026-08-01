@@ -47,8 +47,16 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &App) {
         }
     } else {
         for (i, s) in servers.iter().enumerate() {
+            // Three-state display (#542): an `allowed` server that isn't
+            // connected is *available* (enable it with `e` / `/enable mcp
+            // <name>`), not broken — don't paint it red.
             let status = if s.connected {
                 Span::styled("connected", Style::default().fg(Color::Green))
+            } else if s.state.as_deref() == Some("allowed") {
+                Span::styled(
+                    "available (enable with e)",
+                    Style::default().fg(Color::Yellow),
+                )
             } else {
                 Span::styled("disconnected", Style::default().fg(Color::Red))
             };

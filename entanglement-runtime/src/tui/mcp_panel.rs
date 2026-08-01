@@ -85,6 +85,7 @@ mod tests {
             connected: true,
             tools: vec!["mcp__srv__tool".to_string()],
             error: None,
+            state: None,
         }
     }
 

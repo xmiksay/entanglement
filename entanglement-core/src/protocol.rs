@@ -272,6 +272,12 @@ pub struct McpServerStatus {
     pub tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Three-state activation (#542): `"enabled"` (startup-connected) or
+    /// `"allowed"` (available for per-session enablement — possibly already
+    /// lazily connected, see `connected`). `None` from a pre-#542 peer; the
+    /// runtime MCP responder always fills it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 /// What changed in reply to [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375),
@@ -2566,6 +2572,7 @@ mod tests {
                 connected: true,
                 tools: vec!["mcp__everything__echo".into()],
                 error: None,
+                state: None,
             }],
         };
         assert_eq!(list_ev.seq(), None);

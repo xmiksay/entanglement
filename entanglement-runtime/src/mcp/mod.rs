@@ -32,7 +32,13 @@ use serde::{Deserialize, Serialize};
 use crate::tool_names;
 use crate::tools::{Tool, ToolRegistry};
 
+// Via core's re-export (ADR-0053), not `entanglement_provider` directly —
+// that dep is optional (`provider` feature) and absent from the lean build.
+pub use entanglement_core::McpServerState;
+
+pub mod available;
 pub mod client;
+pub mod enable_tool;
 #[cfg(feature = "mcp-http")]
 pub mod http;
 pub mod live;
@@ -40,7 +46,19 @@ pub mod responder;
 pub mod stdio;
 pub mod tool;
 
+pub use available::AvailableMcp;
 pub use client::{McpClient, McpToolDef};
+pub use enable_tool::McpEnableTool;
+
+/// The handle bundle a head needs to drive per-session enablement of
+/// `allowed` servers (#542) — `/enable mcp <name>` lazily connects through
+/// these, exactly like the `mcp_enable` tool does.
+#[derive(Clone)]
+pub struct McpHandles {
+    pub avail: std::sync::Arc<AvailableMcp>,
+    pub registry: crate::tools::SharedRegistry,
+    pub active: ActiveServers,
+}
 #[cfg(feature = "mcp-http")]
 pub use http::HttpClient;
 pub use live::{mcp_add, mcp_list, mcp_remove, ActiveServer, ActiveServers, ServerConfigs};
@@ -89,6 +107,13 @@ pub struct McpServerConfig {
     /// (or survive across) the server actually connecting.
     #[serde(default)]
     pub capabilities: HashMap<String, String>,
+    /// Three-state activation (#542): `enabled` connects at startup, `allowed`
+    /// is available for per-session enablement (`/enable mcp <name>` / the
+    /// `mcp_enable` tool), `disabled` is invisible. `None` falls back to the
+    /// legacy `disabled` bool (`true` ⇒ `disabled`, else `enabled`) so every
+    /// pre-#542 config keeps its exact behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<McpServerState>,
 }
 
 /// The resolved transport for one server — the `command` XOR `url` choice made
@@ -108,6 +133,20 @@ pub enum Transport {
 }
 
 impl McpServerConfig {
+    /// The resolved three-state activation (#542): the explicit `state` field
+    /// wins; absent, the legacy `disabled` bool maps `true` ⇒ [`Disabled`]
+    /// and `false` ⇒ [`Enabled`] — byte-identical to pre-#542 behavior.
+    ///
+    /// [`Disabled`]: McpServerState::Disabled
+    /// [`Enabled`]: McpServerState::Enabled
+    pub fn effective_state(&self) -> McpServerState {
+        self.state.unwrap_or(if self.disabled {
+            McpServerState::Disabled
+        } else {
+            McpServerState::Enabled
+        })
+    }
+
     /// Resolve the transport, enforcing the `command` XOR `url` rule.
     pub fn transport(&self) -> Result<Transport> {
         match (self.command.as_deref(), self.url.as_deref()) {
@@ -145,6 +184,7 @@ impl From<entanglement_core::McpServerSpec> for McpServerConfig {
             headers: spec.headers,
             disabled: spec.disabled,
             capabilities: HashMap::new(),
+            state: None,
         }
     }
 }
@@ -216,8 +256,8 @@ pub async fn connect(
 ) -> HashMap<String, ActiveServer> {
     let mut active = HashMap::new();
     for (name, cfg) in servers {
-        if cfg.disabled {
-            tracing::info!("MCP server `{name}` is disabled; skipping");
+        if cfg.effective_state() != McpServerState::Enabled {
+            tracing::info!("MCP server `{name}` is not enabled at startup; skipping");
             continue;
         }
         match connect_one(name, cfg, registry, secret_env).await {
@@ -365,6 +405,7 @@ headers:
                 headers: HashMap::new(),
                 disabled: true,
                 capabilities: HashMap::new(),
+                state: None,
             },
         )]);
         let mut registry = ToolRegistry::new();
@@ -384,6 +425,7 @@ headers:
                 headers: HashMap::new(),
                 disabled: false,
                 capabilities: HashMap::new(),
+                state: None,
             },
         )]);
         let mut registry = ToolRegistry::new();
@@ -405,6 +447,7 @@ headers:
                 headers: HashMap::new(),
                 disabled: false,
                 capabilities: HashMap::new(),
+                state: None,
             },
         )]);
         let mut registry = ToolRegistry::new();

@@ -33,11 +33,14 @@ pub mod gemini;
 pub mod llm;
 pub mod message;
 pub mod openai;
+pub mod provider_mcp;
 mod sse_frame;
 pub mod web_search;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm};
-pub use catalog::{Catalog, ModelEntry, ModelPricing, ProviderEntry, Wire};
+pub use catalog::{
+    Catalog, McpServerState, ModelEntry, ModelPricing, ProviderEntry, ProviderMcpServer, Wire,
+};
 pub use client::{HttpClient, RetryConfig, StreamGuard, ThrottleStatus};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{

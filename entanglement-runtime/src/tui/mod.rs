@@ -3,6 +3,7 @@ mod app;
 mod attention;
 mod bash_command;
 mod clipboard;
+mod command_args;
 mod command_palette;
 mod commands;
 mod diff;
@@ -28,6 +29,7 @@ mod session_tools_dialog;
 mod session_tree;
 mod session_view;
 mod sessions;
+mod slash_popup;
 mod theme;
 mod tool_render;
 mod tools_dialog;
@@ -78,6 +80,7 @@ pub async fn tui(
     http_client: HttpClient,
     configured_editor: Option<String>,
     grants: std::sync::Arc<crate::policy::DefaultGrantStore>,
+    mcp_handles: crate::mcp::McpHandles,
 ) -> Result<()> {
     setup_panic_handler();
 
@@ -129,6 +132,7 @@ pub async fn tui(
     app.set_http_client(http_client);
     app.set_configured_editor(configured_editor);
     app.set_grants(grants);
+    app.set_mcp_handles(mcp_handles);
     app.init_head_context(root, live_bash);
 
     let mut attention = Attention::from_env();

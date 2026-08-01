@@ -484,13 +484,26 @@ fn test_thinking_state_tracking() {
     assert!(app.thinking_since().is_none());
 }
 
+/// The focused-use counterpart of `update_popups` for the slash popup alone:
+/// typing a `/prefix` narrows the roster and shows the popup.
+#[test]
+fn update_slash_recomputes_the_popup_from_the_input_line() {
+    let mut app = App::new_for_test(SessionId::new("test"));
+    app.input.insert_str("/co");
+
+    app.update_slash();
+    assert!(app.slash_visible());
+    let names: Vec<&str> = app.slash().matches().iter().map(|c| c.name()).collect();
+    assert!(names.contains(&"compact"), "names={names:?}");
+}
+
 #[test]
 fn accept_mention_replaces_at_token_with_path() {
     let mut app = App::new_for_test(SessionId::new("test"));
     app.mention = MentionPopup::new(FileIndex::from_paths(vec!["src/tui/app.rs".to_string()]));
     app.input.insert_str("explain @app");
 
-    app.update_mention();
+    app.update_popups();
     assert!(app.mention_visible());
 
     assert!(app.accept_mention());

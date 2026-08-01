@@ -89,7 +89,7 @@ mod tests {
             "src/b.rs".to_string(),
         ]));
         app.input.insert_str(" @a");
-        app.update_mention();
+        app.update_popups();
         assert!(app.mention_visible(), "precondition: popup open");
 
         // First press does not quit; it clears and arms.

@@ -21,10 +21,10 @@ pub use holly::{
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
 // the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
 pub use entanglement_provider::{
-    content_text, stream_from_response, ContentPart, DummyLlm, EchoLlm, GenerationParams,
+    content_text, stream_from_response, Catalog, ContentPart, DummyLlm, EchoLlm, GenerationParams,
     GenerationResolver, ImageSource, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream,
-    Message, MessageRole, ModelPricing, ModelResolver, ReasoningEffort, ResolvedModel, StopReason,
-    ToolCall, ToolSpec, Usage, UserId, WebSearchConfig,
+    McpServerState, Message, MessageRole, ModelPricing, ModelResolver, ProviderMcpServer,
+    ReasoningEffort, ResolvedModel, StopReason, ToolCall, ToolSpec, Usage, UserId, WebSearchConfig,
 };
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, BashGrade, FileChangeKind, InMsg,

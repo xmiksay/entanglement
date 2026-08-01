@@ -24,7 +24,8 @@ use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, bash_live, config, extra_roots, history, host, inspect, logging, mcp,
     permission_path, persistence, plan_tasks, policy, propose_plan, session_store, skills,
-    subagent, system_prompt, throttle, tool_names, tool_runner, watch, ToolRegistry,
+    subagent, system_prompt, throttle, tool_names, tool_runner, watch, SharedRegistry,
+    ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -94,9 +95,10 @@ async fn build_config(
     EngineConfig,
     ModelInfo,
     String,
-    ToolRegistry,
+    SharedRegistry,
     Vec<String>,
-    HashMap<String, mcp::ActiveServer>,
+    mcp::ActiveServers,
+    Arc<mcp::AvailableMcp>,
     EscapeRoot,
     Arc<bash_live::LiveBashState>,
     bash_live::BashToolConfig,
@@ -212,13 +214,34 @@ async fn build_config(
     // logged and skipped, never fatal.
     // The same provider-key scrub as the exec tools (#164): an MCP stdio server
     // is an arbitrary external process and must not inherit the engine's keys.
-    let initial_mcp = mcp::connect(&user_config.mcp, &mut tools, &secret_env).await;
-    cfg.tool_specs = tools.specs();
+    // Three-state split (#542): catalog-bundled servers (key-gated) overlay
+    // the user `mcp:` map; only the `enabled` slice connects at startup —
+    // `allowed` servers wait in `mcp_available` for a per-session `/enable`
+    // or the `mcp_enable` tool below.
+    let (startup_mcp, mcp_available) =
+        mcp::AvailableMcp::partition(catalog, &user_config.mcp, secret_env.clone());
+    let mcp_available = Arc::new(mcp_available);
+    let initial_mcp = mcp::connect(&startup_mcp, &mut tools, &secret_env).await;
+    let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(initial_mcp));
+    // Shared from here on (#372): `mcp_enable` needs the registry handle to
+    // register a lazily-connected server's tools at enable time, so the
+    // by-value registration phase ends here. Registered *before* the specs
+    // snapshot so it rides the static roster like any host tool.
+    let tools = tools.shared();
+    tools.write().unwrap().register(mcp::McpEnableTool::new(
+        mcp_available.clone(),
+        tools.clone(),
+        mcp_active.clone(),
+    ));
+    cfg.tool_specs = tools.read().unwrap().specs();
     // `read_raw` (rhai-only, see `script.rs`'s `parse_json`/`parse_yaml`)
     // registers *after* the specs snapshot above: present in `tools` for
     // execution (the rhai bridge routes through the same `ToolRegistry`), but
     // never advertised as a standalone model-callable tool.
-    tools.register(ReadRawTool::new(root.clone()));
+    tools
+        .write()
+        .unwrap()
+        .register(ReadRawTool::new(root.clone()));
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
     // the model. Per-profile spawn control (#119, ADR-0040) makes the family
@@ -273,7 +296,8 @@ async fn build_config(
         provider_name,
         tools,
         tool_names,
-        initial_mcp,
+        mcp_active,
+        mcp_available,
         escape_root,
         live_bash,
         bash_tool_config,
@@ -1147,7 +1171,8 @@ async fn main() -> Result<()> {
         provider_name,
         tools,
         tool_names,
-        initial_mcp,
+        mcp_active,
+        mcp_available,
         escape_root,
         live_bash,
         bash_tool_config,
@@ -1174,37 +1199,39 @@ async fn main() -> Result<()> {
     // snapshot (registry tools + the runtime-owned pseudo-tools that aren't
     // registry entries) keeps this change behavior-neutral today, while making
     // every *future* registry mutation land on the next turn for free.
-    let tools = tools.shared();
     {
         let tools = tools.clone();
+        let avail = mcp_available.clone();
         #[allow(unused_mut)] // only mutated when the `rhai` feature is on
         let mut runtime_owned_specs =
             vec![plan_tasks::update_tasks_spec(), ask_user::ask_user_spec()];
         #[cfg(feature = "rhai")]
         runtime_owned_specs.push(script::rhai_spec());
-        engine_config.tool_spec_resolver = Some(Arc::new(move |_session: &SessionId| {
+        engine_config.tool_spec_resolver = Some(Arc::new(move |session: &SessionId| {
             // `read_raw` lives in the same shared registry as every other tool
             // (rhai's bridge needs to `execute()` it) but must never reach the
             // model directly — it's read-only for `parse_json`/`parse_yaml`
             // (ADR-0098) and is graded/masked as an alias of `read`, which only
             // holds if a profile author never sees it to configure separately.
+            // A lazily-connected `allowed` MCP server's tools (#542) are
+            // additionally scoped to the sessions that enabled them.
             let mut specs: Vec<_> = tools
                 .read()
                 .unwrap()
                 .specs()
                 .into_iter()
-                .filter(|s| s.name != "read_raw")
+                .filter(|s| s.name != "read_raw" && avail.spec_visible(&s.name, session))
                 .collect();
             specs.extend(runtime_owned_specs.iter().cloned());
             specs
         }));
     }
-    // Live MCP server management (#375): `ActiveServers` starts seeded from the
-    // servers `build_config` actually connected; `ServerConfigs` starts from
-    // the *whole* configured set (including a disabled/failed one) — the wider
-    // map `save_mcp` must round-trip so a live add/remove never drops an
-    // unrelated entry.
-    let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(initial_mcp));
+    // Live MCP server management (#375): `ActiveServers` was seeded by
+    // `build_config` from the servers it actually connected; `ServerConfigs`
+    // starts from the *whole* user-configured set (including a disabled/failed
+    // one) — the wider map `save_mcp` must round-trip so a live add/remove
+    // never drops an unrelated entry. Catalog-bundled servers (#542) are
+    // deliberately absent: they never persist to `config.yml`.
     let mcp_configs: mcp::ServerConfigs = Arc::new(Mutex::new(user_config.mcp.clone()));
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.
@@ -1271,8 +1298,9 @@ async fn main() -> Result<()> {
     let mcp_responder_handle = mcp::spawn_mcp_responder(
         &holly,
         tools.clone(),
-        mcp_active,
+        mcp_active.clone(),
         mcp_configs,
+        mcp_available.clone(),
         catalog.key_envs(),
     );
 
@@ -1399,6 +1427,11 @@ async fn main() -> Result<()> {
                 http_client.clone(),
                 user_config.editor.clone(),
                 grants.clone(),
+                mcp::McpHandles {
+                    avail: mcp_available.clone(),
+                    registry: tools.clone(),
+                    active: mcp_active.clone(),
+                },
             )
             .await
         }
@@ -1436,6 +1469,11 @@ async fn main() -> Result<()> {
                     http_client.clone(),
                     user_config.editor.clone(),
                     grants.clone(),
+                    mcp::McpHandles {
+                        avail: mcp_available.clone(),
+                        registry: tools.clone(),
+                        active: mcp_active.clone(),
+                    },
                 )
                 .await
             } else {
@@ -1562,6 +1600,7 @@ mod tests {
             concurrency: None,
             default_model: "test-model".to_string(),
             models: Vec::new(),
+            mcp_servers: Default::default(),
         }
     }
 

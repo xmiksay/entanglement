@@ -44,7 +44,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | SessionHibernated{session,ts}      // lifecycle, no seq; memory evicted, id NOT tombstoned (#318, ADR-0077)
          | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072)
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
-         | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375)
+         | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
          | BashChanged{enabled,grade?}   // bash/bash_output live-registered/unregistered, no seq; reply to BashEnable/BashDisable (#498, ADR-0133)
          | Throttle{endpoint,throttled,in_flight,cap,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll

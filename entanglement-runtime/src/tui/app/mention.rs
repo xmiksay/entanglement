@@ -40,11 +40,14 @@ impl App {
         self.mention.visible()
     }
 
-    /// Recompute the `@file` popup from the current input line. Call after any
-    /// key that changes the input text or cursor position.
-    pub fn update_mention(&mut self) {
+    /// Recompute both the `@file` mention popup and the `/cmd` slash popup
+    /// (Issue 2) from the current input line. Call after any key that changes
+    /// the input text or cursor position — the one-call replacement for the
+    /// scattered per-popup `update_*` sites.
+    pub fn update_popups(&mut self) {
         let before = self.input.current_line_before_cursor().to_string();
         self.mention.update(&before);
+        self.slash.update(&before);
         self.mark_dirty();
     }
 

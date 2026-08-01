@@ -9,6 +9,17 @@ use entanglement_core::{McpAction, McpServerStatus};
 use super::App;
 
 impl App {
+    /// Wire the per-session enablement handles for `allowed` MCP servers
+    /// (#542) — set once at TUI startup, `None` in tests.
+    pub fn set_mcp_handles(&mut self, handles: crate::mcp::McpHandles) {
+        self.mcp_handles = Some(handles);
+    }
+
+    /// The enablement handles, for `/enable`/`/disable`'s lazy-connect path.
+    pub(in crate::tui) fn mcp_handles(&self) -> Option<&crate::mcp::McpHandles> {
+        self.mcp_handles.as_ref()
+    }
+
     pub fn showing_mcp_panel(&self) -> bool {
         self.mcp_panel.visible()
     }
@@ -106,6 +117,7 @@ mod tests {
             connected: true,
             tools: vec!["mcp__srv__tool".to_string()],
             error: None,
+            state: None,
         }
     }
 
