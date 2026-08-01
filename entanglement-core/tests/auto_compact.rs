@@ -258,3 +258,120 @@ async fn auto_compact_disabled_falls_back_to_the_old_refuse_behavior() {
         "the LLM must never be streamed for a refused over-window turn"
     );
 }
+
+/// The `summarize` aux-model pin (Issue 5) routes compaction to its own
+/// backend: the auto-summarize call must land on the resolver's LLM, while the
+/// ordinary turn calls keep using the session's own.
+#[tokio::test]
+async fn auto_compact_uses_the_summarize_aux_model_when_pinned() {
+    let turn_calls = Arc::new(AtomicUsize::new(0));
+    let summary_calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    // Counts calls that landed on the *aux* backend specifically.
+    let aux_calls = Arc::new(AtomicUsize::new(0));
+
+    let (turn_calls2, summary_calls2, seen2) =
+        (turn_calls.clone(), summary_calls.clone(), seen.clone());
+    let aux_for_resolver = aux_calls.clone();
+
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm {
+                summary: "session-model summary (should NOT be used)".to_string(),
+                turn_calls: turn_calls2.clone(),
+                summary_calls: summary_calls2.clone(),
+                seen: seen2.clone(),
+            }) as Box<dyn Llm>
+        }),
+        context_window: Some(4_000),
+        aux_llm_resolver: Some(Arc::new(move |purpose: &str| {
+            // Core must ask for exactly this purpose key.
+            assert_eq!(purpose, "summarize");
+            let aux_calls = aux_for_resolver.clone();
+            Some(entanglement_core::ResolvedModel {
+                provider: "aux-provider".to_string(),
+                model: "aux-model".to_string(),
+                llm_factory: Arc::new(move || {
+                    Box::new(ScriptedLlm {
+                        summary: "aux-summary: compacted by the pinned model".to_string(),
+                        turn_calls: aux_calls.clone(),
+                        summary_calls: aux_calls.clone(),
+                        seen: Arc::new(Mutex::new(Vec::new())),
+                    }) as Box<dyn Llm>
+                }),
+                generation: None,
+                context_window: None,
+            })
+        })),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+
+    let events = run_three_turns_then_overflow(&holly, &sid).await;
+
+    let summary = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::Compacted { summary, auto, .. } if *auto => Some(summary.clone()),
+            _ => None,
+        })
+        .expect("expected an auto Compacted event");
+
+    // The summary came from the pinned aux backend, not the session's own.
+    assert!(
+        summary.contains("aux-summary"),
+        "compaction must run on the pinned aux model, got: {summary}"
+    );
+    assert_eq!(
+        summary_calls.load(Ordering::SeqCst),
+        0,
+        "the session's own backend must not have been asked to summarize"
+    );
+    assert_eq!(
+        aux_calls.load(Ordering::SeqCst),
+        1,
+        "exactly one summarization call should land on the aux backend"
+    );
+    // Ordinary turns still run on the session's own backend.
+    assert!(turn_calls.load(Ordering::SeqCst) > 0);
+}
+
+/// A resolver that returns `None` (no pin, or a pin the catalog forgot) falls
+/// back to the session's own backend — byte-identical to pre-Issue-5.
+#[tokio::test]
+async fn auto_compact_falls_back_to_the_session_model_when_unpinned() {
+    let turn_calls = Arc::new(AtomicUsize::new(0));
+    let summary_calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (turn_calls2, summary_calls2, seen2) =
+        (turn_calls.clone(), summary_calls.clone(), seen.clone());
+
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm {
+                summary: "session-summary: used as the fallback".to_string(),
+                turn_calls: turn_calls2.clone(),
+                summary_calls: summary_calls2.clone(),
+                seen: seen2.clone(),
+            }) as Box<dyn Llm>
+        }),
+        context_window: Some(4_000),
+        aux_llm_resolver: Some(Arc::new(|_purpose: &str| None)),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+
+    let events = run_three_turns_then_overflow(&holly, &sid).await;
+
+    let summary = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::Compacted { summary, auto, .. } if *auto => Some(summary.clone()),
+            _ => None,
+        })
+        .expect("expected an auto Compacted event");
+    assert!(summary.contains("session-summary"));
+    assert_eq!(summary_calls.load(Ordering::SeqCst), 1);
+}

@@ -266,17 +266,13 @@ async fn try_auto_compact(
     // overrides the profile's pinned model; `None` falls back to the backend's
     // own default.
     let model = s.model.as_deref().or(s.profile.model.as_deref());
+    // Same `summarize` aux-model pin as the manual `/compact` path (Issue 5):
+    // an overflow recovery is a side transformation too, so it runs on the
+    // pinned backend when one is set.
+    let mut aux = super::summarize::AuxBackend::for_summarize(cfg);
+    let (llm, model, generation) = aux.resolve(&mut *s.llm, model, s.generation);
 
-    match summarize(
-        &s.ctx,
-        &mut *s.llm,
-        model,
-        s.generation,
-        AUTO_COMPACT_KEEP_TAIL,
-        None,
-    )
-    .await
-    {
+    match summarize(&s.ctx, llm, model, generation, AUTO_COMPACT_KEEP_TAIL, None).await {
         Ok(SummarizeOutcome {
             summary,
             kept,

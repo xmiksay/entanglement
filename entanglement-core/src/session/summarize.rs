@@ -18,6 +18,72 @@ use futures::StreamExt;
 /// context window.
 const TRANSCRIPT_TOOL_MESSAGE_CAP: usize = 2_000;
 
+/// The [`EngineConfig::aux_llm_resolver`][crate::EngineConfig::aux_llm_resolver]
+/// purpose key for compaction (Issue 5). Core knows only this string; the
+/// runtime maps it onto its own `Purpose` enum and the managed
+/// `aux-models.yml` pin.
+pub const AUX_PURPOSE_SUMMARIZE: &str = "summarize";
+
+/// The backend one compaction call runs against: either a purpose-pinned aux
+/// model built from [`AUX_PURPOSE_SUMMARIZE`], or the session's own.
+///
+/// Owning the built `Box<dyn Llm>` here is what lets both call sites hand
+/// [`summarize`] a `&mut dyn Llm` that outlives the borrow — the aux client is
+/// one-shot and dropped when this value goes out of scope.
+pub(crate) struct AuxBackend {
+    llm: Option<Box<dyn Llm>>,
+    model: Option<String>,
+    generation: Option<GenerationParams>,
+}
+
+impl AuxBackend {
+    /// Resolve the `summarize` purpose against the engine's aux resolver.
+    /// A missing resolver, an unset pin, or a pin the catalog no longer knows
+    /// all yield the "use the session's own backend" form — byte-identical to
+    /// the pre-Issue-5 behavior.
+    pub(crate) fn for_summarize(cfg: &crate::EngineConfig) -> Self {
+        match cfg
+            .aux_llm_resolver
+            .as_ref()
+            .and_then(|r| r(AUX_PURPOSE_SUMMARIZE))
+        {
+            Some(resolved) => {
+                tracing::debug!(
+                    provider = %resolved.provider,
+                    model = %resolved.model,
+                    "compaction: using the pinned `summarize` aux model"
+                );
+                Self {
+                    llm: Some((resolved.llm_factory)()),
+                    model: Some(resolved.model),
+                    generation: resolved.generation,
+                }
+            }
+            None => Self {
+                llm: None,
+                model: None,
+                generation: None,
+            },
+        }
+    }
+
+    /// The `(llm, model, generation)` triple to summarize with, falling back to
+    /// `session_*` field-by-field. The session fallback deliberately reads the
+    /// *session's current* binding, so a live `/model` switch keeps applying to
+    /// compaction when no aux pin is set.
+    pub(crate) fn resolve<'a>(
+        &'a mut self,
+        session_llm: &'a mut dyn Llm,
+        session_model: Option<&'a str>,
+        session_generation: Option<GenerationParams>,
+    ) -> (&'a mut dyn Llm, Option<&'a str>, Option<GenerationParams>) {
+        match &mut self.llm {
+            Some(llm) => (&mut **llm, self.model.as_deref(), self.generation),
+            None => (session_llm, session_model, session_generation),
+        }
+    }
+}
+
 /// Why [`summarize`] couldn't produce (or accept) a summary. Every variant's
 /// `Display` text matches what `compact_op` has always surfaced via
 /// `OutEvent::Error`, so lifting the logic here changes no user-visible text.

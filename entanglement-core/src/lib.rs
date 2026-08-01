@@ -21,10 +21,11 @@ pub use holly::{
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
 // the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
 pub use entanglement_provider::{
-    content_text, stream_from_response, Catalog, ContentPart, DummyLlm, EchoLlm, GenerationParams,
-    GenerationResolver, ImageSource, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream,
-    McpServerState, Message, MessageRole, ModelPricing, ModelResolver, ProviderMcpServer,
-    ReasoningEffort, ResolvedModel, StopReason, ToolCall, ToolSpec, Usage, UserId, WebSearchConfig,
+    content_text, stream_from_response, AuxLlmResolver, Catalog, ContentPart, DummyLlm, EchoLlm,
+    GenerationParams, GenerationResolver, ImageSource, Llm, LlmEvent, LlmFactory, LlmRequest,
+    LlmResponse, LlmStream, McpServerState, Message, MessageRole, ModelPricing, ModelResolver,
+    ProviderMcpServer, ReasoningEffort, ResolvedModel, StopReason, ToolCall, ToolSpec, Usage,
+    UserId, WebSearchConfig,
 };
 // The MCP client mechanism — transport + OAuth (ADR-0153) — also lives in the
 // leaf crate. Core carries no MCP *logic* (ADR-0067): this is a pass-through so

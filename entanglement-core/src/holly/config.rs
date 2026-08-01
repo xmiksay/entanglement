@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile, SessionId};
 use entanglement_provider::{
-    EchoLlm, GenerationParams, GenerationResolver, Llm, LlmFactory, ModelPricing, ModelResolver,
-    ToolSpec,
+    AuxLlmResolver, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmFactory, ModelPricing,
+    ModelResolver, ToolSpec,
 };
 
 use super::DEFAULT_PROFILE;
@@ -131,6 +131,18 @@ pub struct EngineConfig {
     /// Supplied by the runtime wrapping its `AgentGenerationStore`. `None` (the
     /// default) means no profile carries a persisted override.
     pub generation_resolver: Option<GenerationResolver>,
+    /// Resolves a **side-transformation purpose** to the provider/model pinned
+    /// for it (Issue 5), so an out-of-band call can run on a cheaper/faster
+    /// backend than the session's own. Consulted today by session compaction
+    /// (both the `"compact"` oneshot op and the auto-summarize overflow path)
+    /// under the [`AUX_PURPOSE_SUMMARIZE`] key.
+    ///
+    /// Core stays policy-free: it knows only the purpose *string* and calls the
+    /// runtime's closure, which owns the managed `aux-models.yml` pin and the
+    /// catalog lookup. `None` — the default, an unset pin, or a pin the catalog
+    /// no longer knows — falls back to the session's own `llm`/`model`/
+    /// `generation`, i.e. byte-identical to the pre-Issue-5 behavior.
+    pub aux_llm_resolver: Option<AuxLlmResolver>,
     /// How long a turn may sit parked on unresolved tool calls before the engine
     /// **re-offers** the pending batch — re-emitting each pending `ToolExec` with
     /// the same `request_id` and a fresh `seq` (#274). `OutEvent::ToolExec` rides
@@ -213,6 +225,7 @@ impl Default for EngineConfig {
             pricing: HashMap::new(),
             model_resolver: None,
             generation_resolver: None,
+            aux_llm_resolver: None,
             reoffer_interval: Some(Duration::from_secs(60)),
             max_turns: 200,
             max_ambiguous_stop_retries: 2,

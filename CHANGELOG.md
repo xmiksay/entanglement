@@ -36,13 +36,17 @@ alternatives behind each design decision live in the ADRs under
   `/mcp connect|check|disconnect <name>`, plus `c`/`t` on the MCP panel's
   highlighted row; the authorize URL is always rendered as transcript content
   so a headless/SSH session can copy it.
-- **Per-purpose auxiliary models + auto session titles** (ADR-0151 follow-on):
+- **Per-purpose auxiliary models + auto session titles** (ADR-0154):
   a managed `aux-models.yml` (`ENTANGLEMENT_AUX_MODELS_FILE`) pins a
   `{ provider, model }` per purpose (`summarize`, `session_title`), resolved by
-  a runtime-owned `AuxLlmRegistry` that falls back to the session's primary
-  model. First consumer: an auto session-title generator that names an unnamed
-  session from its first prompt (best-effort; `/name` always wins). TUI:
-  `/aux-model <purpose> <provider>/<model>`.
+  a runtime-owned `AuxLlmRegistry`. Two consumers: an auto session-title
+  generator that names an unnamed session from its first prompt (best-effort;
+  `/name` always wins), and **session compaction** — both `/compact` and the
+  auto-summarize overflow path — routed through a new
+  `EngineConfig::aux_llm_resolver` seam so the summary can run on a cheaper
+  model than the turn loop. Core knows only the purpose string; an unset or
+  unresolvable pin falls back to the session's own backend, so a live `/model`
+  switch keeps applying. TUI: `/aux-model <purpose> <provider>/<model>`.
 - **Multi-user mode — embedder library API** (#522, ADR-0147): one running
   engine can now serve multiple users, each with their own provider catalog,
   API keys, RPM/concurrency budgets, permission ceiling, and grants. A new

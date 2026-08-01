@@ -461,6 +461,23 @@ pub type ModelResolver = std::sync::Arc<
 pub type GenerationResolver =
     std::sync::Arc<dyn Fn(&str) -> Option<GenerationParams> + Send + Sync>;
 
+/// Resolves a **side-transformation purpose** (`"summarize"`, …) to the
+/// provider/model pinned for it, so an out-of-band LLM call can run on a
+/// cheaper or faster backend than the session's own (Issue 5).
+///
+/// Shaped like [`GenerationResolver`] — purely local, a managed-file lookup, so
+/// `Option` rather than `Result` — but reusing [`ResolvedModel`] as its payload
+/// so the caller builds the one-shot client from the same `llm_factory` an
+/// `InMsg::SetModel` switch would, inheriting the warm per-endpoint pool
+/// (ADR-0050) for free.
+///
+/// `None` — no pin for that purpose, or a pin the catalog no longer knows — is
+/// the ordinary case and means "use the session's own backend". That fallback
+/// deliberately lands on the *session's* current binding rather than a fixed
+/// primary, so a live `/model` switch keeps applying to side transformations
+/// exactly as it does to the turn loop.
+pub type AuxLlmResolver = std::sync::Arc<dyn Fn(&str) -> Option<ResolvedModel> + Send + Sync>;
+
 /// Deterministic stub backend. Emits a configured reply as a single text chunk
 /// then `Finish` — ideal for bootstrap wiring and unit tests.
 pub struct DummyLlm {

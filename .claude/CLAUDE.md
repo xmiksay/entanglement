@@ -638,7 +638,8 @@ re-document them here):
   session, a runtime background task calls the aux `session_title` LLM (see
   below) for a short title and sets it via `SetSessionMeta` — purely
   runtime-side, best-effort; `/name` always overrides it.
-- **Per-purpose model/provider for side transformations (Issue 5):** a managed
+- **Per-purpose model/provider for side transformations** (Issue 5,
+  [ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)): a managed
   `aux-models.yml` (sibling of `agent-models.yml`, override
   `ENTANGLEMENT_AUX_MODELS_FILE`) maps a `purpose ∈ { summarize, session_title }`
   to a `{ provider, model }`. A runtime-owned `AuxLlmRegistry` resolves a
@@ -646,14 +647,22 @@ re-document them here):
   closure `SetModel` uses), **falling back to the session's primary model** when
   a purpose is unset or its pin won't resolve against the catalog. Core never
   sees it — a caller builds its own one-shot `Box<dyn Llm>` and drops it.
-  Consumed today by the session-title generator (`session_title` purpose); the
-  `summarize` purpose's wiring into the compact path (`InMsg::Oneshot { op:
-  "compact" }`, which the *engine* drives with its own `&mut s.llm`) is the
-  documented next step — routing it runtime-side needs a compaction intercept or
-  a new seam, deferred to avoid threading an aux `Llm` through the protocol in
-  the first batch. TUI: `/aux-model <purpose> <provider>/<model>`; a second
-  provider means a second endpoint pool/key (already supported — per-endpoint
-  pooling is keyed by base+key).
+  Two consumers, reached by deliberately different routes: the
+  **session-title generator** calls `AuxLlmRegistry::resolve` (no session
+  backend to fall back to, so an unset pin yields the primary model), while
+  **session compaction** — both `InMsg::Oneshot { op: "compact" }` and the
+  auto-summarize overflow path — runs *inside core* and reaches the pin
+  through a new `EngineConfig::aux_llm_resolver` seam
+  (`AuxLlmResolver = Arc<dyn Fn(&str) -> Option<ResolvedModel>>`, shaped like
+  `generation_resolver` but reusing `ResolvedModel` so the one-shot client is
+  built from the same `llm_factory` a `SetModel` switch would, inheriting the
+  warm per-endpoint pool). Core knows only the purpose *string*
+  (`session::summarize::AUX_PURPOSE_SUMMARIZE`), never the registry; `None`
+  there means **use the session's own backend** — strictly better than a fixed
+  primary, since a live `/model` switch keeps applying to compaction. TUI:
+  `/aux-model <purpose> <provider>/<model>`; a second provider means a second
+  endpoint pool/key (already supported — per-endpoint pooling is keyed by
+  base+key).
 - **Single-shot session ops + persisted compaction** (#324,
   [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)):
   `InMsg::Oneshot { session, op: String, args: Value }` is a generic **wire

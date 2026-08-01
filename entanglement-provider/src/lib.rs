@@ -45,9 +45,9 @@ pub use catalog::{
 pub use client::{HttpClient, RetryConfig, StreamGuard, ThrottleStatus};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
-    stream_from_response, DummyLlm, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmEvent,
-    LlmFactory, LlmRequest, LlmResponse, LlmStream, ModelResolver, ReasoningEffort, ResolvedModel,
-    StopReason, ToolCall, ToolSpec, Usage, UserId,
+    stream_from_response, AuxLlmResolver, DummyLlm, EchoLlm, GenerationParams, GenerationResolver,
+    Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream, ModelResolver, ReasoningEffort,
+    ResolvedModel, StopReason, ToolCall, ToolSpec, Usage, UserId,
 };
 // The MCP client mechanism (ADR-0153). `HttpClient` above is the *LLM* endpoint
 // client, so the MCP transport keeps its qualified `McpHttpClient` name rather

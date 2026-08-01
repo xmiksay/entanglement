@@ -11,23 +11,23 @@
 //!   missing API key for that provider — both surfaced as an `Err` from the
 //!   resolver).
 //!
-//! Kept entirely runtime-owned: core never sees it. A caller builds its own
-//! `Box<dyn Llm>` for a one-shot call (`summarize::oneshot_text`-style) and
-//! drops it when done; the protocol is unchanged.
+//! The pin store stays runtime-owned; the *protocol* is unchanged. Two consumers
+//! reach it by different routes, and the difference is deliberate:
 //!
-//! # Compaction wiring (the documented next step)
-//!
-//! Batch A of Issue 5 ships the store + registry + the `/aux-model` command +
-//! the session-title generator. Routing the `summarize` purpose through the
-//! compact path (`InMsg::Oneshot { op: "compact" }` → `session::summarize`,
-//! which the *engine* drives with its own `&mut s.llm`) needs a runtime-side
-//! compaction intercept or a new seam; that is deliberately deferred to avoid
-//! threading an aux `Llm` through the core protocol in this first batch. The
-//! pin is storable today; the resolver is exercised by the session-title path.
+//! - **The session-title generator** has no session backend to fall back to, so
+//!   it calls [`AuxLlmRegistry::resolve`] and gets the primary model when no pin
+//!   is set.
+//! - **Session compaction** (`/compact` *and* the auto-summarize overflow path)
+//!   runs inside core, which reaches the pin through the
+//!   [`AuxLlmResolver`] seam on `EngineConfig` — built here by
+//!   [`AuxLlmRegistry::resolver`]. There `None` means "use the session's own
+//!   backend", which is strictly better than a fixed primary: a live `/model`
+//!   switch keeps applying to compaction. Core knows only the purpose *string*
+//!   (`session::summarize::AUX_PURPOSE_SUMMARIZE`), never this registry.
 
 use std::sync::{Arc, Mutex};
 
-use entanglement_core::{Llm, LlmFactory, ModelResolver};
+use entanglement_core::{AuxLlmResolver, Llm, LlmFactory, ModelResolver, ResolvedModel};
 
 use crate::config::aux_models::{AuxModelStore, Purpose};
 
@@ -103,6 +103,47 @@ impl AuxLlmRegistry {
                 self.primary()
             }
         }
+    }
+
+    /// Resolve `purpose` to its catalog-resolved pin, or `None` when the
+    /// purpose is unset or its pin no longer resolves.
+    ///
+    /// The `Option`-returning counterpart to [`resolve`](Self::resolve), and the
+    /// shape core's [`AuxLlmResolver`] seam wants: there, `None` means "use the
+    /// session's own backend", which is a *better* fallback than this type's
+    /// fixed primary — it keeps a live `/model` switch applying to side
+    /// transformations. So the two differ deliberately, and only callers that
+    /// have no session in hand (the session-title generator) want `resolve`.
+    pub fn resolve_pin(&self, purpose: Purpose) -> Option<ResolvedModel> {
+        let (provider, model) = self
+            .store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(purpose)
+            .map(|(p, m)| (p.to_string(), m.to_string()))?;
+
+        match (self.resolver)(None, &provider, &model) {
+            Ok(resolved) => Some(resolved),
+            Err(reason) => {
+                tracing::debug!(
+                    purpose = purpose.as_str(),
+                    %provider,
+                    %model,
+                    reason,
+                    "aux-models: pin did not resolve against the catalog; \
+                     falling back to the session's own model"
+                );
+                None
+            }
+        }
+    }
+
+    /// The [`AuxLlmResolver`] core consults for a side transformation (Issue 5),
+    /// mapping core's purpose *string* onto this registry's typed [`Purpose`].
+    /// An unrecognized key resolves to `None` (the session's own backend), so a
+    /// future core purpose this build doesn't know is inert rather than fatal.
+    pub fn resolver(self) -> AuxLlmResolver {
+        Arc::new(move |purpose: &str| Purpose::parse(purpose).and_then(|p| self.resolve_pin(p)))
     }
 
     /// The primary-model fallback a caller would get from [`resolve`](Self::resolve)
@@ -210,6 +251,56 @@ mod tests {
         unsafe {
             std::env::remove_var("ENTANGLEMENT_AUX_MODELS_FILE");
         }
+    }
+
+    /// `resolve_pin` is the core-seam counterpart: `None` means "use the
+    /// session's own backend", which is why it must NOT fall back to primary
+    /// the way `resolve` does.
+    #[tokio::test]
+    async fn resolve_pin_is_none_when_unset_or_unresolvable() {
+        let store = store_with_tmp_path("pin-none");
+        let reg = AuxLlmRegistry::new(store.clone(), failing_resolver(), primary_factory());
+        assert!(reg.resolve_pin(Purpose::Summarize).is_none());
+        // A pin that exists but no longer resolves is also `None`, not primary.
+        store
+            .lock()
+            .unwrap()
+            .set(Purpose::Summarize, "ghost", "gone")
+            .unwrap();
+        assert!(reg.resolve_pin(Purpose::Summarize).is_none());
+        cleanup_env();
+    }
+
+    #[tokio::test]
+    async fn resolve_pin_returns_the_catalog_resolution() {
+        let store = store_with_tmp_path("pin-some");
+        store
+            .lock()
+            .unwrap()
+            .set(Purpose::Summarize, "stub", "stub-model")
+            .unwrap();
+        let reg = AuxLlmRegistry::new(store, succeeding_resolver(), primary_factory());
+        let resolved = reg.resolve_pin(Purpose::Summarize).expect("pin resolves");
+        assert_eq!(resolved.provider, "stub");
+        let mut llm = (resolved.llm_factory)();
+        assert_eq!(drain(&mut *llm).await, "aux");
+        cleanup_env();
+    }
+
+    /// The core seam maps a purpose *string*; an unknown key is inert (falls
+    /// back to the session's backend) rather than panicking.
+    #[tokio::test]
+    async fn resolver_maps_known_keys_and_ignores_unknown_ones() {
+        let store = store_with_tmp_path("resolver-seam");
+        store
+            .lock()
+            .unwrap()
+            .set(Purpose::Summarize, "stub", "stub-model")
+            .unwrap();
+        let seam = AuxLlmRegistry::new(store, succeeding_resolver(), primary_factory()).resolver();
+        assert!(seam("summarize").is_some());
+        assert!(seam("no-such-purpose").is_none());
+        cleanup_env();
     }
 
     #[tokio::test]

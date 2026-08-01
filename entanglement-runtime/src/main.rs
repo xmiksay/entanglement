@@ -1211,6 +1211,10 @@ async fn main() -> Result<()> {
         ),
         engine_config.llm_factory.clone(),
     );
+    // Route session compaction (both `/compact` and the auto-summarize overflow
+    // path) through the `summarize` pin when one is set — core calls this with
+    // the purpose string and falls back to the session's own backend on `None`.
+    engine_config.aux_llm_resolver = Some(aux_registry.clone().resolver());
     // Dynamic `ToolRegistry` (#372, ADR-0096): shared mutably so a live
     // registration change (MCP add/remove, #375) is visible without a restart.
     // `engine_config.tool_specs` stays the static snapshot baked above (still
