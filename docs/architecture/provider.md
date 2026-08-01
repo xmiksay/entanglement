@@ -215,7 +215,9 @@ capped at `SLOWDOWN_CAP × base`), each success steps it back toward `base = 60s
 (`relax`). Every 429 **also** parks the shared `Retry-After` window (even with no
 header) so all concurrent callers back off together, and is retried on a patient
 schedule (`rate_limit_initial_backoff` ≈5s → `rate_limit_max_backoff` ≈10 min; a
-server `Retry-After` wins) **until it clears or `rate_limit_max_elapsed` (≈15 min)
+server `Retry-After` wins, clamped to a 24h ceiling so a hostile/misbehaving
+endpoint's huge delta-seconds or far-future HTTP-date can't overflow the
+`Instant + Duration` arithmetic, #548) **until it clears or `rate_limit_max_elapsed` (≈15 min)
 is spent** — then it surfaces as an error, so a saturated endpoint *fails* a
 sub-agent's turn rather than hanging its parent forever. Genuine failures
 (transport faults, retryable 5xx) stay bounded by `max_attempts`.

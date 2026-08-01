@@ -198,6 +198,16 @@ alternatives behind each design decision live in the ADRs under
   digit-scraping. Split into a new `tool_render/search_output.rs` module
   (shared by the standalone `ToolOutput` block and the `grep`/`glob`
   expansion bodies) to keep `tool_render.rs` under the 400-line cap.
+- **A hostile or misbehaving endpoint/proxy could panic a session task via
+  `Retry-After`** (#548): `parse_retry_after` accepted an arbitrary `u64`
+  seconds value or far-future HTTP-date with no ceiling, and the parsed
+  duration fed straight into `Instant + Duration` — a huge value (e.g.
+  `Retry-After: 18446744073709551615`) overflowed that add and panicked
+  inside `send_with_retry`, silently killing the session task (nothing
+  watches its `JoinHandle`). Parsed `Retry-After` values are now clamped to a
+  24h ceiling at the parse site; the cross-process shared-state write
+  (`set_shared_retry_after`) also switched to saturating arithmetic as a
+  second line of defense.
 
 ## [0.5.0] - 2026-07-24
 

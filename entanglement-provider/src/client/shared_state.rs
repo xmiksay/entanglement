@@ -279,7 +279,14 @@ fn remove_lease(path: &Path, lease_id: u64) -> Result<(), ()> {
 
 fn set_shared_retry_after(path: &Path, delay: Duration) -> Result<(), ()> {
     with_locked_state(path, |state| {
-        let until = now_ms() + delay.as_millis() as u64;
+        // Saturating throughout: `delay` is caller-supplied and, pre-#548,
+        // an unclamped huge `Retry-After` could truncate through the
+        // u128->u64 millis cast and/or overflow the add, panicking in debug
+        // builds. `parse_retry_after` now clamps at the source, but this
+        // stays saturating too — the last line of defense for any other
+        // caller of `mark_retry_after`.
+        let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+        let until = now_ms().saturating_add(delay_ms);
         state.retry_after_until_ms = Some(match state.retry_after_until_ms {
             Some(existing) if existing > until => existing,
             _ => until,
@@ -426,6 +433,19 @@ mod tests {
             Ok(Admission::Wait(dur)) => {
                 assert!(dur > Duration::from_secs(25) && dur <= Duration::from_secs(30));
             }
+            other => panic!("expected Wait, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shared_retry_after_saturates_instead_of_panicking_on_huge_delay() {
+        // A huge `delay` (pre-#548, an unclamped `Retry-After: u64::MAX`
+        // could reach here) must not panic the u128->u64 cast or the add —
+        // saturating arithmetic caps it at `u64::MAX` millis instead.
+        let (_dir, path) = tmp_state_path();
+        set_shared_retry_after(&path, Duration::from_secs(u64::MAX)).expect("set retry-after");
+        match try_admit(&path, 100, 100, 111) {
+            Ok(Admission::Wait(_)) => {}
             other => panic!("expected Wait, got {other:?}"),
         }
     }
