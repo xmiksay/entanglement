@@ -624,7 +624,7 @@ pub(super) async fn handle_event(
                 }
             }
         }
-        Event::Mouse(mouse_event) => handle_mouse(app, mouse_event),
+        Event::Mouse(mouse_event) => handle_mouse(app, holly, mouse_event).await,
         Event::Resize => {}
         Event::FocusGained => attention.set_focused(true),
         Event::FocusLost => attention.set_focused(false),

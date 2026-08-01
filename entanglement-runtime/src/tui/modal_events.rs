@@ -5,6 +5,7 @@ use ratatui::crossterm::event::{
 };
 
 use super::app::{App, UiEffect};
+use super::hit_test::{grouped_row_index, list_row_index, rect_contains};
 
 /// Fixed page size for dialog navigation (`PageUp`/`PageDown`). Dialog
 /// viewports are `centered_rect(_, ~40%)` ≈ 8 visible rows on a standard
@@ -18,7 +19,14 @@ pub(super) const DIALOG_PAGE_SIZE: usize = 8;
 /// `j`/`k`), else scrolls the chat transcript. Left-button press/drag/release
 /// drives text selection over the transcript: a drag selects and copies (OSC 52)
 /// on release; a bare click (no drag) toggles the reasoning block it lands on.
-pub(super) fn handle_mouse(app: &mut App, ev: MouseEvent) {
+///
+/// Issue 1 — when a modal or autocomplete popup is open, a left-click instead
+/// acts on the row under the cursor (the same action the `Enter` key would fire
+/// for that row): the click sets the `ListState` selection to the hit row and
+/// dispatches the row's action. A click landing outside an open modal's rect
+/// closes it (click-outside-to-close), matching what `Esc` does. The existing
+/// transcript-selection path runs only when no modal/popup is open.
+pub(super) async fn handle_mouse(app: &mut App, holly: &Holly, ev: MouseEvent) {
     match ev.kind {
         MouseEventKind::ScrollUp => {
             if !wheel_modal_prev(app) {
@@ -30,9 +38,43 @@ pub(super) fn handle_mouse(app: &mut App, ev: MouseEvent) {
                 app.scroll_down(3);
             }
         }
-        MouseEventKind::Down(MouseButton::Left) if !any_modal_open(app) => {
-            // Begin a (possibly zero-width) selection; mouse-up decides whether
-            // it was a drag (copy) or a bare click (block toggle).
+        MouseEventKind::Down(MouseButton::Left) => {
+            // The slash/mention popups are Normal-mode overlays (not full
+            // modals), so they're checked before the `any_modal_open` guard.
+            // A click inside the popup accepts the highlighted-as-clicked row;
+            // a click anywhere else dismisses it (the input keeps the click —
+            // placement isn't supported, so just hide).
+            if app.slash_visible() {
+                if let Some(idx) =
+                    list_row_index(app.slash_popup_rect(), ev.row, app.slash().matches().len())
+                {
+                    app.slash_mut().state().select(Some(idx));
+                    app.accept_slash();
+                } else {
+                    app.hide_slash();
+                }
+                return;
+            }
+            if app.mention_visible() {
+                if let Some(idx) = list_row_index(
+                    app.mention_popup_rect(),
+                    ev.row,
+                    app.mention().matches().len(),
+                ) {
+                    app.mention_mut().state().select(Some(idx));
+                    app.accept_mention();
+                } else {
+                    app.hide_mention();
+                }
+                return;
+            }
+            if any_modal_open(app) {
+                click_modal(app, holly, ev.column, ev.row).await;
+                return;
+            }
+            // No modal/popup open → begin a (possibly zero-width) selection;
+            // mouse-up decides whether it was a drag (copy) or a bare click
+            // (block toggle).
             app.start_selection(ev.column, ev.row);
         }
         MouseEventKind::Drag(MouseButton::Left) if !any_modal_open(app) => {
@@ -60,6 +102,241 @@ pub(super) fn handle_mouse(app: &mut App, ev: MouseEvent) {
             }
         }
         _ => {}
+    }
+}
+
+/// Dispatch a left-click inside an open modal: map `(column, row)` to the
+/// modal's list row, select it, and fire the row's `Enter` action. A click
+/// landing outside the open modal's rect closes it (click-outside-to-close).
+///
+/// The modals are mutually exclusive in routing (the highest-priority open one
+/// wins, mirroring `handle_event`'s key dispatch order), so the first modal
+/// whose rect contains the click claims it. Modals without a clickable list
+/// (Help, Inspect, which-key) are intentionally absent — they have no row
+/// action to fire, and a click inside them is a no-op rather than a close.
+async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: u16) {
+    // Highest priority first: the tools dialog overlays the profile picker
+    // (`e` opens it over the picker without closing it, #330), so it wins.
+    if app.showing_tools_dialog() {
+        let area = app.tools_dialog_rect();
+        if let Some(idx) = list_row_index(area, row, app.tools_dialog().tools().len()) {
+            app.tools_dialog_state().select(Some(idx));
+        }
+        return;
+    }
+    if app.showing_session_tools_dialog() {
+        let area = app.session_tools_dialog_rect();
+        if let Some(idx) = list_row_index(area, row, app.session_tools_dialog().rows().len()) {
+            app.session_tools_dialog_state().select(Some(idx));
+        }
+        return;
+    }
+    if app.showing_sessions_modal() {
+        let area = app.sessions_modal_rect();
+        let len = app.sessions_with_depth().len();
+        if let Some(idx) = list_row_index(area, row, len) {
+            app.sessions_modal_state().select(Some(idx));
+            app.select_session_from_modal();
+        } else if !rect_contains(area, column, row) {
+            app.close_sessions_modal();
+        }
+        return;
+    }
+    if app.showing_resume_modal() {
+        let area = app.resume_modal_rect();
+        let len = app.available_sessions().len();
+        if let Some(idx) = list_row_index(area, row, len) {
+            // Set the clicked index, then run the same resume code the Enter
+            // key uses (`resume_selected` reads `selected_resume_session()`
+            // off the ListState).
+            app.resume_state().select(Some(idx));
+            resume_selected(app, holly).await;
+        } else if !rect_contains(area, column, row) {
+            app.close_resume_modal();
+        }
+        return;
+    }
+    if app.showing_profile_picker() {
+        let area = app.profile_picker_rect();
+        let len = app.available_profiles().len();
+        if let Some(idx) = list_row_index(area, row, len) {
+            app.profile_picker_state().select(Some(idx));
+            if let Some(agent_name) = app.select_profile_picker() {
+                let _ = holly
+                    .send(InMsg::SetAgent {
+                        session: app.active_session_id().clone(),
+                        agent: agent_name,
+                    })
+                    .await;
+            }
+        } else if !rect_contains(area, column, row) {
+            app.close_profile_picker();
+        }
+        return;
+    }
+    if app.showing_model_picker() {
+        let area = app.model_picker_rect();
+        let total: usize = app.available_models().iter().map(|(_, m)| m.len()).sum();
+        if let Some(idx) = list_row_index(area, row, total) {
+            app.model_picker_state().select(Some(idx));
+            if let Some((provider, model)) = app.select_model_picker() {
+                app.record_pending_model_persist(provider.clone(), model.clone());
+                let _ = holly
+                    .send(InMsg::SetModel {
+                        session: app.active_session_id().clone(),
+                        provider,
+                        model,
+                    })
+                    .await;
+            }
+        } else if !rect_contains(area, column, row) {
+            app.close_model_picker();
+        }
+        return;
+    }
+    if app.showing_key_dialog() {
+        // Only the `PickProvider` stage has a clickable list; `EnterKey` is a
+        // text form whose click has no natural target, so ignore it.
+        if matches!(
+            app.key_dialog_stage(),
+            crate::tui::key_dialog::KeyStage::PickProvider
+        ) {
+            let area = app.key_dialog_rect();
+            let len = app.key_dialog().providers().len();
+            if let Some(idx) = list_row_index(area, row, len) {
+                app.key_dialog_state().select(Some(idx));
+                app.key_dialog_confirm_provider();
+            } else if !rect_contains(area, column, row) {
+                app.close_key_dialog();
+            }
+        }
+        return;
+    }
+    if app.showing_command_palette() {
+        let area = app.command_palette_rect();
+        let len = app.command_palette().filtered_commands().len();
+        if let Some(idx) = list_row_index(area, row, len) {
+            app.command_palette().state().select(Some(idx));
+            dispatch_palette_click(app, holly).await;
+        } else if !rect_contains(area, column, row) {
+            app.close_command_palette();
+        }
+        return;
+    }
+    if app.showing_mcp_panel() {
+        // The panel renders two lines per server (header + tools/error).
+        let area = app.mcp_panel_rect();
+        let len = app.mcp_servers().len();
+        if let Some(idx) = grouped_row_index(area, row, len, 2) {
+            // `mcp_select_next`/`prev` are the only public movers; nudge
+            // forward/back to the clicked index. With no direct setter, walk
+            // from the current selection — bounded by the server count.
+            let cur = app.mcp_selected();
+            if idx > cur {
+                for _ in cur..idx {
+                    app.mcp_select_next();
+                }
+            } else {
+                for _ in idx..cur {
+                    app.mcp_select_prev();
+                }
+            }
+        } else if !rect_contains(area, column, row) {
+            app.close_mcp_panel();
+        }
+    }
+}
+
+/// Runs the resume-modal's `Enter` action for the currently-selected past
+/// session — the same code path `handle_resume_modal_event`'s `Enter` arm uses,
+/// factored out so the mouse click dispatch reuses it verbatim.
+async fn resume_selected(app: &mut App, holly: &Holly) {
+    if let Some(meta) = app.selected_resume_session() {
+        let id = meta.id.clone();
+        let cwd = app.root().to_path_buf();
+        match crate::session_store::read(&cwd, &id) {
+            Ok(records) => {
+                if let Some(dropped) = crate::session_store::integrity_gap(&records) {
+                    tracing::error!(
+                        "Refusing to resume session {}: log is missing {} dropped record(s)",
+                        id,
+                        dropped
+                    );
+                } else {
+                    app.restore_session(id.clone(), &records);
+                    let paired = crate::session_store::pair_records(&records);
+                    if let Err(e) = holly.resume(id.clone(), paired).await {
+                        tracing::error!("Failed to resume session {}: {}", id, e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to read session {}: {}", id, e);
+            }
+        }
+    }
+    app.close_resume_modal();
+}
+
+/// Runs the command palette's `Enter` action for the currently-selected
+/// filtered command — the same dispatch `handle_command_palette_event`'s
+/// `Enter` arm uses (each `Command` variant's bespoke engine send), factored
+/// out so the mouse click dispatch reuses it verbatim. Returns early (true)
+/// only when the command is a quit.
+async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
+    if let Some(cmd) = app.command_palette().execute_selected() {
+        if cmd == crate::tui::commands::Command::Compact {
+            let _ = holly
+                .send(InMsg::Oneshot {
+                    session: app.active_session_id().clone(),
+                    op: "compact".to_string(),
+                    args: serde_json::Value::Object(serde_json::Map::new()),
+                })
+                .await;
+        } else if cmd == crate::tui::commands::Command::Set {
+            app.set_input_text("/set ".to_string());
+        } else if cmd == crate::tui::commands::Command::Show {
+            let _ = holly
+                .send(InMsg::SetGeneration {
+                    session: app.active_session_id().clone(),
+                    overrides: entanglement_core::GenerationParams::default(),
+                })
+                .await;
+        } else if cmd == crate::tui::commands::Command::Mcp {
+            super::mcp_command::send_mcp_list(app, holly).await;
+        } else if cmd == crate::tui::commands::Command::Allow {
+            app.set_input_text("/allow ".to_string());
+        } else if cmd == crate::tui::commands::Command::Enable {
+            app.open_session_tools_dialog();
+        } else if cmd == crate::tui::commands::Command::Disable {
+            app.set_input_text("/disable ".to_string());
+        } else if cmd == crate::tui::commands::Command::Bash {
+            let _ = holly
+                .send(InMsg::BashEnable {
+                    grade: super::bash_command::default_grade(),
+                })
+                .await;
+        } else if cmd == crate::tui::commands::Command::Stop {
+            let _ = holly
+                .send(InMsg::Stop {
+                    session: app.active_session_id().clone(),
+                })
+                .await;
+        } else if cmd == crate::tui::commands::Command::Pause {
+            let _ = holly
+                .send(InMsg::PauseSession {
+                    session: app.active_session_id().clone(),
+                })
+                .await;
+        } else if cmd == crate::tui::commands::Command::Continue {
+            let _ = holly
+                .send(InMsg::ResumeSession {
+                    session: app.active_session_id().clone(),
+                })
+                .await;
+        } else {
+            app.execute_command(cmd);
+        }
     }
 }
 
@@ -970,10 +1247,11 @@ mod tests {
     /// switch the active session; the attention panel must route a click to
     /// the jump. Rendered through the real `ui::draw` so the hit-test rects
     /// are the ones a live frame records.
-    #[test]
-    fn click_on_sidebar_row_switches_session_and_panel_click_jumps() {
+    #[tokio::test]
+    async fn click_on_sidebar_row_switches_session_and_panel_click_jumps() {
         let active = SessionId::new("active-1");
         let mut app = App::new_for_test(active.clone());
+        let holly = engine();
         let bg = SessionId::new("bg-session");
         app.handle_out_event(OutEvent::ToolRequest {
             session: bg.clone(),
@@ -1002,8 +1280,18 @@ mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         };
-        handle_mouse(&mut app, click(MouseEventKind::Down(MouseButton::Left)));
-        handle_mouse(&mut app, click(MouseEventKind::Up(MouseButton::Left)));
+        handle_mouse(
+            &mut app,
+            &holly,
+            click(MouseEventKind::Down(MouseButton::Left)),
+        )
+        .await;
+        handle_mouse(
+            &mut app,
+            &holly,
+            click(MouseEventKind::Up(MouseButton::Left)),
+        )
+        .await;
         assert_eq!(app.active_session_id(), &bg, "click switched the session");
 
         // Switch back, then click the attention panel: it jumps to the
@@ -1022,8 +1310,168 @@ mod tests {
             row: prow,
             modifiers: KeyModifiers::NONE,
         };
-        handle_mouse(&mut app, click(MouseEventKind::Down(MouseButton::Left)));
-        handle_mouse(&mut app, click(MouseEventKind::Up(MouseButton::Left)));
+        handle_mouse(
+            &mut app,
+            &holly,
+            click(MouseEventKind::Down(MouseButton::Left)),
+        )
+        .await;
+        handle_mouse(
+            &mut app,
+            &holly,
+            click(MouseEventKind::Up(MouseButton::Left)),
+        )
+        .await;
         assert_eq!(app.active_session_id(), &bg, "panel click jumped");
+    }
+
+    /// Issue 1: a left-click on a row inside the open sessions modal switches
+    /// the active session to the clicked row (the same action `Enter` fires),
+    /// and a click outside the modal's rect closes it. Rendered through the
+    /// real `ui::draw` so the hit-test rect is the one a live frame records.
+    #[tokio::test]
+    async fn click_on_sessions_modal_row_switches_and_outside_closes() {
+        let active = SessionId::new("active-1");
+        let mut app = App::new_for_test(active.clone());
+        let holly = engine();
+        let other = app.create_session(); // a second live session to click
+        app.toggle_sessions_modal();
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| crate::tui::ui::draw(f, &mut app))
+            .unwrap();
+
+        // Resolve the second session's row coordinates through the modal's
+        // captured rect + the sessions-with-depth order, rather than
+        // hardcoding layout math.
+        let area = app.sessions_modal_rect();
+        let len = app.sessions_with_depth().len();
+        assert!(len >= 2, "expected at least two sessions in the modal");
+        // The second item's row is the inner y + 1 (index 1).
+        let inner_y = area.y + 1;
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x + 2,
+            row: inner_y + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(&mut app, &holly, click).await;
+        // `select_session_from_modal` closes the modal (same as Enter), so a
+        // click that selects both switches the session and closes the modal.
+        assert!(
+            !app.showing_sessions_modal(),
+            "a select click closes the modal (matches Enter)"
+        );
+        assert_eq!(
+            app.active_session_id(),
+            &other,
+            "clicking the second row switched to that session"
+        );
+
+        // A click outside the modal's rect closes it (click-outside-to-close).
+        app.switch_to_session(active);
+        app.toggle_sessions_modal();
+        terminal
+            .draw(|f| crate::tui::ui::draw(f, &mut app))
+            .unwrap();
+        let area = app.sessions_modal_rect();
+        // A click at the top-left corner of the screen is well outside a
+        // centered 60%×40% modal.
+        let outside = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        debug_assert!(
+            !area.contains(ratatui::layout::Position::new(0, 0)),
+            "sanity: (0,0) must be outside the centered modal"
+        );
+        handle_mouse(&mut app, &holly, outside).await;
+        assert!(
+            !app.showing_sessions_modal(),
+            "a click outside the modal closes it"
+        );
+    }
+
+    /// Issue 1: a left-click on a row inside the open command palette executes
+    /// the clicked command (the same dispatch `Enter` fires). Rendered through
+    /// the real `ui::draw` so the list-chunk rect is the one a live frame
+    /// records.
+    #[tokio::test]
+    async fn click_on_command_palette_row_executes_it() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        // `/help` is the first filtered command in a fresh palette (see
+        // `CommandPalette` tests); executing it opens the Help dialog — a
+        // pure head-side effect, easy to assert.
+        app.toggle_command_palette();
+        assert_eq!(
+            app.command_palette().filtered_commands().first(),
+            Some(&crate::tui::commands::Command::Help)
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| crate::tui::ui::draw(f, &mut app))
+            .unwrap();
+
+        let area = app.command_palette_rect();
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x + 2,
+            row: area.y + 1, // first list row (border + 1)
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(&mut app, &holly, click).await;
+        assert!(
+            !app.showing_command_palette(),
+            "executing a palette command closes the palette"
+        );
+        assert!(
+            app.showing_help(),
+            "clicking the first row executed /help (opened the Help dialog)"
+        );
+    }
+
+    /// Issue 1: a left-click on a row inside the `/cmd` slash-autocomplete
+    /// popup inserts the clicked command (the same action Tab/Enter fires).
+    #[tokio::test]
+    async fn click_on_slash_popup_row_inserts_command() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        // `/comp` narrows the popup to `compact` as the first match.
+        app.input().insert_str("/comp");
+        app.update_popups();
+        assert!(app.slash_visible(), "sanity: slash popup is visible");
+        assert_eq!(
+            app.slash().matches().first(),
+            Some(&crate::tui::commands::Command::Compact),
+            "sanity: /comp narrows to compact first"
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| crate::tui::ui::draw(f, &mut app))
+            .unwrap();
+
+        let area = app.slash_popup_rect();
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x + 2,
+            row: area.y + 1, // first match row
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(&mut app, &holly, click).await;
+        assert!(
+            !app.slash_visible(),
+            "accepting a slash command hides the popup"
+        );
+        let text = app.input().lines().join("\n");
+        assert_eq!(
+            text, "/compact ",
+            "the clicked first match (/compact) was inserted"
+        );
     }
 }

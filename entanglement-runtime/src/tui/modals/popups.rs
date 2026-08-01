@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::centered_rect;
+use super::{centered_rect, mention_popup_area, slash_popup_area};
 use crate::tui::app::App;
 use crate::tui::commands::Command;
 use crate::tui::keybindings::KeyMap;
@@ -126,7 +126,12 @@ pub fn draw_command_palette(f: &mut Frame, app: &mut App) {
 
     f.render_widget(Clear, area);
     f.render_widget(input_paragraph, chunks[0]);
-    f.render_stateful_widget(list, chunks[1], palette.state());
+    let list_rect = chunks[1];
+    f.render_stateful_widget(list, list_rect, palette.state());
+    // Capture the list chunk's rect so a click maps to a filtered-command row
+    // (Issue 1) — the outer `area` holds the query row too, which isn't a row.
+    // Set after the palette borrow ends so the two `&mut App` don't overlap.
+    app.set_command_palette_rect(list_rect);
 }
 
 pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
@@ -157,7 +162,6 @@ pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
         })
         .collect();
 
-    let height = (commands.len() as u16 + 2).min(15).min(input_area.y);
     let list = List::new(items)
         .block(
             Block::default()
@@ -166,13 +170,8 @@ pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
 
-    let popup_area = Rect {
-        x: input_area.x,
-        y: input_area.y.saturating_sub(height),
-        width: input_area.width.min(60),
-        height,
-    };
-
+    let popup_area = slash_popup_area(input_area, commands.len());
+    app.set_slash_popup_rect(popup_area);
     f.render_widget(Clear, popup_area);
     f.render_stateful_widget(list, popup_area, app.slash_mut().state());
 }
@@ -199,7 +198,6 @@ pub fn draw_mention_popup(f: &mut Frame, app: &mut App, input_area: Rect) {
         })
         .collect();
 
-    let height = (matches.len() as u16 + 2).min(15).min(input_area.y);
     let list = List::new(items)
         .block(
             Block::default()
@@ -208,13 +206,8 @@ pub fn draw_mention_popup(f: &mut Frame, app: &mut App, input_area: Rect) {
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
 
-    let popup_area = Rect {
-        x: input_area.x,
-        y: input_area.y.saturating_sub(height),
-        width: input_area.width.min(70),
-        height,
-    };
-
+    let popup_area = mention_popup_area(input_area, matches.len());
+    app.set_mention_popup_rect(popup_area);
     f.render_widget(Clear, popup_area);
     f.render_stateful_widget(list, popup_area, app.mention_mut().state());
 }
@@ -227,6 +220,7 @@ pub fn draw_key_dialog(f: &mut Frame, app: &mut App) {
     use crate::tui::key_dialog::KeyStage;
 
     let area = centered_rect(50, 40, f.area());
+    app.set_key_dialog_rect(area);
     f.render_widget(Clear, area);
 
     match app.key_dialog_stage() {

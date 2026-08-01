@@ -1,4 +1,5 @@
 use entanglement_core::{AgentMode, SessionId};
+use ratatui::layout::Rect;
 
 /// A deferred, terminal-owning side effect a command/action requests but cannot
 /// perform itself: the `App` has no `Terminal`, so it records the intent here
@@ -46,4 +47,38 @@ pub struct ProfileInfo {
     pub tools: Option<Vec<String>>,
     /// Current effective tool denylist, applied after `tools` (#330).
     pub disallowed_tools: Vec<String>,
+}
+
+/// The list `Rect` each open modal captured at draw time, so a left-click can
+/// map to a row index and dispatch the row's `Enter` action (Issue 1 — mouse
+/// support). A field stays `Rect::default()` while its modal is closed, so a
+/// stale click can never hit a list that isn't on screen. The drawers write
+/// these via `App::set_modal_*` setters; `modal_events::handle_mouse` reads
+/// them back. `command_palette_list` is the inner list chunk (the palette
+/// splits its area into a query row + the list); every other field is the
+/// full bordered `Rect` the `List`/`Paragraph` rendered into.
+#[derive(Debug, Default, Clone)]
+pub struct ModalClickAreas {
+    /// Sessions modal (`Ctrl+L`).
+    pub sessions: Rect,
+    /// Resume modal (`/resume`).
+    pub resume: Rect,
+    /// `/agent` profile picker (`Ctrl+A`).
+    pub profile_picker: Rect,
+    /// `/model` picker.
+    pub model_picker: Rect,
+    /// `/key` dialog — the provider list on the `PickProvider` stage only.
+    pub key_dialog: Rect,
+    /// `/agent` picker's `e` tools-checklist dialog (#330).
+    pub tools_dialog: Rect,
+    /// Bare `/enable` session-tools checklist (#539).
+    pub session_tools_dialog: Rect,
+    /// `Ctrl+P` command palette — the list chunk below the query row.
+    pub command_palette_list: Rect,
+    /// `/mcp list` panel — a `Paragraph` rendering two lines per server.
+    pub mcp_panel: Rect,
+    /// `/cmd` slash-autocomplete popup, anchored above the input box.
+    pub slash_popup: Rect,
+    /// `@file` mention popup, anchored above the input box.
+    pub mention_popup: Rect,
 }

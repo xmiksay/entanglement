@@ -18,7 +18,7 @@ use crate::tui::app::App;
 /// selection (`▶`), `e`/`d` enable/disable the selected server for the active
 /// session (a `mcp__<name>__*` overlay entry — the tag after the status shows
 /// the session's current override), `PageUp`/`PageDown` scroll, `Esc` closes.
-pub fn draw_mcp_panel(f: &mut Frame, app: &App) {
+pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
     let servers = app.mcp_servers();
     let overlay = app.overlay_entries(app.active_session_id());
     let selected = app.mcp_selected();
@@ -112,6 +112,7 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &App) {
     );
 
     let area = centered_rect(70, 60, f.area());
+    app.set_mcp_panel_rect(area);
     f.render_widget(Clear, area);
     f.render_widget(para, area);
 }
@@ -164,6 +165,7 @@ pub fn draw_session_tools_dialog(f: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     let area = centered_rect(60, 60, f.area());
+    app.set_session_tools_dialog_rect(area);
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.session_tools_dialog_state());
 }
@@ -199,6 +201,7 @@ pub fn draw_tools_dialog(f: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     let area = centered_rect(60, 60, f.area());
+    app.set_tools_dialog_rect(area);
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.tools_dialog_state());
 }

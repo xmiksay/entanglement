@@ -35,6 +35,33 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+/// The slash-autocomplete popup rect (Issue 1 + Issue 2): anchored above the
+/// input box, sized to the current match count (capped), never overflowing the
+/// top of the screen. Shared between `draw_slash_autocomplete` and the mouse
+/// hit-test path so the two can't drift.
+pub(crate) fn slash_popup_area(input_area: Rect, item_count: usize) -> Rect {
+    let height = (item_count as u16 + 2).min(15).min(input_area.y);
+    Rect {
+        x: input_area.x,
+        y: input_area.y.saturating_sub(height),
+        width: input_area.width.min(60),
+        height,
+    }
+}
+
+/// The `@file` mention popup rect — the slash popup's shape at a slightly
+/// wider max width. Shared between `draw_mention_popup` and the mouse hit-test
+/// path so the two can't drift.
+pub(crate) fn mention_popup_area(input_area: Rect, item_count: usize) -> Rect {
+    let height = (item_count as u16 + 2).min(15).min(input_area.y);
+    Rect {
+        x: input_area.x,
+        y: input_area.y.saturating_sub(height),
+        width: input_area.width.min(70),
+        height,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::centered_rect;

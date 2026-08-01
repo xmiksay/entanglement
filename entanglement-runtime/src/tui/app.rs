@@ -26,6 +26,7 @@ mod construct;
 mod dispatch;
 mod enable;
 mod generation;
+mod hit;
 mod input;
 mod inspect;
 mod key;
@@ -41,7 +42,7 @@ mod types;
 mod view;
 
 pub use inspect::InspectTab;
-pub use types::{CompactFork, ProfileInfo, UiEffect};
+pub use types::{CompactFork, ModalClickAreas, ProfileInfo, UiEffect};
 
 #[cfg(test)]
 mod tests;
@@ -188,6 +189,16 @@ pub struct App {
     // The attention panel's rect this frame (zero-sized when hidden) so a
     // click on it jumps to the oldest waiting background session.
     attention_area: Rect,
+
+    // Modal/popup click hit-testing (Issue 1): each open modal captures its
+    // list `Rect` at draw time so a later left-click maps to a row index and
+    // dispatches the same action the `Enter` key would. Zero-sized when the
+    // modal is closed, so a stale click can't hit a ghost list. Mirrors the
+    // chat/sidebar/attention capture pattern above. `input_area` is the input
+    // box's rect, captured so the slash/mention popup geometry — which anchors
+    // above the input — can be reproduced identically on click.
+    modal_click: ModalClickAreas,
+    input_area: Rect,
 
     // Deferred terminal-owning effect (editor / export) for the event loop to run.
     pending_effect: Option<UiEffect>,

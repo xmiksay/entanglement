@@ -205,6 +205,11 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     f.set_cursor_position((cursor_x, cursor_y));
 
     if matches!(approval_mode, ApprovalMode::Normal) && !app.is_asking() {
+        // Capture the input box rect so the slash/mention popup geometry —
+        // which anchors above the input — can be reproduced identically on a
+        // click (Issue 1). Set before the popups draw so it's available even
+        // when a popup is hidden (a click then misses its zero rect).
+        app.set_input_area(area);
         modals::draw_slash_autocomplete(f, app, area);
         modals::draw_mention_popup(f, app, area);
     }

@@ -13,6 +13,7 @@ mod event;
 mod event_loop;
 mod export;
 mod format;
+mod hit_test;
 mod input;
 mod input_panel;
 mod key_dialog;
@@ -397,7 +398,7 @@ fn dispatch_engine_event(
 mod tests {
     use super::modal_events::handle_mouse;
     use super::*;
-    use entanglement_core::SessionId;
+    use entanglement_core::{EngineConfig, Holly, SessionId};
     use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
 
     fn wheel(kind: MouseEventKind) -> MouseEvent {
@@ -409,9 +410,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn wheel_moves_modal_selection_not_chat() {
+    fn engine() -> Holly {
+        Holly::spawn(EngineConfig::default())
+    }
+
+    #[tokio::test]
+    async fn wheel_moves_modal_selection_not_chat() {
         let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
         app.create_session();
         app.create_session();
         // Give the active transcript headroom so a chat scroll *would* freeze
@@ -420,7 +426,7 @@ mod tests {
         app.toggle_sessions_modal();
 
         let before = app.sessions_modal_state().selected();
-        handle_mouse(&mut app, wheel(MouseEventKind::ScrollUp));
+        handle_mouse(&mut app, &holly, wheel(MouseEventKind::ScrollUp)).await;
         let after = app.sessions_modal_state().selected();
 
         assert_ne!(before, after, "wheel should move the modal selection");
@@ -430,11 +436,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn wheel_scrolls_chat_when_no_modal_open() {
+    #[tokio::test]
+    async fn wheel_scrolls_chat_when_no_modal_open() {
         let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
         app.set_viewport_metrics(20, 5);
-        handle_mouse(&mut app, wheel(MouseEventKind::ScrollUp));
+        handle_mouse(&mut app, &holly, wheel(MouseEventKind::ScrollUp)).await;
         assert!(
             !app.auto_follow(),
             "wheel up should scroll (freeze) the chat when no modal is open"

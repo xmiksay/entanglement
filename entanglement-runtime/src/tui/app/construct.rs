@@ -13,7 +13,7 @@ use crate::tui::theme::Theme;
 use entanglement_core::{AgentMode, SessionId};
 use ratatui::layout::Rect;
 
-use super::{App, ProfileInfo, HISTORY_CAPACITY};
+use super::{App, ModalClickAreas, ProfileInfo, HISTORY_CAPACITY};
 
 impl App {
     /// Test constructor: builds an `App` over the embedded default catalog with a
@@ -178,6 +178,8 @@ impl App {
             sidebar_sessions_area: Rect::default(),
             sidebar_rows: Vec::new(),
             attention_area: Rect::default(),
+            modal_click: ModalClickAreas::default(),
+            input_area: Rect::default(),
             pending_effect: None,
             pending_compact_fork: None,
             inspect: Default::default(),

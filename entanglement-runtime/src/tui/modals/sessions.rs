@@ -33,6 +33,7 @@ pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
             .highlight_style(Style::default().bg(Color::DarkGray));
 
     let area = centered_rect(60, 40, f.area());
+    app.set_profile_picker_rect(area);
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.profile_picker_state());
 }
@@ -113,6 +114,7 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     let area = centered_rect(60, 40, f.area());
+    app.set_sessions_modal_rect(area);
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.sessions_modal_state());
 }
@@ -160,6 +162,7 @@ pub fn draw_model_picker(f: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     let area = centered_rect(50, 50, f.area());
+    app.set_model_picker_rect(area);
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, &mut list_state);
 
@@ -213,6 +216,7 @@ pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     let area = centered_rect(60, 40, f.area());
+    app.set_resume_modal_rect(area);
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.resume_state());
 }
