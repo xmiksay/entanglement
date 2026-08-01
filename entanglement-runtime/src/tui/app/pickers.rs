@@ -202,6 +202,12 @@ impl App {
         self.mark_dirty();
     }
 
+    /// The session id highlighted in the open sessions modal, if any (#6) —
+    /// used by the modal's quick keys (`s`/`p`/`r`) to act on that session.
+    pub fn modal_selected_session_id(&self) -> Option<SessionId> {
+        self.sessions.modal_selected_id()
+    }
+
     pub fn showing_model_picker(&self) -> bool {
         self.showing_model_picker
     }
@@ -451,7 +457,10 @@ impl App {
     pub fn toggle_resume_modal(&mut self) {
         self.showing_resume_modal = !self.showing_resume_modal;
         if self.showing_resume_modal {
-            if let Ok(mut sessions) = list_sessions(&std::env::current_dir().unwrap_or_default()) {
+            // `self.root()` (the canonicalized cwd wired in at startup) is the
+            // same cwd `session_store::delete`/`prune` key off, so the modal
+            // lists exactly the logs a `d` press can reach.
+            if let Ok(mut sessions) = list_sessions(self.root()) {
                 // Only root sessions are independently resumable; spawned
                 // children live inside their root's file. Most-recent first.
                 sessions.retain(|s| s.root);
@@ -540,5 +549,67 @@ impl App {
         self.resume_state
             .selected()
             .and_then(|i| self.available_sessions.get(i).cloned())
+    }
+
+    /// Delete the session highlighted in the **sessions modal** (Issue 4, Phase
+    /// 4.1). The modal lists the *live* set (sessions with an in-memory view),
+    /// so this refuses a live id with a status line rather than deleting its
+    /// on-disk log underneath it. A past/non-live id is deleted from disk and
+    /// its view (if any still hangs around) is left alone — the live set is the
+    /// source of truth, not the on-disk log. The modal stays open.
+    pub fn delete_session_from_modal(&mut self) {
+        let Some(id) = self.modal_selected_session_id() else {
+            return;
+        };
+        // Live-set guard: never delete a session the engine still holds. The
+        // modal's `order` is the live set (`SessionRegistry::order`).
+        let is_live = self.sessions().iter().any(|(sid, _)| **sid == id);
+        if is_live {
+            self.record_notice("/sessions", "cannot delete a live session".to_string());
+            return;
+        }
+        let cwd = self.root().to_path_buf();
+        match crate::session_store::delete(&cwd, &id) {
+            Ok(()) => self.record_notice("/sessions", format!("deleted session {}", id.0)),
+            Err(e) => self.record_notice(
+                "/sessions",
+                format!("could not delete session {}: {e:#}", id.0),
+            ),
+        }
+    }
+
+    /// Delete the session highlighted in the **resume modal** (Issue 4, Phase
+    /// 4.1). The resume modal only lists past (persisted, non-live) sessions, so
+    /// `d` here always deletes — no live-set guard needed. The deleted entry is
+    /// dropped from the modal's list and the selection clamped; the modal stays
+    /// open so several can be deleted in a row.
+    pub fn delete_resume_session(&mut self) {
+        let Some(meta) = self.selected_resume_session() else {
+            return;
+        };
+        let id = meta.id.clone();
+        let cwd = self.root().to_path_buf();
+        match crate::session_store::delete(&cwd, &id) {
+            Ok(()) => {
+                // Drop the deleted entry from the modal list and clamp the
+                // selection so the highlight stays in range.
+                self.available_sessions.retain(|s| s.id != id);
+                if let Some(selected) = self.resume_state.selected() {
+                    if selected >= self.available_sessions.len()
+                        && !self.available_sessions.is_empty()
+                    {
+                        self.resume_state
+                            .select(Some(self.available_sessions.len() - 1));
+                    } else if self.available_sessions.is_empty() {
+                        self.resume_state.select(None);
+                    }
+                }
+                self.record_notice("/resume", format!("deleted session {}", id.0));
+            }
+            Err(e) => self.record_notice(
+                "/resume",
+                format!("could not delete session {}: {e:#}", id.0),
+            ),
+        }
     }
 }

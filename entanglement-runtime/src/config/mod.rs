@@ -78,6 +78,8 @@ pub mod keys;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_retention;
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
 
@@ -89,6 +91,16 @@ const TEMPLATE_YML: &str = include_str!("template.yml");
 
 /// Env var overriding the user config file path (tests + non-XDG setups).
 const CONFIG_FILE_ENV: &str = "ENTANGLEMENT_CONFIG_FILE";
+
+/// Env var overriding the session-log retention (Issue 4, Phase 4.2). Wins over
+/// the config file's `session_retention_days`, which itself wins over the
+/// embedded default (30).
+const SESSION_RETENTION_ENV: &str = "ENTANGLEMENT_SESSION_RETENTION_DAYS";
+
+/// The embedded default for [`Config::session_retention_days`]: 30 days. A
+/// session log untouched for a month is stale enough to prune without surprising
+/// a user who never set the key.
+const DEFAULT_SESSION_RETENTION_DAYS: u64 = 30;
 
 /// Guards mutation of `ENTANGLEMENT_CONFIG_FILE` — process-global env state —
 /// across every test in this crate that points the layered config loader (or
@@ -148,6 +160,14 @@ struct RawConfig {
     /// → `vi`. Word-split like a shell command, so `"code --wait"` works.
     #[serde(default)]
     editor: Option<String>,
+    /// Session-log retention in days (Issue 4, Phase 4.2): on startup the TUI
+    /// prunes `.jsonl` files in the cwd's session dir whose mtime is older than
+    /// this. The embedded default (`30`) keeps the on-disk footprint bounded
+    /// without surprising a user who never configures it; `ENTANGLEMENT_SESSION_`
+    /// `RETENTION_DAYS` (env > config > default) wins over the file. Absent in a
+    /// layer ⇒ fall through to the lower layer, exactly like every other key.
+    #[serde(default)]
+    session_retention_days: Option<u64>,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -184,6 +204,12 @@ pub struct Config {
     /// Editor command for the TUI `$EDITOR` round-trip; `Some` wins over
     /// `$VISUAL`/`$EDITOR`. `None` ⇒ resolve from env then `vi`.
     pub editor: Option<String>,
+    /// Session-log retention in days (Issue 4, Phase 4.2). The startup prune
+    /// deletes `.jsonl` files in the cwd's session dir whose mtime is older
+    /// than this. Precedence: `ENTANGLEMENT_SESSION_RETENTION_DAYS` env, then
+    /// config, then the embedded default (30). Best-effort: a read-only data
+    /// dir logs and continues, never fatal.
+    pub session_retention_days: u64,
 }
 
 /// Which of the three precedence layers a value came from. Ordered low → high so
@@ -324,6 +350,10 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
         editor: raw.editor.filter(|s| !s.trim().is_empty()),
+        // Precedence: env > config > embedded default (30). Env must be the
+        // last-resort fallback `parse` itself computes (not a layer), since the
+        // layered `Value` merge can't see the process env.
+        session_retention_days: resolve_session_retention(raw.session_retention_days),
     };
     Ok(Resolved {
         config,
@@ -349,6 +379,7 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "max_turns",
         "idle_ttl_secs",
         "editor",
+        "session_retention_days",
     ];
     KEYS.iter()
         .filter_map(|key| {
@@ -360,6 +391,28 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
                 .map(|rl| (key.to_string(), rl.layer))
         })
         .collect()
+}
+
+/// Resolve [`Config::session_retention_days`]: env wins, else the merged config
+/// value, else the embedded default (30). A malformed env value is logged and
+/// ignored (falling back to config/default) — never fatal, matching how a bad
+/// env value elsewhere is surfaced.
+fn resolve_session_retention(config_value: Option<u64>) -> u64 {
+    if let Some(raw) = std::env::var(SESSION_RETENTION_ENV)
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        match raw.parse::<u64>() {
+            Ok(n) => return n,
+            Err(_) => {
+                tracing::warn!(
+                    "ignoring unparseable {SESSION_RETENTION_ENV}={raw:?}; \
+                     falling back to config/default"
+                );
+            }
+        }
+    }
+    config_value.unwrap_or(DEFAULT_SESSION_RETENTION_DAYS)
 }
 
 /// Deep-merge `over` onto `base`: mappings merge key-wise recursively; scalars

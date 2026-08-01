@@ -119,3 +119,11 @@
 # the shell env. Leave commented to fall back to $VISUAL → $EDITOR → vi.
 # Word-split like a shell command, so flags work, e.g. "code --wait".
 #editor: nvim
+
+# Session-log retention in days (Issue 4). On startup the TUI prunes `.jsonl`
+# files in the current project's session dir whose mtime is older than this.
+# Scope is this project's dir only — it never walks sibling project dirs, and a
+# read-only data dir is logged and skipped (never fatal). Leave commented for
+# the 30-day default, or set ENTANGLEMENT_SESSION_RETENTION_DAYS (which wins
+# over this).
+#session_retention_days: 30

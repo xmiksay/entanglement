@@ -10,8 +10,10 @@ use entanglement_core::Permission;
 use super::*;
 
 /// The embedded defaults alone, parsed the way the loader does. Guards that the
-/// `.expect` in [`super::default_layer`] is provably unreachable.
-fn defaults() -> Config {
+/// `.expect` in [`super::default_layer`] is provably unreachable. `pub(super)`
+/// so the sibling `tests_retention` module reuses it instead of rebuilding the
+/// same parse path.
+pub(super) fn defaults() -> Config {
     parse(&[default_layer()]).unwrap().config
 }
 
@@ -29,8 +31,9 @@ fn builtin_parses_with_expected_defaults() {
 }
 
 /// Merge a user-file YAML string over the embedded defaults, the way the loader
-/// does, without touching the filesystem.
-fn merge_user(user: &str) -> Config {
+/// does, without touching the filesystem. `pub(super)` so the sibling
+/// `tests_retention` module reuses it.
+pub(super) fn merge_user(user: &str) -> Config {
     let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
     let over: Value = serde_yaml::from_str(user).unwrap();
     let merged = merge_value(base, over);
@@ -52,6 +55,7 @@ fn merge_user(user: &str) -> Config {
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(std::time::Duration::from_secs),
         editor: raw.editor.filter(|s| !s.trim().is_empty()),
+        session_retention_days: super::resolve_session_retention(raw.session_retention_days),
     }
 }
 

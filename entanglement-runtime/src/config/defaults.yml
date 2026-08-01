@@ -70,3 +70,11 @@ idle_ttl_secs: null
 # matter the shell env. `null` (the default) falls back to $VISUAL → $EDITOR →
 # vi. Word-split like a shell command, so flags work, e.g. "code --wait".
 editor: null
+
+# Session-log retention in days (Issue 4). On startup the TUI prunes `.jsonl`
+# files in the current project's session dir whose mtime is older than this.
+# Scope is this project's dir only — it never walks sibling project dirs. Scope
+# and pruning are best-effort: a read-only data dir logs and continues, never
+# fatal. Precedence: ENTANGLEMENT_SESSION_RETENTION_DAYS env > this file >
+# this default (30).
+session_retention_days: 30

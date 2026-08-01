@@ -977,6 +977,21 @@ async fn main() -> Result<()> {
     // including the pre-engine `inspect`/`sessions` fast paths.
     let user_config = config::Config::load(&cwd).context("loading user config")?;
 
+    // Session-log auto-prune on startup (Issue 4, Phase 4.2): best-effort,
+    // scoped to this cwd's session dir only. A read-only data dir or a transient
+    // error is logged and skipped — never fatal to startup. Runs before any head
+    // so the TUI's resume modal and `sessions` both reflect the pruned set.
+    match session_store::prune(&cwd, user_config.session_retention_days) {
+        Ok(removed) if removed > 0 => {
+            tracing::info!(
+                "startup prune removed {removed} session log(s) older than {} day(s)",
+                user_config.session_retention_days
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("startup session prune skipped: {e:#}"),
+    }
+
     // stdout is reserved for command output — the assembled prompt
     // (`inspect prompt`), NDJSON frames (`run --format json` / `pipe`) — so logs
     // go to stderr, except under the TUI (raw mode) where they'd corrupt the

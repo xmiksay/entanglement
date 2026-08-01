@@ -320,7 +320,11 @@ pub(super) async fn handle_session_tools_dialog_event(
     Ok(false)
 }
 
-pub(super) async fn handle_sessions_modal_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+pub(super) async fn handle_sessions_modal_event(
+    app: &mut App,
+    holly: &Holly,
+    key: KeyEvent,
+) -> Result<bool> {
     match key.code {
         KeyCode::Esc => {
             app.close_sessions_modal();
@@ -343,6 +347,32 @@ pub(super) async fn handle_sessions_modal_event(app: &mut App, key: KeyEvent) ->
         KeyCode::Char('n') => {
             app.create_session();
             app.close_sessions_modal();
+        }
+        // Lifecycle quick keys (#6) act on the highlighted session: `s` stops
+        // its in-flight turn, `p` pauses it, `r` resumes it. The modal stays
+        // open so the user can act on several in a row. No-op on a session in
+        // an incompatible state (idempotent server-side).
+        KeyCode::Char('s') => {
+            if let Some(id) = app.modal_selected_session_id() {
+                let _ = holly.send(InMsg::Stop { session: id }).await;
+            }
+        }
+        KeyCode::Char('p') => {
+            if let Some(id) = app.modal_selected_session_id() {
+                let _ = holly.send(InMsg::PauseSession { session: id }).await;
+            }
+        }
+        KeyCode::Char('r') => {
+            if let Some(id) = app.modal_selected_session_id() {
+                let _ = holly.send(InMsg::ResumeSession { session: id }).await;
+            }
+        }
+        // `d`/`Delete` (Issue 4, Phase 4.1): delete the highlighted session's
+        // `.jsonl`. Refuses a live session with a status line — the modal lists
+        // the live set, so deleting underneath one would orphan its view. The
+        // modal stays open so several can be deleted in a row.
+        KeyCode::Char('d') | KeyCode::Delete => {
+            app.delete_session_from_modal();
         }
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
@@ -422,6 +452,27 @@ pub(super) async fn handle_command_palette_event(
                     let _ = holly
                         .send(InMsg::BashEnable {
                             grade: super::bash_command::default_grade(),
+                        })
+                        .await;
+                } else if cmd == crate::tui::commands::Command::Stop {
+                    // Lifecycle commands (#6): the palette carries no `--all`
+                    // flag, so a picked `/stop` acts on the active session only
+                    // — the same default a bare typed `/stop` falls back to.
+                    let _ = holly
+                        .send(InMsg::Stop {
+                            session: app.active_session_id().clone(),
+                        })
+                        .await;
+                } else if cmd == crate::tui::commands::Command::Pause {
+                    let _ = holly
+                        .send(InMsg::PauseSession {
+                            session: app.active_session_id().clone(),
+                        })
+                        .await;
+                } else if cmd == crate::tui::commands::Command::Continue {
+                    let _ = holly
+                        .send(InMsg::ResumeSession {
+                            session: app.active_session_id().clone(),
                         })
                         .await;
                 } else if app.execute_command(cmd) {
@@ -541,7 +592,7 @@ pub(super) async fn handle_resume_modal_event(
         KeyCode::Enter => {
             if let Some(meta) = app.selected_resume_session() {
                 let id = meta.id.clone();
-                let cwd = std::env::current_dir().unwrap_or_default();
+                let cwd = app.root().to_path_buf();
                 match crate::session_store::read(&cwd, &id) {
                     Ok(records) => {
                         // A gap tombstone means the log lost a contiguous run of
@@ -580,6 +631,13 @@ pub(super) async fn handle_resume_modal_event(
         }
         KeyCode::PageUp => {
             app.resume_page_up(DIALOG_PAGE_SIZE);
+        }
+        // `d`/`Delete` (Issue 4, Phase 4.1): delete the highlighted past
+        // session's `.jsonl`. The resume modal only lists past (non-live)
+        // sessions, so `d` here always deletes — no live-set guard. The modal
+        // stays open; the entry is dropped from the list.
+        KeyCode::Char('d') | KeyCode::Delete => {
+            app.delete_resume_session();
         }
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
