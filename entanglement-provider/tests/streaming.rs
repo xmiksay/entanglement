@@ -378,6 +378,78 @@ async fn rate_limit_429_honors_retry_after_then_succeeds() {
 }
 
 #[tokio::test]
+async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration() {
+    // #547: a server `Retry-After: 3600` must not park every *other* caller of
+    // this endpoint for an hour — the endpoint-wide cool-down every caller
+    // waits on is clamped to `rate_limit_max_backoff`, even though the
+    // offending caller's own give-up decision still honors the raw value.
+    let huge_429 = b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"slow down\"}".to_vec();
+    let ok = sse_response(&ok_body());
+    let base_url = serve_raw_seq(vec![huge_429, ok]).await;
+
+    let config = RetryConfig {
+        rpm: 60_000,
+        rate_limit_max_backoff: Duration::from_millis(50),
+        rate_limit_max_elapsed: Duration::from_millis(200),
+        ..RetryConfig::default()
+    };
+    let http = HttpClient::with_config(config);
+    let messages = vec![Message::user("hi")];
+    let req = || LlmRequest {
+        system: "s",
+        model: None,
+        messages: &messages,
+        tools: &[],
+        generation: None,
+    };
+
+    // Caller A hits the 429 and gives up well within its own
+    // `rate_limit_max_elapsed` budget — driving the endpoint's cool-down to
+    // be set to the raw (huge) `Retry-After` before clamping.
+    let mut llm_a = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-5.2",
+        None,
+        None,
+        None,
+        None,
+        http.clone(),
+    );
+    let _ = tokio::time::timeout(Duration::from_secs(2), llm_a.stream(req()))
+        .await
+        .expect("caller A must give up well within its own budget, not hang");
+
+    // Caller B, a fresh request to the *same* endpoint (same base URL + key,
+    // so the same `EndpointState`), must not be parked for anywhere near the
+    // raw 3600s `Retry-After` — only up to the clamped `rate_limit_max_backoff`.
+    let mut llm_b = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-5.2",
+        None,
+        None,
+        None,
+        None,
+        http,
+    );
+    let start = Instant::now();
+    let events = tokio::time::timeout(Duration::from_secs(2), llm_b.stream(req()))
+        .await
+        .expect("a sibling caller must not be parked for anywhere near the raw Retry-After")
+        .expect("stream should start once the clamped cool-down clears")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "the endpoint-wide park must be clamped to rate_limit_max_backoff, not \
+         the raw Retry-After — elapsed {:?}",
+        start.elapsed()
+    );
+    assert!(events.iter().all(|r| r.is_ok()));
+}
+
+#[tokio::test]
 async fn retryable_500_then_success_retries_and_streams() {
     // #193/#217: a 500 *response* (not a reqwest::Error) is now classified inside
     // the retry loop and retried per endpoint. The first connection gets a 500,

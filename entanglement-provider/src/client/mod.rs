@@ -290,15 +290,28 @@ impl EndpointState {
         }
     }
 
-    /// Park until any active `Retry-After` window has elapsed.
-    async fn wait_for_retry_after(&self) {
+    /// Park until any active `Retry-After` window has elapsed, bounded by
+    /// `deadline` — the caller's own `rate_limit_max_elapsed` budget (#547).
+    /// The endpoint-wide cool-down this reads is itself clamped to
+    /// `rate_limit_max_backoff` at the point it's set, but a value written by
+    /// an older build, a sibling process on different config, or read back
+    /// from the cross-process file after a restart could still exceed one
+    /// caller's own deadline — this is the backstop that keeps *this* caller
+    /// from ever sleeping past its own budget regardless of who set the
+    /// cool-down or why. `Err(())` means the wait would need to extend past
+    /// `deadline`: the caller gives up without sleeping further.
+    async fn wait_for_retry_after(&self, deadline: Instant) -> Result<(), ()> {
         let until = *self.retry_after.lock().expect("retry_after poisoned");
         if let Some(until) = until {
+            if until >= deadline {
+                return Err(());
+            }
             let now = Instant::now();
             if until > now {
                 sleep(until - now).await;
             }
         }
+        Ok(())
     }
 
     /// Resolve (creating on first use) this endpoint's slot for `model`. Only
@@ -478,9 +491,18 @@ impl HttpClient {
     /// wait until it clears *or* `rate_limit_max_elapsed` is exceeded, then
     /// surfaces as `Ok` for the caller to error (so a saturated endpoint fails a
     /// turn rather than hanging its parent) — the cool-down stays endpoint-wide
-    /// (v1; see ADR-0140), not scoped to just the offending model. Transient
-    /// transport faults and 5xx retry up to `max_attempts`; a permanent 4xx or an
-    /// exhausted retryable is returned as `Ok`.
+    /// (v1; see ADR-0140), not scoped to just the offending model. The
+    /// endpoint-wide park itself is clamped to `rate_limit_max_backoff`
+    /// regardless of how large the server's `Retry-After` was (#547): every
+    /// *other* caller of this endpoint — in-process and, once restarted,
+    /// cross-process via the persisted shared file — waits at most that long,
+    /// even though the offending caller's own give-up decision still honors
+    /// the server's raw value. Every wait this call makes (the endpoint-wide
+    /// cool-down and the cross-process gate) is itself bounded by this call's
+    /// own `rate_limit_max_elapsed`, surfacing `RetryError::RateLimited`
+    /// rather than sleeping past it. Transient transport faults and 5xx retry
+    /// up to `max_attempts`; a permanent 4xx or an exhausted retryable is
+    /// returned as `Ok`.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_with_retry<F, Fut>(
         &self,
@@ -508,7 +530,13 @@ impl HttpClient {
         let rl_deadline = Instant::now() + config.rate_limit_max_elapsed;
 
         loop {
-            endpoint.wait_for_retry_after().await;
+            if endpoint.wait_for_retry_after(rl_deadline).await.is_err() {
+                tracing::error!(
+                    "rate limited: giving up after exhausting the retry budget waiting \
+                     for the endpoint's retry-after cool-down to clear"
+                );
+                return Err(RetryError::RateLimited);
+            }
             endpoint.limiter.acquire().await;
             // Model permit **first** (#521 refinement): a caller blocked on its
             // model's own slot must never hold a scarcer resource hostage
@@ -550,10 +578,24 @@ impl HttpClient {
             // actually fires. `None` when sharing is disabled or the shared
             // state directory is unwritable — falls back to the in-process
             // gates above unaffected.
-            let shared_lease = endpoint
+            let shared_lease = match endpoint
                 .shared
-                .acquire(endpoint.rpm, endpoint.concurrency_cap)
-                .await;
+                .acquire(endpoint.rpm, endpoint.concurrency_cap, rl_deadline)
+                .await
+            {
+                Ok(lease) => lease,
+                Err(()) => {
+                    // The cross-process gate would need to wait past this
+                    // caller's own `rate_limit_max_elapsed` budget (#547) —
+                    // `permit`/`model_permit` drop here, freeing the
+                    // in-process slots this caller was holding hostage.
+                    tracing::error!(
+                        "rate limited: giving up after exhausting the retry budget waiting \
+                         for the cross-process shared endpoint gate"
+                    );
+                    return Err(RetryError::RateLimited);
+                }
+            };
 
             match request_fn().await {
                 Ok(response) => {
@@ -581,8 +623,21 @@ impl HttpClient {
                         endpoint.limiter.penalize();
                         let delay = retry_after
                             .unwrap_or_else(|| rl_backoff.min(config.rate_limit_max_backoff));
-                        endpoint.set_retry_after(delay);
-                        endpoint.shared.mark_retry_after(delay);
+                        // The endpoint-wide park (every other caller waits on
+                        // this, in-process via `wait_for_retry_after` and
+                        // cross-process via the persisted shared file) is
+                        // clamped to `rate_limit_max_backoff` regardless of
+                        // how large the server's own `Retry-After` was
+                        // (#547) — a `Retry-After: 3600` must not park every
+                        // *other* caller of this endpoint for an hour, nor
+                        // survive a restart parked that long via the shared
+                        // file. `delay` itself stays uncapped (up to
+                        // `MAX_RETRY_AFTER`, #548) for *this* caller's own
+                        // give-up decision below, honoring what the server
+                        // actually asked for.
+                        let endpoint_delay = delay.min(config.rate_limit_max_backoff);
+                        endpoint.set_retry_after(endpoint_delay);
+                        endpoint.shared.mark_retry_after(endpoint_delay).await;
                         // Give up once another wait would exceed the overall
                         // budget: surface the 429 (permits still held) so the
                         // caller errors instead of the parent hanging forever.
@@ -607,10 +662,14 @@ impl HttpClient {
                     }
 
                     // Retryable 5xx: bounded by `max_attempts`; park only if the
-                    // server advised a `Retry-After`.
+                    // server advised a `Retry-After`. Clamped the same way as
+                    // the 429 path above (#547) — the endpoint-wide park
+                    // every caller waits on must never exceed
+                    // `rate_limit_max_backoff`, even though this caller's own
+                    // `sleep(delay)` below still honors the raw value.
                     attempt += 1;
                     if let Some(server_delay) = retry_after {
-                        endpoint.set_retry_after(server_delay);
+                        endpoint.set_retry_after(server_delay.min(config.rate_limit_max_backoff));
                     }
                     if attempt >= config.max_attempts {
                         return Ok((response, StreamGuard(permit, model_permit, shared_lease)));
@@ -845,6 +904,14 @@ pub enum RetryError {
     Exhausted(u32, reqwest::Error),
     #[error("permanent error, not retrying: {0}")]
     Permanent(reqwest::Error),
+    /// Gave up waiting for the endpoint's `Retry-After` cool-down (in-process
+    /// or the cross-process shared gate) to clear within
+    /// `rate_limit_max_elapsed`, without ever sending a request (#547) — the
+    /// no-response counterpart to the 429-with-a-response give-up path,
+    /// which still returns `Ok` with the 429 itself for the caller to
+    /// inspect.
+    #[error("rate limited: gave up waiting for the endpoint's retry-after cool-down to clear")]
+    RateLimited,
 }
 
 #[cfg(test)]

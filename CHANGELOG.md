@@ -160,6 +160,34 @@ alternatives behind each design decision live in the ADRs under
 
 ### Fixed
 
+- **Retry-After could wedge every local `skutter` process, with `Stop`
+  unresponsive and no throttle indication** (#547): three compounding
+  defects. (1) `rate_limit_max_elapsed` only bounded the caller that
+  personally received the 429 — `wait_for_retry_after` (the endpoint-wide
+  park every *other* caller waits on), the 5xx `Retry-After` path, and
+  `SharedGate::acquire`'s poll loop had no deadline, so a server
+  `Retry-After: 3600` (or bogus value) could park the endpoint for the full
+  raw duration and — via `mark_retry_after` — persist that cool-down to the
+  cross-process shared-state file, surviving a restart. Fixed by clamping the
+  endpoint-wide park (both in-process and the persisted shared file) to
+  `rate_limit_max_backoff` while still honoring the raw value for the
+  offending caller's own give-up decision, and by threading each caller's own
+  `rate_limit_max_elapsed` deadline into `wait_for_retry_after` and
+  `SharedGate::acquire` so neither can sleep past it (surfacing a new
+  `RetryError::RateLimited` instead). (2) `session/stream.rs` awaited
+  `s.llm.stream(req)` outside the `tokio::select!` that races the inbox, so
+  the whole pre-stream phase (retry-after wait, pacing gate, shared gate,
+  semaphores, 429 sleep) couldn't be preempted by `Stop` — the call is now
+  pinned and raced against the inbox the same way the stream-consuming loop
+  already was. (3) `SharedLease::drop` only cancelled a detached background
+  task that then asynchronously removed the lease — a short-lived one-shot
+  `run` (or a SIGINT/SIGTERM shutdown) could tear the tokio runtime down
+  before that task ever ran, leaving a live-looking lease for the next
+  launch to silently block on; release is now synchronous in `Drop`, and
+  `mark_retry_after` is awaited rather than fired off as a detached task.
+  `LEASE_TTL` is also tightened from 180s to ~2× `LEASE_RENEW_INTERVAL`
+  (120s) as the backstop for the one case synchronous release can't cover: a
+  `SIGKILL`.
 - **Shared endpoint gate acquired before the model permit — cross-process
   starvation of sibling instances** (#546): `execute_with_retry` acquired the
   cross-process shared lease *before* the in-process model permit, violating

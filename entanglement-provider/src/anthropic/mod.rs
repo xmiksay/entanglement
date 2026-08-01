@@ -229,6 +229,9 @@ impl Llm for AnthropicLlm {
                         crate::client::RetryError::Exhausted(attempts, e) => {
                             anyhow::anyhow!("anthropic request failed after {attempts} attempts: {e}")
                         }
+                        crate::client::RetryError::RateLimited => {
+                            anyhow::anyhow!("anthropic rate limited: gave up waiting for the endpoint to clear")
+                        }
                     })?;
 
                 let response = ensure_success(response).await?;

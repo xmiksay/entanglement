@@ -172,6 +172,95 @@ async fn stop_preempts_a_stalled_stream() {
     );
 }
 
+/// An `Llm` whose `stream()` call itself never resolves — modelling the
+/// pre-stream phase a real provider client runs before the first byte
+/// (endpoint retry-after wait, pacing gate, cross-process shared gate,
+/// semaphores, 429 backoff sleep, #547). Records requests into `seen` so a
+/// follow-up turn can be asserted.
+struct StallsBeforeStreamingLlm {
+    seen: Arc<Mutex<Vec<Vec<Message>>>>,
+}
+
+#[async_trait]
+impl Llm for StallsBeforeStreamingLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        self.seen.lock().unwrap().push(req.messages.to_vec());
+        std::future::pending::<()>().await;
+        unreachable!("pending() never resolves");
+    }
+}
+
+/// Regression (#547): `Stop` must preempt the *pre-stream* phase too, not
+/// just a stalled stream once it's started. Before the fix,
+/// `s.llm.stream(req).await` in `session/stream.rs` ran outside any
+/// `select!`, so a `Stop` sent while the provider client was still parked on
+/// its retry-after wait / pacing gate / shared gate / semaphores couldn't be
+/// observed until `stream()` itself returned. This test would hang (fail on
+/// the collect timeout) under the old code, since `StallsBeforeStreamingLlm`
+/// never returns from `stream()` at all.
+#[tokio::test]
+async fn stop_preempts_before_streaming_starts() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let holly = Holly::spawn(EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(StallsBeforeStreamingLlm {
+                seen: seen2.clone(),
+            }) as Box<dyn Llm>
+        }),
+        ..EngineConfig::default()
+    });
+    let sid = SessionId::new("s1");
+
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "first-prompt"))
+        .await
+        .unwrap();
+    let mut thinking = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+        if matches!(&ev, OutEvent::Status { state, .. } if *state == entanglement_core::AgentState::Thinking)
+        {
+            thinking = true;
+            break;
+        }
+    }
+    assert!(
+        thinking,
+        "turn should enter Thinking before stream() resolves"
+    );
+
+    holly
+        .send(InMsg::Stop {
+            session: sid.clone(),
+        })
+        .await
+        .unwrap();
+    let mut went_done = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+        if matches!(&ev, OutEvent::Status { state, .. } if *state == entanglement_core::AgentState::Done)
+        {
+            went_done = true;
+            break;
+        }
+    }
+    assert!(
+        went_done,
+        "Stop must preempt the pre-stream await and return the session to Done"
+    );
+
+    // The session task survives the interrupt and answers a fresh prompt.
+    holly
+        .send(InMsg::prompt(sid.clone(), "second-prompt"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        seen.lock().unwrap().len() >= 2,
+        "session should still be alive and stream a second turn after cancellation"
+    );
+}
+
 #[tokio::test]
 async fn stop_while_idle_preserves_context_for_next_prompt() {
     let seen = Arc::new(Mutex::new(Vec::new()));
