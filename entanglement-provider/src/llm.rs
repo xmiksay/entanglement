@@ -402,13 +402,50 @@ pub struct ResolvedModel {
     pub context_window: Option<usize>,
 }
 
+/// Identity of the human/tenant a session belongs to, in a multi-user
+/// deployment (#522, ADR-0147). Established once at session creation (an
+/// embedder-authored `InMsg::Spawn` carries it, in `entanglement-core`) and
+/// never mutated afterward — a session's user is a spawn-time fact exactly like
+/// its `parent`; a spawned child inherits its parent's user rather than setting
+/// its own. `None` (the default, single-user mode) means the session runs under the
+/// process-global provider catalog/config, byte-identical to pre-#522 behavior.
+/// Opaque to the engine: an embedder picks the string (a DB primary key, an
+/// email, whatever it already uses to key its own per-tenant state) — core
+/// never validates, parses, or looks it up; it only threads the value to the
+/// seams that need it ([`ModelResolver`] here, the runtime's
+/// `PermissionResolver`/`GrantStore` via `Session`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct UserId(pub String);
+
+impl UserId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+impl std::fmt::Display for UserId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
 /// Re-resolves a `(provider, model)` pair to a [`ResolvedModel`] for a
 /// mid-session switch (#218), or `Err(message)` when the provider is unknown or
 /// its API key is unset. Held by the engine config so a session can swap its LLM
 /// with no restart; the runtime builds it capturing the provider catalog + the
 /// per-endpoint HTTP client (already warm, #217).
-pub type ModelResolver =
-    std::sync::Arc<dyn Fn(&str, &str) -> Result<ResolvedModel, String> + Send + Sync>;
+///
+/// Takes the resolving session's [`UserId`] (`None` in single-user mode, #522):
+/// a multi-user runtime's resolver closure looks up that user's own catalog
+/// overlay + API key instead of the one process-global catalog/env-var key a
+/// single-user embedder's closure captures. The three call sites (session
+/// start, `SetAgent` pin rebind, `SetModel`) all already have the session in
+/// scope, so this costs single-user callers nothing — they simply ignore the
+/// parameter.
+pub type ModelResolver = std::sync::Arc<
+    dyn Fn(Option<&UserId>, &str, &str) -> Result<ResolvedModel, String> + Send + Sync,
+>;
 
 /// Resolves a named agent profile's **persisted** generation override (#374,
 /// the generation-parameter analogue of the model pin ADR-0081 bakes directly

@@ -195,6 +195,7 @@ async fn compact_forks_into_a_new_session_and_preserves_the_source() {
             predecessor: Some(source.clone()),
             agent: "build".to_string(),
             prompt: format!("[Conversation summary]\n\n{summary}"),
+            user: None,
         })
         .await
         .unwrap();

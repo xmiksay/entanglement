@@ -595,6 +595,7 @@ fn elapsed_tracks_running_then_freezes_on_end() {
         model: None,
         root: false,
         ts: 1_000,
+        user: None,
     });
     // Running: measured against the current wall clock.
     assert_eq!(v.elapsed_secs(4_000), Some(3));

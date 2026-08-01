@@ -12,7 +12,7 @@ use super::TurnState;
 use crate::context::Context;
 use crate::protocol::{AgentProfile, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::{GenerationParams, Llm, ResolvedModel};
+use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 
 /// Mutable per-session loop + turn state (#61). Holds the conversation
 /// [`Context`], the provider LLM backend (`llm`, a plain `Box<dyn Llm>` — the
@@ -89,6 +89,15 @@ pub struct Session {
     /// Reconstructed on replay from
     /// [`SessionStarted`][crate::protocol::OutEvent::SessionStarted].
     pub predecessor: Option<SessionId>,
+    /// Owning user in a multi-user deployment (#522, ADR-0147). Set once at
+    /// spawn — a root spawn takes it from `InMsg::Spawn.user`, a child or a
+    /// compaction successor inherits it from its parent/predecessor — and never
+    /// mutated afterward, mirroring [`parent`][Self::parent]. `None` in
+    /// single-user mode (the default). Threaded to [`EngineConfig::model_resolver`]
+    /// so a multi-user runtime resolves this session's own provider catalog +
+    /// API key instead of the process-global one. Reconstructed on replay from
+    /// [`SessionStarted`][crate::protocol::OutEvent::SessionStarted].
+    pub user: Option<UserId>,
     /// Cumulative token usage + cost across every model round-trip this session
     /// has run (#192). Each `LlmEvent::Finish` folds its normalized `Usage` in
     /// here and emits the per-round-trip delta as [`OutEvent::Usage`].
@@ -139,6 +148,7 @@ impl Session {
             parent: None,
             children: Vec::new(),
             predecessor: None,
+            user: None,
             usage: SessionUsage::default(),
             turn: None,
             paused: false,

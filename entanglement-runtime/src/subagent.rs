@@ -370,6 +370,7 @@ async fn launch(
             predecessor: None,
             agent: agent.clone(),
             prompt,
+            user: None,
         })
         .await
         .is_err()

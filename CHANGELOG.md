@@ -15,6 +15,22 @@ alternatives behind each design decision live in the ADRs under
 
 ### Added
 
+- **Multi-user mode — embedder library API** (#522, ADR-0147): one running
+  engine can now serve multiple users, each with their own provider catalog,
+  API keys, RPM/concurrency budgets, permission ceiling, and grants. A new
+  `UserId` (`entanglement-provider`, re-exported by core) rides
+  `Session.user`/`InMsg::Spawn.user`/`OutEvent::SessionStarted.user`/
+  `SessionInfo.user`, fixed at spawn like `parent` — a spawned child or
+  `/compact` successor inherits its parent's/predecessor's user automatically.
+  `ModelResolver` widened to accept the resolving session's `Option<&UserId>`.
+  `entanglement-runtime::multi_user::provider` resolves a per-user `Catalog` +
+  API keys (held only in memory, never `std::env`) via an embedder-implemented
+  `UserProviderStore`; `entanglement-runtime::multi_user::permission` builds
+  `PerUserPermissionResolver`/`PerUserGrantStore` on the existing #311
+  `PermissionResolver`/`GrantStore` seams, so an `Always` grant recorded by
+  one user is never consulted for another's session. v1 is embedder-API-only
+  — `serve` stays single-user (ADR-0048); an authenticated multi-user wire
+  head is a follow-up.
 - **List/retract/replace an open `ask_user` question** (#515, ADR-0146):
   `InMsg::ListQuestions { correlation_id, session? }` → `OutEvent::QuestionList`
   enumerates every open question (or one session's), mirroring `ListSessions`/

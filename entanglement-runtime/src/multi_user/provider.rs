@@ -1,0 +1,309 @@
+//! Per-user provider context: catalog + API keys (#522, ADR-0147).
+//!
+//! Single-user mode's provider resolution (`skutter`'s `main.rs`) is
+//! deliberately process-global: one [`Catalog`], one managed `.env` key file
+//! (#220) loaded into `std::env` at startup. A multi-user embedder instead
+//! gives each [`UserId`] its own catalog overlay + API keys via a
+//! [`UserProviderStore`] it implements over its own storage, and wires
+//! [`build_user_model_resolver`]'s output onto
+//! [`EngineConfig::model_resolver`][entanglement_core::EngineConfig] in place
+//! of `main.rs`'s process-global one. Keys never touch `std::env` — they are
+//! read straight out of the store and handed to the provider client
+//! constructors, mirroring how `main.rs`'s `*_factory_for` helpers accept an
+//! `explicit_key` instead of an env lookup.
+//!
+//! Rate-limit isolation falls out of the existing per-endpoint pool for free
+//! (ADR-0050): [`HttpClient`] keys its `EndpointState` by `(base_url,
+//! sha256(api_key))`, so two users with distinct keys on the same provider
+//! already get separate RPM/concurrency/429 cool-down state with no extra
+//! plumbing here. Two users configured to *share* one literal key currently
+//! share that key's budget too — an intentional v1 scope limit, recorded as a
+//! follow-up in ADR-0147.
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+use entanglement_core::{ModelResolver, ResolvedModel, UserId};
+use entanglement_provider::{
+    anthropic_factory, gemini_factory, openai_factory, Catalog, HttpClient, ProviderEntry,
+    WebSearchConfig, Wire, GEMINI_BASE, OPENAI_BASE,
+};
+
+/// One user's provider surface: their own [`Catalog`] (same shape as the
+/// process-global `providers.yml`, #118 — providers, models, per-provider
+/// `rpm`/`concurrency`) and their own API keys, keyed by the catalog entry's
+/// `key_env` name purely as a stable per-provider label (the value is never
+/// read from or written to an actual environment variable in multi-user
+/// mode).
+#[derive(Clone)]
+pub struct UserProviderContext {
+    pub catalog: Catalog,
+    keys: HashMap<String, String>,
+}
+
+impl UserProviderContext {
+    pub fn new(catalog: Catalog) -> Self {
+        Self {
+            catalog,
+            keys: HashMap::new(),
+        }
+    }
+
+    /// Register this user's API key for the provider whose catalog entry
+    /// declares `key_env` (e.g. `"ZAI_API_KEY"`) — the same label the
+    /// single-user `.env` file would use for that provider, reused here only
+    /// as a lookup key, never as an actual env var name.
+    pub fn with_key(mut self, key_env: impl Into<String>, key: impl Into<String>) -> Self {
+        self.keys.insert(key_env.into(), key.into());
+        self
+    }
+
+    fn key_for(&self, entry: &ProviderEntry) -> Option<&str> {
+        entry
+            .key_env
+            .as_deref()
+            .and_then(|k| self.keys.get(k))
+            .map(String::as_str)
+    }
+}
+
+/// Looks up a user's [`UserProviderContext`] — the seam a multi-user embedder
+/// implements over its own per-tenant storage (a DB row, a config file, a
+/// secrets manager). Called on every model resolution (session start,
+/// `SetAgent` pin rebind, `SetModel`), so an implementation backed by I/O
+/// should cache — mirroring the guidance on
+/// [`ToolSpecResolver`][entanglement_core::ToolSpecResolver].
+pub trait UserProviderStore: Send + Sync {
+    fn context(&self, user: &UserId) -> Option<UserProviderContext>;
+}
+
+/// An in-memory [`UserProviderStore`] — good for tests and small
+/// deployments. An embedder with its own per-user database should implement
+/// [`UserProviderStore`] directly against it instead of mirroring every
+/// user's catalog/keys into this map.
+#[derive(Clone, Default)]
+pub struct InMemoryUserProviderStore {
+    users: Arc<RwLock<HashMap<UserId, UserProviderContext>>>,
+}
+
+impl InMemoryUserProviderStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set(&self, user: UserId, ctx: UserProviderContext) {
+        self.users
+            .write()
+            .expect("user provider store lock poisoned")
+            .insert(user, ctx);
+    }
+}
+
+impl UserProviderStore for InMemoryUserProviderStore {
+    fn context(&self, user: &UserId) -> Option<UserProviderContext> {
+        self.users
+            .read()
+            .expect("user provider store lock poisoned")
+            .get(user)
+            .cloned()
+    }
+}
+
+/// Build the [`ModelResolver`] a multi-user `EngineConfig` wires in place of
+/// the single-user process-global one: every call looks the resolving
+/// session's [`UserId`] up in `store` and resolves against *that user's own*
+/// catalog + key. A session with no user (`None` — single-user-mode session
+/// sharing a multi-user engine) or a user absent from `store` is a hard
+/// `Err`, surfaced to the head exactly like an unknown provider.
+pub fn build_user_model_resolver(
+    store: Arc<dyn UserProviderStore>,
+    http_client: HttpClient,
+    web_search: Option<WebSearchConfig>,
+) -> ModelResolver {
+    Arc::new(move |user, provider, model| {
+        let user =
+            user.ok_or_else(|| "multi-user model resolution requires a session user".to_string())?;
+        let ctx = store
+            .context(user)
+            .ok_or_else(|| format!("no provider context configured for user `{user}`"))?;
+        resolve_for_user(&ctx, &http_client, web_search.clone(), provider, model)
+    })
+}
+
+fn resolve_for_user(
+    ctx: &UserProviderContext,
+    http_client: &HttpClient,
+    web_search: Option<WebSearchConfig>,
+    provider: &str,
+    model: &str,
+) -> Result<ResolvedModel, String> {
+    let entry = ctx
+        .catalog
+        .provider(provider)
+        .ok_or_else(|| format!("unknown provider `{provider}` for this user"))?;
+    let key = ctx.key_for(entry);
+    let rpm = entry.rpm;
+    let concurrency = entry.concurrency;
+    let model_concurrency = ctx
+        .catalog
+        .model(provider, model)
+        .and_then(|m| m.concurrency);
+
+    let llm_factory = match entry.wire {
+        Wire::Openai => {
+            let base = entry
+                .base_url
+                .clone()
+                .unwrap_or_else(|| OPENAI_BASE.to_string());
+            openai_factory(
+                base,
+                key.map(str::to_string),
+                model.to_string(),
+                rpm,
+                concurrency,
+                model_concurrency,
+                web_search,
+                http_client.clone(),
+            )
+        }
+        Wire::Anthropic => {
+            let key =
+                key.ok_or_else(|| format!("no API key configured for provider `{provider}`"))?;
+            let web_search_tool_version = ctx
+                .catalog
+                .model(provider, model)
+                .and_then(|m| m.web_search_tool_version.clone());
+            anthropic_factory(
+                key.to_string(),
+                model.to_string(),
+                rpm,
+                concurrency,
+                model_concurrency,
+                web_search,
+                web_search_tool_version,
+                http_client.clone(),
+            )
+        }
+        Wire::Gemini => {
+            let key =
+                key.ok_or_else(|| format!("no API key configured for provider `{provider}`"))?;
+            let base = entry
+                .base_url
+                .clone()
+                .unwrap_or_else(|| GEMINI_BASE.to_string());
+            gemini_factory(
+                base,
+                key.to_string(),
+                model.to_string(),
+                rpm,
+                concurrency,
+                model_concurrency,
+                http_client.clone(),
+            )
+        }
+    };
+
+    Ok(ResolvedModel {
+        provider: entry.name.clone(),
+        model: model.to_string(),
+        llm_factory,
+        generation: ctx
+            .catalog
+            .model(provider, model)
+            .map(|m| m.generation_params()),
+        context_window: ctx
+            .catalog
+            .model(provider, model)
+            .and_then(|m| m.context_window)
+            .map(|w| w as usize),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use entanglement_provider::{ModelEntry, ProviderEntry};
+
+    fn zai_catalog(rpm: Option<u32>) -> Catalog {
+        Catalog {
+            providers: vec![ProviderEntry {
+                name: "zai".into(),
+                wire: Wire::Openai,
+                base_url: None,
+                key_env: Some("ZAI_API_KEY".into()),
+                rpm,
+                concurrency: None,
+                default_model: "glm-5.2".into(),
+                models: vec![ModelEntry {
+                    id: "glm-5.2".into(),
+                    display_name: None,
+                    context_window: Some(128_000),
+                    supports_thinking: false,
+                    supports_temperature: true,
+                    default_temperature: None,
+                    max_output_tokens: None,
+                    thinking_budget_tokens: None,
+                    default_reasoning_effort: None,
+                    pricing: None,
+                    concurrency: None,
+                    web_search_tool_version: None,
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn resolver_errors_without_a_user() {
+        let store: Arc<dyn UserProviderStore> = Arc::new(InMemoryUserProviderStore::new());
+        let resolver = build_user_model_resolver(store, HttpClient::new(), None);
+        let err = resolver(None, "zai", "glm-5.2").err().unwrap();
+        assert!(err.contains("session user"));
+    }
+
+    #[test]
+    fn resolver_errors_for_an_unregistered_user() {
+        let store: Arc<dyn UserProviderStore> = Arc::new(InMemoryUserProviderStore::new());
+        let resolver = build_user_model_resolver(store, HttpClient::new(), None);
+        let user = UserId::new("alice");
+        let err = resolver(Some(&user), "zai", "glm-5.2").err().unwrap();
+        assert!(err.contains("alice"));
+    }
+
+    #[test]
+    fn resolver_resolves_against_the_users_own_catalog_and_key() {
+        let store = InMemoryUserProviderStore::new();
+        let alice = UserId::new("alice");
+        store.set(
+            alice.clone(),
+            UserProviderContext::new(zai_catalog(Some(7))).with_key("ZAI_API_KEY", "alice-key"),
+        );
+        let store: Arc<dyn UserProviderStore> = Arc::new(store);
+        let resolver = build_user_model_resolver(store, HttpClient::new(), None);
+        let resolved = resolver(Some(&alice), "zai", "glm-5.2").expect("resolves");
+        assert_eq!(resolved.provider, "zai");
+        assert_eq!(resolved.model, "glm-5.2");
+        assert_eq!(resolved.context_window, Some(128_000));
+    }
+
+    #[test]
+    fn two_users_resolve_independently_even_with_the_same_provider_name() {
+        let store = InMemoryUserProviderStore::new();
+        let alice = UserId::new("alice");
+        let bob = UserId::new("bob");
+        store.set(
+            alice.clone(),
+            UserProviderContext::new(zai_catalog(Some(5))).with_key("ZAI_API_KEY", "alice-key"),
+        );
+        // Bob has no `zai` in his catalog at all — a distinct provider surface.
+        store.set(
+            bob.clone(),
+            UserProviderContext::new(Catalog { providers: vec![] }),
+        );
+        let store: Arc<dyn UserProviderStore> = Arc::new(store);
+        let resolver = build_user_model_resolver(store, HttpClient::new(), None);
+
+        assert!(resolver(Some(&alice), "zai", "glm-5.2").is_ok());
+        let err = resolver(Some(&bob), "zai", "glm-5.2").err().unwrap();
+        assert!(err.contains("unknown provider"));
+    }
+}

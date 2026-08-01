@@ -425,3 +425,24 @@ Per-provider env still wins: `<PROV>_API_KEY` (name from the entry's `key_env`),
 `<PROV>_MODEL`, `<PROV>_BASE`/`<PROV>_API_BASE`. Default models come from each
 provider's `default_model` (`glm-5.2` / `gpt-4o` / `llama3.1` /
 `claude-sonnet-4-5`). The TUI model picker + context bar read the same catalog.
+
+**Multi-user provider context (#522, [ADR-0147](../adr/0147-multi-user-mode-embedder-api.md)):**
+everything above is the **single-user** story — one process-global `Catalog`,
+API keys loaded from the managed `.env` file (#220) into `std::env`. A
+multi-user embedder instead builds `ModelResolver`s per user via
+`entanglement-runtime::multi_user::provider` (behind the `provider` feature):
+`ModelResolver` itself widened to `Fn(Option<&UserId>, &str, &str) -> Result<ResolvedModel, String>`
+so its three call sites in `entanglement-core/src/session.rs` (session-start
+pin, `SetAgent` pin rebind, `SetModel`) can resolve against the *resolving
+session's own user* — single-user callers (`main.rs::build_model_resolver`)
+simply ignore the parameter. `build_user_model_resolver` looks the session's
+`UserId` up in an embedder-supplied `UserProviderStore`, resolving each
+`UserProviderContext`'s own `Catalog` (same shape as `providers.yml` — so
+**per-user RPM/concurrency budgets are just per-user catalog data**, no new
+plumbing) and API keys (an in-memory map, **never** written to `std::env`).
+The shared `HttpClient` connection pool still isolates rate-limit state per
+`(base_url, sha256(api_key))` (ADR-0050), so two users with distinct keys on
+the same provider already get independent `EndpointState`s with no further
+change — two users sharing one literal key currently share that key's budget
+too (an accepted v1 gap). `serve` is unaffected — it stays single-user
+(ADR-0048); this seam is reachable only through the embedder library API.

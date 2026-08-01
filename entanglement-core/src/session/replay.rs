@@ -145,10 +145,12 @@ impl Session {
                 OutEvent::SessionStarted {
                     parent,
                     predecessor,
+                    user,
                     ..
                 } => {
                     session.parent = parent.clone();
                     session.predecessor = predecessor.clone();
+                    session.user = user.clone();
                 }
                 OutEvent::TextDelta { text, .. } => {
                     pending_text.push_str(text);
@@ -222,7 +224,7 @@ impl Session {
                         (provider.clone(), model.clone()),
                     );
                     if let Some(resolver) = cfg.model_resolver.as_ref() {
-                        match resolver(provider, model) {
+                        match resolver(session.user.as_ref(), provider, model) {
                             Ok(resolved) => {
                                 session.provider = Some(resolved.provider);
                                 session.llm = (resolved.llm_factory)();
@@ -401,6 +403,7 @@ mod tests {
             model: None,
             root: parent.is_none(),
             ts: 0,
+            user: None,
         }
     }
 

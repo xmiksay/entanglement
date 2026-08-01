@@ -30,7 +30,7 @@ use tool_runner::EscapeRoot;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId};
+use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId, UserId};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
     ProviderEntry, ResolvedModel, WebSearchConfig, Wire,
@@ -529,6 +529,7 @@ fn openai_wire_config(
         http_client,
         catalog,
         web_search_config(user_config),
+        None,
     )
     .ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
@@ -572,6 +573,7 @@ fn anthropic_wire_config(
         catalog,
         web_search_config(user_config),
         web_search_tool_version(entry, &model, catalog),
+        None,
     )
     .ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
@@ -597,7 +599,7 @@ fn gemini_wire_config(
     user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
     let model = resolve_model(entry, user_config);
-    let llm_factory = gemini_factory_for(entry, &model, http_client, catalog).ok()?;
+    let llm_factory = gemini_factory_for(entry, &model, http_client, catalog, None).ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -615,17 +617,29 @@ fn gemini_wire_config(
 /// startup and the live-switch resolver (#218). Always keyed; `Err(message)` when
 /// the key env is absent/unset. Base from `{NAME}_API_BASE`/`{NAME}_BASE` env else
 /// `entry.base_url` else the client's [`GEMINI_BASE`] default.
+///
+/// `explicit_key`, when `Some`, is used verbatim instead of reading
+/// `entry.key_env` from the process environment — the multi-user seam (#522):
+/// a per-user resolver supplies the user's own key from its in-memory store,
+/// never placing it in `std::env`. `None` (every single-user call site) keeps
+/// the original env-lookup behavior byte-identical.
 fn gemini_factory_for(
     entry: &ProviderEntry,
     model: &str,
     http_client: &HttpClient,
     catalog: &Catalog,
+    explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let key_env = entry
-        .key_env
-        .as_deref()
-        .ok_or_else(|| format!("provider `{}` has no API key env", entry.name))?;
-    let key = env_nonempty(key_env).ok_or_else(|| format!("{key_env} is not set"))?;
+    let key = match explicit_key {
+        Some(k) => k.to_string(),
+        None => {
+            let key_env = entry
+                .key_env
+                .as_deref()
+                .ok_or_else(|| format!("provider `{}` has no API key env", entry.name))?;
+            env_nonempty(key_env).ok_or_else(|| format!("{key_env} is not set"))?
+        }
+    };
     let name = entry.name.to_uppercase();
     let base = env_nonempty(&format!("{name}_API_BASE"))
         .or_else(|| env_nonempty(&format!("{name}_BASE")))
@@ -646,19 +660,27 @@ fn gemini_factory_for(
 /// Shared by startup ([`openai_wire_config`]) and the live-switch resolver
 /// ([`build_model_resolver`], #218). `Err(message)` when a keyed provider's API
 /// key is unset — startup maps it to a skip, the switch surfaces it to the head.
+///
+/// `explicit_key`, when `Some`, is used verbatim instead of reading
+/// `entry.key_env` from the process environment (#522 multi-user seam,
+/// mirroring [`gemini_factory_for`]).
 fn openai_factory_for(
     entry: &ProviderEntry,
     model: &str,
     http_client: &HttpClient,
     catalog: &Catalog,
     web_search: Option<WebSearchConfig>,
+    explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let key = match &entry.key_env {
-        Some(k) => Some(
-            env_nonempty(k)
-                .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
-        ),
-        None => None, // keyless (Ollama)
+    let key = match explicit_key {
+        Some(k) => Some(k.to_string()),
+        None => match &entry.key_env {
+            Some(k) => Some(
+                env_nonempty(k)
+                    .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
+            ),
+            None => None, // keyless (Ollama)
+        },
     };
     let name = entry.name.to_uppercase();
     let base = env_nonempty(&format!("{name}_API_BASE"))
@@ -681,6 +703,10 @@ fn openai_factory_for(
 /// Shared by startup and the live-switch resolver (#218). Always keyed;
 /// `Err(message)` when the key env is absent/unset. `web_search_tool_version`
 /// selects the server-tool type (#481) when web search is enabled.
+///
+/// `explicit_key`, when `Some`, is used verbatim instead of reading
+/// `entry.key_env` from the process environment (#522 multi-user seam,
+/// mirroring [`gemini_factory_for`]).
 #[allow(clippy::too_many_arguments)]
 fn anthropic_factory_for(
     entry: &ProviderEntry,
@@ -689,12 +715,18 @@ fn anthropic_factory_for(
     catalog: &Catalog,
     web_search: Option<WebSearchConfig>,
     web_search_tool_version: Option<String>,
+    explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let key_env = entry
-        .key_env
-        .as_deref()
-        .ok_or_else(|| format!("provider `{}` has no API key env", entry.name))?;
-    let key = env_nonempty(key_env).ok_or_else(|| format!("{key_env} is not set"))?;
+    let key = match explicit_key {
+        Some(k) => k.to_string(),
+        None => {
+            let key_env = entry
+                .key_env
+                .as_deref()
+                .ok_or_else(|| format!("provider `{}` has no API key env", entry.name))?;
+            env_nonempty(key_env).ok_or_else(|| format!("{key_env} is not set"))?
+        }
+    };
     Ok(entanglement_provider::anthropic_factory(
         key,
         model.to_string(),
@@ -720,36 +752,65 @@ fn build_model_resolver(
     http_client: HttpClient,
     web_search: Option<WebSearchConfig>,
 ) -> ModelResolver {
-    Arc::new(move |provider: &str, model: &str| {
-        let entry = catalog
-            .provider(provider)
-            .ok_or_else(|| format!("unknown provider `{provider}`"))?;
-        let llm_factory = match entry.wire {
-            Wire::Openai => {
-                openai_factory_for(entry, model, &http_client, &catalog, web_search.clone())?
-            }
-            Wire::Anthropic => anthropic_factory_for(
-                entry,
-                model,
-                &http_client,
-                &catalog,
-                web_search.clone(),
-                web_search_tool_version(entry, model, &catalog),
-            )?,
-            Wire::Gemini => gemini_factory_for(entry, model, &http_client, &catalog)?,
-        };
-        Ok(ResolvedModel {
-            provider: entry.name.clone(),
-            model: model.to_string(),
-            llm_factory,
-            generation: catalog
-                .model(provider, model)
-                .map(|m| m.generation_params()),
-            context_window: catalog
-                .model(provider, model)
-                .and_then(|m| m.context_window)
-                .map(|w| w as usize),
-        })
+    // Single-user mode: every session shares this one process-global catalog +
+    // client, so the resolving session's `UserId` (#522) is simply ignored — a
+    // multi-user runtime builds a distinct resolver via
+    // `multi_user::build_user_model_resolver` instead, reusing
+    // `resolve_catalog_entry` below with an explicit per-user key.
+    Arc::new(move |_user: Option<&UserId>, provider: &str, model: &str| {
+        resolve_catalog_entry(
+            &catalog,
+            &http_client,
+            web_search.clone(),
+            provider,
+            model,
+            None,
+        )
+    })
+}
+
+/// Resolve `(provider, model)` against `catalog` into a [`ResolvedModel`] — the
+/// wire-dispatch body shared by the single-user [`build_model_resolver`] and the
+/// multi-user [`multi_user::build_user_model_resolver`]. `explicit_key`, when
+/// `Some`, is threaded to the `*_factory_for` builders instead of letting them
+/// fall back to reading `entry.key_env` from the process environment (#522).
+fn resolve_catalog_entry(
+    catalog: &Catalog,
+    http_client: &HttpClient,
+    web_search: Option<WebSearchConfig>,
+    provider: &str,
+    model: &str,
+    explicit_key: Option<&str>,
+) -> Result<ResolvedModel, String> {
+    let entry = catalog
+        .provider(provider)
+        .ok_or_else(|| format!("unknown provider `{provider}`"))?;
+    let llm_factory = match entry.wire {
+        Wire::Openai => {
+            openai_factory_for(entry, model, http_client, catalog, web_search, explicit_key)?
+        }
+        Wire::Anthropic => anthropic_factory_for(
+            entry,
+            model,
+            http_client,
+            catalog,
+            web_search,
+            web_search_tool_version(entry, model, catalog),
+            explicit_key,
+        )?,
+        Wire::Gemini => gemini_factory_for(entry, model, http_client, catalog, explicit_key)?,
+    };
+    Ok(ResolvedModel {
+        provider: entry.name.clone(),
+        model: model.to_string(),
+        llm_factory,
+        generation: catalog
+            .model(provider, model)
+            .map(|m| m.generation_params()),
+        context_window: catalog
+            .model(provider, model)
+            .and_then(|m| m.context_window)
+            .map(|w| w as usize),
     })
 }
 

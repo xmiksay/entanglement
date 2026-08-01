@@ -37,6 +37,7 @@ async fn replay_from_answers_with_content_after_cursor() {
                 model: None,
                 root: true,
                 ts: 0,
+                user: None,
             },
         ),
         out(
