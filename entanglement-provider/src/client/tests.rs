@@ -150,6 +150,85 @@ async fn model_permit_blocked_never_holds_the_endpoint_permit_hostage() {
     );
 }
 
+#[tokio::test]
+async fn model_permit_wait_does_not_hold_the_shared_cross_process_lease() {
+    // Regression for #546: `execute_with_retry` must acquire the shared
+    // cross-process lease *after* both in-process permits (the innermost
+    // gate). The shipped z.ai config that triggered this: endpoint cap 3,
+    // `glm-4.7-flash` model cap 1 — a caller queued on the model semaphore
+    // must not sit holding one of the 3 shared leases, or it starves sibling
+    // `skutter` processes sharing the same endpoint+key even though this
+    // process has sent nothing.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = "https://api.example/v1#shared-lease-test";
+    let (http, ep) = {
+        // Held only across the env var + endpoint construction, never across
+        // an `.await` (`clippy::await_holding_lock`) — the shared-state dir
+        // is only read here, at `SharedGate::new` time.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var("ENTANGLEMENT_SHARED_STATE_DIR", dir.path());
+        let http = HttpClient::with_config(RetryConfig {
+            concurrency: 3,
+            ..RetryConfig::default()
+        });
+        let ep = http.endpoint(key, None, Some(3));
+        std::env::remove_var("ENTANGLEMENT_SHARED_STATE_DIR");
+        (http, ep)
+    };
+
+    // Simulate one in-flight Flash call already holding the model's only permit.
+    let model_slot = ep.model_slot("glm-4.7-flash", 1);
+    let _held_model_permit = model_slot.semaphore.clone().acquire_owned().await.unwrap();
+
+    // A second call to the same model, driven through the real entry point,
+    // must queue on the model semaphore before ever touching the shared gate.
+    let http2 = http.clone();
+    let key2 = key.to_string();
+    let blocked = tokio::spawn(async move {
+        let _ = http2
+            .execute_with_retry(
+                &key2,
+                None,
+                None,
+                Some(3),
+                "glm-4.7-flash",
+                Some(1),
+                || async {
+                    std::future::pending::<Result<reqwest::Response, reqwest::Error>>().await
+                },
+            )
+            .await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !blocked.is_finished(),
+        "must still be queued on the saturated model permit"
+    );
+
+    // A sibling "process" touching the same shared-state file must be able to
+    // take the *whole* endpoint-wide shared budget (3) right away — proving
+    // the blocked caller holds none of it. Bounded by a timeout: under the
+    // pre-fix ordering this would hang forever (the blocked caller holds one
+    // of the 3 leases and never releases it).
+    let siblings = tokio::time::timeout(
+        Duration::from_secs(2),
+        futures::future::join_all((0..3).map(|_| ep.shared.acquire(RPM_LIMIT, 3))),
+    )
+    .await
+    .expect(
+        "a sibling process must not be starved while the caller is blocked \
+         purely on its own model permit",
+    );
+    assert!(
+        siblings.iter().all(Option::is_some),
+        "the full shared cap must be available to siblings"
+    );
+
+    blocked.abort();
+}
+
 #[test]
 fn model_cap_wider_than_endpoint_cap_warns_but_is_still_honored() {
     // A model cap wider than its endpoint's own is a likely misconfiguration

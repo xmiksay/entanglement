@@ -49,6 +49,18 @@
 //! endpoint-wide `Retry-After`/pacing stay shared across every model on it (a
 //! 429 may well be host-wide); a model carrying no cap admits solely through
 //! the endpoint gate, unchanged from before this layer existed.
+//!
+//! # Shared cross-process lease ordering (#546)
+//! The cross-process gate (below) is scarcer still than either in-process
+//! permit — it is capped process-*wide*, across every `skutter` sharing the
+//! endpoint+key. It is therefore acquired **last**, only once both the model
+//! and endpoint permits are already held: a caller queued on its own model's
+//! semaphore (which can block for a full lease-renewal interval, ~60s) must
+//! never sit holding the shared lease while it waits, or it starves sibling
+//! processes even though the provider sees room. Acquiring it only right
+//! before the request fires also keeps the shared RPM ledger's timestamp
+//! (stamped on admission) meaning what it says — the start of the send, not
+//! the start of a possibly long in-process queue wait.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -453,9 +465,11 @@ impl HttpClient {
     /// admits solely through the endpoint-wide cap, byte-identical to pre-#521.
     /// The endpoint cap is the ceiling on the *sum* of in-flight requests across
     /// every model sharing it; each model's own cap bounds only itself. Permits
-    /// acquire **model first, then endpoint** — a caller blocked on its model's
-    /// slot never holds the scarce endpoint slot hostage, which would otherwise
-    /// starve sibling models — and release in the reverse order.
+    /// acquire **model, then endpoint, then the cross-process shared lease
+    /// last** (#546) — a caller blocked on its model's slot never holds a
+    /// scarcer resource hostage, which would otherwise starve sibling models
+    /// (in-process) or sibling `skutter` processes (cross-process) — and
+    /// release in the reverse order.
     ///
     /// Returns the response **plus a [`StreamGuard`]** the caller must keep alive
     /// for the whole streamed body — it holds the per-endpoint concurrency permit
@@ -496,24 +510,15 @@ impl HttpClient {
         loop {
             endpoint.wait_for_retry_after().await;
             endpoint.limiter.acquire().await;
-            // Cross-process gate (#523, ADR-0144): admitted only once every
-            // `skutter` process sharing this endpoint+key agrees there's
-            // combined RPM/concurrency room and no peer's `Retry-After` is
-            // still in force. `None` when sharing is disabled or the shared
-            // state directory is unwritable — falls back to the in-process
-            // gates above/below unaffected.
-            let shared_lease = endpoint
-                .shared
-                .acquire(endpoint.rpm, endpoint.concurrency_cap)
-                .await;
             // Model permit **first** (#521 refinement): a caller blocked on its
-            // model's own slot must never hold the scarce endpoint-wide slot
-            // hostage while it waits — that would let one saturated model
-            // starve every *other* model sharing the endpoint of admission,
+            // model's own slot must never hold a scarcer resource hostage
+            // while it waits — that would let one saturated model starve every
+            // *other* model sharing the endpoint (or every sibling process
+            // sharing the endpoint's cross-process lease, #546) of admission,
             // even though the endpoint itself has room. Acquiring in this
-            // fixed order (model, then endpoint) everywhere is also
-            // deadlock-free. Released in the reverse order below/in
-            // `StreamGuard`'s field order.
+            // fixed order (model, then endpoint, then the shared lease)
+            // everywhere is also deadlock-free. Released in the reverse order
+            // below/in `StreamGuard`'s field order.
             let model_permit = match &model_slot {
                 Some(slot) => Some(
                     slot.semaphore
@@ -534,6 +539,21 @@ impl HttpClient {
                 .acquire_owned()
                 .await
                 .expect("endpoint concurrency semaphore never closed");
+            // Cross-process gate (#523, ADR-0144), acquired **last** (#546):
+            // admitted only once every `skutter` process sharing this
+            // endpoint+key agrees there's combined RPM/concurrency room and no
+            // peer's `Retry-After` is still in force. Acquiring it only after
+            // both in-process permits are already held means a caller queued
+            // on its model's semaphore never sits holding this scarcer,
+            // cross-process-wide resource — and that the shared RPM ledger,
+            // stamped on admission below, is stamped right before the request
+            // actually fires. `None` when sharing is disabled or the shared
+            // state directory is unwritable — falls back to the in-process
+            // gates above unaffected.
+            let shared_lease = endpoint
+                .shared
+                .acquire(endpoint.rpm, endpoint.concurrency_cap)
+                .await;
 
             match request_fn().await {
                 Ok(response) => {

@@ -329,9 +329,15 @@ process's 429 parks every sibling's next `acquire`). **Not** shared in v1: the
 AIMD pacing gate stays per-process — once the budget itself is bounded
 correctly in aggregate, per-process pacing converges on the same signal (see
 the ADR for the full reasoning). `execute_with_retry`'s loop calls
-`endpoint.shared.acquire(rpm, concurrency)` after its existing in-process
-`wait_for_retry_after`/`limiter.acquire`, holding the returned lease in
-`StreamGuard` alongside the endpoint/model permits and releasing all three
+`endpoint.shared.acquire(rpm, concurrency)` **last** — after `wait_for_retry_after`/
+`limiter.acquire` *and* after both in-process permits (model, then endpoint)
+— not before them (#546, fixing a starvation bug: acquiring the shared lease
+first let a caller queued on its own model's semaphore sit holding this
+scarcer, process-wide resource for as long as it waited, starving sibling
+`skutter` processes even though the provider had room; it also meant the
+shared RPM ledger, stamped on admission, was stamped at the start of that
+wait rather than at the actual send). The returned lease is held in
+`StreamGuard` alongside the endpoint/model permits and all three release
 together; a 429 also calls `endpoint.shared.mark_retry_after(delay)` so the
 cool-down reaches siblings, not just this process. Falls back silently to
 pure in-process gating (today's pre-#523 behavior) when the state directory
