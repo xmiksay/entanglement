@@ -96,6 +96,47 @@ async fn text_only_turn_replay_fidelity() {
 }
 
 #[tokio::test]
+async fn tool_overlay_replay_fidelity() {
+    // #539, ADR-0149: `ToolOverlayChanged` folds by overwriting the session's
+    // overlay with the logged full-replacement list — last write wins, and an
+    // empty final record clears it, exactly like the live engine.
+    use entanglement_core::ToolOverlayEntry;
+    let sid = SessionId::new("test-overlay");
+    let cfg = factory(vec![]);
+    let overlay = |entries: Vec<ToolOverlayEntry>| {
+        (
+            None,
+            OutEvent::ToolOverlayChanged {
+                session: sid.clone(),
+                entries,
+            },
+        )
+    };
+
+    let records = vec![
+        overlay(vec![ToolOverlayEntry::ask("mcp__docs__*")]),
+        overlay(vec![
+            ToolOverlayEntry::ask("mcp__docs__*"),
+            ToolOverlayEntry {
+                pattern: "bash".into(),
+                allow: true,
+            },
+        ]),
+    ];
+    let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
+    assert_eq!(session.tool_overlay.len(), 2, "last full list wins");
+    assert!(session.tool_overlay[1].allow);
+
+    let mut cleared = records;
+    cleared.push(overlay(vec![]));
+    let session = entanglement_core::session::Session::replay(&cleared, &cfg, &sid).unwrap();
+    assert!(
+        session.tool_overlay.is_empty(),
+        "an empty final record clears the overlay"
+    );
+}
+
+#[tokio::test]
 async fn single_tool_turn_replay_fidelity() {
     let sid = SessionId::new("test-single-tool");
     let records = vec![

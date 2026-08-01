@@ -188,10 +188,10 @@ content, bounded, core never sees it) instead of ending the turn (#481). Enablin
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
-          | SetAgent | SetModel | SetGeneration | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
+          | SetAgent | SetModel | SetGeneration | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove
           | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged | ToolOverlayChanged
           | McpList | McpChanged | BashChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
@@ -643,6 +643,22 @@ re-document them here):
   checked set, so a glob doesn't survive the round-trip); `Space` toggles,
   `Enter` saves, `Esc` discards. Applies on next restart — no live registry
   reload yet.
+- **Per-session tool overlay — live injection past the agent mask** (#539,
+  [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md), builds on #537
+  below): `InMsg::SetToolOverlay { session, entries: [ToolOverlayEntry {
+  pattern, allow }] }` (**trusted-only**, the `BashEnable` rationale) replaces
+  a session's live overlay — ADR-0148-style patterns whose matching tools
+  *exist* for that session regardless of the active profile's mask
+  (`mcp__chessbase__*` = one server, a literal name = one tool). Full
+  replacement, empty clears; always acks with `OutEvent::ToolOverlayChanged`
+  (full effective list, persisted + replay-folded by overwrite like
+  `GenerationChanged`); survives `SetAgent` by design, stash-deferred during
+  a live turn. Enforcement: core's advertisement filter ORs the overlay;
+  `tool_masked` admits per chain link (a parent's overlay covers its spawn
+  sub-tree); the generic dispatch route replaces the chain grade with the
+  entry's `Ask` (default)/`Allow`, still ceiling-clamped (#172) — resolver
+  seam (#311) untouched. TUI: `/enable mcp <server> | tool <name> [--allow]`,
+  bare `/enable` shows overlay + roster, `/disable` retracts (bare clears).
 - **Agent tool-mask entries are glob patterns** (#537,
   [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md),
   superseding ADR-0038's "no globbing" consequence): `tools:`/

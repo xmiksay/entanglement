@@ -75,6 +75,10 @@ impl App {
             // (plus the trailing text), not available here — both call sites
             // intercept it before reaching this dispatch.
             Command::Bash => false,
+            // Same shape again (#539): `/enable`/`/disable` need `holly` plus
+            // the trailing text — both call sites intercept them before
+            // reaching this dispatch.
+            Command::Enable | Command::Disable => false,
         }
     }
 

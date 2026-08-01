@@ -316,6 +316,44 @@ pub enum BashGrade {
     },
 }
 
+/// One entry of a session's live tool overlay (#539, ADR-0149): a `*`/`?`
+/// wildcard `pattern` (the ADR-0148 mask semantics — `mcp__chessbase__*` for a
+/// server, `bash` for one tool) a trusted head injected via
+/// [`InMsg::SetToolOverlay`] to make matching tools exist for **this session**
+/// regardless of the active agent profile's `tools:`/`disallowed_tools:` mask.
+/// `allow: false` (the default, mirroring [`BashGrade::Ask`]) still routes
+/// every matching call through the approval prompt; `allow: true` grants
+/// permission outright — both runtime-side and still clamped by the config
+/// ceiling (#172), exactly like a live bash grade (#498).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolOverlayEntry {
+    pub pattern: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow: bool,
+}
+
+impl ToolOverlayEntry {
+    pub fn ask(pattern: impl Into<String>) -> Self {
+        Self {
+            pattern: pattern.into(),
+            allow: false,
+        }
+    }
+
+    /// Whether this entry's pattern matches `tool` (same matcher as the
+    /// ADR-0148 agent mask).
+    pub fn matches(&self, tool: &str) -> bool {
+        glob_match(&self.pattern, tool)
+    }
+
+    /// The first entry matching `tool`, if any — the session-overlay lookup
+    /// both the advertisement filter and the runtime's mask/permission
+    /// overrides share.
+    pub fn find<'a>(entries: &'a [Self], tool: &str) -> Option<&'a Self> {
+        entries.iter().find(|e| e.matches(tool))
+    }
+}
+
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Agent profiles (opencode-style: system prompt + permission profile)
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1040,6 +1078,23 @@ pub enum InMsg {
         session: SessionId,
         overrides: GenerationParams,
     },
+    /// Replace this session's live **tool overlay** (#539, ADR-0149): the full
+    /// list of [`ToolOverlayEntry`] patterns whose matching tools exist for
+    /// this session *regardless* of the active profile's #116 mask — the
+    /// per-session injection a head uses to enable an MCP server/tool (or any
+    /// registered tool) without editing agent definitions. Full replacement,
+    /// not a merge (an empty list clears the overlay); the head computes the
+    /// new list from the previous [`OutEvent::ToolOverlayChanged`] it holds.
+    /// Always succeeds and always emits `ToolOverlayChanged` with the full
+    /// effective list (mirroring [`SetGeneration`][InMsg::SetGeneration]);
+    /// deferred while a turn is live (stash replay), like `SetAgent`.
+    /// **Trusted-only** (not wire-allowed), same rationale as
+    /// [`BashEnable`][InMsg::BashEnable]: it can hand the model tools with no
+    /// restart and — with `allow: true` — no approval prompt.
+    SetToolOverlay {
+        session: SessionId,
+        entries: Vec<ToolOverlayEntry>,
+    },
     /// Run a single out-of-band LLM op outside the turn loop (#324, ADR-0082).
     /// The generic surface is the **wire shape** — an opaque `op` string plus
     /// `args` — not a plugin registry: `session::ops::run_oneshot` matches on
@@ -1181,6 +1236,7 @@ impl InMsg {
             | InMsg::SetAgent { session, .. }
             | InMsg::SetModel { session, .. }
             | InMsg::SetGeneration { session, .. }
+            | InMsg::SetToolOverlay { session, .. }
             | InMsg::Oneshot { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => Some(session),
@@ -1221,6 +1277,9 @@ impl InMsg {
     ///   (#498, ADR-0133, same rationale as `McpAdd`/`McpRemove`): live-enabling
     ///   `bash` hands the model a full shell, optionally graded `Allow` with no
     ///   approval prompt at all — a wire frame must never grant that.
+    /// - [`SetToolOverlay`][InMsg::SetToolOverlay] (#539, ADR-0149, same
+    ///   rationale as `BashEnable`): injects tools past the agent mask,
+    ///   optionally graded `allow` with no approval prompt.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -1266,7 +1325,8 @@ impl InMsg {
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
             | InMsg::BashEnable { .. }
-            | InMsg::BashDisable => false,
+            | InMsg::BashDisable
+            | InMsg::SetToolOverlay { .. } => false,
         }
     }
 
@@ -1297,6 +1357,7 @@ impl InMsg {
             InMsg::SetAgent { .. } => "set_agent",
             InMsg::SetModel { .. } => "set_model",
             InMsg::SetGeneration { .. } => "set_generation",
+            InMsg::SetToolOverlay { .. } => "set_tool_overlay",
             InMsg::Oneshot { .. } => "oneshot",
             InMsg::Spawn { .. } => "spawn",
             InMsg::Resume { .. } => "resume",
@@ -1469,6 +1530,17 @@ pub enum OutEvent {
     GenerationChanged {
         session: SessionId,
         generation: GenerationParams,
+    },
+    /// The session's live tool overlay changed (point-in-time, no `seq`), in
+    /// reply to [`InMsg::SetToolOverlay`] (#539, ADR-0149). Carries the **full**
+    /// effective entry list — not a delta — so a head can render/track the
+    /// overlay directly and replay restores it by overwriting
+    /// [`Session::tool_overlay`][crate::session::Session] verbatim (the
+    /// `GenerationChanged` pattern). The runtime's tool executor also folds it
+    /// to honor the overlay at dispatch (mask + grade override).
+    ToolOverlayChanged {
+        session: SessionId,
+        entries: Vec<ToolOverlayEntry>,
     },
     /// The agent's strategy plan (markdown prose), full snapshot on every change.
     /// Emitted by the runtime when it resolves a `propose_plan` call (#513,
@@ -1737,6 +1809,7 @@ impl OutEvent {
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::ModelChanged { session, .. }
             | OutEvent::GenerationChanged { session, .. }
+            | OutEvent::ToolOverlayChanged { session, .. }
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }
             | OutEvent::ReasoningDelta { session, .. }
@@ -1788,7 +1861,8 @@ impl OutEvent {
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }
             | OutEvent::ModelChanged { .. }
-            | OutEvent::GenerationChanged { .. } => None,
+            | OutEvent::GenerationChanged { .. }
+            | OutEvent::ToolOverlayChanged { .. } => None,
             OutEvent::Plan { seq, .. }
             | OutEvent::TextDelta { seq, .. }
             | OutEvent::ReasoningDelta { seq, .. }
@@ -1874,6 +1948,14 @@ mod tests {
         }
         .wire_allowed());
         assert!(!InMsg::McpRemove { name: "srv".into() }.wire_allowed());
+        // The live tool overlay is trusted-only (#539, ADR-0149, the BashEnable
+        // rationale): it injects tools past the agent mask, optionally graded
+        // `allow` with no approval prompt — never wire-grantable.
+        assert!(!InMsg::SetToolOverlay {
+            session: s.clone(),
+            entries: vec![ToolOverlayEntry::ask("mcp__*")],
+        }
+        .wire_allowed());
         // Every head-authored frame stays acceptable off the wire.
         for msg in [
             InMsg::prompt(s.clone(), "hi"),

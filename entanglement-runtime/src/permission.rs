@@ -39,7 +39,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use entanglement_core::{AgentProfile, Permission, PermissionProfile, ProfileRegistry, SessionId};
+use entanglement_core::{
+    AgentProfile, Permission, PermissionProfile, ProfileRegistry, SessionId, ToolOverlayEntry,
+};
 
 use crate::subagent::SpawnGuard;
 
@@ -205,15 +207,27 @@ fn resolve_with_source(
 pub fn tool_masked(
     active: &HashMap<SessionId, AgentProfile>,
     guard: &SpawnGuard,
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     session: &SessionId,
     tool: &str,
 ) -> bool {
+    // A link admits `tool` if its profile advertises it **or** its own live
+    // tool overlay (#539, ADR-0149) matches it — the overlay beats the
+    // profile's allowlist *and* denylist for the session it was set on, and,
+    // because the check is per link, a parent's overlay also admits the tool
+    // for its spawn sub-tree (each descendant's own profile permitting).
+    let admits = |s: &SessionId, profile: &AgentProfile| {
+        profile.advertises_tool(tool)
+            || overlays
+                .get(s)
+                .is_some_and(|entries| ToolOverlayEntry::find(entries, tool).is_some())
+    };
     let mut current = session.clone();
     // A sponsored session is a permission root (ADR-0138): only its own (and
     // any sponsored ancestor's) advertised set masks it, not the chain above.
     if guard.is_sponsored(&current) {
         match active.get(&current) {
-            Some(profile) => return !profile.advertises_tool(tool),
+            Some(profile) => return !admits(&current, profile),
             // Unseen sponsored session ⇒ fail-closed (#156).
             None => return true,
         }
@@ -222,7 +236,7 @@ pub fn tool_masked(
     let mut visited = HashSet::new();
     while visited.insert(current.clone()) {
         match active.get(&current) {
-            Some(profile) if !profile.advertises_tool(tool) => return true,
+            Some(profile) if !admits(&current, profile) => return true,
             Some(_) => {}
             // Unseen session in the chain ⇒ fail-closed (#156).
             None => return true,
@@ -233,7 +247,7 @@ pub fn tool_masked(
                 // clamps this sub-tree) but stop the walk above it.
                 if guard.is_sponsored(&parent) {
                     match active.get(&parent) {
-                        Some(profile) if !profile.advertises_tool(tool) => return true,
+                        Some(profile) if !admits(&parent, profile) => return true,
                         // Unseen sponsored ancestor ⇒ fail-closed.
                         None => return true,
                         _ => {}
@@ -688,16 +702,34 @@ mod tests {
         let mut active = HashMap::new();
         active.insert(s.clone(), explore);
         let guard = SpawnGuard::new();
-        assert!(!tool_masked(&active, &guard, &s, "read"));
-        assert!(tool_masked(&active, &guard, &s, "edit"));
-        assert!(tool_masked(&active, &guard, &s, "agent_spawn"));
+        assert!(!tool_masked(&active, &guard, &HashMap::new(), &s, "read"));
+        assert!(tool_masked(&active, &guard, &HashMap::new(), &s, "edit"));
+        assert!(tool_masked(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &s,
+            "agent_spawn"
+        ));
         // An unseen session masks everything — fail-closed (#156). Even a tool a
         // seen profile would advertise (`read`) is refused until the session's
         // profile is known, so a dropped `SessionStarted` cannot un-mask a
         // restricted session under overload.
         let other = SessionId::new("other");
-        assert!(tool_masked(&active, &guard, &other, "edit"));
-        assert!(tool_masked(&active, &guard, &other, "read"));
+        assert!(tool_masked(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &other,
+            "edit"
+        ));
+        assert!(tool_masked(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &other,
+            "read"
+        ));
     }
 
     #[test]
@@ -785,11 +817,11 @@ mod tests {
         guard.record_start(c.clone(), Some(p.clone()));
 
         // `read` survives both → available on the child.
-        assert!(!tool_masked(&active, &guard, &c, "read"));
+        assert!(!tool_masked(&active, &guard, &HashMap::new(), &c, "read"));
         // `edit` is on the child alone but masked by the parent → refused.
-        assert!(tool_masked(&active, &guard, &c, "edit"));
+        assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
         // The parent (a root) keeps its own mask unchanged.
-        assert!(tool_masked(&active, &guard, &p, "edit"));
+        assert!(tool_masked(&active, &guard, &HashMap::new(), &p, "edit"));
     }
 
     #[test]
@@ -816,9 +848,15 @@ mod tests {
         let mut guard = SpawnGuard::new();
         guard.record_start(p.clone(), None);
         guard.record_start(c.clone(), Some(p.clone()));
-        assert!(!tool_masked(&active, &guard, &c, "mcp__docs__search"));
+        assert!(!tool_masked(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &c,
+            "mcp__docs__search"
+        ));
         // A non-matching tool is still clamped by the same ancestor.
-        assert!(tool_masked(&active, &guard, &c, "edit"));
+        assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
 
         // Without the glob the identical MCP call is masked by the ancestor.
         let plain_parent = masked_profile(
@@ -829,7 +867,93 @@ mod tests {
             Vec::new(),
         );
         active.insert(p.clone(), plain_parent);
-        assert!(tool_masked(&active, &guard, &c, "mcp__docs__search"));
+        assert!(tool_masked(
+            &active,
+            &guard,
+            &HashMap::new(),
+            &c,
+            "mcp__docs__search"
+        ));
+    }
+
+    #[test]
+    fn tool_overlay_admits_past_mask_per_link() {
+        // #539, ADR-0149: a session's live overlay beats its own profile's
+        // allowlist *and* denylist, and — because admission is per link — a
+        // parent's overlay admits the tool for an unmasked child too.
+        let restricted = masked_profile(
+            "restricted",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+            Some(vec!["read"]),
+            vec!["mcp__jira__*"],
+        );
+        let s = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(s.clone(), restricted);
+        let guard = SpawnGuard::new();
+        let mut overlays = HashMap::new();
+        overlays.insert(
+            s.clone(),
+            vec![
+                ToolOverlayEntry::ask("mcp__docs__*"),
+                ToolOverlayEntry::ask("mcp__jira__create"),
+            ],
+        );
+        // Not in the allowlist, admitted by the overlay.
+        assert!(!tool_masked(
+            &active,
+            &guard,
+            &overlays,
+            &s,
+            "mcp__docs__search"
+        ));
+        // Explicitly denylisted by the profile — the overlay still wins.
+        assert!(!tool_masked(
+            &active,
+            &guard,
+            &overlays,
+            &s,
+            "mcp__jira__create"
+        ));
+        // A non-matching tool stays masked.
+        assert!(tool_masked(&active, &guard, &overlays, &s, "edit"));
+
+        // Parent overlay admits down the chain for an unmasked child.
+        let child_profile = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+        );
+        let c = SessionId::new("c");
+        active.insert(c.clone(), child_profile);
+        let mut guard = SpawnGuard::new();
+        guard.record_start(s.clone(), None);
+        guard.record_start(c.clone(), Some(s.clone()));
+        assert!(!tool_masked(
+            &active,
+            &guard,
+            &overlays,
+            &c,
+            "mcp__docs__search"
+        ));
+        // A child with its own restrictive mask still refuses (no overlay on
+        // its own link).
+        let masked_child = masked_profile(
+            "leaf",
+            AgentMode::Subagent,
+            PermissionProfile::new(Permission::Allow),
+            Some(vec!["read"]),
+            Vec::new(),
+        );
+        active.insert(c.clone(), masked_child);
+        assert!(tool_masked(
+            &active,
+            &guard,
+            &overlays,
+            &c,
+            "mcp__docs__search"
+        ));
     }
 
     #[test]

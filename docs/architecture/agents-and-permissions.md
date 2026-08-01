@@ -497,7 +497,18 @@ below realize one model:
   Skill `allowed_tools` (#400), permission tool-name keys, and
   `spawnable_agents` deliberately stay exact; built-in `plan`/`explore` masks
   are unchanged (an MCP tool can be arbitrarily write-capable) — enabling MCP
-  for them is a user/project-layer override adding a pattern to `tools:`. **(a) Advertisement:** core's turn loop (`run_round`) filters both
+  for them is a user/project-layer override adding a pattern to `tools:`.
+  **A session-scoped escape hatch layers on top** (✅ #539,
+  [ADR-0149](../adr/0149-per-session-tool-overlay.md)): the live **tool
+  overlay** — `InMsg::SetToolOverlay` (trusted-only) replaces a per-session
+  list of `ToolOverlayEntry { pattern, allow }` whose matching tools exist
+  for that session past the profile's allowlist *and* denylist, surviving
+  `SetAgent` and replay. Core's advertisement filter ORs it with the mask;
+  `tool_masked` admits per chain link (a parent's overlay covers its spawn
+  sub-tree); the generic dispatch route replaces the chain's grade with the
+  entry's `Ask` (default)/`Allow`, still ceiling-clamped. The TUI drives it
+  via `/enable mcp <server>` / `/enable tool <name>` [`--allow`] and
+  `/disable`; see the protocol doc for the wire shape. **(a) Advertisement:** core's turn loop (`run_round`) filters both
   `EngineConfig.tool_specs` and the active profile's `profile_tool_specs` entry by
   the mask — a masked tool's schema never reaches the model. `propose_plan`/
   `update_tasks` are ordinary runtime state/orchestration tools now (✅ #231/#513,

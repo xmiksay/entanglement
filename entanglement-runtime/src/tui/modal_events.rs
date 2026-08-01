@@ -374,6 +374,16 @@ pub(super) async fn handle_command_palette_event(
                     // presses Enter, which routes through the typed path
                     // (`event_loop`'s Enter handler → `allow_command::send_allow`).
                     app.set_input_text("/allow ".to_string());
+                } else if cmd == crate::tui::commands::Command::Enable {
+                    // The palette carries no trailing args (#539), so a picked
+                    // `/enable` shows the overlay + available roster — the same
+                    // default a bare typed `/enable` falls back to.
+                    app.render_overlay_status();
+                } else if cmd == crate::tui::commands::Command::Disable {
+                    // A bare `/disable` clears the whole overlay — prefill the
+                    // input instead so a palette pick can't wipe it by accident
+                    // (the `/allow` "no sensible default" reasoning, #486).
+                    app.set_input_text("/disable ".to_string());
                 } else if cmd == crate::tui::commands::Command::Bash {
                     // The palette carries no trailing `on`/`off` args (#498), so
                     // a picked `/bash` always live-enables with the shared safe

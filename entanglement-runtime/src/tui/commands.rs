@@ -27,6 +27,8 @@ pub enum Command {
     Mcp,
     Allow,
     Bash,
+    Enable,
+    Disable,
 }
 
 impl Command {
@@ -50,6 +52,8 @@ impl Command {
             Command::Mcp => "mcp",
             Command::Allow => "allow",
             Command::Bash => "bash",
+            Command::Enable => "enable",
+            Command::Disable => "disable",
         }
     }
 
@@ -79,6 +83,12 @@ impl Command {
             Command::Bash => {
                 "Live-enable/disable bash (on [--allow [<pattern>]|--ask] | off)"
             }
+            Command::Enable => {
+                "Enable tools for this session past the agent mask (mcp <server> | tool <name> [--allow])"
+            }
+            Command::Disable => {
+                "Retract a /enable entry (mcp <server> | tool <name>; bare = clear all)"
+            }
         }
     }
 
@@ -107,6 +117,8 @@ pub fn all_commands() -> Vec<Command> {
         Command::Mcp,
         Command::Allow,
         Command::Bash,
+        Command::Enable,
+        Command::Disable,
     ]
 }
 

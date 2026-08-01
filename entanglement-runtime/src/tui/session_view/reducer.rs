@@ -116,6 +116,11 @@ impl SessionView {
             // Generation-parameter changes (#374) have no dedicated TUI surface
             // yet (#376 owns the `/set`/`/show` display) — no view state to fold.
             OutEvent::GenerationChanged { .. } => false,
+            // The live tool overlay (#539): the event loop renders the
+            // confirmation status line and tracks the per-session list on the
+            // `App` (for `/enable`/`/disable` to compute replacements) — no
+            // per-session view state to fold here.
+            OutEvent::ToolOverlayChanged { .. } => false,
             OutEvent::Plan {
                 seq, content, path, ..
             } => {

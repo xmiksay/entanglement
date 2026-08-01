@@ -450,6 +450,17 @@ pub(super) async fn handle_event(
                                                 .await;
                                                 return Ok(false);
                                             }
+                                            if cmd == crate::tui::commands::Command::Enable
+                                                || cmd == crate::tui::commands::Command::Disable
+                                            {
+                                                let enabling =
+                                                    cmd == crate::tui::commands::Command::Enable;
+                                                crate::tui::enable_command::send_enable(
+                                                    app, holly, &text, enabling,
+                                                )
+                                                .await;
+                                                return Ok(false);
+                                            }
                                             if app.execute_command(cmd) {
                                                 return Ok(true);
                                             }

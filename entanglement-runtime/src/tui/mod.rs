@@ -7,6 +7,7 @@ mod command_palette;
 mod commands;
 mod diff;
 mod editor;
+mod enable_command;
 mod event;
 mod event_loop;
 mod export;

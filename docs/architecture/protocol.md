@@ -23,6 +23,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
+         | SetToolOverlay{session,entries:[ToolOverlayEntry]}   // replace the session's live tool overlay — patterns that exist past the agent mask, graded Ask|Allow (#539, ADR-0149); full replacement, empty clears; trusted-only, wire-refused
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
@@ -51,6 +52,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
          | ModelChanged{session,provider,model,context_window?}   // point-in-time, no seq; reply to SetModel, or a SetAgent model pin (#218, ADR-0063; #323, ADR-0081)
          | GenerationChanged{session,generation:GenerationParams}   // point-in-time, no seq; full effective params, reply to SetGeneration (incl. "/show") or a SetAgent generation overlay (#374/#376, ADR-0094/0095)
+         | ToolOverlayChanged{session,entries:[ToolOverlayEntry]}   // point-in-time, no seq; full effective overlay, reply to SetToolOverlay; persisted + replay-folded by overwrite (#539, ADR-0149)
          | Plan{session,seq,content}          // markdown prose snapshot, runtime-emitted (#231)
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
@@ -128,7 +130,12 @@ the TUI `/mcp` path is unaffected since it sends over the privileged
 ([ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md), #498,
 same rationale as `McpAdd`/`McpRemove`: a blanket-`Allow` live-enable hands the
 model a full shell with no approval prompt, so a wire frame must never grant
-it — the TUI `/bash` command likewise sends over `Holly::send`). `wire_allowed`
+it — the TUI `/bash` command likewise sends over `Holly::send`), and
+`SetToolOverlay` (#539,
+[ADR-0149](../adr/0149-per-session-tool-overlay.md), the `BashEnable`
+rationale again: it injects tools past the agent mask, optionally graded
+`allow` with no approval prompt — the TUI `/enable`/`/disable` commands send
+over `Holly::send`). `wire_allowed`
 is an explicit exhaustive allowlist `match`
 (ADR-0124), so a new variant is wire-refused until deliberately opted in — a
 compile error to skip, mirroring `session()`/`variant_name()`. The executor
@@ -324,6 +331,27 @@ later `SetAgent` switch back to that profile re-applies it. Deferred (stashed)
 while a turn is live, like `SetAgent`/`SetModel`. See the engine doc for the
 `SetAgent`/session-start overlay precedence and the runtime doc for the
 per-profile persisted store.
+
+**Live tool overlay — `InMsg::SetToolOverlay`** (#539,
+[ADR-0149](../adr/0149-per-session-tool-overlay.md)).
+`SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow}]}` **replaces**
+the session's live tool overlay: `*`/`?` patterns (the ADR-0148 mask
+semantics) whose matching tools *exist* for this session regardless of the
+active profile's `tools:`/`disallowed_tools:` mask — the per-session
+MCP/tool enablement path (`mcp__chessbase__*` for a server, a literal name
+for one tool). Full replacement, not a merge (an empty list clears); like
+`SetGeneration` there is nothing to fail against, so it always succeeds and
+always emits `OutEvent::ToolOverlayChanged` with the full effective list —
+which is also what persistence logs and `Session::replay` folds back (by
+overwrite), so a resumed session keeps its overlay. Session-scoped by design:
+it survives `SetAgent` (overriding the profile is its point) and dies with
+the session. `allow: false` (default) grades matching calls `Ask`; `allow:
+true` grades them `Allow` — the grade replaces the profile chain's resolution
+on the runtime's generic dispatch route, still clamped by the config
+permission ceiling. Mask admission is per ancestor-chain link, so a parent's
+overlay also covers its spawn sub-tree. Trusted-only (wire-refused, the
+`BashEnable` rationale); the TUI drives it via `/enable`/`/disable`.
+Stash-deferred while a turn is live, like `SetAgent`/`SetModel`.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/0004-structured-plan-and-task-events.md)
 
