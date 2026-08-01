@@ -310,6 +310,19 @@ fn parse_retry_after_reads_delta_seconds() {
 }
 
 #[test]
+fn parse_retry_after_clamps_huge_value() {
+    // A hostile/misbehaving endpoint sending `Retry-After: u64::MAX` must not
+    // overflow `Instant + Duration` downstream (#548): the parsed value is
+    // clamped to a sane ceiling instead of passed through as-is.
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("Retry-After", u64::MAX.to_string().parse().unwrap());
+    let delay = parse_retry_after(&headers).expect("huge value still parses");
+    assert_eq!(delay, MAX_RETRY_AFTER);
+    // The whole point: this must not panic.
+    let _ = Instant::now() + delay;
+}
+
+#[test]
 fn truncate_on_boundary_keeps_short_bodies_whole() {
     let (shown, truncated) = truncate_on_boundary("hello", 8 * 1024);
     assert_eq!(shown, "hello");

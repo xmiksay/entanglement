@@ -101,6 +101,12 @@ const RATE_LIMIT_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
 /// giving up. A server-provided `Retry-After` overrides this cap (honored as-is).
 const RATE_LIMIT_MAX_BACKOFF: Duration = Duration::from_secs(600);
 
+/// Ceiling a parsed `Retry-After` header is clamped to (#548). Generous enough
+/// to honor any legitimate server-advised wait as-is, but bounded so a
+/// network-controlled huge delta-seconds value or far-future HTTP-date can
+/// never overflow the `Instant + Duration` arithmetic downstream.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Cap on establishing the TCP+TLS connection only — *not* the whole request.
 /// A long healthy LLM stream must be allowed to run past any fixed ceiling, so
 /// the old whole-request `.timeout(300s)` (which killed streams mid-turn and
@@ -739,16 +745,24 @@ fn is_transient_error(error: &reqwest::Error) -> bool {
     error.to_string().contains("incomplete")
 }
 
-/// Parse a `Retry-After` header (delta-seconds or an HTTP date) into a duration.
+/// Parse a `Retry-After` header (delta-seconds or an HTTP date) into a
+/// duration, clamped to [`MAX_RETRY_AFTER`]. A hostile or misbehaving
+/// endpoint/proxy can send an arbitrary huge delta-seconds value (e.g.
+/// `u64::MAX`) or a far-future HTTP-date; unclamped, that value later feeds
+/// `Instant::now() + delay`, which **panics** on overflow — taking down the
+/// session task silently, since nothing watches its `JoinHandle` (#548). This
+/// is the single choke point every caller (`send_with_retry`,
+/// [`extract_retry_after_from_response`]) goes through.
 fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let val = headers.get("Retry-After")?.to_str().ok()?;
-    if let Ok(seconds) = val.parse::<u64>() {
-        Some(Duration::from_secs(seconds))
+    let delay = if let Ok(seconds) = val.parse::<u64>() {
+        Duration::from_secs(seconds)
     } else if let Ok(datetime) = httpdate::parse_http_date(val) {
-        datetime.duration_since(std::time::SystemTime::now()).ok()
+        datetime.duration_since(std::time::SystemTime::now()).ok()?
     } else {
-        None
-    }
+        return None;
+    };
+    Some(delay.min(MAX_RETRY_AFTER))
 }
 
 /// Extract a `Retry-After` duration from a 429 response, for callers that want to
