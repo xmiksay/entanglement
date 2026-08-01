@@ -189,10 +189,10 @@ content, bounded, core never sees it) instead of ending the turn (#481). Enablin
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
-          | SetAgent | SetModel | SetGeneration | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
+          | SetAgent | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove
           | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged | ToolOverlayChanged
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | BashChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
@@ -554,6 +554,20 @@ re-document them here):
   of a startup-only snapshot. Enablement is process-wide (matching
   `SharedRegistry`'s own scope) and ephemeral — no `config.yml` persistence,
   unlike `Approve { scope: Always }`'s durable grants.
+- **Settable session display metadata** ([ADR-0151](../docs/adr/0151-settable-session-metadata.md)):
+  `InMsg::SetSessionMeta { session, name?, action? }` merges a display **name**
+  (session title) and/or the current **action** ("what the agent is doing
+  now") onto `Session.name`/`.action` — `None` leaves a field, `Some("")`
+  clears it — always acking with `OutEvent::SessionMetaChanged` (full merged
+  state, seq-less, persisted + replay-folded by overwrite). Applied
+  **immediately, never stashed** (the `ChildSpawned` path, not `SetGeneration`'s
+  stash gate) since `action` exists to change mid-turn. Wire-allowed
+  (cosmetic); **not** mirrored into `SessionInfo` (creation-only directory) —
+  heads fold it like `AgentChanged`, and `skutter sessions`/the resume modal
+  recover the name from the log scan. TUI: `/name <text>`; sidebar/modal
+  prefer name over short id and action over the first-prompt line. No LLM
+  auto-namer in-tree yet — an external namer is the intended `action`/`name`
+  writer.
 - **Single-shot session ops + persisted compaction** (#324,
   [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)):
   `InMsg::Oneshot { session, op: String, args: Value }` is a generic **wire

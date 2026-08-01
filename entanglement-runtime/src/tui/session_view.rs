@@ -227,6 +227,13 @@ pub struct SessionView {
     /// have none; the resume path replays `Prompt` records through
     /// `record_user_message`, so a restored view gets it for free.
     first_prompt: Option<String>,
+    /// Display name set via `SetSessionMeta` (folded from
+    /// `SessionMetaChanged`): the sidebar/modal title, preferred over the
+    /// short id when set.
+    name: Option<String>,
+    /// Current action ("what the agent is doing now"), same fold; the sidebar
+    /// description line prefers it over `first_prompt` when set.
+    action: Option<String>,
     parent: Option<SessionId>,
     /// Wall-clock (ms since epoch) the session started / ended, from
     /// `SessionStarted` / `SessionEnded`. Drives the live spawn-duration shown
@@ -272,6 +279,8 @@ impl SessionView {
             pending_tool_requests: VecDeque::new(),
             pending_questions: VecDeque::new(),
             first_prompt: None,
+            name: None,
+            action: None,
             parent: None,
             started_ms: None,
             ended_ms: None,
@@ -431,6 +440,16 @@ impl SessionView {
     /// The session's first-prompt snippet, if a user message was recorded.
     pub fn first_prompt(&self) -> Option<&str> {
         self.first_prompt.as_deref()
+    }
+
+    /// Display name set via `/name`/`SetSessionMeta`, if any.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Current action ("what the agent is doing now"), if set.
+    pub fn action(&self) -> Option<&str> {
+        self.action.as_deref()
     }
 
     /// The front of the question queue — the question currently prompted.

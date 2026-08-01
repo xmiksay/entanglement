@@ -100,6 +100,7 @@ fn children_of_finds_direct_children() {
             parent: None,
             root: true,
             first_prompt: None,
+            name: None,
         },
         SessionMeta {
             id: child1_id.clone(),
@@ -110,6 +111,7 @@ fn children_of_finds_direct_children() {
             parent: Some(root_id.clone()),
             root: false,
             first_prompt: None,
+            name: None,
         },
         SessionMeta {
             id: child2_id.clone(),
@@ -120,6 +122,7 @@ fn children_of_finds_direct_children() {
             parent: Some(root_id.clone()),
             root: false,
             first_prompt: None,
+            name: None,
         },
         SessionMeta {
             id: grandchild_id.clone(),
@@ -130,6 +133,7 @@ fn children_of_finds_direct_children() {
             parent: Some(child1_id.clone()),
             root: false,
             first_prompt: None,
+            name: None,
         },
     ];
 
@@ -159,6 +163,7 @@ fn root_of_walks_up_parent_chain() {
             parent: None,
             root: true,
             first_prompt: None,
+            name: None,
         },
         SessionMeta {
             id: child1_id.clone(),
@@ -169,6 +174,7 @@ fn root_of_walks_up_parent_chain() {
             parent: Some(root_id.clone()),
             root: false,
             first_prompt: None,
+            name: None,
         },
         SessionMeta {
             id: child2_id.clone(),
@@ -179,6 +185,7 @@ fn root_of_walks_up_parent_chain() {
             parent: Some(child1_id.clone()),
             root: false,
             first_prompt: None,
+            name: None,
         },
     ];
 
@@ -200,6 +207,7 @@ fn root_of_returns_self_for_orphan_session() {
         parent: None,
         root: true,
         first_prompt: None,
+        name: None,
     }];
 
     assert_eq!(root_of(&sessions, &orphan_id), orphan_id);

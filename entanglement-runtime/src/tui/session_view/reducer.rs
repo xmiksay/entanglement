@@ -121,6 +121,14 @@ impl SessionView {
             // `App` (for `/enable`/`/disable` to compute replacements) — no
             // per-session view state to fold here.
             OutEvent::ToolOverlayChanged { .. } => false,
+            // Display metadata: the ack carries full merged state — overwrite
+            // both fields (the resume path replays these records through this
+            // same fold, so a restored view keeps its name/action for free).
+            OutEvent::SessionMetaChanged { name, action, .. } => {
+                self.name = name;
+                self.action = action;
+                true
+            }
             OutEvent::Plan {
                 seq, content, path, ..
             } => {

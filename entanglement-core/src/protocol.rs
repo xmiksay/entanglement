@@ -1110,6 +1110,22 @@ pub enum InMsg {
         session: SessionId,
         overrides: GenerationParams,
     },
+    /// Set this session's display **metadata**: a human-readable `name`
+    /// (a title, e.g. derived from the first prompt) and/or the current
+    /// `action` (what the agent is doing right now). A `None` field leaves the
+    /// stored value untouched; `Some("")` clears it. Unlike
+    /// [`SetGeneration`][InMsg::SetGeneration] it is applied **immediately,
+    /// never stashed behind a live turn** — `action`'s whole purpose is to
+    /// change mid-turn — and it always acks with
+    /// [`OutEvent::SessionMetaChanged`] carrying the full merged values.
+    /// Wire-allowed: cosmetic, session-scoped, no privilege.
+    SetSessionMeta {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+    },
     /// Replace this session's live **tool overlay** (#539, ADR-0149): the full
     /// list of [`ToolOverlayEntry`] patterns whose matching tools exist for
     /// this session *regardless* of the active profile's #116 mask — the
@@ -1268,6 +1284,7 @@ impl InMsg {
             | InMsg::SetAgent { session, .. }
             | InMsg::SetModel { session, .. }
             | InMsg::SetGeneration { session, .. }
+            | InMsg::SetSessionMeta { session, .. }
             | InMsg::SetToolOverlay { session, .. }
             | InMsg::Oneshot { session, .. }
             | InMsg::Spawn { session, .. }
@@ -1349,6 +1366,7 @@ impl InMsg {
             | InMsg::SetAgent { .. }
             | InMsg::SetModel { .. }
             | InMsg::SetGeneration { .. }
+            | InMsg::SetSessionMeta { .. }
             | InMsg::Oneshot { .. } => true,
             InMsg::ToolResult { .. }
             | InMsg::Spawn { .. }
@@ -1389,6 +1407,7 @@ impl InMsg {
             InMsg::SetAgent { .. } => "set_agent",
             InMsg::SetModel { .. } => "set_model",
             InMsg::SetGeneration { .. } => "set_generation",
+            InMsg::SetSessionMeta { .. } => "set_session_meta",
             InMsg::SetToolOverlay { .. } => "set_tool_overlay",
             InMsg::Oneshot { .. } => "oneshot",
             InMsg::Spawn { .. } => "spawn",
@@ -1573,6 +1592,21 @@ pub enum OutEvent {
     ToolOverlayChanged {
         session: SessionId,
         entries: Vec<ToolOverlayEntry>,
+    },
+    /// Ack to [`InMsg::SetSessionMeta`] carrying the session's full merged
+    /// display metadata (both fields as stored, not just the ones the set
+    /// touched). Lifecycle-shaped like
+    /// [`GenerationChanged`][OutEvent::GenerationChanged]: seq-less, persisted,
+    /// folded on replay by overwrite (last write wins). Heads fold it into
+    /// their session views (the `AgentChanged` pattern) — it is deliberately
+    /// **not** mirrored into [`SessionInfo`]/[`SessionList`][OutEvent::SessionList],
+    /// whose supervisor directory records creation-time facts only.
+    SessionMetaChanged {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
     },
     /// The agent's strategy plan (markdown prose), full snapshot on every change.
     /// Emitted by the runtime when it resolves a `propose_plan` call (#513,
@@ -1841,6 +1875,7 @@ impl OutEvent {
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::ModelChanged { session, .. }
             | OutEvent::GenerationChanged { session, .. }
+            | OutEvent::SessionMetaChanged { session, .. }
             | OutEvent::ToolOverlayChanged { session, .. }
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }
@@ -1873,7 +1908,7 @@ impl OutEvent {
     /// `None` for a point-in-time lifecycle/query event that carries no `seq`
     /// (`SessionStarted`, `SessionEnded`, `SessionList`, `QuestionList`,
     /// `History`, `Status`, `AgentChanged`, `ModelChanged`,
-    /// `GenerationChanged`). Returning `Option`
+    /// `GenerationChanged`, `SessionMetaChanged`). Returning `Option`
     /// instead of a fake `0`
     /// (#160, ADR-0072) lets a head tell "seq 0" apart from "no seq" — the
     /// supervisor-shed `Error` sentinel (seq `0`) is a real `Some(0)`, distinct
@@ -1894,6 +1929,7 @@ impl OutEvent {
             | OutEvent::AgentChanged { .. }
             | OutEvent::ModelChanged { .. }
             | OutEvent::GenerationChanged { .. }
+            | OutEvent::SessionMetaChanged { .. }
             | OutEvent::ToolOverlayChanged { .. } => None,
             OutEvent::Plan { seq, .. }
             | OutEvent::TextDelta { seq, .. }
@@ -2026,6 +2062,11 @@ mod tests {
             InMsg::SetGeneration {
                 session: s.clone(),
                 overrides: entanglement_provider::GenerationParams::default(),
+            },
+            InMsg::SetSessionMeta {
+                session: s.clone(),
+                name: Some("my session".into()),
+                action: None,
             },
             InMsg::Oneshot {
                 session: s.clone(),

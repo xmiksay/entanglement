@@ -32,6 +32,7 @@ pub enum Command {
     Pause,
     Continue,
     Stop,
+    Name,
 }
 
 impl Command {
@@ -60,6 +61,7 @@ impl Command {
             Command::Pause => "pause",
             Command::Continue => "continue",
             Command::Stop => "stop",
+            Command::Name => "name",
         }
     }
 
@@ -104,6 +106,7 @@ impl Command {
             Command::Stop => {
                 "Stop/cancel the current session's in-flight turn (--all for every live session)"
             }
+            Command::Name => "Set a display name for the current session",
         }
     }
 
@@ -137,6 +140,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Pause,
         Command::Continue,
         Command::Stop,
+        Command::Name,
     ]
 }
 
@@ -254,6 +258,14 @@ pub fn parse_all_flag(text: &str, cmd: Command) -> Result<bool, String> {
         }
     }
     Ok(all)
+}
+
+/// Parse `/name <text>`'s trailing free text (the raw-text re-parse pattern,
+/// like [`parse_compact_args`] — [`parse_command`] drops everything after the
+/// command name). `None` when no text follows (the caller renders usage).
+pub fn parse_name_args(text: &str) -> Option<String> {
+    let rest = text.trim().strip_prefix("/name").unwrap_or("").trim();
+    (!rest.is_empty()).then(|| rest.to_string())
 }
 
 pub fn parse_command(input: &str) -> Option<Command> {
@@ -486,6 +498,17 @@ mod tests {
         assert!(filter_commands("stop")
             .iter()
             .any(|c| matches!(c, Command::Stop)));
+    }
+
+    #[test]
+    fn parse_name_command_and_args() {
+        assert_eq!(parse_command("/name my session"), Some(Command::Name));
+        assert_eq!(
+            parse_name_args("/name my session"),
+            Some("my session".to_string())
+        );
+        assert_eq!(parse_name_args("/name   "), None, "bare /name → usage");
+        assert_eq!(parse_name_args("/name"), None);
     }
 
     #[test]

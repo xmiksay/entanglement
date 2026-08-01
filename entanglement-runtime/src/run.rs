@@ -147,6 +147,12 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::GenerationChanged { generation, .. } => {
             writeln!(out, "# generation: {generation:?}")?
         }
+        OutEvent::SessionMetaChanged { name, action, .. } => writeln!(
+            out,
+            "# session: name={} action={}",
+            name.as_deref().unwrap_or("-"),
+            action.as_deref().unwrap_or("-")
+        )?,
         // Live tool overlay (#539): render the effective pattern list so a
         // one-shot run driven by an embedder shows what was injected.
         OutEvent::ToolOverlayChanged { entries, .. } => {

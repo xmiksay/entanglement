@@ -55,9 +55,14 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
             let indent = "  ".repeat(depth);
             let marker = if *id == active { "▸ " } else { "  " };
             let color = app.profile_color_for(view.agent());
+            // A set display name beats the short id as the row title (#name).
+            let title = view
+                .name()
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::tui::format::short_id(id));
             let mut spans = vec![
                 Span::raw(format!("{}{}", indent, marker)),
-                Span::styled(crate::tui::format::short_id(id), Style::default().bold()),
+                Span::styled(title, Style::default().bold()),
                 Span::raw(" "),
                 Span::styled("[", Style::default().dim()),
                 Span::styled(view.agent().to_string(), Style::default().fg(color).bold()),
@@ -78,9 +83,9 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
                     Style::default().fg(Color::Cyan),
                 ));
             }
-            // First-prompt snippet as an inline description, dimmed (#327's
-            // resume-list idiom, now for live sessions too).
-            if let Some(desc) = view.first_prompt() {
+            // Inline description, dimmed (#327's resume-list idiom): the live
+            // action when set, else the first-prompt snippet.
+            if let Some(desc) = view.action().or_else(|| view.first_prompt()) {
                 spans.push(Span::styled(format!("  {desc}"), Style::default().dim()));
             }
             // Sub-agents (depth > 0) show their spawn duration: live while
@@ -186,8 +191,10 @@ pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
                 Span::styled("]", Style::default().dim()),
                 Span::raw(format!(" {}", model_string)),
             ];
-            // First-prompt snippet after id/agent/model, dimmed (#327).
-            if let Some(snippet) = meta.first_prompt.as_deref() {
+            // Description after id/agent/model, dimmed (#327): a set display
+            // name (from the log's `SessionMetaChanged` records) beats the
+            // derived first-prompt snippet.
+            if let Some(snippet) = meta.name.as_deref().or(meta.first_prompt.as_deref()) {
                 spans.push(Span::styled(
                     format!("  {}", snippet),
                     Style::default().dim(),
@@ -230,6 +237,7 @@ mod tests {
             parent: None,
             root: true,
             first_prompt: Some("fix the login bug".to_string()),
+            name: None,
         }]);
 
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();

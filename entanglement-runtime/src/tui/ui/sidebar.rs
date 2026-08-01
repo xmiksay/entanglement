@@ -82,10 +82,17 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
         let agent_color = app.profile_color_for(&agent);
         let prefix = if is_active { "* " } else { "  " };
         let indent = "  ".repeat(depth);
+        // A set display name (`/name`/`SetSessionMeta`) beats the short id as
+        // the row title; the description line prefers the live `action` over
+        // the static first-prompt snippet.
+        let title = view
+            .name()
+            .map(str::to_string)
+            .unwrap_or_else(|| short_id(id));
         let mut spans = vec![
             Span::raw(format!("{prefix}{indent}")),
             Span::styled(
-                short_id(id),
+                title,
                 if is_active {
                     Style::default().bold()
                 } else {
@@ -109,8 +116,9 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
         lines.push(fit_line(line, inner_width));
         row_map.push(Some(id.clone()));
 
-        // One dim description line under the row: the session's first prompt.
-        if let Some(desc) = view.first_prompt() {
+        // One dim description line under the row: the current action when set,
+        // else the session's first prompt.
+        if let Some(desc) = view.action().or_else(|| view.first_prompt()) {
             let text = crate::tui::wrap::truncate(&format!("  {indent}  {desc}"), inner_width);
             lines.push(Line::from(Span::styled(text, Style::default().dim())));
             row_map.push(Some(id.clone()));
@@ -370,6 +378,33 @@ mod tests {
         assert!(
             lines[row_of("child-on")].starts_with("│    "),
             "child row is indented past the root rows: {text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_prefers_name_and_action_over_short_id_and_first_prompt() {
+        let sid = SessionId::new("a1b2c3d4-e5f6-7890-abcd-ef0123456789");
+        let mut app = App::new_for_test(sid.clone());
+        app.record_user_message("fix the login bug in the auth module".to_string());
+        app.handle_out_event(OutEvent::SessionMetaChanged {
+            session: sid.clone(),
+            name: Some("login fix".to_string()),
+            action: Some("running tests".to_string()),
+        });
+
+        let text = render_sidebar(&mut app, 44, 12);
+        assert!(text.contains("login fix"), "name is the title: {text}");
+        assert!(
+            !text.contains("a1b2c3d4"),
+            "short id replaced by the name: {text}"
+        );
+        assert!(
+            text.contains("running tests"),
+            "action is the description: {text}"
+        );
+        assert!(
+            !text.contains("fix the login bug"),
+            "action beats first_prompt: {text}"
         );
     }
 

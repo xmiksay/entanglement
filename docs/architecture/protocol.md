@@ -23,6 +23,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
+         | SetSessionMeta{session,name?,action?}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151)
          | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow), deny entries withdraw even profile-advertised tools (#539, ADR-0149); full replacement, empty clears; trusted-only, wire-refused
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110)
@@ -52,6 +53,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
          | ModelChanged{session,provider,model,context_window?}   // point-in-time, no seq; reply to SetModel, or a SetAgent model pin (#218, ADR-0063; #323, ADR-0081)
          | GenerationChanged{session,generation:GenerationParams}   // point-in-time, no seq; full effective params, reply to SetGeneration (incl. "/show") or a SetAgent generation overlay (#374/#376, ADR-0094/0095)
+         | SessionMetaChanged{session,name?,action?}   // point-in-time, no seq; full merged display metadata, reply to SetSessionMeta; persisted + replay-folded by overwrite, head-folded — not mirrored into SessionInfo (ADR-0151)
          | ToolOverlayChanged{session,entries:[ToolOverlayEntry]}   // point-in-time, no seq; full effective overlay, reply to SetToolOverlay; persisted + replay-folded by overwrite (#539, ADR-0149)
          | Plan{session,seq,content}          // markdown prose snapshot, runtime-emitted (#231)
          | TextDelta{session,seq,text}
@@ -331,6 +333,32 @@ later `SetAgent` switch back to that profile re-applies it. Deferred (stashed)
 while a turn is live, like `SetAgent`/`SetModel`. See the engine doc for the
 `SetAgent`/session-start overlay precedence and the runtime doc for the
 per-profile persisted store.
+
+**Settable session display metadata — `InMsg::SetSessionMeta`**
+([ADR-0151](../adr/0151-settable-session-metadata.md)).
+`SetSessionMeta{session,name?,action?}` merges a human-readable display
+`name` (a session title, e.g. derived from the first prompt by an external
+namer) and/or the current `action` ("what the agent is doing now") onto
+`Session.name`/`Session.action` — a `None` field leaves the stored value
+untouched, `Some("")` clears it. Pure metadata: nothing in the engine reads
+it. Unlike `SetGeneration` it is applied **immediately, never stashed** (the
+`ChildSpawned` pattern) — `action`'s whole purpose is to change mid-turn, so
+a set while the turn is parked on tool calls acks right away; a mid-*stream*
+arrival still rides the generic stash like every command, since the session
+task is single-threaded. Always acks with
+`OutEvent::SessionMetaChanged{session,name?,action?}` carrying the **full
+merged** values (both fields, not just the touched ones) — persisted and
+replay-folded by overwrite (last write wins), like `GenerationChanged`.
+Wire-allowed (cosmetic, session-scoped, no privilege). Heads fold it into
+their session views (the `AgentChanged` pattern); it is deliberately **not**
+mirrored into `SessionInfo`/`SessionList`, whose supervisor directory records
+creation-time facts only. The TUI's `/name <text>` sets `name` for the active
+session (the sidebar title updating is the confirmation) and prefers `name`
+over the short id and `action` over the first-prompt snippet in the sidebar
+and sessions modal; `skutter sessions` and the resume modal recover the name
+from the log's last `SessionMetaChanged` record. `action` has no in-tree
+producer yet — the intended consumer is an external namer/status writer
+sending the wire message.
 
 **Live tool overlay — `InMsg::SetToolOverlay`** (#539,
 [ADR-0149](../adr/0149-per-session-tool-overlay.md)).

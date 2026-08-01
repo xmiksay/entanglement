@@ -493,6 +493,10 @@ pub(super) async fn handle_event(
                                                 .await;
                                                 return Ok(false);
                                             }
+                                            if cmd == crate::tui::commands::Command::Name {
+                                                send_name(app, holly, &text).await;
+                                                return Ok(false);
+                                            }
                                             // Lifecycle commands (#6): `/stop`,
                                             // `/pause`, `/continue` need `holly`
                                             // and the optional `--all` text.
@@ -685,6 +689,25 @@ async fn send_show(app: &App, holly: &Holly) {
         .send(InMsg::SetGeneration {
             session: app.active_session_id().clone(),
             overrides: entanglement_core::GenerationParams::default(),
+        })
+        .await;
+}
+
+/// Send `/name <text>` as an [`InMsg::SetSessionMeta`] naming the active
+/// session (same raw-text re-parse pattern as [`send_compact`]). The
+/// confirming `SessionMetaChanged` folds into the session view, so the sidebar
+/// title updating *is* the confirmation — no status line. Bare `/name`
+/// renders a one-line usage toast instead; no engine traffic.
+async fn send_name(app: &mut App, holly: &Holly, text: &str) {
+    let Some(name) = crate::tui::commands::parse_name_args(text) else {
+        app.set_toast("usage: /name <text>".to_string());
+        return;
+    };
+    let _ = holly
+        .send(InMsg::SetSessionMeta {
+            session: app.active_session_id().clone(),
+            name: Some(name),
+            action: None,
         })
         .await;
 }

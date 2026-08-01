@@ -66,6 +66,12 @@ pub(crate) enum SessionCmd {
     /// Live-adjust generation knobs (#374, ADR-0094): partial overrides merged
     /// onto `Session::generation` via `GenerationParams::apply_overrides`.
     SetGeneration(entanglement_provider::GenerationParams),
+    /// Set display metadata (`name`, `action`): `None` leaves a field
+    /// untouched, `Some("")` clears it. Applied immediately — never stashed —
+    /// like [`ChildSpawned`][SessionCmd::ChildSpawned], since `action` exists
+    /// precisely to change mid-turn. Always acks with
+    /// [`OutEvent::SessionMetaChanged`] carrying the full merged values.
+    SetSessionMeta(Option<String>, Option<String>),
     /// Replace the session's live tool overlay (#539, ADR-0149): the full
     /// [`ToolOverlayEntry`] list whose matching tools exist for this session
     /// regardless of the profile mask. Always succeeds and emits
@@ -460,6 +466,25 @@ pub(crate) async fn session_loop(
                 let _ = events.send(OutEvent::GenerationChanged {
                     session: session.clone(),
                     generation: merged,
+                });
+            }
+            // Display metadata (name/action): applied immediately even
+            // mid-turn — the `ChildSpawned` pattern, not the stash gate —
+            // since `action` ("what the agent is doing now") is only useful if
+            // it can change while a turn runs. Pure state + ack, no engine
+            // behavior reads it.
+            Some(SessionCmd::SetSessionMeta(name, action)) => {
+                // `None` leaves a field untouched; `Some("")` clears it.
+                if let Some(name) = name {
+                    s.name = (!name.is_empty()).then_some(name);
+                }
+                if let Some(action) = action {
+                    s.action = (!action.is_empty()).then_some(action);
+                }
+                let _ = events.send(OutEvent::SessionMetaChanged {
+                    session: session.clone(),
+                    name: s.name.clone(),
+                    action: s.action.clone(),
                 });
             }
             // Live tool-overlay replacement (#539, ADR-0149): like

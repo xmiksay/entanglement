@@ -1494,7 +1494,12 @@ fn print_sessions(cwd: &std::path::Path) -> Result<()> {
     );
     for s in &sessions {
         let model = s.model.as_deref().unwrap_or("default");
-        let description = s.first_prompt.as_deref().unwrap_or("");
+        // A set display name beats the derived first-prompt snippet.
+        let description = s
+            .name
+            .as_deref()
+            .or(s.first_prompt.as_deref())
+            .unwrap_or("");
         println!(
             "{:<28}  {:<10}  {:<16}  {:<14}  {}",
             s.id.0,

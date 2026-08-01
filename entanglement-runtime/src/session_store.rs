@@ -155,6 +155,10 @@ pub struct SessionMeta {
     /// (#327). `None` when the log carries no `Prompt` (e.g. a session that only
     /// ever received tool results). See [`first_prompt_snippet`].
     pub first_prompt: Option<String>,
+    /// Display name set via `SetSessionMeta`, from the log's last
+    /// `SessionMetaChanged` record (last write wins — unlike `first_prompt`'s
+    /// first-write scan). Preferred over `first_prompt` in listings when set.
+    pub name: Option<String>,
 }
 
 /// Maximum length (in chars) of a [`SessionMeta::first_prompt`] snippet before
@@ -368,6 +372,7 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
         // snippet in the same pass — no extra I/O (#327).
         let mut started: Option<SessionMeta> = None;
         let mut first_prompt: Option<String> = None;
+        let mut name: Option<String> = None;
         for r in &records {
             match &r.payload {
                 LogPayload::Out(OutEvent::SessionStarted {
@@ -387,6 +392,7 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
                         parent: parent.clone(),
                         root: *root,
                         first_prompt: None,
+                        name: None,
                     });
                 }
                 LogPayload::In(InMsg::Prompt { content, .. }) if first_prompt.is_none() => {
@@ -394,6 +400,17 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
                     if !text.trim().is_empty() {
                         first_prompt = Some(first_prompt_snippet(&text));
                     }
+                }
+                // Last write wins (do NOT copy first_prompt's first-write
+                // guard): the record carries full merged state. A root log
+                // interleaves spawned children's records, so only the root's
+                // own metadata names this file's row.
+                LogPayload::Out(OutEvent::SessionMetaChanged {
+                    session,
+                    name: new_name,
+                    ..
+                }) if *session == session_id => {
+                    name = new_name.clone();
                 }
                 _ => {}
             }
@@ -408,8 +425,10 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
             parent: None,
             root: true,
             first_prompt: None,
+            name: None,
         });
         meta.first_prompt = first_prompt;
+        meta.name = name;
 
         sessions.push(meta);
     }
@@ -541,5 +560,7 @@ pub fn root_of(sessions: &[SessionMeta], session_id: &SessionId) -> SessionId {
 mod tests_delete_prune;
 #[cfg(test)]
 mod tests_log;
+#[cfg(test)]
+mod tests_meta;
 #[cfg(test)]
 mod tests_sessions;

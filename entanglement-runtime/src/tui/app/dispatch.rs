@@ -84,6 +84,9 @@ impl App {
             // handler and the command palette) intercept them before reaching
             // this dispatch, exactly like `Compact`/`Set`/`Mcp` above.
             Command::Stop | Command::Pause | Command::Continue => false,
+            // Same shape again: `/name <text>` needs `holly` plus the trailing
+            // text — both call sites intercept it before reaching this dispatch.
+            Command::Name => false,
         }
     }
 

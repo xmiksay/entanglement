@@ -759,3 +759,26 @@ fn auto_compacted_renders_an_in_place_notice() {
     assert!(!notice.contains("forked"), "auto-compaction never forks");
     assert!(notice.contains("context overflowed, summarized in place"));
 }
+
+#[test]
+fn session_meta_changed_folds_name_and_action() {
+    let mut v = SessionView::new();
+    assert_eq!(v.name(), None);
+    assert_eq!(v.action(), None);
+
+    assert!(v.apply_event(OutEvent::SessionMetaChanged {
+        session: sid(),
+        name: Some("fix login".to_string()),
+        action: Some("running tests".to_string()),
+    }));
+    assert_eq!(v.name(), Some("fix login"));
+    assert_eq!(v.action(), Some("running tests"));
+
+    // The ack carries full merged state — overwrite, including back to None.
+    assert!(v.apply_event(OutEvent::SessionMetaChanged {
+        session: sid(),
+        name: Some("fix login".to_string()),
+        action: None,
+    }));
+    assert_eq!(v.action(), None);
+}

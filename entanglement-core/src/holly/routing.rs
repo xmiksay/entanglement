@@ -139,6 +139,7 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
             provider, model, ..
         } => SessionCmd::SetModel(provider, model),
         InMsg::SetGeneration { overrides, .. } => SessionCmd::SetGeneration(overrides),
+        InMsg::SetSessionMeta { name, action, .. } => SessionCmd::SetSessionMeta(name, action),
         InMsg::SetToolOverlay { entries, .. } => SessionCmd::SetToolOverlay(entries),
         InMsg::Oneshot { op, args, .. } => SessionCmd::Oneshot(op, args),
         // Approve/Reject/AnswerQuestion and the ListSessions/ReplayFrom/

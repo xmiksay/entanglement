@@ -11,31 +11,6 @@ use crate::protocol::{InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
 use entanglement_provider::{ContentPart, Message, ToolCall};
 
-/// Flush the accumulated partial assistant round — text, persisted search
-/// blocks (#481), tool calls — into `session.ctx` as one message, mirroring
-/// the live commit in `session/round.rs`. A no-op when nothing is pending.
-/// Clears all three accumulators on flush.
-fn flush_pending_assistant(
-    session: &mut Session,
-    pending_text: &mut String,
-    pending_tools: &mut Vec<ToolCall>,
-    pending_search: &mut Vec<ContentPart>,
-) {
-    if pending_text.is_empty() && pending_tools.is_empty() && pending_search.is_empty() {
-        return;
-    }
-    let mut content: Vec<ContentPart> = Vec::new();
-    if !pending_text.is_empty() {
-        content.push(ContentPart::text(pending_text.clone()));
-    }
-    content.append(pending_search);
-    session
-        .ctx
-        .push(Message::assistant_content(content, pending_tools.clone()));
-    pending_text.clear();
-    pending_tools.clear();
-}
-
 impl Session {
     /// Resume a session from replayed log records.
     ///
@@ -125,8 +100,7 @@ impl Session {
             max_seq = max_seq.max(out_event.seq().unwrap_or(0));
 
             if let Some(InMsg::Prompt { content, .. }) = in_msg {
-                flush_pending_assistant(
-                    &mut session,
+                session.flush_pending_assistant(
                     &mut pending_text,
                     &mut pending_tools,
                     &mut pending_search,
@@ -260,13 +234,18 @@ impl Session {
                 OutEvent::ToolOverlayChanged { entries, .. } => {
                     session.tool_overlay = entries.clone();
                 }
+                // Display metadata: the logged values are the full merged
+                // state, so replay overwrites — last write wins.
+                OutEvent::SessionMetaChanged { name, action, .. } => {
+                    session.name = name.clone();
+                    session.action = action.clone();
+                }
                 // `Plan`/`TaskList` are the runtime's display state now (#231,
                 // ADR-0049): they carry nothing the engine's `Context` needs, so
                 // replay ignores them. A resuming head folds them from the log
                 // itself to restore its plan/task panels.
                 OutEvent::Done { .. } => {
-                    flush_pending_assistant(
-                        &mut session,
+                    session.flush_pending_assistant(
                         &mut pending_text,
                         &mut pending_tools,
                         &mut pending_search,
@@ -303,8 +282,7 @@ impl Session {
                     kept,
                     ..
                 } => {
-                    flush_pending_assistant(
-                        &mut session,
+                    session.flush_pending_assistant(
                         &mut pending_text,
                         &mut pending_tools,
                         &mut pending_search,
@@ -326,8 +304,7 @@ impl Session {
                 // then push the nudge — so a resumed session's history matches
                 // what the live model saw, instead of merging both rounds' text.
                 OutEvent::AmbiguousRetry { nudge, .. } => {
-                    flush_pending_assistant(
-                        &mut session,
+                    session.flush_pending_assistant(
                         &mut pending_text,
                         &mut pending_tools,
                         &mut pending_search,
