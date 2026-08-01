@@ -15,6 +15,8 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | ToolResult{session,request_id,content:[ContentPart]}   // runtime → core: tool ran (#58)
          //   content: text, or an image block when `read` opens an image (#221); legacy `output:"…"` still deserializes
          | AnswerQuestion{session,request_id,answers:[[string]],answer?}  // ask_user answer(s) → runtime (#90, #488); answers = one inner vec per question; legacy answer:"…" still deserializes, folds to [[answer]] in seam::Decision::from_inmsg
+         | RetractQuestion{session,request_id}   // withdraw an open ask_user question without cancelling the turn (#515, ADR-0146) — the orchestrator still replies (withdrawal note), unlike Stop's silent unwind
+         | ReplaceQuestion{session,request_id,questions:[Question]}   // swap an open ask_user question's content in place; re-parks under the same request_id, not terminal (#515, ADR-0146)
          | Stop{session}
          | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0145)
          | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0145)
@@ -24,6 +26,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
+         | ListQuestions{correlation_id,session?}   // supervisor-global query; every open ask_user question, or one session's when session is set → QuestionList reply (#515, ADR-0146)
          | McpList{correlation_id}   // supervisor-global query; live MCP servers → McpList reply (#375)
          | McpAdd{name,config:McpServerSpec}   // hot-connect + persist to config.yml → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | McpRemove{name}   // hot-disconnect + persist removal → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
@@ -38,6 +41,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | SessionEnded{session,ts}           // lifecycle, no seq
          | SessionHibernated{session,ts}      // lifecycle, no seq; memory evicted, id NOT tombstoned (#318, ADR-0077)
          | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072)
+         | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
          | BashChanged{enabled,grade?}   // bash/bash_output live-registered/unregistered, no seq; reply to BashEnable/BashDisable (#498, ADR-0133)
@@ -77,6 +81,31 @@ batch several questions into one call, a typed "Other" answer is unconditional
 (no flag to opt into it), and `multi_select` lets a question accept more than
 one picked option — `answers` carries one inner vec per question, in call
 order.
+
+**List/retract/replace an open question** (#515,
+[ADR-0146](../adr/0146-ask-user-list-retract-replace.md)). `RetractQuestion`/
+`ReplaceQuestion` join `AnswerQuestion` at the same supervisor bypass and the
+same runtime consumer (`seam::Decision::from_inmsg` maps all three off the
+inbound fan-out) — both carry a mandatory `session` but are core-oblivious
+exactly like `AnswerQuestion`, never routed to a session task. Retract
+withdraws the parked question *without* cancelling the rest of the turn: the
+`ask_user` orchestrator still owes the model a `ToolResult`, so it replies
+with an explicit withdrawal note instead of `Stop`'s silent unwind (sound
+there only because the whole turn is being cancelled anyway). Replace is
+**not terminal** — `run_ask_user` loops: a replace re-emits `UserQuestion`
+with the revised `questions` under the *same* `request_id` and re-parks,
+resolved only by the eventual answer or retract, so core never sees a second
+round-trip for what is, from its perspective, one unchanged tool call.
+`ListQuestions{correlation_id,session?}` mirrors `ListSessions`/`McpList`: a
+session-less snapshot query (`session()` is `None` for it — the optional
+`session` field is a result *filter*, not a routing target) answered by a
+runtime-owned `OpenQuestions` registry (`entanglement-runtime/src/questions.rs`)
+that `ask_user` keeps in sync with `PendingDecisions`, since the generic
+`PendingDecisions` map carries no question content to answer the query with.
+All four variants are wire-allowed: list is read-only, and retract/replace are
+no more privileged than answering, which is already wire-allowed — the `serve`
+head's per-connection approval-ownership gate (#402, ADR-0107) covers all
+three decision variants alike.
 
 **Trusted/untrusted frame split** (#155, [ADR-0069](../adr/0069-trusted-untrusted-wire-frame-split.md)).
 `InMsg` has two entry points. `Holly::send` is **privileged in-process**: an

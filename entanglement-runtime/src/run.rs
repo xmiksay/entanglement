@@ -118,6 +118,9 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // to render.
         OutEvent::SessionHibernated { .. } => {}
         OutEvent::SessionList { .. } => {}
+        // `ListQuestions` reply (#515): a session-less snapshot query; the
+        // one-shot head never issues it, so nothing to render.
+        OutEvent::QuestionList { .. } => {}
         // MCP ops (#375) and the bash-live ops (#498) are engine-global
         // queries/commands; the one-shot head never issues them, so nothing to
         // render.

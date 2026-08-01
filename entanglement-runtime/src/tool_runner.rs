@@ -426,17 +426,28 @@ pub fn spawn_tool_executor_with_policy(
         // decision to its waiter — closing the window where a per-task broadcast
         // park lagged and silently dropped an `Approve`/`Reject`/`Answer`.
         let pending = crate::pending::PendingDecisions::default();
+        // Open `ask_user` question content, keyed the same way as `pending`
+        // (#515): `pending` alone can't answer `InMsg::ListQuestions`, since a
+        // bare `oneshot::Sender` carries no question text. Shared with
+        // `run_ask_user` (which owns insert/remove) and the router below
+        // (which only reads it for a `ListQuestions` snapshot).
+        let open_questions = crate::questions::OpenQuestions::default();
         {
             // The single inbound router (#156): the *sole* consumer of the inbound
             // fan-out for decisions. It watches `Stop` (cancel in-flight tools +
             // unwind parked approvals, #167), fires the `user_prompt_submit` hooks
-            // (#199) off each `Prompt`, and resolves every `Approve`/`Reject`/
-            // `Answer` to its parked waiter. One light map-lookup-per-frame loop
-            // drains far faster than a park loop, so it does not lag the way the
-            // per-task subscriptions it replaced did.
+            // (#199) off each `Prompt`, resolves every `Approve`/`Reject`/
+            // `Answer`/`RetractQuestion`/`ReplaceQuestion` (#515) to its parked
+            // waiter, and answers `InMsg::ListQuestions` (#515) directly from
+            // `open_questions` — a read-only snapshot query, not a decision, so
+            // it does not go through `pending`. One light map-lookup-per-frame
+            // loop drains far faster than a park loop, so it does not lag the
+            // way the per-task subscriptions it replaced did.
             let cancels = cancels.clone();
             let hooks = hooks.clone();
             let pending = pending.clone();
+            let open_questions = open_questions.clone();
+            let emitter = holly.clone();
             let mut inbound = inbound;
             tokio::spawn(async move {
                 loop {
@@ -454,6 +465,13 @@ pub fn spawn_tool_executor_with_policy(
                                 let text = entanglement_core::content_text(&content);
                                 hooks.run_user_prompt_submit(&session, &text).await;
                             });
+                        }
+                        Ok(InMsg::ListQuestions {
+                            correlation_id,
+                            session,
+                        }) => {
+                            let questions = open_questions.snapshot(session.as_ref());
+                            emitter.emit_question_list(correlation_id, questions);
                         }
                         Ok(other) => {
                             if let Some((s, rid, decision)) = seam::Decision::from_inmsg(other) {
@@ -751,14 +769,21 @@ pub fn spawn_tool_executor_with_policy(
                             });
                         }
                         Intercept::AskUser => {
-                            // Registers with `pending` before emitting the question
-                            // (#156), so a fast answer routes to the parked waiter
-                            // rather than racing a per-task broadcast park.
+                            // Registers with `pending` (and `open_questions`,
+                            // #515) before emitting the question (#156), so a
+                            // fast answer routes to the parked waiter rather
+                            // than racing a per-task broadcast park.
                             let pending = pending.clone();
+                            let open_questions = open_questions.clone();
                             let holly = holly.clone();
                             tokio::spawn(async move {
                                 crate::ask_user::run_ask_user(
-                                    holly, pending, session, request_id, input,
+                                    holly,
+                                    pending,
+                                    open_questions,
+                                    session,
+                                    request_id,
+                                    input,
                                 )
                                 .await;
                             });
@@ -1180,9 +1205,13 @@ async fn await_decision(
             );
             seam::reply(holly, session, request_id, output).await;
         }
-        // `Stop` (and a closed inbox) unwind silently; `Answer` never targets a
-        // tool-approval request id.
-        seam::Decision::Stop | seam::Decision::Answer { .. } => {}
+        // `Stop` (and a closed inbox) unwind silently; `Answer`/`Retract`/
+        // `Replace` never target a tool-approval request id (they are
+        // `ask_user`-only, #515).
+        seam::Decision::Stop
+        | seam::Decision::Answer { .. }
+        | seam::Decision::Retract
+        | seam::Decision::Replace { .. } => {}
     }
 }
 

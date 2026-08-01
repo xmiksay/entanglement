@@ -338,7 +338,11 @@ non-blocking join `agent_poll { agent_id, timeout_secs }` (ADR-0026; `timeout_se
 blocking `agent { agent, prompt }` (spawn-and-wait in one call) —
 `ask_user { questions: [{question, options, multi_select}] }` (§5, ADR-0027;
 v2 #488, ADR-0127 — batched questions, `multi_select` per question, an
-unconditional free-text "Other" answer), and
+unconditional free-text "Other" answer; #515, ADR-0146 — a head can list every
+open question (`InMsg::ListQuestions`), withdraw one without cancelling the
+turn (`InMsg::RetractQuestion`), or swap its content in place
+(`InMsg::ReplaceQuestion`), tracked by a runtime-owned `OpenQuestions`
+registry beside `PendingDecisions`), and
 `propose_plan { plan }`, the plan agent's finalize step, force-parked on the
 user-approval round-trip since acceptance *is* its semantics (#141,
 [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md);

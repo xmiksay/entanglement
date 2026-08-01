@@ -216,6 +216,19 @@ impl<'de> Deserialize<'de> for Questions {
     }
 }
 
+/// One open `ask_user` question still parked awaiting an answer, as reported
+/// in an [`OutEvent::QuestionList`] snapshot (#515, in reply to
+/// [`InMsg::ListQuestions`]). Mirrors the payload of the still-open
+/// [`OutEvent::UserQuestion`] plus the `session` it belongs to — a
+/// `QuestionList` can span every session, so each entry must name its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingQuestion {
+    pub session: SessionId,
+    pub request_id: String,
+    #[serde(flatten)]
+    pub questions: Questions,
+}
+
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Live MCP server management (#375)
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -800,6 +813,32 @@ pub enum InMsg {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         answer: String,
     },
+    /// Withdraw a pending `ask_user` question (`request_id` from
+    /// [`OutEvent::UserQuestion`]) without answering it and without cancelling
+    /// the rest of the turn (#515) — the targeted counterpart to a
+    /// session-wide [`Stop`][InMsg::Stop], which would abandon every other
+    /// parked call too. Resolved by the same runtime `ask_user` orchestrator
+    /// [`AnswerQuestion`][InMsg::AnswerQuestion] parks on: it folds a
+    /// withdrawal note back as the tool's `ToolResult` so the model's call
+    /// still completes (unlike `Stop`'s silent unwind, which leaves it
+    /// unresolved on purpose because the whole turn is being torn down
+    /// anyway). Unknown/already-resolved `(session, request_id)` is a no-op.
+    RetractQuestion {
+        session: SessionId,
+        request_id: String,
+    },
+    /// Swap a pending `ask_user` question's content in place (#515):
+    /// re-parks the same `request_id` with revised `questions`, re-emitting
+    /// [`OutEvent::UserQuestion`] rather than resolving the call. Lets a head
+    /// correct or narrow a question it already surfaced without cancelling
+    /// the turn or losing the model's original tool call. Unknown/
+    /// already-resolved `(session, request_id)` is a no-op.
+    ReplaceQuestion {
+        session: SessionId,
+        request_id: String,
+        #[serde(flatten)]
+        questions: Questions,
+    },
     /// Cancel the current turn and park the session at idle.
     Stop { session: SessionId },
     /// Hold a live session at [`AgentState::Paused`] (#516, ADR-0144) without
@@ -833,6 +872,27 @@ pub enum InMsg {
     /// head can pair the snapshot to its request without overloading a
     /// [`SessionId`] as a correlation key (#160, ADR-0072).
     ListSessions { correlation_id: String },
+    /// Enumerate every currently-open `ask_user` question (#515) — the
+    /// `ask_user`/`UserQuestion` counterpart to
+    /// [`ListSessions`][InMsg::ListSessions]: a reconnecting head or a
+    /// multi-pane UI has no other authoritative source, since a parked
+    /// [`OutEvent::UserQuestion`] it missed leaves no trace elsewhere.
+    /// `session`, when set, filters to that session's own open questions;
+    /// `None` lists every session's (the common case, mirroring
+    /// `ListSessions`'s whole-engine scope). Like `ListSessions` this is
+    /// supervisor-global — [`session`][InMsg::session] returns `None` for it
+    /// regardless of the filter, since it names no *routing* target — but
+    /// answered by the same runtime service that owns `ask_user`'s open-call
+    /// registry, off the inbound fan-out (mirrors
+    /// [`McpList`][InMsg::McpList]), not the core supervisor.
+    /// `correlation_id` pairs the reply
+    /// ([`OutEvent::QuestionList`][crate::protocol::OutEvent::QuestionList])
+    /// to this query, exactly like `ListSessions`/`McpList`.
+    ListQuestions {
+        correlation_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+    },
     /// Enumerate the engine's currently-attached MCP servers (#375). MCP config
     /// is global (not per-session), so — like [`ListSessions`][InMsg::ListSessions]
     /// — this is supervisor-global: core routes it to no session task, and it is
@@ -1052,14 +1112,20 @@ impl InMsg {
     }
 
     /// The session this message targets, or `None` for a supervisor-global query
-    /// that names no session — [`ListSessions`][InMsg::ListSessions], the MCP
+    /// that names no session — [`ListSessions`][InMsg::ListSessions],
+    /// [`ListQuestions`][InMsg::ListQuestions] (#515; its optional `session`
+    /// is a result *filter*, not a routing target — a `None` filter spans
+    /// every session), the MCP
     /// ops [`McpList`][InMsg::McpList]/[`McpAdd`][InMsg::McpAdd]/
     /// [`McpRemove`][InMsg::McpRemove] (#375; MCP config is engine-global, not
     /// per-session), and the bash-live ops
     /// [`BashEnable`][InMsg::BashEnable]/[`BashDisable`][InMsg::BashDisable]
     /// (#498; the tool registry is likewise engine-global). Every other
     /// variant, including the session-scoped [`ReplayFrom`][InMsg::ReplayFrom]
-    /// query, carries one.
+    /// query and [`RetractQuestion`][InMsg::RetractQuestion]/
+    /// [`ReplaceQuestion`][InMsg::ReplaceQuestion] (#515, resolved by the
+    /// runtime off the inbound fan-out exactly like `AnswerQuestion`, never
+    /// routed to a session task — see `msg_to_cmd`), carries one.
     pub fn session(&self) -> Option<&SessionId> {
         match self {
             InMsg::Prompt { session, .. }
@@ -1067,6 +1133,8 @@ impl InMsg {
             | InMsg::Reject { session, .. }
             | InMsg::ToolResult { session, .. }
             | InMsg::AnswerQuestion { session, .. }
+            | InMsg::RetractQuestion { session, .. }
+            | InMsg::ReplaceQuestion { session, .. }
             | InMsg::Stop { session }
             | InMsg::PauseSession { session }
             | InMsg::ResumeSession { session }
@@ -1080,6 +1148,7 @@ impl InMsg {
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => Some(session),
             InMsg::ListSessions { .. }
+            | InMsg::ListQuestions { .. }
             | InMsg::McpList { .. }
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
@@ -1116,6 +1185,13 @@ impl InMsg {
     ///   `bash` hands the model a full shell, optionally graded `Allow` with no
     ///   approval prompt at all — a wire frame must never grant that.
     ///
+    /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
+    /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
+    /// former two withdraw/revise a question the *same* head already saw
+    /// surfaced (no more privileged than answering it, which is already
+    /// wire-allowed), and the latter is a read-only snapshot query, exactly
+    /// like `ListSessions`/`McpList`.
+    ///
     /// The executor submits `ToolResult`/`Spawn` over the privileged in-process
     /// [`Holly::send`][crate::Holly::send] (it holds the handle); a wire head uses
     /// [`Holly::send_from_wire`][crate::Holly::send_from_wire], which enforces this
@@ -1132,10 +1208,13 @@ impl InMsg {
             | InMsg::Approve { .. }
             | InMsg::Reject { .. }
             | InMsg::AnswerQuestion { .. }
+            | InMsg::RetractQuestion { .. }
+            | InMsg::ReplaceQuestion { .. }
             | InMsg::Stop { .. }
             | InMsg::PauseSession { .. }
             | InMsg::ResumeSession { .. }
             | InMsg::ListSessions { .. }
+            | InMsg::ListQuestions { .. }
             | InMsg::McpList { .. }
             | InMsg::ReplayFrom { .. }
             | InMsg::CloseSession { .. }
@@ -1163,10 +1242,13 @@ impl InMsg {
             InMsg::Reject { .. } => "reject",
             InMsg::ToolResult { .. } => "tool_result",
             InMsg::AnswerQuestion { .. } => "answer_question",
+            InMsg::RetractQuestion { .. } => "retract_question",
+            InMsg::ReplaceQuestion { .. } => "replace_question",
             InMsg::Stop { .. } => "stop",
             InMsg::PauseSession { .. } => "pause_session",
             InMsg::ResumeSession { .. } => "resume_session",
             InMsg::ListSessions { .. } => "list_sessions",
+            InMsg::ListQuestions { .. } => "list_questions",
             InMsg::McpList { .. } => "mcp_list",
             InMsg::McpAdd { .. } => "mcp_add",
             InMsg::McpRemove { .. } => "mcp_remove",
@@ -1233,6 +1315,16 @@ pub enum OutEvent {
     SessionList {
         correlation_id: String,
         sessions: Vec<SessionInfo>,
+    },
+    /// Snapshot of every currently-open `ask_user` question (lifecycle event,
+    /// no `seq`), in reply to [`InMsg::ListQuestions`] (#515) — same
+    /// "session-less enumeration" shape as
+    /// [`SessionList`][OutEvent::SessionList]. Answered by the runtime
+    /// service that owns the open-question registry `ask_user` populates and
+    /// clears (`entanglement_runtime::questions::OpenQuestions`), not core.
+    QuestionList {
+        correlation_id: String,
+        questions: Vec<PendingQuestion>,
     },
     /// Snapshot of every currently-attached MCP server (lifecycle event, no
     /// `seq`), in reply to [`InMsg::McpList`] (#375). Answered by the runtime
@@ -1620,6 +1712,7 @@ impl OutEvent {
             | OutEvent::AmbiguousRetry { session, .. }
             | OutEvent::SearchResult { session, .. } => Some(session),
             OutEvent::SessionList { .. }
+            | OutEvent::QuestionList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::BashChanged { .. }
@@ -1629,8 +1722,9 @@ impl OutEvent {
 
     /// The monotonic per-session sequence number for a **content** event, or
     /// `None` for a point-in-time lifecycle/query event that carries no `seq`
-    /// (`SessionStarted`, `SessionEnded`, `SessionList`, `History`, `Status`,
-    /// `AgentChanged`, `ModelChanged`, `GenerationChanged`). Returning `Option`
+    /// (`SessionStarted`, `SessionEnded`, `SessionList`, `QuestionList`,
+    /// `History`, `Status`, `AgentChanged`, `ModelChanged`,
+    /// `GenerationChanged`). Returning `Option`
     /// instead of a fake `0`
     /// (#160, ADR-0072) lets a head tell "seq 0" apart from "no seq" — the
     /// supervisor-shed `Error` sentinel (seq `0`) is a real `Some(0)`, distinct
@@ -1641,6 +1735,7 @@ impl OutEvent {
             | OutEvent::SessionEnded { .. }
             | OutEvent::SessionHibernated { .. }
             | OutEvent::SessionList { .. }
+            | OutEvent::QuestionList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::BashChanged { .. }
@@ -2179,6 +2274,84 @@ mod tests {
         assert_eq!(list.variant_name(), "mcp_list");
         assert_eq!(add.variant_name(), "mcp_add");
         assert_eq!(remove.variant_name(), "mcp_remove");
+    }
+
+    #[test]
+    fn list_questions_is_session_less_with_an_optional_filter_and_wire_allowed() {
+        let global = InMsg::ListQuestions {
+            correlation_id: "c1".into(),
+            session: None,
+        };
+        let filtered = InMsg::ListQuestions {
+            correlation_id: "c2".into(),
+            session: Some(SessionId::new("s1")),
+        };
+        for msg in [&global, &filtered] {
+            // The filter is a data field, not a routing target — both forms
+            // are supervisor-global, mirroring `ListSessions`/`McpList`.
+            assert_eq!(msg.session(), None, "{msg:?} is engine-global");
+            assert!(msg.wire_allowed());
+            assert_eq!(msg.variant_name(), "list_questions");
+            let json = serde_json::to_string(msg).unwrap();
+            assert_eq!(&serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+        }
+        // The `None` filter omits the field entirely (additive wire shape).
+        assert_eq!(
+            serde_json::to_string(&global).unwrap(),
+            r#"{"kind":"list_questions","correlation_id":"c1"}"#
+        );
+    }
+
+    #[test]
+    fn question_list_event_is_session_less_and_seq_less() {
+        let ev = OutEvent::QuestionList {
+            correlation_id: "c1".into(),
+            questions: vec![PendingQuestion {
+                session: SessionId::new("s1"),
+                request_id: "q1".into(),
+                questions: Questions(vec![Question {
+                    question: "Which DB?".into(),
+                    options: vec![],
+                    multi_select: false,
+                }]),
+            }],
+        };
+        assert_eq!(ev.seq(), None);
+        assert_eq!(ev.session(), None);
+        let json = serde_json::to_string(&ev).unwrap();
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+    }
+
+    #[test]
+    fn retract_and_replace_question_roundtrip_and_are_wire_allowed() {
+        let retract = InMsg::RetractQuestion {
+            session: SessionId::new("s1"),
+            request_id: "q1".into(),
+        };
+        assert_eq!(retract.session(), Some(&SessionId::new("s1")));
+        assert!(retract.wire_allowed());
+        assert_eq!(retract.variant_name(), "retract_question");
+        let json = serde_json::to_string(&retract).unwrap();
+        assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), retract);
+
+        let replace = InMsg::ReplaceQuestion {
+            session: SessionId::new("s1"),
+            request_id: "q1".into(),
+            questions: Questions(vec![Question {
+                question: "Which DB, revised?".into(),
+                options: vec![QuestionOption {
+                    label: "Postgres".into(),
+                    description: None,
+                }],
+                multi_select: false,
+            }]),
+        };
+        assert_eq!(replace.session(), Some(&SessionId::new("s1")));
+        assert!(replace.wire_allowed());
+        assert_eq!(replace.variant_name(), "replace_question");
+        let json = serde_json::to_string(&replace).unwrap();
+        assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), replace);
+        assert!(json.contains("Which DB, revised?"), "{json}");
     }
 
     #[test]

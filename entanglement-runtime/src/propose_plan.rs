@@ -239,9 +239,13 @@ pub async fn run_propose_plan(
             );
             seam::reply(&holly, session, request_id, output).await;
         }
-        // `Stop` (and a closed inbox) unwind silently; `Answer` never targets a
-        // `propose_plan` request id.
-        seam::Decision::Stop | seam::Decision::Answer { .. } => {}
+        // `Stop` (and a closed inbox) unwind silently; `Answer`/`Retract`/
+        // `Replace` never target a `propose_plan` request id (they are
+        // `ask_user`-only, #515).
+        seam::Decision::Stop
+        | seam::Decision::Answer { .. }
+        | seam::Decision::Retract
+        | seam::Decision::Replace { .. } => {}
     }
 }
 

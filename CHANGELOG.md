@@ -13,6 +13,19 @@ alternatives behind each design decision live in the ADRs under
 > **Wire-shape change:** `OutEvent::Plan` gains a `path: String` field
 > (`#[serde(default)]`, so a pre-#513 persisted log still replays).
 
+### Added
+
+- **List/retract/replace an open `ask_user` question** (#515, ADR-0146):
+  `InMsg::ListQuestions { correlation_id, session? }` → `OutEvent::QuestionList`
+  enumerates every open question (or one session's), mirroring `ListSessions`/
+  `McpList`. `InMsg::RetractQuestion { session, request_id }` withdraws a
+  question without cancelling the rest of the turn — the `ask_user`
+  orchestrator still replies with a withdrawal note, unlike a session-wide
+  `Stop`. `InMsg::ReplaceQuestion { session, request_id, questions }` swaps a
+  parked question's content in place, re-emitting `OutEvent::UserQuestion`
+  under the same `request_id` rather than resolving the call. All four
+  variants are wire-allowed.
+
 ### Changed
 
 - **One plan tool, file-backed, with a blocking review loop** (#513,

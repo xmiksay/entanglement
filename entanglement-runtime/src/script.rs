@@ -657,8 +657,12 @@ async fn await_approval(
         seam::Decision::Reject { reason } => {
             Approval::Rejected(reason.unwrap_or_else(|| "user".to_string()))
         }
-        // `Stop`, a closed inbox, or an unexpected `Answer` all unwind the run.
-        seam::Decision::Stop | seam::Decision::Answer { .. } => Approval::Stopped,
+        // `Stop`, a closed inbox, or an unexpected `Answer`/`Retract`/`Replace`
+        // (the latter two `ask_user`-only, #515) all unwind the run.
+        seam::Decision::Stop
+        | seam::Decision::Answer { .. }
+        | seam::Decision::Retract
+        | seam::Decision::Replace { .. } => Approval::Stopped,
     }
 }
 
