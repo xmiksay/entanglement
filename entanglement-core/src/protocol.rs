@@ -466,11 +466,13 @@ fn split_rule_key(key: &str) -> (&str, RuleScope<'_>) {
     (key, RuleScope::None)
 }
 
-/// Minimal `*`/`?` wildcard match for argument-scoped permission rules (#173):
-/// `*` matches any run of characters (including `/` and the empty string), `?`
-/// matches exactly one, everything else is literal. Deliberately
-/// separator-agnostic and free of `**`/character-classes — so `bash(git *)` and
-/// `edit(src/*)` both read naturally and core stays dependency-free (ADR-0006).
+/// Minimal `*`/`?` wildcard match for argument-scoped permission rules (#173)
+/// and the agent tool mask's `tools:`/`disallowed_tools:` entries (#537,
+/// ADR-0148): `*` matches any run of characters (including `/` and the empty
+/// string), `?` matches exactly one, everything else is literal. Deliberately
+/// separator-agnostic and free of `**`/character-classes — so `bash(git *)`,
+/// `edit(src/*)` and `mcp__docs__*` all read naturally and core stays
+/// dependency-free (ADR-0006).
 fn glob_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
@@ -590,16 +592,23 @@ pub struct AgentProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     pub permission: PermissionProfile,
-    /// Tool allowlist (#116, ADR-0038). `Some` ⇒ only these tools are
-    /// advertised to the model and accepted at dispatch (the registry is
+    /// Tool allowlist (#116, ADR-0038). `Some` ⇒ only tools matching an entry
+    /// are advertised to the model and accepted at dispatch (the registry is
     /// intersected with this set); `None` ⇒ inherit every advertised tool.
+    /// Each entry is a `*`/`?` wildcard pattern (#537, ADR-0148) matched with
+    /// the same [`glob_match`] the #173 argument scopes use — a literal entry
+    /// degenerates to exact equality, so `read` behaves as before while
+    /// `"mcp__*"` admits every MCP tool and `"mcp__docs__*"` one server's,
+    /// names unknowable at profile-parse time (servers connect later).
     /// Distinct from [`permission`][Self::permission]: this controls a tool's
     /// *existence*, not `Allow`/`Ask`/`Deny` among tools that exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
     /// Tool denylist (#116, ADR-0038), applied *after* the allowlist. A tool
-    /// named here is never advertised nor accepted, even if the allowlist (or an
-    /// inherit-all `None`) would otherwise include it.
+    /// matching an entry — same wildcard-pattern semantics as
+    /// [`tools`][Self::tools] (#537, ADR-0148) — is never advertised nor
+    /// accepted, even if the allowlist (or an inherit-all `None`) would
+    /// otherwise include it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
@@ -629,14 +638,6 @@ pub struct AgentProfile {
 }
 
 impl AgentProfile {
-    /// Whether `tool` is in this profile's advertised set: present unless the
-    /// denylist removes it, or an allowlist is set and omits it. This is the
-    /// *physical* restriction of #116 — orthogonal to
-    /// [`PermissionProfile::for_tool`], which grades `Allow`/`Ask`/`Deny` among
-    /// the tools that survive this mask. Plan authorship rides this mask now
-    /// (#231, ADR-0049): the runtime advertises `update_plan`/`propose_plan` only
-    /// to a profile that *explicitly* allowlists them, so plan authority is
-    /// default-closed without a dedicated flag.
     /// The profile's model pin (#323, ADR-0081): `Some((provider, model))` only
     /// when **both** [`provider`][Self::provider] and [`model`][Self::model] are
     /// set, so the runtime can re-bind the session's backend to that endpoint on
@@ -649,12 +650,33 @@ impl AgentProfile {
         }
     }
 
+    /// Whether `tool` is in this profile's advertised set: present unless the
+    /// denylist removes it, or an allowlist is set and omits it. This is the
+    /// *physical* restriction of #116 — orthogonal to
+    /// [`PermissionProfile::for_tool`], which grades `Allow`/`Ask`/`Deny` among
+    /// the tools that survive this mask. Plan authorship rides this mask now
+    /// (#231, ADR-0049): the runtime advertises `update_plan`/`propose_plan` only
+    /// to a profile that *explicitly* allowlists them (literal name, never a
+    /// pattern — `plan_tasks::explicitly_allowlists`), so plan authority is
+    /// default-closed without a dedicated flag.
+    /// Entries are `*`/`?` wildcard patterns (#537, ADR-0148) matched by
+    /// [`glob_match`], evaluated dynamically here at advertisement/dispatch time
+    /// — which is what lets a mask cover MCP tools (`mcp__<server>__<tool>`)
+    /// whose names don't exist yet when profiles are parsed.
     pub fn advertises_tool(&self, tool: &str) -> bool {
-        if self.disallowed_tools.iter().any(|t| t == tool) {
+        Self::mask_allows(self.tools.as_deref(), &self.disallowed_tools, tool)
+    }
+
+    /// The mask predicate behind [`advertises_tool`][Self::advertises_tool],
+    /// callable on a projection of the mask (a head holding only
+    /// `tools`/`disallowed_tools`, e.g. the TUI's profile info) so no caller
+    /// re-implements the pattern semantics.
+    pub fn mask_allows(tools: Option<&[String]>, disallowed: &[String], tool: &str) -> bool {
+        if disallowed.iter().any(|t| glob_match(t, tool)) {
             return false;
         }
-        match &self.tools {
-            Some(allow) => allow.iter().any(|t| t == tool),
+        match tools {
+            Some(allow) => allow.iter().any(|t| glob_match(t, tool)),
             None => true,
         }
     }
@@ -2795,5 +2817,55 @@ mod tests {
         let p = masked_profile(None, vec!["bash"]);
         assert!(p.advertises_tool("read"));
         assert!(!p.advertises_tool("bash"));
+    }
+
+    #[test]
+    fn advertises_tool_glob_allowlist_matches_mcp_namespace() {
+        // #537: `mcp__*` admits every MCP tool from every server, nothing else.
+        let p = masked_profile(Some(vec!["read", "mcp__*"]), vec![]);
+        assert!(p.advertises_tool("mcp__docs__search"));
+        assert!(p.advertises_tool("mcp__jira__create_issue"));
+        assert!(p.advertises_tool("read"));
+        assert!(!p.advertises_tool("edit"));
+    }
+
+    #[test]
+    fn advertises_tool_glob_server_scoped() {
+        let p = masked_profile(Some(vec!["mcp__docs__*"]), vec![]);
+        assert!(p.advertises_tool("mcp__docs__search"));
+        assert!(!p.advertises_tool("mcp__jira__create_issue"));
+    }
+
+    #[test]
+    fn advertises_tool_glob_denylist_subtracts_from_inherit_all() {
+        // Strip MCP from an otherwise-unmasked profile.
+        let p = masked_profile(None, vec!["mcp__*"]);
+        assert!(p.advertises_tool("read"));
+        assert!(!p.advertises_tool("mcp__docs__search"));
+    }
+
+    #[test]
+    fn advertises_tool_deny_glob_beats_allow_glob() {
+        // All MCP except one server: deny is applied last, patterns included.
+        let p = masked_profile(Some(vec!["mcp__*"]), vec!["mcp__docs__*"]);
+        assert!(p.advertises_tool("mcp__jira__create_issue"));
+        assert!(!p.advertises_tool("mcp__docs__search"));
+    }
+
+    #[test]
+    fn advertises_tool_star_is_inherit_all_and_empty_is_nothing() {
+        let all = masked_profile(Some(vec!["*"]), vec![]);
+        assert!(all.advertises_tool("read"));
+        assert!(all.advertises_tool("mcp__docs__search"));
+        let none = masked_profile(Some(vec![]), vec![]);
+        assert!(!none.advertises_tool("read"));
+    }
+
+    #[test]
+    fn advertises_tool_literal_entry_stays_exact() {
+        // No implicit prefixing: a literal never matches a longer name.
+        let p = masked_profile(Some(vec!["mcp__docs"]), vec![]);
+        assert!(!p.advertises_tool("mcp__docs__search"));
+        assert!(p.advertises_tool("mcp__docs"));
     }
 }

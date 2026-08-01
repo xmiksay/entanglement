@@ -793,6 +793,46 @@ mod tests {
     }
 
     #[test]
+    fn tool_mask_glob_admits_mcp_down_the_ancestor_chain() {
+        // #537: a glob entry in an ancestor's allowlist admits a child's MCP
+        // call through the chain intersection, evaluated per profile per link.
+        let mcp_parent = masked_profile(
+            "mcp-parent",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+            Some(vec!["read", "mcp__*"]),
+            Vec::new(),
+        );
+        let unmasked_child = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+        );
+        let p = SessionId::new("parent");
+        let c = SessionId::new("child");
+        let mut active = HashMap::new();
+        active.insert(p.clone(), mcp_parent);
+        active.insert(c.clone(), unmasked_child);
+        let mut guard = SpawnGuard::new();
+        guard.record_start(p.clone(), None);
+        guard.record_start(c.clone(), Some(p.clone()));
+        assert!(!tool_masked(&active, &guard, &c, "mcp__docs__search"));
+        // A non-matching tool is still clamped by the same ancestor.
+        assert!(tool_masked(&active, &guard, &c, "edit"));
+
+        // Without the glob the identical MCP call is masked by the ancestor.
+        let plain_parent = masked_profile(
+            "plain-parent",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+            Some(vec!["read"]),
+            Vec::new(),
+        );
+        active.insert(p.clone(), plain_parent);
+        assert!(tool_masked(&active, &guard, &c, "mcp__docs__search"));
+    }
+
+    #[test]
     fn clamp_to_base_is_a_least_privilege_ceiling() {
         // Allow-all base (the embedded default) never changes the agent's grade.
         let open = PermissionProfile::new(Permission::Allow);

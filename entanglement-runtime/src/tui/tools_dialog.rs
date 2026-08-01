@@ -5,6 +5,7 @@
 //! ([`crate::tui::key_dialog`]). The actual write goes through
 //! [`crate::agents::save_tools_override`]; this module is pure state.
 
+use entanglement_core::AgentProfile;
 use ratatui::widgets::ListState;
 
 /// A tools-checklist modal over one profile's full advertised tool roster.
@@ -48,10 +49,12 @@ impl ToolsDialog {
     }
 
     /// Open the checklist for `agent` over `roster`, seeding each checkbox from
-    /// the profile's current effective mask: an omitted allowlist (`tools:
-    /// None`) means every tool starts checked; otherwise checked = in the
-    /// allowlist and not in the denylist — the same resolution
-    /// [`entanglement_core::AgentProfile::advertises_tool`] applies.
+    /// the profile's current effective mask via [`AgentProfile::mask_allows`]
+    /// itself — not a re-implementation — so a wildcard entry (#537, ADR-0148)
+    /// seeds its matches checked exactly as the engine would advertise them.
+    /// Note the save path still emits the concrete checked set: submitting
+    /// expands a glob to the currently registered names (hand-edit the
+    /// frontmatter to keep a live pattern).
     pub fn show(
         &mut self,
         agent: String,
@@ -61,12 +64,7 @@ impl ToolsDialog {
     ) {
         self.checked = roster
             .iter()
-            .map(|t| {
-                let allowed = tools
-                    .map(|list| list.iter().any(|a| a == t))
-                    .unwrap_or(true);
-                allowed && !disallowed.iter().any(|d| d == t)
-            })
+            .map(|t| AgentProfile::mask_allows(tools, disallowed, t))
             .collect();
         self.tools = roster;
         self.agent = agent;
@@ -185,6 +183,32 @@ mod tests {
         assert!(d.is_checked(0), "read: allowlisted, not denied");
         assert!(!d.is_checked(1), "edit: allowlisted but denied");
         assert!(!d.is_checked(2), "bash: not allowlisted");
+    }
+
+    #[test]
+    fn glob_entry_seeds_its_matches_checked() {
+        // #537: a wildcard mask entry seeds every matching roster tool exactly
+        // as the engine would advertise it; saving still emits the concrete
+        // checked set (a glob does not survive the round-trip).
+        let mut d = ToolsDialog::new();
+        let roster = vec![
+            "read".to_string(),
+            "mcp__docs__search".to_string(),
+            "mcp__jira__create_issue".to_string(),
+        ];
+        d.show(
+            "custom".into(),
+            roster,
+            Some(&["read".to_string(), "mcp__*".to_string()]),
+            &["mcp__jira__*".to_string()],
+        );
+        assert!(d.is_checked(0), "read: literal entry");
+        assert!(d.is_checked(1), "mcp__docs__search: matches mcp__*");
+        assert!(!d.is_checked(2), "mcp__jira__create_issue: deny glob wins");
+        assert_eq!(
+            d.to_allowlist(),
+            Some(vec!["read".to_string(), "mcp__docs__search".to_string()])
+        );
     }
 
     #[test]

@@ -638,8 +638,29 @@ re-document them here):
   picker's highlighted profile opens a checklist dialog
   (`tui::tools_dialog::ToolsDialog`) over the full advertised tool roster
   (`EngineConfig.tool_specs`, captured before `Holly::spawn` consumes it) seeded
-  from the profile's current mask; `Space` toggles, `Enter` saves, `Esc`
-  discards. Applies on next restart — no live registry reload yet.
+  from the profile's current mask via `AgentProfile::mask_allows` (#537 — a
+  wildcard entry shows its matches checked; saving still emits the concrete
+  checked set, so a glob doesn't survive the round-trip); `Space` toggles,
+  `Enter` saves, `Esc` discards. Applies on next restart — no live registry
+  reload yet.
+- **Agent tool-mask entries are glob patterns** (#537,
+  [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md),
+  superseding ADR-0038's "no globbing" consequence): `tools:`/
+  `disallowed_tools:` entries match with the same `*`/`?` `glob_match` the #173
+  argument scopes use — a literal entry stays exact (zero migration), while
+  `"mcp__*"` / `"mcp__<server>__*"` finally let a `tools:`-restricted profile
+  hold MCP tools whose namespaced names don't exist at profile-parse time
+  (servers connect later; live `McpAdd` mints names mid-process), and
+  `disallowed_tools: ["mcp__*"]` strips MCP from an inherit-all profile.
+  Matching is dynamic at advertisement/dispatch time, confined to
+  `advertises_tool` (now delegating to the public `AgentProfile::mask_allows`),
+  so core's spec filter, `tool_masked`'s ancestor clamp, and the rhai binding
+  mirror inherit it from one place and core stays MCP-unaware. Carve-out:
+  `plan_tasks::explicitly_allowlists` stays literal-exact (`tools: ["*"]`
+  never grants plan authorship, mirroring `tools: None`); skill
+  `allowed_tools`, permission tool-name keys, and `spawnable_agents` stay
+  exact; built-in `plan`/`explore` masks unchanged — enabling MCP for them is
+  a user-layer override.
 - **Session hibernation is eviction, not termination** (#318,
   [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)): a third
   lifecycle state between `live` and the terminal tombstone. `HibernateSession {

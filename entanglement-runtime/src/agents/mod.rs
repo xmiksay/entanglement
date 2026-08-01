@@ -1356,6 +1356,22 @@ mod tests {
     }
 
     #[test]
+    fn tool_mask_glob_entry_parses_and_matches_mcp() {
+        // #537: a wildcard entry rides the frontmatter verbatim (no parse-time
+        // expansion — MCP tool names don't exist yet when profiles load) and
+        // matches dynamically at advertisement time.
+        let p = parse(
+            "---\nname: x\ndescription: d\ntools: [read, \"mcp__*\"]\n\
+             disallowed_tools: [\"mcp__jira__*\"]\n---\nbody",
+        )
+        .unwrap();
+        assert!(p.advertises_tool("read"));
+        assert!(p.advertises_tool("mcp__docs__search"));
+        assert!(!p.advertises_tool("mcp__jira__create_issue"));
+        assert!(!p.advertises_tool("edit"));
+    }
+
+    #[test]
     fn skills_preload_injects_body_into_system_prompt() {
         // `skills:` preloads the full body; the tool mask is untouched (preload is
         // not an allowlist), so `load_skill` stays advertised for the rest (#117).

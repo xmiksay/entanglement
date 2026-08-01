@@ -53,7 +53,10 @@ pub fn update_tasks_spec() -> ToolSpec {
 /// Whether `profile` *explicitly* names `tool` in its `tools` allowlist. An
 /// inherit-all (`tools: None`) profile does **not** count — the default-closed
 /// gate `propose_plan::specs_for` uses for plan authorship (#231, ADR-0049;
-/// #513, ADR-0145).
+/// #513, ADR-0145). Deliberately literal-exact even though mask entries are
+/// wildcard patterns since #537 — a glob (`"*"`, `"propose_*"`) widens the mask
+/// without silently granting plan authorship, exactly as `tools: None` already
+/// doesn't.
 pub fn explicitly_allowlists(profile: &AgentProfile, tool: &str) -> bool {
     matches!(&profile.tools, Some(list) if list.iter().any(|t| t == tool))
 }
@@ -138,6 +141,20 @@ mod tests {
         ));
         assert!(explicitly_allowlists(
             &profile(Some(vec!["read", "propose_plan"])),
+            "propose_plan"
+        ));
+    }
+
+    #[test]
+    fn explicitly_allowlists_never_matches_a_glob() {
+        // #537: a wildcard widens the #116 mask but is not an explicit plan
+        // opt-in — plan authorship stays default-closed under `"*"`.
+        assert!(!explicitly_allowlists(
+            &profile(Some(vec!["*"])),
+            "propose_plan"
+        ));
+        assert!(!explicitly_allowlists(
+            &profile(Some(vec!["propose_*"])),
             "propose_plan"
         ));
     }
