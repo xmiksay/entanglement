@@ -1,11 +1,14 @@
 //! `/enable` + `/disable` subcommand parsing + wire dispatch (#539, ADR-0149):
 //! per-session tool-overlay editing — enable an MCP server (`/enable mcp
-//! <server>`), a single tool or pattern (`/enable tool <name>`), or retract
-//! (`/disable ...`, bare `/disable` clears). Kept in its own module mirroring
+//! <server>`), a single tool or pattern (`/enable tool <name>`), disable
+//! either the same way (`/disable ...` upserts a **deny** entry, withdrawing
+//! even a profile-advertised tool for this session; bare `/disable` clears
+//! the whole overlay), or open the session-tools checklist dialog (bare
+//! `/enable`). Kept in its own module mirroring
 //! `mcp_command.rs`/`bash_command.rs` (the raw-text re-parse pattern), since
 //! `commands.rs`/`event_loop.rs` are past the 400-line cap.
 
-use entanglement_core::{Holly, InMsg, ToolOverlayEntry};
+use entanglement_core::{Holly, InMsg, SessionId, ToolOverlayEntry};
 
 use super::app::App;
 use super::commands::Command;
@@ -15,13 +18,16 @@ use super::commands::Command;
 /// verbatim (a name or a `*`/`?` pattern).
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnableCommand {
-    /// Bare `/enable`: show the session's overlay + the available roster.
+    /// Bare `/enable`: open the session-tools checklist dialog.
     Show,
-    /// Add (or re-grade) one overlay entry on the active session.
+    /// Upsert one enable entry on the active session (drops a same-pattern
+    /// deny entry — the two are mutually exclusive per pattern).
     Enable { pattern: String, allow: bool },
-    /// Remove one overlay entry (by its exact stored pattern).
+    /// Upsert one **deny** entry (drops a same-pattern enable entry):
+    /// matching tools stop existing for this session, even ones the profile
+    /// advertises.
     Disable { pattern: String },
-    /// Bare `/disable`: clear the whole overlay.
+    /// Bare `/disable`: clear the whole overlay (back to the profile mask).
     Clear,
 }
 
@@ -94,33 +100,57 @@ fn usage(enabling: bool) -> &'static str {
 /// instead of hitting the engine, mirroring `send_mcp`/`send_bash`.
 pub(super) async fn send_enable(app: &mut App, holly: &Holly, text: &str, enabling: bool) {
     match parse_enable_args(text, enabling) {
-        Ok(EnableCommand::Show) => app.render_overlay_status(),
-        Ok(cmd) => {
+        Ok(EnableCommand::Show) => app.open_session_tools_dialog(),
+        Ok(EnableCommand::Enable { pattern, allow }) => {
+            upsert_enable(app, holly, pattern, allow).await;
+        }
+        Ok(EnableCommand::Disable { pattern }) => {
+            upsert_deny(app, holly, pattern).await;
+        }
+        Ok(EnableCommand::Clear) => {
             let session = app.active_session_id().clone();
-            let mut entries = app.overlay_entries(&session);
-            match cmd {
-                EnableCommand::Enable { pattern, allow } => {
-                    // Re-enabling an existing pattern re-grades it in place.
-                    entries.retain(|e| e.pattern != pattern);
-                    entries.push(ToolOverlayEntry { pattern, allow });
-                }
-                EnableCommand::Disable { pattern } => {
-                    let before = entries.len();
-                    entries.retain(|e| e.pattern != pattern);
-                    if entries.len() == before {
-                        app.record_enable_error(format!(
-                            "`{pattern}` is not in this session's overlay"
-                        ));
-                        return;
-                    }
-                }
-                EnableCommand::Clear => entries.clear(),
-                EnableCommand::Show => unreachable!("handled above"),
-            }
-            let _ = holly.send(InMsg::SetToolOverlay { session, entries }).await;
+            send_overlay(holly, session, Vec::new()).await;
         }
         Err(message) => app.record_enable_error(message),
     }
+}
+
+/// Upsert an enable entry for `pattern` on the active session, dropping any
+/// same-pattern entry (a re-enable re-grades in place; a prior deny flips).
+/// Shared by the typed `/enable`, the `/mcp` panel's `e` key, and the
+/// session-tools dialog.
+pub(super) async fn upsert_enable(app: &mut App, holly: &Holly, pattern: String, allow: bool) {
+    let session = app.active_session_id().clone();
+    let mut entries = app.overlay_entries(&session);
+    entries.retain(|e| e.pattern != pattern);
+    entries.push(ToolOverlayEntry {
+        pattern,
+        allow,
+        deny: false,
+    });
+    send_overlay(holly, session, entries).await;
+}
+
+/// Upsert a deny entry for `pattern` on the active session, dropping any
+/// same-pattern entry — matching tools stop existing for this session even
+/// when the profile advertises them. Shared by the typed `/disable` and the
+/// `/mcp` panel's `d` key.
+pub(super) async fn upsert_deny(app: &mut App, holly: &Holly, pattern: String) {
+    let session = app.active_session_id().clone();
+    let mut entries = app.overlay_entries(&session);
+    entries.retain(|e| e.pattern != pattern);
+    entries.push(ToolOverlayEntry::deny(pattern));
+    send_overlay(holly, session, entries).await;
+}
+
+/// Send the full-replacement overlay update. Also shared by the session-tools
+/// dialog's submit path (`modal_events::handle_session_tools_dialog_event`).
+pub(super) async fn send_overlay(
+    holly: &Holly,
+    session: SessionId,
+    entries: Vec<ToolOverlayEntry>,
+) {
+    let _ = holly.send(InMsg::SetToolOverlay { session, entries }).await;
 }
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
-         | SetToolOverlay{session,entries:[ToolOverlayEntry]}   // replace the session's live tool overlay — patterns that exist past the agent mask, graded Ask|Allow (#539, ADR-0149); full replacement, empty clears; trusted-only, wire-refused
+         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow), deny entries withdraw even profile-advertised tools (#539, ADR-0149); full replacement, empty clears; trusted-only, wire-refused
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
@@ -334,12 +334,15 @@ per-profile persisted store.
 
 **Live tool overlay — `InMsg::SetToolOverlay`** (#539,
 [ADR-0149](../adr/0149-per-session-tool-overlay.md)).
-`SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow}]}` **replaces**
-the session's live tool overlay: `*`/`?` patterns (the ADR-0148 mask
-semantics) whose matching tools *exist* for this session regardless of the
-active profile's `tools:`/`disallowed_tools:` mask — the per-session
-MCP/tool enablement path (`mcp__chessbase__*` for a server, a literal name
-for one tool). Full replacement, not a merge (an empty list clears); like
+`SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny}]}`
+**replaces** the session's live tool overlay: `*`/`?` patterns (the ADR-0148
+mask semantics) that override the active profile's
+`tools:`/`disallowed_tools:` mask in both directions — an enable entry makes
+matching tools *exist* regardless of the mask (`mcp__chessbase__*` for a
+server, a literal name for one tool), a `deny: true` entry *withdraws* them
+even when the profile advertises them (deny > enable > profile,
+`ToolOverlayEntry::disposition`). Full replacement, not a merge (an empty
+list clears); like
 `SetGeneration` there is nothing to fail against, so it always succeeds and
 always emits `OutEvent::ToolOverlayChanged` with the full effective list —
 which is also what persistence logs and `Session::replay` folds back (by
@@ -348,9 +351,12 @@ it survives `SetAgent` (overriding the profile is its point) and dies with
 the session. `allow: false` (default) grades matching calls `Ask`; `allow:
 true` grades them `Allow` — the grade replaces the profile chain's resolution
 on the runtime's generic dispatch route, still clamped by the config
-permission ceiling. Mask admission is per ancestor-chain link, so a parent's
-overlay also covers its spawn sub-tree. Trusted-only (wire-refused, the
-`BashEnable` rationale); the TUI drives it via `/enable`/`/disable`.
+permission ceiling (a deny entry has no grade; it removes the tool ahead of
+any permission decision). Mask disposition is per ancestor-chain link, so a
+parent's overlay also covers its spawn sub-tree. Trusted-only (wire-refused,
+the `BashEnable` rationale); the TUI drives it via `/enable`/`/disable`, the
+bare-`/enable` session-tools checklist dialog (the overlay as a diff against
+the profile mask), and the `/mcp` panel's `e`/`d` server keys.
 Stash-deferred while a turn is live, like `SetAgent`/`SetModel`.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/0004-structured-plan-and-task-events.md)

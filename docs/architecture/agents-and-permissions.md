@@ -501,14 +501,20 @@ below realize one model:
   **A session-scoped escape hatch layers on top** (✅ #539,
   [ADR-0149](../adr/0149-per-session-tool-overlay.md)): the live **tool
   overlay** — `InMsg::SetToolOverlay` (trusted-only) replaces a per-session
-  list of `ToolOverlayEntry { pattern, allow }` whose matching tools exist
-  for that session past the profile's allowlist *and* denylist, surviving
-  `SetAgent` and replay. Core's advertisement filter ORs it with the mask;
-  `tool_masked` admits per chain link (a parent's overlay covers its spawn
-  sub-tree); the generic dispatch route replaces the chain's grade with the
-  entry's `Ask` (default)/`Allow`, still ceiling-clamped. The TUI drives it
-  via `/enable mcp <server>` / `/enable tool <name>` [`--allow`] and
-  `/disable`; see the protocol doc for the wire shape. **(a) Advertisement:** core's turn loop (`run_round`) filters both
+  list of `ToolOverlayEntry { pattern, allow, deny }` overriding the
+  profile's mask in both directions (an enable entry makes matching tools
+  exist past allowlist *and* denylist; a deny entry withdraws even
+  profile-advertised ones — deny > enable > profile), surviving `SetAgent`
+  and replay. Core's advertisement filter and `tool_masked` apply the same
+  disposition — per chain link, so a parent's overlay covers its spawn
+  sub-tree; the generic dispatch route replaces the chain's grade with an
+  enable entry's `Ask` (default)/`Allow`, still ceiling-clamped. The TUI
+  drives it via `/enable mcp <server>` / `/enable tool <name>` [`--allow`]
+  and `/disable` (upserts a deny; bare = reset), the bare-`/enable`
+  session-tools checklist dialog (checkboxes over the full roster seeded
+  from effective availability; `Enter` submits the overlay as a diff
+  against the profile), and the `/mcp` panel's `e`/`d` keys on the
+  highlighted server; see the protocol doc for the wire shape. **(a) Advertisement:** core's turn loop (`run_round`) filters both
   `EngineConfig.tool_specs` and the active profile's `profile_tool_specs` entry by
   the mask — a masked tool's schema never reaches the model. `propose_plan`/
   `update_tasks` are ordinary runtime state/orchestration tools now (✅ #231/#513,

@@ -646,19 +646,26 @@ re-document them here):
 - **Per-session tool overlay — live injection past the agent mask** (#539,
   [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md), builds on #537
   below): `InMsg::SetToolOverlay { session, entries: [ToolOverlayEntry {
-  pattern, allow }] }` (**trusted-only**, the `BashEnable` rationale) replaces
-  a session's live overlay — ADR-0148-style patterns whose matching tools
-  *exist* for that session regardless of the active profile's mask
-  (`mcp__chessbase__*` = one server, a literal name = one tool). Full
+  pattern, allow, deny }] }` (**trusted-only**, the `BashEnable` rationale)
+  replaces a session's live overlay — ADR-0148-style patterns overriding the
+  active profile's mask in both directions: an enable entry makes matching
+  tools *exist* regardless of the mask (`mcp__chessbase__*` = one server, a
+  literal name = one tool), a deny entry withdraws even profile-advertised
+  ones (deny > enable > profile, `ToolOverlayEntry::disposition`). Full
   replacement, empty clears; always acks with `OutEvent::ToolOverlayChanged`
   (full effective list, persisted + replay-folded by overwrite like
   `GenerationChanged`); survives `SetAgent` by design, stash-deferred during
-  a live turn. Enforcement: core's advertisement filter ORs the overlay;
-  `tool_masked` admits per chain link (a parent's overlay covers its spawn
-  sub-tree); the generic dispatch route replaces the chain grade with the
-  entry's `Ask` (default)/`Allow`, still ceiling-clamped (#172) — resolver
-  seam (#311) untouched. TUI: `/enable mcp <server> | tool <name> [--allow]`,
-  bare `/enable` shows overlay + roster, `/disable` retracts (bare clears).
+  a live turn. Enforcement: core's advertisement filter and `tool_masked`
+  apply the same disposition — per chain link (a parent's overlay covers its
+  spawn sub-tree); the generic dispatch route replaces the chain grade with
+  an enable entry's `Ask` (default)/`Allow`, still ceiling-clamped (#172) —
+  resolver seam (#311) untouched. TUI: `/enable mcp <server> | tool <name>
+  [--allow]` (upsert enable), `/disable mcp|tool <x>` (upsert deny; bare =
+  reset to profile defaults), bare `/enable` opens the session-tools
+  checklist dialog (checkboxes over the full roster seeded from effective
+  availability; `Enter` submits the overlay as a diff against the profile
+  mask), and the `/mcp` panel's `e`/`d` keys toggle the highlighted server
+  per session.
 - **Agent tool-mask entries are glob patterns** (#537,
   [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md),
   superseding ADR-0038's "no globbing" consequence): `tools:`/

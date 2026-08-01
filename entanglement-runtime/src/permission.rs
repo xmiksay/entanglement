@@ -211,16 +211,17 @@ pub fn tool_masked(
     session: &SessionId,
     tool: &str,
 ) -> bool {
-    // A link admits `tool` if its profile advertises it **or** its own live
-    // tool overlay (#539, ADR-0149) matches it — the overlay beats the
-    // profile's allowlist *and* denylist for the session it was set on, and,
-    // because the check is per link, a parent's overlay also admits the tool
-    // for its spawn sub-tree (each descendant's own profile permitting).
-    let admits = |s: &SessionId, profile: &AgentProfile| {
-        profile.advertises_tool(tool)
-            || overlays
-                .get(s)
-                .is_some_and(|entries| ToolOverlayEntry::find(entries, tool).is_some())
+    // A link's own live tool overlay (#539, ADR-0149) overrides its profile
+    // mask in both directions — a deny entry withdraws a profile-advertised
+    // tool, an enable entry injects a masked one; no opinion falls back to
+    // the profile. Because the check is per link, a parent's overlay also
+    // covers its spawn sub-tree (each descendant's own link permitting).
+    let admits = |s: &SessionId, profile: &AgentProfile| match overlays
+        .get(s)
+        .and_then(|entries| ToolOverlayEntry::disposition(entries, tool))
+    {
+        Some(v) => v,
+        None => profile.advertises_tool(tool),
     };
     let mut current = session.clone();
     // A sponsored session is a permission root (ADR-0138): only its own (and
@@ -918,6 +919,14 @@ mod tests {
         ));
         // A non-matching tool stays masked.
         assert!(tool_masked(&active, &guard, &overlays, &s, "edit"));
+
+        // A deny entry withdraws a profile-advertised tool (#539 deny half).
+        overlays
+            .get_mut(&s)
+            .unwrap()
+            .push(ToolOverlayEntry::deny("read"));
+        assert!(tool_masked(&active, &guard, &overlays, &s, "read"));
+        overlays.get_mut(&s).unwrap().pop();
 
         // Parent overlay admits down the chain for an unmasked child.
         let child_profile = profile(

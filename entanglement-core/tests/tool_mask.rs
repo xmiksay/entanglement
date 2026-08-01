@@ -219,6 +219,32 @@ async fn tool_overlay_injects_past_the_profile_mask() {
 }
 
 #[tokio::test]
+async fn tool_overlay_deny_withdraws_a_profile_advertised_tool() {
+    // #539 (deny half): a deny entry removes a tool the profile advertises —
+    // per-session disable without touching the agent definition.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let holly = Holly::spawn(recording_config(seen.clone()));
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![ToolOverlayEntry::deny("edit")],
+        })
+        .await
+        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let names = first_recorded(&seen).await;
+    assert!(
+        names.iter().any(|n| n == "read"),
+        "unmatched tools keep the profile default; got {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "edit"),
+        "a deny entry withdraws a profile-advertised tool; got {names:?}"
+    );
+}
+
+#[tokio::test]
 async fn spawned_explore_child_request_carries_no_edit_spec() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let holly = Holly::spawn(recording_config(seen.clone()));

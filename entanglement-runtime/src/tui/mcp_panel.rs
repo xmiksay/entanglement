@@ -1,7 +1,8 @@
-//! `/mcp list` result panel (#373): a read-only popup listing connected MCP
-//! servers, their transport, status, and tools. Mirrors [`crate::tui::key_dialog::KeyDialog`]'s
-//! show/hide shape but carries no interactive state beyond visibility — `Esc`
-//! is the only key it consumes.
+//! `/mcp list` result panel (#373): a popup listing connected MCP servers,
+//! their transport, status, and tools. Mirrors [`crate::tui::key_dialog::KeyDialog`]'s
+//! show/hide shape. Selectable since #539: `Up`/`Down` move a server
+//! selection so `e`/`d` can enable/disable the highlighted server for the
+//! active session (a `mcp__<name>__*` tool-overlay entry).
 
 use entanglement_core::McpServerStatus;
 
@@ -13,6 +14,8 @@ pub struct McpPanel {
     /// against a stale/foreign `OutEvent::McpList` opening the panel with the
     /// wrong snapshot (e.g. a reply to another head sharing the same engine).
     pending: Option<String>,
+    /// The highlighted server row (#539) the `e`/`d` keys act on.
+    selected: usize,
 }
 
 impl McpPanel {
@@ -22,6 +25,30 @@ impl McpPanel {
 
     pub fn servers(&self) -> &[McpServerStatus] {
         &self.servers
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// The highlighted server's name, if any server is listed.
+    pub fn selected_server(&self) -> Option<&str> {
+        self.servers.get(self.selected).map(|s| s.name.as_str())
+    }
+
+    pub fn select_next(&mut self) {
+        if !self.servers.is_empty() {
+            self.selected = (self.selected + 1) % self.servers.len();
+        }
+    }
+
+    pub fn select_prev(&mut self) {
+        if !self.servers.is_empty() {
+            self.selected = self
+                .selected
+                .checked_sub(1)
+                .unwrap_or(self.servers.len() - 1);
+        }
     }
 
     pub fn hide(&mut self) {
@@ -40,6 +67,7 @@ impl McpPanel {
             return false;
         }
         self.pending = None;
+        self.selected = 0;
         self.servers = servers;
         self.visible = true;
         true

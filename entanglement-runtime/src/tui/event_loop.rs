@@ -10,8 +10,8 @@ use super::keybindings::LeaderResult;
 use super::modal_events::{
     handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
     handle_model_picker_event, handle_mouse, handle_profile_picker_event, handle_question_event,
-    handle_resume_modal_event, handle_sessions_modal_event, handle_tools_dialog_event,
-    DIALOG_PAGE_SIZE,
+    handle_resume_modal_event, handle_session_tools_dialog_event, handle_sessions_modal_event,
+    handle_tools_dialog_event, DIALOG_PAGE_SIZE,
 };
 use super::session_view::ApprovalMode;
 
@@ -97,6 +97,10 @@ pub(super) async fn handle_event(
                 if app.showing_tools_dialog() {
                     return handle_tools_dialog_event(app, key).await;
                 }
+                // Bare `/enable`'s session-tools checklist (#539).
+                if app.showing_session_tools_dialog() {
+                    return handle_session_tools_dialog_event(app, holly, key).await;
+                }
                 if app.showing_profile_picker() {
                     return handle_profile_picker_event(app, holly, key).await;
                 }
@@ -129,19 +133,36 @@ pub(super) async fn handle_event(
                     }
                     return Ok(false);
                 }
-                // `/mcp list` panel (#373): read-only + scrollable via
-                // `PageUp`/`PageDown`/`Up`/`Down`/`j`/`k` (mirrors the help
-                // dialog); `Esc` closes.
+                // `/mcp list` panel (#373, selectable since #539):
+                // `Up`/`Down`/`j`/`k` move the server selection, `e`/`d`
+                // enable/disable the highlighted server for the active session
+                // (a `mcp__<name>__*` tool-overlay entry),
+                // `PageUp`/`PageDown` scroll, `Esc` closes.
                 if app.showing_mcp_panel() {
                     match key.code {
                         KeyCode::Esc => app.close_mcp_panel(),
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            let s = app.mcp_scroll();
-                            app.set_mcp_scroll(s.saturating_sub(1));
+                        KeyCode::Up | KeyCode::Char('k') => app.mcp_select_prev(),
+                        KeyCode::Down | KeyCode::Char('j') => app.mcp_select_next(),
+                        KeyCode::Char('e') => {
+                            if let Some(name) = app.mcp_selected_server() {
+                                crate::tui::enable_command::upsert_enable(
+                                    app,
+                                    holly,
+                                    format!("mcp__{name}__*"),
+                                    false,
+                                )
+                                .await;
+                            }
                         }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            let s = app.mcp_scroll();
-                            app.set_mcp_scroll(s.saturating_add(1));
+                        KeyCode::Char('d') => {
+                            if let Some(name) = app.mcp_selected_server() {
+                                crate::tui::enable_command::upsert_deny(
+                                    app,
+                                    holly,
+                                    format!("mcp__{name}__*"),
+                                )
+                                .await;
+                            }
                         }
                         KeyCode::PageUp => {
                             let s = app.mcp_scroll();

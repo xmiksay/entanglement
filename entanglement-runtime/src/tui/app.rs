@@ -119,6 +119,10 @@ pub struct App {
     // `OutEvent::ToolOverlayChanged` — the head-side mirror `/enable`/`/disable`
     // read to compute the full-replacement list `InMsg::SetToolOverlay` needs.
     tool_overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
+    // Bare `/enable`'s session-tools checklist dialog (#539): toggle any
+    // advertised tool's availability for the active session; the overlay is
+    // the diff against the profile mask.
+    session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog,
 
     // `/agent` picker's `e` tools-checklist dialog (#330): the full advertised
     // tool roster (host + MCP + runtime-owned specs, from

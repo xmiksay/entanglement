@@ -3,15 +3,17 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 mod inspect;
 mod popups;
 mod sessions;
+mod tool_popups;
 
 pub use inspect::draw_inspect_overlay;
 pub use popups::{
-    draw_command_palette, draw_help_dialog, draw_key_dialog, draw_mcp_panel, draw_mention_popup,
-    draw_slash_autocomplete, draw_tools_dialog, draw_which_key_popup,
+    draw_command_palette, draw_help_dialog, draw_key_dialog, draw_mention_popup,
+    draw_slash_autocomplete, draw_which_key_popup,
 };
 pub use sessions::{
     draw_model_picker, draw_profile_picker, draw_resume_modal, draw_sessions_modal,
 };
+pub use tool_popups::{draw_mcp_panel, draw_session_tools_dialog, draw_tools_dialog};
 
 type ParentLinks =
     std::collections::HashMap<entanglement_core::SessionId, Option<entanglement_core::SessionId>>;

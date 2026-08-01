@@ -120,6 +120,7 @@ async fn tool_overlay_replay_fidelity() {
             ToolOverlayEntry {
                 pattern: "bash".into(),
                 allow: true,
+                deny: false,
             },
         ]),
     ];

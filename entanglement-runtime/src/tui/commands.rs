@@ -84,10 +84,10 @@ impl Command {
                 "Live-enable/disable bash (on [--allow [<pattern>]|--ask] | off)"
             }
             Command::Enable => {
-                "Enable tools for this session past the agent mask (mcp <server> | tool <name> [--allow])"
+                "Enable tools for this session past the agent mask (bare = checklist dialog; mcp <server> | tool <name> [--allow])"
             }
             Command::Disable => {
-                "Retract a /enable entry (mcp <server> | tool <name>; bare = clear all)"
+                "Disable tools for this session (mcp <server> | tool <name>; bare = reset to profile defaults)"
             }
         }
     }

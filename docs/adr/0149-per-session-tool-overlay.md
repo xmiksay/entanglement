@@ -24,12 +24,17 @@ an embedder) rather than authored into a profile.
 A **session-scoped tool overlay**, replacing wholesale via a new trusted-only
 frame and confirmed/persisted via a new lifecycle event:
 
-- `ToolOverlayEntry { pattern: String, allow: bool }` — `pattern` uses the
-  ADR-0148 `*`/`?` mask semantics (`mcp__chessbase__*` = one server,
-  `mcp__chessbase__evaluate` or `bash` = one tool, `mcp__*` = all MCP).
-  `allow: false` (the serde default, mirroring `BashGrade::Ask`) still routes
-  every matching call through the approval prompt; `allow: true` grants
-  outright.
+- `ToolOverlayEntry { pattern: String, allow: bool, deny: bool }` — `pattern`
+  uses the ADR-0148 `*`/`?` mask semantics (`mcp__chessbase__*` = one server,
+  `mcp__chessbase__evaluate` or `bash` = one tool, `mcp__*` = all MCP). An
+  **enable** entry (`deny: false`): `allow: false` (the serde default,
+  mirroring `BashGrade::Ask`) still routes every matching call through the
+  approval prompt; `allow: true` grants outright. A **deny** entry
+  (`deny: true`) withdraws matching tools from the session — even ones the
+  profile advertises — making disable exactly as expressible as enable;
+  `ToolOverlayEntry::disposition` resolves deny > enable > no-opinion
+  (falling back to the profile mask), mirroring the mask's own denylist-first
+  rule; a deny entry's `allow` is meaningless and ignored.
 - `InMsg::SetToolOverlay { session, entries }` — **full replacement**, not a
   merge (an empty list clears; the head computes the new list from the last
   confirmation it holds). Always succeeds, always confirms — the
@@ -47,14 +52,15 @@ frame and confirmed/persisted via a new lifecycle event:
 
 Semantics — "exists, and how it's graded":
 
-1. **Existence (mask):** a matching entry beats the active profile's
-   allowlist *and* denylist. Core's advertisement filter ORs the overlay with
-   `advertises_tool`; the runtime's `tool_masked` applies the identical
-   predicate **per link** of the ancestor walk — so a parent's overlay also
-   admits the tool for its spawn sub-tree (each descendant's own profile
-   permitting), and a masked child stays masked unless its own link has an
-   overlay. The rhai `BindingPolicy` inherits the mask half through
-   `tool_masked` unchanged.
+1. **Existence (mask):** the overlay's disposition beats the active profile's
+   allowlist *and* denylist in both directions (deny withdraws, enable
+   injects; no opinion ⇒ the profile mask stands). Core's advertisement
+   filter and the runtime's `tool_masked` apply the identical predicate —
+   `tool_masked` **per link** of the ancestor walk, so a parent's overlay
+   also covers its spawn sub-tree (each descendant's own link permitting),
+   and a masked child stays masked unless its own link has an overlay. The
+   rhai `BindingPolicy` inherits the mask half through `tool_masked`
+   unchanged.
 2. **Grade:** on the generic dispatch route, a matching overlay entry
    *replaces* the profile chain's resolved grade with `Ask`/`Allow` — applied
    in the executor ladder itself (after the pluggable `PermissionResolver`,
@@ -68,12 +74,22 @@ Semantics — "exists, and how it's graded":
    layered after), spawn gating, or the sandbox clamp.
 
 Head surface (TUI): `/enable mcp <server>` (→ `mcp__<server>__*`),
-`/enable tool <name-or-pattern>`, both `--allow`-capable; bare `/enable`
-renders the session's overlay + the advertised roster (discovery detail lives
-in `/mcp`'s panel and the `/agent` tools dialog); `/disable mcp|tool <x>`
-retracts one entry, bare `/disable` clears. Confirmations render as
-transcript status lines off `ToolOverlayChanged`; the head mirrors the
-per-session lists to compute each full-replacement update.
+`/enable tool <name-or-pattern>`, both `--allow`-capable — each an upsert
+that drops a same-pattern deny; `/disable mcp|tool <x>` upserts a deny entry
+(dropping a same-pattern enable), bare `/disable` clears the whole overlay
+back to profile defaults. Bare `/enable` opens the **session-tools checklist
+dialog**: every advertised tool with a checkbox seeded from the session's
+*effective* availability (profile default overridden by the overlay's
+disposition); `Space` toggles, `a` toggles auto-allow on an enabled override,
+`Enter` submits the overlay computed as the **diff against the profile**
+(default-matching rows contribute nothing, so clearing every override
+empties the overlay; a hand-typed glob entry is expanded to concrete names on
+submit — the #330 tools-dialog resolve-to-final-set behavior). The `/mcp`
+panel is selectable: `e`/`d` enable/disable the highlighted server for the
+active session (an exact `mcp__<name>__*` entry, tagged inline). All
+confirmations render as transcript status lines off `ToolOverlayChanged`;
+the head mirrors the per-session lists to compute each full-replacement
+update.
 
 ## Consequences
 

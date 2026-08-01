@@ -319,17 +319,23 @@ pub enum BashGrade {
 /// One entry of a session's live tool overlay (#539, ADR-0149): a `*`/`?`
 /// wildcard `pattern` (the ADR-0148 mask semantics — `mcp__chessbase__*` for a
 /// server, `bash` for one tool) a trusted head injected via
-/// [`InMsg::SetToolOverlay`] to make matching tools exist for **this session**
-/// regardless of the active agent profile's `tools:`/`disallowed_tools:` mask.
-/// `allow: false` (the default, mirroring [`BashGrade::Ask`]) still routes
-/// every matching call through the approval prompt; `allow: true` grants
-/// permission outright — both runtime-side and still clamped by the config
-/// ceiling (#172), exactly like a live bash grade (#498).
+/// [`InMsg::SetToolOverlay`] to make matching tools exist — or, with `deny:
+/// true`, **not** exist — for **this session** regardless of the active agent
+/// profile's `tools:`/`disallowed_tools:` mask. For an enable entry, `allow:
+/// false` (the default, mirroring [`BashGrade::Ask`]) still routes every
+/// matching call through the approval prompt; `allow: true` grants permission
+/// outright — both runtime-side and still clamped by the config ceiling
+/// (#172), exactly like a live bash grade (#498). A deny entry withdraws
+/// matching tools from the session (its `allow` is meaningless and ignored);
+/// deny beats enable beats the profile, mirroring the mask's own
+/// denylist-first rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOverlayEntry {
     pub pattern: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deny: bool,
 }
 
 impl ToolOverlayEntry {
@@ -337,6 +343,15 @@ impl ToolOverlayEntry {
         Self {
             pattern: pattern.into(),
             allow: false,
+            deny: false,
+        }
+    }
+
+    pub fn deny(pattern: impl Into<String>) -> Self {
+        Self {
+            pattern: pattern.into(),
+            allow: false,
+            deny: true,
         }
     }
 
@@ -346,11 +361,28 @@ impl ToolOverlayEntry {
         glob_match(&self.pattern, tool)
     }
 
-    /// The first entry matching `tool`, if any — the session-overlay lookup
-    /// both the advertisement filter and the runtime's mask/permission
-    /// overrides share.
+    /// The overlay's opinion on `tool`: `Some(false)` — a deny entry matches
+    /// (the tool does not exist for this session, even if the profile
+    /// advertises it); `Some(true)` — an enable entry matches (it exists even
+    /// if the profile masks it); `None` — no opinion, the profile mask stands.
+    /// Deny entries win over enable entries regardless of list order — the
+    /// session-overlay lookup the advertisement filter and the runtime's
+    /// mask override share.
+    pub fn disposition(entries: &[Self], tool: &str) -> Option<bool> {
+        if entries.iter().any(|e| e.deny && e.matches(tool)) {
+            return Some(false);
+        }
+        entries
+            .iter()
+            .any(|e| !e.deny && e.matches(tool))
+            .then_some(true)
+    }
+
+    /// The first **enable** entry matching `tool`, if any — the grade-override
+    /// lookup (a deny entry has no grade; it removes the tool ahead of any
+    /// permission decision).
     pub fn find<'a>(entries: &'a [Self], tool: &str) -> Option<&'a Self> {
-        entries.iter().find(|e| e.matches(tool))
+        entries.iter().find(|e| !e.deny && e.matches(tool))
     }
 }
 
@@ -2941,6 +2973,33 @@ mod tests {
         assert!(all.advertises_tool("mcp__docs__search"));
         let none = masked_profile(Some(vec![]), vec![]);
         assert!(!none.advertises_tool("read"));
+    }
+
+    #[test]
+    fn overlay_disposition_deny_beats_enable_beats_none() {
+        // #539: deny entries win regardless of list order; enable entries win
+        // over "no opinion"; an unmatched tool leaves the profile mask to
+        // decide (None).
+        let entries = vec![
+            ToolOverlayEntry::ask("mcp__*"),
+            ToolOverlayEntry::deny("mcp__jira__*"),
+        ];
+        assert_eq!(
+            ToolOverlayEntry::disposition(&entries, "mcp__docs__search"),
+            Some(true)
+        );
+        assert_eq!(
+            ToolOverlayEntry::disposition(&entries, "mcp__jira__create"),
+            Some(false),
+            "deny beats the broader enable"
+        );
+        assert_eq!(ToolOverlayEntry::disposition(&entries, "edit"), None);
+        // The grade lookup skips deny entries entirely.
+        assert!(ToolOverlayEntry::find(&entries, "mcp__docs__search").is_some());
+        assert!(
+            ToolOverlayEntry::find(&entries, "mcp__jira__create").is_some(),
+            "find returns the enable entry; existence was already refused by disposition"
+        );
     }
 
     #[test]
