@@ -14,10 +14,16 @@
 //!   `agent_poll` (see [`crate::agent_poll`]).
 //! - `agent` (blocking, #120) — [`run_agent`] runs the exact same launch path
 //!   (guard, clamp, `Spawn`), but instead of handing back the handle it parks on
-//!   the child's `Done` and folds the child's answer + elapsed straight into the
-//!   `ToolOutput` — the one-call path for a single delegation. It still records
-//!   into the registry, so a parent `Stop` while parked leaves the child
-//!   collectable via `agent_poll`.
+//!   the child's *genuine* completion and folds the child's answer + elapsed
+//!   straight into the `ToolOutput` — the one-call path for a single delegation.
+//!   It still records into the registry, so a parent `Stop` while parked leaves
+//!   the child collectable via `agent_poll`.
+//!
+//! Both routes share [`collect_child_answer`], which waits past an errored turn
+//! with no usable answer instead of unblocking the parent on it (#562): the
+//! child session stays alive and steerable, and the parent parks until the
+//! child's next turn genuinely finishes, or the child ends. See the function's
+//! own doc for the detail.
 //!
 //! Because they only orchestrate sessions (they touch no host resource), the
 //! executor runs them *before* permission resolution — they bypass the permission
@@ -321,9 +327,10 @@ pub async fn launch_subagent(
 }
 
 /// Orchestrate one blocking `agent` call (#120): run the exact `agent_spawn`
-/// launch path, then park on the child's `Done` and fold its answer + elapsed
-/// straight into the `ToolOutput`. Still records into `registry`, so a parent
-/// `Stop` while parked leaves the child collectable via `agent_poll`.
+/// launch path, then park on the child's genuine completion ([`collect_child_answer`])
+/// and fold its answer + elapsed straight into the `ToolOutput`. Still records
+/// into `registry`, so a parent `Stop` while parked leaves the child collectable
+/// via `agent_poll`.
 pub async fn run_agent(
     holly: Holly,
     events: Receiver<OutEvent>,
@@ -407,7 +414,7 @@ async fn launch(
     }
 
     // Keep accumulating the child's answer; publish it (with timing) for poll.
-    let answer = collect_child_answer(&mut events, &child).await;
+    let answer = collect_child_answer(&holly, &parent, &mut events, &child).await;
     let elapsed = started.elapsed();
     // The registry keeps a receiver, so the completed value survives this drop —
     // a blocking `agent` whose parent `Stop`ped is still poll-able by handle.
@@ -434,13 +441,39 @@ async fn launch(
 }
 
 /// Watch the child's event stream, accumulating its assistant text until the
-/// child's turn finishes (`Done`). Returns the final answer, or an explanatory
-/// note when the child errored or produced nothing. Public so the sponsored
-/// build launch in `propose_plan.rs` can reuse the exact same accumulation
-/// (ADR-0138).
-pub async fn collect_child_answer(events: &mut Receiver<OutEvent>, child: &SessionId) -> String {
+/// child *genuinely* finishes. Returns the final answer, or an explanatory note
+/// when the child produced nothing. Public so the sponsored build launch in
+/// `propose_plan.rs` can reuse the exact same accumulation (ADR-0138).
+///
+/// A turn's `Done` is **not** by itself the end of the wait (#562, amends
+/// ADR-0111/ADR-0123/ADR-0138 — see ADR-0155): the engine emits `Done` even for
+/// a turn that ended in `Error` (`emit_turn_error` fires both), so a child that
+/// ran out of budget mid-answer would otherwise resolve the parent with a bare
+/// "sub-agent ended with error" and let it conclude on top of a failed child. If
+/// a turn's `Done` lands with no accumulated text *and* that turn surfaced an
+/// `Error`, the child session is still alive and steerable (prompting it
+/// "continue" starts a new turn) — this clears the per-turn text/error and keeps
+/// watching instead of breaking, and tells `parent` why it's still parked so the
+/// user knows to steer the child. The wait only ends definitively on a turn
+/// whose `Done` carries a usable answer, or on the child's `SessionEnded`/
+/// `SessionHibernated` — a lagging or closed watcher still breaks defensively so
+/// a missed event can't park the parent forever.
+pub async fn collect_child_answer(
+    holly: &Holly,
+    parent: &SessionId,
+    events: &mut Receiver<OutEvent>,
+    child: &SessionId,
+) -> String {
     let mut text = String::new();
+    // This turn's error, if any — consumed (`.take()`) whenever it gates a
+    // "keep waiting" decision, so a later empty-and-error-free turn isn't
+    // mistaken for a still-erroring one.
     let mut error: Option<String> = None;
+    // The most recent turn's error, kept across a "keep waiting" reset purely
+    // as the fallback message if the wait ends (`SessionEnded`/lagged/closed)
+    // without ever landing an answer — losing it to "produced no output" would
+    // erase the one piece of context the user has for why the child stalled.
+    let mut last_error: Option<String> = None;
     loop {
         match events.recv().await {
             Ok(ev) if ev.session() != Some(child) => {}
@@ -449,8 +482,29 @@ pub async fn collect_child_answer(events: &mut Receiver<OutEvent>, child: &Sessi
             // drop the partial text so the final answer is the recovered round's
             // alone, not the discarded round concatenated onto it.
             Ok(OutEvent::AmbiguousRetry { .. }) => text.clear(),
-            Ok(OutEvent::Error { message, .. }) => error = Some(message),
-            Ok(OutEvent::Done { .. }) => break,
+            Ok(OutEvent::Error { message, .. }) => {
+                last_error = Some(message.clone());
+                error = Some(message);
+            }
+            Ok(OutEvent::Done { .. }) => {
+                if text.trim().is_empty() {
+                    if let Some(message) = error.take() {
+                        text.clear();
+                        holly.emit_for_session(parent, |seq| OutEvent::Error {
+                            session: parent.clone(),
+                            seq,
+                            message: format!(
+                                "sub-agent `{child}` ended its turn in error with no answer \
+                                 ({message}); it is still alive — steer it (e.g. prompt it to \
+                                 continue) to resolve this wait."
+                            ),
+                        });
+                        continue;
+                    }
+                }
+                break;
+            }
+            Ok(OutEvent::SessionEnded { .. }) | Ok(OutEvent::SessionHibernated { .. }) => break,
             Ok(_) => {}
             // A lagging watcher could miss the child's `Done` and park the parent
             // forever; surface what we have instead of blocking indefinitely.
@@ -459,7 +513,7 @@ pub async fn collect_child_answer(events: &mut Receiver<OutEvent>, child: &Sessi
         }
     }
     let text = text.trim();
-    match (text.is_empty(), error) {
+    match (text.is_empty(), last_error) {
         (false, _) => text.to_string(),
         (true, Some(e)) => format!("sub-agent ended with error: {e}"),
         (true, None) => "sub-agent produced no output".to_string(),
@@ -500,6 +554,180 @@ fn parse_input(input: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use entanglement_core::EngineConfig;
+    use std::time::Duration;
+
+    fn empty_engine() -> Holly {
+        Holly::spawn(EngineConfig::default())
+    }
+
+    /// Drain `sub` for up to a short deadline, returning the first event
+    /// matching `pred`. Panics if none arrives — these tests only await events
+    /// the code under test is expected to emit.
+    async fn expect_event(
+        sub: &mut Receiver<OutEvent>,
+        pred: impl Fn(&OutEvent) -> bool,
+    ) -> OutEvent {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match sub.recv().await.expect("event bus closed before match") {
+                    ev if pred(&ev) => return ev,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for expected event")
+    }
+
+    #[tokio::test]
+    async fn collect_child_answer_waits_past_an_errored_turn_for_the_next_one() {
+        // Repro shape for #562: the child's first turn errors with no usable
+        // text (e.g. an exhausted 429 budget). The old code broke on that
+        // turn's `Done` and folded the bare error in as the answer, unblocking
+        // the parent on a failed child. The fix keeps watching — a second turn
+        // (the child steered to "continue") with real text is what should
+        // actually resolve the wait.
+        let holly = empty_engine();
+        let parent = SessionId::new("parent");
+        let child = SessionId::new("child");
+        let mut parent_events = holly.subscribe();
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<OutEvent>(16);
+
+        let handle = {
+            let holly = holly.clone();
+            let parent = parent.clone();
+            let child = child.clone();
+            tokio::spawn(
+                async move { collect_child_answer(&holly, &parent, &mut rx, &child).await },
+            )
+        };
+
+        tx.send(OutEvent::Error {
+            session: child.clone(),
+            seq: 1,
+            message: "out of tokens".to_string(),
+        })
+        .unwrap();
+        tx.send(OutEvent::Done {
+            session: child.clone(),
+            seq: 2,
+        })
+        .unwrap();
+
+        // The parent is told why it's still parked, not unblocked.
+        let note = expect_event(
+            &mut parent_events,
+            |ev| matches!(ev, OutEvent::Error { session, .. } if session == &parent),
+        )
+        .await;
+        match note {
+            OutEvent::Error { message, .. } => {
+                assert!(
+                    message.contains("child"),
+                    "should name the child: {message}"
+                );
+                assert!(
+                    message.to_lowercase().contains("steer")
+                        || message.to_lowercase().contains("continue"),
+                    "should hint at steering: {message}"
+                );
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+        assert!(
+            !handle.is_finished(),
+            "the wait must not have resolved on the errored turn's Done"
+        );
+
+        // The child is steered ("continue") and its next turn produces a real
+        // answer.
+        tx.send(OutEvent::TextDelta {
+            session: child.clone(),
+            seq: 3,
+            text: "done for real".to_string(),
+        })
+        .unwrap();
+        tx.send(OutEvent::Done {
+            session: child.clone(),
+            seq: 4,
+        })
+        .unwrap();
+
+        let answer = tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("collect_child_answer must resolve once the child truly finishes")
+            .unwrap();
+        assert_eq!(answer, "done for real");
+    }
+
+    #[tokio::test]
+    async fn collect_child_answer_ends_on_session_ended_after_an_error() {
+        // If the child never gets steered and its session simply ends, the
+        // wait must still resolve — not hang forever.
+        let holly = empty_engine();
+        let parent = SessionId::new("parent2");
+        let child = SessionId::new("child2");
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<OutEvent>(16);
+
+        tx.send(OutEvent::Error {
+            session: child.clone(),
+            seq: 1,
+            message: "out of tokens".to_string(),
+        })
+        .unwrap();
+        tx.send(OutEvent::Done {
+            session: child.clone(),
+            seq: 2,
+        })
+        .unwrap();
+        tx.send(OutEvent::SessionEnded {
+            session: child.clone(),
+            ts: 0,
+        })
+        .unwrap();
+
+        let answer = tokio::time::timeout(
+            Duration::from_secs(2),
+            collect_child_answer(&holly, &parent, &mut rx, &child),
+        )
+        .await
+        .expect("SessionEnded must end the wait");
+        assert!(
+            answer.contains("out of tokens"),
+            "the best-effort error answer should surface: {answer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_child_answer_breaks_on_the_first_done_when_it_has_an_answer() {
+        // The common case — no error at all — is unaffected: any `Done`
+        // carrying usable text still ends the wait immediately.
+        let holly = empty_engine();
+        let parent = SessionId::new("parent3");
+        let child = SessionId::new("child3");
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<OutEvent>(16);
+
+        tx.send(OutEvent::TextDelta {
+            session: child.clone(),
+            seq: 1,
+            text: "all good".to_string(),
+        })
+        .unwrap();
+        tx.send(OutEvent::Done {
+            session: child.clone(),
+            seq: 2,
+        })
+        .unwrap();
+
+        let answer = tokio::time::timeout(
+            Duration::from_secs(1),
+            collect_child_answer(&holly, &parent, &mut rx, &child),
+        )
+        .await
+        .expect("a clean Done must resolve immediately");
+        assert_eq!(answer, "all good");
+    }
 
     #[test]
     fn parse_input_reads_json_object() {
