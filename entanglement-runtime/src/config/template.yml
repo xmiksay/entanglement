@@ -69,6 +69,15 @@
 #     headers   — static request headers; values may use ${VAR} from the env
 #
 #   disabled     — skip this server without deleting the block (both transports)
+#   state        — (#542) three-state activation: `enabled` (connect at startup,
+#                  the default), `allowed` (available — connect on demand per
+#                  session via `/enable mcp <name>` or the agent's `mcp_enable`
+#                  tool), `disabled`. Overrides the `disabled` bool when set.
+#                  Provider-bundled servers (z.ai web_search_prime / web_reader /
+#                  zread, unlocked by ZAI_API_KEY) default to `allowed`; a
+#                  same-name entry here overrides them field-wise — e.g.
+#                  `zread: { state: disabled }` hides one, `state: enabled`
+#                  connects it at startup.
 #   capabilities — (#426) map a server's raw tool name to `read`/`write`/`call` so
 #                  a bare `permissions: { read: allow }` above also covers it —
 #                  an MCP tool isn't self-describing, so without this hint it only

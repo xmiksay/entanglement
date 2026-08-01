@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use crate::permission_path::normalize_lexical;
 
 use super::app::App;
-use super::commands::Command;
 
 /// Resolve `/allow`'s raw path argument against the project `root` into the
 /// normalized, root-relative form the grant store keys on (#486): joins a
@@ -42,15 +41,20 @@ pub fn normalize_allow_dir(root: &Path, input: &str) -> Result<String, String> {
 /// Send `/allow <path>`: normalize against the head's root and record a
 /// `SessionDir` grant for the active session directly through the installed
 /// grant store — no wire traffic, this is head policy (ADR-0126), not an
-/// engine op. A parse/outside-root error renders as a status line instead,
+/// engine op. Issue 2: the path-presence validation is now clap-derived
+/// ([`crate::tui::command_args::parse_allow_via_clap`]); the root-relative
+/// normalization stays here (it needs the head's `root`, which the clap layer
+/// doesn't see). A parse/outside-root error renders as a status line instead,
 /// mirroring `mcp_command::send_mcp`.
 pub(super) fn send_allow(app: &mut App, text: &str) {
-    let rest = text
-        .trim()
-        .strip_prefix(&Command::Allow.slash_name())
-        .map(str::trim)
-        .unwrap_or("");
-    match normalize_allow_dir(app.root(), rest) {
+    let rest = match crate::tui::command_args::parse_allow_via_clap(text) {
+        Ok(path) => path,
+        Err(message) => {
+            app.record_allow_error(message);
+            return;
+        }
+    };
+    match normalize_allow_dir(app.root(), &rest) {
         Ok(dir) => app.apply_allow_grant(&dir),
         Err(message) => app.record_allow_error(message),
     }

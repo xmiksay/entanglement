@@ -360,7 +360,15 @@ replaced; the final `Catalog` deserialize is `deny_unknown_fields` (typos are
 loud). A `wire: openai | anthropic` tag on each provider is what makes
 user-defined providers work with **zero code change** — any OpenAI-compatible
 endpoint (proxy, local vLLM, new vendor) is `wire: openai` + `base_url` +
-`key_env`. `ModelEntry` carries capability flags (`supports_thinking`,
+`key_env`. A provider entry may also **bundle MCP servers** (#542,
+[ADR-0152](../adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)):
+`mcp_servers: {name → ProviderMcpServer}` — transport (`command` XOR `url`,
+validated runtime-side), `${VAR}` headers, the #426 capability hint, and a
+default `McpServerState` (`None` ⇒ `allowed`). The embedded defaults ship
+z.ai's `web_search_prime`/`web_reader`/`zread` this way, key-gated on
+`ZAI_API_KEY`; the runtime (`entanglement-runtime::mcp::available`) owns all
+interpretation — the provider crate only carries the data. `ModelEntry`
+carries capability flags (`supports_thinking`,
 `supports_temperature`, `default_temperature`, `max_output_tokens`,
 `thinking_budget_tokens`) and **pricing** (USD/M tokens:
 `input`/`output`/`cached_input`/`cache_write`, all optional). Lookups:

@@ -130,10 +130,49 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let input_text = app.input_text();
-    let display_text = if input_text.is_empty() {
-        placeholder_text
+
+    // Issue 2 whisper: when the input starts with `/`, show a dimmed one-line
+    // usage hint for the best-matching command (the prefix filter from
+    // `filter_commands`) instead of the generic placeholder. When input is
+    // empty, keep the current placeholder. When input is `/` alone or `/xyz`
+    // with no match, show nothing extra (the slash popup handles "no match").
+    let slash_whisper = if !input_text.is_empty() && input_text.starts_with('/') {
+        // The prefix is the text after `/` up to the first space.
+        let prefix = input_text[1..].split_whitespace().next().unwrap_or("");
+        let best = crate::tui::commands::filter_commands(prefix)
+            .into_iter()
+            .next()
+            .map(|cmd| cmd.help_text());
+        best.and_then(|help| help.lines().next().map(|line| line.trim().to_string()))
+            .filter(|line| !line.is_empty())
     } else {
-        &input_text
+        None
+    };
+
+    // Build the rendered line: empty input → placeholder; a `/…` input with a
+    // matching whisper → the typed text + a dimmed hint; anything else → the
+    // raw input text.
+    let display_line: Line = if input_text.is_empty() {
+        Line::from(Span::styled(
+            placeholder_text,
+            Style::default().fg(Color::DarkGray).bg(theme.input_bg),
+        ))
+    } else if let Some(hint) = slash_whisper {
+        Line::from(vec![
+            Span::styled(
+                input_text.clone(),
+                Style::default().fg(Color::White).bg(theme.input_bg),
+            ),
+            Span::styled(
+                format!("  {hint}"),
+                Style::default().fg(Color::DarkGray).bg(theme.input_bg),
+            ),
+        ])
+    } else {
+        Line::from(Span::styled(
+            input_text.clone(),
+            Style::default().fg(Color::White).bg(theme.input_bg),
+        ))
     };
 
     // The cursor (row, col) and a vertical/horizontal scroll that keep it in
@@ -150,7 +189,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     // no further right than the last visible column (`width - 1`).
     let hscroll = cursor_col.saturating_sub(area.width.saturating_sub(1) as usize) as u16;
 
-    let paragraph = Paragraph::new(display_text)
+    let paragraph = Paragraph::new(display_line)
         .style(Style::default().fg(Color::White).bg(theme.input_bg))
         .scroll((vscroll, hscroll));
     f.render_widget(paragraph, area);

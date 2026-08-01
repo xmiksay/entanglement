@@ -604,6 +604,42 @@ both dispatch and model-advertised schemas with no engine restart.
   a separate, unscheduled follow-up. The TUI `/mcp` surface landed next —
   §"TUI `/mcp` command" below.
 
+### Provider-bundled servers & three-state enablement — [ADR-0152](../adr/0152-provider-bundled-mcp-servers-three-state-enablement.md) (#542)
+
+Provider-bundled MCP servers are **catalog data**: `ProviderEntry.mcp_servers`
+(name → `ProviderMcpServer` — transport, `${VAR}` headers, #426 capability
+hint, default state) ships z.ai's `web_search_prime`/`web_reader`/`zread` in
+the embedded `defaults.yml`, authenticated by the provider's own
+`key_env` (`Bearer ${ZAI_API_KEY}`), every tool hinted `read`. A same-name
+user `mcp:` entry overrides field-wise (`available::merge_user_over_bundled`);
+bundled servers never enter `ServerConfigs`/`save_mcp` — they are not
+persistable state, and a `McpRemove` of one merely disconnects it.
+
+Every MCP server now has a **three-state activation**
+(`McpServerState`, `McpServerConfig::effective_state()` — the optional
+`state:` field wins, else the legacy `disabled` bool maps `true` ⇒ `disabled`
+/ `false` ⇒ `enabled`):
+
+- **`enabled`** — connects at startup, advertised everywhere (mask/overlay
+  still apply). The user-entry default.
+- **`allowed`** — *available*, not connected: visible to `/enable mcp <name>`,
+  the `/mcp` panel's `e` key, and the agent's **`mcp_enable` tool** (an
+  ordinary profile-graded registry tool, `load_skill`-shaped; the live
+  available roster rides its schema as a dynamic `enum`). Enabling lazily
+  connects (`available::enable_for_session` — `mcp_add` minus persistence)
+  and marks the calling session in `AvailableMcp`; the runtime's
+  `tool_spec_resolver` then filters a lazily-connected server's specs to its
+  enabling sessions, so enablement is **session-scoped and ephemeral**
+  (`/disable mcp <name>` unmarks; the connection stays up for others). The
+  bundled-entry default. Availability is **key presence read live** from the
+  process env, so a `/key` save unlocks a bundle with no restart; keyless ⇒
+  silently absent everywhere.
+- **`disabled`** — invisible; only a config edit lifts it.
+
+`McpServerStatus` gains an optional `state` (`"enabled"`/`"allowed"`) and the
+responder's `McpList` snapshot appends available-unconnected servers
+(`connected: false`), which the TUI panel paints "available", not red.
+
 ### TUI `/mcp` command — [ADR-0100](../adr/0100-tui-mcp-command.md) (#373)
 
 `Command::Mcp` (`tui/commands.rs`) joins `all_commands()`; its subcommand

@@ -8,6 +8,7 @@ use ratatui::{
 
 use super::centered_rect;
 use crate::tui::app::App;
+use crate::tui::commands::Command;
 use crate::tui::keybindings::KeyMap;
 
 pub fn draw_which_key_popup(f: &mut Frame, keymap: &KeyMap) {
@@ -129,13 +130,17 @@ pub fn draw_command_palette(f: &mut Frame, app: &mut App) {
 }
 
 pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
-    let input_text = app.input().lines().join("\n");
-
-    if !input_text.starts_with('/') || input_text.chars().count() > 1 {
+    // Issue 2: the old "only show when input is exactly `/`" static list is
+    // replaced by the live prefix-filter `SlashPopup` (mirrors the mention
+    // popup). The popup's own visibility gate (set by `SlashPopup::update`
+    // on every keystroke) decides whether to render.
+    if !app.slash_visible() {
         return;
     }
-
-    let commands = crate::tui::commands::all_commands();
+    let commands: Vec<Command> = app.slash().matches().to_vec();
+    if commands.is_empty() {
+        return;
+    }
 
     let items: Vec<ListItem> = commands
         .iter()
@@ -152,23 +157,24 @@ pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
         })
         .collect();
 
+    let height = (commands.len() as u16 + 2).min(15).min(input_area.y);
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Commands (Tab to select)"),
+                .title("Commands (Tab/Enter to insert, Esc to dismiss)"),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     let popup_area = Rect {
         x: input_area.x,
-        y: input_area.y.saturating_sub(15),
+        y: input_area.y.saturating_sub(height),
         width: input_area.width.min(60),
-        height: 15.min(input_area.y),
+        height,
     };
 
     f.render_widget(Clear, popup_area);
-    f.render_widget(list, popup_area);
+    f.render_stateful_widget(list, popup_area, app.slash_mut().state());
 }
 
 /// `@file` completion popup (ADR-0030). Anchored above the input like the slash

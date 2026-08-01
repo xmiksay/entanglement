@@ -125,6 +125,9 @@ pub fn mcp_list(active: &ActiveServers) -> Vec<entanglement_core::McpServerStatu
             connected: true,
             tools: server.tools.clone(),
             error: None,
+            // Filled by the MCP responder (#542), which alone knows whether a
+            // connected server is startup-`enabled` or lazily `allowed`.
+            state: None,
         })
         .collect();
     list.sort_by(|a, b| a.name.cmp(&b.name));
@@ -151,6 +154,7 @@ mod tests {
             headers: HashMap::new(),
             disabled: false,
             capabilities: HashMap::new(),
+            state: None,
         }
     }
 

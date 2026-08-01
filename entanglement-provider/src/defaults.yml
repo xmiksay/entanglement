@@ -42,6 +42,35 @@ providers:
     base_url: https://api.z.ai/api/coding/paas/v4
     key_env: ZAI_API_KEY
     default_model: glm-5.2
+    # Provider-bundled MCP servers (#542): z.ai's first-party tool servers,
+    # reachable with the same ZAI_API_KEY (docs.z.ai/devpack/mcp, fetched
+    # 2026-08-01). Default state is `allowed` — available for per-session
+    # enablement (`/enable mcp <name>` or the agent's `mcp_enable` tool) when
+    # the key resolves, silently absent otherwise. Override per server in your
+    # `config.yml` `mcp:` section (merge by name): `state: enabled` connects at
+    # startup, `state: disabled` hides one. The capability hints (#426) mark
+    # every tool read-only so a bare `read: allow` permission rule covers them.
+    mcp_servers:
+      web_search_prime:
+        url: https://api.z.ai/api/mcp/web_search_prime/mcp
+        headers:
+          Authorization: "Bearer ${ZAI_API_KEY}"
+        capabilities:
+          webSearchPrime: read
+      web_reader:
+        url: https://api.z.ai/api/mcp/web_reader/mcp
+        headers:
+          Authorization: "Bearer ${ZAI_API_KEY}"
+        capabilities:
+          webReader: read
+      zread:
+        url: https://api.z.ai/api/mcp/zread/mcp
+        headers:
+          Authorization: "Bearer ${ZAI_API_KEY}"
+        capabilities:
+          search_doc: read
+          read_file: read
+          get_repo_structure: read
     # Full z.ai text palette (docs.z.ai/guides/overview/pricing, fetched
     # 2026-07-15). glm-5.2 stays first — the auto-detect default and the
     # `default_model` above; `builtin_parses` asserts the ordering. Pricing is

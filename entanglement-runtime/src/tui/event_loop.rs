@@ -19,7 +19,7 @@ use super::session_view::ApprovalMode;
 /// word jumps, plain + Ctrl Home/End, Alt+Enter newline. Returns whether the key
 /// was consumed so callers can fall back to their own bindings (e.g. the Normal
 /// `Enter` = send). Kept free of `holly`/mention side effects; the Normal path
-/// re-runs `update_mention` after a mutation, the reject/answer paths don't need it.
+/// re-runs `update_popups` after a mutation, the reject/answer paths don't need it.
 pub(super) fn apply_input_edit_key(
     app: &mut App,
     key: &ratatui::crossterm::event::KeyEvent,
@@ -30,39 +30,39 @@ pub(super) fn apply_input_edit_key(
         // Alt+Enter newline (D1): universally detected via the ESC Alt prefix.
         KeyCode::Enter if mods.contains(KeyModifiers::ALT) => {
             app.input().insert_newline();
-            app.update_mention();
+            app.update_popups();
             true
         }
         // Ctrl+Left/Right word jumps.
         KeyCode::Left if mods.contains(KeyModifiers::CONTROL) => {
             app.input().move_word_left();
-            app.update_mention();
+            app.update_popups();
             true
         }
         KeyCode::Right if mods.contains(KeyModifiers::CONTROL) => {
             app.input().move_word_right();
-            app.update_mention();
+            app.update_popups();
             true
         }
         // Ctrl+Home/End document jumps; plain Home/End line jumps.
         KeyCode::Home if mods.contains(KeyModifiers::CONTROL) => {
             app.input().move_to_doc_home();
-            app.update_mention();
+            app.update_popups();
             true
         }
         KeyCode::End if mods.contains(KeyModifiers::CONTROL) => {
             app.input().move_to_doc_end();
-            app.update_mention();
+            app.update_popups();
             true
         }
         KeyCode::Home => {
             app.input().move_cursor_to_head();
-            app.update_mention();
+            app.update_popups();
             true
         }
         KeyCode::End => {
             app.input().move_cursor_to_end();
-            app.update_mention();
+            app.update_popups();
             true
         }
         _ => false,
@@ -332,8 +332,14 @@ pub(super) async fn handle_event(
                         }
                     }
                     ApprovalMode::Normal => match key.code {
+                        // Mention popup (ADR-0030) wins first — it's the most
+                        // specific (`@token` in flight). Then the slash popup
+                        // (Issue 2): Tab accepts the selected `/command`.
                         KeyCode::Tab if app.mention_visible() => {
                             app.accept_mention();
+                        }
+                        KeyCode::Tab if app.slash_visible() => {
+                            app.accept_slash();
                         }
                         KeyCode::Tab => {
                             let input_text = app.input().lines().join("\n");
@@ -353,6 +359,9 @@ pub(super) async fn handle_event(
                         // a modifier. Mirrors the Tab arm in reverse (#322).
                         KeyCode::BackTab if app.mention_visible() => {
                             app.accept_mention();
+                        }
+                        KeyCode::BackTab if app.slash_visible() => {
+                            app.accept_slash();
                         }
                         KeyCode::BackTab => {
                             let input_text = app.input().lines().join("\n");
@@ -384,27 +393,27 @@ pub(super) async fn handle_event(
                         }
                         KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.input().move_word_left();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.input().move_word_right();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.input().move_to_doc_home();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.input().move_to_doc_end();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::Home => {
                             app.input().move_cursor_to_head();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::End => {
                             app.input().move_cursor_to_end();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::Esc => {
                             // Esc is "cancel the current turn", not "quit" (#6):
@@ -416,6 +425,8 @@ pub(super) async fn handle_event(
                             // the two-stage Ctrl+C remain the quit paths.
                             if app.mention_visible() {
                                 app.hide_mention();
+                            } else if app.slash_visible() {
+                                app.hide_slash();
                             } else if app.is_input_multiline() {
                                 app.set_input_multiline(false);
                             } else {
@@ -436,9 +447,11 @@ pub(super) async fn handle_event(
                                 || key.modifiers.contains(KeyModifiers::SHIFT)
                             {
                                 app.input().insert_newline();
-                                app.update_mention();
+                                app.update_popups();
                             } else if app.mention_visible() {
                                 app.accept_mention();
+                            } else if app.slash_visible() {
+                                app.accept_slash();
                             } else {
                                 let text = app.take_input_text();
                                 if !text.is_empty() {
@@ -446,6 +459,14 @@ pub(super) async fn handle_event(
                                         if let Some(cmd) =
                                             crate::tui::commands::parse_command(&text)
                                         {
+                                            // Issue 2: `/cmd -h`/`--help` renders the
+                                            // clap-generated help for any arg-bearing
+                                            // command, and `/help <cmd>` renders it for
+                                            // `<cmd>`. Both surface as a transcript status
+                                            // line (never the keybindings dialog).
+                                            if send_help_if_requested(app, &text, &cmd).await {
+                                                return Ok(false);
+                                            }
                                             // `/compact` needs both the trailing
                                             // free text (→ `args.instructions`)
                                             // and `holly` to send the oneshot op
@@ -539,11 +560,13 @@ pub(super) async fn handle_event(
                         }
                         KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.input().insert_newline();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::Up => {
                             if app.mention_visible() {
                                 app.mention_select_prev();
+                            } else if app.slash_visible() {
+                                app.slash_select_prev();
                             } else if app.input().cursor() == (0, 0) {
                                 app.history_up();
                             } else {
@@ -553,6 +576,8 @@ pub(super) async fn handle_event(
                         KeyCode::Down => {
                             if app.mention_visible() {
                                 app.mention_select_next();
+                            } else if app.slash_visible() {
+                                app.slash_select_next();
                             } else if app.input().cursor() == (0, 0) {
                                 app.history_down();
                             } else {
@@ -576,23 +601,23 @@ pub(super) async fn handle_event(
                                     _ => app.input().insert_char(c),
                                 }
                             }
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::Char(c) => {
                             app.input().insert_char(c);
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::Backspace => {
                             app.input().delete_char();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::Left => {
                             app.input().move_cursor_left();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         KeyCode::Right => {
                             app.input().move_cursor_right();
-                            app.update_mention();
+                            app.update_popups();
                         }
                         _ => {}
                     },
@@ -606,7 +631,7 @@ pub(super) async fn handle_event(
         Event::Paste(s) => {
             if matches!(app.approval_mode(), ApprovalMode::Normal) {
                 app.input().insert_str(&s);
-                app.update_mention();
+                app.update_popups();
             }
         }
         // External SIGINT (ADR-0087): route through the same two-stage path as
@@ -619,6 +644,51 @@ pub(super) async fn handle_event(
         }
     }
     Ok(false)
+}
+
+/// Issue 2: `/cmd -h`/`--help` and `/help <cmd>` both render the clap-generated
+/// help for the command. Returns `true` if the input was a help request (so the
+/// caller short-circuits the normal dispatch), `false` to let dispatch proceed.
+/// For `/cmd -h`, `cmd` is the parsed command; for `/help <cmd>`, `cmd` is
+/// `Command::Help` and the target is parsed from the trailing text.
+async fn send_help_if_requested(
+    app: &mut App,
+    text: &str,
+    cmd: &crate::tui::commands::Command,
+) -> bool {
+    use crate::tui::commands::Command;
+    // `/help <cmd>`: look up the named command and render its help_text.
+    if *cmd == Command::Help {
+        let target = text
+            .trim()
+            .strip_prefix("/help")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|name| {
+                crate::tui::commands::all_commands()
+                    .into_iter()
+                    .find(|c| c.name() == name)
+            });
+        if let Some(target) = target {
+            let help = target.help_text();
+            app.record_notice("help", help);
+            return true;
+        }
+        return false;
+    }
+    // `/cmd -h`/`--help`: any arg-bearing command accepts the help flag.
+    if cmd.has_args() && has_help_flag(text) {
+        let help = cmd.help_text();
+        app.record_notice(cmd.name(), help);
+        return true;
+    }
+    false
+}
+
+/// Whether the raw `/cmd …` text contains a `-h` or `--help` token (Issue 2).
+fn has_help_flag(text: &str) -> bool {
+    text.split_whitespace()
+        .any(|tok| tok == "-h" || tok == "--help")
 }
 
 /// Send `/compact [--keep N] [instructions]` as an [`InMsg::Oneshot`]
@@ -1296,6 +1366,91 @@ mod tests {
             drain_inbound(&mut rx).await,
             vec![InMsg::PauseSession { session: sid }],
             "Ctrl+Space on a non-paused session pauses it"
+        );
+    }
+
+    // --- Issue 2: `/help <cmd>` and `/cmd -h`/`--help` ----------------------
+    //
+    // Both surface the clap-generated help as a transcript status line (never
+    // the keybindings dialog). The help text comes from `Command::help_text()`,
+    // which renders the clap struct for arg-bearing commands.
+
+    fn transcript_has_notice(app: &App, label: &str, needle: &str) -> bool {
+        app.transcript().iter().any(|e| {
+            matches!(e, TranscriptEntry::ToolOutput { tool: Some(t), output }
+                if t == label && output.contains(needle))
+        })
+    }
+
+    #[tokio::test]
+    async fn help_with_command_arg_renders_clap_help() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        app.set_input_text("/help compact".to_string());
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Enter)),
+        )
+        .await
+        .unwrap();
+
+        // The clap-rendered /compact help names the --keep flag.
+        assert!(
+            transcript_has_notice(&app, "help", "--keep"),
+            "expected --keep in /help compact output: {:?}",
+            app.transcript()
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_dash_h_renders_clap_help() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        app.set_input_text("/set -h".to_string());
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Enter)),
+        )
+        .await
+        .unwrap();
+
+        // The clap-rendered /set help names the KEY positional.
+        assert!(
+            transcript_has_notice(&app, "set", "KEY") || transcript_has_notice(&app, "set", "key"),
+            "expected KEY/key in /set -h output: {:?}",
+            app.transcript()
+        );
+    }
+
+    #[tokio::test]
+    async fn help_with_unknown_command_falls_through_to_keybindings() {
+        // `/help bogus` (no matching command) falls through to the default
+        // `/help` behavior (toggle the keybindings dialog), not a status line.
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        app.set_input_text("/help bogus".to_string());
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Enter)),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            app.showing_help(),
+            "/help <unknown> opens the keybindings dialog"
         );
     }
 }

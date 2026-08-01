@@ -2,14 +2,18 @@
 //! rather than folded into `tui/commands.rs` (name/description/dispatch) or
 //! `tui/event_loop.rs` (the `Enter`-key send helpers) — both already past the
 //! 400-line cap — mirroring how `CommandPalette` was split out of
-//! `commands.rs` once it crossed the cap (#376).
+//! `commands.rs` once it crossed the cap (#376). Issue 2: the `list`/`add`/
+//! `remove` subcommand grammar is now clap-derived
+//! ([`crate::tui::command_args::parse_mcp_via_clap`]); this module maps the
+//! parsed `McpSub` onto the [`McpCommand`] + `McpServerSpec` the wire path
+//! needs.
 
 use std::collections::HashMap;
 
 use entanglement_core::{Holly, InMsg, McpServerSpec, SessionId};
 
 use super::app::App;
-use super::commands::Command;
+use super::command_args::{parse_mcp_via_clap, McpSub};
 
 /// One parsed `/mcp` subcommand: `List` needs no further wire data; `Add`/
 /// `Remove` carry exactly what `InMsg::McpAdd`/`McpRemove` need.
@@ -23,100 +27,90 @@ pub enum McpCommand {
 const MCP_USAGE: &str = "usage: /mcp list | /mcp add <name> -- <command> [args...] | \
      /mcp add <name> --url <url> [--header KEY:VALUE]... | /mcp remove <name>";
 
-/// Parse `/mcp <subcommand> ...` — the same raw-text re-parse pattern as
-/// [`crate::tui::commands::parse_set_args`], since [`crate::tui::commands::parse_command`]
-/// only matches the command name and drops everything after it. A bare `/mcp`
-/// (no subcommand) defaults to `list`, so both a plain Enter and a
-/// command-palette pick (which carries no trailing text) do something useful.
+/// Parse `/mcp <subcommand> ...` — Issue 2 delegates to clap
+/// ([`parse_mcp_via_clap`]) and maps the parsed [`McpSub`] onto [`McpCommand`],
+/// building the [`McpServerSpec`] for `add`. A bare `/mcp` (no subcommand)
+/// defaults to `list`, so both a plain Enter and a command-palette pick (which
+/// carries no trailing text) do something useful. Clap's "unrecognized
+/// subcommand" wording is normalized to the friendlier "unknown subcommand"
+/// the pre-Issue-2 parser used.
 pub fn parse_mcp_args(text: &str) -> Result<McpCommand, String> {
-    let rest = text
-        .trim()
-        .strip_prefix(&Command::Mcp.slash_name())
-        .map(str::trim)
-        .unwrap_or("");
-    let mut parts = rest.splitn(2, char::is_whitespace);
-    let sub = parts.next().unwrap_or("").trim();
-    let args = parts.next().unwrap_or("").trim();
+    let sub = parse_mcp_via_clap(text)
+        .map_err(|e| e.replace("unrecognized subcommand", "unknown subcommand"))?;
     match sub {
-        "" | "list" => Ok(McpCommand::List),
-        "remove" => {
-            let name = args
-                .split_whitespace()
-                .next()
-                .ok_or_else(|| "usage: /mcp remove <name>".to_string())?;
-            Ok(McpCommand::Remove {
-                name: name.to_string(),
-            })
-        }
-        "add" => parse_mcp_add(args),
-        other => Err(format!("unknown /mcp subcommand: {other} — {MCP_USAGE}")),
+        None | Some(McpSub::List) => Ok(McpCommand::List),
+        Some(McpSub::Remove { name }) => Ok(McpCommand::Remove { name }),
+        Some(McpSub::Add(add)) => build_mcp_add_spec(add),
     }
 }
 
-/// Parse `/mcp add`'s arguments: `<name> -- <command> [args...]` (stdio) or
-/// `<name> --url <url> [--header KEY:VALUE]...` (streamable HTTP). Whitespace
-/// splitting only — no quoting — matching every other raw-text re-parse in the
-/// TUI.
-fn parse_mcp_add(args: &str) -> Result<McpCommand, String> {
-    let mut tokens = args.split_whitespace();
-    let name = tokens
-        .next()
-        .ok_or_else(|| MCP_USAGE.to_string())?
-        .to_string();
-    let rest: Vec<&str> = tokens.collect();
-    match rest.first() {
-        Some(&"--") => {
-            let command = rest
-                .get(1)
-                .ok_or_else(|| "usage: /mcp add <name> -- <command> [args...]".to_string())?
-                .to_string();
-            let args = rest[2..].iter().map(|s| s.to_string()).collect();
-            Ok(McpCommand::Add {
-                name,
-                spec: McpServerSpec {
-                    command: Some(command),
-                    args,
-                    env: HashMap::new(),
-                    url: None,
-                    headers: HashMap::new(),
-                    disabled: false,
-                },
-            })
-        }
-        Some(&"--url") => {
-            let url = rest
-                .get(1)
-                .ok_or_else(|| "usage: /mcp add <name> --url <url>".to_string())?
-                .to_string();
-            let mut headers = HashMap::new();
-            let mut i = 2;
-            while i < rest.len() {
-                if rest[i] != "--header" {
-                    return Err(format!("unknown /mcp add flag: {}", rest[i]));
-                }
-                let kv = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "usage: --header KEY:VALUE".to_string())?;
-                let (k, v) = kv
-                    .split_once(':')
-                    .ok_or_else(|| format!("invalid --header value: {kv} (expected KEY:VALUE)"))?;
-                headers.insert(k.to_string(), v.to_string());
-                i += 2;
-            }
-            Ok(McpCommand::Add {
-                name,
-                spec: McpServerSpec {
-                    command: None,
-                    args: Vec::new(),
-                    env: HashMap::new(),
-                    url: Some(url),
-                    headers,
-                    disabled: false,
-                },
-            })
-        }
-        _ => Err(MCP_USAGE.to_string()),
+/// Build the [`McpServerSpec`] from clap's parsed `McpAddArgs`: the `command`
+/// vec carries the stdio command + args (the tokens after `--`); `url` selects
+/// the streamable-HTTP transport with optional repeated `--header KEY:VALUE`s
+/// — but clap's standard `Vec<String>` can't collect a repeatable `--header`
+/// alongside a `trailing_var_arg` command, so headers are re-extracted from the
+/// raw tokens here (mirroring the pre-Issue-2 behavior exactly).
+fn build_mcp_add_spec(add: super::command_args::McpAddArgs) -> Result<McpCommand, String> {
+    let name = add.name;
+    if let Some(url) = add.url {
+        // HTTP form: re-scan the original tokens for `--header KEY:VALUE` pairs.
+        // clap captured `name` + `url`; headers ride the same raw text.
+        let headers = parse_headers_from_remaining(&add.command)?;
+        Ok(McpCommand::Add {
+            name,
+            spec: McpServerSpec {
+                command: None,
+                args: Vec::new(),
+                env: HashMap::new(),
+                url: Some(url),
+                headers,
+                disabled: false,
+            },
+        })
+    } else if add.command.is_empty() {
+        Err(MCP_USAGE.to_string())
+    } else {
+        let command = add.command[0].clone();
+        let args = add.command[1..].to_vec();
+        Ok(McpCommand::Add {
+            name,
+            spec: McpServerSpec {
+                command: Some(command),
+                args,
+                env: HashMap::new(),
+                url: None,
+                headers: HashMap::new(),
+                disabled: false,
+            },
+        })
     }
+}
+
+/// Extract `KEY:VALUE` header pairs from the leftover tokens clap didn't
+/// consume (the `--header` flag isn't a clap field on `McpAddArgs`; it rides
+/// the same `command` trailing-var-arg vec when `--url` is used). Each
+/// `--header` must be followed by a `KEY:VALUE` token; a missing value or a
+/// value without a `:` separator is a friendly error, matching the pre-Issue-2
+/// parser exactly.
+fn parse_headers_from_remaining(tokens: &[String]) -> Result<HashMap<String, String>, String> {
+    let mut headers = HashMap::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "--header" {
+            let kv = tokens
+                .get(i + 1)
+                .ok_or_else(|| "usage: --header KEY:VALUE".to_string())?;
+            let (k, v) = kv
+                .split_once(':')
+                .ok_or_else(|| format!("invalid --header value: {kv} (expected KEY:VALUE)"))?;
+            headers.insert(k.to_string(), v.to_string());
+            i += 2;
+        } else {
+            // An unexpected token after `--url <url>` — only `--header` is valid.
+            return Err(format!("unknown /mcp add flag: {}", tokens[i]));
+        }
+    }
+    Ok(headers)
 }
 
 /// Send `/mcp list|add|remove ...`: `list` records the query's correlation id

@@ -23,6 +23,7 @@
 //! Precedence overall is **env > user YAML > embedded defaults** — the env layer
 //! is applied by the head when it reads a resolved [`ProviderEntry`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -71,7 +72,19 @@ pub struct ProviderEntry {
     pub default_model: String,
     #[serde(default)]
     pub models: Vec<ModelEntry>,
+    /// Provider-bundled MCP servers (#542): first-party tool servers this
+    /// provider ships (e.g. z.ai's web_search_prime / web_reader / zread),
+    /// available to the runtime whenever this provider's `key_env` resolves.
+    /// Keyed by server name; a user `config.yml` `mcp:` entry of the same name
+    /// overrides field-wise. Mapping-valued, so the catalog merge combines the
+    /// defaults with a user `providers.yml` key-wise for free.
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, ProviderMcpServer>,
 }
+
+// Split to `crate::provider_mcp` for the 400-line file cap; re-exported here
+// so `catalog::McpServerState`/`catalog::ProviderMcpServer` stay valid paths.
+pub use crate::provider_mcp::{McpServerState, ProviderMcpServer};
 
 /// Which concrete client talks to a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -677,6 +690,95 @@ mod tests {
         // A model with no documented per-model tier stays unset — falls back to
         // the provider/client cap rather than an invented guess.
         assert_eq!(c.model("zai", "glm-4.7").unwrap().concurrency, None);
+    }
+
+    #[test]
+    fn zai_ships_the_three_bundled_mcp_servers() {
+        // #542: web_search_prime / web_reader / zread ride the catalog as data,
+        // HTTP transport, keyed by the provider's own ZAI_API_KEY header, all
+        // tools hinted read-only (#426), state unset (⇒ the runtime's
+        // `allowed` default).
+        let c = Catalog::builtin();
+        let zai = c.provider("zai").unwrap();
+        assert_eq!(zai.mcp_servers.len(), 3);
+        for name in ["web_search_prime", "web_reader", "zread"] {
+            let s = zai.mcp_servers.get(name).unwrap_or_else(|| {
+                panic!("bundled z.ai MCP server `{name}` missing from defaults")
+            });
+            assert!(
+                s.url
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("https://api.z.ai/api/mcp/"),
+                "{name}: unexpected url {:?}",
+                s.url
+            );
+            assert!(s.command.is_none());
+            assert_eq!(
+                s.headers.get("Authorization").map(String::as_str),
+                Some("Bearer ${ZAI_API_KEY}")
+            );
+            assert!(s.state.is_none(), "{name}: default state must stay unset");
+            assert!(!s.capabilities.is_empty());
+            assert!(s.capabilities.values().all(|c| c == "read"));
+        }
+        // No other embedded provider bundles servers (yet).
+        for p in &c.providers {
+            if p.name != "zai" {
+                assert!(p.mcp_servers.is_empty(), "{}: unexpected bundle", p.name);
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_mcp_server_state_is_user_overridable_field_wise() {
+        // A user providers.yml can flip one bundled server's state without
+        // re-declaring (or losing) its url/headers — the mapping merges
+        // key-wise like every other catalog mapping.
+        let c = merge_str(
+            "providers:\n\
+             \x20 - name: zai\n\
+             \x20   mcp_servers:\n\
+             \x20     web_reader:\n\
+             \x20       state: disabled\n",
+        );
+        let zai = c.provider("zai").unwrap();
+        let reader = zai.mcp_servers.get("web_reader").unwrap();
+        assert_eq!(reader.state, Some(McpServerState::Disabled));
+        assert!(reader.url.as_deref().unwrap().contains("web_reader"));
+        // Siblings untouched.
+        assert!(zai.mcp_servers.get("zread").unwrap().state.is_none());
+        // And a user can bundle a server onto another provider entirely.
+        let c = merge_str(
+            "providers:\n\
+             \x20 - name: openai\n\
+             \x20   mcp_servers:\n\
+             \x20     myserver:\n\
+             \x20       url: https://example.com/mcp\n\
+             \x20       state: enabled\n",
+        );
+        let my = c
+            .provider("openai")
+            .unwrap()
+            .mcp_servers
+            .get("myserver")
+            .unwrap();
+        assert_eq!(my.state, Some(McpServerState::Enabled));
+    }
+
+    #[test]
+    fn bundled_mcp_server_rejects_unknown_fields() {
+        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
+        let over: Value = serde_yaml::from_str(
+            "providers:\n\
+             \x20 - name: zai\n\
+             \x20   mcp_servers:\n\
+             \x20     zread:\n\
+             \x20       typo_field: 1\n",
+        )
+        .unwrap();
+        let err = serde_yaml::from_value::<Catalog>(merge_value(base, over)).unwrap_err();
+        assert!(err.to_string().contains("typo_field"), "got: {err}");
     }
 
     #[test]

@@ -85,6 +85,7 @@ mod tests {
             headers: HashMap::new(),
             disabled: false,
             capabilities: HashMap::new(),
+            state: None,
         }
     }
 

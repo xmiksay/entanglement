@@ -233,6 +233,7 @@ mod tests {
                 key_env: Some("ZAI_API_KEY".into()),
                 rpm,
                 concurrency: None,
+                mcp_servers: Default::default(),
                 default_model: "glm-5.2".into(),
                 models: vec![ModelEntry {
                     id: "glm-5.2".into(),

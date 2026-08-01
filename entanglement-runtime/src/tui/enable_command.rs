@@ -6,12 +6,15 @@
 //! the whole overlay), or open the session-tools checklist dialog (bare
 //! `/enable`). Kept in its own module mirroring
 //! `mcp_command.rs`/`bash_command.rs` (the raw-text re-parse pattern), since
-//! `commands.rs`/`event_loop.rs` are past the 400-line cap.
+//! `commands.rs`/`event_loop.rs` are past the 400-line cap. Issue 2: the
+//! `mcp`/`tool` subcommand grammar is now clap-derived
+//! ([`crate::tui::command_args::parse_enable_via_clap`]); this module maps the
+//! parsed pieces onto [`EnableCommand`].
 
 use entanglement_core::{Holly, InMsg, SessionId, ToolOverlayEntry};
 
 use super::app::App;
-use super::commands::Command;
+use super::command_args::{parse_enable_via_clap, EnableTarget};
 
 /// One parsed `/enable` or `/disable` subcommand. `pattern` is the overlay
 /// entry it maps onto: `mcp <server>` ⇒ `mcp__<server>__*`, `tool <x>` ⇒ `x`
@@ -31,65 +34,46 @@ pub enum EnableCommand {
     Clear,
 }
 
-const ENABLE_USAGE: &str = "usage: /enable | /enable mcp <server> [--allow] | \
-     /enable tool <name-or-pattern> [--allow]";
-const DISABLE_USAGE: &str = "usage: /disable | /disable mcp <server> | /disable tool <name>";
-
-/// Parse `/enable ...` / `/disable ...` — the same raw-text re-parse pattern as
-/// [`crate::tui::mcp_command::parse_mcp_args`]. `enabling` selects which
-/// command's grammar `text` is parsed under.
+/// Parse `/enable ...` / `/disable ...` — Issue 2 delegates to clap
+/// ([`parse_enable_via_clap`]) and maps the parsed `(target, allow)` onto
+/// [`EnableCommand`]. `enabling` selects which command's grammar `text` is
+/// parsed under. A bare `/disable` (or its `/disable all` alias) clears the
+/// whole overlay.
 pub fn parse_enable_args(text: &str, enabling: bool) -> Result<EnableCommand, String> {
-    let cmd = if enabling {
-        Command::Enable
-    } else {
-        Command::Disable
-    };
-    let rest = text
-        .trim()
-        .strip_prefix(&cmd.slash_name())
-        .map(str::trim)
-        .unwrap_or("");
-    let mut tokens = rest.split_whitespace();
-    let sub = tokens.next().unwrap_or("");
-    match (enabling, sub) {
-        (true, "") => Ok(EnableCommand::Show),
-        (false, "") | (false, "all") => Ok(EnableCommand::Clear),
-        (_, "mcp") | (_, "tool") => {
-            let target = tokens
-                .next()
-                .ok_or_else(|| usage(enabling).to_string())?
-                .to_string();
-            let pattern = if sub == "mcp" {
-                format!("mcp__{target}__*")
-            } else {
-                target
-            };
-            let mut allow = false;
-            for flag in tokens {
-                match flag {
-                    "--allow" if enabling => allow = true,
-                    other => return Err(format!("unknown {} flag: {other}", cmd.slash_name())),
-                }
-            }
+    // `/disable all` is an alias for bare `/disable` (Clear) — not a clap
+    // subcommand, so intercept it before clap rejects `all` as unrecognized.
+    if !enabling {
+        let trimmed = text
+            .trim()
+            .strip_prefix("/disable")
+            .map(str::trim)
+            .unwrap_or("");
+        if trimmed.is_empty() || trimmed == "all" {
+            return Ok(EnableCommand::Clear);
+        }
+    }
+    let (target, allow) = parse_enable_via_clap(text, enabling)?;
+    match (enabling, target) {
+        (true, None) => Ok(EnableCommand::Show),
+        (false, None) => Ok(EnableCommand::Clear),
+        (_, Some(EnableTarget::Mcp { server })) => {
+            let pattern = format!("mcp__{server}__*");
             if enabling {
                 Ok(EnableCommand::Enable { pattern, allow })
             } else {
                 Ok(EnableCommand::Disable { pattern })
             }
         }
-        (_, other) => Err(format!(
-            "unknown {} subcommand: {other} — {}",
-            cmd.slash_name(),
-            usage(enabling)
-        )),
-    }
-}
-
-fn usage(enabling: bool) -> &'static str {
-    if enabling {
-        ENABLE_USAGE
-    } else {
-        DISABLE_USAGE
+        (_, Some(EnableTarget::Tool { name })) => {
+            if enabling {
+                Ok(EnableCommand::Enable {
+                    pattern: name,
+                    allow,
+                })
+            } else {
+                Ok(EnableCommand::Disable { pattern: name })
+            }
+        }
     }
 }
 
@@ -118,8 +102,16 @@ pub(super) async fn send_enable(app: &mut App, holly: &Holly, text: &str, enabli
 /// Upsert an enable entry for `pattern` on the active session, dropping any
 /// same-pattern entry (a re-enable re-grades in place; a prior deny flips).
 /// Shared by the typed `/enable`, the `/mcp` panel's `e` key, and the
-/// session-tools dialog.
+/// session-tools dialog. For an `mcp__<server>__*` pattern naming an
+/// *available* (`allowed`-state, #542) server, this first lazily connects it —
+/// the same path the `mcp_enable` tool takes — and scopes its visibility to
+/// this session; a connect failure renders as a status line and skips the
+/// overlay entirely.
 pub(super) async fn upsert_enable(app: &mut App, holly: &Holly, pattern: String, allow: bool) {
+    if let Err(message) = lazy_enable_available(app, &pattern).await {
+        app.record_enable_error(message);
+        return;
+    }
     let session = app.active_session_id().clone();
     let mut entries = app.overlay_entries(&session);
     entries.retain(|e| e.pattern != pattern);
@@ -131,11 +123,54 @@ pub(super) async fn upsert_enable(app: &mut App, holly: &Holly, pattern: String,
     send_overlay(holly, session, entries).await;
 }
 
+/// The `/enable` side of #542: when `pattern` targets an available MCP server,
+/// connect it on demand and mark it enabled for the active session. A pattern
+/// that isn't `mcp__<server>__*`, a TUI without handles (tests), or a server
+/// that is neither available nor lazily connected (i.e. a startup-`enabled`
+/// one, or an ordinary masked tool) all fall through as a no-op.
+async fn lazy_enable_available(app: &mut App, pattern: &str) -> Result<(), String> {
+    let Some(server) = pattern
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.strip_suffix("__*"))
+        .map(str::to_string)
+    else {
+        return Ok(());
+    };
+    let Some(handles) = app.mcp_handles().cloned() else {
+        return Ok(());
+    };
+    if handles.avail.get(&server).is_none() && !handles.avail.is_lazy(&server) {
+        return Ok(());
+    }
+    let session = app.active_session_id().clone();
+    crate::mcp::available::enable_for_session(
+        &handles.avail,
+        &server,
+        &session,
+        &handles.registry,
+        &handles.active,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("MCP server `{server}`: {e:#}"))
+}
+
 /// Upsert a deny entry for `pattern` on the active session, dropping any
 /// same-pattern entry — matching tools stop existing for this session even
 /// when the profile advertises them. Shared by the typed `/disable` and the
-/// `/mcp` panel's `d` key.
+/// `/mcp` panel's `d` key. For a lazily-connected `allowed` server (#542) it
+/// also withdraws this session's enablement mark — the symmetric,
+/// session-scoped inverse; the connection itself stays up for other sessions.
 pub(super) async fn upsert_deny(app: &mut App, holly: &Holly, pattern: String) {
+    if let (Some(server), Some(handles)) = (
+        pattern
+            .strip_prefix("mcp__")
+            .and_then(|rest| rest.strip_suffix("__*")),
+        app.mcp_handles(),
+    ) {
+        let avail = handles.avail.clone();
+        avail.mark_disabled(server, &app.active_session_id().clone());
+    }
     let session = app.active_session_id().clone();
     let mut entries = app.overlay_entries(&session);
     entries.retain(|e| e.pattern != pattern);

@@ -1,4 +1,4 @@
-use entanglement_provider::{GenerationParams, ReasoningEffort};
+use entanglement_provider::GenerationParams;
 
 // `CommandPalette` lives in a sibling module (#376, once this file crossed the
 // 400-line cap) but stays reachable at its historical path for every call site.
@@ -152,60 +152,12 @@ pub fn all_commands() -> Vec<Command> {
 /// (f32), `effort` (`low|medium|high`), `thinking_budget`/`thinking_budget_tokens`
 /// (u32), `max_tokens`/`max_output_tokens` (u32). An unknown key or a value that
 /// fails to parse for its key is a friendly `Err` message, not a panic.
+///
+/// Issue 2: the tokenization + key/value grammar is now clap-derived
+/// ([`crate::tui::command_args::parse_set_via_clap`]); this thin wrapper keeps
+/// the historical call-site path so `event_loop::send_set` is untouched.
 pub fn parse_set_args(text: &str) -> Result<GenerationParams, String> {
-    let rest = text
-        .trim()
-        .strip_prefix(&Command::Set.slash_name())
-        .map(str::trim)
-        .unwrap_or("");
-    let mut parts = rest.splitn(2, char::is_whitespace);
-    let key = parts.next().unwrap_or("").trim();
-    let value = parts.next().unwrap_or("").trim();
-    if key.is_empty() || value.is_empty() {
-        return Err(
-            "usage: /set <key> <value> — keys: temperature, effort, thinking_budget, max_tokens"
-                .to_string(),
-        );
-    }
-
-    let mut overrides = GenerationParams::default();
-    match key {
-        "temperature" => {
-            overrides.temperature = Some(
-                value
-                    .parse::<f32>()
-                    .map_err(|_| format!("invalid temperature value: {value}"))?,
-            );
-        }
-        "effort" => {
-            overrides.reasoning_effort = Some(match value.to_lowercase().as_str() {
-                "low" => ReasoningEffort::Low,
-                "medium" => ReasoningEffort::Medium,
-                "high" => ReasoningEffort::High,
-                _ => {
-                    return Err(format!(
-                        "invalid effort value: {value} (expected low|medium|high)"
-                    ))
-                }
-            });
-        }
-        "thinking_budget" | "thinking_budget_tokens" => {
-            overrides.thinking_budget_tokens = Some(
-                value
-                    .parse::<u32>()
-                    .map_err(|_| format!("invalid thinking_budget value: {value}"))?,
-            );
-        }
-        "max_tokens" | "max_output_tokens" => {
-            overrides.max_output_tokens = Some(
-                value
-                    .parse::<u32>()
-                    .map_err(|_| format!("invalid max_tokens value: {value}"))?,
-            );
-        }
-        other => return Err(format!("unknown /set key: {other}")),
-    }
-    Ok(overrides)
+    crate::tui::command_args::parse_set_via_clap(text)
 }
 
 /// Parse `/compact`'s trailing text into an optional keep-tail count plus the
@@ -215,49 +167,25 @@ pub fn parse_set_args(text: &str) -> Result<GenerationParams, String> {
 /// command name). A leading `--keep N` token is consumed and parsed as `u64`;
 /// anything else is passed through unchanged as instructions. No `--keep` →
 /// `kept: 0` (today's default: summarize the whole history).
+///
+/// Issue 2: the `--keep N` + free-text grammar is now clap-derived
+/// ([`crate::tui::command_args::parse_compact_via_clap`]); this thin wrapper
+/// keeps the historical call-site path so `event_loop::send_compact` is
+/// untouched.
 pub fn parse_compact_args(text: &str) -> Result<(u64, Option<String>), String> {
-    let rest = text
-        .trim()
-        .strip_prefix(&Command::Compact.slash_name())
-        .map(str::trim)
-        .unwrap_or("");
-    let Some(after_flag) = rest.strip_prefix("--keep") else {
-        return Ok((0, (!rest.is_empty()).then(|| rest.to_string())));
-    };
-    let mut parts = after_flag.trim_start().splitn(2, char::is_whitespace);
-    let value = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "usage: /compact [--keep N] [instructions]".to_string())?;
-    let kept = value
-        .parse::<u64>()
-        .map_err(|_| format!("invalid --keep value: {value}"))?;
-    let instructions = parts.next().map(str::trim).filter(|s| !s.is_empty());
-    Ok((kept, instructions.map(str::to_string)))
+    crate::tui::command_args::parse_compact_via_clap(text)
 }
 
 /// Parse the `--all` flag shared by `/stop`, `/pause`, `/continue` (#6).
 /// `text` is the raw input including the leading slash command. Returns
 /// whether the flag was present; an unknown token is a friendly `Err`.
+///
+/// Issue 2: the `--all`/`-a` grammar is now clap-derived
+/// ([`crate::tui::command_args::parse_lifecycle_via_clap`]); this thin wrapper
+/// keeps the historical call-site path so the three `event_loop::send_*`
+/// helpers are untouched.
 pub fn parse_all_flag(text: &str, cmd: Command) -> Result<bool, String> {
-    let rest = text
-        .trim()
-        .strip_prefix(&cmd.slash_name())
-        .map(str::trim)
-        .unwrap_or("");
-    let mut all = false;
-    for tok in rest.split_whitespace() {
-        match tok {
-            "--all" | "-a" => all = true,
-            other => {
-                return Err(format!(
-                    "unknown {} argument: {other} (expected --all)",
-                    cmd.slash_name()
-                ))
-            }
-        }
-    }
-    Ok(all)
+    crate::tui::command_args::parse_lifecycle_via_clap(text, cmd)
 }
 
 /// Parse `/name <text>`'s trailing free text (the raw-text re-parse pattern,
@@ -295,6 +223,7 @@ pub fn filter_commands(query: &str) -> Vec<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use entanglement_provider::ReasoningEffort;
 
     #[test]
     fn test_parse_command_valid() {
