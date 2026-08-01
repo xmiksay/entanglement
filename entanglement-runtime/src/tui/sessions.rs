@@ -232,6 +232,14 @@ impl SessionRegistry {
         }
         self.showing_modal = false;
     }
+
+    /// The session id highlighted in the open modal, if any — used by the
+    /// sessions-modal quick keys (#6) to act on the highlighted session.
+    pub fn modal_selected_id(&self) -> Option<SessionId> {
+        self.modal_state
+            .selected()
+            .and_then(|i| self.order.get(i).cloned())
+    }
 }
 
 #[cfg(test)]

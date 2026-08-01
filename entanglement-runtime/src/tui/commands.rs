@@ -29,6 +29,9 @@ pub enum Command {
     Bash,
     Enable,
     Disable,
+    Pause,
+    Continue,
+    Stop,
 }
 
 impl Command {
@@ -54,6 +57,9 @@ impl Command {
             Command::Bash => "bash",
             Command::Enable => "enable",
             Command::Disable => "disable",
+            Command::Pause => "pause",
+            Command::Continue => "continue",
+            Command::Stop => "stop",
         }
     }
 
@@ -89,6 +95,15 @@ impl Command {
             Command::Disable => {
                 "Disable tools for this session (mcp <server> | tool <name>; bare = reset to profile defaults)"
             }
+            Command::Pause => {
+                "Pause the current session (--all for every live session)"
+            }
+            Command::Continue => {
+                "Resume a paused session (--all for every live session)"
+            }
+            Command::Stop => {
+                "Stop/cancel the current session's in-flight turn (--all for every live session)"
+            }
         }
     }
 
@@ -119,6 +134,9 @@ pub fn all_commands() -> Vec<Command> {
         Command::Bash,
         Command::Enable,
         Command::Disable,
+        Command::Pause,
+        Command::Continue,
+        Command::Stop,
     ]
 }
 
@@ -212,6 +230,30 @@ pub fn parse_compact_args(text: &str) -> Result<(u64, Option<String>), String> {
         .map_err(|_| format!("invalid --keep value: {value}"))?;
     let instructions = parts.next().map(str::trim).filter(|s| !s.is_empty());
     Ok((kept, instructions.map(str::to_string)))
+}
+
+/// Parse the `--all` flag shared by `/stop`, `/pause`, `/continue` (#6).
+/// `text` is the raw input including the leading slash command. Returns
+/// whether the flag was present; an unknown token is a friendly `Err`.
+pub fn parse_all_flag(text: &str, cmd: Command) -> Result<bool, String> {
+    let rest = text
+        .trim()
+        .strip_prefix(&cmd.slash_name())
+        .map(str::trim)
+        .unwrap_or("");
+    let mut all = false;
+    for tok in rest.split_whitespace() {
+        match tok {
+            "--all" | "-a" => all = true,
+            other => {
+                return Err(format!(
+                    "unknown {} argument: {other} (expected --all)",
+                    cmd.slash_name()
+                ))
+            }
+        }
+    }
+    Ok(all)
 }
 
 pub fn parse_command(input: &str) -> Option<Command> {
@@ -421,5 +463,44 @@ mod tests {
     fn parse_set_args_missing_args() {
         assert!(parse_set_args("/set").is_err());
         assert!(parse_set_args("/set temperature").is_err());
+    }
+
+    #[test]
+    fn new_lifecycle_commands_parse() {
+        assert_eq!(parse_command("/pause"), Some(Command::Pause));
+        assert_eq!(parse_command("/continue"), Some(Command::Continue));
+        assert_eq!(parse_command("/stop"), Some(Command::Stop));
+    }
+
+    #[test]
+    fn new_commands_appear_in_all_commands_and_palette_filter() {
+        assert!(all_commands().iter().any(|c| matches!(c, Command::Pause)));
+        assert!(all_commands()
+            .iter()
+            .any(|c| matches!(c, Command::Continue)));
+        assert!(all_commands().iter().any(|c| matches!(c, Command::Stop)));
+        // `filter_commands` is what the palette uses.
+        assert!(filter_commands("pause")
+            .iter()
+            .any(|c| matches!(c, Command::Pause)));
+        assert!(filter_commands("stop")
+            .iter()
+            .any(|c| matches!(c, Command::Stop)));
+    }
+
+    #[test]
+    fn parse_all_flag_bare_and_flagged() {
+        assert_eq!(parse_all_flag("/stop", Command::Stop), Ok(false));
+        assert_eq!(parse_all_flag("/stop --all", Command::Stop), Ok(true));
+        assert_eq!(parse_all_flag("/pause -a", Command::Pause), Ok(true));
+        assert_eq!(
+            parse_all_flag("/continue --all", Command::Continue),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn parse_all_flag_rejects_unknown_token() {
+        assert!(parse_all_flag("/stop frobnicate", Command::Stop).is_err());
     }
 }

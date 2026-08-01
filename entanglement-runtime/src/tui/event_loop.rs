@@ -89,7 +89,7 @@ pub(super) async fn handle_event(
                 }
                 app.clear_quit_pending();
                 if app.showing_sessions_modal() {
-                    return handle_sessions_modal_event(app, key).await;
+                    return handle_sessions_modal_event(app, holly, key).await;
                 }
                 // Checked before the profile picker: `e` opens the tools dialog
                 // *over* the picker without closing it (#330), so it must win the
@@ -407,12 +407,23 @@ pub(super) async fn handle_event(
                             app.update_mention();
                         }
                         KeyCode::Esc => {
+                            // Esc is "cancel the current turn", not "quit" (#6):
+                            // close a mention popup, then collapse a multiline
+                            // buffer, and only then (single-line, empty input)
+                            // stop the active session's in-flight turn — the
+                            // same `InMsg::Stop` Esc already sends in approval
+                            // mode. The app no longer quits on Esc; `/exit` and
+                            // the two-stage Ctrl+C remain the quit paths.
                             if app.mention_visible() {
                                 app.hide_mention();
                             } else if app.is_input_multiline() {
                                 app.set_input_multiline(false);
                             } else {
-                                return Ok(true);
+                                let _ = holly
+                                    .send(InMsg::Stop {
+                                        session: app.active_session_id().clone(),
+                                    })
+                                    .await;
                             }
                         }
                         KeyCode::Enter => {
@@ -482,6 +493,21 @@ pub(super) async fn handle_event(
                                                 .await;
                                                 return Ok(false);
                                             }
+                                            // Lifecycle commands (#6): `/stop`,
+                                            // `/pause`, `/continue` need `holly`
+                                            // and the optional `--all` text.
+                                            if cmd == crate::tui::commands::Command::Stop {
+                                                send_stop(app, holly, &text).await;
+                                                return Ok(false);
+                                            }
+                                            if cmd == crate::tui::commands::Command::Pause {
+                                                send_pause(app, holly, &text).await;
+                                                return Ok(false);
+                                            }
+                                            if cmd == crate::tui::commands::Command::Continue {
+                                                send_resume(app, holly, &text).await;
+                                                return Ok(false);
+                                            }
                                             if app.execute_command(cmd) {
                                                 return Ok(true);
                                             }
@@ -528,6 +554,12 @@ pub(super) async fn handle_event(
                             } else {
                                 app.input().move_cursor_down();
                             }
+                        }
+                        // Ctrl+Space toggles pause/resume on the active session
+                        // (#6): Esc now stops the turn, so pause/resume need
+                        // their own dedicated key. Idempotent server-side.
+                        KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            send_pause_resume_toggle(app, holly).await;
                         }
                         KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             if !app.handle_readline_key(c) {
@@ -655,6 +687,112 @@ async fn send_show(app: &App, holly: &Holly) {
             overrides: entanglement_core::GenerationParams::default(),
         })
         .await;
+}
+
+/// Send `/stop [--all]` as one [`InMsg::Stop`] per live session (#6): the bare
+/// form cancels the active session's in-flight turn (the same wire message the
+/// repurposed Esc sends); `--all` fans out to every live session. A parse error
+/// (unknown argument) is rendered as a status line instead.
+async fn send_stop(app: &mut App, holly: &Holly, text: &str) {
+    let all = match crate::tui::commands::parse_all_flag(text, crate::tui::commands::Command::Stop)
+    {
+        Ok(all) => all,
+        Err(e) => {
+            app.record_status("stop", e);
+            return;
+        }
+    };
+    if all {
+        for (id, _) in app.sessions() {
+            let _ = holly
+                .send(InMsg::Stop {
+                    session: id.clone(),
+                })
+                .await;
+        }
+    } else {
+        let _ = holly
+            .send(InMsg::Stop {
+                session: app.active_session_id().clone(),
+            })
+            .await;
+    }
+}
+
+/// Send `/pause [--all]` as one [`InMsg::PauseSession`] per live session (#6):
+/// holds the session at `AgentState::Paused` without cancelling the turn or
+/// evicting memory. `--all` fans out to every live session.
+async fn send_pause(app: &mut App, holly: &Holly, text: &str) {
+    let all = match crate::tui::commands::parse_all_flag(text, crate::tui::commands::Command::Pause)
+    {
+        Ok(all) => all,
+        Err(e) => {
+            app.record_status("pause", e);
+            return;
+        }
+    };
+    if all {
+        for (id, _) in app.sessions() {
+            let _ = holly
+                .send(InMsg::PauseSession {
+                    session: id.clone(),
+                })
+                .await;
+        }
+    } else {
+        let _ = holly
+            .send(InMsg::PauseSession {
+                session: app.active_session_id().clone(),
+            })
+            .await;
+    }
+}
+
+/// Send `/continue [--all]` as one [`InMsg::ResumeSession`] per live session
+/// (#6): lifts a hold placed by `/pause`. Idempotent on a non-paused session.
+/// `--all` fans out to every live session.
+async fn send_resume(app: &mut App, holly: &Holly, text: &str) {
+    let all =
+        match crate::tui::commands::parse_all_flag(text, crate::tui::commands::Command::Continue) {
+            Ok(all) => all,
+            Err(e) => {
+                app.record_status("resume", e);
+                return;
+            }
+        };
+    if all {
+        for (id, _) in app.sessions() {
+            let _ = holly
+                .send(InMsg::ResumeSession {
+                    session: id.clone(),
+                })
+                .await;
+        }
+    } else {
+        let _ = holly
+            .send(InMsg::ResumeSession {
+                session: app.active_session_id().clone(),
+            })
+            .await;
+    }
+}
+
+/// Ctrl+Space toggle (#6): pause the active session if it is currently running,
+/// resume it if it is paused. Mirrors the idempotent wire semantics — the engine
+/// treats `PauseSession` on an idle session and `ResumeSession` on a non-paused
+/// one as no-ops, so toggling by observed state is safe.
+async fn send_pause_resume_toggle(app: &mut App, holly: &Holly) {
+    use entanglement_core::AgentState;
+    let msg = if app.state() == AgentState::Paused {
+        InMsg::ResumeSession {
+            session: app.active_session_id().clone(),
+        }
+    } else {
+        InMsg::PauseSession {
+            session: app.active_session_id().clone(),
+        }
+    };
+    let _ = holly.send(msg).await;
 }
 
 /// Send an [`InMsg::Approve`] with the chosen [`ApprovalScope`] (#174) and clear
@@ -846,6 +984,295 @@ mod tests {
             recorded,
             "expected a bare rejection decision line: {:?}",
             app.transcript()
+        );
+    }
+
+    // --- Issue #6: Esc stops the turn; /stop, /pause, /continue commands ----
+    //
+    // These cover the control-flow invariants the feature depends on: bare Esc
+    // no longer quits (it stops the active turn), the mention-popup and
+    // multiline-collapse layers still win over stop, and the three slash
+    // commands route through their interceptors without quitting. The fan-out
+    // of `--all` is asserted by counting inbound `InMsg`s on
+    // `holly.subscribe_inbound()` — deterministic, no engine-timing dependency.
+
+    fn key(code: KeyCode) -> ratatui::crossterm::event::KeyEvent {
+        ratatui::crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Drains every inbound `InMsg` the supervisor has fanned out since `rx`
+    /// was created. `Holly::send` only awaits the mpsc hand-off to the
+    /// supervisor; the inbound broadcast happens on the supervisor's own task,
+    /// so this polls with a short quiet-window terminator instead of a
+    /// synchronous `try_recv` — deterministic without racing the supervisor's
+    /// wake-up. The overall deadline is a backstop; in practice every message
+    /// arrives within the first quiet window.
+    async fn drain_inbound(rx: &mut tokio::sync::broadcast::Receiver<InMsg>) -> Vec<InMsg> {
+        use std::time::Duration;
+        let mut seen = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            // A 30ms quiet window with no message means the supervisor has
+            // fanned out everything we sent.
+            match tokio::time::timeout(Duration::from_millis(30), rx.recv()).await {
+                Ok(Ok(msg)) => seen.push(msg),
+                Ok(Err(_)) => break, // channel closed
+                Err(_) => break,     // quiet window elapsed
+            }
+        }
+        seen
+    }
+
+    #[tokio::test]
+    async fn bare_esc_in_normal_mode_stops_the_turn_and_does_not_quit() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::from_env();
+
+        // Empty, single-line input → the Esc fallthrough sends `InMsg::Stop`
+        // for the active session and returns `Ok(false)` (not quit). Esc used
+        // to return `Ok(true)` here (#6 regression).
+        let quit = handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Esc)),
+        )
+        .await
+        .expect("handle_event is infallible for Esc");
+        assert!(!quit, "bare Esc no longer quits the app");
+
+        let inbox = drain_inbound(&mut rx).await;
+        assert_eq!(
+            inbox,
+            vec![InMsg::Stop {
+                session: sid.clone()
+            }],
+            "bare Esc stops the active session's turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn esc_collapses_multiline_instead_of_stopping() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid);
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::from_env();
+        app.set_input_multiline(true);
+        assert!(app.is_input_multiline());
+
+        let quit = handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Esc)),
+        )
+        .await
+        .unwrap();
+
+        // The multiline-collapse layer must win over the stop layer: no
+        // `InMsg::Stop` is sent, the buffer collapses to single-line, and the
+        // app stays alive.
+        assert!(!quit);
+        assert!(
+            !app.is_input_multiline(),
+            "Esc collapsed the multiline buffer"
+        );
+        assert!(
+            drain_inbound(&mut rx).await.is_empty(),
+            "no Stop sent while collapsing a multiline buffer"
+        );
+    }
+
+    #[tokio::test]
+    async fn esc_closes_a_mention_popup_before_stopping() {
+        // Wire a real (temp) working dir with one file so typing `@` opens the
+        // popup, then Esc must close it rather than send `InMsg::Stop`.
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("alpha.txt"), "x").expect("write file");
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid);
+        app.init_head_context(
+            dir.path().to_path_buf(),
+            crate::bash_live::LiveBashState::new(false),
+        );
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::from_env();
+
+        // Type `@` → `update_mention` opens the popup (the indexed file matches).
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Char('@'))),
+        )
+        .await
+        .unwrap();
+        assert!(app.mention_visible(), "typing @ opened the popup");
+
+        // Esc closes the popup and must NOT send Stop (the mention layer wins).
+        let quit = handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Esc)),
+        )
+        .await
+        .unwrap();
+        assert!(!quit);
+        assert!(!app.mention_visible(), "Esc closed the mention popup");
+        assert!(
+            drain_inbound(&mut rx).await.is_empty(),
+            "no Stop sent while a mention popup was open"
+        );
+    }
+
+    #[tokio::test]
+    async fn slash_stop_bare_sends_one_stop_and_does_not_quit() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::from_env();
+        app.set_input_text("/stop".to_string());
+
+        let quit = handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Enter)),
+        )
+        .await
+        .unwrap();
+        assert!(!quit, "/stop does not quit");
+
+        assert_eq!(
+            drain_inbound(&mut rx).await,
+            vec![InMsg::Stop { session: sid }],
+            "bare /stop sends exactly one Stop for the active session"
+        );
+    }
+
+    #[tokio::test]
+    async fn slash_stop_all_fans_out_one_stop_per_live_session() {
+        let sid = SessionId::new("root");
+        let mut app = App::new_for_test(sid.clone());
+        let s2 = app.create_session();
+        let s3 = app.create_session();
+        // `create_session` switches active to the newest; the active session
+        // is still "live" and counted in `app.sessions()`, so `/stop --all`
+        // must fan out to all three.
+        assert_eq!(app.sessions().len(), 3);
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::from_env();
+        app.set_input_text("/stop --all".to_string());
+
+        let quit = handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Enter)),
+        )
+        .await
+        .unwrap();
+        assert!(!quit, "/stop --all does not quit");
+
+        let inbox = drain_inbound(&mut rx).await;
+        let stops = inbox
+            .iter()
+            .filter(|m| matches!(m, InMsg::Stop { .. }))
+            .count();
+        assert_eq!(
+            stops, 3,
+            "/stop --all emits one Stop per live session (got {inbox:?})"
+        );
+        // Each live session id appears exactly once.
+        for id in [&sid, &s2, &s3] {
+            assert_eq!(
+                inbox
+                    .iter()
+                    .filter(|m| matches!(m, InMsg::Stop { session } if session == id))
+                    .count(),
+                1,
+                "session {id} stopped exactly once"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn slash_pause_and_continue_each_send_one_message_and_do_not_quit() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut attention = Attention::from_env();
+
+        // /pause → one PauseSession for the active session.
+        let mut rx_pause = holly.subscribe_inbound();
+        app.set_input_text("/pause".to_string());
+        let quit = handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Enter)),
+        )
+        .await
+        .unwrap();
+        assert!(!quit, "/pause does not quit");
+        assert_eq!(
+            drain_inbound(&mut rx_pause).await,
+            vec![InMsg::PauseSession {
+                session: sid.clone()
+            }],
+            "bare /pause sends exactly one PauseSession"
+        );
+
+        // /continue → one ResumeSession for the active session.
+        let mut rx_resume = holly.subscribe_inbound();
+        app.set_input_text("/continue".to_string());
+        let quit = handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Enter)),
+        )
+        .await
+        .unwrap();
+        assert!(!quit, "/continue does not quit");
+        assert_eq!(
+            drain_inbound(&mut rx_resume).await,
+            vec![InMsg::ResumeSession { session: sid }],
+            "bare /continue sends exactly one ResumeSession"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_space_pause_resume_toggle_does_not_quit() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::from_env();
+
+        // An idle session is not Paused, so the toggle sends PauseSession.
+        let toggle =
+            ratatui::crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL);
+        let quit = handle_event(&mut app, &holly, &mut attention, Event::Key(toggle))
+            .await
+            .unwrap();
+        assert!(!quit, "Ctrl+Space does not quit");
+        assert_eq!(
+            drain_inbound(&mut rx).await,
+            vec![InMsg::PauseSession { session: sid }],
+            "Ctrl+Space on a non-paused session pauses it"
         );
     }
 }

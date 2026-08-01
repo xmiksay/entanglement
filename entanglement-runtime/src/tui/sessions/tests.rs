@@ -409,3 +409,45 @@ fn restore_from_records_rebuilds_token_totals() {
     assert_eq!(view.output_tokens(), 900);
     assert!((view.cost_usd() - 0.0123).abs() < 1e-9);
 }
+
+#[test]
+fn modal_selected_id_tracks_the_highlight_and_navigation() {
+    // #6: the sessions-modal quick keys (`s`/`p`/`r`) act on the highlighted
+    // session, so `modal_selected_id` must return exactly what the modal's
+    // `ListState` has selected — the active session on open, and whatever
+    // `modal_next`/`modal_prev`/`modal_page_*` moves it to afterwards.
+    let a = SessionId::new("a");
+    let mut reg = SessionRegistry::new(a.clone());
+    let b = reg.create();
+    let c = reg.create();
+    // `create` switches active to the newest, so switch back to `a` first to
+    // make the open-modal highlight deterministic (it seeds from the active id).
+    reg.switch_to(a.clone());
+
+    reg.toggle_modal();
+    assert_eq!(reg.modal_selected_id().as_ref(), Some(&a));
+
+    reg.modal_next();
+    assert_eq!(reg.modal_selected_id().as_ref(), Some(&b));
+
+    reg.modal_next();
+    assert_eq!(reg.modal_selected_id().as_ref(), Some(&c));
+
+    // Wrap-around back to the first session (modal_next is modular).
+    reg.modal_next();
+    assert_eq!(reg.modal_selected_id().as_ref(), Some(&a));
+
+    reg.modal_prev();
+    assert_eq!(reg.modal_selected_id().as_ref(), Some(&c));
+
+    // Page down clamps at the last session rather than wrapping.
+    reg.modal_page_down(10);
+    assert_eq!(reg.modal_selected_id().as_ref(), Some(&c));
+
+    // Closing the modal does not clear the underlying selection — the next
+    // open re-seeds from the then-active id.
+    reg.close_modal();
+    reg.switch_to(b.clone());
+    reg.toggle_modal();
+    assert_eq!(reg.modal_selected_id().as_ref(), Some(&b));
+}

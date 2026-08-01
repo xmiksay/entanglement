@@ -79,6 +79,11 @@ impl App {
             // the trailing text — both call sites intercept them before
             // reaching this dispatch.
             Command::Enable | Command::Disable => false,
+            // Lifecycle commands (#6): `/stop`, `/pause`, `/continue` need `holly`
+            // (plus the optional `--all` text) — both call sites (the Enter
+            // handler and the command palette) intercept them before reaching
+            // this dispatch, exactly like `Compact`/`Set`/`Mcp` above.
+            Command::Stop | Command::Pause | Command::Continue => false,
         }
     }
 
