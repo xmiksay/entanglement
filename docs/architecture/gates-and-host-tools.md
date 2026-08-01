@@ -504,10 +504,48 @@ the same permission profiles as `read`/`bash`.
     transport's `env:` block. Any future logging of resolved request headers
     must redact expanded values; none exists today. An `Mcp-Session-Id`
     handed back on `initialize` is echoed on every later request
-    (and the negotiated `MCP-Protocol-Version`). `reqwest` rides the `mcp-http`
-    feature so the lean build carries no HTTP transport (§ADR-0025). `HttpClient` is
-    **public** so an embedder can build a per-tenant client with a per-user token and
-    register its tools without the YAML path.
+    (and the negotiated `MCP-Protocol-Version`). Since
+    [ADR-0153](../adr/0153-mcp-server-oauth.md) the transport itself lives in
+    **`entanglement-provider::mcp`** (as `McpHttpClient`) and is reached through
+    core's re-export, the same path `McpServerState` takes — mechanism in the leaf
+    crate, policy (config, registry, permissions, the token file, the browser
+    launch) in the runtime. The runtime therefore names no `reqwest` of its own;
+    `mcp-http` is now a pure compile gate deciding whether the HTTP-MCP paths are
+    built at all, and `reqwest` rides in via core→provider exactly as ADR-0025's
+    lean gate already sanctions. Re-exported as `mcp::HttpClient` under its
+    historical name, still **public** so an embedder can build a per-tenant client
+    with a per-user token and register its tools without the YAML path.
+  - **OAuth (✅ [ADR-0153](../adr/0153-mcp-server-oauth.md)):** a server entry may
+    carry an optional `oauth:` block. Present — *even empty* — it switches that
+    server from static-header auth to a browser-obtained bearer token, since most
+    remote MCP servers are OAuth-protected and issue no pre-registered
+    `client_id`. Endpoints come from **RFC 9728** protected-resource metadata (off
+    the `401` `WWW-Authenticate: resource_metadata` pointer, else the well-known
+    path) chained into **RFC 8414** authorization-server metadata; a client is
+    minted on the fly by **RFC 7591** dynamic client registration as a *public*
+    client (`token_endpoint_auth_method: none`), so a URL alone suffices. **PKCE
+    S256** is mandatory and the only method offered. Every field in the block is an
+    override; setting `authorization_url` + `token_url` skips discovery entirely.
+    The redirect is caught by a one-request loopback listener hand-rolled on
+    `tokio::net` (RFC 8252, bound to `127.0.0.1`, mismatched `state` refused
+    outright — never `axum`, which must not reach the leaf crate). Credentials
+    live in the managed `mcp-tokens.yml` (`0600`, atomic + `fd-lock`ed like the
+    sibling managed files, override `ENTANGLEMENT_MCP_TOKENS_FILE`) **together
+    with the resolved endpoints and client id**, so a startup connect skips
+    discovery/registration entirely — those run only during an explicit
+    `/mcp connect`. Tokens refresh on expiry and once more on a `401`; every
+    `Debug` impl redacts secrets. Driven by the trusted-only, **wire-refused**
+    `InMsg::McpAuth { name, action: Connect|Check|Disconnect }` →
+    `OutEvent::McpAuthChanged` (a forged connect would open a browser and mint a
+    durable credential; even `Check` mutates state by refreshing), answered by the
+    same `mcp::spawn_mcp_responder` that answers `McpList` — each op detached, since
+    a connect parks up to five minutes on the browser. Startup **never** opens a
+    browser: an unauthenticated OAuth server is skipped non-fatally and reported as
+    `needs auth` in `/mcp list`. TUI: `/mcp connect|check|disconnect <name>` plus
+    `c`/`t` on the panel's highlighted row; the authorize URL is always rendered as
+    transcript content (never a toast) so a headless/SSH session can copy it when
+    the browser launch fails. `/mcp disconnect` attempts RFC 7009 revocation when
+    advertised, then deletes locally regardless.
 - **Proxy (`mcp::tool::McpTool`):** adapts one remote tool. `schema()` returns the
   server's `inputSchema` verbatim; `run()` JSON-decodes the model's input to the
   `arguments` object, calls `tools/call`, and flattens the result's text content

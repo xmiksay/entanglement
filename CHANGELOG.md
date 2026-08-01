@@ -15,6 +15,34 @@ alternatives behind each design decision live in the ADRs under
 
 ### Added
 
+- **MCP server OAuth** (ADR-0153): an MCP server entry gains an optional
+  `oauth:` block — present *even empty*, it switches that server from
+  static-header auth to a browser-obtained bearer token. Most remote MCP
+  servers are OAuth-protected and issue no pre-registered `client_id`, so
+  endpoints are **discovered** rather than configured: RFC 9728
+  protected-resource metadata (off the `401` `WWW-Authenticate` pointer, else
+  the well-known path) chained into RFC 8414 authorization-server metadata,
+  with RFC 7591 dynamic client registration minting a public client. PKCE
+  `S256` is mandatory. Every field in the block is an override, and setting
+  `authorization_url` + `token_url` skips discovery entirely.
+  `InMsg::McpAuth { name, action: Connect|Check|Disconnect }` →
+  `OutEvent::McpAuthChanged` is engine-global and **wire-refused** (a forged
+  connect would open a browser and mint a durable credential on the user's
+  behalf). Credentials persist in a managed `mcp-tokens.yml` (`0600`, atomic +
+  locked, `ENTANGLEMENT_MCP_TOKENS_FILE`) alongside the resolved endpoints, so
+  startup connects skip discovery; tokens refresh on expiry and once more on a
+  `401`. Startup never opens a browser — an unauthenticated OAuth server is
+  skipped non-fatally and reported as `needs auth` in `/mcp list`. TUI:
+  `/mcp connect|check|disconnect <name>`, plus `c`/`t` on the MCP panel's
+  highlighted row; the authorize URL is always rendered as transcript content
+  so a headless/SSH session can copy it.
+- **Per-purpose auxiliary models + auto session titles** (ADR-0151 follow-on):
+  a managed `aux-models.yml` (`ENTANGLEMENT_AUX_MODELS_FILE`) pins a
+  `{ provider, model }` per purpose (`summarize`, `session_title`), resolved by
+  a runtime-owned `AuxLlmRegistry` that falls back to the session's primary
+  model. First consumer: an auto session-title generator that names an unnamed
+  session from its first prompt (best-effort; `/name` always wins). TUI:
+  `/aux-model <purpose> <provider>/<model>`.
 - **Multi-user mode — embedder library API** (#522, ADR-0147): one running
   engine can now serve multiple users, each with their own provider catalog,
   API keys, RPM/concurrency budgets, permission ceiling, and grants. A new

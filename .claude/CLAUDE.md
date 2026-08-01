@@ -26,7 +26,7 @@ inverting [ADR-0006](../docs/adr/0006-core-dependency-hygiene-gate.md)/[ADR-0007
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
-| `entanglement-provider` | **leaf** crate, owns the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`, `ToolSpec`, `Message`/`MessageRole`, `Dummy`/`EchoLlm`); all LLM I/O — generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client + native Gemini client (#309), via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL + API-key hash, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider. Per-session state is deliberately absent: the `llm` a session owns is a plain `Box<dyn Llm>`, the former `LlmSession` newtype collapsed since resilience is per-endpoint not per-session ([ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md), #195). Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
+| `entanglement-provider` | **leaf** crate, owns the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`, `ToolSpec`, `Message`/`MessageRole`, `Dummy`/`EchoLlm`); all LLM I/O — generic OpenAI-compat client (z.ai GLM — primary, OpenAI, Ollama) + separate Anthropic client + native Gemini client (#309), via `reqwest`; **per-endpoint** connection pool + retry + rate-limit (keyed by base URL + API-key hash, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)), reasoning stream, models-per-provider. Per-session state is deliberately absent: the `llm` a session owns is a plain `Box<dyn Llm>`, the former `LlmSession` newtype collapsed since resilience is per-endpoint not per-session ([ADR-0062](../docs/adr/0062-collapse-llmsession-placeholder-newtype.md), #195). Since [ADR-0153](../docs/adr/0153-mcp-server-oauth.md) it also owns the **MCP client mechanism** (`mcp::`): the streamable-HTTP transport (`McpHttpClient`), the shared JSON-RPC/tool-def helpers, and the full OAuth stack (RFC 9728/8414 discovery, PKCE, RFC 7591 dynamic client registration, token exchange/refresh/RFC 7009 revocation, and an RFC 8252 loopback redirect catcher on bare `tokio::net`) — mechanism only; every MCP *policy* concern stays in the runtime. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, `Context` (built on provider's `Message`). Advertises tool *schemas* (`ToolSpec`) only — holds no executable tools. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest`/`hyper`/`tower` are transitive via provider ([ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). `make tree` enforces. |
 | `entanglement-runtime` | the head crate (binary `skutter`): the **`Tool` trait + `ToolRegistry`** (moved from core ✅ #206, [ADR-0059](../docs/adr/0059-tool-trait-and-registry-live-in-the-runtime.md)), **host tools** (impls moved from core ✅), **tool execution** (`tool_runner`, moved from core ✅ #58), **permission dispatch + approval** (moved from core ✅ #59), user sessions, stdio `run`/`pipe`, `tui`, the `sessions`/`inspect` subcommands, and the local WebSocket `serve` head (axum, ✅ #153, [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md)). Selects the concrete provider via `ENTANGLEMENT_PROVIDER` or key auto-detect and glues it to core. All transports packaged here ([ADR-0010](../docs/adr/0010-single-head-crate-and-bash-opt-in.md)). Feature-gated: `cli` (clap + log init) / `provider` (LLM providers, split from `cli` in #208) / `tui` / `serve` (axum WS, implies `cli`+`provider`) / `mcp-http` (streamable-HTTP MCP transport, [ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)) / `rhai` (the sandboxed script tool, default-on but droppable via `--no-default-features` for a lean embedder that never registers it, #502, [ADR-0135](../docs/adr/0135-deferred-build-speed-trims-tokio-rhai-syntect.md)); `default = ["tui", "serve", "mcp-http", "rhai"]` builds the binary; the crate also exposes a lean library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). `main.rs` imports the library modules from the lib crate — only `pipe`/`run`/`tui` stay bin-local (#208; `serve` lives in the lib as `runtime::serve`). | `--no-default-features` must stay CLI/TUI/transport-free (`reqwest` rides in via core; `axum` stays behind `serve`); `make check-lean` enforces ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)). |
 
@@ -124,7 +124,7 @@ reads it; this table is the one-place index):
 | `ENTANGLEMENT_CONFIG_FILE` | override the layered user config file path (`config.yml`) |
 | `ENTANGLEMENT_ENV_FILE` | override the managed provider-key env file path (`.env`) |
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` | replace the whole user agents/skills layer (also the cross-vendor opt-out) |
-| `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_AUX_MODELS_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the five managed runtime files |
+| `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_AUX_MODELS_FILE` / `ENTANGLEMENT_MCP_TOKENS_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the six managed runtime files |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
 | `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register the `bash`/`bash_output` exec pair at startup (the TUI `/bash on` command, #498, live-registers it mid-session instead) |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide (default when a profile sets no `sandbox:` override); opt-in to keep network (#399, #479) |
@@ -190,10 +190,10 @@ content, bounded, core never sees it) instead of ending the turn (#481). Enablin
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
           | SetAgent | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
-          | McpList | McpAdd | McpRemove
+          | McpList | McpAdd | McpRemove | McpAuth
           | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
-          | McpList | McpChanged | BashChanged | Throttle
+          | McpList | McpChanged | McpAuthChanged | BashChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
           | SkillActive | AmbiguousRetry | SearchResult
@@ -549,6 +549,48 @@ re-document them here):
   it (still available) instead of erroring. Deferred edges in the ledger
   (row 10): child sessions don't inherit visibility, marks survive
   `SessionEnded`, inspect/bare-`/enable`-dialog don't cover bundles.
+- **MCP server OAuth** ([ADR-0153](../docs/adr/0153-mcp-server-oauth.md),
+  tui-ux-batch Issue 3): an MCP server entry gains an optional `oauth:` block —
+  present *even empty* it switches that server from static-header auth to a
+  browser-obtained bearer token. Most remote MCP servers are OAuth-protected and
+  issue **no** pre-registered `client_id`, so endpoints are **discovered**, not
+  configured: RFC 9728 protected-resource metadata (off the `401`
+  `WWW-Authenticate: resource_metadata` pointer, else the well-known path)
+  chained into RFC 8414 AS metadata, with RFC 7591 **dynamic client
+  registration** minting a *public* client (`token_endpoint_auth_method: none`).
+  PKCE `S256` is mandatory (`plain` never offered; an AS advertising neither is
+  refused, not downgraded); every field in the block is an override, and
+  `authorization_url` + `token_url` short-circuits discovery. The RFC 8252
+  loopback redirect is caught by a one-request listener on bare `tokio::net`
+  (`127.0.0.1` only, mismatched `state` refused outright), bound *before*
+  registration since the ephemeral port is part of the declared `redirect_uri`.
+  `InMsg::McpAuth { name, action: Connect|Check|Disconnect }` →
+  `OutEvent::McpAuthChanged` is engine-global (no `session`, no `seq`) and
+  **trusted-only/wire-refused**, sharpening [ADR-0124](../docs/adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md):
+  a forged `Connect` opens a browser and mints a durable credential, a forged
+  `Disconnect` destroys one, and even `Check` mutates state by refreshing — so
+  unlike the read-only `McpList` none of the three is wire-allowed. Answered by
+  the same `mcp::spawn_mcp_responder`, each op **detached** (a connect parks up
+  to 5 min on the browser); a `Connect` emits twice — interim `authorize_url`,
+  then outcome. Credentials persist in a managed
+  `${config_dir}/entanglement/mcp-tokens.yml` (`0600`, atomic + `fd-lock` like
+  the sibling managed files, override `ENTANGLEMENT_MCP_TOKENS_FILE`)
+  **together with the resolved endpoints + client id**, so a startup connect
+  skips discovery/registration entirely — they run only on an explicit
+  `/mcp connect`; tokens refresh on expiry and once more on a `401`, and every
+  `Debug` impl redacts secrets. Startup **never** opens a browser: an
+  unauthenticated OAuth server is skipped non-fatally and reported as
+  `needs auth` in `/mcp list` (`McpServerStatus.auth`). Browser launch is
+  runtime-side (keeps process spawning out of the leaf crate) and deliberately
+  *not* opt-in — the user typed the command — with the URL always reported too,
+  so a failed launch degrades to "copy this link". TUI:
+  `/mcp connect|check|disconnect <name>` plus `c`/`t` on the `/mcp` panel's
+  highlighted row; the authorize URL renders as **transcript content, never a
+  toast**, so an SSH/headless session can copy it. `/mcp disconnect` attempts
+  RFC 7009 revocation when advertised, then deletes locally regardless.
+  Deferred: device-code flow, per-user credentials under ADR-0147 (the store is
+  process-global, keyed by server name), OAuth for LLM provider endpoints,
+  cross-process refresh leasing.
 - **Live bash enablement, graded by the permission model** (#498,
   [ADR-0133](../docs/adr/0133-live-bash-enablement-graded-by-permission.md),
   built on the `SharedRegistry`/live-MCP pattern above): `bash`/`bash_output`
