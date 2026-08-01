@@ -274,6 +274,10 @@ precedence system < user < repo) and
 - **Comments: WHY, not WHAT.**
 - **Conventional Commits** (`feat(engine): …`), fast-forward only, never commit
   to `master`. No `Co-Authored-By`.
+- **Never edit `CHANGELOG.md` in a feature/fix change.** The changelog is
+  generated once, at release time, from `git log <last-tag>..HEAD` + the
+  release's closed issues (see [`../docs/releasing.md`](../docs/releasing.md)) —
+  per-PR `[Unreleased]` edits conflict on every concurrent merge.
 - **Architecture decisions run ADR + arch doc in parallel.** Any hard-to-reverse
   design choice gets an ADR in [`../docs/adr/`](../docs/adr/) (numbered,
   immutable; supersede, never edit). Then update the relevant

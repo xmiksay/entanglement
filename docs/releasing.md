@@ -14,9 +14,14 @@ Two mandatory steps come first, committed before tagging:
    `entanglement-provider` (they carry an explicit `version` alongside `path` so
    `cargo publish` resolves the registry dep). All three must agree, or `make tag`
    refuses on the mismatch.
-2. **Promote the changelog**: in `CHANGELOG.md`, rename the `[Unreleased]`
-   section to `[X.Y.Z] - YYYY-MM-DD` and add the version's link reference in the
-   footer.
+2. **Write the changelog — at release time only.** `CHANGELOG.md` is **never**
+   edited by feature/fix PRs (concurrent PRs each appending to an `[Unreleased]`
+   section conflict on every merge). Instead, generate the whole `[X.Y.Z] -
+   YYYY-MM-DD` section now, in the release commit, from `git log
+   <last-tag>..HEAD --oneline` plus the release's closed epic/issues — group
+   into `### Added` / `### Changed` / `### Fixed`, call out wire-shape changes
+   explicitly, and add the version's link reference in the footer. No
+   `[Unreleased]` section accumulates between releases.
 
 Then:
 
