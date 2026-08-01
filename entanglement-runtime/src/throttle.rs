@@ -41,7 +41,14 @@ fn classify(status: &ThrottleStatus) -> ThrottleClass {
         ThrottleClass::Backoff
     } else if status.penalized {
         ThrottleClass::Pacing
-    } else if status.in_flight >= status.cap {
+    } else if status.in_flight >= status.cap
+        || status
+            .shared_leases
+            .is_some_and(|leases| leases >= status.cap)
+    {
+        // A sibling process (or a not-yet-reconciled lease of this process's
+        // own) can saturate the shared cap even while this process's own
+        // semaphore reads under it (#552) — that must still classify as busy.
         ThrottleClass::Busy
     } else {
         ThrottleClass::AtRest
@@ -86,6 +93,8 @@ fn diff_and_emit(
             status.cap,
             retry_in_ms,
             pacing_in_ms,
+            status.waiters,
+            status.shared_leases,
         );
     }
 }
@@ -130,6 +139,8 @@ mod tests {
             penalized: false,
             model: None,
             next_request_in: None,
+            waiters: 0,
+            shared_leases: None,
         }
     }
 

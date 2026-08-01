@@ -280,8 +280,9 @@ impl Holly {
     }
 
     /// Broadcast a runtime-authored [`OutEvent::Throttle`] transition (#517,
-    /// ADR-0141). No `seq` — a point-in-time engine-global lifecycle event, not
-    /// session content, exactly like [`emit_bash_changed`][Self::emit_bash_changed].
+    /// ADR-0141; `waiters`/`shared_leases` added #552). No `seq` — a
+    /// point-in-time engine-global lifecycle event, not session content,
+    /// exactly like [`emit_bash_changed`][Self::emit_bash_changed].
     #[allow(clippy::too_many_arguments)]
     pub fn emit_throttle(
         &self,
@@ -291,6 +292,8 @@ impl Holly {
         cap: usize,
         retry_in_ms: Option<u64>,
         pacing_in_ms: Option<u64>,
+        waiters: usize,
+        shared_leases: Option<usize>,
     ) {
         let _ = self.events.send(OutEvent::Throttle {
             endpoint,
@@ -299,6 +302,8 @@ impl Holly {
             cap,
             retry_in_ms,
             pacing_in_ms,
+            waiters,
+            shared_leases,
         });
     }
 
