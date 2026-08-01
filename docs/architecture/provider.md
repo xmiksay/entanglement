@@ -222,6 +222,20 @@ is spent** — then it surfaces as an error, so a saturated endpoint *fails* a
 sub-agent's turn rather than hanging its parent forever. Genuine failures
 (transport faults, retryable 5xx) stay bounded by `max_attempts`.
 
+**The endpoint-wide park is clamped separately from the offending caller's own
+budget** (#547): what `EndpointState::set_retry_after`/`SharedGate::mark_retry_after`
+*store* — the deadline every *other* caller of the endpoint waits on via
+`wait_for_retry_after`, in-process and (once persisted) across a restart — is
+clamped to `rate_limit_max_backoff`, even when the server's raw `Retry-After`
+is far larger (a `Retry-After: 3600` must not park every sibling caller for an
+hour). The offending caller's own give-up decision still honors the raw,
+`MAX_RETRY_AFTER`-clamped value. On top of that, every wait this call makes —
+`wait_for_retry_after` and `SharedGate::acquire`'s poll loop — is bounded by
+*this call's own* `rl_deadline` (`rate_limit_max_elapsed`): waiting further
+returns `RetryError::RateLimited` instead of sleeping past it, so a cool-down
+set by a different caller (or read back from the persisted shared file after a
+restart) can never park a caller longer than its own budget allows.
+
 **Per-model concurrency, layered on top of the endpoint cap** (#521,
 [ADR-0140](../adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md)):
 some providers — z.ai in particular — cap concurrency **per model**, not just
@@ -329,22 +343,39 @@ process's 429 parks every sibling's next `acquire`). **Not** shared in v1: the
 AIMD pacing gate stays per-process — once the budget itself is bounded
 correctly in aggregate, per-process pacing converges on the same signal (see
 the ADR for the full reasoning). `execute_with_retry`'s loop calls
-`endpoint.shared.acquire(rpm, concurrency)` **last** — after `wait_for_retry_after`/
-`limiter.acquire` *and* after both in-process permits (model, then endpoint)
-— not before them (#546, fixing a starvation bug: acquiring the shared lease
-first let a caller queued on its own model's semaphore sit holding this
-scarcer, process-wide resource for as long as it waited, starving sibling
-`skutter` processes even though the provider had room; it also meant the
-shared RPM ledger, stamped on admission, was stamped at the start of that
-wait rather than at the actual send). The returned lease is held in
-`StreamGuard` alongside the endpoint/model permits and all three release
-together; a 429 also calls `endpoint.shared.mark_retry_after(delay)` so the
-cool-down reaches siblings, not just this process. Falls back silently to
-pure in-process gating (today's pre-#523 behavior) when the state directory
-is unwritable or disabled via `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` — an
+`endpoint.shared.acquire(rpm, concurrency, rl_deadline)` **last** — after
+`wait_for_retry_after`/`limiter.acquire` *and* after both in-process permits
+(model, then endpoint) — not before them (#546, fixing a starvation bug:
+acquiring the shared lease first let a caller queued on its own model's
+semaphore sit holding this scarcer, process-wide resource for as long as it
+waited, starving sibling `skutter` processes even though the provider had
+room; it also meant the shared RPM ledger, stamped on admission, was stamped
+at the start of that wait rather than at the actual send). `acquire` is
+itself bounded by `rl_deadline` (#547) — waiting past it returns `Err(())`
+rather than polling forever on a persisted cool-down or a saturated cap. The
+returned lease is held in `StreamGuard` alongside the endpoint/model permits
+and all three release together; a 429 also `.await`s
+`endpoint.shared.mark_retry_after(delay)` so the cool-down reaches siblings,
+not just this process — awaited rather than fired off as a detached
+`tokio::spawn` (#547), since a detached task can be dropped mid-flight by a
+short-lived one-shot `run` exiting right after. Falls back silently to pure
+in-process gating (today's pre-#523 behavior) when the state directory is
+unwritable or disabled via `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` — an
 operator who wants genuinely separate per-instance budgets already gets that
 for free by giving each instance its own key/base URL, since the pool key
 itself isolates them.
+
+**Lease release is synchronous, and the TTL backstop is tighter** (#547):
+`SharedLease::drop` used to only cancel its background renewal task, which
+then asynchronously removed the lease from the shared file — a detached
+`tokio::spawn` a short-lived one-shot `run` (or a SIGINT/SIGTERM shutdown)
+could tear the tokio runtime down before it ever got scheduled, leaving a
+live-looking lease for the next launch to block on. `Drop` now removes the
+lease **synchronously**, in-line, covering every clean exit path (normal
+completion, a `.abort()`-driven task teardown, SIGINT/SIGTERM). `LEASE_TTL`
+is kept close to `LEASE_RENEW_INTERVAL` (~2×: 120s vs. 60s, was 180s) rather
+than generously above it — the TTL is now purely the backstop for the one
+case synchronous release can't cover: a `SIGKILL`, where nothing runs at all.
 
 **Request-body logging is opt-in and symmetric** (#165): every client emits a
 `debug!` *summary* per request (model, message/tool counts — no payload). The

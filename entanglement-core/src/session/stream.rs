@@ -80,11 +80,48 @@ pub(super) async fn stream_round(
             attempt,
             "sending request to LLM"
         );
-        let mut stream = match s.llm.stream(req).await {
-            Ok(st) => st,
-            Err(e) => {
-                emit_turn_error(session, &s.seq, events, e.to_string());
-                return StreamedRound::Failed;
+        // Race the pre-stream phase against the inbox too (#547): everything
+        // `s.llm.stream()` does before the first byte — the endpoint's
+        // retry-after wait, the pacing gate, the cross-process shared gate,
+        // in-process semaphores, and any 429 backoff sleep — used to run
+        // outside any `select!`, so a `Stop` sent while parked there had to
+        // wait for the whole pre-stream phase to finish before it was even
+        // observed. Pinning the future and looping the same pattern as the
+        // stream-consuming loop below lets `Stop` preempt immediately;
+        // non-Stop commands are stashed exactly as they are mid-stream.
+        let stream_fut = s.llm.stream(req);
+        tokio::pin!(stream_fut);
+        let mut stream = loop {
+            let ev = tokio::select! {
+                biased;
+                cmd = rx.recv() => cmd,
+                result = &mut stream_fut => {
+                    match result {
+                        Ok(st) => break st,
+                        Err(e) => {
+                            emit_turn_error(session, &s.seq, events, e.to_string());
+                            return StreamedRound::Failed;
+                        }
+                    }
+                }
+            };
+            match ev {
+                Some(SessionCmd::Stop) => {
+                    tracing::debug!("turn interrupted before streaming started");
+                    let _ = events.send(OutEvent::Status {
+                        session: session.clone(),
+                        state: AgentState::Done,
+                    });
+                    return StreamedRound::Cancelled;
+                }
+                None => return StreamedRound::Cancelled,
+                Some(other) => {
+                    tracing::debug!(
+                        cmd = ?other,
+                        "command arrived before streaming started; stashed for replay after turn"
+                    );
+                    stash.push_back(other);
+                }
             }
         };
 

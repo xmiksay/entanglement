@@ -197,6 +197,9 @@ impl Llm for OpenAiLlm {
                     "openai-compat request failed after {} attempts: {e}",
                     attempts
                 ),
+                crate::client::RetryError::RateLimited => anyhow::anyhow!(
+                    "openai-compat rate limited: gave up waiting for the endpoint to clear"
+                ),
             })?;
 
         if !response.status().is_success() {

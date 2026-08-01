@@ -149,8 +149,14 @@ inbox against the stream** with a `biased` `tokio::select!` (#179) — not a
 `try_recv` polled only after each event yields — so a `Stop` preempts a
 connected-but-silent provider immediately (dropping the stream aborts the
 `reqwest` request) instead of blocking until the HTTP client's read timeout.
-While parked there is no racing to do: the session loop itself is the receiver,
-handling `ToolResult`/`Stop`/`Prompt` directly against the pending `TurnState`.
+The **pre-stream phase races the inbox too** (#547): `session/stream.rs` pins
+the `llm.stream()` call itself and `select!`s it against the inbox the same
+way, so a `Stop` sent while the provider client is still parked on its
+retry-after wait / pacing gate / cross-process shared gate / semaphores —
+none of which used to be preemptible — cancels immediately instead of
+waiting for the whole pre-stream phase to finish. While parked there is no
+racing to do: the session loop itself is the receiver, handling
+`ToolResult`/`Stop`/`Prompt` directly against the pending `TurnState`.
 
 **Parked-turn re-offer timer** (✅ #274,
 [ADR-0071](../adr/0071-parked-turn-reoffer-timer.md)). `OutEvent::ToolExec` rides

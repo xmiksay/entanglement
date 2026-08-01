@@ -166,6 +166,11 @@ impl Llm for GeminiLlm {
                 crate::client::RetryError::Exhausted(attempts, e) => {
                     anyhow::anyhow!("gemini request failed after {attempts} attempts: {e}")
                 }
+                crate::client::RetryError::RateLimited => {
+                    anyhow::anyhow!(
+                        "gemini rate limited: gave up waiting for the endpoint to clear"
+                    )
+                }
             })?;
 
         if !response.status().is_success() {

@@ -60,12 +60,19 @@ async fn first_recorded(
     }
 }
 
-async fn run_one_turn(cfg: EngineConfig) {
+// Returns the live `Holly` handle rather than dropping it: dropping it closes
+// the supervisor's inbox, which signals every live session to `Stop` (#547) —
+// a turn that hasn't reached `stream()` yet is now preemptible right there,
+// so an immediately-dropped handle could race a `Stop` in before the LLM is
+// ever called. The caller keeps `Holly` alive until after it has observed the
+// recorded request.
+async fn run_one_turn(cfg: EngineConfig) -> Holly {
     let holly = Holly::spawn(cfg);
     holly
         .send(InMsg::prompt(SessionId::new("s1"), "go"))
         .await
         .unwrap();
+    holly
 }
 
 #[tokio::test]
@@ -77,13 +84,13 @@ async fn resolved_generation_params_reach_the_request() {
         reasoning_effort: None,
     };
     let (cfg, seen) = config_with(Some(params));
-    run_one_turn(cfg).await;
+    let _holly = run_one_turn(cfg).await;
     assert_eq!(first_recorded(&seen).await, Some(params));
 }
 
 #[tokio::test]
 async fn no_generation_config_leaves_request_knobs_unset() {
     let (cfg, seen) = config_with(None);
-    run_one_turn(cfg).await;
+    let _holly = run_one_turn(cfg).await;
     assert_eq!(first_recorded(&seen).await, None);
 }

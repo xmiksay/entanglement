@@ -212,9 +212,12 @@ async fn model_permit_wait_does_not_hold_the_shared_cross_process_lease() {
     // the blocked caller holds none of it. Bounded by a timeout: under the
     // pre-fix ordering this would hang forever (the blocked caller holds one
     // of the 3 leases and never releases it).
+    let sibling_deadline = Instant::now() + Duration::from_secs(2);
     let siblings = tokio::time::timeout(
         Duration::from_secs(2),
-        futures::future::join_all((0..3).map(|_| ep.shared.acquire(RPM_LIMIT, 3))),
+        futures::future::join_all(
+            (0..3).map(|_| ep.shared.acquire(RPM_LIMIT, 3, sibling_deadline)),
+        ),
     )
     .await
     .expect(
@@ -222,7 +225,7 @@ async fn model_permit_wait_does_not_hold_the_shared_cross_process_lease() {
          purely on its own model permit",
     );
     assert!(
-        siblings.iter().all(Option::is_some),
+        siblings.iter().all(|s| matches!(s, Ok(Some(_)))),
         "the full shared cap must be available to siblings"
     );
 
@@ -335,6 +338,31 @@ fn retry_after_window_extends_never_shrinks() {
     // A longer window does extend it.
     state.set_retry_after(Duration::from_secs(60));
     assert!(state.retry_after.lock().unwrap().unwrap() > long);
+}
+
+#[tokio::test]
+async fn wait_for_retry_after_gives_up_when_the_cool_down_exceeds_the_deadline() {
+    // #547: a caller must never sleep past its own `rate_limit_max_elapsed`
+    // budget, regardless of how far out the endpoint's cool-down is.
+    let state = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    state.set_retry_after(Duration::from_secs(3600));
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let result = tokio::time::timeout(
+        Duration::from_millis(500),
+        state.wait_for_retry_after(deadline),
+    )
+    .await
+    .expect("must give up promptly instead of sleeping toward the cool-down");
+    assert_eq!(result, Err(()), "a cool-down past the deadline must bail");
+}
+
+#[tokio::test]
+async fn wait_for_retry_after_waits_normally_within_the_deadline() {
+    let state = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    state.set_retry_after(Duration::from_millis(20));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let result = state.wait_for_retry_after(deadline).await;
+    assert_eq!(result, Ok(()));
 }
 
 #[test]

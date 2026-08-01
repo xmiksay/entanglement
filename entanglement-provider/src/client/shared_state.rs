@@ -13,43 +13,41 @@
 //! ([`state_path`]), guarded by the same advisory `fd-lock` read-modify-write
 //! pattern the managed config files use (#329, ADR-0084;
 //! [`with_locked_state`] mirrors `entanglement-runtime::config::lock::with_locked_file`,
-//! independently re-implemented rather than depended on since
-//! `entanglement-provider` is the leaf crate and takes no `entanglement-*`
-//! dependency, ADR-0053).
+//! independently re-implemented since `entanglement-provider` is the leaf
+//! crate and takes no `entanglement-*` dependency, ADR-0053).
 //!
-//! The AIMD pacing gate (`RateLimiter`, ADR-0111) stays **per-process** (v1):
-//! once the RPM budget and concurrency cap are themselves shared and
-//! correctly bounded in aggregate, per-process pacing is smoothing a signal
-//! that's already correct — see ADR-0144 for the full reasoning and the
-//! rejected alternatives (a broker daemon, static partitioning).
+//! The AIMD pacing gate (`RateLimiter`, ADR-0111) stays **per-process** (v1) —
+//! see ADR-0144 for the full reasoning and rejected alternatives (a broker
+//! daemon, static partitioning).
 //!
 //! Concurrency is **lease-based**, not a shared semaphore: each admitted
 //! request writes a lease (an id + owning pid + expiry) and renews it on a
 //! heartbeat while the request is in flight. A process that dies (killed,
 //! panicked) simply stops renewing; the next process to touch the file prunes
 //! the lease once its TTL elapses, so slots are recovered rather than leaked
-//! permanently, with no explicit peer-liveness detection needed.
+//! permanently. Every caller also releases its own lease **synchronously** on
+//! drop (#547) — the TTL is the backstop for the unrecoverable case (a
+//! `SIGKILL`), not the normal path.
 //!
-//! Falls back silently to pure in-process behavior (today's pre-#523
-//! behavior) when the state directory can't be created or written
-//! (permissions, a read-only filesystem, a sandboxed test environment) or
-//! when explicitly disabled via [`DISABLE_ENV`] — instances just don't
-//! coordinate, they don't break.
+//! Falls back silently to pure in-process behavior (pre-#523) when the state
+//! directory can't be created or written, or when explicitly disabled via
+//! [`DISABLE_ENV`] — instances just don't coordinate, they don't break.
 
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 
 /// How long an unrenewed concurrency lease is honored before it's treated as
-/// abandoned (a crashed/killed process) and its slot recovered. Comfortably
-/// above [`LEASE_RENEW_INTERVAL`] so a live holder never lapses under normal
-/// scheduling jitter.
-const LEASE_TTL: Duration = Duration::from_secs(180);
+/// abandoned and its slot recovered. Kept close to [`LEASE_RENEW_INTERVAL`]
+/// (~2×, #547) rather than generously above it — this bounds how long a
+/// `SIGKILL`ed process's slot blocks the next launch, the one case
+/// [`SharedLease::drop`]'s synchronous release can't cover.
+const LEASE_TTL: Duration = Duration::from_secs(120);
 
 /// How often a held lease is refreshed while its request is still in flight.
 const LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(60);
@@ -141,29 +139,45 @@ impl SharedGate {
 
     /// Block until admitted under the shared RPM budget, concurrency cap, and
     /// `retry_after` cool-down, then return a lease the caller must hold for
-    /// the whole request plus its streamed body. Returns `None` immediately
-    /// when sharing is disabled or the state directory proved unwritable —
-    /// the caller is unaffected, having already applied its own in-process
-    /// gates for the same `rpm`/`concurrency`.
-    pub(crate) async fn acquire(&self, rpm: u32, concurrency: usize) -> Option<SharedLease> {
-        let path = self.path.clone()?;
+    /// the whole request plus its streamed body. `Ok(None)` means sharing is
+    /// disabled/unwritable — fall back to in-process gates. `Err(())` means
+    /// waiting further would extend past `deadline`, the caller's own
+    /// `rate_limit_max_elapsed` budget (#547): a cool-down read back from the
+    /// shared file must not park a caller past its own budget.
+    pub(crate) async fn acquire(
+        &self,
+        rpm: u32,
+        concurrency: usize,
+        deadline: Instant,
+    ) -> Result<Option<SharedLease>, ()> {
+        let Some(path) = self.path.clone() else {
+            return Ok(None);
+        };
         loop {
-            let p = path.clone();
-            let pid = self.pid;
+            if Instant::now() >= deadline {
+                return Err(());
+            }
+            let (p, pid) = (path.clone(), self.pid);
             let result = tokio::task::spawn_blocking(move || try_admit(&p, rpm, concurrency, pid))
                 .await
                 .unwrap_or(Err(()));
             match result {
                 Ok(Admission::Admitted(lease_id)) => {
-                    return Some(SharedLease::spawn(path, lease_id))
+                    return Ok(Some(SharedLease::spawn(path, lease_id)))
                 }
-                Ok(Admission::Wait(dur)) => sleep(dur.max(Duration::from_millis(10))).await,
+                Ok(Admission::Wait(dur)) => {
+                    let wait = dur.max(Duration::from_millis(10));
+                    if Instant::now() + wait >= deadline {
+                        return Err(());
+                    }
+                    sleep(wait).await;
+                }
                 Err(()) => {
                     tracing::debug!(
                         path = %path.display(),
                         "shared endpoint state unwritable; falling back to in-process gating"
                     );
-                    return None;
+                    return Ok(None);
                 }
             }
         }
@@ -171,53 +185,60 @@ impl SharedGate {
 
     /// Record a 429's cool-down in the shared file too, so a sibling
     /// instance's next [`acquire`][Self::acquire] parks until the same
-    /// deadline instead of immediately re-saturating the endpoint the moment
-    /// this process backs off. Best-effort and fire-and-forget: a failed
-    /// write just means the sibling discovers the cool-down itself on its own
-    /// next 429, exactly as before #523.
-    pub(crate) fn mark_retry_after(&self, delay: Duration) {
+    /// deadline instead of immediately re-saturating the endpoint. Best-effort
+    /// (a failed write is discovered by the sibling on its own next 429,
+    /// as before #523); awaited rather than fired off as a detached
+    /// `tokio::spawn` (#547), which a short-lived one-shot `run` could exit
+    /// past before it ever ran.
+    pub(crate) async fn mark_retry_after(&self, delay: Duration) {
         let Some(path) = self.path.clone() else {
             return;
         };
-        tokio::spawn(async move {
-            let _ = tokio::task::spawn_blocking(move || set_shared_retry_after(&path, delay)).await;
-        });
+        let _ = tokio::task::spawn_blocking(move || set_shared_retry_after(&path, delay)).await;
     }
 }
 
 /// A held cross-process concurrency slot. Renewed on a background heartbeat
-/// while alive; releasing it (drop) cancels the heartbeat and removes the
-/// lease. If the process is killed instead of dropping this cleanly, the
-/// lease simply stops being renewed and a later admission attempt (by any
-/// process sharing the file) prunes it once [`LEASE_TTL`] elapses.
+/// while alive; releasing it removes the lease **synchronously in `Drop`**
+/// (#547), not via a detached task — a short-lived one-shot `run` (or a
+/// SIGINT/SIGTERM shutdown) can tear the tokio runtime down before a detached
+/// cleanup task ever gets scheduled.
 pub(crate) struct SharedLease {
+    path: PathBuf,
+    lease_id: u64,
     cancel: Option<oneshot::Sender<()>>,
 }
 
 impl SharedLease {
     fn spawn(path: PathBuf, lease_id: u64) -> Self {
         let (tx, mut rx) = oneshot::channel();
+        let renew_path = path.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = &mut rx => break,
                     _ = sleep(LEASE_RENEW_INTERVAL) => {
-                        let p = path.clone();
+                        let p = renew_path.clone();
                         let _ = tokio::task::spawn_blocking(move || renew_lease(&p, lease_id)).await;
                     }
                 }
             }
-            let _ = tokio::task::spawn_blocking(move || remove_lease(&path, lease_id)).await;
         });
-        Self { cancel: Some(tx) }
+        Self {
+            path,
+            lease_id,
+            cancel: Some(tx),
+        }
     }
 }
 
 impl Drop for SharedLease {
     fn drop(&mut self) {
+        // Cancel the renewal heartbeat first so it can't resurrect the lease.
         if let Some(tx) = self.cancel.take() {
             let _ = tx.send(());
         }
+        let _ = remove_lease(&self.path, self.lease_id);
     }
 }
 
@@ -543,21 +564,54 @@ mod tests {
         };
         std::env::remove_var(STATE_DIR_ENV);
 
+        let deadline = Instant::now() + Duration::from_secs(5);
         let lease = gate
-            .acquire(100, 1)
+            .acquire(100, 1, deadline)
             .await
+            .expect("deadline is generous enough not to be hit")
             .expect("shared state dir is writable in this test");
         // Cap is 1 and the lease above holds it — a second acquire attempt
         // from the "same instance" must not be immediately admitted.
-        let second = tokio::time::timeout(Duration::from_millis(50), gate.acquire(100, 1)).await;
+        let second =
+            tokio::time::timeout(Duration::from_millis(50), gate.acquire(100, 1, deadline)).await;
         assert!(
             second.is_err(),
             "expected the second acquire to still be waiting"
         );
+        // Release is synchronous in `Drop` (#547) — no need to wait for a
+        // detached task to catch up before the slot is visibly free.
         drop(lease);
-        // Give the lease's async release task a moment to run.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let third = tokio::time::timeout(Duration::from_secs(2), gate.acquire(100, 1)).await;
+        let third =
+            tokio::time::timeout(Duration::from_secs(2), gate.acquire(100, 1, deadline)).await;
         assert!(third.is_ok(), "slot must be released once the lease drops");
+    }
+
+    #[tokio::test]
+    async fn acquire_gives_up_once_the_deadline_is_exceeded() {
+        // #547: a caller must not poll the shared gate forever — a saturated
+        // cap (or a persisted cool-down from a sibling/previous run) that
+        // outlives the caller's own `rate_limit_max_elapsed` budget must
+        // surface as `Err(())` instead of hanging.
+        let (_dir, path) = tmp_state_path();
+        std::env::set_var(STATE_DIR_ENV, path.parent().unwrap());
+        let gate = SharedGate {
+            path: Some(path),
+            pid: std::process::id(),
+        };
+        std::env::remove_var(STATE_DIR_ENV);
+
+        // Cap of 1, held by this "instance" itself, so a second acquire can
+        // never be admitted — it must instead give up at `deadline`.
+        let _held = gate
+            .acquire(100, 1, Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("deadline generous enough not to be hit")
+            .expect("shared state dir is writable in this test");
+
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let result = tokio::time::timeout(Duration::from_secs(2), gate.acquire(100, 1, deadline))
+            .await
+            .expect("must give up at the deadline instead of hanging");
+        assert!(matches!(result, Err(())));
     }
 }
