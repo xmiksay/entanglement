@@ -31,6 +31,18 @@ alternatives behind each design decision live in the ADRs under
   a one-line `Plan: <path> (pending|accepted)` indicator, and `/plan` now
   opens the bound file in `$EDITOR` instead of revealing the sidebar.
 
+### Fixed
+
+- **TUI `grep`/`glob` output rendering was lossy** (#520): `render_grep_output`
+  kept only lines containing `:`, silently dropping `host/grep.rs`'s skip/cap
+  notices (ADR-0091) and the `truncate_output` truncation marker;
+  `render_glob_output` re-derived a directory count by scraping digits out of
+  its own prose hint instead of rendering it verbatim. Both now pass every
+  notice through untouched, and `glob`'s "no files" hints render as-is with no
+  digit-scraping. Split into a new `tool_render/search_output.rs` module
+  (shared by the standalone `ToolOutput` block and the `grep`/`glob`
+  expansion bodies) to keep `tool_render.rs` under the 400-line cap.
+
 ## [0.5.0] - 2026-07-24
 
 The TUI attention panel + session-panel overhaul (background approvals are no
