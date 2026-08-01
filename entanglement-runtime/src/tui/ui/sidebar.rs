@@ -51,8 +51,12 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     lines.push(Line::from("Sessions").bold());
     row_map.push(None);
     let active_id = app.active_session_id().clone();
-    for (id, view) in app.sessions() {
+    // Spawn-tree order with depth (session_tree.rs): children indent under
+    // their parent; an ended child dims with a ✓ so finished sub-agents read
+    // as history without leaving the tree.
+    for (id, view, depth) in app.sessions_with_depth() {
         let is_active = id.0 == active_id.0;
+        let ended_child = depth > 0 && view.has_ended();
         // Attention states come from the pending queues (not the flappy
         // `Status`, #273) and stay visually distinct: an approval is not the
         // same ask as a question.
@@ -77,8 +81,9 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
         let agent = view.agent().to_string();
         let agent_color = app.profile_color_for(&agent);
         let prefix = if is_active { "* " } else { "  " };
-        let line = Line::from(vec![
-            Span::raw(prefix),
+        let indent = "  ".repeat(depth);
+        let mut spans = vec![
+            Span::raw(format!("{prefix}{indent}")),
             Span::styled(
                 short_id(id),
                 if is_active {
@@ -91,13 +96,22 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
             Span::styled(agent, Style::default().fg(agent_color)),
             Span::raw(" "),
             Span::styled(state_word, state_style),
-        ]);
+        ];
+        if ended_child {
+            spans.push(Span::raw(" ✓"));
+        }
+        let line = Line::from(spans);
+        let line = if ended_child {
+            line.style(Style::default().dim())
+        } else {
+            line
+        };
         lines.push(fit_line(line, inner_width));
         row_map.push(Some(id.clone()));
 
         // One dim description line under the row: the session's first prompt.
         if let Some(desc) = view.first_prompt() {
-            let text = crate::tui::wrap::truncate(&format!("    {desc}"), inner_width);
+            let text = crate::tui::wrap::truncate(&format!("  {indent}  {desc}"), inner_width);
             lines.push(Line::from(Span::styled(text, Style::default().dim())));
             row_map.push(Some(id.clone()));
         }
@@ -308,6 +322,96 @@ mod tests {
         assert!(text.contains("needs approval"), "{text}");
         assert!(text.contains("question"), "{text}");
         assert!(!text.contains("waiting"), "collapsed word replaced: {text}");
+    }
+
+    /// Fold a `SessionStarted` naming `parent` so the view records its spawn
+    /// lineage (reducer.rs keeps only `parent` + `ts` from it).
+    fn start_session(app: &mut App, id: &SessionId, parent: Option<&SessionId>) {
+        app.handle_out_event(OutEvent::SessionStarted {
+            session: id.clone(),
+            parent: parent.cloned(),
+            predecessor: None,
+            profile: "build".to_string(),
+            model: None,
+            root: parent.is_none(),
+            ts: 1,
+            user: None,
+        });
+    }
+
+    #[test]
+    fn sidebar_nests_a_child_under_its_parent_despite_interleaved_discovery() {
+        let root1 = SessionId::new("root-one");
+        let mut app = App::new_for_test(root1.clone());
+        // A second root registers *before* root1's child is discovered — flat
+        // insertion order would list the child under root2.
+        let root2 = SessionId::new("root-two");
+        start_session(&mut app, &root2, None);
+        let child = SessionId::new("child-one");
+        start_session(&mut app, &child, Some(&root1));
+
+        let text = render_sidebar(&mut app, 40, 12);
+        let lines: Vec<&str> = text.lines().collect();
+        let row_of = |needle: &str| {
+            lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} not rendered: {text}"))
+        };
+        assert_eq!(
+            row_of("child-on"),
+            row_of("root-one") + 1,
+            "child renders directly under its parent: {text}"
+        );
+        assert!(
+            row_of("root-two") > row_of("child-on"),
+            "the interleaved root lists after the subtree: {text}"
+        );
+        assert!(
+            lines[row_of("child-on")].starts_with("│    "),
+            "child row is indented past the root rows: {text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_marks_an_ended_child_with_a_check() {
+        let root = SessionId::new("root-one");
+        let mut app = App::new_for_test(root.clone());
+        let child = SessionId::new("child-one");
+        start_session(&mut app, &child, Some(&root));
+        app.handle_out_event(OutEvent::SessionEnded {
+            session: child.clone(),
+            ts: 2,
+        });
+
+        let text = render_sidebar(&mut app, 40, 12);
+        let child_line = text
+            .lines()
+            .find(|l| l.contains("child-on"))
+            .expect("child rendered");
+        assert!(child_line.contains('✓'), "ended child gets a ✓: {text}");
+        let root_line = text
+            .lines()
+            .find(|l| l.contains("root-one"))
+            .expect("root rendered");
+        assert!(!root_line.contains('✓'), "live root has no ✓: {text}");
+    }
+
+    #[test]
+    fn click_resolves_an_indented_child_row() {
+        let root = SessionId::new("root-one");
+        let mut app = App::new_for_test(root.clone());
+        let root2 = SessionId::new("root-two");
+        start_session(&mut app, &root2, None);
+        let child = SessionId::new("child-one");
+        start_session(&mut app, &child, Some(&root));
+
+        render_sidebar(&mut app, 40, 12);
+        // Inner rows: 0 = header, 1 = root-one, 2 = child-one (tree order puts
+        // it before root-two), 3 = root-two. Border offsets both axes by 1.
+        assert_eq!(app.session_at(2, 2), Some(root), "root row");
+        assert_eq!(app.session_at(2, 3), Some(child), "indented child row");
+        assert_eq!(app.session_at(2, 4), Some(root2), "second root row");
     }
 
     #[test]

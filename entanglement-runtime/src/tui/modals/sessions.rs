@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::{centered_rect, get_depth};
+use super::centered_rect;
 use crate::tui::app::App;
 
 pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
@@ -39,15 +39,9 @@ pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
 
 pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
     let active = app.active_session_id().clone();
-    let sessions_vec: Vec<_> = app.sessions().into_iter().collect();
-    let mut parent_links: std::collections::HashMap<
-        entanglement_core::SessionId,
-        Option<entanglement_core::SessionId>,
-    > = std::collections::HashMap::new();
-
-    for (id, view) in sessions_vec.iter() {
-        parent_links.insert((*id).clone(), view.parent().cloned());
-    }
+    // Tree-ordered with depth (session_tree.rs): rows nest under their parent,
+    // and the modal's ListState index matches this same ordering.
+    let sessions_vec = app.sessions_with_depth();
 
     // Wall clock (ms) for the live spawn-duration of in-flight sub-agents (#89).
     let now_ms = std::time::SystemTime::now()
@@ -57,8 +51,7 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
 
     let rows: Vec<ListItem> = sessions_vec
         .into_iter()
-        .map(|(id, view)| {
-            let depth = get_depth(id, &parent_links);
+        .map(|(id, view, depth)| {
             let indent = "  ".repeat(depth);
             let marker = if *id == active { "▸ " } else { "  " };
             let color = app.profile_color_for(view.agent());

@@ -25,6 +25,7 @@ mod modals;
 mod progress;
 mod selection;
 mod session_tools_dialog;
+mod session_tree;
 mod session_view;
 mod sessions;
 mod theme;

@@ -232,6 +232,14 @@ impl App {
         self.sessions.all()
     }
 
+    /// [`Self::sessions`] plus each session's spawn-tree depth, for the
+    /// indent-rendering surfaces (sidebar, sessions modal).
+    pub fn sessions_with_depth(
+        &self,
+    ) -> Vec<(&SessionId, &crate::tui::session_view::SessionView, usize)> {
+        self.sessions.all_with_depth()
+    }
+
     pub fn clear_dirty(&mut self) {
         self.dirty = false;
     }

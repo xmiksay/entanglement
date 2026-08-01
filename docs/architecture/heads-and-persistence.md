@@ -180,7 +180,12 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `needs approval`/`question` state words (queue-derived); the sessions modal
   adds a `❓ question` badge beside `⏳ approval`; and sidebar session rows are
   **click-to-select** via a draw-time row map mirroring the chat hit-test
-  capture. **Two-stage Ctrl+C** ([ADR-0087](../adr/0087-two-stage-ctrl-c.md)):
+  capture. Both the sidebar and the sessions modal list sessions as a **spawn
+  tree** (`tui/session_tree.rs`): `SessionRegistry::all()` re-orders the
+  insertion-ordered set depth-first (roots in insertion order, children
+  indented under their parent; a corrupt parent cycle appends rather than
+  drops), the modal's selection index follows the same ordering, and an ended
+  child session renders dim with a `✓`. **Two-stage Ctrl+C** ([ADR-0087](../adr/0087-two-stage-ctrl-c.md)):
   a first Ctrl+C clears the transient input (text buffer, `@file` popup,
   multiline mode) and arms a pending quit; a second within 3s quits. It is
   intercepted **once** at the top of `handle_event`'s key-press block (before

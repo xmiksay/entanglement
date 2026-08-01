@@ -102,11 +102,41 @@ impl SessionRegistry {
         self.switch_to(id);
     }
 
+    /// Every session in **spawn-tree order** (roots in insertion order, each
+    /// followed by its descendants depth-first) — the one ordering source for
+    /// the sidebar, the sessions modal, and the attention panel, so a click/
+    /// jump target always matches what is drawn.
     pub fn all(&self) -> Vec<(&SessionId, &SessionView)> {
-        self.order
+        self.all_with_depth()
+            .into_iter()
+            .map(|(id, view, _)| (id, view))
+            .collect()
+    }
+
+    /// [`all`][Self::all] plus each session's spawn-tree depth (for indent).
+    pub fn all_with_depth(&self) -> Vec<(&SessionId, &SessionView, usize)> {
+        let entries: Vec<(&SessionId, &SessionView)> = self
+            .order
             .iter()
             .filter_map(|id| self.views.get(id).map(|v| (id, v)))
+            .collect();
+        let links: crate::tui::session_tree::ParentLinks = entries
+            .iter()
+            .map(|(id, view)| ((*id).clone(), view.parent().cloned()))
+            .collect();
+        let ids: Vec<&SessionId> = entries.iter().map(|(id, _)| *id).collect();
+        crate::tui::session_tree::tree_order(&ids, &links)
+            .into_iter()
+            .map(|i| {
+                let (id, view) = entries[i];
+                (id, view, crate::tui::session_tree::get_depth(id, &links))
+            })
             .collect()
+    }
+
+    /// The tree-ordered id list the modal's `ListState` index points into.
+    fn ordered_ids(&self) -> Vec<&SessionId> {
+        self.all().into_iter().map(|(id, _)| id).collect()
     }
 
     /// Routes an event into its session's view, auto-discovering sessions
@@ -131,9 +161,9 @@ impl SessionRegistry {
         self.showing_modal = !self.showing_modal;
         if self.showing_modal {
             let current_index = self
-                .order
+                .ordered_ids()
                 .iter()
-                .position(|id| id == &self.active)
+                .position(|id| *id == &self.active)
                 .unwrap_or(0);
             self.modal_state.select(Some(current_index));
         }
@@ -225,20 +255,19 @@ impl SessionRegistry {
 
     /// Switches to the highlighted session and closes the modal.
     pub fn select_from_modal(&mut self) {
-        if let Some(selected) = self.modal_state.selected() {
-            if let Some(id) = self.order.get(selected).cloned() {
-                self.switch_to(id);
-            }
+        if let Some(id) = self.modal_selected_id() {
+            self.switch_to(id);
         }
         self.showing_modal = false;
     }
 
     /// The session id highlighted in the open modal, if any — used by the
     /// sessions-modal quick keys (#6) to act on the highlighted session.
+    /// Indexes the same tree order [`all`][Self::all] renders.
     pub fn modal_selected_id(&self) -> Option<SessionId> {
         self.modal_state
             .selected()
-            .and_then(|i| self.order.get(i).cloned())
+            .and_then(|i| self.ordered_ids().get(i).cloned().cloned())
     }
 }
 
