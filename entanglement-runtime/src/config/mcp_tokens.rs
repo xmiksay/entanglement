@@ -34,14 +34,30 @@
 //!   redact every secret, and nothing here prints a token value.
 //!
 //! A missing file is an empty store. A *malformed* one is logged and treated as
-//! empty — fail-open, matching the sibling stores: the worst case is that the
-//! user has to re-run `/mcp connect`, whereas failing hard would wedge startup
-//! over a file the user cannot easily repair by hand.
+//! empty for reads — fail-open, matching the sibling stores: the worst case is
+//! that the user has to re-run `/mcp connect`, whereas failing hard would wedge
+//! startup over a file the user cannot easily repair by hand.
+//!
+//! A write (`save`/`delete`) is the destructive case: read-modify-write over a
+//! "treated as empty" map would silently discard every *other* server's
+//! credential the moment any one server reconnects (#549). So a write that
+//! finds an unparseable file moves it aside to a `.corrupt-<unix-secs>`
+//! sibling first and starts fresh from empty, rather than overwriting the
+//! original bytes — the operator can still recover a refresh token from the
+//! moved-aside file by hand. If the move itself fails, the write bails instead
+//! of touching the file at all.
+//!
+//! No `deny_unknown_fields` on [`McpTokensFile`]: a version downgrade or a
+//! forward-compat schema addition must never turn into a parse error on this
+//! file, since (per the above) a parse error on a write is destructive. Typos
+//! in the credentials the store actually manages are still structurally
+//! checked, via [`StoredAuth`]'s own required fields.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use entanglement_core::{StoredAuth, TokenStore};
 use serde::{Deserialize, Serialize};
 
@@ -50,10 +66,8 @@ use super::atomic::atomic_write;
 /// Env var overriding the managed token file path (tests + non-XDG setups).
 const MCP_TOKENS_FILE_ENV: &str = "ENTANGLEMENT_MCP_TOKENS_FILE";
 
-/// On-disk shape. A single `servers:` map leaves room for future keys and lets
-/// `deny_unknown_fields` flag a typo instead of silently dropping a credential.
+/// On-disk shape: a single `servers:` map.
 #[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct McpTokensFile {
     #[serde(default)]
     servers: BTreeMap<String, StoredAuth>,
@@ -123,7 +137,7 @@ impl TokenStore for McpTokenStore {
     fn save(&self, server: &str, auth: &StoredAuth) -> Result<()> {
         let path = self.require_path()?;
         super::lock::with_locked_file(&path, || {
-            let mut on_disk = read_tokens(&path);
+            let mut on_disk = read_tokens_for_write(&path)?;
             on_disk.insert(server.to_string(), auth.clone());
             persist_map(&path, &on_disk)
         })
@@ -135,7 +149,7 @@ impl TokenStore for McpTokenStore {
     fn delete(&self, server: &str) -> Result<()> {
         let path = self.require_path()?;
         super::lock::with_locked_file(&path, || {
-            let mut on_disk = read_tokens(&path);
+            let mut on_disk = read_tokens_for_write(&path)?;
             if on_disk.remove(server).is_none() {
                 return Ok(());
             }
@@ -161,20 +175,38 @@ fn persist_map(path: &Path, servers: &BTreeMap<String, StoredAuth>) -> Result<()
     atomic_write(path, &format!("{header}{body}"))
 }
 
-/// Read + parse the token file. A missing file, or any read/parse error, yields
-/// an empty map (logged without any file content, which could carry a token).
-fn read_tokens(path: &Path) -> BTreeMap<String, StoredAuth> {
+/// The outcome of trying to load the on-disk file, before any policy decision
+/// (fail-open vs quarantine-and-fail-open) is applied to it.
+enum RawRead {
+    /// No file yet.
+    Missing,
+    Parsed(BTreeMap<String, StoredAuth>),
+    /// Read or parse failed; carries serde's own error string (a line/column
+    /// and field name, never a value — safe to log, unlike the file body).
+    Corrupt(String),
+}
+
+fn read_raw(path: &Path) -> RawRead {
     if !path.exists() {
-        return BTreeMap::new();
+        return RawRead::Missing;
     }
     match std::fs::read_to_string(path)
         .map_err(|e| e.to_string())
         .and_then(|t| serde_yaml::from_str::<McpTokensFile>(&t).map_err(|e| e.to_string()))
     {
-        Ok(file) => file.servers,
-        Err(e) => {
-            // The error string is serde's own (a line/column and field name),
-            // never a value — safe to log, unlike the file body.
+        Ok(file) => RawRead::Parsed(file.servers),
+        Err(e) => RawRead::Corrupt(e),
+    }
+}
+
+/// Read + parse the token file for a *read-only* query (`servers`/`has`/
+/// `load`). A missing file, or any read/parse error, yields an empty map —
+/// fail-open, since a read can't destroy anything.
+fn read_tokens(path: &Path) -> BTreeMap<String, StoredAuth> {
+    match read_raw(path) {
+        RawRead::Missing => BTreeMap::new(),
+        RawRead::Parsed(servers) => servers,
+        RawRead::Corrupt(e) => {
             tracing::warn!(
                 path = %path.display(),
                 "mcp-tokens: could not parse the managed token file ({e}); treating as empty — \
@@ -183,6 +215,56 @@ fn read_tokens(path: &Path) -> BTreeMap<String, StoredAuth> {
             BTreeMap::new()
         }
     }
+}
+
+/// Read + parse the token file for a *write* (`save`/`delete`), which is about
+/// to read-modify-write the file back out. Treating a corrupt file as an empty
+/// map here — like the read path does — would have the next write silently
+/// erase every other server's credential (#549). So a corrupt file is instead
+/// moved aside first; only once it's safely out of the way does the write
+/// proceed from an empty map. If the move itself fails, the write bails
+/// entirely rather than risk clobbering possibly-recoverable content.
+fn read_tokens_for_write(path: &Path) -> Result<BTreeMap<String, StoredAuth>> {
+    match read_raw(path) {
+        RawRead::Missing => Ok(BTreeMap::new()),
+        RawRead::Parsed(servers) => Ok(servers),
+        RawRead::Corrupt(e) => {
+            quarantine(path, &e)?;
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// Move an unparseable managed file aside to a `.corrupt-<unix-secs>` sibling
+/// so the next write starts from empty without destroying the original bytes.
+fn quarantine(path: &Path, parse_err: &str) -> Result<()> {
+    let epoch_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut quarantine_name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "mcp-tokens.yml".into());
+    quarantine_name.push(format!(".corrupt-{epoch_secs}"));
+    let quarantine_path = path.with_file_name(quarantine_name);
+
+    std::fs::rename(path, &quarantine_path).with_context(|| {
+        format!(
+            "mcp-tokens: {} is unparseable ({parse_err}) and could not be moved aside to {}; \
+             refusing to overwrite it",
+            path.display(),
+            quarantine_path.display()
+        )
+    })?;
+    tracing::error!(
+        path = %path.display(),
+        quarantine_path = %quarantine_path.display(),
+        "mcp-tokens: managed file was unparseable ({parse_err}); moved aside rather than \
+         overwriting it, and starting a fresh empty store — re-run `/mcp connect <server>` \
+         for each server, or inspect the moved-aside file by hand to recover a refresh token"
+    );
+    Ok(())
 }
 
 fn tokens_file_path() -> Option<PathBuf> {
@@ -280,11 +362,57 @@ mod tests {
     }
 
     #[test]
-    fn unknown_key_in_the_file_is_rejected_not_silently_dropped() {
+    fn save_over_a_corrupt_file_quarantines_it_instead_of_overwriting() {
+        let (store, path) = store_at("quarantine");
+        let garbage = "servers: [this is not a map]\n";
+        std::fs::write(&path, garbage).unwrap();
+
+        // #549: this must NOT silently discard `garbage` — it must move it
+        // aside so it's still recoverable by hand.
+        store.save("srv", &auth("fresh")).unwrap();
+
+        // The live file now holds only what was just saved.
+        assert_eq!(
+            store.load("srv").unwrap().unwrap().tokens.access_token,
+            "fresh"
+        );
+
+        // The original corrupt bytes survive in a quarantined sibling.
+        let dir = path.parent().unwrap();
+        let stem = path.file_name().unwrap().to_string_lossy().into_owned();
+        let quarantined: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with(&format!("{stem}.corrupt-")))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            quarantined.len(),
+            1,
+            "expected exactly one quarantined file"
+        );
+        assert_eq!(std::fs::read_to_string(&quarantined[0]).unwrap(), garbage);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&quarantined[0]);
+    }
+
+    #[test]
+    fn unknown_top_level_key_is_forward_compat_not_a_wipe() {
         let (store, path) = store_at("unknown-key");
-        std::fs::write(&path, "serverz:\n  a: {}\n").unwrap();
-        // `deny_unknown_fields` → parse error → fail-open empty.
-        assert!(store.servers().is_empty());
+        // A newer skutter version (or a stray top-level key) must not turn
+        // into a parse error that then wipes the file on the next write
+        // (#549) — dropping `deny_unknown_fields` keeps this readable.
+        std::fs::write(
+            &path,
+            "servers:\n  srv:\n    client_id: cid\n    token_endpoint: https://as.example/token\n    tokens:\n      access_token: tok\nfuture_top_level_field: 1\n",
+        )
+        .unwrap();
+        assert_eq!(store.servers(), vec!["srv".to_string()]);
         let _ = std::fs::remove_file(&path);
     }
 

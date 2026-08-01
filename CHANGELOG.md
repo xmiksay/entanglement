@@ -175,6 +175,24 @@ alternatives behind each design decision live in the ADRs under
 
 ### Fixed
 
+- **A corrupt `mcp-tokens.yml` silently wiped every OAuth credential on the
+  next save** (#549): `read_tokens` mapped *any* read/parse error to an empty
+  map, and `TokenStore::save`/`delete` then read-modify-wrote that empty map
+  straight back over the file — one unparseable byte, and the next `/mcp
+  connect <anything>` or background refresh deleted every other server's
+  refresh token, irrecoverably. A write now distinguishes a missing file
+  (fine, starts empty) from an unparseable one: the latter is moved aside to
+  a `.corrupt-<unix-secs>` sibling first (so the original bytes are still
+  recoverable by hand) before the write proceeds from empty; if the move
+  itself fails, the write bails rather than risk overwriting it. Read-only
+  queries (`servers`/`has`/`load`) keep the prior fail-open behavior since
+  they can't destroy anything. `McpTokensFile` also drops
+  `deny_unknown_fields`, so a forward-compat schema addition or a version
+  downgrade no longer turns into a destructive parse error either.
+  Additionally, neither `atomic_write` nor the shared endpoint-state writer
+  `fsync`ed the temp file before rename or the directory after — a crash
+  could leave a managed file (including `mcp-tokens.yml`) zero-length; both
+  now `fsync` the temp file and the parent directory.
 - **Retry-After could wedge every local `skutter` process, with `Stop`
   unresponsive and no throttle indication** (#547): three compounding
   defects. (1) `rate_limit_max_elapsed` only bounded the caller that
