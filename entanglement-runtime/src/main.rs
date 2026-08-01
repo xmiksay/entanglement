@@ -494,16 +494,6 @@ fn resolve_concurrency(entry: &ProviderEntry) -> Option<usize> {
         .or(entry.concurrency)
 }
 
-/// A model's own tighter in-flight cap on its provider's endpoint (#521,
-/// ADR-0140) — the catalog `ModelEntry::concurrency`, e.g. z.ai's documented
-/// 1-in-flight limit for GLM-4.7-Flash vs 5 for GLM-5.2. `None` when the model
-/// is absent from the catalog or carries no per-model cap; YAML-only for v1 —
-/// no env override (model ids contain `.`/`-`, so there is no clean
-/// `{NAME}_{MODEL}_CONCURRENCY` env spelling yet).
-fn resolve_model_concurrency(catalog: &Catalog, provider: &str, model: &str) -> Option<usize> {
-    catalog.model(provider, model).and_then(|m| m.concurrency)
-}
-
 /// Summarize the chosen model against the catalog (context window, display name).
 fn model_info_for(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> ModelInfo {
     ModelInfo::from_catalog(catalog.model(&entry.name, model), model)
@@ -680,7 +670,7 @@ fn gemini_factory_for(
         model.to_string(),
         resolve_rpm(entry),
         resolve_concurrency(entry),
-        resolve_model_concurrency(catalog, &entry.name, model),
+        catalog.model_concurrency_resolver(&entry.name),
         http_client.clone(),
     ))
 }
@@ -722,7 +712,7 @@ fn openai_factory_for(
         model.to_string(),
         resolve_rpm(entry),
         resolve_concurrency(entry),
-        resolve_model_concurrency(catalog, &entry.name, model),
+        catalog.model_concurrency_resolver(&entry.name),
         web_search,
         http_client.clone(),
     ))
@@ -761,7 +751,7 @@ fn anthropic_factory_for(
         model.to_string(),
         resolve_rpm(entry),
         resolve_concurrency(entry),
-        resolve_model_concurrency(catalog, &entry.name, model),
+        catalog.model_concurrency_resolver(&entry.name),
         web_search,
         web_search_tool_version,
         http_client.clone(),

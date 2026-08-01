@@ -244,23 +244,34 @@ fn model_cap_wider_than_endpoint_cap_warns_but_is_still_honored() {
 }
 
 #[test]
-fn model_slot_is_stable_by_model_id_and_first_caller_sets_the_cap() {
+fn model_slot_is_stable_by_model_id_while_the_cap_agrees() {
     let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
     let a1 = ep.model_slot("glm-5.2", 5);
     let a2 = ep.model_slot("glm-5.2", 5);
-    // Same model id → the same slot (and thus the same live semaphore state).
+    // Same model id, same cap → the same slot (and thus the same live
+    // semaphore state) — no needless churn on the common case.
     assert!(Arc::ptr_eq(&a1, &a2));
     assert_eq!(a1.cap, 5);
-    // A later call for the same model with a different requested cap does not
-    // resize an already-created slot — mirrors `HttpClient::endpoint`'s own
-    // "only the first caller sizes the bucket" contract.
-    let a3 = ep.model_slot("glm-5.2", 1);
-    assert!(Arc::ptr_eq(&a1, &a3));
-    assert_eq!(a3.cap, 5);
     // A different model id gets its own independent slot.
     let flash = ep.model_slot("glm-4.7-flash", 1);
     assert!(!Arc::ptr_eq(&a1, &flash));
     assert_eq!(flash.cap, 1);
+}
+
+#[test]
+fn model_slot_corrects_a_stale_cap_instead_of_latching_it_forever() {
+    // #550: a wrong cap reaching `model_slot` first (e.g. resolved against the
+    // wrong model before the per-request fix) must not stick for the rest of
+    // the process — a later, correct caller has to be able to fix it.
+    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    let wrong = ep.model_slot("glm-4.7-flash", 5);
+    assert_eq!(wrong.cap, 5);
+    let corrected = ep.model_slot("glm-4.7-flash", 1);
+    assert!(!Arc::ptr_eq(&wrong, &corrected));
+    assert_eq!(corrected.cap, 1);
+    // Every subsequent caller now sees the corrected slot.
+    let again = ep.model_slot("glm-4.7-flash", 1);
+    assert!(Arc::ptr_eq(&corrected, &again));
 }
 
 #[test]

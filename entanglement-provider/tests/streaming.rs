@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use entanglement_provider::{HttpClient, OpenAiLlm, RetryConfig};
+use entanglement_provider::{fixed_model_concurrency, HttpClient, OpenAiLlm, RetryConfig};
 use entanglement_provider::{Llm, LlmEvent, LlmRequest, Message};
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -134,7 +134,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         "glm-5.2",
         None,
         None,
-        None,
+        fixed_model_concurrency(None),
         None,
         HttpClient::new(),
     );
@@ -303,7 +303,7 @@ async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEven
         "glm-5.2",
         None,
         None,
-        None,
+        fixed_model_concurrency(None),
         None,
         HttpClient::with_config(config),
     );
@@ -412,7 +412,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         "glm-5.2",
         None,
         None,
-        None,
+        fixed_model_concurrency(None),
         None,
         http.clone(),
     );
@@ -429,7 +429,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         "glm-5.2",
         None,
         None,
-        None,
+        fixed_model_concurrency(None),
         None,
         http,
     );
@@ -620,7 +620,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
         "glm-4.7-flash",
         None,
         None,
-        Some(1),
+        fixed_model_concurrency(Some(1)),
         None,
         http.clone(),
     );
@@ -630,7 +630,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
         "glm-4.7-flash",
         None,
         None,
-        Some(1),
+        fixed_model_concurrency(Some(1)),
         None,
         http,
     );
@@ -674,6 +674,87 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
 }
 
 #[tokio::test]
+async fn model_concurrency_resolves_the_requests_model_not_the_clients_default() {
+    // #550: a profile's `model:` set without `provider:` sends a request whose
+    // `LlmRequest::model` diverges from the client's own `default_model` (the
+    // documented request-level fallback — `AgentProfile::model_pin` returns
+    // `None` so `SetAgent` never rebinds the client to a fresh backend). Both
+    // clients below are constructed with `default_model = "glm-5.2"` (cap 5)
+    // but every actual request asks for `"glm-4.7-flash"` (cap 1) — proving
+    // the per-model cap tracks the *request's* model, not whatever the client
+    // happened to be built with. Before #550 the cap was resolved once at
+    // construction from `default_model`, so this would have (wrongly) used
+    // cap 5 and let both calls race instead of serializing.
+    let delay = Duration::from_millis(300);
+    let (base_url, accept_times) = serve_sequential_with_delay(ok_body(), 2, delay).await;
+
+    let resolver: entanglement_provider::ModelConcurrencyResolver =
+        Arc::new(|model: &str| match model {
+            "glm-4.7-flash" => Some(1),
+            "glm-5.2" => Some(5),
+            _ => None,
+        });
+    let http = HttpClient::with_config(no_pacing_config());
+    let mut llm_a = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-5.2",
+        None,
+        None,
+        resolver.clone(),
+        None,
+        http.clone(),
+    );
+    let mut llm_b = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "glm-5.2",
+        None,
+        None,
+        resolver,
+        None,
+        http,
+    );
+    let messages = vec![Message::user("hi")];
+    let req = || LlmRequest {
+        system: "s",
+        model: Some("glm-4.7-flash"),
+        messages: &messages,
+        tools: &[],
+        generation: None,
+    };
+
+    let (a, b) = tokio::join!(
+        async {
+            llm_a
+                .stream(req())
+                .await
+                .expect("a starts")
+                .collect::<Vec<_>>()
+                .await
+        },
+        async {
+            llm_b
+                .stream(req())
+                .await
+                .expect("b starts")
+                .collect::<Vec<_>>()
+                .await
+        },
+    );
+    assert!(a.iter().all(|r| r.is_ok()) && b.iter().all(|r| r.is_ok()));
+
+    let times = accept_times.lock().unwrap().clone();
+    assert_eq!(times.len(), 2, "both calls must eventually connect");
+    let gap = times[1].duration_since(times[0]);
+    assert!(
+        gap >= delay - Duration::from_millis(50),
+        "the request's model (flash, cap 1) must govern admission even though \
+         the client's default_model (glm-5.2, cap 5) differs, gap={gap:?}"
+    );
+}
+
+#[tokio::test]
 async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
     // The mixed-model scenario ADR-0140 exists to fix: GLM-4.7-Flash (cap 1)
     // occupies its one slot for `delay`, but a concurrent GLM-5.2 (cap 5) call
@@ -692,7 +773,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
         "glm-4.7-flash",
         None,
         None,
-        Some(1),
+        fixed_model_concurrency(Some(1)),
         None,
         http.clone(),
     );
@@ -702,7 +783,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
         "glm-5.2",
         None,
         None,
-        Some(5),
+        fixed_model_concurrency(Some(5)),
         None,
         http,
     );
@@ -746,7 +827,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         "glm-4.6",
         None,
         None,
-        None, // no per-model cap
+        fixed_model_concurrency(None), // no per-model cap
         None,
         http.clone(),
     );
@@ -756,7 +837,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         "glm-4.6",
         None,
         None,
-        None,
+        fixed_model_concurrency(None),
         None,
         http,
     );
@@ -842,7 +923,7 @@ async fn endpoint_permit_frees_promptly_when_a_keep_alive_proxy_holds_the_body_o
         "glm-5.2",
         None,
         None,
-        None,
+        fixed_model_concurrency(None),
         None,
         http.clone(),
     );

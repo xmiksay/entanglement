@@ -20,7 +20,9 @@
 //! `candidates[0].finishReason` and the terminal `usageMetadata`.
 
 use crate::client::HttpClient;
-use crate::{Llm, LlmEvent, LlmRequest, LlmStream, StopReason, ToolCall, Usage};
+use crate::{
+    Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, StopReason, ToolCall, Usage,
+};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -64,11 +66,11 @@ pub struct GeminiLlm {
     /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
     /// client default). Threaded into the per-endpoint concurrency permit (#414).
     concurrency: Option<usize>,
-    /// Catalog-provided in-flight concurrency cap for this specific model on
-    /// this endpoint (`None` = no tighter cap than the endpoint's own).
-    /// Threaded into the per-model concurrency permit layered under the
-    /// endpoint permit (#521, ADR-0140).
-    model_concurrency: Option<usize>,
+    /// Resolves the in-flight concurrency cap for whichever model a given
+    /// request actually names, re-run per request rather than baked in at
+    /// construction (#521/#550, ADR-0140) — threaded into the per-model
+    /// concurrency permit layered under the endpoint permit.
+    model_concurrency: ModelConcurrencyResolver,
     http: HttpClient,
 }
 
@@ -80,7 +82,7 @@ impl GeminiLlm {
         default_model: impl Into<String>,
         rpm: Option<u32>,
         concurrency: Option<usize>,
-        model_concurrency: Option<usize>,
+        model_concurrency: ModelConcurrencyResolver,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -96,9 +98,10 @@ impl GeminiLlm {
 }
 
 /// Build an [`LlmFactory`] wired to Gemini. Each session gets its own cloned
-/// [`GeminiLlm`]. `rpm`/`concurrency`/`model_concurrency = None` use the
-/// client's (or endpoint's) defaults — `model_concurrency` layers a tighter
-/// per-model cap on top (#521).
+/// [`GeminiLlm`]. `rpm`/`concurrency = None` use the client's (or endpoint's)
+/// defaults; `model_concurrency` resolves a tighter per-model cap per request
+/// (`|_| None` disables it, #521, resolved per request rather than once at
+/// construction, #550).
 #[allow(clippy::too_many_arguments)]
 pub fn gemini_factory(
     base_url: impl Into<String>,
@@ -106,7 +109,7 @@ pub fn gemini_factory(
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
-    model_concurrency: Option<usize>,
+    model_concurrency: ModelConcurrencyResolver,
     http: HttpClient,
 ) -> crate::LlmFactory {
     let llm = GeminiLlm::new(
@@ -125,6 +128,10 @@ pub fn gemini_factory(
 impl Llm for GeminiLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         let model = req.model.unwrap_or(&self.default_model).to_string();
+        // Resolved against *this* request's model, not baked in at
+        // construction (#550) — a profile's `model:`-only pin can send a
+        // request under a different model than `default_model`.
+        let model_concurrency = (self.model_concurrency)(&model);
         let body = build_body(req.system, req.messages, req.tools, req.generation);
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{base}/{model}:streamGenerateContent?alt=sse");
@@ -147,7 +154,7 @@ impl Llm for GeminiLlm {
                 self.rpm,
                 self.concurrency,
                 &model,
-                self.model_concurrency,
+                model_concurrency,
                 || {
                     self.http
                         .client()

@@ -262,12 +262,30 @@ byte-identical to pre-#521; a model cap configured *wider* than its
 endpoint's own is legal (the narrower endpoint cap simply binds first) but
 logs a `tracing::warn!` as a likely misconfiguration rather than erroring.
 The `{name}_factory`/`{Name}Llm::new` constructors each gained a
-`model_concurrency: Option<usize>` parameter, resolved once per `(entry,
-model)` at the same point `resolve_rpm`/`resolve_concurrency` already resolve
-the provider-level knobs (so a live `SetModel` switch re-resolves it exactly
-like the others). The endpoint-wide `Retry-After` cool-down and pacing gate
-stay shared across every model on the endpoint (v1) — a 429 still parks the
-whole endpoint regardless of which model triggered it.
+`model_concurrency: ModelConcurrencyResolver` parameter — **resolved per
+request** against the request's own model (#550), not baked in once at
+construction. The original v1 shape resolved the cap once per `(entry,
+model)` at factory-build time, the same point `resolve_rpm`/`resolve_concurrency`
+resolve the provider-level knobs; that model is the *client's* — the startup
+default or whatever `SetModel` last rebound to — and diverges from a given
+request's actual model whenever a profile pins `model:` **without**
+`provider:` (the documented request-level fallback: `AgentProfile::model_pin`
+returns `None`, so `SetAgent` doesn't rebind the client). The mismatch paired
+the wrong model's cap with the request's real model at `execute_with_retry`'s
+`model`/`model_concurrency` call site, and — because `EndpointState::model_slot`
+only sized a model's semaphore on the *first* caller — that wrong cap then
+stuck for the rest of the process, immune to a later, correct `/model` switch.
+`Catalog::model_concurrency_resolver(provider)` builds the resolver (an
+`Arc<dyn Fn(&str) -> Option<usize>>`, cheap to clone into every session's
+backend clone), closing over a cloned `Catalog` so each client can look its
+*actual* per-request model up against the real catalog data. `model_slot`
+itself now also **corrects** an already-cached slot when a later caller
+supplies a different cap, instead of latching the first value seen forever —
+belt-and-suspenders against any other path (a config reload, a race) that
+still manages to resolve the wrong cap first. The endpoint-wide `Retry-After`
+cool-down and pacing gate stay shared across every model on the endpoint
+(v1) — a 429 still parks the whole endpoint regardless of which model
+triggered it.
 
 **Timeouts — connect + idle-gap, not whole-request** (#241): the shared
 `reqwest::Client` is built with `connect_timeout` only (30s to establish TCP+TLS).
