@@ -160,6 +160,25 @@ alternatives behind each design decision live in the ADRs under
 
 ### Fixed
 
+- **`skutter run`/`tui`/`serve` never exited — untracked detached tasks held
+  `Holly` clones open forever** (#545, a regression from #515/33992db): the
+  shutdown block aborts the top-level responder handles then blocks on the
+  persistence subscriber draining, which only happens once every `Holly`
+  clone drops. Several handlers spawned a *further* detached `tokio::spawn`
+  from inside themselves — the tool executor's inbound decision router, its
+  per-call dispatch/rhai tasks (tracked in `CancelRegistry` but never
+  cancelled at shutdown), the session-title generator's per-prompt task, and
+  the MCP responder's `McpAuth` op — none reachable by aborting the outer
+  handle, so at least one `Holly` clone always outlived shutdown. The
+  router/session-title/MCP-auth tasks are now parked in a `tokio::task::JoinSet`
+  owned by their spawning task's own future, so an abort (or the loop's
+  terminal `Closed` break) drops the set and aborts them too; `CancelRegistry`
+  gained `cancel_all()` plus a `CancelAllOnDrop` guard so every in-flight
+  dispatch/rhai task is aborted on shutdown, not just a live session's `Stop`.
+  The final persistence drain is now bounded by a 5s `tokio::time::timeout`
+  backstop. Separately, the TUI's crossterm stdin-reader task is now tracked
+  and aborted right after `restore_terminal`, instead of continuing to
+  consume stdin meant for whatever the terminal is handed back to.
 - **TUI approval prompts showed an empty or truncated body for several
   tools** (#519): approval bodies fell back to raw JSON, a truncated
   header-only arg, or nothing at all — an approval you can't inspect isn't

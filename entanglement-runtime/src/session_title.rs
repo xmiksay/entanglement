@@ -54,9 +54,14 @@ const TITLE_OUTPUT_CHAR_CAP: usize = 80;
 /// Spawns the session-title generator (Issue 5). Subscribes to the engine's
 /// inbound `InMsg` fan-out and, on the first `Prompt` of an unnamed session,
 /// spawns a detached task that calls the aux `session_title` LLM and sends the
-/// result back as `SetSessionMeta`. Aborted at shutdown alongside the other
-/// runtime responders (`main.rs`) — it holds only a `Holly` clone + the
-/// registry (both cheap, neither needs a graceful drain).
+/// result back as `SetSessionMeta`. The outer task is aborted at shutdown
+/// alongside the other runtime responders (`main.rs`); each inner per-prompt
+/// task is tracked in a `JoinSet` rather than a bare detached `tokio::spawn`
+/// (#545) — one still holding its own `Holly` clone while parked on a
+/// throttled/slow aux call would otherwise keep the engine's channels open
+/// indefinitely, since aborting the *outer* task never reaches a child spawned
+/// from inside it. Parking it here means it's aborted along with the outer
+/// task when this future's local variables drop.
 #[cfg(feature = "provider")]
 pub fn spawn_session_title_generator(
     holly: &Holly,
@@ -68,48 +73,59 @@ pub fn spawn_session_title_generator(
         // Sessions this generator has already titled (or decided to skip). A
         // late second `Prompt` for a titled session is a no-op.
         let mut titled: HashSet<SessionId> = HashSet::new();
+        let mut inflight: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         loop {
-            match inbound.recv().await {
-                Ok(InMsg::Prompt { session, content }) => {
-                    // Already titled/skipped → leave it alone.
-                    if titled.contains(&session) {
-                        continue;
-                    }
-                    let prompt_text = content_text(&content);
-                    if prompt_text.trim().is_empty() {
-                        continue;
-                    }
-                    titled.insert(session.clone());
-                    let holly = holly.clone();
-                    let registry = registry.clone();
-                    // Detached: the generator must not block the inbound
-                    // fan-out (a slow aux model would stall every later
-                    // `InMsg`). A failure is logged + dropped.
-                    tokio::spawn(async move {
-                        let title = match generate_title(&registry, &prompt_text).await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                tracing::debug!(
-                                    "session-title: generation failed for {}: {e:#}",
-                                    session
-                                );
-                                return;
+            tokio::select! {
+                // Reap finished per-prompt tasks so `inflight` doesn't grow
+                // unbounded over a long-running process; guarded so this branch
+                // never fires (and busy-loops) while the set is empty.
+                Some(_) = inflight.join_next(), if !inflight.is_empty() => {}
+                msg = inbound.recv() => {
+                    match msg {
+                        Ok(InMsg::Prompt { session, content }) => {
+                            // Already titled/skipped → leave it alone.
+                            if titled.contains(&session) {
+                                continue;
                             }
-                        };
-                        if let Some(title) = title {
-                            let _ = holly
-                                .send(InMsg::SetSessionMeta {
-                                    session,
-                                    name: Some(title),
-                                    action: None,
-                                })
-                                .await;
+                            let prompt_text = content_text(&content);
+                            if prompt_text.trim().is_empty() {
+                                continue;
+                            }
+                            titled.insert(session.clone());
+                            let holly = holly.clone();
+                            let registry = registry.clone();
+                            // Tracked (not bare-detached): the generator must not
+                            // block the inbound fan-out (a slow aux model would
+                            // stall every later `InMsg`), but the task must still
+                            // be reachable for abort at shutdown. A failure is
+                            // logged + dropped.
+                            inflight.spawn(async move {
+                                let title = match generate_title(&registry, &prompt_text).await {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            "session-title: generation failed for {}: {e:#}",
+                                            session
+                                        );
+                                        return;
+                                    }
+                                };
+                                if let Some(title) = title {
+                                    let _ = holly
+                                        .send(InMsg::SetSessionMeta {
+                                            session,
+                                            name: Some(title),
+                                            action: None,
+                                        })
+                                        .await;
+                                }
+                            });
                         }
-                    });
+                        Ok(_) => {}
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => break,
+                    }
                 }
-                Ok(_) => {}
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => break,
             }
         }
     })

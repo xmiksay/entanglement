@@ -113,7 +113,7 @@ pub async fn tui(
     let mut terminal = Terminal::new(backend)?;
 
     let (event_tx, mut event_rx) = mpsc::channel(128);
-    spawn_crossterm_task(event_tx.clone());
+    let crossterm_handle = spawn_crossterm_task(event_tx.clone());
     // External SIGINT safety net (ADR-0087): in raw mode Ctrl+C is delivered
     // as a key event (ISIG suppressed), so this only fires for an out-of-band
     // `kill -INT` — routing it through the same two-stage quit path so the
@@ -232,13 +232,13 @@ pub async fn tui(
 
     restore_terminal(&mut terminal)?;
 
-    // Abort the external-SIGINT task and reset SIGINT to its default disposition
-    // (terminate). `tokio::signal::ctrl_c()` installs a *process-global* handler
-    // that outlives the future it's dropped from, so without this reset a Ctrl+C
-    // during `main`'s post-TUI shutdown (engine/persistence teardown) would be
-    // swallowed by tokio's lingering handler — leaving the user no escape but
-    // `kill -9`. Resetting here makes that shutdown interruptible again, as it
-    // was before any SIGINT handler existed.
+    // Abort the crossterm reader (#545 — it would otherwise keep consuming
+    // stdin after the terminal is handed back) and the external-SIGINT task,
+    // then reset SIGINT to its default disposition (terminate):
+    // `tokio::signal::ctrl_c()`'s handler is process-global and outlives the
+    // future it's dropped from, so without this a Ctrl+C during `main`'s
+    // post-TUI shutdown would be swallowed — leaving only `kill -9`.
+    crossterm_handle.abort();
     sigint_handle.abort();
     reset_sigint_to_default();
 
@@ -264,7 +264,7 @@ fn entry_profiles_from(registry: &ProfileRegistry) -> Vec<app::ProfileInfo> {
         .collect()
 }
 
-fn spawn_crossterm_task(tx: mpsc::Sender<Event>) {
+fn spawn_crossterm_task(tx: mpsc::Sender<Event>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match event::read().await {
@@ -276,7 +276,7 @@ fn spawn_crossterm_task(tx: mpsc::Sender<Event>) {
                 Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
             }
         }
-    });
+    })
 }
 
 /// External-SIGINT safety net (ADR-0087). In raw mode crossterm suppresses

@@ -98,6 +98,33 @@ impl CancelRegistry {
     pub fn forget_session(&self, session: &SessionId) {
         self.inner.lock().unwrap().remove(session);
     }
+
+    /// Abort every in-flight tool task across *every* session (#545): unlike
+    /// [`Self::cancel_session`] (one session's `Stop`), this is the process-shutdown
+    /// path — a per-call dispatch/rhai task holds a `Holly` clone for as long as it
+    /// runs (an in-flight `bash`/`call`, a parked approval, a blocking rhai
+    /// script), and nothing else cancels it when the head is tearing down. Collect
+    /// the session ids first so the removal loop doesn't hold the lock across
+    /// `cancel()`.
+    pub fn cancel_all(&self) {
+        let sessions: Vec<SessionId> = self.inner.lock().unwrap().keys().cloned().collect();
+        for session in &sessions {
+            self.cancel_session(session);
+        }
+    }
+}
+
+/// RAII guard that cancels every in-flight tool task ([`CancelRegistry::cancel_all`])
+/// when dropped (#545). Held by the tool executor's own task future: aborting that
+/// task (or its loop breaking on the engine's outbox closing) drops this guard
+/// along with it, so shutdown cancellation happens automatically instead of
+/// depending on an explicit call the caller could forget.
+pub struct CancelAllOnDrop(pub CancelRegistry);
+
+impl Drop for CancelAllOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel_all();
+    }
 }
 
 #[cfg(test)]
@@ -156,5 +183,42 @@ mod tests {
     fn cancel_unknown_session_is_a_noop() {
         let reg = CancelRegistry::default();
         reg.cancel_session(&SessionId::new("nope"));
+    }
+
+    #[tokio::test]
+    async fn cancel_all_aborts_every_session() {
+        let reg = CancelRegistry::default();
+        let sessions: Vec<SessionId> = (0..3).map(|i| SessionId::new(format!("s{i}"))).collect();
+        let mut handles = Vec::new();
+        for session in &sessions {
+            let handle = tokio::spawn(std::future::pending::<()>());
+            reg.register(session, TaskCanceller::task(handle.abort_handle()));
+            handles.push(handle);
+        }
+
+        reg.cancel_all();
+
+        for handle in handles {
+            let err = handle.await.unwrap_err();
+            assert!(err.is_cancelled(), "every session's task must be aborted");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_all_on_drop_guard_cancels_registered_tasks() {
+        let reg = CancelRegistry::default();
+        let session = SessionId::new("s1");
+        let handle = tokio::spawn(std::future::pending::<()>());
+        reg.register(&session, TaskCanceller::task(handle.abort_handle()));
+
+        {
+            let _guard = CancelAllOnDrop(reg.clone());
+        }
+
+        let err = handle.await.unwrap_err();
+        assert!(
+            err.is_cancelled(),
+            "guard drop must cancel registered tasks"
+        );
     }
 }

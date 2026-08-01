@@ -46,7 +46,7 @@ use entanglement_core::{
 use crate::tools::{SharedRegistry, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::cancel::{CancelRegistry, TaskCanceller};
+use crate::cancel::{CancelAllOnDrop, CancelRegistry, TaskCanceller};
 use crate::hooks::Hooks;
 #[cfg(feature = "rhai")]
 use crate::permission::effective_permission;
@@ -328,6 +328,15 @@ pub fn spawn_tool_executor_with_policy(
     let inbound = holly.subscribe_inbound();
     let holly = holly.clone();
     tokio::spawn(async move {
+        // Background tasks this executor spawns that must not outlive it (#545):
+        // the file-change listener and the decision router below each hold
+        // resources (the router a `Holly` clone) that keep the engine's channels
+        // open, so a bare detached `tokio::spawn` would block process shutdown
+        // forever — nothing else ever aborts them. Parking them in this `JoinSet`
+        // instead means they're aborted automatically when *this* task's future
+        // drops, whether that's an explicit `.abort()` at shutdown or the loop
+        // below breaking on the engine's outbox closing.
+        let mut background: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         // Active profile per session. Folded from lifecycle events, but the fold
         // is a *lossy* broadcast — so it is authoritatively self-healed on every
         // `ToolExec` from the profile name that event carries (#156). See the
@@ -388,7 +397,7 @@ pub fn spawn_tool_executor_with_policy(
             let mut file_changes = holly.subscribe();
             let plan_files = plan_files.clone();
             let plan_root = plan_root.clone();
-            tokio::spawn(async move {
+            background.spawn(async move {
                 loop {
                     match file_changes.recv().await {
                         Ok(OutEvent::FileChange {
@@ -430,6 +439,12 @@ pub fn spawn_tool_executor_with_policy(
         // `bash`/`call` command or `rhai` script is actually cancelled — core
         // only clears the parked turn state, it never owns the execution.
         let cancels = CancelRegistry::default();
+        // Aborts every session's in-flight dispatch/rhai task (#545) when this
+        // executor's own task future drops — a `Stop` only cancels one session's
+        // registered tasks; process shutdown must cancel all of them, since a
+        // long-running `bash`/`call`, a parked approval, or a blocking rhai
+        // script each hold a `Holly` clone for as long as they run.
+        let _cancel_all_on_drop = CancelAllOnDrop(cancels.clone());
         // Lag-proof decision delivery (#156): parked approvals await a oneshot
         // registered here, and the single inbound router below fans each head
         // decision to its waiter — closing the window where a per-task broadcast
@@ -458,7 +473,7 @@ pub fn spawn_tool_executor_with_policy(
             let open_questions = open_questions.clone();
             let emitter = holly.clone();
             let mut inbound = inbound;
-            tokio::spawn(async move {
+            background.spawn(async move {
                 loop {
                     match inbound.recv().await {
                         Ok(InMsg::Stop { session }) => {
