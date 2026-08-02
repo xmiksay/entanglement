@@ -128,7 +128,7 @@ pub(super) async fn upsert_enable(app: &mut App, holly: &Holly, pattern: String,
 /// that isn't `mcp__<server>__*`, a TUI without handles (tests), or a server
 /// that is neither available nor lazily connected (i.e. a startup-`enabled`
 /// one, or an ordinary masked tool) all fall through as a no-op.
-async fn lazy_enable_available(app: &mut App, pattern: &str) -> Result<(), String> {
+pub(super) async fn lazy_enable_available(app: &mut App, pattern: &str) -> Result<(), String> {
     let Some(server) = pattern
         .strip_prefix("mcp__")
         .and_then(|rest| rest.strip_suffix("__*"))
@@ -176,6 +176,23 @@ pub(super) async fn upsert_deny(app: &mut App, holly: &Holly, pattern: String) {
     entries.retain(|e| e.pattern != pattern);
     entries.push(ToolOverlayEntry::deny(pattern));
     send_overlay(holly, session, entries).await;
+}
+
+/// Lazy-connect every available server implied by `entries`' enable patterns
+/// (#555): the session-tools dialog submits a whole diffed roster at once —
+/// unlike the single-pattern `upsert_enable` path, any number of its rows may
+/// name an `allowed` bundled server (`mcp__<server>__*`, #542) still
+/// unconnected. Mirrors `upsert_enable`'s per-pattern connect for each; a deny
+/// entry never targets a server to connect, so those are skipped. Stops and
+/// reports the first failure so a bad row never lets the rest partially apply.
+pub(super) async fn lazy_enable_entries(
+    app: &mut App,
+    entries: &[ToolOverlayEntry],
+) -> Result<(), String> {
+    for entry in entries.iter().filter(|e| !e.deny) {
+        lazy_enable_available(app, &entry.pattern).await?;
+    }
+    Ok(())
 }
 
 /// Send the full-replacement overlay update. Also shared by the session-tools
@@ -250,5 +267,69 @@ mod tests {
         assert!(parse_enable_args("/enable bogus x", true).is_err());
         // `--allow` is an enable-only flag.
         assert!(parse_enable_args("/disable tool bash --allow", false).is_err());
+    }
+
+    /// Builds `McpHandles` around a single ungated `allowed` stdio server
+    /// pointed at a nonexistent binary — `enable_for_session` fails fast on
+    /// spawn, mirroring `mcp::live::tests::mcp_add_surfaces_a_connect_failure_without_touching_state`.
+    fn handles_with_unreachable_available_server(name: &str) -> crate::mcp::McpHandles {
+        let mut user_mcp = std::collections::HashMap::new();
+        user_mcp.insert(
+            name.to_string(),
+            crate::mcp::McpServerConfig {
+                command: Some("definitely-not-a-real-binary-xyz".to_string()),
+                args: vec![],
+                env: std::collections::HashMap::new(),
+                url: None,
+                headers: std::collections::HashMap::new(),
+                disabled: false,
+                capabilities: std::collections::HashMap::new(),
+                oauth: None,
+                state: Some(crate::mcp::McpServerState::Allowed),
+            },
+        );
+        let catalog = entanglement_core::Catalog { providers: vec![] };
+        let (_startup, avail) = crate::mcp::AvailableMcp::partition(&catalog, &user_mcp, vec![]);
+        crate::mcp::McpHandles {
+            avail: std::sync::Arc::new(avail),
+            registry: std::sync::Arc::new(std::sync::RwLock::new(crate::ToolRegistry::new())),
+            active: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Ordinary tool patterns and deny entries never target a server to
+    /// connect — a no-op success, with or without `mcp_handles` wired (#555).
+    #[tokio::test]
+    async fn lazy_enable_entries_skips_ordinary_and_deny_patterns() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let entries = vec![
+            ToolOverlayEntry {
+                pattern: "read".to_string(),
+                allow: false,
+                deny: false,
+            },
+            ToolOverlayEntry::deny("bash"),
+        ];
+        assert_eq!(lazy_enable_entries(&mut app, &entries).await, Ok(()));
+    }
+
+    /// The session-tools dialog can now check a row naming an available
+    /// bundled server (#555): submitting it must attempt the same lazy
+    /// connect `upsert_enable` runs for a single typed/panel pattern — a
+    /// broken server surfaces its failure instead of silently applying an
+    /// overlay entry that unmasks tools which were never registered.
+    #[tokio::test]
+    async fn lazy_enable_entries_surfaces_a_connect_failure() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.set_mcp_handles(handles_with_unreachable_available_server("zread"));
+        let entries = vec![ToolOverlayEntry {
+            pattern: "mcp__zread__*".to_string(),
+            allow: false,
+            deny: false,
+        }];
+        let err = lazy_enable_entries(&mut app, &entries)
+            .await
+            .expect_err("a broken bundled server must surface, not silently no-op");
+        assert!(err.contains("zread"), "unexpected error: {err}");
     }
 }

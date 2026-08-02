@@ -569,7 +569,8 @@ pub(super) async fn handle_tools_dialog_event(app: &mut App, key: KeyEvent) -> R
 
 /// Bare `/enable`'s session-tools checklist (#539): `Space` toggles a tool's
 /// availability for the active session, `a` toggles auto-allow on an enabled
-/// override row, `Enter` sends the computed overlay diff, `Esc` discards.
+/// override row, `Enter` lazily connects any newly-checked available server
+/// (#555) then sends the computed overlay diff, `Esc` discards.
 pub(super) async fn handle_session_tools_dialog_event(
     app: &mut App,
     holly: &Holly,
@@ -579,9 +580,17 @@ pub(super) async fn handle_session_tools_dialog_event(
         KeyCode::Esc => app.close_session_tools_dialog(),
         KeyCode::Enter => {
             let entries = app.session_tools_dialog().to_entries();
-            let session = app.active_session_id().clone();
             app.close_session_tools_dialog();
-            crate::tui::enable_command::send_overlay(holly, session, entries).await;
+            // A checked row may name an available bundled server (#542, #555) —
+            // lazily connect every such row before the full-replacement write,
+            // mirroring `upsert_enable`'s single-pattern connect.
+            match crate::tui::enable_command::lazy_enable_entries(app, &entries).await {
+                Ok(()) => {
+                    let session = app.active_session_id().clone();
+                    crate::tui::enable_command::send_overlay(holly, session, entries).await;
+                }
+                Err(message) => app.record_enable_error(message),
+            }
         }
         KeyCode::Char(' ') => app.session_tools_dialog_mut().toggle_selected(),
         KeyCode::Char('a') => app.session_tools_dialog_mut().toggle_allow_selected(),
