@@ -96,6 +96,40 @@ fn user_override_merges_over_bundle_by_name() {
     std::env::remove_var("ZAI_API_KEY_OVR");
 }
 
+/// #561: a user `mcp:` entry that collides with a bundled name and sets no
+/// explicit `state:` must keep its own `effective_state()` (legacy
+/// `disabled:false` ⇒ `Enabled`) rather than falling back to the bundle's
+/// `Allowed` default — otherwise a previously startup-connected user server
+/// silently demotes to lazy the moment its name shadows a catalog bundle.
+#[test]
+fn user_override_colliding_with_a_bundle_keeps_effective_state_when_unset() {
+    let mut catalog = Catalog::builtin();
+    std::env::set_var("ZAI_API_KEY_561_COLLISION", "k");
+    for p in &mut catalog.providers {
+        if p.name == "zai" {
+            p.key_env = Some("ZAI_API_KEY_561_COLLISION".into());
+        }
+    }
+    let mut user = HashMap::new();
+    // No explicit `state:` — legacy `disabled: false` must still mean Enabled,
+    // exactly as it would for a non-colliding name.
+    let mut mine = user_entry("https://my-zread.example/mcp", None);
+    mine.disabled = false;
+    user.insert("zread".to_string(), mine);
+    let (startup, avail) = AvailableMcp::partition(&catalog, &user, vec![]);
+    assert!(
+        startup.contains_key("zread"),
+        "a colliding user entry with no explicit state must keep its legacy \
+         Enabled default, not the bundle's Allowed one"
+    );
+    assert_eq!(
+        startup.get("zread").unwrap().url.as_deref(),
+        Some("https://my-zread.example/mcp")
+    );
+    assert!(!avail.available_names().contains(&"zread".to_string()));
+    std::env::remove_var("ZAI_API_KEY_561_COLLISION");
+}
+
 /// A user-declared (non-bundled) server with `state: allowed` joins the
 /// available set ungated; `enabled`/legacy entries keep startup semantics.
 #[test]
@@ -134,12 +168,16 @@ fn spec_visibility_is_scoped_to_enabling_sessions() {
     assert!(avail.spec_visible("mcp__zread__search_doc", &a));
     assert!(avail.spec_visible("read", &a));
     avail.mark_enabled("zread", &a);
+    avail.mark_enabled("zread", &b);
     assert!(avail.spec_visible("mcp__zread__search_doc", &a));
-    assert!(!avail.spec_visible("mcp__zread__search_doc", &b));
+    assert!(avail.spec_visible("mcp__zread__search_doc", &b));
     assert!(avail.is_lazy("zread"));
-    // Symmetric session-scoped disable hides it again.
+    // Symmetric session-scoped disable hides it for just that session while
+    // another still has it enabled.
     avail.mark_disabled("zread", &a);
     assert!(!avail.spec_visible("mcp__zread__search_doc", &a));
+    assert!(avail.spec_visible("mcp__zread__search_doc", &b));
+    assert!(avail.is_lazy("zread"));
     // Full disconnect clears the lazy mark → globally visible again (it will
     // also have been unregistered, so nothing actually advertises).
     let registry: SharedRegistry =
@@ -148,6 +186,25 @@ fn spec_visibility_is_scoped_to_enabling_sessions() {
     disconnect(&avail, "zread", &registry, &active);
     assert!(!avail.is_lazy("zread"));
     assert!(avail.spec_visible("mcp__zread__search_doc", &b));
+}
+
+/// #561: an enable→disable cycle by the *last* enabling session must drop the
+/// bookkeeping entry entirely, not leave it present-but-empty — an empty
+/// `HashSet` still answers `contains(..)` with `false` for every session, so a
+/// leftover entry would hide the (still-connected) server's tools from every
+/// session, including ones that never touched it, until restart.
+#[test]
+fn mark_disabled_by_the_last_session_drops_the_entry() {
+    let avail = AvailableMcp::default();
+    let a = SessionId::new("a");
+    let c = SessionId::new("c");
+    avail.mark_enabled("zread", &a);
+    avail.mark_disabled("zread", &a);
+    assert!(!avail.is_lazy("zread"));
+    // A session that never touched `zread` at all must see it — the leaked
+    // connection reverts to globally visible, not stuck hidden.
+    assert!(avail.spec_visible("mcp__zread__search_doc", &c));
+    assert!(avail.spec_visible("mcp__zread__search_doc", &a));
 }
 
 /// Enabling an unknown/absent server errors and names the available set.

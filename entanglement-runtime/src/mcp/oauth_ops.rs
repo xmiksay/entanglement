@@ -79,7 +79,11 @@ async fn connect(
     let Some(oauth) = cfg.oauth.clone() else {
         bail!(
             "MCP server `{server}` has no `oauth:` block — add one to its `mcp:` entry in \
-             config.yml (an empty block is enough; endpoints are discovered)"
+             config.yml (an empty block is enough; endpoints are discovered via RFC 9728/8414). \
+             If `{server}` issues a static bearer token instead (no discovery endpoints to find), \
+             `/mcp connect` can never complete — adding `oauth: {{}}` only moves the failure. Use \
+             `headers: {{Authorization: \"Bearer ${{VAR}}\"}}` on its `mcp:` entry with the token \
+             in the managed `.env` instead"
         );
     };
     let Some(url) = cfg.url.clone() else {
@@ -182,6 +186,11 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no `oauth:` block"));
+        // #561: a bearer-only server has no discovery endpoints to find, so the
+        // error must point at the actual fix (static `headers:`), not just name
+        // the missing block.
+        assert!(err.to_string().contains("headers:"));
+        assert!(err.to_string().contains("static bearer token"));
     }
 
     #[tokio::test]

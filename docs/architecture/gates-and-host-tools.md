@@ -545,7 +545,12 @@ the same permission profiles as `read`/`bash`.
     `c`/`t` on the panel's highlighted row; the authorize URL is always rendered as
     transcript content (never a toast) so a headless/SSH session can copy it when
     the browser launch fails. `/mcp disconnect` attempts RFC 7009 revocation when
-    advertised, then deletes locally regardless.
+    advertised, then deletes locally regardless. `/mcp connect` only ever works
+    for a server whose deployment actually exposes RFC 9728/8414 discovery — a
+    server that issues static bearer tokens has no such endpoints, so the flow
+    can never complete no matter what the `oauth:` block contains; `connect`'s
+    error says so and points at static `headers:` + the managed `.env` instead
+    (#561).
 - **Proxy (`mcp::tool::McpTool`):** adapts one remote tool. `schema()` returns the
   server's `inputSchema` verbatim; `run()` JSON-decodes the model's input to the
   `arguments` object, calls `tools/call`, and flattens the result's text content
