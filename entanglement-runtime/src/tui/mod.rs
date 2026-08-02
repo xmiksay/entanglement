@@ -67,6 +67,7 @@ use event_loop::handle_event;
 #[allow(clippy::too_many_arguments)]
 pub async fn tui(
     holly: &Holly,
+    mut holly_sub: tokio::sync::broadcast::Receiver<entanglement_core::OutEvent>, // subscribed pre-`SetAgent` by the caller (#598)
     initial_session: SessionId,
     model_info: ModelInfo,
     provider_name: String,
@@ -141,7 +142,6 @@ pub async fn tui(
     app.init_head_context(root, live_bash);
 
     let mut attention = Attention::from_env();
-    let mut holly_sub = holly.subscribe();
 
     const FRAME_INTERVAL: Duration = Duration::from_millis(33);
     let mut last_draw = Instant::now();
@@ -449,6 +449,61 @@ mod tests {
         assert!(
             !app.auto_follow(),
             "wheel up should scroll (freeze) the chat when no modal is open"
+        );
+    }
+
+    /// Regression for #598: a subscribe-after-send race in the TUI bootstrap
+    /// let the session task's `SessionStarted`/initial `AgentChanged` +
+    /// corrective `AgentChanged` (from a queued `SetAgent`) race ahead of
+    /// `tui()`'s `holly.subscribe()`, permanently stranding the badge on
+    /// `SessionView`'s hardcoded `"build"` default. `main.rs` now subscribes
+    /// before sending the bootstrap `SetAgent` and threads that receiver into
+    /// `tui()` — proven here by subscribing first, sending `SetAgent`, then
+    /// sleeping past the window the bug lived in before ever draining.
+    #[tokio::test]
+    async fn early_subscribe_survives_the_bootstrap_setagent_race() {
+        use entanglement_core::{AgentMode, AgentProfile, InMsg, Permission, PermissionProfile};
+
+        let mut cfg = EngineConfig::default();
+        cfg.profiles.insert(AgentProfile {
+            name: "plan".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: "Plan only.".into(),
+            model: None,
+            provider: None,
+            permission: PermissionProfile::new(Permission::Ask),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+            sandbox: None,
+        });
+        let holly = Holly::spawn(cfg);
+        let sid = SessionId::new("s1");
+
+        let mut holly_sub = holly.subscribe();
+        holly
+            .send(InMsg::SetAgent {
+                session: sid.clone(),
+                agent: "plan".into(),
+            })
+            .await
+            .unwrap();
+
+        // Give the session task every chance to race ahead before we drain —
+        // exactly the pre-`subscribe()` window the bug lived in.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let mut app = App::new_for_test(sid);
+        while let Ok(event) = holly_sub.try_recv() {
+            app.handle_out_event(event);
+        }
+
+        assert_eq!(
+            app.agent(),
+            "plan",
+            "an early subscription must not lose the bootstrap SetAgent's AgentChanged"
         );
     }
 }
