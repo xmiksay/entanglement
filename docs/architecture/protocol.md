@@ -26,7 +26,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetSessionMeta{session,name?,action?,if_unset=false}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151); if_unset=true applies `name` only when the session has none yet — the session-title generator's guard against clobbering a `/name` or a name restored by resume (#553)
          | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow), deny entries withdraw even profile-advertised tools (#539, ADR-0149); full replacement, empty clears; trusted-only, wire-refused
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
-         | Spawn{session,parent:Option,predecessor:Option,agent,prompt}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110)
+         | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
          | ListQuestions{correlation_id,session?}   // supervisor-global query; every open ask_user question, or one session's when session is set → QuestionList reply (#515, ADR-0146)
          | McpList{correlation_id}   // supervisor-global query; live MCP servers → McpList reply (#375)
@@ -40,16 +40,16 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | HibernateSession{session}   // trusted-only: evict memory, NO tombstone → SessionHibernated, resumable (#318, ADR-0077)
          | Resume{session,records}   // internal, not serialized (#[serde(skip)]); replay log → session (§6b)
 
-OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}   // lifecycle, no seq; predecessor = /compact source this session succeeds (ADR-0110)
+OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,user?}   // lifecycle, no seq; predecessor = /compact source this session succeeds (ADR-0110); user = owning user in multi-user deployment (#522)
          | SessionEnded{session,ts}           // lifecycle, no seq
          | SessionHibernated{session,ts}      // lifecycle, no seq; memory evicted, id NOT tombstoned (#318, ADR-0077)
-         | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072)
+         | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,profile,root,profile_detail?,user?}
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
-         | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152)
+         | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152); McpServerStatus.auth? = OAuth posture (ADR-0153)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
          | McpAuthChanged{status}   // MCP OAuth state change, no seq/session; reply to McpAuth — a Connect emits twice, interim authorize_url then outcome (ADR-0153)
          | BashChanged{enabled,grade?}   // bash/bash_output live-registered/unregistered, no seq; reply to BashEnable/BashDisable (#498, ADR-0133)
-         | Throttle{endpoint,throttled,in_flight,cap,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll
+         | Throttle{endpoint,throttled,in_flight,cap,waiters,shared_leases?,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
          | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
@@ -57,7 +57,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts}  
          | GenerationChanged{session,generation:GenerationParams}   // point-in-time, no seq; full effective params, reply to SetGeneration (incl. "/show") or a SetAgent generation overlay (#374/#376, ADR-0094/0095)
          | SessionMetaChanged{session,name?,action?}   // point-in-time, no seq; full merged display metadata, reply to SetSessionMeta; persisted + replay-folded by overwrite, head-folded — not mirrored into SessionInfo (ADR-0151)
          | ToolOverlayChanged{session,entries:[ToolOverlayEntry]}   // point-in-time, no seq; full effective overlay, reply to SetToolOverlay; persisted + replay-folded by overwrite (#539, ADR-0149)
-         | Plan{session,seq,content}          // markdown prose snapshot, runtime-emitted (#231)
+         | Plan{session,seq,content,path}          // markdown prose snapshot, runtime-emitted (#231)
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
          | ToolCallDelta{session,seq,request_id,tool,delta}   // streamed tool-arg fragment; display-only, before the assembled ToolCall (#194)
@@ -161,7 +161,7 @@ a remote attacker; the WS head routes every inbound frame through
 `ListSessions` and `CloseSession` are **supervisor-global**: the supervisor
 answers/acts on them directly rather than routing to a session task.
 `ListSessions` returns one `SessionList` snapshot of the live
-`SessionInfo{session,parent?,profile,root,profile_detail?}` set — a reconnecting
+`SessionInfo{session,parent?,profile,root,profile_detail?,user?}` set — a reconnecting
 head enumerates in one round-trip instead of folding the whole broadcast. Both
 the query and the reply carry an opaque **`correlation_id`** the head mints and
 the reply echoes — not an overloaded `SessionId` (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)),
