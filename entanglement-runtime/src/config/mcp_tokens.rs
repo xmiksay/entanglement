@@ -114,6 +114,15 @@ impl McpTokenStore {
         read_tokens(path).remove(server)
     }
 
+    /// A store with no backing file — reads empty, refuses writes. Lets a
+    /// caller outside this module (e.g. `inspect::mcp`'s render tests) build a
+    /// [`McpTokenStore`] without touching the process-global
+    /// `ENTANGLEMENT_MCP_TOKENS_FILE` env var or the real filesystem.
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self { path: None }
+    }
+
     fn require_path(&self) -> Result<PathBuf> {
         match self.path.clone() {
             Some(p) => Ok(p),

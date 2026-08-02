@@ -36,13 +36,18 @@ const DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// Env vars whose managed file, if overridden, needs its parent dir watched
 /// too (the default `${config_dir}/entanglement/` catch-all below already
-/// covers the un-overridden case for all five).
+/// covers the un-overridden case for all nine — this list only matters when
+/// one is relocated outside that directory, #558).
 const MANAGED_FILE_ENVS: &[&str] = &[
     "ENTANGLEMENT_CONFIG_FILE",
     "ENTANGLEMENT_PROVIDERS_FILE",
     "ENTANGLEMENT_GRANTS_FILE",
     "ENTANGLEMENT_AGENT_MODELS_FILE",
     "ENTANGLEMENT_ENV_FILE",
+    "ENTANGLEMENT_AGENT_GENERATION_FILE",
+    "ENTANGLEMENT_AUX_MODELS_FILE",
+    "ENTANGLEMENT_MCP_TOKENS_FILE",
+    "ENTANGLEMENT_EXTRA_ROOTS_FILE",
 ];
 
 /// The runtime-held mirrors a reload swaps. See the module doc for why this is
@@ -258,11 +263,13 @@ fn spawn_debounced_watcher(
 
 /// The resolved set of paths to watch: every candidate agent/skill dir
 /// `layers.rs` would read, plus `${config_dir}/entanglement/` (covers
-/// providers.yml, config.yml, grants.yml, agent-models.yml, .env in one
-/// recursive watch), `<root>/.entanglement/` (covers the project config.yml),
-/// and the parent dir of any `ENTANGLEMENT_*_FILE`/`ENTANGLEMENT_*_DIR`
-/// override so a non-default managed-file location is still watched.
-/// Deduplicated (a `BTreeSet` — several of these overlap by construction).
+/// providers.yml, config.yml, grants.yml, agent-models.yml,
+/// agent-generation.yml, aux-models.yml, mcp-tokens.yml, extra-roots.yml, .env
+/// in one recursive watch), `<root>/.entanglement/` (covers the project
+/// config.yml), and the parent dir of any `ENTANGLEMENT_*_FILE`/
+/// `ENTANGLEMENT_*_DIR` override so a non-default managed-file location is
+/// still watched (#558). Deduplicated (a `BTreeSet` — several of these overlap
+/// by construction).
 fn watch_paths(cwd: &Path) -> Vec<PathBuf> {
     let mut set = BTreeSet::new();
     let home = dirs::home_dir();
@@ -538,5 +545,29 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(paths, sorted, "watch_paths must already be deduplicated");
+    }
+
+    /// #558: `MANAGED_FILE_ENVS` used to cover only 5 of the 9 managed-file env
+    /// overrides — a relocated `extra-roots.yml` (via `ENTANGLEMENT_EXTRA_ROOTS_FILE`)
+    /// got no parent-dir watch, so live reload silently missed it. Shares
+    /// `crate::config::ENV_LOCK` with `extra_roots`'s own tests (both mutate the
+    /// same process-global env var) rather than a module-local lock, so the two
+    /// suites can't race under `cargo test`'s parallel threads.
+    #[test]
+    fn watch_paths_includes_the_parent_dir_of_every_managed_file_env_override() {
+        let _g = crate::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&custom).unwrap();
+        let file = custom.join("extra-roots.yml");
+        std::env::set_var("ENTANGLEMENT_EXTRA_ROOTS_FILE", &file);
+        let paths = watch_paths(dir.path());
+        std::env::remove_var("ENTANGLEMENT_EXTRA_ROOTS_FILE");
+        assert!(
+            paths.contains(&custom),
+            "an overridden ENTANGLEMENT_EXTRA_ROOTS_FILE's parent dir must be watched"
+        );
     }
 }

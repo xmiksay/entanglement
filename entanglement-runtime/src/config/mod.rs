@@ -99,8 +99,9 @@ const CONFIG_FILE_ENV: &str = "ENTANGLEMENT_CONFIG_FILE";
 
 /// Env var overriding the session-log retention (Issue 4, Phase 4.2). Wins over
 /// the config file's `session_retention_days`, which itself wins over the
-/// embedded default (30).
-const SESSION_RETENTION_ENV: &str = "ENTANGLEMENT_SESSION_RETENTION_DAYS";
+/// embedded default (30). `pub(crate)` so `inspect config` (#558) can report it
+/// as the winning source without duplicating the literal.
+pub(crate) const SESSION_RETENTION_ENV: &str = "ENTANGLEMENT_SESSION_RETENTION_DAYS";
 
 /// The embedded default for [`Config::session_retention_days`]: 30 days. A
 /// session log untouched for a month is stale enough to prune without surprising
