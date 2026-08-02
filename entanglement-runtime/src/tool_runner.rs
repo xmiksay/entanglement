@@ -525,9 +525,16 @@ pub fn spawn_tool_executor_with_policy(
                     ..
                 }) => {
                     spawn_guard.record_start(session.clone(), parent.clone());
-                    let started_profile = profiles.read().unwrap().get(&profile).cloned();
+                    let started_profile = profiles
+                        .read()
+                        .expect("agent-profile registry lock poisoned")
+                        .get(&profile)
+                        .cloned();
                     if let Some(p) = started_profile.clone() {
-                        active.lock().unwrap().insert(session.clone(), p);
+                        active
+                            .lock()
+                            .expect("active-profile mutex poisoned")
+                            .insert(session.clone(), p);
                     }
                     // Ancestor clamp frozen at spawn (#479, ADR-0104 amendment),
                     // mirroring ADR-0024's privilege ceiling for confinement
@@ -542,14 +549,22 @@ pub fn spawn_tool_executor_with_policy(
                     );
                 }
                 Ok(OutEvent::AgentChanged { session, agent, .. }) => {
-                    if let Some(p) = profiles.read().unwrap().get(&agent).cloned() {
+                    if let Some(p) = profiles
+                        .read()
+                        .expect("agent-profile registry lock poisoned")
+                        .get(&agent)
+                        .cloned()
+                    {
                         crate::policy::record_own_sandbox(
                             &sandbox.own,
                             &session,
                             p.sandbox.as_deref(),
                             sandbox.base,
                         );
-                        active.lock().unwrap().insert(session, p);
+                        active
+                            .lock()
+                            .expect("active-profile mutex poisoned")
+                            .insert(session, p);
                     }
                 }
                 // A hibernated session (#318) tore down just like an ended one, so
@@ -581,10 +596,21 @@ pub fn spawn_tool_executor_with_policy(
                     in_flight.remove(&session);
                     // The active-skill mask is moot once the session is gone too
                     // (#400) — no `Done` will follow to clear it otherwise.
-                    active_skill.lock().unwrap().remove(&session);
+                    active_skill
+                        .lock()
+                        .expect("active-skill mutex poisoned")
+                        .remove(&session);
                     // The sandbox cache (#479) is equally moot — drop both maps.
-                    sandbox.own.lock().unwrap().remove(&session);
-                    sandbox.floor.lock().unwrap().remove(&session);
+                    sandbox
+                        .own
+                        .lock()
+                        .expect("sandbox-own mutex poisoned")
+                        .remove(&session);
+                    sandbox
+                        .floor
+                        .lock()
+                        .expect("sandbox-floor mutex poisoned")
+                        .remove(&session);
                     // The plan-file staleness binding (#513) is moot too.
                     plan_files.forget_session(&session);
                 }
@@ -669,14 +695,22 @@ pub fn spawn_tool_executor_with_policy(
                     // leaf's gate authoritative regardless of that drop; the
                     // fail-closed `permission_for`/`tool_masked` defaults cover
                     // only the residual unknown case (empty/unresolved `agent`).
-                    if let Some(p) = profiles.read().unwrap().get(&agent).cloned() {
+                    if let Some(p) = profiles
+                        .read()
+                        .expect("agent-profile registry lock poisoned")
+                        .get(&agent)
+                        .cloned()
+                    {
                         crate::policy::record_own_sandbox(
                             &sandbox.own,
                             &session,
                             p.sandbox.as_deref(),
                             sandbox.base,
                         );
-                        active.lock().unwrap().insert(session.clone(), p);
+                        active
+                            .lock()
+                            .expect("active-profile mutex poisoned")
+                            .insert(session.clone(), p);
                     }
                     // Physical tool restriction (#116, ADR-0038): a tool outside
                     // the session's effective advertised set — its profile's
@@ -687,7 +721,7 @@ pub fn spawn_tool_executor_with_policy(
                     // hard boundary, not a persona nudge. Core already withholds
                     // the schema; this closes the gap if the model calls it anyway.
                     let masked = {
-                        let active = active.lock().unwrap();
+                        let active = active.lock().expect("active-profile mutex poisoned");
                         tool_masked(&active, &spawn_guard, &overlays, &session, &tool)
                     };
                     if masked {
@@ -704,7 +738,8 @@ pub fn spawn_tool_executor_with_policy(
                     // both. A loaded skill's `allowed_tools` narrows the session's
                     // already-unmasked set for the rest of this turn.
                     let skill_masked_by = {
-                        let active_skill = active_skill.lock().unwrap();
+                        let active_skill =
+                            active_skill.lock().expect("active-skill mutex poisoned");
                         skill_masked(&active_skill, &session, &tool)
                     };
                     if let Some(skill_id) = skill_masked_by {
@@ -742,8 +777,10 @@ pub fn spawn_tool_executor_with_policy(
                             let blocking = tool == AGENT_TOOL;
                             let target = crate::subagent::target_agent(&input);
                             let refusal = {
-                                let active = active.lock().unwrap();
-                                let profiles = profiles.read().unwrap();
+                                let active = active.lock().expect("active-profile mutex poisoned");
+                                let profiles = profiles
+                                    .read()
+                                    .expect("agent-profile registry lock poisoned");
                                 spawn_refusal(active.get(&session), &target, &profiles)
                             };
                             if let Some(refusal) = refusal {
@@ -918,7 +955,7 @@ pub fn spawn_tool_executor_with_policy(
                             let escape_root = escape_root.clone();
                             let workdir = crate::permission::permission_workdir(&tool, &input);
                             let (base_self, policy) = {
-                                let active = active.lock().unwrap();
+                                let active = active.lock().expect("active-profile mutex poisoned");
                                 let base_self = clamp_to_base(
                                     effective_permission(
                                         &active,
@@ -938,7 +975,8 @@ pub fn spawn_tool_executor_with_policy(
                                 // live read — sound because `load_skill` is not
                                 // itself a binding, so nothing inside a running
                                 // script can change it mid-run.
-                                let active_skill = active_skill.lock().unwrap();
+                                let active_skill =
+                                    active_skill.lock().expect("active-skill mutex poisoned");
                                 let policy = crate::script::BindingPolicy::capture(
                                     &active,
                                     &spawn_guard,
@@ -957,7 +995,7 @@ pub fn spawn_tool_executor_with_policy(
                             // read lock, never held across the script's `.await`, so a
                             // concurrent tool registration/removal is invisible to a
                             // script already in flight but picked up by the next one.
-                            let tools = tools.read().unwrap().clone();
+                            let tools = tools.read().expect("tool registry lock poisoned").clone();
                             let holly = holly.clone();
                             // The blocking engine can't be aborted, so pair the
                             // task abort with a cooperative stop flag its progress
@@ -1013,7 +1051,7 @@ pub fn spawn_tool_executor_with_policy(
                             });
                             let ceiling = base.clone();
                             // Snapshot before spawning (#372) — see the Rhai arm above.
-                            let tools = tools.read().unwrap().clone();
+                            let tools = tools.read().expect("tool registry lock poisoned").clone();
                             let holly = holly.clone();
                             let skills = skills.clone();
                             let active_skill = active_skill.clone();
@@ -1366,16 +1404,19 @@ fn activate_skill(
     };
     let allowed_tools = skills
         .read()
-        .unwrap()
+        .expect("skill registry lock poisoned")
         .get(skill_id)
         .and_then(|s| s.allowed_tools.clone());
-    active_skill.lock().unwrap().insert(
-        session.clone(),
-        ActiveSkill {
-            skill_id: skill_id.to_string(),
-            allowed_tools: allowed_tools.clone(),
-        },
-    );
+    active_skill
+        .lock()
+        .expect("active-skill mutex poisoned")
+        .insert(
+            session.clone(),
+            ActiveSkill {
+                skill_id: skill_id.to_string(),
+                allowed_tools: allowed_tools.clone(),
+            },
+        );
     holly.emit_for_session(session, |seq| OutEvent::SkillActive {
         session: session.clone(),
         seq,
@@ -1393,7 +1434,12 @@ fn clear_active_skill(
     active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
     session: &SessionId,
 ) {
-    if active_skill.lock().unwrap().remove(session).is_some() {
+    if active_skill
+        .lock()
+        .expect("active-skill mutex poisoned")
+        .remove(session)
+        .is_some()
+    {
         holly.emit_for_session(session, |seq| OutEvent::SkillActive {
             session: session.clone(),
             seq,

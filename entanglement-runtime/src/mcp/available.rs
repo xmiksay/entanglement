@@ -202,7 +202,12 @@ impl AvailableMcp {
         else {
             return true;
         };
-        match self.enabled.lock().unwrap().get(server) {
+        match self
+            .enabled
+            .lock()
+            .expect("available-server enablement mutex poisoned")
+            .get(server)
+        {
             Some(sessions) => sessions.contains(session),
             None => true,
         }
@@ -212,7 +217,7 @@ impl AvailableMcp {
     pub fn mark_enabled(&self, server: &str, session: &SessionId) {
         self.enabled
             .lock()
-            .unwrap()
+            .expect("available-server enablement mutex poisoned")
             .entry(server.to_string())
             .or_default()
             .insert(session.clone());
@@ -229,7 +234,10 @@ impl AvailableMcp {
     /// sessions.contains(session)` check, so an enable→disable cycle would
     /// otherwise hide the server's tools from *every* session until restart.
     pub fn mark_disabled(&self, server: &str, session: &SessionId) {
-        let mut enabled = self.enabled.lock().unwrap();
+        let mut enabled = self
+            .enabled
+            .lock()
+            .expect("available-server enablement mutex poisoned");
         if let Some(sessions) = enabled.get_mut(server) {
             sessions.remove(session);
             if sessions.is_empty() {
@@ -241,7 +249,10 @@ impl AvailableMcp {
     /// Whether `server` is one of the lazily-connected set (for `/mcp list`
     /// display: "allowed" vs a plain startup "enabled").
     pub fn is_lazy(&self, server: &str) -> bool {
-        self.enabled.lock().unwrap().contains_key(server)
+        self.enabled
+            .lock()
+            .expect("available-server enablement mutex poisoned")
+            .contains_key(server)
     }
 
     /// The per-server async guard for [`enable_for_session`]'s connect
@@ -250,7 +261,7 @@ impl AvailableMcp {
     fn connect_guard(&self, server: &str) -> Arc<AsyncMutex<()>> {
         self.connecting
             .lock()
-            .unwrap()
+            .expect("available-server connect-guard mutex poisoned")
             .entry(server.to_string())
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone()
