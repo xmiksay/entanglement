@@ -1,6 +1,6 @@
 # 0077. Session hibernation — evict in-memory state without tombstoning, resumable later
 
-- Status: Accepted
+- Status: Accepted — Amended by [0144] (pause/resume)
 - Date: 2026-07-15
 - Adds a third session-lifecycle state between the `live` task+`Context` and the terminal tombstone of [`CloseSession`](0028 is pre-repo; see #105). Builds on the event-log persistence seam of [0061](0061-parked-turn-state-batch-tool-resolution.md) and its in-process re-offer sibling [0071](0071-parked-turn-reoffer-timer.md); trusted-only like the internal `Resume`, mirroring the frame split of [0069](0069-trusted-untrusted-wire-frame-split.md). Part of #307. Issue #318.
 

@@ -1,6 +1,6 @@
 # 0138. Sponsored build child — plan acceptance spawns a clamp-exempt child
 
-- Status: Accepted
+- Status: Accepted — Amended by [0145]
 - Date: 2026-07-30
 - Amends: [ADR-0042](0042-plan-acceptance-via-propose-plan-approval-roundtrip.md) (the handoff becomes a sponsored child, not a fresh root), [ADR-0024](0024-subagent-permission-gating.md) (sponsored children are exempt from the ancestor privilege clamp), [ADR-0023](0023-subagent-spawn-limits.md) (sponsored spawns are exempt from `MAX_SPAWNS_PER_ROOT`)
 

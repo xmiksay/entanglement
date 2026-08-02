@@ -1,6 +1,6 @@
 # 0023. Sub-agent spawn recursion / fan-out limits
 
-- Status: Accepted
+- Status: Accepted — Amended by [0138]
 - Date: 2026-07-09
 
 ## Context

@@ -1,6 +1,6 @@
 # 0027. `ask_user` tool — model-driven user decision prompt
 
-- Status: Accepted
+- Status: Accepted — Amended by [0146]
 - Date: 2026-07-09
 
 ## Context

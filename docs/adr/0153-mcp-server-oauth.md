@@ -1,6 +1,6 @@
 # 0153. MCP server OAuth, and moving the MCP client mechanism into the provider crate
 
-- Status: Accepted
+- Status: Accepted — Amended by [0157]
 - Date: 2026-08-01
 - Issue: tui-ux-batch plan, Issue 3
 

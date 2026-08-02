@@ -1,6 +1,6 @@
 # 0127. `ask_user` v2 — multi-question envelope, always-on free text, multi-select
 
-- Status: Accepted
+- Status: Accepted — Amended by [0143], [0146]
 - Date: 2026-07-22
 - Amends: [0027](0027-ask-user-interactive-prompt.md)
 

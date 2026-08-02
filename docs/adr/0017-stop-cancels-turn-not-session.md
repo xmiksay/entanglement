@@ -1,6 +1,6 @@
 # 0017. `InMsg::Stop` cancels the turn, not the session
 
-- Status: Accepted
+- Status: Accepted — Amended by [0144] (pause/resume)
 - Date: 2026-07-07
 
 ## Context

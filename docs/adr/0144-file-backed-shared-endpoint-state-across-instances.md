@@ -1,6 +1,6 @@
 # 0144. File-backed shared endpoint state across instances
 
-- Status: Accepted
+- Status: Accepted — Amended by [0156]
 - Date: 2026-07-31
 
 ## Context

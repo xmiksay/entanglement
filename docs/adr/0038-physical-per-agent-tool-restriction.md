@@ -1,6 +1,6 @@
 # 0038. Physical per-agent tool restriction (allowlist/denylist mask)
 
-- Status: Accepted
+- Status: Accepted — Amended by [0137], [0148]
 - Date: 2026-07-11
 
 ## Context

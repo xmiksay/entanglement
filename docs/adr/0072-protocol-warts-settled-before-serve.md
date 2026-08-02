@@ -1,6 +1,6 @@
 # 0072. Protocol warts settled before `serve` freezes the wire
 
-- Status: Accepted
+- Status: Accepted — Amended by [0139]
 - Date: 2026-07-15
 - Refines the session-multiplexed protocol of [0002](0002-session-multiplexed-protocol.md); complements the seq contract of [0068](0068-shared-per-session-seq-counter.md) and the trusted/untrusted split of [0069](0069-trusted-untrusted-wire-frame-split.md). Part of #153 (pre-`serve` hardening). Issue #160.
 

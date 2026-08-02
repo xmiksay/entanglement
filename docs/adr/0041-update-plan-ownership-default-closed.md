@@ -1,6 +1,6 @@
 # 0041. update_plan ownership — default-closed plan authority
 
-- Status: Superseded by [ADR-0049](0049-plan-task-tools-as-runtime-state-tools.md)
+- Status: Superseded by [ADR-0049](0049-plan-task-tools-as-runtime-state-tools.md) — Amended by [0142]
 - Date: 2026-07-11
 
 > **Superseded (2026-07-12, #231).** `update_plan`/`update_tasks` moved out of

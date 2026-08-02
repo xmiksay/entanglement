@@ -1,6 +1,6 @@
 # 0024. Sub-agent spawn permission gating and privilege ceiling
 
-- Status: Accepted
+- Status: Accepted — Amended by [0137], [0138]
 - Date: 2026-07-09
 
 ## Context

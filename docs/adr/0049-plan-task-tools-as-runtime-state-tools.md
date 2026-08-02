@@ -1,6 +1,6 @@
 # 0049. `update_plan`/`update_tasks` as runtime state tools
 
-- Status: Partially superseded by [ADR-0145](0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) (the `update_plan` half only — `update_tasks` is unaffected and stays as described here)
+- Status: Partially superseded by [ADR-0145](0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) (the `update_plan` half only — `update_tasks` is unaffected and stays as described here) — Amended by [0142]
 - Date: 2026-07-12
 - Supersedes: [ADR-0041](0041-update-plan-ownership-default-closed.md) (in full);
   the core-side halves of [ADR-0004](0004-structured-plan-and-task-events.md) and

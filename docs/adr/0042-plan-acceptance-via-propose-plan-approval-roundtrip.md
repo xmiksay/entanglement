@@ -1,6 +1,6 @@
 # 0042. Plan acceptance via the propose_plan approval round-trip
 
-- Status: Accepted
+- Status: Accepted — Amended by [0138], [0145]
 - Date: 2026-07-11
 
 ## Context

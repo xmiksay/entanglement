@@ -1,6 +1,6 @@
 # 0123. `agent_poll` `timeout_secs: 0` waits for the child's notification
 
-- Status: Accepted
+- Status: Accepted — Amended by [0155]
 - Date: 2026-07-21
 
 ## Context

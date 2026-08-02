@@ -1,6 +1,6 @@
 # 0139. Visible session states — `Working` + `WaitingAgent`, and `Done` as the resting state
 
-- Status: Accepted
+- Status: Accepted — Amended by [0144] (pause/resume)
 - Date: 2026-07-30
 - Amends: [ADR-0072](0072-protocol-warts-settled-before-serve.md) (the `AgentState` enum widens)
 

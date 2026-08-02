@@ -1,6 +1,6 @@
 # 0016. Host tools: empty-result contract (no silent zero-output)
 
-- Status: Accepted
+- Status: Accepted — Amended by [0150]
 - Date: 2026-07-07
 
 ## Context

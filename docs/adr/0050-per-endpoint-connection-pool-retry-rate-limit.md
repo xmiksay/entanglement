@@ -1,6 +1,6 @@
 # 0050. Per-endpoint connection pool, rate-limit, and retry
 
-- Status: Accepted
+- Status: Accepted — Amended by [0141], [0156], [0157]
 - Date: 2026-07-13
 
 ## Context
