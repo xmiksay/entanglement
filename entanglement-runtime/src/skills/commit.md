@@ -10,6 +10,11 @@ allowed_tools:
   - call
   - read
   - grep
+  - glob
+  - write
+  - edit
+  - apply_patch
+  - load_skill
 ---
 
 # Conventional Commit messages
@@ -34,7 +39,9 @@ Before writing the message, inspect what is actually staged (`git diff --cached`
 so the type, scope, and subject describe the real change. Never invent a scope
 you have not confirmed exists.
 
-When the `bash` tool is unavailable (it is opt-in), run git through the `call`
-tool instead — single argv commands like `git diff --cached` or `git log
---oneline -10` need no shell. Shell composition (pipes, `&&`) still requires
-`bash` (`/bash on`).
+`bash` is opt-in and not registered by default — run git through the `call`
+tool instead: single argv commands like `git diff --cached` or `git log
+--oneline -10` need no shell. Shell composition (pipes, `&&`) needs `bash`,
+which only exists if the user has turned it on
+(`ENTANGLEMENT_ENABLE_BASH=1` at startup, or `/bash on` in the TUI — not
+available from every head); don't assume it is there.

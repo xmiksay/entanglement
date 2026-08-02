@@ -355,6 +355,11 @@ mod tests {
                     "call".to_string(),
                     "read".to_string(),
                     "grep".to_string(),
+                    "glob".to_string(),
+                    "write".to_string(),
+                    "edit".to_string(),
+                    "apply_patch".to_string(),
+                    "load_skill".to_string(),
                 ][..]
             )
         );
@@ -368,6 +373,19 @@ mod tests {
                 .contains(&"call".to_string()),
             "commit skill must allow `call` — bash is opt-in"
         );
+        // #554: a narrow `[bash, call, read, grep]` mask disarmed editing for the
+        // rest of the turn once the skill loaded (ADR-0106) — "fix the bug and
+        // commit it" lost write/edit/apply_patch/glob/load_skill mid-turn.
+        for tool in ["write", "edit", "apply_patch", "glob", "load_skill"] {
+            assert!(
+                commit
+                    .allowed_tools
+                    .as_deref()
+                    .unwrap()
+                    .contains(&tool.to_string()),
+                "commit skill must not disarm `{tool}` for the rest of the turn"
+            );
+        }
     }
 
     #[test]

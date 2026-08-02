@@ -10,12 +10,21 @@ use entanglement_core::{AgentState, Holly, InMsg, OutEvent, SessionId};
 use tokio::sync::broadcast::error::RecvError;
 
 /// Send one prompt and stream events until `Done` (or timeout).
+///
+/// `auto_approve` (`--yes`, #554) controls how a generic (non-`propose_plan`)
+/// `ToolRequest` is settled: there is no interactive user to answer it, and
+/// left unhandled it parks until the 60s `recv` timeout below kills the whole
+/// run — reachable on stock defaults because the escape-root gate forces an
+/// approval prompt even under a profile's `Allow` (ADR-0109). `false` (the
+/// default) auto-rejects with a reason the model can act on instead of
+/// silently dying; `true` auto-approves so a trusted unattended run proceeds.
 pub async fn run_one(
     holly: &Holly,
     session: &SessionId,
     agent: Option<&str>,
     prompt: &str,
     format: &str,
+    auto_approve: bool,
 ) -> Result<()> {
     let json = format == "json";
     let mut sub = holly.subscribe();
@@ -85,7 +94,17 @@ pub async fn run_one(
         }
         // `propose_plan` force-parks on approval (#141, ADR-0042); a one-shot head
         // has no interactive user to accept it, so auto-reject with a clear reason
-        // (the plan agent learns the outcome in-band and can end its turn).
+        // (the plan agent learns the outcome in-band and can end its turn) —
+        // unconditionally, regardless of `auto_approve`: accepting a plan hands off
+        // to a `build` child with its own review loop, which a headless run can't
+        // drive either way.
+        //
+        // Any other `ToolRequest` (#554) — most commonly the escape-root gate
+        // forcing a prompt for an out-of-root path even under an `Allow` profile —
+        // has no such special handling and would otherwise park until this loop's
+        // 60s `recv` timeout kills the whole run. Settle it immediately instead:
+        // `--yes` approves once, the default rejects with a reason the model can
+        // act on (retry inside the root, or ask the user to rerun interactively).
         if let OutEvent::ToolRequest {
             request_id, tool, ..
         } = &ev
@@ -97,6 +116,26 @@ pub async fn run_one(
                         request_id: request_id.clone(),
                         reason: Some(
                             "non-interactive head cannot accept a plan; run interactively (tui) to accept".to_string(),
+                        ),
+                    })
+                    .await?;
+            } else if auto_approve {
+                holly
+                    .send(InMsg::Approve {
+                        session: session.clone(),
+                        request_id: request_id.clone(),
+                        scope: Default::default(),
+                    })
+                    .await?;
+            } else {
+                holly
+                    .send(InMsg::Reject {
+                        session: session.clone(),
+                        request_id: request_id.clone(),
+                        reason: Some(
+                            "non-interactive head auto-rejects tool approval requests by default; \
+                             rerun with --yes to auto-approve, or interactively (tui) to decide"
+                                .to_string(),
                         ),
                     })
                     .await?;

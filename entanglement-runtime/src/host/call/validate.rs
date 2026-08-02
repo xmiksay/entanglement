@@ -23,7 +23,12 @@ const SHELL_METACHARS: &[char] = &['|', '&', ';', '<', '>', '$', '`', '(', ')', 
 /// suppressed when `command` looks like a path (`/`, `./`, `../`) so a genuine
 /// spaced executable path — `/opt/My App/tool` — is never a false positive; a
 /// well-formed call passing that same path *with* `args` is untouched regardless.
-pub(super) fn check_no_shell(command: &str, args: &[String]) -> Result<()> {
+///
+/// `bash_available` (#554) picks which fix the error suggests for a metachar
+/// line: `bash` is opt-in (`ENTANGLEMENT_ENABLE_BASH=1` or a live `/bash on`),
+/// so pointing at it unconditionally used to send a model chasing a tool that,
+/// out of the box, isn't registered at all — a dead end it can't self-correct.
+pub(super) fn check_no_shell(command: &str, args: &[String], bash_available: bool) -> Result<()> {
     let trimmed = command.trim();
     let looks_like_path =
         trimmed.starts_with('/') || trimmed.starts_with("./") || trimmed.starts_with("../");
@@ -47,10 +52,18 @@ pub(super) fn check_no_shell(command: &str, args: &[String]) -> Result<()> {
         }
         _ => String::new(),
     };
+    let shell_hint = if bash_available {
+        "the `bash` tool instead"
+    } else {
+        "a shell, which isn't available here (`bash` is opt-in and not \
+         registered) — split into repeated `call`s, use the `rhai` tool's \
+         scripting for multi-step logic, or ask the user to enable `bash` \
+         (`ENTANGLEMENT_ENABLE_BASH=1` at startup, or `/bash on` in the TUI)"
+    };
     bail!(
         "`call` runs one executable with NO shell: put the program name in \
          `command` and each argument in `args` (pipes, redirects `>`, `&&`, \
-         `$VAR`, and globs need the `bash` tool instead). Received command = \
+         `$VAR`, and globs need {shell_hint}). Received command = \
          `{command}`.{suggestion}"
     );
 }
@@ -59,16 +72,16 @@ pub(super) fn check_no_shell(command: &str, args: &[String]) -> Result<()> {
 mod tests {
     use super::check_no_shell;
 
-    fn err(command: &str, args: &[&str]) -> String {
+    fn err(command: &str, args: &[&str], bash_available: bool) -> String {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        check_no_shell(command, &args)
+        check_no_shell(command, &args, bash_available)
             .expect_err("expected a shape error")
             .to_string()
     }
 
     #[test]
     fn whole_command_line_stuffed_into_command_is_rejected_with_a_split() {
-        let msg = err("gh pr view 446 --json title,body", &[]);
+        let msg = err("gh pr view 446 --json title,body", &[], false);
         assert!(msg.contains("NO shell"), "got: {msg}");
         // The suggestion turns the stuffed line into a proper argv.
         assert!(
@@ -81,33 +94,42 @@ mod tests {
 
     #[test]
     fn multi_token_command_without_args_is_rejected() {
-        assert!(err("git remote -v", &[]).contains("`command`"));
+        assert!(err("git remote -v", &[], false).contains("`command`"));
     }
 
     #[test]
-    fn shell_metacharacters_are_rejected_and_steer_to_bash() {
-        let msg = err("gh pr diff 446 > /tmp/pr446.diff", &[]);
-        assert!(msg.contains("`bash` tool"), "got: {msg}");
+    fn shell_metacharacters_steer_to_bash_when_it_is_registered() {
+        let msg = err("gh pr diff 446 > /tmp/pr446.diff", &[], true);
+        assert!(msg.contains("`bash` tool instead"), "got: {msg}");
         // A metachar line gets no naive whitespace-split suggestion.
         assert!(!msg.contains("e.g."), "got: {msg}");
     }
 
     #[test]
+    fn shell_metacharacters_never_point_at_an_unregistered_bash() {
+        let msg = err("gh pr diff 446 > /tmp/pr446.diff", &[], false);
+        assert!(!msg.contains("`bash` tool instead"), "got: {msg}");
+        assert!(msg.contains("isn't available here"), "got: {msg}");
+        assert!(msg.contains("ENTANGLEMENT_ENABLE_BASH=1"), "got: {msg}");
+        assert!(!msg.contains("e.g."), "got: {msg}");
+    }
+
+    #[test]
     fn bare_executable_passes() {
-        check_no_shell("pwd", &[]).unwrap();
+        check_no_shell("pwd", &[], false).unwrap();
     }
 
     #[test]
     fn executable_with_verbatim_args_passes() {
         let args = vec!["%s".to_string(), "hello world".to_string()];
-        check_no_shell("printf", &args).unwrap();
+        check_no_shell("printf", &args, false).unwrap();
     }
 
     #[test]
     fn spaced_executable_path_is_not_a_false_positive() {
         // A real path may contain spaces; the path exemption keeps it valid
         // both with and without args.
-        check_no_shell("/opt/My App/tool", &[]).unwrap();
-        check_no_shell("/opt/My App/tool", &["--flag".to_string()]).unwrap();
+        check_no_shell("/opt/My App/tool", &[], false).unwrap();
+        check_no_shell("/opt/My App/tool", &["--flag".to_string()], false).unwrap();
     }
 }

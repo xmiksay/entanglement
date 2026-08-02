@@ -368,7 +368,9 @@ below realize one model:
   argv, no shell). **(2)** an active skill's `allowed_tools` (ADR-0106) is a
   **literal exact-name** mask — no capability fan-out — so an exec-capable
   skill must list `call` explicitly (the built-in `commit` lists
-  `bash, call, read, grep`); it layers *after* the profile mask and also
+  `bash, call, read, grep, glob, write, edit, apply_patch, load_skill` — wide
+  enough that loading it mid-turn doesn't disarm editing for the rest of the
+  turn, #554); it layers *after* the profile mask and also
   reaches `rhai` bindings (ADR-0129). **(3)** the user-config permission
   ceiling defaults to `default: allow` — a no-op clamp until the user
   tightens it (#172).

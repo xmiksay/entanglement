@@ -66,6 +66,13 @@ pub struct CallTool {
     sandbox_resolver: Arc<dyn SandboxResolver>,
     /// Approval-gated out-of-root `workdir` (ADR-0109).
     extra_roots: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
+    /// Live bash-registration handle (#554) — lets the shape-check error in
+    /// [`validate::check_no_shell`] tell a model whether the `bash` tool is
+    /// actually reachable right now (startup `ENTANGLEMENT_ENABLE_BASH=1` or a
+    /// live `/bash on`) instead of unconditionally pointing at a tool that,
+    /// out of the box, doesn't exist. `None` (the standalone/test constructor
+    /// path) is treated as "unavailable".
+    bash_status: Option<Arc<crate::bash_live::LiveBashState>>,
 }
 
 impl CallTool {
@@ -76,6 +83,7 @@ impl CallTool {
             secret_env: Vec::new(),
             sandbox_resolver: Arc::new(SandboxPolicy::none()),
             extra_roots: None,
+            bash_status: None,
         }
     }
 
@@ -113,6 +121,13 @@ impl CallTool {
     /// amendment) instead of a single fixed [`SandboxPolicy`].
     pub fn with_sandbox_resolver(mut self, resolver: Arc<dyn SandboxResolver>) -> Self {
         self.sandbox_resolver = resolver;
+        self
+    }
+
+    /// Read bash registration live from `status` (#554) so the shape-check
+    /// error can point at `bash` only when it is actually reachable.
+    pub fn with_bash_status(mut self, status: Arc<crate::bash_live::LiveBashState>) -> Self {
+        self.bash_status = Some(status);
         self
     }
 }
@@ -243,7 +258,8 @@ impl CallTool {
         // Fail fast (with a fix) when `command` is a whole shell line rather than
         // a bare executable — otherwise `spawn()` fails with an opaque ENOENT and
         // the model loops the same malformed call (the PR-#446-review failure).
-        validate::check_no_shell(&parsed.command, &parsed.args)?;
+        let bash_available = self.bash_status.as_ref().is_some_and(|s| s.is_enabled());
+        validate::check_no_shell(&parsed.command, &parsed.args, bash_available)?;
         let secs = parsed.timeout.unwrap_or(120);
         let dur = std::time::Duration::from_secs(secs.min(MAX_CALL_TIMEOUT_SECONDS));
 
