@@ -31,9 +31,18 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
 
 - **ABI** — `holly.send()` / `holly.subscribe()`. Done.
 - **stdio** (`skutter run` / `skutter pipe`): one-shot `run [--format text|json]
-  [--agent <name>] [--session <id> | --resume <id>]`; bidirectional `pipe` NDJSON
-  (`InMsg` in, `OutEvent` out). `skutter sessions` lists past root sessions for
-  the cwd (see §6b). `skutter inspect prompt --agent <name> [--parts]` prints an
+  [--agent <name>] [--session <id> | --resume <id>] [--yes]`; bidirectional
+  `pipe` NDJSON (`InMsg` in, `OutEvent` out). `skutter sessions` lists past root
+  sessions for the cwd (see §6b). `run` has no interactive user to answer a
+  `ToolRequest` (most commonly the escape-root gate forcing a prompt for an
+  out-of-root path even under a profile's `Allow`, ADR-0109) or a `propose_plan`
+  approval, so both are settled immediately instead of parking until the relay
+  loop's 60s `recv` timeout kills the whole run (#554): `propose_plan` always
+  auto-rejects (accepting hands off to a `build` child with its own review loop,
+  which a headless run can't drive either way); every other `ToolRequest`
+  auto-rejects with a reason by default, or auto-approves (`Once` scope) when
+  `--yes`/the global `skutter … --yes` flag is set. `ask_user` questions keep
+  auto-answering their first option (ADR-0027). `skutter inspect prompt --agent <name> [--parts]` prints an
   agent's **assembled** system prompt (#184) — it re-runs the load-time discovery
   (`PromptContext::load` + skill/agent registries) with no engine, so a wrong
   brief pick, an empty preamble override, or a subagent losing the skill index is

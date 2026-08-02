@@ -162,6 +162,15 @@ async fn build_config(
         extra_root_store = extra_root_store.with_scratch(scratch.clone());
     }
     let extra_root_store = Arc::new(extra_root_store);
+    // Live bash enablement (#498, ADR-0133): `live_bash` starts seeded from the
+    // startup `bash_enabled` (so the TUI `!bash` gate and `ProfileResolver`
+    // reflect it uniformly) but with no grade override — a startup-registered
+    // pair still resolves through the session's own profile, unchanged from
+    // pre-#498 behavior. Created *before* `register_default_tools` (rather than
+    // after, as pre-#554) so `call`'s shape-check error (#554) can read the same
+    // live handle and stay accurate across a later `/bash on`/`off`, not just
+    // the startup state.
+    let live_bash = bash_live::LiveBashState::new(bash_enabled);
     let mut tools = register_default_tools(
         root.clone(),
         scratch_base,
@@ -169,15 +178,11 @@ async fn build_config(
         secret_env.clone(),
         bash_enabled,
         sandbox_config.resolver(),
+        live_bash.clone(),
     );
-    // Live bash enablement (#498, ADR-0133): `live_bash` starts seeded from the
-    // startup `bash_enabled` (so the TUI `!bash` gate and `ProfileResolver`
-    // reflect it uniformly) but with no grade override — a startup-registered
-    // pair still resolves through the session's own profile, unchanged from
-    // pre-#498 behavior. `bash_tool_config` is what a later live `/bash on`
-    // needs to build a fresh `BashTool`/`BashOutputTool` pair on demand,
-    // mirroring this function's own bash arm in `register_default_tools`.
-    let live_bash = bash_live::LiveBashState::new(bash_enabled);
+    // `bash_tool_config` is what a later live `/bash on` needs to build a fresh
+    // `BashTool`/`BashOutputTool` pair on demand, mirroring this function's own
+    // bash arm in `register_default_tools`.
     let bash_tool_config = bash_live::BashToolConfig {
         root: root.clone(),
         extra_roots: Some(extra_root_store.clone()),
@@ -325,11 +330,13 @@ fn register_default_tools(
     secret_env: Vec<String>,
     bash_enabled: bool,
     sandbox_resolver: Arc<dyn policy::SandboxResolver>,
+    live_bash: Arc<bash_live::LiveBashState>,
 ) -> ToolRegistry {
     let mut tools = host::host_tools_with_extra_roots(root.clone(), extra_roots.clone());
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
-        .with_sandbox_resolver(sandbox_resolver.clone());
+        .with_sandbox_resolver(sandbox_resolver.clone())
+        .with_bash_status(live_bash);
     if let Some(base) = scratch_base {
         call = call.with_scratch_base(base);
     }
@@ -875,6 +882,15 @@ struct Cli {
     /// it may follow the subcommand: `skutter run … --verbose`.
     #[arg(long, global = true)]
     verbose: bool,
+    /// Auto-approve every tool approval request instead of auto-rejecting it
+    /// (#554). Only affects `run` heads (explicit `run` and the implicit
+    /// one-shot form): there is no interactive user to answer a `ToolRequest`
+    /// there (e.g. the escape-root gate on an out-of-root path, which fires
+    /// even under a profile's `Allow`), and without this flag such a request
+    /// is rejected immediately with a reason rather than parking the run.
+    /// Global so it may follow the subcommand: `skutter run … --yes`.
+    #[arg(long, global = true)]
+    yes: bool,
 }
 
 #[derive(Subcommand)]
@@ -1402,6 +1418,7 @@ async fn main() -> Result<()> {
     let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watcher_handle = watch::spawn_watcher(cwd.clone(), live, Some(reload_tx));
 
+    let auto_approve = cli.yes;
     let result = match cli.cmd {
         Some(Cmd::Run {
             prompt,
@@ -1446,7 +1463,15 @@ async fn main() -> Result<()> {
                     .await?;
             }
             let prompt = prompt.join(" ");
-            run_one(&holly, &session_id, agent.as_deref(), &prompt, &format).await
+            run_one(
+                &holly,
+                &session_id,
+                agent.as_deref(),
+                &prompt,
+                &format,
+                auto_approve,
+            )
+            .await
         }
         Some(Cmd::Pipe { session }) => {
             let session_id = SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0));
@@ -1550,7 +1575,15 @@ async fn main() -> Result<()> {
                         .await?;
                 }
                 let prompt = cli.prompt.join(" ");
-                run_one(&holly, &session_id, agent.as_deref(), &prompt, "text").await
+                run_one(
+                    &holly,
+                    &session_id,
+                    agent.as_deref(),
+                    &prompt,
+                    "text",
+                    auto_approve,
+                )
+                .await
             }
         }
     };
@@ -1649,6 +1682,7 @@ fn format_relative(ts_ms: u64) -> String {
 mod tests {
     use super::{launches_tui_head, register_default_tools, Cmd};
     use crate::host::SandboxPolicy;
+    use entanglement_runtime::bash_live;
 
     #[test]
     fn tui_head_covers_bare_skutter_and_explicit_subcommand() {
@@ -1710,6 +1744,7 @@ mod tests {
             Vec::new(),
             bash_enabled,
             std::sync::Arc::new(SandboxPolicy::none()),
+            bash_live::LiveBashState::new(bash_enabled),
         )
         .specs()
         .into_iter()
