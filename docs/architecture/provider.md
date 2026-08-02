@@ -112,6 +112,22 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   `ToolCall.provider_meta` (below). `gemini_factory(base, key, model, rpm,
   concurrency, model_concurrency, http)` — no web-search knob.
   Request-body assembly lives in the `gemini::request` submodule.
+- **Explicit `cachedContents` caching** (#587) — mirrors Anthropic's
+  `cache_control` breakpoints (above) for the backend that otherwise has no
+  equivalent: `gemini::cache::CacheHandle` (one per session, held on the
+  `GeminiLlm` clone that session owns) hashes the resolved `model` + `system`
+  + `tools` before every `stream` call, creating a `cachedContents` resource
+  via a `POST .../cachedContents` the first time a given combination is seen
+  (or after it changes) and reusing the returned resource name — sent as
+  `cachedContent` on the `streamGenerateContent` body in place of the inline
+  `systemInstruction`/`tools`, which Gemini rejects alongside a cache
+  reference — on every subsequent turn. Unlike Anthropic's breakpoints, the
+  growing message history is never folded into the cache (it changes every
+  turn, so caching it would just thrash); only the stable system+tools prefix
+  is. Best-effort throughout: a prefix under `MIN_CACHEABLE_CHARS` (a
+  char-count proxy for Gemini's undocumented per-model minimum token count)
+  or any create-call failure resolves to `None`, falling back to inlining
+  `system`/`tools` exactly as before — cache creation never fails the turn.
 - **Opaque `provider_meta`** (#309) — `ToolCall.provider_meta: Option<Value>` is a
   provider-private slot that must round-trip **verbatim** through history persistence
   + replay; core never inspects it. Gemini stashes `thoughtSignature` there; the
