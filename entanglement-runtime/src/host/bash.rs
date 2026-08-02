@@ -138,15 +138,14 @@ impl Tool for BashTool {
         Cow::Borrowed("bash")
     }
     fn description(&self) -> &str {
-        "Run a shell command rooted at the working directory. The command \
-         runs with the engine's full privileges (unsandboxed). Stdin is \
+        "Run a shell command (`sh -c`) rooted at the working directory (or \
+         `workdir`), with the engine's full privileges (unsandboxed). Stdin is \
          closed, not inherited — use shell-native `< file` redirection if the \
-         command needs input. Returns \
-         `[exit N]`, stdout, and `[stderr]`; oversized output keeps a head + \
-         tail slice so the trailing error survives truncation. Pass `workdir` to \
-         run in a subdirectory (validated under root). Pass \
-         `run_in_background=true` to start a long job (build, dev server) \
-         detached and get a job id — poll it with `bash_output`."
+         command needs input. Returns `[exit N]`, stdout, and `[stderr]`; \
+         oversized output keeps a head + tail slice so the trailing error \
+         survives truncation. Pass `run_in_background=true` to start a long \
+         job (build, dev server) detached and get a job id — poll it with \
+         `bash_output`."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({

@@ -161,7 +161,7 @@ impl Tool for GrepTool {
                 "exclude": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Glob patterns to exclude from the search, e.g. `[\"target/**\", \"node_modules/**\"]`. `.git` is always excluded regardless of this list."
+                    "description": "Glob patterns to exclude from the search, e.g. `[\"target/**\", \"node_modules/**\"]`."
                 },
                 "case_insensitive": {
                     "type": "boolean",

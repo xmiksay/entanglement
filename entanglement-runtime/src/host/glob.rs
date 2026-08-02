@@ -73,7 +73,7 @@ impl Tool for GlobTool {
                 "exclude": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Glob patterns to exclude from results, e.g. `[\"target/**\", \"node_modules/**\"]`. `.git` is always excluded regardless of this list."
+                    "description": "Glob patterns to exclude from results, e.g. `[\"target/**\", \"node_modules/**\"]`."
                 }
             },
             "required": ["pattern"]

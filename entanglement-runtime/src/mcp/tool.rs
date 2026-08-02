@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::client::{McpClient, McpToolDef};
+use crate::host::truncate_output;
 use crate::tools::Tool;
 
 /// A proxy for one tool on one MCP server.
@@ -68,7 +69,10 @@ impl Tool for McpTool {
             serde_json::from_str(input).context("MCP tool arguments must be a JSON object")?
         };
         let result = self.client.call_tool(&self.remote_name, arguments).await?;
-        Ok(render_result(&result))
+        // MCP servers are the one tool source the runtime doesn't author — cap
+        // their results with the same 32 KiB bound every host tool honors, so a
+        // chatty server can't flood the context in a single call.
+        Ok(truncate_output(render_result(&result)))
     }
 }
 
@@ -180,6 +184,24 @@ mod tests {
         let img = json!({ "content": [ { "type": "image", "data": "…" } ] });
         assert_eq!(render_result(&img), "[image content omitted]");
         assert_eq!(render_result(&json!({ "content": [] })), "(no content)");
+    }
+
+    #[test]
+    fn oversized_results_are_byte_capped() {
+        let big = "x".repeat(crate::host::MAX_OUTPUT_BYTES + 1024);
+        let r = json!({ "content": [ { "type": "text", "text": big } ] });
+        let out = truncate_output(render_result(&r));
+        assert!(
+            out.contains("[truncated:") && out.ends_with("bytes total]"),
+            "expected a truncation notice, got tail: …{}",
+            &out[out.len().saturating_sub(60)..]
+        );
+        // Bounded: the cap plus the short notice, nothing near the input size.
+        assert!(
+            out.len() < crate::host::MAX_OUTPUT_BYTES + 128,
+            "len={}",
+            out.len()
+        );
     }
 
     #[tokio::test]

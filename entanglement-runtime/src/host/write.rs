@@ -79,7 +79,7 @@ impl Tool for WriteTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to the working directory. Created (with parent dirs) if absent, overwritten if present."
+                    "description": "File path (relative)."
                 },
                 "content": {
                     "type": "string",

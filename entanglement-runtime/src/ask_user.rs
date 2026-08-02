@@ -45,35 +45,34 @@ pub fn ask_user_spec() -> ToolSpec {
     ToolSpec::with_schema(
         ASK_USER_TOOL,
         "Ask the user one or more decision questions when the choice is genuinely \
-         theirs to make (ambiguous requirements, a trade-off, a preference). Batch \
-         several related questions into one call rather than calling this \
-         repeatedly. Offer 2-4 labelled options per question; set multi_select when \
-         the user may pick more than one. A typed custom answer is always offered \
-         to the user alongside the options, so there is nothing to opt into for \
-         free text. Prefer doing the work directly over asking when you can decide.",
+         theirs (ambiguous requirements, a trade-off, a preference). Batch \
+         related questions into one call. Offer 2-4 labelled options per \
+         question; set multi_select to allow picking several. A typed free-text \
+         answer is always offered alongside the options. Prefer deciding \
+         yourself when you can.",
         serde_json::json!({
             "type": "object",
             "properties": {
                 "questions": {
                     "type": "array",
-                    "description": "One or more questions to put to the user, asked in order.",
+                    "description": "Questions for the user, asked in order.",
                     "minItems": 1,
                     "items": {
                         "type": "object",
                         "properties": {
                             "question": {
                                 "type": "string",
-                                "description": "The question to put to the user."
+                                "description": "The question text."
                             },
                             "options": {
                                 "type": "array",
-                                "description": "Labelled choices the user picks from.",
+                                "description": "Labelled choices.",
                                 "items": {
                                     "type": "object",
                                     "properties": {
                                         "label": {
                                             "type": "string",
-                                            "description": "Short choice label — this exact text is returned when picked."
+                                            "description": "Choice label — returned verbatim when picked."
                                         },
                                         "description": {
                                             "type": "string",
@@ -85,7 +84,7 @@ pub fn ask_user_spec() -> ToolSpec {
                             },
                             "multi_select": {
                                 "type": "boolean",
-                                "description": "Whether the user may pick more than one option. Defaults to false."
+                                "description": "Allow picking more than one option (default false)."
                             }
                         },
                         "required": ["question", "options"]
