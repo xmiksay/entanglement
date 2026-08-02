@@ -5,6 +5,29 @@ How to cut a tagged release and how the automated crates.io publish works
 the crates.io Trusted Publishing setup below is a **one-time** step done once
 per crate by whoever owns them on crates.io.
 
+## Pre-tag audit (standing step)
+
+Before cutting *any* tag — not just major/minor releases — sweep for the
+failure modes that keep recurring (each already logged at least once in
+[`deferred-work-ledger.md`](deferred-work-ledger.md)): CHANGELOG entries
+lagging shipped commits, the README/`protocol.md` contract block lagging
+`protocol.rs`, and ADR back-links missing on amendment. A green `make verify`
+is **not** a release signal by itself — it proves the code compiles and tests
+pass, not that docs/ADRs/the deferred-work ledger reflect what actually
+shipped. Concretely, before the version bump below:
+
+1. Diff the wire contract (`InMsg`/`OutEvent` variants in `protocol.rs`)
+   against the contract blocks in `README.md` and `docs/architecture/protocol.md`.
+2. Skim `git log <last-tag>..HEAD` for any ADR that superseded/amended another
+   and confirm the back-link landed on both sides.
+3. Review open issues and [`deferred-work-ledger.md`](deferred-work-ledger.md)
+   for stale blockers or entries that shipped since they were logged.
+4. Re-check the six audit tracks from issue #560 (stability/robustness,
+   provider/endpoint sharing, default-setup usability, design gaps, release
+   mechanics, and general docs drift) empirically — by inspection and repro,
+   not just by reading code — since a passing test suite doesn't exercise
+   every one of these paths.
+
 ## Cutting a tag
 
 Two mandatory steps come first, committed before tagging:
@@ -22,6 +45,10 @@ Two mandatory steps come first, committed before tagging:
    into `### Added` / `### Changed` / `### Fixed`, call out wire-shape changes
    explicitly, and add the version's link reference in the footer. No
    `[Unreleased]` section accumulates between releases.
+
+`make tag` enforces both: it refuses if the `workspace.dependencies` pins
+don't match `workspace.package.version`, and if `CHANGELOG.md` has no
+`## [X.Y.Z]` section for the target `VERSION`.
 
 Then:
 
