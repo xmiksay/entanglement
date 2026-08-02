@@ -402,6 +402,91 @@ fn provider_search_block_from_anthropic_replays_verbatim() {
     assert_eq!(blocks[1], raw);
 }
 
+// ── prompt caching breakpoints (#566) ───────────────────────────────────
+
+#[test]
+fn system_block_carries_a_cache_breakpoint() {
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &[msg(MessageRole::User, "hi")],
+        &[],
+        1024,
+        None,
+        None,
+        None,
+    );
+    let system = body["system"].as_array().unwrap();
+    assert_eq!(system.len(), 1);
+    assert_eq!(system[0]["text"], "sys");
+    assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
+}
+
+#[test]
+fn last_tool_entry_carries_a_cache_breakpoint() {
+    let specs = vec![ToolSpec::new("a", "a"), ToolSpec::new("b", "b")];
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &[msg(MessageRole::User, "hi")],
+        &specs,
+        1024,
+        None,
+        None,
+        None,
+    );
+    let tools = body["tools"].as_array().unwrap();
+    assert!(tools[0].get("cache_control").is_none());
+    assert_eq!(tools[1]["cache_control"]["type"], "ephemeral");
+}
+
+#[test]
+fn single_user_turn_carries_the_history_breakpoint() {
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &[msg(MessageRole::User, "hi")],
+        &[],
+        1024,
+        None,
+        None,
+        None,
+    );
+    let blocks = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks.last().unwrap()["cache_control"]["type"], "ephemeral");
+}
+
+#[test]
+fn second_to_last_user_turn_carries_the_history_breakpoint() {
+    // The most recent user turn may still be edited/retried — anchor one turn
+    // earlier so the stable bulk of history isn't re-marked every request.
+    let msgs = vec![
+        msg(MessageRole::User, "first"),
+        msg(MessageRole::Assistant, "reply"),
+        msg(MessageRole::User, "second"),
+    ];
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &msgs,
+        &[],
+        1024,
+        None,
+        None,
+        None,
+    );
+    let out = body["messages"].as_array().unwrap();
+    assert_eq!(out.len(), 3);
+    let first_blocks = out[0]["content"].as_array().unwrap();
+    assert_eq!(
+        first_blocks.last().unwrap()["cache_control"]["type"],
+        "ephemeral"
+    );
+    // The latest turn is left unmarked.
+    let last_blocks = out[2]["content"].as_array().unwrap();
+    assert!(last_blocks.last().unwrap().get("cache_control").is_none());
+}
+
 #[test]
 fn provider_search_block_from_another_provider_is_dropped() {
     // A block minted by z.ai (crossed over via a live provider switch) has

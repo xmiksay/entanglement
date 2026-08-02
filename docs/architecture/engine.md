@@ -295,7 +295,12 @@ recovery steps in order (#398,
 2. **Fall back to `Context::compact`** (placeholder-prune the oldest tool
    outputs, newest-first-preserved) when auto-summarize is disabled, its own
    guard trips (an oversized transcript/tail, an LLM error, a truncated
-   summary), or the result still doesn't fit.
+   summary), or the result still doesn't fit. Prunes in one batch down to
+   ~90% of the budget rather than stopping the instant the estimate dips
+   under it (#566): a session sitting near the edge would otherwise re-trip
+   this fallback and mutate one more early message every round or two as new
+   content trickles in — busting a provider's cached prefix right when
+   requests are largest.
 3. **Refuse the turn** via `emit_turn_error` (a `"context window exceeded"`
    `Error` + `Done` + `Status`) if pruning also doesn't fit — sending an
    over-window request just burns a paid round-trip and errors at the provider.

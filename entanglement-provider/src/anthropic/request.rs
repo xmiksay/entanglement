@@ -37,11 +37,22 @@ pub(super) fn build_body(
 ) -> Value {
     let g = generation.unwrap_or_default();
     let mut max_tokens = g.max_output_tokens.unwrap_or(default_max_tokens);
+    let mut messages = convert_messages(messages);
+    place_history_breakpoint(&mut messages);
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
-        "system": system,
-        "messages": convert_messages(messages),
+        // Standard breakpoint placement (#566): end of tools, end of system,
+        // second-to-last user turn. Anthropic's fixed render order is
+        // tools → system → messages, and without a `cache_control` anywhere the
+        // whole request re-bills at the full input rate every round — the system
+        // block plus every tool schema (~10 KB) and the entire growing history.
+        "system": [{
+            "type": "text",
+            "text": system,
+            "cache_control": { "type": "ephemeral" },
+        }],
+        "messages": messages,
         "stream": true,
     });
     // Function tools (core-advertised) plus the opt-in provider-side web-search
@@ -50,6 +61,9 @@ pub(super) fn build_body(
     let mut tool_entries = convert_tools(tools);
     if let Some(ws) = web_search {
         tool_entries.push(web_search_tool_entry(ws, web_search_tool_version));
+    }
+    if let Some(last) = tool_entries.last_mut() {
+        last["cache_control"] = json!({ "type": "ephemeral" });
     }
     if !tool_entries.is_empty() {
         body["tools"] = Value::Array(tool_entries);
@@ -140,6 +154,31 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
         }
     }
     coalesce_same_role(out, "content")
+}
+
+/// Mark the standard third breakpoint (#566): the last content block of the
+/// second-to-last `user`-role message. The final user turn is the one most
+/// likely to still change (a steered/edited retry), so anchoring one turn
+/// earlier gives every prior round — the bulk of a growing conversation — a
+/// stable, cacheable prefix without re-marking it on every request. Falls back
+/// to the single user message present when there's only one.
+fn place_history_breakpoint(messages: &mut [Value]) {
+    let user_idxs: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
+        .map(|(i, _)| i)
+        .collect();
+    let Some(&idx) = user_idxs.iter().rev().nth(1).or_else(|| user_idxs.last()) else {
+        return;
+    };
+    if let Some(last_block) = messages[idx]
+        .get_mut("content")
+        .and_then(Value::as_array_mut)
+        .and_then(|blocks| blocks.last_mut())
+    {
+        last_block["cache_control"] = json!({ "type": "ephemeral" });
+    }
 }
 
 /// Merge adjacent messages that share a `role` by concatenating their content

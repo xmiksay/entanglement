@@ -31,6 +31,16 @@ const INPUT_BUDGET_FRACTION: f32 = 0.85;
 /// Kept short and stable so a re-compaction skips an already-pruned message.
 const PRUNED_PLACEHOLDER: &str = "[tool output pruned to fit the context window]";
 
+/// Fraction of the budget [`Context::compact`] prunes down to, rather than
+/// stopping the instant the estimate dips at or under `limit` (#566).
+/// Hovering exactly at the edge means a session sitting near the boundary
+/// re-triggers compaction and mutates one more early message every round or
+/// two as new content trickles in — busting a provider's cached prefix right
+/// when requests are largest. Overshooting downward in one batch means several
+/// rounds pass before the next prune is needed, at the cost of a slightly
+/// smaller live history.
+const COMPACT_TARGET_FRACTION: f32 = 0.9;
+
 /// Owns the rolling conversation history, a token estimate, and the per-model
 /// token budget the engine compacts/refuses against.
 ///
@@ -178,9 +188,15 @@ impl Context {
     /// event would let replay reconstruct that the guard doesn't already.
     pub fn compact(&mut self) -> bool {
         // Prune oldest-first so recent tool results (the ones the model is
-        // actively reasoning over) survive as long as possible.
+        // actively reasoning over) survive as long as possible. Target
+        // `COMPACT_TARGET_FRACTION` of the budget rather than `self.limit`
+        // itself (#566): pruning in one hysteresis-padded batch, instead of
+        // stopping the instant the estimate dips under the real limit, means a
+        // session sitting near the boundary goes several rounds before this
+        // mutates the prefix again.
+        let target = (self.limit as f32 * COMPACT_TARGET_FRACTION) as usize;
         for i in 0..self.messages.len() {
-            if self.within_limit() {
+            if self.estimated_tokens() <= target {
                 break;
             }
             let msg = &mut self.messages[i];
@@ -290,6 +306,36 @@ mod tests {
         assert_eq!(ctx.messages()[3].text(), "recent");
         // User text is never pruned.
         assert_eq!(ctx.messages()[0].text(), "start");
+    }
+
+    #[test]
+    fn compact_prunes_past_the_limit_down_to_the_target_fraction() {
+        // #566: stopping the instant the estimate dips at/under `limit` (850
+        // tokens here) would leave this history at 814 tokens — still under
+        // `limit`, but close enough that a sliver of new content next round
+        // would trip another single-message prune. Pruning down to
+        // `COMPACT_TARGET_FRACTION` (765 tokens) in this same call instead
+        // prunes the second bulky output too, leaving real headroom.
+        let mut ctx = Context::with_window(Some(1000)); // limit = 850 tokens
+        ctx.push_user("u");
+        ctx.push_tool("a", "x".repeat(1050));
+        ctx.push_tool("b", "x".repeat(2800));
+        ctx.push_tool("c", "zz"); // stays untouched either way
+        assert_eq!(ctx.estimated_tokens(), 1101);
+        assert!(!ctx.within_limit());
+
+        assert!(ctx.compact());
+        // Pruning only the oldest ("a") would land at 814 — under the 850
+        // limit, but over the 765 hysteresis target — so "b" must go too.
+        assert_eq!(ctx.messages()[1].text(), PRUNED_PLACEHOLDER, "a pruned");
+        assert_eq!(ctx.messages()[2].text(), PRUNED_PLACEHOLDER, "b pruned too");
+        assert_eq!(ctx.messages()[3].text(), "zz", "c never needed pruning");
+        let target = (ctx.limit() as f32 * COMPACT_TARGET_FRACTION) as usize;
+        assert!(
+            ctx.estimated_tokens() <= target,
+            "estimate {} should be at/under the {target}-token hysteresis target",
+            ctx.estimated_tokens()
+        );
     }
 
     #[test]
