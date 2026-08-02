@@ -390,6 +390,45 @@ async fn pause_then_stop_cancels_turn_but_keeps_paused_state() {
     );
 }
 
+/// A stuck automation flooding a paused session with prompts must not grow
+/// the deferred-command stash without bound (#556): past the cap, a prompt
+/// is dropped and reported via `OutEvent::Error` instead of queuing forever.
+#[tokio::test]
+async fn pause_with_a_prompt_flood_reports_an_error_past_the_stash_cap() {
+    let (holly, _seen) = engine(vec![LlmResponse {
+        text: "final".into(),
+        tool_calls: vec![],
+    }]);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::PauseSession {
+            session: sid.clone(),
+        })
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Status { session, state, .. } if *session == sid && *state == AgentState::Paused),
+    )
+    .await;
+
+    let obs = holly.subscribe();
+    // Comfortably past any reasonable cap — every one of these is stashable
+    // (paused, idle turn), so a real cap must reject some of them.
+    for _ in 0..200 {
+        holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    }
+    let events = collect_for(obs, &sid, Duration::from_millis(500)).await;
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OutEvent::Error { message, .. } if message.contains("too many commands queued"))
+        ),
+        "flooding a paused session past the stash cap must surface an error; got {events:?}"
+    );
+}
+
 /// Hibernating a paused session bypasses the hold (memory eviction always
 /// wins, mirroring `Stop`): the pending call is re-offered on resume exactly
 /// as an unpaused hibernate would, and the resumed session is not stuck —

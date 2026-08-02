@@ -19,21 +19,24 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 
-use crate::tools::{text_parts, SharedRegistry, Tool};
+use crate::tools::{text_parts, SharedRegistry, Tool, WeakRegistry};
 
 use super::available::{enable_for_session, AvailableMcp};
 use super::live::ActiveServers;
 
-/// See the module docs. Holds a `SharedRegistry` handle that (once this tool
-/// is registered) forms an `Arc` cycle with the registry — deliberate: both
-/// are process-lifetime singletons, never torn down before exit.
+/// See the module docs. Holds a [`WeakRegistry`] back-reference (#556): this
+/// tool is itself registered *into* the registry it needs to call back into
+/// (to register a lazily-connected server's tools), so an owning `Arc` here
+/// would form a reference cycle — the `ToolRegistry`, and every `Arc<McpClient>`
+/// it holds (with their `kill_on_drop` stdio children), would never drop.
 pub struct McpEnableTool {
     avail: Arc<AvailableMcp>,
-    registry: SharedRegistry,
+    registry: WeakRegistry,
     active: ActiveServers,
 }
 
@@ -43,10 +46,10 @@ struct Input {
 }
 
 impl McpEnableTool {
-    pub fn new(avail: Arc<AvailableMcp>, registry: SharedRegistry, active: ActiveServers) -> Self {
+    pub fn new(avail: Arc<AvailableMcp>, registry: &SharedRegistry, active: ActiveServers) -> Self {
         Self {
             avail,
-            registry,
+            registry: Arc::downgrade(registry),
             active,
         }
     }
@@ -95,8 +98,16 @@ impl Tool for McpEnableTool {
         input: &str,
     ) -> anyhow::Result<Vec<ContentPart>> {
         let Input { server } = serde_json::from_str(input)?;
+        // The registry outlives every real caller for the process's whole
+        // lifetime in practice; `upgrade` only fails during the (never
+        // observed outside tests) teardown window after the last strong
+        // handle has already dropped.
+        let registry = self
+            .registry
+            .upgrade()
+            .context("tool registry is no longer available")?;
         let tools =
-            enable_for_session(&self.avail, &server, session, &self.registry, &self.active).await?;
+            enable_for_session(&self.avail, &server, session, &registry, &self.active).await?;
         Ok(text_parts(format!(
             "MCP server `{server}` enabled for this session — {} tool(s) available from your \
              next round: {}",
@@ -114,24 +125,31 @@ mod tests {
     use super::*;
     use crate::tools::ToolRegistry;
 
-    fn tool_with_empty_roster() -> McpEnableTool {
-        McpEnableTool::new(
+    /// Returns the tool alongside the `SharedRegistry` it holds only a `Weak`
+    /// reference to (#556) — the caller must keep this alive for as long as
+    /// the tool needs a live registry, exactly like the real owner
+    /// (`main.rs`'s `tools` handle) does for the process's lifetime.
+    fn tool_with_empty_roster() -> (McpEnableTool, SharedRegistry) {
+        let registry: SharedRegistry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let tool = McpEnableTool::new(
             Arc::new(AvailableMcp::default()),
-            Arc::new(RwLock::new(ToolRegistry::new())),
+            &registry,
             Arc::new(Mutex::new(HashMap::new())),
-        )
+        );
+        (tool, registry)
     }
 
     #[test]
     fn schema_omits_enum_on_an_empty_roster() {
-        let schema = tool_with_empty_roster().schema();
+        let (tool, _registry) = tool_with_empty_roster();
+        let schema = tool.schema();
         assert!(schema["properties"]["server"].get("enum").is_none());
         assert_eq!(schema["required"][0], "server");
     }
 
     #[tokio::test]
     async fn unknown_server_surfaces_the_error_to_the_model() {
-        let tool = tool_with_empty_roster();
+        let (tool, _registry) = tool_with_empty_roster();
         let err = tool
             .run_for_session(&SessionId::new("s"), "r1", r#"{"server":"nope"}"#)
             .await
@@ -141,10 +159,36 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_input_is_an_error_not_a_panic() {
-        let tool = tool_with_empty_roster();
+        let (tool, _registry) = tool_with_empty_roster();
         assert!(tool
             .run_for_session(&SessionId::new("s"), "r1", "not json")
             .await
             .is_err());
+    }
+
+    /// The whole point of holding `Weak` instead of `Arc` (#556): once every
+    /// strong handle on the registry drops, the tool must not keep it alive —
+    /// and must fail cleanly, not panic, on its next call.
+    #[test]
+    fn holds_no_strong_reference_keeping_the_registry_alive() {
+        let (tool, registry) = tool_with_empty_roster();
+        assert_eq!(
+            Arc::strong_count(&registry),
+            1,
+            "only the test's own handle"
+        );
+        drop(registry);
+        assert!(tool.registry.upgrade().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_dropped_registry_surfaces_a_clean_error_not_a_panic() {
+        let (tool, registry) = tool_with_empty_roster();
+        drop(registry);
+        let err = tool
+            .run_for_session(&SessionId::new("s"), "r1", r#"{"server":"nope"}"#)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no longer available"), "{err}");
     }
 }

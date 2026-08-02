@@ -100,6 +100,14 @@ pub struct ToolRegistry {
 /// is fine — registration is rare compared to dispatch.
 pub type SharedRegistry = Arc<RwLock<ToolRegistry>>;
 
+/// A non-owning handle on a [`SharedRegistry`] (#556): a tool that must call
+/// back into the registry holding it (`McpEnableTool`) takes this instead of
+/// `SharedRegistry` itself, so the tool ↔ registry edge isn't a reference
+/// cycle — without it, neither the `ToolRegistry` nor the `Arc<McpClient>`s
+/// (and their `kill_on_drop` stdio children) it holds are ever freed, even
+/// after every other handle (the engine, every session) drops.
+pub type WeakRegistry = std::sync::Weak<RwLock<ToolRegistry>>;
+
 impl ToolRegistry {
     pub fn new() -> Self {
         Self::default()

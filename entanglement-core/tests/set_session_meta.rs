@@ -69,6 +69,33 @@ async fn set_name_if_unset(holly: &Holly, sid: &SessionId, name: &str) {
         .unwrap();
 }
 
+/// #556: an unbounded `name`/`action` is persisted and re-broadcast on every
+/// set — cap it rather than let one write bloat the event log/session store.
+#[tokio::test]
+async fn oversized_name_and_action_are_capped_not_stored_verbatim() {
+    let holly = Holly::spawn(EngineConfig::default());
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    let huge_name = "n".repeat(10_000);
+    let huge_action = "a".repeat(10_000);
+    set_meta(&holly, &sid, Some(&huge_name), Some(&huge_action)).await;
+    let (name, action) = meta_of(recv_until(&mut sub, is_meta_changed).await);
+
+    let name = name.expect("name set");
+    let action = action.expect("action set");
+    assert!(
+        name.len() < huge_name.len(),
+        "an oversized name must be capped, got {} bytes",
+        name.len()
+    );
+    assert!(
+        action.len() < huge_action.len(),
+        "an oversized action must be capped, got {} bytes",
+        action.len()
+    );
+}
+
 #[tokio::test]
 async fn fields_merge_and_the_ack_carries_full_state() {
     let holly = Holly::spawn(EngineConfig::default());

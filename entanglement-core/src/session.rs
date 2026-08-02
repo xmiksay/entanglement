@@ -34,6 +34,7 @@ pub use state::{Session, SessionUsage};
 pub use turn_state::TurnState;
 
 use std::collections::VecDeque;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
@@ -47,6 +48,54 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use emit::{emit_tool_exec, emit_tool_output, next_seq};
 use ops::run_oneshot;
 use turn::drive_turn;
+
+/// Ceiling on the deferred-command queue (#556): while paused (or mid-turn),
+/// every wire-allowed command that arrives is stashed until the hold lifts or
+/// the live turn ends — a stuck automation retrying against a paused/busy
+/// session must not grow this without bound.
+const MAX_STASHED_COMMANDS: usize = 64;
+
+/// Push `cmd` onto `stash` unless it's already at [`MAX_STASHED_COMMANDS`], in
+/// which case `cmd` is dropped and the caller told via `OutEvent::Error`
+/// rather than the queue growing forever.
+fn stash_or_reject(
+    stash: &mut VecDeque<SessionCmd>,
+    cmd: SessionCmd,
+    session: &SessionId,
+    events: &broadcast::Sender<OutEvent>,
+    seq: &AtomicU64,
+) {
+    if stash.len() >= MAX_STASHED_COMMANDS {
+        let _ = events.send(OutEvent::Error {
+            session: session.clone(),
+            seq: next_seq(seq),
+            message: format!(
+                "too many commands queued while this session is busy/paused \
+                 (cap {MAX_STASHED_COMMANDS}) — dropped"
+            ),
+        });
+        return;
+    }
+    stash.push_back(cmd);
+}
+
+/// Ceiling on `SetSessionMeta`'s `name`/`action` (#556): both are persisted
+/// and re-broadcast on every set, so an unbounded value bloats the event log
+/// and every session listing one write at a time.
+const MAX_SESSION_META_LEN: usize = 200;
+
+/// Byte-cap `s` at [`MAX_SESSION_META_LEN`], backing off to the nearest UTF-8
+/// char boundary rather than panicking mid-character.
+fn cap_meta_field(s: String) -> String {
+    if s.len() <= MAX_SESSION_META_LEN {
+        return s;
+    }
+    let mut cut = MAX_SESSION_META_LEN;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    s[..cut].to_string()
+}
 
 /// Commands routed to a single session by the supervisor (InMsg minus session id).
 #[derive(Debug, Clone)]
@@ -319,7 +368,13 @@ pub(crate) async fn session_loop(
                     // session (#516, ADR-0144): stash it — the next round, or
                     // `Unpause`'s resulting idle pop, folds a stashed prompt
                     // into the live context before the model request.
-                    stash.push_back(SessionCmd::Prompt(content));
+                    stash_or_reject(
+                        &mut stash,
+                        SessionCmd::Prompt(content),
+                        &session,
+                        &events,
+                        &s.seq,
+                    );
                 } else {
                     s.ctx.push_user_content(content);
                     s.turn = Some(TurnState::default());
@@ -340,7 +395,13 @@ pub(crate) async fn session_loop(
                     // Applied once the turn ends (stash replay), same as when
                     // it arrived mid-stream before #270; likewise deferred
                     // while paused (#516, ADR-0144).
-                    stash.push_back(SessionCmd::SetAgent(name));
+                    stash_or_reject(
+                        &mut stash,
+                        SessionCmd::SetAgent(name),
+                        &session,
+                        &events,
+                        &s.seq,
+                    );
                     continue;
                 }
                 match cfg.profiles.get(&name) {
@@ -417,7 +478,13 @@ pub(crate) async fn session_loop(
             // Deferred during a live turn (stash replay), like `SetAgent`.
             Some(SessionCmd::SetModel(provider, model)) => {
                 if s.turn.is_some() || s.paused {
-                    stash.push_back(SessionCmd::SetModel(provider, model));
+                    stash_or_reject(
+                        &mut stash,
+                        SessionCmd::SetModel(provider, model),
+                        &session,
+                        &events,
+                        &s.seq,
+                    );
                     continue;
                 }
                 let Some(resolver) = cfg.model_resolver.as_ref() else {
@@ -455,7 +522,13 @@ pub(crate) async fn session_loop(
             // `SetAgent`/`SetModel`.
             Some(SessionCmd::SetGeneration(overrides)) => {
                 if s.turn.is_some() || s.paused {
-                    stash.push_back(SessionCmd::SetGeneration(overrides));
+                    stash_or_reject(
+                        &mut stash,
+                        SessionCmd::SetGeneration(overrides),
+                        &session,
+                        &events,
+                        &s.seq,
+                    );
                     continue;
                 }
                 let mut merged = s.generation.unwrap_or_default();
@@ -483,11 +556,13 @@ pub(crate) async fn session_loop(
                 // keeps it; the generator's write silently no-ops instead of
                 // racing (and losing to) a user-set name.
                 if let Some(name) = name {
+                    let name = cap_meta_field(name);
                     if !if_unset || s.name.is_none() {
                         s.name = (!name.is_empty()).then_some(name);
                     }
                 }
                 if let Some(action) = action {
+                    let action = cap_meta_field(action);
                     s.action = (!action.is_empty()).then_some(action);
                 }
                 let _ = events.send(OutEvent::SessionMetaChanged {
@@ -503,7 +578,13 @@ pub(crate) async fn session_loop(
             // never changes under a round already in flight.
             Some(SessionCmd::SetToolOverlay(entries)) => {
                 if s.turn.is_some() || s.paused {
-                    stash.push_back(SessionCmd::SetToolOverlay(entries));
+                    stash_or_reject(
+                        &mut stash,
+                        SessionCmd::SetToolOverlay(entries),
+                        &session,
+                        &events,
+                        &s.seq,
+                    );
                     continue;
                 }
                 s.tool_overlay = entries.clone();
@@ -514,7 +595,13 @@ pub(crate) async fn session_loop(
             }
             Some(SessionCmd::Oneshot(op, args)) => {
                 if s.turn.is_some() || s.paused {
-                    stash.push_back(SessionCmd::Oneshot(op, args));
+                    stash_or_reject(
+                        &mut stash,
+                        SessionCmd::Oneshot(op, args),
+                        &session,
+                        &events,
+                        &s.seq,
+                    );
                     continue;
                 }
                 run_oneshot(&session, &mut s, &events, &cfg, op, args).await;

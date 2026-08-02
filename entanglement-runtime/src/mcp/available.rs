@@ -17,9 +17,11 @@
 //! bundle with no restart; a keyless bundle is silently absent everywhere.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{bail, Result};
+use tokio::sync::Mutex as AsyncMutex;
 // Catalog types come via core's re-export (ADR-0053): the runtime's direct
 // `entanglement-provider` dep is optional (`provider` feature) and absent
 // from the lean build, but core's unconditional dep carries them everywhere.
@@ -29,6 +31,11 @@ use crate::tools::SharedRegistry;
 
 use super::live::{ActiveServer, ActiveServers};
 use super::{connect_client, register_tools, transport_label, McpServerConfig};
+
+/// Ceiling on a lazy `mcp_enable` connect (#556): a hung server must not park
+/// the calling turn — nor every other caller waiting on the per-server
+/// [`AvailableMcp::connect_guard`] — forever.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One available-but-not-startup-connected server: its resolved config (bundled
 /// definition field-merged with any same-name user `mcp:` override), the env
@@ -64,6 +71,14 @@ pub struct AvailableMcp {
     enabled: Mutex<HashMap<String, HashSet<SessionId>>>,
     /// The catalog's provider key envs, scrubbed from any stdio child (#164).
     secret_env: Vec<String>,
+    /// Per-server async guard serializing `enable_for_session`'s
+    /// check-then-connect-then-register sequence (#556): without it, two
+    /// concurrent enables of the same not-yet-connected server can both pass
+    /// the "not connected yet" check, both call `connect_client`, and race to
+    /// insert into `active` — orphaning the loser's registered tools (and its
+    /// live connection/subprocess) with nothing left holding a reference to
+    /// unregister or drop them.
+    connecting: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
 }
 
 impl AvailableMcp {
@@ -145,6 +160,7 @@ impl AvailableMcp {
                 servers,
                 enabled: Mutex::new(HashMap::new()),
                 secret_env,
+                connecting: Mutex::new(HashMap::new()),
             },
         )
     }
@@ -220,6 +236,18 @@ impl AvailableMcp {
     pub fn is_lazy(&self, server: &str) -> bool {
         self.enabled.lock().unwrap().contains_key(server)
     }
+
+    /// The per-server async guard for [`enable_for_session`]'s connect
+    /// section (#556) — the same `Arc<AsyncMutex<()>>` for every caller
+    /// naming the same `server`, minted on first use.
+    fn connect_guard(&self, server: &str) -> Arc<AsyncMutex<()>> {
+        self.connecting
+            .lock()
+            .unwrap()
+            .entry(server.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    }
 }
 
 /// Enable an available server for `session` (#542): lazily connect + register
@@ -249,31 +277,55 @@ pub async fn enable_for_session(
     let tools = match connected {
         Some(tools) => tools,
         None => {
-            let Some(server) = avail.get(name) else {
-                bail!(
-                    "no available MCP server named `{name}` (available: {})",
-                    avail.available_names().join(", ")
+            // Serialize the check-then-connect-then-register sequence per
+            // server (#556 TOCTOU): two concurrent enables of a not-yet-
+            // connected server must not both pass the check above,
+            // double-connect, and orphan the loser's registered tools.
+            let guard = avail.connect_guard(name);
+            let _permit = guard.lock().await;
+            // Re-check now that we hold the guard — another caller may have
+            // finished connecting while we waited for it. Bound to a `let`
+            // first so the `MutexGuard` drops before the `else` branch's
+            // `.await`s (an `if let`'s scrutinee temporary otherwise lives
+            // for the whole if/else, poisoning the future's `Send`-ness).
+            let already_connected = active.lock().unwrap().get(name).map(|s| s.tools.clone());
+            if let Some(tools) = already_connected {
+                tools
+            } else {
+                let Some(server) = avail.get(name) else {
+                    bail!(
+                        "no available MCP server named `{name}` (available: {})",
+                        avail.available_names().join(", ")
+                    );
+                };
+                let (client, defs) = match tokio::time::timeout(
+                    CONNECT_TIMEOUT,
+                    connect_client(name, &server.config, &avail.secret_env),
+                )
+                .await
+                {
+                    Ok(result) => result?,
+                    Err(_) => bail!("connecting MCP server `{name}` timed out"),
+                };
+                let tools = {
+                    let mut reg = registry.write().unwrap();
+                    reg.unregister_prefix(&format!("mcp__{name}__"));
+                    register_tools(&mut reg, &client, name, defs)
+                };
+                active.lock().unwrap().insert(
+                    name.to_string(),
+                    ActiveServer {
+                        client,
+                        tools: tools.clone(),
+                        transport: transport_label(&server.config),
+                    },
                 );
-            };
-            let (client, defs) = connect_client(name, &server.config, &avail.secret_env).await?;
-            let tools = {
-                let mut reg = registry.write().unwrap();
-                reg.unregister_prefix(&format!("mcp__{name}__"));
-                register_tools(&mut reg, &client, name, defs)
-            };
-            active.lock().unwrap().insert(
-                name.to_string(),
-                ActiveServer {
-                    client,
-                    tools: tools.clone(),
-                    transport: transport_label(&server.config),
-                },
-            );
-            tracing::info!(
-                "MCP server `{name}`: lazily connected, {} tool(s)",
-                tools.len()
-            );
-            tools
+                tracing::info!(
+                    "MCP server `{name}`: lazily connected, {} tool(s)",
+                    tools.len()
+                );
+                tools
+            }
         }
     };
     avail.mark_enabled(name, session);

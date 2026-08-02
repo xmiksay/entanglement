@@ -103,13 +103,13 @@ impl DiffRenderer {
             let is_diff = before_line != after_line;
 
             let before_preview = if before_line.len() > 30 {
-                format!("─ {}", &before_line[..27])
+                format!("─ {}", truncate_at_boundary(&before_line, 27))
             } else {
                 format!("─ {}", before_line)
             };
 
             let after_preview = if after_line.len() > 30 {
-                format!("+ {}", &after_line[..27])
+                format!("+ {}", truncate_at_boundary(&after_line, 27))
             } else {
                 format!("+ {}", after_line)
             };
@@ -135,6 +135,20 @@ impl DiffRenderer {
     }
 }
 
+/// Byte-safe prefix of `s` up to `max` bytes, backing off to the nearest
+/// UTF-8 char boundary (#556): a multi-byte char straddling the byte cut must
+/// not panic, mirroring `host/mod.rs`'s `truncate_output`.
+fn truncate_at_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut cut = max;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &s[..cut]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +169,16 @@ mod tests {
         let before = "line 1\nline 2\nline 3";
         let after = "line 1\nline 2 modified\nline 3";
         let result = DiffRenderer::render_stacked(before, after);
+        assert!(!result.lines.is_empty());
+    }
+
+    #[test]
+    fn render_stacked_does_not_panic_on_a_multibyte_boundary() {
+        // 26 ASCII bytes then a 3-byte char starting at byte 26: a byte-27 cut
+        // (the old `&line[..27]` slice) lands mid-char and panics.
+        let before = format!("{}日本語 rest of the line", "a".repeat(26));
+        let after = format!("{}異なる other content here", "a".repeat(26));
+        let result = DiffRenderer::render_stacked(&before, &after);
         assert!(!result.lines.is_empty());
     }
 

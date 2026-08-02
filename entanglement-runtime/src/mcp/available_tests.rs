@@ -264,6 +264,7 @@ async fn enable_already_connected_marks_only() {
         servers,
         enabled: Mutex::new(HashMap::new()),
         secret_env: vec![],
+        connecting: Mutex::new(HashMap::new()),
     };
     let registry: SharedRegistry =
         std::sync::Arc::new(std::sync::RwLock::new(crate::tools::ToolRegistry::new()));
@@ -282,6 +283,57 @@ async fn enable_already_connected_marks_only() {
         .unwrap();
     assert_eq!(tools, vec!["mcp__srv__t".to_string()]);
     assert!(avail.spec_visible("mcp__srv__t", &s));
+}
+
+/// The per-server connect guard (#556) is the same lock for repeated lookups
+/// of the same name, and a distinct one per name — the property
+/// `enable_for_session`'s TOCTOU fix depends on.
+#[test]
+fn connect_guard_is_shared_per_server_name_only() {
+    let avail = AvailableMcp::default();
+    let a1 = avail.connect_guard("srv-a");
+    let a2 = avail.connect_guard("srv-a");
+    let b = avail.connect_guard("srv-b");
+    assert!(std::sync::Arc::ptr_eq(&a1, &a2));
+    assert!(!std::sync::Arc::ptr_eq(&a1, &b));
+}
+
+/// Two concurrent enables of the same not-yet-connected server must not panic
+/// or deadlock (#556 TOCTOU): the per-server guard serializes them, and since
+/// the configured endpoint is unreachable both calls fail, but cleanly and
+/// independently — neither leaves the registry/active map in a partial state.
+#[tokio::test]
+async fn concurrent_enable_of_the_same_server_does_not_panic_or_corrupt_state() {
+    let mut servers = HashMap::new();
+    servers.insert(
+        "srv".to_string(),
+        AvailableServer {
+            // A reserved TEST-NET-1 address that never answers (mirrors
+            // `mcp::mod`'s `unreachable_http_server_is_skipped_not_fatal`).
+            config: user_entry("http://192.0.2.1:1/mcp", Some(McpServerState::Allowed)),
+            key_env: None,
+            provider: None,
+        },
+    );
+    let avail = AvailableMcp {
+        servers,
+        enabled: Mutex::new(HashMap::new()),
+        secret_env: vec![],
+        connecting: Mutex::new(HashMap::new()),
+    };
+    let registry: SharedRegistry =
+        std::sync::Arc::new(std::sync::RwLock::new(crate::tools::ToolRegistry::new()));
+    let active: ActiveServers = std::sync::Arc::new(Mutex::new(HashMap::new()));
+
+    let session_a = SessionId::new("a");
+    let session_b = SessionId::new("b");
+    let (r1, r2) = tokio::join!(
+        enable_for_session(&avail, "srv", &session_a, &registry, &active),
+        enable_for_session(&avail, "srv", &session_b, &registry, &active),
+    );
+    assert!(r1.is_err() && r2.is_err(), "both calls should fail cleanly");
+    assert!(active.lock().unwrap().is_empty());
+    assert!(registry.read().unwrap().is_empty());
 }
 
 /// Transport-exclusive user override: setting `url` clears a bundled

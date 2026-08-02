@@ -21,6 +21,14 @@ use super::jsonrpc_payload;
 /// never sends the response event.
 pub const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Ceiling on the buffered partial line / accumulated event payload (#556): a
+/// server that never completes a line, or emits an unbounded `data:` payload,
+/// must not grow these buffers without bound — the idle timeout above doesn't
+/// help here since it resets on every chunk received, even one that never
+/// completes a line. Mirrors the OAuth loopback reader's `MAX_REQUEST_BYTES`
+/// cap (`mcp/auth/loopback.rs`).
+const MAX_SSE_BUFFER_BYTES: usize = 10 * 1024 * 1024;
+
 /// Drain an SSE body until the JSON-RPC message answering `id` arrives.
 /// `server` names the server in error messages only.
 pub async fn read_sse_response(
@@ -40,27 +48,54 @@ pub async fn read_sse_response(
             Ok(None) => bail!("MCP server `{server}` closed the SSE stream before answering"),
             Err(_) => bail!("MCP server `{server}` SSE stream stalled"),
         };
-        buf.extend_from_slice(&chunk);
-        // An SSE event ends at a blank line; a `data:` field may span lines.
-        while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-            let raw: Vec<u8> = buf.drain(..=nl).collect();
-            let line = String::from_utf8_lossy(&raw[..nl]);
-            let line = line.trim_end_matches('\r');
-            if line.is_empty() {
-                // End of one event: try to resolve it, else reset and continue.
-                if let Some(v) = event_payload(&data, id)? {
-                    return Ok(v);
-                }
-                data.clear();
-            } else if let Some(rest) = line.strip_prefix("data:") {
-                if !data.is_empty() {
-                    data.push('\n');
-                }
-                data.push_str(rest.trim_start());
-            }
-            // Other SSE fields (`event:`, `id:`, comments) are ignored.
+        if let Some(v) = feed_chunk(&mut buf, &chunk, &mut data, id)
+            .with_context(|| format!("server `{server}`"))?
+        {
+            return Ok(v);
         }
     }
+}
+
+/// Fold one network chunk into `buf`/`data`, splitting complete SSE lines out
+/// as they complete and resolving the moment a blank line closes an event
+/// matching `id`. Split out of [`read_sse_response`] so the buffering/cap
+/// logic (#556) is unit-testable without a real network round-trip.
+fn feed_chunk(
+    buf: &mut Vec<u8>,
+    chunk: &[u8],
+    data: &mut String,
+    id: i64,
+) -> Result<Option<Value>> {
+    buf.extend_from_slice(chunk);
+    if buf.len() > MAX_SSE_BUFFER_BYTES {
+        bail!(
+            "SSE stream sent a line exceeding {MAX_SSE_BUFFER_BYTES} bytes with no newline in \
+             sight"
+        );
+    }
+    // An SSE event ends at a blank line; a `data:` field may span lines.
+    while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+        let raw: Vec<u8> = buf.drain(..=nl).collect();
+        let line = String::from_utf8_lossy(&raw[..nl]);
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            // End of one event: try to resolve it, else reset and continue.
+            if let Some(v) = event_payload(data, id)? {
+                return Ok(Some(v));
+            }
+            data.clear();
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(rest.trim_start());
+            if data.len() > MAX_SSE_BUFFER_BYTES {
+                bail!("SSE event payload exceeded {MAX_SSE_BUFFER_BYTES} bytes");
+            }
+        }
+        // Other SSE fields (`event:`, `id:`, comments) are ignored.
+    }
+    Ok(None)
 }
 
 /// Try to resolve one buffered SSE event's `data` payload against our request
@@ -133,5 +168,49 @@ mod tests {
         assert!(is_event_stream(&h));
         h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         assert!(!is_event_stream(&h));
+    }
+
+    /// A chunk with no `\n` at all that pushes the partial-line buffer past
+    /// the cap must error rather than accumulate forever (#556) — the idle
+    /// timeout doesn't catch this since bytes do keep arriving, just never a
+    /// full line.
+    #[test]
+    fn feed_chunk_errors_when_the_partial_line_exceeds_the_cap() {
+        let mut buf = Vec::new();
+        let mut data = String::new();
+        let chunk = vec![b'a'; MAX_SSE_BUFFER_BYTES + 1];
+        let err = feed_chunk(&mut buf, &chunk, &mut data, 1).unwrap_err();
+        assert!(err.to_string().contains("bytes"), "{err}");
+    }
+
+    /// A single `data:` field whose accumulated payload exceeds the cap must
+    /// error, independent of the partial-line cap above (#556).
+    #[test]
+    fn feed_chunk_errors_when_the_data_payload_exceeds_the_cap() {
+        let mut buf = Vec::new();
+        let mut data = String::new();
+        let mut line = b"data:".to_vec();
+        line.extend(vec![b'a'; MAX_SSE_BUFFER_BYTES + 1]);
+        line.push(b'\n');
+        let err = feed_chunk(&mut buf, &line, &mut data, 1).unwrap_err();
+        assert!(err.to_string().contains("bytes"), "{err}");
+    }
+
+    /// Normal operation still resolves a matching event split across two
+    /// chunks — the cap logic must not disturb the happy path.
+    #[test]
+    fn feed_chunk_resolves_a_matching_event_split_across_chunks() {
+        let mut buf = Vec::new();
+        let mut data = String::new();
+        assert!(feed_chunk(
+            &mut buf,
+            b"data: {\"jsonrpc\":\"2.0\",\"id\":1,",
+            &mut data,
+            1
+        )
+        .unwrap()
+        .is_none());
+        let v = feed_chunk(&mut buf, b"\"result\":{\"ok\":true}}\n\n", &mut data, 1).unwrap();
+        assert_eq!(v.unwrap(), json!({ "ok": true }));
     }
 }
