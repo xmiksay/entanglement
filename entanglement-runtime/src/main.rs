@@ -1513,6 +1513,12 @@ async fn main() -> Result<()> {
         }
         Some(Cmd::Tui { session, agent }) => {
             let session_id = SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0));
+            // Subscribe *before* the bootstrap `SetAgent` send below, matching
+            // the "subscribe before send" convention `subagent.rs` follows for
+            // spawned children — otherwise the session task can emit
+            // `SessionStarted`/`AgentChanged` before `tui()` gets around to
+            // subscribing, permanently desyncing the agent badge (#598).
+            let holly_sub = holly.subscribe();
             // CLI `--agent` wins; else the user config's default agent (#172).
             let agent = agent.or_else(|| user_config.agent.clone());
             if let Some(a) = agent {
@@ -1525,6 +1531,7 @@ async fn main() -> Result<()> {
             }
             tui(
                 &holly,
+                holly_sub,
                 session_id,
                 model_info,
                 provider_name,
@@ -1557,6 +1564,9 @@ async fn main() -> Result<()> {
             // - `skutter "<prompt>"` → one implicit `run` turn, as before.
             if cli.prompt.is_empty() {
                 let session_id = SessionId::new_uuid();
+                // Subscribe before the bootstrap `SetAgent` send — see the
+                // matching comment on the `Cmd::Tui` arm above (#598).
+                let holly_sub = holly.subscribe();
                 let agent = user_config.agent.clone();
                 if let Some(ref a) = agent {
                     holly
@@ -1568,6 +1578,7 @@ async fn main() -> Result<()> {
                 }
                 tui(
                     &holly,
+                    holly_sub,
                     session_id,
                     model_info,
                     provider_name,
