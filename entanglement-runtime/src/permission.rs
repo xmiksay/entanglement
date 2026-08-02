@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn spawn_refusal_layers_the_four_checks() {
-        let reg = crate::agents::built_in_registry(); // build/plan (Primary), explore (Subagent)
+        let reg = crate::agents::built_in_registry().expect("built-in agents must parse"); // build/plan (Primary), explore (Subagent)
         let build = reg.get("build").unwrap();
         let explore = reg.get("explore").unwrap();
 
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn spawn_refusal_honors_the_allowlist() {
-        let mut reg = crate::agents::built_in_registry();
+        let mut reg = crate::agents::built_in_registry().expect("built-in agents must parse");
         // A worker leaf (Subagent) plus a second spawnable target.
         reg.insert(masked_profile(
             "worker",

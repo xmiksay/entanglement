@@ -110,7 +110,7 @@ async fn stop_aborted_request_id_is_not_stuck_in_flight_forever() {
     let _executor = spawn_tool_executor(
         &holly,
         reg,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         PermissionProfile::new(Permission::Allow),
     );
 

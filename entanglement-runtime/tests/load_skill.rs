@@ -174,7 +174,7 @@ async fn load_skill_then_read_a_substituted_ref() {
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -252,7 +252,8 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
     // permission (default Deny): `load_skill` is gated exactly like `read`, no
     // exemption (ADR-0037). Using a non-masked profile keeps this focused on the
     // permission path, distinct from the #116 tool mask.
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
         name: "denyskill".into(),
         description: String::new(),

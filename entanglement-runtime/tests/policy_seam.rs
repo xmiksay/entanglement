@@ -131,7 +131,8 @@ fn spawn_with_policy(
             tool_calls: vec![],
         },
     ]);
-    let profiles = entanglement_runtime::agents::built_in_registry();
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>

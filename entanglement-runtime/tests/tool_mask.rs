@@ -81,7 +81,8 @@ fn spawn_with_edit_call() -> Holly {
         }),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve the `SetAgent { agent: "explore" }` below.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -90,7 +91,7 @@ fn spawn_with_edit_call() -> Holly {
     let _executor = spawn_tool_executor(
         &holly,
         reg,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     holly

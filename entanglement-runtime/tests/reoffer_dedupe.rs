@@ -99,7 +99,7 @@ async fn reoffered_tool_exec_runs_only_once() {
     let _executor = spawn_tool_executor(
         &holly,
         reg,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         PermissionProfile::new(Permission::Allow),
     );
 
@@ -179,7 +179,7 @@ async fn resolved_id_can_be_reused_in_a_later_round() {
     let _executor = spawn_tool_executor(
         &holly,
         reg,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         PermissionProfile::new(Permission::Allow),
     );
 

@@ -201,7 +201,7 @@ fn spawn_with_ask_user_call(question: &str) -> Holly {
     let _executor = spawn_tool_executor(
         &holly,
         ToolRegistry::new(),
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         PermissionProfile::new(Permission::Allow),
     );
     holly

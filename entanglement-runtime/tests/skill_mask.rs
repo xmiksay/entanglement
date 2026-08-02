@@ -170,7 +170,8 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
         },
     ]);
 
-    let profiles = entanglement_runtime::agents::built_in_registry();
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>

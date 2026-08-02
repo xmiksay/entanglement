@@ -361,7 +361,7 @@ mod tests {
         // explicitly allowlists `propose_plan` gets the spec. The built-in `plan`
         // profile does (its allowlist lists it); `build` (inherit-all) and
         // `explore` (read trio) do not.
-        let reg = crate::agents::built_in_registry();
+        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
         assert!(
             specs_for(reg.get("build").unwrap()).is_empty(),
             "an inherit-all profile gets no propose_plan spec"

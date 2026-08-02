@@ -110,7 +110,8 @@ fn config(make: impl Fn() -> SpawnPollLlm + Send + Sync + 'static) -> EngineConf
         llm_factory: Arc::new(move || Box::new(make()) as Box<dyn Llm>),
         // Core carries only `build` now (#201); spawn tests target `explore`/`plan`,
         // so the engine needs the full runtime trio.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     }
 }
@@ -265,7 +266,8 @@ async fn two_sub_agents_fan_out_and_both_answers_are_polled() {
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(FanOutLlm) as Box<dyn Llm>),
         // Core carries only `build` now (#201); the spawn targets need the trio.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let profiles = cfg.profiles.clone();
@@ -328,7 +330,8 @@ async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
     // `all`-mode `worker` (both a valid spawn *target* and able to spawn further,
     // #119), so the chain can recurse until the depth cap — not the mode gate —
     // refuses it.
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(all_mode_worker());
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(RecursiveLlm) as Box<dyn Llm>),
@@ -445,7 +448,8 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
     // capability gate ("cannot spawn"), not the mask ("not available"). (The
     // stock `explore` masks the spawn tools too; that path is covered by the
     // `tool_mask` tests.)
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
         name: "explore".into(),
         description: "read-only leaf".into(),
@@ -570,7 +574,8 @@ async fn agent_blocks_and_returns_child_answer_in_one_call() {
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(BlockingAgentLlm) as Box<dyn Llm>),
         // Core carries only `build` now (#201); the spawn targets need the trio.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let profiles = cfg.profiles.clone();
@@ -683,7 +688,8 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
             }) as Box<dyn Llm>
         }),
         // Core carries only `build` now (#201); the spawn target needs the trio.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let profiles = cfg.profiles.clone();
@@ -819,7 +825,8 @@ async fn agent_poll_zero_timeout_blocks_until_completion() {
             Box::new(ZeroTimeoutPollLlm { release: r.clone() }) as Box<dyn Llm>
         }),
         // Core carries only `build` now (#201); the spawn target needs the trio.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let profiles = cfg.profiles.clone();
@@ -991,7 +998,8 @@ async fn spawn_of_a_primary_target_is_refused() {
 async fn spawn_outside_the_allowlist_is_refused() {
     // A `build` scoped to spawn only `explore` tries to spawn `helper` (a valid
     // Subagent target, but off-list) → refused with the reason in the output.
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let mut build = profiles.get("build").unwrap().clone();
     build.spawnable_agents = Some(vec!["explore".into()]);
     profiles.insert(build);
@@ -1021,7 +1029,8 @@ async fn spawn_outside_the_allowlist_is_refused() {
 async fn primary_with_can_spawn_false_cannot_spawn() {
     // `can_spawn: false` on a primary withholds the whole family and refuses a
     // stale call — even for an otherwise-valid target like `explore` (#119).
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let mut build = profiles.get("build").unwrap().clone();
     build.can_spawn = Some(false);
     profiles.insert(build);
@@ -1051,7 +1060,8 @@ fn specs_advertise_the_agent_family_names() {
     // The rename + new blocking tool are reflected in the advertised specs (#120).
     // The family is now per-profile (#119): `spawn_specs_for` scopes the roster +
     // enum to who the spawning profile may target.
-    let reg = entanglement_runtime::agents::built_in_registry();
+    let reg =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let build = reg.get("build").unwrap();
     let specs = entanglement_runtime::subagent::spawn_specs_for(build, &reg);
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
