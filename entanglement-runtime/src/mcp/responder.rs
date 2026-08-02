@@ -47,13 +47,25 @@ pub fn spawn_mcp_responder(
         // shutdown (#545): a `Connect` can hold its own `Holly` clone (`emitter`)
         // for up to five minutes waiting on the user's browser, and aborting
         // *this* task never reaches a child it already spawned via a bare
-        // `tokio::spawn` — only dropping this `JoinSet` does.
-        let mut auth_ops: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+        // `tokio::spawn` — only dropping this `JoinSet` does. Each task
+        // resolves to the server name it ran for, so completion can clear
+        // `in_flight_auth` below (#556).
+        let mut auth_ops: tokio::task::JoinSet<String> = tokio::task::JoinSet::new();
+        // Servers with an auth op currently running (#556): two concurrent
+        // `McpAuth{Connect}` for the same server would otherwise both open a
+        // loopback listener, both start a DCR, and both pop a browser tab —
+        // the later request is dropped instead, not queued or double-run.
+        let mut in_flight_auth: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         loop {
             tokio::select! {
                 // Reap finished auth ops so `auth_ops` doesn't grow unbounded;
                 // guarded so this branch never busy-loops while empty.
-                Some(_) = auth_ops.join_next(), if !auth_ops.is_empty() => {}
+                Some(done) = auth_ops.join_next(), if !auth_ops.is_empty() => {
+                    if let Ok(name) = done {
+                        in_flight_auth.remove(&name);
+                    }
+                }
                 msg = inbound.recv() => {
                     match msg {
                         Ok(InMsg::McpList { correlation_id }) => {
@@ -96,6 +108,19 @@ pub fn spawn_mcp_responder(
                             }
                         }
                         Ok(InMsg::McpAuth { name, action }) => {
+                            // In-flight dedupe (#556): a second `McpAuth` for a
+                            // server already mid-op is dropped rather than
+                            // racing it — two loopback listeners/DCRs/browser
+                            // tabs for the same server would only confuse the
+                            // user and leave one flow's credential save racing
+                            // the other's.
+                            if !in_flight_auth.insert(name.clone()) {
+                                tracing::debug!(
+                                    server = %name,
+                                    "MCP auth op already in flight — ignoring duplicate request"
+                                );
+                                continue;
+                            }
                             // Tracked (not bare-detached, #545): a `Connect`
                             // parks for up to five minutes on the user's
                             // browser, and blocking the responder would stall
@@ -107,6 +132,7 @@ pub fn spawn_mcp_responder(
                             let (registry, active, configs) =
                                 (registry.clone(), active.clone(), configs.clone());
                             let secret_env = secret_env.clone();
+                            let op_name = name.clone();
                             auth_ops.spawn(async move {
                                 run_auth_op(
                                     &emitter,
@@ -118,6 +144,7 @@ pub fn spawn_mcp_responder(
                                     &secret_env,
                                 )
                                 .await;
+                                op_name
                             });
                         }
                         Ok(_) => {}

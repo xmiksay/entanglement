@@ -240,7 +240,7 @@ async fn build_config(
     let tools = tools.shared();
     tools.write().unwrap().register(mcp::McpEnableTool::new(
         mcp_available.clone(),
-        tools.clone(),
+        &tools,
         mcp_active.clone(),
     ));
     cfg.tool_specs = tools.read().unwrap().specs();

@@ -36,6 +36,12 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 /// the model sees, rather than blocking the executor task indefinitely.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Ceiling on one newline-framed line off a server's stdout (#556): a
+/// misbehaving server that never emits a newline must not grow the reader's
+/// buffer without bound — mirrors the OAuth loopback reader's
+/// `MAX_REQUEST_BYTES` cap (`entanglement-provider/src/mcp/auth/loopback.rs`).
+const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
+
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<std::result::Result<Value, String>>>>>;
 
 /// A live JSON-RPC session with one stdio MCP server.
@@ -220,9 +226,9 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(reader).lines();
+        let mut reader = BufReader::new(reader);
         loop {
-            match lines.next_line().await {
+            match read_line_capped(&mut reader, MAX_LINE_BYTES).await {
                 Ok(Some(line)) if line.trim().is_empty() => continue,
                 Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
                     Ok(msg) => route(&msg, &pending),
@@ -241,6 +247,44 @@ where
             let _ = tx.send(Err(format!("MCP server `{server}` closed the connection")));
         }
     });
+}
+
+/// Read one newline-terminated line off `reader`, capped at `max_bytes` total
+/// (#556) — unlike `AsyncBufReadExt::lines()`/`next_line`, which buffer
+/// without limit until a `\n` shows up. A subprocess stream that never emits
+/// one (hung, or spewing binary noise) would otherwise grow the buffer to an
+/// OOM. Returns `Ok(None)` only on a clean EOF with nothing buffered.
+async fn read_line_capped<R>(reader: &mut R, max_bytes: usize) -> Result<Option<String>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        // Copy out of the fill_buf borrow before calling `consume` — the two
+        // can't be held across each other on `&mut reader`.
+        let (chunk, found_newline) = {
+            let available = reader
+                .fill_buf()
+                .await
+                .context("reading MCP server stdout")?;
+            if available.is_empty() {
+                return Ok((!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned()));
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(pos) => (available[..=pos].to_vec(), true),
+                None => (available.to_vec(), false),
+            }
+        };
+        reader.consume(chunk.len());
+        if found_newline {
+            buf.extend_from_slice(&chunk[..chunk.len() - 1]); // drop the trailing `\n`
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+        }
+        buf.extend_from_slice(&chunk);
+        if buf.len() > max_bytes {
+            bail!("MCP server line exceeded the {max_bytes}-byte cap with no newline in sight");
+        }
+    }
 }
 
 /// Route one parsed message: a response (has `id`) resolves its pending oneshot;
@@ -364,6 +408,33 @@ mod tests {
             envs.get("SERVER_TOKEN".as_ref() as &std::ffi::OsStr),
             Some(&Some("abc".into()))
         );
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_reads_a_full_line_and_stops_before_the_next() {
+        let data = std::io::Cursor::new(b"hello world\nsecond line\n".to_vec());
+        let mut reader = BufReader::new(data);
+        let line = read_line_capped(&mut reader, 1024).await.unwrap();
+        assert_eq!(line.as_deref(), Some("hello world"));
+        let line = read_line_capped(&mut reader, 1024).await.unwrap();
+        assert_eq!(line.as_deref(), Some("second line"));
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_returns_none_at_clean_eof() {
+        let data = std::io::Cursor::new(Vec::new());
+        let mut reader = BufReader::new(data);
+        assert!(read_line_capped(&mut reader, 1024).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_errors_past_the_cap_with_no_newline() {
+        // A newline-free stream (a hung/misbehaving server) must error out
+        // rather than growing the buffer forever (#556).
+        let data = std::io::Cursor::new(vec![b'a'; 100]);
+        let mut reader = BufReader::new(data);
+        let err = read_line_capped(&mut reader, 16).await.unwrap_err();
+        assert!(err.to_string().contains("cap"), "{err}");
     }
 
     #[tokio::test]

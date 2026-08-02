@@ -43,7 +43,16 @@ pub async fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Resu
             .accept()
             .await
             .context("accepting the OAuth redirect connection")?;
-        let request = read_request_head(&mut stream).await?;
+        // A stray connection reset/probe reading the request head must not
+        // abort the whole flow (#556) — only a `state` mismatch or an
+        // explicit `error=` from the authorization server does that, below.
+        let request = match read_request_head(&mut stream).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!("OAuth loopback: ignoring a failed request read: {e:#}");
+                continue;
+            }
+        };
         let Some(target) = request_target(&request) else {
             respond(&mut stream, 400, "Bad Request").await;
             continue;
