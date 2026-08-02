@@ -174,6 +174,28 @@ impl AuxModelStore {
             self.aux = read_aux_models(path);
         }
     }
+
+    /// Build an in-memory store from `pins` directly — no file, no env var.
+    /// Lets a caller (e.g. `inspect::aux_models`'s render tests) exercise
+    /// [`get`](Self::get) without mutating the process-global
+    /// `ENTANGLEMENT_AUX_MODELS_FILE` env var, which would race against
+    /// [`crate::aux_llm`]'s own tests under `cargo test`'s parallel threads.
+    #[cfg(test)]
+    pub(crate) fn for_test(pins: &[(Purpose, &str, &str)]) -> Self {
+        let aux = pins
+            .iter()
+            .map(|(p, provider, model)| {
+                (
+                    *p,
+                    AuxModelPin {
+                        provider: provider.to_string(),
+                        model: model.to_string(),
+                    },
+                )
+            })
+            .collect();
+        Self { aux, path: None }
+    }
 }
 
 /// Re-write the managed file at `path` from `aux`. The [`BTreeMap`] keeps the

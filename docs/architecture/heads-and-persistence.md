@@ -78,7 +78,23 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   per-target directives and `trace` are reachable — e.g.
   `RUST_LOG=entanglement_core::host=trace`); absent it, `--verbose` (a **global**
   flag, so it may follow the subcommand) selects `debug`, otherwise `warn`
-  (issue #187, `runtime::logging`).
+  (issue #187, `runtime::logging`). `inspect config` (#172) prints the resolved
+  user config with per-field provenance — every fallback setting in
+  [`config::Config`](../../entanglement-runtime/src/config/mod.rs), including
+  `max_turns`/`idle_ttl_secs`/`auto_compact`/`editor`/`session_retention_days`
+  (#558; `session_retention_days` reports `env (…)` as its source instead of a
+  file layer when `ENTANGLEMENT_SESSION_RETENTION_DAYS` actually won). Four more
+  engine-free CLI-only views round out the managed-file/live-state blind spots
+  (#558, deferred-work-ledger row 10c): `inspect aux-models` prints the
+  persisted `/aux-model` pins (`aux-models.yml`); `inspect mcp-tokens` prints
+  which MCP servers hold a stored OAuth credential (`mcp-tokens.yml`,
+  ADR-0153), redacted — never a token value; `inspect mcp` prints the resolved
+  bundled/available MCP server roster (provider-bundled servers folded with the
+  user `mcp:` map, #542) — which servers auto-connect vs. wait for `/enable`;
+  `inspect session <id>` folds one **root** session's persisted log into its
+  resolved agent/model/name plus its live tool overlay (ADR-0149) — the one
+  piece of session state with no managed file of its own, so it is read
+  straight from the `.jsonl` log rather than re-run load-time discovery.
 - **WebSocket** (`skutter serve`, ✅ #153, `runtime::serve` behind the `serve`
   cargo feature): an axum HTTP server exposing `GET /ws` (plus a `GET /healthz`
   liveness probe), one `subscribe()` fan-out per socket relayed out as JSON text

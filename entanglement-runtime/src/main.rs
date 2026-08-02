@@ -996,6 +996,20 @@ enum InspectCmd {
     /// Print the resolved user config (#172): merged settings with their winning
     /// layer (default < user < project) and the permission ceiling.
     Config,
+    /// Print the persisted per-purpose auxiliary-LLM pins (#558), i.e. the
+    /// `/aux-model` state (`summarize`/`session_title`).
+    AuxModels,
+    /// Print which MCP servers hold a stored OAuth credential (#558), redacted —
+    /// never a token value.
+    McpTokens,
+    /// Print the resolved bundled/available MCP server roster (#558): which
+    /// servers auto-connect at session start vs. wait for `/enable`.
+    Mcp,
+    /// Print one session's resolved live state folded from its persisted log
+    /// (#558) — agent, model, and the per-session tool overlay (ADR-0149),
+    /// which has no managed file of its own. Takes a **root** session id (see
+    /// `skutter sessions`).
+    Session { id: String },
 }
 
 /// Whether this invocation runs the TUI as its head — either the explicit
@@ -1094,6 +1108,10 @@ async fn main() -> Result<()> {
                 inspect::inspect_skills(&cwd, name.as_deref(), *disclosures)
             }
             InspectCmd::Config => inspect::inspect_config(&cwd),
+            InspectCmd::AuxModels => inspect::inspect_aux_models(),
+            InspectCmd::McpTokens => inspect::inspect_mcp_tokens(),
+            InspectCmd::Mcp => inspect::inspect_mcp(&cwd),
+            InspectCmd::Session { id } => inspect::inspect_session(&cwd, id),
         };
     }
 
