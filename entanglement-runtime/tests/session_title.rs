@@ -74,8 +74,15 @@ impl Llm for GatedLlm {
 }
 
 /// An `AuxLlmRegistry` with no persisted pin (so `resolve()` always falls
-/// back to the primary factory) wired to `factory`.
-fn registry_with_primary(label: &str, factory: LlmFactory) -> AuxLlmRegistry {
+/// back to the primary factory) wired to `factory`. `primary_concurrency` is
+/// the cap `concurrency_cap` reports for the no-pin fallback (#589) — `None`
+/// in the racing/resume tests below (irrelevant there), `Some(1)` in the
+/// deferral test to simulate a contended model.
+fn registry_with_primary(
+    label: &str,
+    factory: LlmFactory,
+    primary_concurrency: Option<usize>,
+) -> AuxLlmRegistry {
     let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let path = std::env::temp_dir().join(format!(
         "entanglement-session-title-it-{label}-{}.yml",
@@ -93,7 +100,13 @@ fn registry_with_primary(label: &str, factory: LlmFactory) -> AuxLlmRegistry {
     let resolver: ModelResolver = Arc::new(|_u: Option<&UserId>, _p: &str, _m: &str| {
         Err::<ResolvedModel, String>("no catalog in this test".to_string())
     });
-    AuxLlmRegistry::new(store, resolver, factory)
+    AuxLlmRegistry::new(
+        store,
+        resolver,
+        factory,
+        entanglement_provider::Catalog { providers: vec![] },
+        primary_concurrency,
+    )
 }
 
 /// Issue #553, scenario 1: `/name` racing the generator. The generator's aux
@@ -116,7 +129,7 @@ async fn a_racing_name_survives_the_generators_late_write() {
             }) as Box<dyn Llm>
         })
     };
-    let registry = registry_with_primary("race", factory);
+    let registry = registry_with_primary("race", factory, None);
 
     let holly = Holly::spawn(EngineConfig::default());
     let handle = spawn_session_title_generator(&holly, registry);
@@ -178,7 +191,7 @@ async fn a_resumed_named_session_is_never_retitled() {
             }) as Box<dyn Llm>
         })
     };
-    let registry = registry_with_primary("resume", factory);
+    let registry = registry_with_primary("resume", factory, None);
 
     let holly = Holly::spawn(EngineConfig::default());
     let handle = spawn_session_title_generator(&holly, registry);
@@ -221,5 +234,89 @@ async fn a_resumed_named_session_is_never_retitled() {
 
     // Unblock the (unreached) gate defensively, then confirm the name held.
     proceed.notify_one();
+    handle.abort();
+}
+
+/// Issue #589: when the primary model's effective concurrency cap is 1 (a
+/// contended model, e.g. z.ai's glm-4.7-flash), the generator must not fire
+/// its aux call while the main turn's own request is still in flight — that
+/// would just have it queue behind the main turn's request for the model's
+/// one permit. It must instead wait for the main turn to settle (`Done`) and
+/// only then call the aux LLM.
+#[tokio::test]
+async fn a_contended_primary_model_defers_the_aux_call_until_the_turn_settles() {
+    let aux_entered = Arc::new(Notify::new());
+    let aux_proceed = Arc::new(Notify::new());
+    let aux_factory: LlmFactory = {
+        let aux_entered = aux_entered.clone();
+        let aux_proceed = aux_proceed.clone();
+        Arc::new(move || {
+            Box::new(GatedLlm {
+                entered: aux_entered.clone(),
+                proceed: aux_proceed.clone(),
+                title: "Generated Title".to_string(),
+            }) as Box<dyn Llm>
+        })
+    };
+    // `Some(1)`: simulates a primary model with a single in-flight permit, so
+    // the generator's contention guard treats firing alongside the main turn
+    // as guaranteed contention.
+    let registry = registry_with_primary("contended", aux_factory, Some(1));
+
+    let primary_entered = Arc::new(Notify::new());
+    let primary_proceed = Arc::new(Notify::new());
+    let primary_factory: LlmFactory = {
+        let primary_entered = primary_entered.clone();
+        let primary_proceed = primary_proceed.clone();
+        Arc::new(move || {
+            Box::new(GatedLlm {
+                entered: primary_entered.clone(),
+                proceed: primary_proceed.clone(),
+                title: "ok".to_string(),
+            }) as Box<dyn Llm>
+        })
+    };
+    let holly = Holly::spawn(EngineConfig {
+        llm_factory: primary_factory,
+        ..EngineConfig::default()
+    });
+    let handle = spawn_session_title_generator(&holly, registry);
+    tokio::task::yield_now().await;
+    let mut sub = holly.subscribe();
+    let sid = SessionId::new("s1");
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "fix the login bug"))
+        .await
+        .unwrap();
+
+    // The main turn's own request reaches the primary model first...
+    primary_entered.notified().await;
+    // ...and the aux call must NOT have fired yet.
+    let aux_entered_early =
+        tokio::time::timeout(Duration::from_millis(300), aux_entered.notified())
+            .await
+            .is_ok();
+    assert!(
+        !aux_entered_early,
+        "the aux call must be deferred while the main turn is still in flight"
+    );
+
+    // Let the main turn finish — it emits `Done`, releasing the deferral.
+    primary_proceed.notify_one();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == sid),
+    )
+    .await;
+
+    // Now the aux call fires.
+    tokio::time::timeout(Duration::from_secs(1), aux_entered.notified())
+        .await
+        .expect("the aux call must fire once the main turn has settled");
+    aux_proceed.notify_one();
+    let ev = recv_until(&mut sub, is_meta_changed).await;
+    assert_eq!(meta_name(&ev).as_deref(), Some("Generated Title"));
+
     handle.abort();
 }

@@ -283,6 +283,18 @@ impl Catalog {
         })
     }
 
+    /// One-shot snapshot of the effective per-model in-flight cap: `model`'s
+    /// own `concurrency`, else its provider's endpoint-wide `concurrency`,
+    /// else `None` (falls back to the client default). Unlike
+    /// [`model_concurrency_resolver`], not a resolver closure for a live
+    /// client — for a caller (#589's aux-LLM registry) judging contention risk
+    /// against a `(provider, model)` pair already in hand.
+    pub fn effective_concurrency(&self, provider: &str, model: &str) -> Option<usize> {
+        self.model(provider, model)
+            .and_then(|m| m.concurrency)
+            .or_else(|| self.provider(provider).and_then(|p| p.concurrency))
+    }
+
     /// Find a model by id across *all* providers (the model picker only carries
     /// the id, not which provider it came from).
     pub fn model_by_id(&self, id: &str) -> Option<&ModelEntry> {
@@ -710,6 +722,23 @@ mod tests {
         // A model with no documented per-model tier stays unset — falls back to
         // the provider/client cap rather than an invented guess.
         assert_eq!(c.model("zai", "glm-4.7").unwrap().concurrency, None);
+    }
+
+    #[test]
+    fn effective_concurrency_prefers_model_then_provider_then_unset() {
+        // #589: a caller judging contention risk (the aux-LLM registry) wants
+        // one snapshot number, not the model/provider fallback chain spelled
+        // out at every call site.
+        let c = Catalog::builtin();
+        // glm-4.7-flash carries its own tight tier — wins over zai's provider
+        // cap of 5.
+        assert_eq!(c.effective_concurrency("zai", "glm-4.7-flash"), Some(1));
+        // glm-4.7 has no model-level cap — falls back to the provider's.
+        assert_eq!(c.effective_concurrency("zai", "glm-4.7"), Some(5));
+        // An unknown model on a known provider still falls back to that
+        // provider's endpoint cap — only an unknown provider is uncapped.
+        assert_eq!(c.effective_concurrency("zai", "no-such-model"), Some(5));
+        assert_eq!(c.effective_concurrency("no-such-provider", "x"), None);
     }
 
     #[test]

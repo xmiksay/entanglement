@@ -354,7 +354,15 @@ transformation). Two consumers reach it by deliberately different routes:
   in-process titled-set, so an already-named resumed session skips the aux
   call on its next prompt too, not just the write. It has no session backend
   to fall back to, so it calls `AuxLlmRegistry::resolve` directly and an unset
-  pin yields the primary model.
+  pin yields the primary model. It fires **concurrently** with the main turn
+  by default — except when `AuxLlmRegistry::concurrency_cap(SessionTitle)`
+  reports the resolved model's effective per-model cap
+  ([ADR-0140](../adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md))
+  at 1 or below ([ADR-0158](../adr/0158-defer-session-title-aux-call-under-contended-primary-concurrency.md),
+  #589): with only one permit, the main turn's own request is guaranteed to
+  hold it first, so the generator instead waits for that session's first
+  `Done`/`Error` (bounded, 300s safety net) before making its aux call,
+  sequencing the two instead of racing for a permit neither can win early.
 - **Session compaction** runs *inside core*, which reaches the pin through the
   `EngineConfig::aux_llm_resolver` seam built by `AuxLlmRegistry::resolver`
   (see the engine doc's *Auxiliary models* section): there `None` means "use

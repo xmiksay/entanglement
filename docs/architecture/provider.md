@@ -316,6 +316,15 @@ cool-down and pacing gate stay shared across every model on the endpoint
 (v1) — a 429 still parks the whole endpoint regardless of which model
 triggered it.
 
+`Catalog::effective_concurrency(provider, model)` is the one-shot sibling of
+`model_concurrency_resolver` (#589): a plain `Option<usize>` snapshot (model's
+own cap, else its provider's) for a caller that isn't building a live client
+and just wants to judge a `(provider, model)` pair's cap once — the runtime's
+`AuxLlmRegistry` uses it to decide whether firing an aux call alongside a
+primary-model call risks contending for the same permit (see the *Per-purpose
+auxiliary models* section of the [heads & persistence
+doc](heads-and-persistence.md), [ADR-0158](../adr/0158-defer-session-title-aux-call-under-contended-primary-concurrency.md)).
+
 **Timeouts — connect + idle-gap, not whole-request** (#241): the shared
 `reqwest::Client` is built with `connect_timeout` only (30s to establish TCP+TLS).
 A fixed whole-request `.timeout()` would abort a long *healthy* LLM stream

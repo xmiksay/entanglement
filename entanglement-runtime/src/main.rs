@@ -1258,7 +1258,12 @@ async fn main() -> Result<()> {
     // The registry reuses the same catalog resolver the engine calls on
     // `SetModel` (capturing the warm per-endpoint pool) + the primary
     // `LlmFactory` as the no-pin fallback, so an unset purpose is byte-identical
-    // to "use the main model".
+    // to "use the main model". The catalog + the primary model's own effective
+    // concurrency cap (#589) back `AuxLlmRegistry::concurrency_cap`, so a caller
+    // firing an aux call alongside a live primary-turn call (the session-title
+    // generator) can tell whether it would contend for the same per-model
+    // permit before doing so.
+    let primary_concurrency = catalog.effective_concurrency(&provider_name, &model_info.id);
     let aux_registry = entanglement_runtime::aux_llm::AuxLlmRegistry::new(
         live_aux_models.clone(),
         build_model_resolver(
@@ -1267,6 +1272,8 @@ async fn main() -> Result<()> {
             web_search_config(&user_config),
         ),
         engine_config.llm_factory.clone(),
+        catalog.clone(),
+        primary_concurrency,
     );
     // Route session compaction (both `/compact` and the auto-summarize overflow
     // path) through the `summarize` pin when one is set — core calls this with
