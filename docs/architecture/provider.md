@@ -79,6 +79,15 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   `anthropic/{mod,request,sse}.rs` (#481)
   the same way as `openai/` — `mod.rs` additionally owns the `pause_turn`
   continuation loop (below).
+- **Explicit `cache_control` breakpoints** (#566) — Anthropic caching is opt-in
+  per content block, unlike z.ai/OpenAI-compat's implicit whole-prefix caching;
+  without a marker every round re-bills the full system + tool schemas + growing
+  history at the uncached rate. `anthropic::request::build_body` places the
+  standard three: the last `system` block (also covers the `tools` array before
+  it in the fixed tools → system → messages render order), the last `tools`
+  entry, and the last content block of the second-to-last `user`-role message
+  (`place_history_breakpoint`) — the final turn is left unmarked since it's the
+  one most likely to still change on a steered/edited retry.
 - `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
   [ADR-0085](../adr/0085-gemini-native-wire-and-opaque-provider-meta.md)): the
   compat endpoint drops `thoughtSignature`, the opaque per-call token a 2.5

@@ -39,6 +39,7 @@ pub mod bash_live;
 pub mod cancel;
 pub mod config;
 mod date;
+pub mod env_date;
 pub mod extra_roots;
 pub mod file_change;
 pub mod frontmatter;

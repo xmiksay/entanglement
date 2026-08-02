@@ -22,8 +22,8 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, bash_live, config, extra_roots, history, host, inspect, logging, mcp,
-    permission_path, persistence, plan_tasks, policy, propose_plan, session_store, skills,
+    agents, ask_user, bash_live, config, env_date, extra_roots, history, host, inspect, logging,
+    mcp, permission_path, persistence, plan_tasks, policy, propose_plan, session_store, skills,
     subagent, system_prompt, throttle, tool_names, tool_runner, watch, SharedRegistry,
     ToolRegistry,
 };
@@ -1186,6 +1186,11 @@ async fn main() -> Result<()> {
     engine_config.generation_resolver = Some(
         config::agent_generation::AgentGenerationStore::resolver(live_agent_generation.clone()),
     );
+    // Keep the baked `<env>` date accurate across a long-lived process (#566):
+    // consulted once per turn, a no-op (falls back to the byte-stable baked
+    // prompt) except on the one turn where the calendar date has actually
+    // rolled over.
+    engine_config.system_prompt_resolver = Some(env_date::date_resolver());
     // Per-purpose aux-model pins (Issue 5): a managed `aux-models.yml` sibling
     // of `agent-models.yml`, consulted by the `AuxLlmRegistry` to route a side
     // transformation (session-title generation today; compaction summary once
@@ -1242,6 +1247,12 @@ async fn main() -> Result<()> {
                 .filter(|s| s.name != "read_raw" && avail.spec_visible(&s.name, session))
                 .collect();
             specs.extend(runtime_owned_specs.iter().cloned());
+            // Sorted by name (#566): `specs()` is already sorted, but appending
+            // the runtime-owned pseudo-tools after it reintroduces an unsorted
+            // tail — re-sort so the whole array handed to the model (and thus
+            // the provider's cached `tools` prefix) has one stable order,
+            // independent of registration order and stable across restarts.
+            specs.sort_by(|a, b| a.name.cmp(&b.name));
             specs
         }));
     }

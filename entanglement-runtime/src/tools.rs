@@ -149,11 +149,22 @@ impl ToolRegistry {
     /// Specs advertised to the model (for the `tools` field of an LLM request).
     /// Each carries the tool's [`Tool::schema`] so the model sees the real
     /// `input_schema`, not an empty object.
+    ///
+    /// Sorted by name (#566): the backing `HashMap` has no stable iteration
+    /// order, so an unsorted list reshuffles on every registry mutation (MCP
+    /// add/remove, live bash enable, a tool overlay) — busting a provider's
+    /// cached prefix for the *entire* tools array instead of appending, and
+    /// differing across process restarts so a resumed session inside the
+    /// cache TTL never re-hits. A stable name order keeps unrelated
+    /// registrations from perturbing the tools already advertised.
     pub fn specs(&self) -> Vec<ToolSpec> {
-        self.tools
+        let mut specs: Vec<ToolSpec> = self
+            .tools
             .values()
             .map(|t| ToolSpec::with_schema(t.name(), t.description(), t.schema()))
-            .collect()
+            .collect();
+        specs.sort_by(|a, b| a.name.cmp(&b.name));
+        specs
     }
 
     /// Execute a model-requested [`ToolCall`] for a given session, returning the
@@ -353,6 +364,31 @@ mod tests {
             specs[0].schema,
             serde_json::json!({"type":"object","properties":{}})
         );
+    }
+
+    #[test]
+    fn specs_are_sorted_by_name_regardless_of_registration_order() {
+        // #566: the registry is a HashMap with no stable iteration order — a
+        // request-body cache breakpoint on the `tools` array only survives a
+        // registry mutation (MCP add/remove, live bash enable) if unrelated
+        // tools keep the same relative order, so `specs()` must sort.
+        struct Named(&'static str);
+        #[async_trait]
+        impl Tool for Named {
+            fn name(&self) -> Cow<'static, str> {
+                Cow::Borrowed(self.0)
+            }
+            async fn run(&self, _input: &str) -> anyhow::Result<String> {
+                Ok(String::new())
+            }
+        }
+
+        let mut reg = ToolRegistry::new();
+        for name in ["write", "bash", "read", "glob", "edit"] {
+            reg.register(Named(name));
+        }
+        let names: Vec<String> = reg.specs().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, vec!["bash", "edit", "glob", "read", "write"]);
     }
 
     #[test]

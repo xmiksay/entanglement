@@ -715,7 +715,13 @@ below realize one model:
   so sub-agent turns resolve against **that child's** profile (per-profile prompts
   keep working) and a resolver can compose off `profile.system_prompt` rather than
   only replace it. Sibling of the `tool_spec_resolver` seam (ADR-0076) — sync `Fn`,
-  same embedder-owned snapshot-cache pattern; no protocol/wire change.
+  same embedder-owned snapshot-cache pattern; no protocol/wire change. The
+  runtime wires this seam itself (#566) to keep the env block's baked `Date:`
+  line accurate: `entanglement_runtime::env_date::date_resolver()` patches just
+  that line to today's date and returns `None` — falling back to the unmodified
+  baked prompt — whenever the date hasn't actually changed, so the prompt stays
+  byte-identical, and therefore provider-cache-safe, for as long as it's
+  accurate.
 - **Skill discovery + registry (✅ #114, [ADR-0036](../adr/0036-skill-discovery-and-registry.md)):**
   tier 1 of progressive disclosure. A **skill** is a directory with a `SKILL.md`
   (YAML frontmatter + markdown body) plus optional supporting files
