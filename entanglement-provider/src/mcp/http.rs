@@ -181,7 +181,10 @@ impl McpHttpClient {
             .and_then(Value::as_str)
             .unwrap_or(PROTOCOL_VERSION)
             .to_string();
-        *self.protocol_version.lock().unwrap() = Some(negotiated);
+        *self
+            .protocol_version
+            .lock()
+            .expect("MCP protocol-version mutex poisoned") = Some(negotiated);
         self.notify("notifications/initialized", json!({})).await?;
         Ok(())
     }
@@ -297,12 +300,22 @@ impl McpHttpClient {
                 .context("building the MCP bearer header")?;
             headers.insert(AUTHORIZATION, value);
         }
-        if let Some(v) = self.protocol_version.lock().unwrap().clone() {
+        if let Some(v) = self
+            .protocol_version
+            .lock()
+            .expect("MCP protocol-version mutex poisoned")
+            .clone()
+        {
             let value =
                 HeaderValue::from_str(&v).context("building the MCP-Protocol-Version header")?;
             headers.insert(PROTOCOL_HEADER, value);
         }
-        if let Some(sid) = self.session_id.lock().unwrap().clone() {
+        if let Some(sid) = self
+            .session_id
+            .lock()
+            .expect("MCP session-id mutex poisoned")
+            .clone()
+        {
             let value =
                 HeaderValue::from_str(&sid).context("building the Mcp-Session-Id header")?;
             headers.insert(SESSION_HEADER, value);
@@ -352,7 +365,10 @@ impl McpHttpClient {
     /// Record the `Mcp-Session-Id` the server issues (typically on `initialize`).
     fn capture_session_id(&self, headers: &HeaderMap) {
         if let Some(sid) = headers.get(SESSION_HEADER).and_then(|v| v.to_str().ok()) {
-            *self.session_id.lock().unwrap() = Some(sid.to_string());
+            *self
+                .session_id
+                .lock()
+                .expect("MCP session-id mutex poisoned") = Some(sid.to_string());
         }
     }
 }

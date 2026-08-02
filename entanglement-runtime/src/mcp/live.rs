@@ -74,27 +74,35 @@ pub async fn mcp_add(
     if cfg.disabled {
         bail!("cannot live-add a disabled MCP server `{name}` — omit `disabled` or set it false");
     }
-    if let Some(existing) = configs.lock().unwrap().get(&name).cloned() {
+    if let Some(existing) = configs
+        .lock()
+        .expect("MCP server-config mutex poisoned")
+        .get(&name)
+        .cloned()
+    {
         carry_forward_unspecified_fields(&mut cfg, &existing, &name);
     }
     let (client, defs) = connect_client(&name, &cfg, secret_env, http, None).await?;
     let prefix = format!("mcp__{name}__");
     let tools = {
-        let mut reg = registry.write().unwrap();
+        let mut reg = registry.write().expect("tool registry lock poisoned");
         reg.unregister_prefix(&prefix);
         register_tools(&mut reg, &client, &name, defs)
     };
     let transport = transport_label(&cfg);
-    active.lock().unwrap().insert(
-        name.clone(),
-        ActiveServer {
-            client,
-            tools: tools.clone(),
-            transport,
-        },
-    );
+    active
+        .lock()
+        .expect("MCP active-server mutex poisoned")
+        .insert(
+            name.clone(),
+            ActiveServer {
+                client,
+                tools: tools.clone(),
+                transport,
+            },
+        );
     {
-        let mut all = configs.lock().unwrap();
+        let mut all = configs.lock().expect("MCP server-config mutex poisoned");
         all.insert(name.clone(), cfg);
         crate::config::save_mcp(&all)?;
     }
@@ -152,19 +160,22 @@ pub async fn mcp_reconnect(
     let (client, defs) = connect_client(name, cfg, secret_env, http, None).await?;
     let prefix = format!("mcp__{name}__");
     let tools = {
-        let mut reg = registry.write().unwrap();
+        let mut reg = registry.write().expect("tool registry lock poisoned");
         reg.unregister_prefix(&prefix);
         register_tools(&mut reg, &client, name, defs)
     };
     let transport = transport_label(cfg);
-    active.lock().unwrap().insert(
-        name.to_string(),
-        ActiveServer {
-            client,
-            tools: tools.clone(),
-            transport,
-        },
-    );
+    active
+        .lock()
+        .expect("MCP active-server mutex poisoned")
+        .insert(
+            name.to_string(),
+            ActiveServer {
+                client,
+                tools: tools.clone(),
+                transport,
+            },
+        );
     tracing::info!("MCP server `{name}`: reconnected, {} tool(s)", tools.len());
     Ok(tools)
 }
@@ -180,9 +191,12 @@ pub fn mcp_disconnect_only(
 ) -> Result<()> {
     registry
         .write()
-        .unwrap()
+        .expect("tool registry lock poisoned")
         .unregister_prefix(&format!("mcp__{name}__"));
-    active.lock().unwrap().remove(name);
+    active
+        .lock()
+        .expect("MCP active-server mutex poisoned")
+        .remove(name);
     Ok(())
 }
 
@@ -200,10 +214,13 @@ pub fn mcp_remove(
 ) -> Result<()> {
     registry
         .write()
-        .unwrap()
+        .expect("tool registry lock poisoned")
         .unregister_prefix(&format!("mcp__{name}__"));
-    active.lock().unwrap().remove(name);
-    let mut all = configs.lock().unwrap();
+    active
+        .lock()
+        .expect("MCP active-server mutex poisoned")
+        .remove(name);
+    let mut all = configs.lock().expect("MCP server-config mutex poisoned");
     if all.remove(name).is_none() {
         bail!("no MCP server named `{name}` in the configuration");
     }
@@ -215,7 +232,7 @@ pub fn mcp_remove(
 /// Enumerate every currently-connected server, sorted by name for stable
 /// output.
 pub fn mcp_list(active: &ActiveServers) -> Vec<entanglement_core::McpServerStatus> {
-    let active = active.lock().unwrap();
+    let active = active.lock().expect("MCP active-server mutex poisoned");
     let mut list: Vec<entanglement_core::McpServerStatus> = active
         .iter()
         .map(|(name, server)| entanglement_core::McpServerStatus {

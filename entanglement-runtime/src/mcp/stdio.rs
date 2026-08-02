@@ -180,10 +180,16 @@ impl StdioClient {
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending
+            .lock()
+            .expect("MCP pending-requests mutex poisoned")
+            .insert(id, tx);
         let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         if let Err(e) = self.write_line(&frame).await {
-            self.pending.lock().unwrap().remove(&id);
+            self.pending
+                .lock()
+                .expect("MCP pending-requests mutex poisoned")
+                .remove(&id);
             return Err(e);
         }
         match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
@@ -193,7 +199,10 @@ impl StdioClient {
             // with an explanatory error on EOF, so this is the rare torn case.
             Ok(Err(_)) => bail!("MCP server `{}` closed before answering", self.server),
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending
+                    .lock()
+                    .expect("MCP pending-requests mutex poisoned")
+                    .remove(&id);
                 bail!("MCP server `{}` timed out on `{method}`", self.server)
             }
         }
@@ -242,7 +251,11 @@ where
             }
         }
         // EOF/error: fail everything still waiting rather than leak parked turns.
-        let drained: Vec<_> = pending.lock().unwrap().drain().collect();
+        let drained: Vec<_> = pending
+            .lock()
+            .expect("MCP pending-requests mutex poisoned")
+            .drain()
+            .collect();
         for (_, tx) in drained {
             let _ = tx.send(Err(format!("MCP server `{server}` closed the connection")));
         }
@@ -293,7 +306,11 @@ fn route(msg: &Value, pending: &Pending) {
     let Some(id) = msg.get("id").and_then(Value::as_i64) else {
         return; // notification
     };
-    let Some(tx) = pending.lock().unwrap().remove(&id) else {
+    let Some(tx) = pending
+        .lock()
+        .expect("MCP pending-requests mutex poisoned")
+        .remove(&id)
+    else {
         return; // unknown / already-timed-out id
     };
     let _ = tx.send(super::client::jsonrpc_payload(msg));

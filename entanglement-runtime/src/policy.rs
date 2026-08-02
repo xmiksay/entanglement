@@ -157,7 +157,7 @@ impl PermissionResolver for ProfileResolver {
                 workdir.as_deref(),
             ),
             None => {
-                let active = self.active.lock().unwrap();
+                let active = self.active.lock().expect("active-profile mutex poisoned");
                 permission_for(&active, session, tool, arg.as_deref(), workdir.as_deref())
             }
         };
@@ -242,13 +242,13 @@ pub(crate) fn resolve_sandbox(
 ) -> SandboxPolicy {
     let own = own
         .lock()
-        .unwrap()
+        .expect("sandbox-own mutex poisoned")
         .get(session)
         .copied()
         .unwrap_or(default_policy);
     let floor = floor
         .lock()
-        .unwrap()
+        .expect("sandbox-floor mutex poisoned")
         .get(session)
         .copied()
         .unwrap_or_else(SandboxPolicy::none);
@@ -268,7 +268,7 @@ pub(crate) fn record_own_sandbox(
     profile_sandbox: Option<&str>,
     default_policy: SandboxPolicy,
 ) {
-    own.lock().unwrap().insert(
+    own.lock().expect("sandbox-own mutex poisoned").insert(
         session.clone(),
         default_policy.resolve_profile_override(profile_sandbox),
     );
@@ -293,7 +293,10 @@ pub(crate) fn record_session_sandbox(
     let parent_floor = parent
         .map(|p| resolve_sandbox(own, floor, p, default_policy))
         .unwrap_or_else(SandboxPolicy::none);
-    floor.lock().unwrap().insert(session.clone(), parent_floor);
+    floor
+        .lock()
+        .expect("sandbox-floor mutex poisoned")
+        .insert(session.clone(), parent_floor);
 }
 
 /// Bundled per-process sandbox state (#479, ADR-0104 amendment): the shared
@@ -355,18 +358,22 @@ impl DefaultGrantStore {
         }
     }
 
+    fn grants(&self) -> std::sync::MutexGuard<'_, FileGrantStore> {
+        self.inner.lock().expect("grants mutex poisoned")
+    }
+
     /// Re-read the persisted `Always` grants from disk (#329) — the watcher's
     /// hook for picking up a grant another skutter instance recorded, without
     /// disturbing this process's in-memory `Session`-scoped grants.
     pub fn reload(&self) {
-        self.inner.lock().unwrap().reload();
+        self.grants().reload();
     }
 }
 
 #[async_trait]
 impl GrantStore for DefaultGrantStore {
     fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>) -> bool {
-        self.inner.lock().unwrap().is_granted(session, tool, arg)
+        self.grants().is_granted(session, tool, arg)
     }
 
     async fn record(
@@ -376,15 +383,15 @@ impl GrantStore for DefaultGrantStore {
         arg: Option<&str>,
         scope: ApprovalScope,
     ) {
-        self.inner.lock().unwrap().record(session, tool, arg, scope);
+        self.grants().record(session, tool, arg, scope);
     }
 
     fn forget_session(&self, session: &SessionId) {
-        self.inner.lock().unwrap().forget_session(session);
+        self.grants().forget_session(session);
     }
 
     fn grant_session_dir(&self, session: &SessionId, dir: &str) -> String {
-        self.inner.lock().unwrap().grant_session_dir(session, dir)
+        self.grants().grant_session_dir(session, dir)
     }
 }
 
