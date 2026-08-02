@@ -131,7 +131,7 @@ async fn update_tasks_allow_emits_tasklist_and_acks() {
     let holly = spawn_calling(
         "update_tasks",
         r#"{"content":"- [x] a\n- [ ] b"}"#,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
     );
     let sid = SessionId::new("s1");
     let events = collect_until_done(&holly, &sid, None).await;
@@ -161,7 +161,7 @@ async fn read_only_explore_cannot_mutate_tasks_via_mask() {
     let holly = spawn_calling(
         "update_tasks",
         r#"{"content":"- [ ] sneaky"}"#,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
     );
     let sid = SessionId::new("s1");
     let events = collect_until_done(&holly, &sid, Some("explore")).await;
@@ -187,7 +187,8 @@ async fn permission_deny_closes_task_mutation() {
     // The ordinary permission path also gates it: an inherit-all profile that
     // *denies* `update_tasks` refuses the call (no mask involved) — the #175 fix
     // as a permission-profile entry.
-    let mut reg = entanglement_runtime::agents::built_in_registry();
+    let mut reg =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     reg.insert(perm_profile(
         "locked",
         PermissionProfile::new(Permission::Allow).with("update_tasks", Permission::Deny),

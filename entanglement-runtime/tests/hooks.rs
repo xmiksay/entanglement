@@ -123,7 +123,7 @@ fn engine(
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: built_in_registry(),
+        profiles: built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     (Holly::spawn(cfg), tools)
@@ -167,8 +167,13 @@ async fn pre_tool_use_hook_blocks_the_tool() {
         pre_tool_use: vec![spec("echo policy-veto >&2; exit 1")],
         ..Default::default()
     };
-    let _exec =
-        spawn_tool_executor_with_hooks(&holly, tools, built_in_registry(), allow_all(), hooks);
+    let _exec = spawn_tool_executor_with_hooks(
+        &holly,
+        tools,
+        built_in_registry().expect("built-in agents must parse"),
+        allow_all(),
+        hooks,
+    );
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -204,8 +209,13 @@ async fn pre_tool_use_hook_exit_zero_lets_the_tool_run() {
         pre_tool_use: vec![spec("exit 0")],
         ..Default::default()
     };
-    let _exec =
-        spawn_tool_executor_with_hooks(&holly, tools, built_in_registry(), allow_all(), hooks);
+    let _exec = spawn_tool_executor_with_hooks(
+        &holly,
+        tools,
+        built_in_registry().expect("built-in agents must parse"),
+        allow_all(),
+        hooks,
+    );
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -233,8 +243,13 @@ async fn post_tool_use_hook_runs_after_a_cleared_tool() {
         post_tool_use: vec![spec(&format!("touch {}", marker.display()))],
         ..Default::default()
     };
-    let _exec =
-        spawn_tool_executor_with_hooks(&holly, tools, built_in_registry(), allow_all(), hooks);
+    let _exec = spawn_tool_executor_with_hooks(
+        &holly,
+        tools,
+        built_in_registry().expect("built-in agents must parse"),
+        allow_all(),
+        hooks,
+    );
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -273,8 +288,13 @@ async fn user_prompt_submit_hook_fires_on_prompt() {
         user_prompt_submit: vec![spec(&format!("cat > {}", out.display()))],
         ..Default::default()
     };
-    let _exec =
-        spawn_tool_executor_with_hooks(&holly, tools, built_in_registry(), allow_all(), hooks);
+    let _exec = spawn_tool_executor_with_hooks(
+        &holly,
+        tools,
+        built_in_registry().expect("built-in agents must parse"),
+        allow_all(),
+        hooks,
+    );
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();

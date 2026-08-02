@@ -254,7 +254,8 @@ fn spawn_with_rhai_escape(
 /// A single primary profile with a caller-shaped permission, advertising every
 /// tool (no mask) so binding behavior is decided by permission alone.
 fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
         name: name.into(),
         description: String::new(),
@@ -792,7 +793,8 @@ async fn call_binding_denied_surfaces_as_catchable_script_error() {
 #[tokio::test]
 async fn call_binding_masked_when_omitted_from_profile_tools() {
     let dir = TempDir::new("call-masked");
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
         name: "readonly".into(),
         description: String::new(),
@@ -1106,7 +1108,8 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         },
     ]);
 
-    let profiles = entanglement_runtime::agents::built_in_registry();
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>

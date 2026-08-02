@@ -79,7 +79,7 @@ fn spawn_with_ask_user_call(input: &str) -> Holly {
     let _executor = spawn_tool_executor(
         &holly,
         ToolRegistry::new(),
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     holly
@@ -249,7 +249,7 @@ async fn list_questions_returns_nothing_when_none_are_open() {
     let _executor = spawn_tool_executor(
         &holly,
         ToolRegistry::new(),
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let mut sub = holly.subscribe();

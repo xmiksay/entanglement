@@ -116,7 +116,8 @@ async fn read_tool_runs_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -125,7 +126,7 @@ async fn read_tool_runs_through_engine_under_build_profile() {
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -190,7 +191,8 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -199,7 +201,7 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -291,14 +293,15 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -407,14 +410,15 @@ async fn write_tool_denied_under_explore_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -484,14 +488,15 @@ async fn write_tool_denied_outside_plans_folder_under_plan_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -559,14 +564,15 @@ async fn write_tool_allowed_in_plans_folder_under_plan_profile() {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -636,7 +642,8 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -645,7 +652,7 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");
@@ -715,14 +722,15 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        entanglement_runtime::agents::built_in_registry(),
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     let sid = SessionId::new("s1");

@@ -269,22 +269,24 @@ pub fn load_registry(
 /// are composed with an identity [`PromptContext`] (no brief/env/skills),
 /// matching the raw built-in bodies.
 ///
-/// The embedded definitions are compile-time constants guarded by
-/// [`tests::built_ins_parse_with_expected_shape`], so a parse failure here is a
-/// build-time bug, not a runtime condition. No MCP servers exist at this
-/// remove (no filesystem/config touched), so the built-ins parse with an empty
-/// [`McpCapabilityIndex`] — none of them reference an MCP tool.
-pub fn built_in_registry() -> ProfileRegistry {
+/// The embedded definitions are exercised by
+/// [`tests::built_ins_parse_with_expected_shape`], but a passing test suite is
+/// not something this function's own callers can rely on at runtime (#585):
+/// embedders call this directly as a public seam, bypassing [`load_registry`]
+/// entirely. So a parse failure here is surfaced as a `Result` — same as
+/// every other layer — rather than an unconditional panic baked into a
+/// library function.
+pub fn built_in_registry() -> Result<ProfileRegistry> {
     let ctx = PromptContext::default();
     let skills = SkillRegistry::default();
     let mcp = McpCapabilityIndex::new();
     let mut reg = ProfileRegistry::default();
     for (file, contents) in BUILT_INS {
         let profile = parse_definition(contents, &ctx, &skills, &mcp)
-            .unwrap_or_else(|e| panic!("embedded built-in agent `{file}` must parse: {e}"));
+            .with_context(|| format!("embedded built-in agent `{file}` must parse"))?;
         reg.insert(profile);
     }
-    reg
+    Ok(reg)
 }
 
 /// One resolved agent for `skutter inspect agents` (#185): the winning
@@ -1114,6 +1116,17 @@ mod tests {
         let p = perm("read: deny\nrhai: allow");
         assert_eq!(p.for_tool("call"), Permission::Deny);
         assert_eq!(p.for_tool("rhai"), Permission::Allow);
+    }
+
+    #[test]
+    fn built_in_registry_resolves_all_four_profiles() {
+        // Exercises the public seam itself (#585): a parse failure here comes
+        // back as an `Err` an embedder can handle, not a panic baked into the
+        // function.
+        let reg = built_in_registry().expect("embedded built-ins must parse");
+        for name in ["build", "plan", "explore", "debug"] {
+            assert!(reg.get(name).is_some(), "missing built-in `{name}`");
+        }
     }
 
     #[test]

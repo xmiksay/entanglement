@@ -102,14 +102,18 @@ fn spawn_with_bash_call_using(input: &str, profiles: ProfileRegistry) -> Holly {
 
 /// Wire the built-in profiles (build/plan/explore).
 fn spawn_with_bash_call(input: &str) -> Holly {
-    spawn_with_bash_call_using(input, entanglement_runtime::agents::built_in_registry())
+    spawn_with_bash_call_using(
+        input,
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+    )
 }
 
 /// Built-ins plus an `askbash` profile that *advertises* bash (no tool mask) but
 /// grades it `Ask` — the built-in `plan` now physically masks bash out (#140), so
 /// the Ask dispatch path needs a profile that still lets bash through the mask.
 fn ask_bash_registry() -> ProfileRegistry {
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
         name: "askbash".into(),
         description: String::new(),
@@ -174,7 +178,8 @@ async fn deny_refuses_without_request() {
     // permission profile — so this exercises the `Deny` dispatch path, distinct
     // from the physical tool mask (#116), which would refuse bash before
     // permission even resolves (see the `tool_mask` integration test).
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
         name: "denybash".into(),
         description: String::new(),
@@ -266,7 +271,8 @@ async fn ask_emits_request_then_runs_on_approve() {
 /// A profile that grades `bash` by its command (#173): `git *` runs outright,
 /// `rm *` is denied, anything else asks.
 fn scoped_bash_registry() -> ProfileRegistry {
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
         name: "scopedbash".into(),
         description: String::new(),
@@ -389,7 +395,8 @@ async fn argument_scoped_falls_through_to_coarse_ask() {
 /// A profile that grades `bash` by its `workdir` (#425): `/tmp/*` runs
 /// outright, `/etc/*` is denied, anything else asks.
 fn scoped_workdir_bash_registry() -> ProfileRegistry {
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
         name: "scopedworkdir".into(),
         description: String::new(),
@@ -736,7 +743,8 @@ impl Tool for EchoRead {
 /// A profile that grades `read` by an arg-scoped rule authored root-relative
 /// (#173): `src/*` runs outright, anything else asks.
 fn scoped_read_registry() -> ProfileRegistry {
-    let mut profiles = entanglement_runtime::agents::built_in_registry();
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
         name: "scopedread".into(),
         description: String::new(),

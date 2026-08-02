@@ -120,7 +120,8 @@ fn text_response(text: &str) -> LlmResponse {
 /// and the root-contained host registry (so a `write`/`edit` a test scripts
 /// against the bound plan file actually lands and fires `FileChange`).
 fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>) -> Holly {
-    let profiles = entanglement_runtime::agents::built_in_registry();
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory,
         profiles: profiles.clone(),
