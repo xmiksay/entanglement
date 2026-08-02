@@ -1183,9 +1183,9 @@ mod tests {
         assert_eq!(plan.permission.for_tool("glob"), Permission::Allow);
         // Plan authors the plan (#231, ADR-0049; #513, ADR-0145): its tool mask
         // carries the read trio + delegation/skill tools + `propose_plan`, plus
-        // `write`/`edit` scoped to the plans folder (#524) — no `bash`.
-        // Children spawned under it inherit the clamp. Its allowlist explicitly
-        // opts into plan authorship.
+        // `write`/`edit` scoped to the plans folder (#524). Children spawned
+        // under it inherit the clamp. Its allowlist explicitly opts into plan
+        // authorship.
         assert!(crate::plan_tasks::explicitly_allowlists(
             plan,
             "propose_plan"
@@ -1196,7 +1196,32 @@ mod tests {
         assert!(plan.advertises_tool("propose_plan"));
         assert!(plan.advertises_tool("edit"));
         assert!(plan.advertises_tool("write"));
-        assert!(!plan.advertises_tool("bash"));
+        // #597: `call`/`bash` are on plan's own mask too — not so plan runs
+        // shell itself, but so the ancestor-chain mask intersection (ADR-0038)
+        // stops erasing them from an `explore` child it delegates research to.
+        // `explore.md` still grades its own call/bash `Ask`.
+        assert!(plan.advertises_tool("call"));
+        assert!(plan.advertises_tool("bash"));
+        // The *coarse* (no-argument) grade for `call` stays `Deny`: `call` is
+        // a `MULTI_GROUP` tool (ADR-0114) whose bare grade is the least
+        // privileged of every bare capability — `write: deny` pulls it down
+        // regardless of any bare `call: ...` a profile writes. `bash` isn't
+        // multi-group, so its coarse grade is plain `default: ask`.
+        assert_eq!(plan.permission.for_tool("call"), Permission::Deny);
+        assert_eq!(plan.permission.for_tool("bash"), Permission::Ask);
+        // A real invocation always carries its command as the `call`/`bash`
+        // argument (#173/#425), so `call(*): ask` — an arg-scoped capability
+        // key, which ADR-0114 lets refine `call`'s multi-group floor — is what
+        // actually governs dispatch: any concrete command resolves `Ask`, not
+        // the coarse `Deny` above.
+        assert_eq!(
+            plan.permission.resolve("call", Some("gh issue view 594")),
+            Permission::Ask
+        );
+        assert_eq!(
+            plan.permission.resolve("bash", Some("git status")),
+            Permission::Ask
+        );
 
         let explore = reg.get("explore").expect("explore built-in");
         assert_eq!(explore.mode, AgentMode::Subagent);

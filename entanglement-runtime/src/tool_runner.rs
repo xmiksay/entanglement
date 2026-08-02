@@ -51,7 +51,7 @@ use crate::hooks::Hooks;
 #[cfg(feature = "rhai")]
 use crate::permission::effective_permission;
 use crate::permission::{
-    ancestor_chain, clamp_to_base, min_permission, skill_masked, spawn_refusal, tool_masked,
+    ancestor_chain, clamp_to_base, min_permission, skill_masked, spawn_refusal, tool_mask_source,
     ActiveSkill,
 };
 use crate::permission_path::grading_arg;
@@ -720,15 +720,34 @@ pub fn spawn_tool_executor_with_policy(
                     // hallucinated call to a masked `edit`/`agent_spawn` is a
                     // hard boundary, not a persona nudge. Core already withholds
                     // the schema; this closes the gap if the model calls it anyway.
-                    let masked = {
+                    // #597: name *which* link's mask did it, not just "profile"
+                    // — a child's own definition can list the tool while an
+                    // ancestor's narrower mask erases it down the chain, and
+                    // an undifferentiated message reads as an inexplicable
+                    // dead end rather than a mask-ancestry issue.
+                    let masked_by = {
                         let active = active.lock().expect("active-profile mutex poisoned");
-                        tool_masked(&active, &spawn_guard, &overlays, &session, &tool)
+                        tool_mask_source(&active, &spawn_guard, &overlays, &session, &tool).map(
+                            |source| {
+                                let name = active.get(&source).map(|p| p.name.clone());
+                                (source, name)
+                            },
+                        )
                     };
-                    if masked {
+                    if let Some((source, agent_name)) = masked_by {
                         let holly = holly.clone();
+                        let own_session = session.clone();
                         tokio::spawn(async move {
-                            let output =
-                                format!("tool `{tool}` is not available to this agent (restricted by profile)");
+                            let output = if source == own_session {
+                                format!(
+                                    "tool `{tool}` is not available to this agent (restricted by its own profile)"
+                                )
+                            } else {
+                                format!(
+                                    "tool `{tool}` is not available to this agent (restricted by ancestor agent `{}`'s profile)",
+                                    agent_name.as_deref().unwrap_or("unknown")
+                                )
+                            };
                             seam::reply(&holly, session, request_id, output).await;
                         });
                         continue;
