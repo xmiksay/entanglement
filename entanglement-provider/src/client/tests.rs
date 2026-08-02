@@ -339,6 +339,48 @@ fn pool_key_partitions_by_endpoint_and_api_key() {
 }
 
 #[test]
+fn pool_key_normalizes_trailing_slash_and_host_case() {
+    // #551: a trailing slash or a differently-cased host must not split one
+    // real endpoint's budget into two — `ZAI_API_BASE=.../v4/` and the
+    // catalog's `.../v4` are the same endpoint.
+    assert_eq!(
+        pool_key("https://api.z.ai/v4/", Some("k1")),
+        pool_key("https://api.z.ai/v4", Some("k1"))
+    );
+    assert_eq!(
+        pool_key("https://Api.Z.AI/v4", Some("k1")),
+        pool_key("https://api.z.ai/v4", Some("k1"))
+    );
+    // The path itself stays case-sensitive — only the host is folded.
+    assert_ne!(
+        pool_key("https://api.z.ai/V4", Some("k1")),
+        pool_key("https://api.z.ai/v4", Some("k1"))
+    );
+    // Keyless normalizes the same way.
+    assert_eq!(
+        pool_key("https://api.z.ai/v4/", None),
+        pool_key("https://api.z.ai/v4", None)
+    );
+}
+
+#[test]
+fn pool_key_is_stable_across_calls_within_and_across_processes() {
+    // #551: the pool key becomes the cross-process shared-state file name
+    // (`shared_store::hash_key`), so it must not depend on per-process/
+    // per-toolchain hash randomization the way `DefaultHasher` did.
+    let a = pool_key("https://api.z.ai/v4", Some("supersecret"));
+    let b = pool_key("https://api.z.ai/v4", Some("supersecret"));
+    assert_eq!(a, b);
+    // Matches an independently-computed sha256("supersecret"), so a future
+    // accidental regression back to an unspecified hasher is caught
+    // immediately rather than only by a cross-process integration test.
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"supersecret");
+    assert!(a.ends_with(&format!("#{:x}", hasher.finalize())));
+}
+
+#[test]
 fn retry_after_window_extends_never_shrinks() {
     let state = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
     state.set_retry_after(Duration::from_secs(10));

@@ -577,7 +577,8 @@ fn web_search_tool_version(
         .and_then(|m| m.web_search_tool_version.clone())
 }
 
-/// Anthropic-wire provider. Always keyed; base is the client's own default.
+/// Anthropic-wire provider. Always keyed; base from env/catalog else the
+/// client's own default (#551, see [`anthropic_factory_for`]).
 fn anthropic_wire_config(
     entry: &ProviderEntry,
     http_client: &HttpClient,
@@ -721,7 +722,11 @@ fn openai_factory_for(
 /// Build an Anthropic-wire [`LlmFactory`] for an explicit `(entry, model)`.
 /// Shared by startup and the live-switch resolver (#218). Always keyed;
 /// `Err(message)` when the key env is absent/unset. `web_search_tool_version`
-/// selects the server-tool type (#481) when web search is enabled.
+/// selects the server-tool type (#481) when web search is enabled. Base from
+/// `{NAME}_API_BASE`/`{NAME}_BASE` env else `entry.base_url` else the client's
+/// own [`entanglement_provider::ANTHROPIC_BASE`] default — mirroring
+/// [`openai_factory_for`]/[`gemini_factory_for`] (#551; before this a
+/// catalog `base_url` on an `anthropic`-wire entry was silently ignored).
 ///
 /// `explicit_key`, when `Some`, is used verbatim instead of reading
 /// `entry.key_env` from the process environment (#522 multi-user seam,
@@ -746,7 +751,13 @@ fn anthropic_factory_for(
             env_nonempty(key_env).ok_or_else(|| format!("{key_env} is not set"))?
         }
     };
+    let name = entry.name.to_uppercase();
+    let base = env_nonempty(&format!("{name}_API_BASE"))
+        .or_else(|| env_nonempty(&format!("{name}_BASE")))
+        .or_else(|| entry.base_url.clone())
+        .unwrap_or_else(|| entanglement_provider::ANTHROPIC_BASE.to_string());
     Ok(entanglement_provider::anthropic_factory(
+        base,
         key,
         model.to_string(),
         resolve_rpm(entry),
@@ -1009,6 +1020,17 @@ async fn main() -> Result<()> {
         }
         Ok(_) => {}
         Err(e) => tracing::debug!("startup session prune skipped: {e:#}"),
+    }
+
+    // Shared endpoint-state auto-prune on startup (#551): a `.state`/`.lock`
+    // pair left behind by a `/key` rotation, a catalog `base_url` edit, or a
+    // decommissioned provider is never otherwise removed. Best-effort and
+    // process-wide (unlike the session prune above, this isn't scoped to
+    // `cwd` — the state dir has no per-project split) — an idle-but-empty
+    // pair older than an hour is swept; anything still live is left alone.
+    let removed = entanglement_provider::prune_stale(std::time::Duration::from_secs(3600));
+    if removed > 0 {
+        tracing::info!("startup prune removed {removed} orphaned shared endpoint-state file(s)");
     }
 
     // stdout is reserved for command output — the assembled prompt

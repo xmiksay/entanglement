@@ -1,7 +1,8 @@
 //! `App` surface for the `/key` dialog (#304): open/close, navigation, and the
 //! submit path that drives the shared [`crate::config::env_key::set_key`] writer,
 //! primes the process env so the live model resolver picks the key up on the next
-//! `/model` switch, and records a status line (never the key) into the transcript.
+//! `/model` switch, sweeps the old key's now-possibly-orphaned shared endpoint
+//! state (#551), and records a status line (never the key) into the transcript.
 
 use ratatui::widgets::ListState;
 
@@ -113,6 +114,19 @@ impl App {
                 // key without a restart. `set_var` is the same channel `load()`
                 // fills at startup.
                 std::env::set_var(&provider.key_env, &value);
+                // A session still bound to the old key (nothing here forces an
+                // already-running session to rebind — that only happens on its
+                // own `/model` switch) keeps its old pool bucket alive until it
+                // does; once every such session has moved off, the old key's
+                // `EndpointState` and shared-state file (#523) are orphaned
+                // with nothing else to remove them. Sweep now, off the
+                // keypress path (`spawn_blocking` — the sweep locks and
+                // fsyncs files) — a short idle threshold, since this is a
+                // deliberate user action, not the generic startup sweep
+                // (#551). Best-effort: nothing here depends on it finishing.
+                tokio::task::spawn_blocking(|| {
+                    entanglement_provider::prune_stale(std::time::Duration::from_secs(5))
+                });
                 self.set_toast(format!("Saved {} to {}", provider.key_env, path.display()));
                 self.key_dialog.hide();
                 self.mark_dirty();

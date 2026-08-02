@@ -74,8 +74,12 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   parsing.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
-  fragments). `anthropic_factory(key, model, rpm, concurrency,
-  model_concurrency, web_search, web_search_tool_version)`. Split into
+  fragments). `anthropic_factory(base_url, key, model, rpm, concurrency,
+  model_concurrency, web_search, web_search_tool_version)` — `base_url`
+  defaults to `ANTHROPIC_BASE` (mirroring `OPENAI_BASE`/`GEMINI_BASE`); a
+  catalog `wire: anthropic` entry's `base_url` (a proxy/gateway speaking the
+  Anthropic wire) overrides it end to end — the request URL *and* the pool
+  key — since #551 (previously hard-coded and silently ignored). Split into
   `anthropic/{mod,request,sse}.rs` (#481)
   the same way as `openai/` — `mod.rs` additionally owns the `pause_turn`
   continuation loop (below).
@@ -194,8 +198,15 @@ api-key)`** — the provider's base URL plus a *hash* of the API key (if any) �
 and its own `Retry-After` cool-down window, so a throttled endpoint never starves
 another — and **multiple keys on the same endpoint each get their own budget**
 (different keys have different limits). The key is hashed, never stored raw in
-the map. Before #217 a single global 50-RPM `Semaphore` was shared across *all*
-providers. The bucket's RPM is **catalog data** (#241): the provider entry's
+the map. `client::pool_key`'s endpoint half is normalized first — trailing `/`
+trimmed, host lowercased (path left case-sensitive) — so a trailing-slash or
+host-casing difference between an env override and the catalog default can't
+split one real endpoint's budget in two; the API-key half is hashed with
+`sha2::Sha256` (not `DefaultHasher`, whose output is unspecified across Rust
+toolchains) since #551, because it also becomes the cross-process shared-state
+**file name** below and so must be stable across separately-built `skutter`
+processes, not merely process-local. Before #217 a single global 50-RPM
+`Semaphore` was shared across *all* providers. The bucket's RPM is **catalog data** (#241): the provider entry's
 optional `rpm` (env `{NAME}_RPM` > user `providers.yml` > embedded default),
 threaded through `openai_factory`/`anthropic_factory` → `execute_with_retry` →
 `EndpointState::new`; when unset it falls back to the client default
@@ -436,6 +447,25 @@ completion, a `.abort()`-driven task teardown, SIGINT/SIGTERM). `LEASE_TTL`
 is kept close to `LEASE_RENEW_INTERVAL` (~2×: 120s vs. 60s, was 180s) rather
 than generously above it — the TTL is now purely the backstop for the one
 case synchronous release can't cover: a `SIGKILL`, where nothing runs at all.
+
+**Orphaned shared-state files are swept, not left to accumulate** (#551):
+nothing evicts a `.state`/`.lock` pair when its pool key stops being used — a
+`/key` rotation, a catalog `base_url` edit, a decommissioned provider — so
+without an explicit sweep they pile up under the state directory forever.
+`client::prune_stale(max_idle)` walks the directory and removes any pair that
+is both **idle** (`.state` mtime older than `max_idle`) and **empty** (no live
+lease, no pending cool-down, no request in the trailing RPM window) — an
+endpoint still in real use always fails the "empty" check regardless of file
+age, so a live budget can never be swept out from under it. The runtime calls
+this twice: a best-effort startup sweep (`max_idle = 1h`, `main.rs`, mirroring
+`session_store::prune`'s role for session logs) and a short-`max_idle` (5s)
+sweep fired from the TUI's `/key` submit handler
+(`entanglement-runtime::tui::app::key`, `tokio::task::spawn_blocking` — the
+sweep locks and `fsync`s files, kept off the keypress path) so a rotated-away
+key's file doesn't wait a full hour once every session bound to it has moved
+off. This does **not** force an already-bound session to rebind — that stays
+an explicit `/model` switch (ADR-0063); it only reclaims the file once nothing
+references it anymore.
 
 **Request-body logging is opt-in and symmetric** (#165): every client emits a
 `debug!` *summary* per request (model, message/tool counts — no payload). The

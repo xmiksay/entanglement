@@ -85,13 +85,14 @@ and generation params gated onto every `LlmRequest` (incl. `reasoning_effort`,
 [ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)).
 Precedence: **env > user YAML > embedded defaults**.
 
-Resilience is **per-endpoint** (keyed by base URL + API-key hash,
-[ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)):
+Resilience is **per-endpoint** (keyed by a normalized base URL + a stable
+sha256 API-key hash, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)/[ADR-0156](../docs/adr/0156-normalize-and-stabilize-the-endpoint-pool-key.md)):
 connection pool, retry/backoff, RPM + concurrency caps, adaptive AIMD pacing,
 bounded 429 park ([ADR-0111](../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)),
 per-model caps layered on top (ADR-0140), and a file-backed **cross-process**
 gate ([ADR-0144](../docs/adr/0144-file-backed-shared-endpoint-state-across-instances.md),
-opt-out `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1`). Opt-in provider-side
+opt-out `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1`), swept for orphaned
+`.state`/`.lock` pairs on startup and on `/key` rotation (ADR-0156). Opt-in provider-side
 **web search** ([ADR-0075](../docs/adr/0075-provider-side-web-search-mvp.md)/[ADR-0131](../docs/adr/0131-web-search-post-mvp-follow-ups.md))
 runs outside the permission ladder — enabling *is* consent.
 

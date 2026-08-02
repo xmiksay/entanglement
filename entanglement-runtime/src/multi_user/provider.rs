@@ -26,7 +26,7 @@ use std::sync::{Arc, RwLock};
 use entanglement_core::{ModelResolver, ResolvedModel, UserId};
 use entanglement_provider::{
     anthropic_factory, gemini_factory, openai_factory, Catalog, HttpClient, ProviderEntry,
-    WebSearchConfig, Wire, GEMINI_BASE, OPENAI_BASE,
+    WebSearchConfig, Wire, ANTHROPIC_BASE, GEMINI_BASE, OPENAI_BASE,
 };
 
 /// One user's provider surface: their own [`Catalog`] (same shape as the
@@ -169,11 +169,16 @@ fn resolve_for_user(
         Wire::Anthropic => {
             let key =
                 key.ok_or_else(|| format!("no API key configured for provider `{provider}`"))?;
+            let base = entry
+                .base_url
+                .clone()
+                .unwrap_or_else(|| ANTHROPIC_BASE.to_string());
             let web_search_tool_version = ctx
                 .catalog
                 .model(provider, model)
                 .and_then(|m| m.web_search_tool_version.clone());
             anthropic_factory(
+                base,
                 key.to_string(),
                 model.to_string(),
                 rpm,
