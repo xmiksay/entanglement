@@ -74,6 +74,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use futures::StreamExt;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
@@ -478,25 +479,32 @@ impl RateLimiter {
 
 impl HttpClient {
     /// Create a shared HTTP client with default per-endpoint retry/rate-limit.
-    pub fn new() -> Self {
+    ///
+    /// Fails if the underlying `reqwest::Client` builder fails (TLS backend
+    /// init, resolver issues) — an unusual host-environment condition, not a
+    /// bug, so it surfaces as an error rather than panicking the process
+    /// (#583).
+    pub fn new() -> anyhow::Result<Self> {
         Self::with_config(RetryConfig::default())
     }
 
     /// Create a shared HTTP client with a custom per-endpoint [`RetryConfig`].
-    pub fn with_config(config: RetryConfig) -> Self {
+    ///
+    /// See [`HttpClient::new`] for why this is fallible.
+    pub fn with_config(config: RetryConfig) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
             .pool_idle_timeout(POOL_IDLE_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
-            .expect("failed to build reqwest client");
-        Self {
+            .context("failed to build reqwest client")?;
+        Ok(Self {
             client,
             pool: Arc::new(EndpointPool {
                 endpoints: Mutex::new(HashMap::new()),
                 config,
             }),
-        }
+        })
     }
 
     /// Get the underlying `reqwest::Client` for making requests.
@@ -771,12 +779,6 @@ impl HttpClient {
                 }
             }
         }
-    }
-}
-
-impl Default for HttpClient {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

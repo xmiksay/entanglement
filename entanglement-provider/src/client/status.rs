@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn at_rest_no_endpoint_is_throttled() {
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         // Resolving an endpoint alone (no 429, no in-flight requests) is at rest.
         let _ = http.endpoint("https://api.rest/v1", None, None);
         assert!(http.throttle_status().is_none());
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn retry_after_window_surfaces_as_backoff() {
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let ep = http.endpoint("https://api.parked/v1", None, None);
         ep.set_retry_after(Duration::from_secs(30));
         let status = http
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn penalized_pacing_surfaces_without_a_cool_down() {
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let ep = http.endpoint("https://api.slowed/v1", None, None);
         ep.limiter.penalize(); // slow the gate below base, no Retry-After set
         let status = http
@@ -254,7 +254,8 @@ mod tests {
         let http = HttpClient::with_config(RetryConfig {
             concurrency: 1,
             ..RetryConfig::default()
-        });
+        })
+        .unwrap();
         let ep = http.endpoint("https://api.busy/v1", None, None);
         // Hold the only permit → in_flight == cap, so the endpoint is throttled
         // even without a 429.
@@ -268,7 +269,7 @@ mod tests {
 
     #[test]
     fn longest_cool_down_wins_across_endpoints() {
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         http.endpoint("https://api.a/v1", None, None)
             .set_retry_after(Duration::from_secs(5));
         http.endpoint("https://api.b/v1", None, None)
@@ -282,7 +283,7 @@ mod tests {
         // The endpoint itself is nowhere near its (default 3) cap, but a
         // model-level slot (#521) at 1/1 is more constrained — it must be the
         // one `throttle_status` reports.
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let ep = http.endpoint("https://api.zai/v1", None, None);
         let flash = ep.model_slot("glm-4.7-flash", 1);
         let _permit = flash.semaphore.clone().try_acquire_owned().unwrap();
@@ -298,7 +299,7 @@ mod tests {
     fn an_idle_model_slot_never_shadows_a_throttled_endpoint() {
         // A registered-but-empty model slot (0/5, e.g. GLM-5.2) must not hide
         // the endpoint's own genuine cool-down — the endpoint stays binding.
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let ep = http.endpoint("https://api.zai/v1", None, None);
         let _glm52 = ep.model_slot("glm-5.2", 5);
         ep.set_retry_after(Duration::from_secs(10));
@@ -313,14 +314,14 @@ mod tests {
         // (`execute_with_retry` only calls `model_slot` when `Some`), so
         // `throttle_status` reports the endpoint alone — byte-identical to
         // before #521.
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let _ = http.endpoint("https://api.rest/v1", None, None);
         assert!(http.throttle_status().is_none());
     }
 
     #[test]
     fn penalized_pacing_surfaces_next_request_in() {
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let ep = http.endpoint("https://api.paced/v1", None, None);
         ep.limiter.penalize();
         // Reserve a slot in the future so `next_request_in` has something to
@@ -343,7 +344,7 @@ mod tests {
 
     #[test]
     fn unpenalized_endpoint_has_no_next_request_in() {
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let ep = http.endpoint("https://api.rest2/v1", None, None);
         // No 429, no penalty — even though every `acquire` reserves a slot, the
         // countdown is only surfaced while actually paced.
@@ -356,7 +357,7 @@ mod tests {
 
     #[test]
     fn throttle_statuses_reports_every_endpoint_independent_of_others() {
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         http.endpoint("https://api.busy.example/v1", None, None)
             .set_retry_after(Duration::from_secs(10));
         http.endpoint("https://api.calm.example/v1", None, None);
@@ -380,7 +381,7 @@ mod tests {
         // `acquire_owned().await` via `WaiterGuard` (#552); exercised directly
         // here since `WaiterGuard` itself is tested alongside `spawn_byte_stream`
         // in `client::tests`.
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let ep = http.endpoint("https://api.queued/v1", None, None);
         ep.waiters.fetch_add(2, AtomicOrdering::Relaxed);
         let statuses = http.throttle_statuses();
@@ -396,7 +397,7 @@ mod tests {
         // reading "at rest".
         let dir = tempfile::tempdir().expect("tempdir");
         std::env::set_var("ENTANGLEMENT_SHARED_STATE_DIR", dir.path());
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let ep = http.endpoint("https://api.peer-parked/v1", None, None);
         std::env::remove_var("ENTANGLEMENT_SHARED_STATE_DIR");
 
@@ -424,7 +425,8 @@ mod tests {
         let http = HttpClient::with_config(RetryConfig {
             concurrency: 1,
             ..RetryConfig::default()
-        });
+        })
+        .unwrap();
         let ep = http.endpoint("https://api.leased/v1", None, None);
         std::env::remove_var("ENTANGLEMENT_SHARED_STATE_DIR");
 
@@ -452,7 +454,7 @@ mod tests {
         // count, and a purely local cool-down must still surface on its own.
         let dir = tempfile::tempdir().expect("tempdir");
         std::env::set_var("ENTANGLEMENT_SHARED_STATE_DIR", dir.path());
-        let http = HttpClient::new();
+        let http = HttpClient::new().unwrap();
         let ep = http.endpoint("https://api.unwritten/v1", None, None);
         std::env::remove_var("ENTANGLEMENT_SHARED_STATE_DIR");
         ep.set_retry_after(Duration::from_secs(5));

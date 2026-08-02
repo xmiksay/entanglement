@@ -44,12 +44,12 @@ fn ensure_shared_state_disabled() {
 
 fn test_http_client() -> PoolHttpClient {
     ensure_shared_state_disabled();
-    PoolHttpClient::default()
+    PoolHttpClient::new().unwrap()
 }
 
 fn test_http_client_with(config: RetryConfig) -> PoolHttpClient {
     ensure_shared_state_disabled();
-    PoolHttpClient::with_config(config)
+    PoolHttpClient::with_config(config).unwrap()
 }
 
 /// The `initialize` reply carries the session id; `tools/list` answers over SSE;

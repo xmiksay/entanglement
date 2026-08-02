@@ -1214,7 +1214,7 @@ async fn main() -> Result<()> {
             ..Default::default()
         }),
         None => HttpClient::new(),
-    };
+    }?;
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
     let (

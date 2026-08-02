@@ -348,7 +348,7 @@ headers:
             }),
         )]);
         let mut registry = ToolRegistry::new();
-        let http = entanglement_core::HttpClient::default();
+        let http = entanglement_core::HttpClient::new().unwrap();
         connect(&servers, &mut registry, &[], &http).await;
         assert!(registry.is_empty());
     }
@@ -370,7 +370,7 @@ headers:
             }),
         )]);
         let mut registry = ToolRegistry::new();
-        let http = entanglement_core::HttpClient::default();
+        let http = entanglement_core::HttpClient::new().unwrap();
         // Must not panic or hang — the failure is logged and swallowed.
         connect(&servers, &mut registry, &[], &http).await;
         assert!(registry.is_empty());
@@ -394,7 +394,7 @@ headers:
             }),
         )]);
         let mut registry = ToolRegistry::new();
-        let http = entanglement_core::HttpClient::default();
+        let http = entanglement_core::HttpClient::new().unwrap();
         connect(&servers, &mut registry, &[], &http).await;
         assert!(registry.is_empty());
     }

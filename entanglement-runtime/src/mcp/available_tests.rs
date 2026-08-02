@@ -217,7 +217,7 @@ async fn enable_unknown_server_errors() {
     let registry: SharedRegistry =
         std::sync::Arc::new(std::sync::RwLock::new(crate::tools::ToolRegistry::new()));
     let active: ActiveServers = std::sync::Arc::new(Mutex::new(HashMap::new()));
-    let http = entanglement_core::HttpClient::default();
+    let http = entanglement_core::HttpClient::new().unwrap();
     let err = enable_for_session(
         &avail,
         "nope",
@@ -249,7 +249,7 @@ async fn enable_startup_server_never_scopes_it() {
         },
     );
     let s = SessionId::new("s");
-    let http = entanglement_core::HttpClient::default();
+    let http = entanglement_core::HttpClient::new().unwrap();
     let tools = enable_for_session(&avail, "startup", &s, &registry, &active, &http)
         .await
         .unwrap();
@@ -290,7 +290,7 @@ async fn enable_already_connected_marks_only() {
         },
     );
     let s = SessionId::new("s");
-    let http = entanglement_core::HttpClient::default();
+    let http = entanglement_core::HttpClient::new().unwrap();
     let tools = enable_for_session(&avail, "srv", &s, &registry, &active, &http)
         .await
         .unwrap();
@@ -340,7 +340,7 @@ async fn concurrent_enable_of_the_same_server_does_not_panic_or_corrupt_state() 
 
     let session_a = SessionId::new("a");
     let session_b = SessionId::new("b");
-    let http = entanglement_core::HttpClient::default();
+    let http = entanglement_core::HttpClient::new().unwrap();
     let (r1, r2) = tokio::join!(
         enable_for_session(&avail, "srv", &session_a, &registry, &active, &http),
         enable_for_session(&avail, "srv", &session_b, &registry, &active, &http),

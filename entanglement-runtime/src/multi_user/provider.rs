@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn resolver_errors_without_a_user() {
         let store: Arc<dyn UserProviderStore> = Arc::new(InMemoryUserProviderStore::new());
-        let resolver = build_user_model_resolver(store, HttpClient::new(), None);
+        let resolver = build_user_model_resolver(store, HttpClient::new().unwrap(), None);
         let err = resolver(None, "zai", "glm-5.2").err().unwrap();
         assert!(err.contains("session user"));
     }
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn resolver_errors_for_an_unregistered_user() {
         let store: Arc<dyn UserProviderStore> = Arc::new(InMemoryUserProviderStore::new());
-        let resolver = build_user_model_resolver(store, HttpClient::new(), None);
+        let resolver = build_user_model_resolver(store, HttpClient::new().unwrap(), None);
         let user = UserId::new("alice");
         let err = resolver(Some(&user), "zai", "glm-5.2").err().unwrap();
         assert!(err.contains("alice"));
@@ -284,7 +284,7 @@ mod tests {
             UserProviderContext::new(zai_catalog(Some(7))).with_key("ZAI_API_KEY", "alice-key"),
         );
         let store: Arc<dyn UserProviderStore> = Arc::new(store);
-        let resolver = build_user_model_resolver(store, HttpClient::new(), None);
+        let resolver = build_user_model_resolver(store, HttpClient::new().unwrap(), None);
         let resolved = resolver(Some(&alice), "zai", "glm-5.2").expect("resolves");
         assert_eq!(resolved.provider, "zai");
         assert_eq!(resolved.model, "glm-5.2");
@@ -306,7 +306,7 @@ mod tests {
             UserProviderContext::new(Catalog { providers: vec![] }),
         );
         let store: Arc<dyn UserProviderStore> = Arc::new(store);
-        let resolver = build_user_model_resolver(store, HttpClient::new(), None);
+        let resolver = build_user_model_resolver(store, HttpClient::new().unwrap(), None);
 
         assert!(resolver(Some(&alice), "zai", "glm-5.2").is_ok());
         let err = resolver(Some(&bob), "zai", "glm-5.2").err().unwrap();

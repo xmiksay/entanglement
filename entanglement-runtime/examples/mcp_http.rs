@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         headers.insert("Authorization".to_string(), format!("Bearer {token}"));
     }
 
-    let http = HttpClient::connect("example", &url, &headers, PoolHttpClient::new(), None).await?;
+    let http = HttpClient::connect("example", &url, &headers, PoolHttpClient::new()?, None).await?;
     let client: Arc<McpClient> = Arc::new(McpClient::Http(http));
 
     let mut registry = ToolRegistry::new();

@@ -4,18 +4,13 @@
 use super::*;
 
 #[test]
-fn test_default_http_client() {
-    let _client = HttpClient::default();
-}
-
-#[test]
 fn test_new_http_client() {
-    let _client = HttpClient::new();
+    let _client = HttpClient::new().unwrap();
 }
 
 #[test]
 fn endpoints_are_isolated_and_stable_by_key() {
-    let http = HttpClient::new();
+    let http = HttpClient::new().unwrap();
     let a1 = http.endpoint("https://api.a/v1", None, None);
     let a2 = http.endpoint("https://api.a/v1", None, None);
     let b = http.endpoint("https://api.b/v1", None, None);
@@ -26,7 +21,7 @@ fn endpoints_are_isolated_and_stable_by_key() {
 
 #[test]
 fn endpoint_uses_provided_rpm_budget() {
-    let http = HttpClient::new();
+    let http = HttpClient::new().unwrap();
     // A per-provider rpm sets the pacing gate's base interval (60s / rpm);
     // `None` falls back to the pool default (RetryConfig::rpm).
     let custom = http.endpoint("https://api.custom/v1", Some(6), None);
@@ -43,11 +38,14 @@ fn endpoint_concurrency_permits_match_config() {
     let http = HttpClient::with_config(RetryConfig {
         concurrency: 2,
         ..RetryConfig::default()
-    });
+    })
+    .unwrap();
     let ep = http.endpoint("https://api.x/v1", None, None);
     // The in-flight cap is seeded from config; the default is DEFAULT_CONCURRENCY.
     assert_eq!(ep.concurrency.available_permits(), 2);
-    let dflt = HttpClient::new().endpoint("https://api.y/v1", None, None);
+    let dflt = HttpClient::new()
+        .unwrap()
+        .endpoint("https://api.y/v1", None, None);
     assert_eq!(dflt.concurrency.available_permits(), DEFAULT_CONCURRENCY);
 }
 
@@ -56,7 +54,8 @@ fn endpoint_uses_provided_concurrency_cap_over_pool_default() {
     let http = HttpClient::with_config(RetryConfig {
         concurrency: 2,
         ..RetryConfig::default()
-    });
+    })
+    .unwrap();
     // A per-provider concurrency override wins over the pool-wide default.
     let custom = http.endpoint("https://api.custom/v1", None, Some(5));
     assert_eq!(custom.concurrency.available_permits(), 5);
@@ -171,7 +170,8 @@ async fn model_permit_wait_does_not_hold_the_shared_cross_process_lease() {
         let http = HttpClient::with_config(RetryConfig {
             concurrency: 3,
             ..RetryConfig::default()
-        });
+        })
+        .unwrap();
         let ep = http.endpoint(key, None, Some(3));
         std::env::remove_var("ENTANGLEMENT_SHARED_STATE_DIR");
         (http, ep)

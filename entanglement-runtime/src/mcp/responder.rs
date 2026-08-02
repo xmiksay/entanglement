@@ -405,7 +405,7 @@ mod tests {
             configs,
             Arc::new(AvailableMcp::default()),
             Vec::new(),
-            entanglement_core::HttpClient::default(),
+            entanglement_core::HttpClient::new().unwrap(),
         );
 
         holly
@@ -446,7 +446,7 @@ mod tests {
             configs,
             Arc::new(AvailableMcp::default()),
             Vec::new(),
-            entanglement_core::HttpClient::default(),
+            entanglement_core::HttpClient::new().unwrap(),
         );
 
         holly

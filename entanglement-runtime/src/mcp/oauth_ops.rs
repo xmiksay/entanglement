@@ -189,7 +189,7 @@ mod tests {
         let configs = configs_with(vec![("srv", http_server("https://ex/mcp", None))]);
         let registry = SharedRegistry::default();
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-        let http = entanglement_core::HttpClient::default();
+        let http = entanglement_core::HttpClient::new().unwrap();
         let err = connect("srv", &configs, &registry, &active, &[], &http, |_| {})
             .await
             .unwrap_err();
@@ -209,7 +209,7 @@ mod tests {
         let configs = configs_with(vec![("srv", cfg)]);
         let registry = SharedRegistry::default();
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-        let http = entanglement_core::HttpClient::default();
+        let http = entanglement_core::HttpClient::new().unwrap();
         let err = connect("srv", &configs, &registry, &active, &[], &http, |_| {})
             .await
             .unwrap_err();
