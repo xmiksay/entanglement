@@ -32,7 +32,10 @@ mod sse;
 
 use crate::client::HttpClient;
 use crate::web_search::WebSearchConfig;
-use crate::{Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, StopReason, Usage};
+use crate::{
+    Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, StopReason, ThinkingStyle,
+    Usage,
+};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -88,6 +91,18 @@ pub struct AnthropicLlm {
     /// the bound model. `None` falls back to the client's own `_20250305`
     /// default (see `request::web_search_tool_entry`).
     web_search_tool_version: Option<String>,
+    /// Which extended-thinking request shape the bound model accepts — the
+    /// resolved `ModelEntry::thinking_style`. Anthropic's fixed-budget and
+    /// adaptive forms are mutually exclusive and the newer models reject
+    /// `budget_tokens` with a 400, so the shape is a per-model catalog fact
+    /// rather than a client constant.
+    thinking_style: ThinkingStyle,
+    /// Whether captured thinking blocks are replayed to the provider — the
+    /// resolved `ModelEntry::replay_thinking`. Anthropic requires the block
+    /// back on a tool round-trip, so this defaults on for a thinking model;
+    /// a user can force it off in the catalog. Gates replay only: blocks are
+    /// captured and persisted either way.
+    replay_thinking: bool,
     http: HttpClient,
 }
 
@@ -102,6 +117,8 @@ impl AnthropicLlm {
         model_concurrency: ModelConcurrencyResolver,
         web_search: Option<WebSearchConfig>,
         web_search_tool_version: Option<String>,
+        thinking_style: ThinkingStyle,
+        replay_thinking: bool,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -114,6 +131,8 @@ impl AnthropicLlm {
             model_concurrency,
             web_search,
             web_search_tool_version,
+            thinking_style,
+            replay_thinking,
             http,
         }
     }
@@ -126,7 +145,8 @@ impl AnthropicLlm {
 /// per request (`|_| None` disables it, #521, resolved per request rather than
 /// once at construction, #550); `web_search = Some(..)` requests provider-side
 /// web search (#305); `web_search_tool_version` selects the server-tool type
-/// when set (#481).
+/// when set (#481); `thinking_style` picks the extended-thinking request shape
+/// the bound model accepts.
 #[allow(clippy::too_many_arguments)]
 pub fn anthropic_factory(
     base_url: impl Into<String>,
@@ -137,6 +157,8 @@ pub fn anthropic_factory(
     model_concurrency: ModelConcurrencyResolver,
     web_search: Option<WebSearchConfig>,
     web_search_tool_version: Option<String>,
+    thinking_style: ThinkingStyle,
+    replay_thinking: bool,
     http: HttpClient,
 ) -> crate::LlmFactory {
     let llm = AnthropicLlm::new(
@@ -148,6 +170,8 @@ pub fn anthropic_factory(
         model_concurrency,
         web_search,
         web_search_tool_version,
+        thinking_style,
+        replay_thinking,
         http,
     );
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
@@ -188,6 +212,8 @@ impl Llm for AnthropicLlm {
             req.generation,
             self.web_search.as_ref(),
             self.web_search_tool_version.as_deref(),
+            self.thinking_style,
+            self.replay_thinking,
         );
         // The original conversation's wire `messages` — the base a `pause_turn`
         // continuation replays from, plus its own accumulated trailing turn.
@@ -270,6 +296,7 @@ impl Llm for AnthropicLlm {
                 let mut frames = crate::sse_frame::SseFrameBuffer::new(b"\n\n");
                 let mut current_tool: Option<PendingTool> = None;
                 let mut current_text: Option<String> = None;
+                let mut current_thinking: Option<sse::PendingThinking> = None;
                 let mut usage = Usage::default();
                 let mut stop_reason: Option<StopReason> = None;
                 let mut pause_turn = false;
@@ -285,6 +312,7 @@ impl Llm for AnthropicLlm {
                             data,
                             &mut current_tool,
                             &mut current_text,
+                            &mut current_thinking,
                             &mut assembled_blocks,
                             &mut usage,
                             &mut stop_reason,

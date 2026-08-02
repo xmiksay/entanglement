@@ -12,7 +12,8 @@ use std::collections::VecDeque;
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{
-    emit_search_result, emit_tool_call, emit_tool_exec, emit_turn_done, emit_usage, next_seq,
+    emit_reasoning_block, emit_search_result, emit_tool_call, emit_tool_exec, emit_turn_done,
+    emit_usage, next_seq,
 };
 use super::stream::{stream_round, StreamedRound};
 use super::turn_state::TurnState;
@@ -188,11 +189,18 @@ pub(super) async fn run_attempt(
     }
     content.extend(content_blocks.iter().cloned());
     if !(ambiguous && content.is_empty()) {
-        // Persisted before the message itself is pushed (#481): each search
-        // block gets its own seq-bearing `SearchResult` so `Session::replay`
-        // can reconstruct this exact content, mirroring `AmbiguousRetry`.
+        // Persisted before the message itself is pushed (#481): each block gets
+        // its own seq-bearing content event so `Session::replay` can reconstruct
+        // this exact content, mirroring `AmbiguousRetry`. Reasoning blocks ride
+        // their own variant rather than `SearchResult` — same rail, honest name,
+        // and pre-existing session logs keep replaying unchanged.
         for part in &content_blocks {
-            emit_search_result(events, session, part.clone(), &s.seq);
+            match part {
+                ContentPart::Reasoning { .. } => {
+                    emit_reasoning_block(events, session, part.clone(), &s.seq)
+                }
+                _ => emit_search_result(events, session, part.clone(), &s.seq),
+            }
         }
         s.ctx
             .push(Message::assistant_content(content, tool_calls.clone()));

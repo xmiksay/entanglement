@@ -147,7 +147,13 @@ fn openai_content(content: &[ContentPart]) -> Value {
             ContentPart::ProviderSearch { summary, .. } => {
                 json!({ "type": "text", "text": summary })
             }
+            // Chat Completions has no assistant-side reasoning field, and the
+            // endpoints that emit `reasoning_content` do not accept it back —
+            // rendering it as text would put the model's thinking into history
+            // as if it had been said aloud.
+            ContentPart::Reasoning { .. } => json!(null),
         })
+        .filter(|b| !b.is_null())
         .collect();
     Value::Array(blocks)
 }

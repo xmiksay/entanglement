@@ -199,6 +199,12 @@ fn content_parts(content: &[ContentPart]) -> Vec<Value> {
                 source: ImageSource::Base64 { media_type, data },
             } => Some(image_part(media_type, data)),
             ContentPart::ProviderSearch { summary, .. } => Some(json!({ "text": summary })),
+            // Reasoning never replays on this wire: Gemini's load-bearing
+            // thinking state is the `thoughtSignature` already round-tripped via
+            // `ToolCall::provider_meta` (#309/ADR-0085), and a thought *text*
+            // part is not answer content — rendering it as `text` would inject
+            // the model's reasoning into history as if it had said it.
+            ContentPart::Reasoning { .. } => None,
         })
         .collect()
 }

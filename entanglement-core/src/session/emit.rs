@@ -170,6 +170,10 @@ fn tool_output_display(content: &[ContentPart]) -> String {
                 source: ImageSource::Base64 { media_type, .. },
             } => format!("[image: {media_type}]"),
             ContentPart::ProviderSearch { summary, .. } => summary.clone(),
+            // A tool result never carries reasoning — the model authors it, the
+            // tool executor does not — but the match is exhaustive, and showing
+            // nothing is the right answer if one ever appeared.
+            ContentPart::Reasoning { .. } => String::new(),
         })
         .collect()
 }
@@ -186,6 +190,28 @@ pub(crate) fn emit_search_result(
     seq: &AtomicU64,
 ) {
     let _ = events.send(OutEvent::SearchResult {
+        session: session.clone(),
+        seq: next_seq(seq),
+        part,
+    });
+}
+
+/// Emit a persisted `ReasoningBlock` content event for one extended-thinking
+/// block captured this round, so `Session::replay` can reconstruct the assistant
+/// message's content verbatim. Without it a resumed parked turn would rebuild a
+/// history whose final assistant message is missing the block Anthropic requires
+/// alongside tool results, and the continuation request would 400.
+///
+/// Capture is unconditional and so is this event; whether the block is actually
+/// replayed to the provider is decided later, per model, by
+/// `ModelEntry::replay_thinking`.
+pub(crate) fn emit_reasoning_block(
+    events: &broadcast::Sender<OutEvent>,
+    session: &SessionId,
+    part: ContentPart,
+    seq: &AtomicU64,
+) {
+    let _ = events.send(OutEvent::ReasoningBlock {
         session: session.clone(),
         seq: next_seq(seq),
         part,

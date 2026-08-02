@@ -47,6 +47,30 @@ pub enum ContentPart {
         summary: String,
         data: serde_json::Value,
     },
+    /// A model's extended-thinking block, captured so it can be replayed to the
+    /// provider that minted it. Anthropic requires the unmodified block —
+    /// signature included — on the final assistant message whenever tool results
+    /// come back, which is exactly a parked turn's shape, so a display-only
+    /// reasoning channel cannot satisfy it.
+    ///
+    /// `data` is opaque JSON in `provider`'s own wire shape and round-trips
+    /// **verbatim** only to that same provider (the
+    /// [`ProviderSearch`][ContentPart::ProviderSearch] /
+    /// [`ToolCall::provider_meta`][crate::ToolCall] contract). Provider-shaped
+    /// details — Anthropic's `signature`, whether the block was
+    /// `redacted_thinking` — live inside it rather than as fields here, so the
+    /// core contract stays wire-agnostic. `text` is the human-readable rendering
+    /// and **may be empty**: current models omit thinking text by default while
+    /// still returning a live signature, and such a block must still replay.
+    ///
+    /// Unlike `ProviderSearch`, a foreign converter emits *nothing* rather than
+    /// falling back to text — reasoning is not answer content, so leaking it into
+    /// history on a model switch would corrupt the conversation.
+    Reasoning {
+        provider: String,
+        text: String,
+        data: serde_json::Value,
+    },
 }
 
 impl ContentPart {
@@ -79,11 +103,32 @@ impl ContentPart {
         }
     }
 
+    /// An extended-thinking block for provider round-trip. See
+    /// [`Reasoning`][ContentPart::Reasoning].
+    pub fn reasoning(
+        provider: impl Into<String>,
+        text: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        ContentPart::Reasoning {
+            provider: provider.into(),
+            text: text.into(),
+            data,
+        }
+    }
+
     /// The text of a [`Text`][ContentPart::Text] part, else `None`.
+    ///
+    /// A [`Reasoning`][ContentPart::Reasoning] part is deliberately **not**
+    /// text: it must stay out of [`content_text`], which feeds the token
+    /// estimator, compaction, and the text-only converters — reasoning is not
+    /// part of the assistant's answer.
     pub fn as_text(&self) -> Option<&str> {
         match self {
             ContentPart::Text { text } => Some(text),
-            ContentPart::Image { .. } | ContentPart::ProviderSearch { .. } => None,
+            ContentPart::Image { .. }
+            | ContentPart::ProviderSearch { .. }
+            | ContentPart::Reasoning { .. } => None,
         }
     }
 }

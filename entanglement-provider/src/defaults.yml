@@ -314,7 +314,46 @@ providers:
     wire: anthropic
     key_env: ANTHROPIC_API_KEY
     default_model: claude-sonnet-4-5
+    # `thinking_style: adaptive` on the current generation: those models reject
+    # `thinking.budget_tokens` with a 400, so the fixed-budget default that suits
+    # claude-sonnet-4-5 would break them. `thinking_budget_tokens` stays unset
+    # everywhere so thinking remains opt-in; on an adaptive model the knob that
+    # enables it is `reasoning_effort`. `max_output_tokens` is generous because
+    # the cap covers thinking *and* the answer on these models.
     models:
+      - id: claude-opus-5
+        display_name: Claude Opus 5
+        context_window: 1000000
+        max_output_tokens: 64000
+        supports_thinking: true
+        thinking_style: adaptive
+        pricing:
+          input: 5.0
+          output: 25.0
+          cached_input: 0.5
+          cache_write: 6.25
+      - id: claude-opus-4-8
+        display_name: Claude Opus 4.8
+        context_window: 1000000
+        max_output_tokens: 64000
+        supports_thinking: true
+        thinking_style: adaptive
+        pricing:
+          input: 5.0
+          output: 25.0
+          cached_input: 0.5
+          cache_write: 6.25
+      - id: claude-sonnet-5
+        display_name: Claude Sonnet 5
+        context_window: 1000000
+        max_output_tokens: 64000
+        supports_thinking: true
+        thinking_style: adaptive
+        pricing:
+          input: 3.0
+          output: 15.0
+          cached_input: 0.3
+          cache_write: 3.75
       - id: claude-sonnet-4-5
         display_name: Claude Sonnet 4.5
         context_window: 200000

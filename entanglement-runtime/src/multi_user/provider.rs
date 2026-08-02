@@ -177,6 +177,21 @@ fn resolve_for_user(
                 .catalog
                 .model(provider, model)
                 .and_then(|m| m.web_search_tool_version.clone());
+            // Which extended-thinking shape this model takes; the newer Anthropic
+            // models reject the fixed-budget form outright.
+            let thinking_style = ctx
+                .catalog
+                .model(provider, model)
+                .map(|m| m.resolved_thinking_style())
+                .unwrap_or_default();
+            // Anthropic requires a captured thinking block back on a tool
+            // round-trip, and replay is inert when thinking is off, so the wire
+            // default (and the unknown-model default) is on.
+            let replay_thinking = ctx
+                .catalog
+                .model(provider, model)
+                .map(|m| m.replays_thinking(true))
+                .unwrap_or(true);
             anthropic_factory(
                 base,
                 key.to_string(),
@@ -186,6 +201,8 @@ fn resolve_for_user(
                 model_concurrency,
                 web_search,
                 web_search_tool_version,
+                thinking_style,
+                replay_thinking,
                 http_client.clone(),
             )
         }
@@ -249,6 +266,8 @@ mod tests {
                     default_temperature: None,
                     max_output_tokens: None,
                     thinking_budget_tokens: None,
+                    thinking_style: None,
+                    replay_thinking: None,
                     default_reasoning_effort: None,
                     pricing: None,
                     concurrency: None,

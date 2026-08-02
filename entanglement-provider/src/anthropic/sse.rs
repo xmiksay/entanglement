@@ -28,6 +28,20 @@ pub(super) struct PendingTool {
     pub is_server: bool,
 }
 
+/// An extended-thinking block being assembled across deltas. Both halves arrive
+/// incrementally and on separate delta types — `thinking_delta` for the text,
+/// `signature_delta` for the integrity signature — so neither is complete until
+/// `content_block_stop`.
+#[derive(Default)]
+pub(super) struct PendingThinking {
+    /// Human-readable reasoning. Legitimately empty on current models, which
+    /// omit thinking text by default while still signing the block.
+    pub text: String,
+    /// Opaque signature Anthropic validates on replay. A block without one
+    /// cannot be sent back.
+    pub signature: String,
+}
+
 /// Split one SSE frame into its `event:` type and parsed `data:` JSON payload.
 pub(super) fn parse_frame(frame: &str) -> (String, Option<Value>) {
     let mut event = String::new();
@@ -57,17 +71,17 @@ pub(super) fn parse_frame(frame: &str) -> (String, Option<Value>) {
 /// for `mod.rs`'s `pause_turn` continuation (#481): resending the paused turn's
 /// content verbatim is exactly this array. `pause_turn` is set when a
 /// `message_delta`'s `stop_reason` is `"pause_turn"`; the caller owns deciding
-/// whether/how to continue. Extended-thinking blocks are intentionally not
-/// captured here (the signature needed to replay one isn't tracked either,
-/// a pre-existing gap this change doesn't widen) — a `pause_turn` that lands
-/// mid-thinking-block loses that block on continuation, a narrow accepted
-/// limitation.
+/// whether/how to continue. Extended-thinking blocks are captured alongside the
+/// rest — signature included — which both closes the earlier `pause_turn`
+/// limitation (a pause landing mid-thinking-block used to lose it) and gives the
+/// turn loop the block Anthropic requires back on a tool round-trip.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_frame(
     event: &str,
     data: Option<Value>,
     current_tool: &mut Option<PendingTool>,
     current_text: &mut Option<String>,
+    current_thinking: &mut Option<PendingThinking>,
     assembled_blocks: &mut Vec<Value>,
     usage: &mut Usage,
     stop_reason: &mut Option<StopReason>,
@@ -147,6 +161,27 @@ pub(super) fn handle_frame(
                         emit_web_search_result(block, &mut out);
                     }
                 }
+                // Extended thinking: text and signature both arrive as deltas, so
+                // accumulate until `content_block_stop`. Started even when the
+                // model returns no thinking text at all (current models omit it by
+                // default) — the signature alone still makes the block replayable,
+                // and dropping it would break the next tool round-trip.
+                Some("thinking") => {
+                    *current_thinking = Some(PendingThinking::default());
+                }
+                // Redacted thinking arrives whole, like a search result: opaque
+                // `data`, no text to show, and it must be echoed back verbatim
+                // alongside its siblings.
+                Some("redacted_thinking") => {
+                    if let Some(block) = data.pointer("/content_block") {
+                        assembled_blocks.push(block.clone());
+                        out.push(LlmEvent::ContentBlock(ContentPart::reasoning(
+                            "anthropic",
+                            "",
+                            block.clone(),
+                        )));
+                    }
+                }
                 _ => {}
             }
         }
@@ -187,10 +222,21 @@ pub(super) fn handle_frame(
                     Some("thinking_delta") => {
                         if let Some(thinking) = delta.get("thinking").and_then(|t| t.as_str()) {
                             out.push(LlmEvent::Reasoning(thinking.to_string()));
+                            if let Some(p) = current_thinking.as_mut() {
+                                p.text.push_str(thinking);
+                            }
                         }
                     }
                     Some("signature_delta") => {
-                        // Integrity signature, not content; ignore.
+                        // The block's integrity signature — not display content,
+                        // but load-bearing on replay: Anthropic rejects a thinking
+                        // block whose signature is missing or altered, so it is
+                        // accumulated here rather than dropped.
+                        if let Some(sig) = delta.get("signature").and_then(|t| t.as_str()) {
+                            if let Some(p) = current_thinking.as_mut() {
+                                p.signature.push_str(sig);
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -241,6 +287,24 @@ pub(super) fn handle_frame(
                         input,
                         provider_meta: None,
                     }));
+                }
+            } else if let Some(thinking) = current_thinking.take() {
+                // Rebuild the block in Anthropic's own wire shape so replay can
+                // send it back byte-for-byte. Empty `thinking` text is normal and
+                // still replayable; a block with no signature is not — Anthropic
+                // rejects it — so that one is captured for display only.
+                let block = json!({
+                    "type": "thinking",
+                    "thinking": thinking.text,
+                    "signature": thinking.signature,
+                });
+                if !thinking.signature.is_empty() {
+                    assembled_blocks.push(block.clone());
+                    out.push(LlmEvent::ContentBlock(ContentPart::reasoning(
+                        "anthropic",
+                        thinking.text,
+                        block,
+                    )));
                 }
             } else if let Some(text) = current_text.take() {
                 if !text.is_empty() {
