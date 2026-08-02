@@ -541,8 +541,17 @@ below realize one model:
   the `agent_spawn`/`agent`/`agent_poll`/`ask_user` interceptions and permission —
   so a hallucinated masked call is a hard boundary, and the mask **intersects down
   the ancestor chain** (a child never gains a tool an ancestor lacked, mirroring
-  ADR-0024's privilege ceiling). `explore` is now the reference read-only agent:
-  `tools: [read, glob, grep]` — no `edit`/`write`, no `bash`, no `agent_spawn`.
+  ADR-0024's privilege ceiling). A sibling `tool_mask_source`
+  ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597)
+  runs the identical walk but returns *which* link (`Option<SessionId>`, the
+  session itself or the clamping ancestor) did the masking — `tool_masked` is
+  now a thin `.is_some()` wrapper over it — so the runtime's refusal message
+  can say "restricted by its own profile" vs "restricted by ancestor agent
+  `<name>`'s profile" instead of a blanket, unattributed "restricted by
+  profile". `explore` is the reference read-only agent: `tools: [read, glob,
+  grep, call, bash, rhai]` — no `edit`/`write`/`agent_spawn`, but `call`/`bash`/
+  `rhai` are graded `Ask` (ADR-0137) rather than masked out, so a research
+  child isn't hard-blocked from shell access, only approval-gated on it.
   It is also the **default** `agent_spawn`/`agent` target (`DEFAULT_SUBAGENT` in
   `entanglement_runtime::subagent`) when the caller omits `agent` — the safe
   choice for an unscoped delegation. But it is also, by design, the *only*
@@ -676,13 +685,30 @@ below realize one model:
   from one carve-out (#524,
   [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)):
   `tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user,
-  load_skill, propose_plan, write, edit]` unmasks `write`/`edit`,
+  load_skill, propose_plan, write, edit, call, bash]` unmasks `write`/`edit`,
   but its permission rules (`write: deny` plus the argument-scoped
   `write(.entanglement/plans/*.md): allow`, fanned out to `edit`/`apply_patch`
   by the `write` capability key, #418) grade every write outside
   `.entanglement/plans/*.md` as `Deny` — the opencode-style plans-folder
   exception `propose_plan`'s `content` mode writes into, everything else
-  stays physically unreachable. A clamp its spawned children inherit.
+  stays physically unreachable. `call`/`bash` are on the mask too
+  ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597):
+  not for `plan` to run shell itself, but so the ancestor-clamp intersection
+  below doesn't erase them from an `explore` child it delegates research to —
+  `explore.md` grants its own `call`/`bash` at `Ask`, and without `plan`'s own
+  mask also carrying them the intersection would silently drop both regardless
+  of what the child's own definition allows. The mask alone isn't enough,
+  though: `call` is a `MULTI_GROUP` tool (#418, ADR-0114) whose *bare*
+  (no-argument) grade is always the least-privileged of every bare capability
+  grade in the profile — `plan.md`'s own `write: deny` pulls it to `Deny`
+  regardless of any bare `call: ask` written alongside it, which would still
+  clamp a real child dispatch. `plan.md`'s permission block instead grades
+  `call(*): ask` — an arg-scoped capability key, which ADR-0114 lets refine
+  `call`'s multi-group floor by command pattern — fanning out to both
+  `call(*)`/`bash(*)`; a real invocation always carries its command as the
+  argument, so this is what actually governs dispatch, while the coarse
+  no-argument view legitimately stays `Deny`. A clamp its spawned children
+  inherit.
 - **System-prompt assembly (✅ #113, [ADR-0035](../adr/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five

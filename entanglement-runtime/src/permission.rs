@@ -25,7 +25,9 @@
 //!   session — a call is refused before permission is even resolved. Like the
 //!   ceiling it clamps down the ancestor chain (a child never gains a tool an
 //!   ancestor lacked). This is the enforcement half of the physical restriction
-//!   whose advertisement half lives in core's `run_turn`.
+//!   whose advertisement half lives in core's `run_turn`. [`tool_mask_source`]
+//!   (#597) is the same walk, naming which link in the chain did the masking,
+//!   so a refusal can say *whose* profile erased the tool.
 //! - **Skill mask** — [`skill_masked`] (#400, ADR-0106): layered *after* the
 //!   #116 agent mask above — a tool must survive both. Set when a `load_skill`
 //!   call activates a skill carrying an `allowed_tools` list, cleared when the
@@ -211,6 +213,22 @@ pub fn tool_masked(
     session: &SessionId,
     tool: &str,
 ) -> bool {
+    tool_mask_source(active, guard, overlays, session, tool).is_some()
+}
+
+/// Like [`tool_masked`], but names *which* link in the chain masked the tool
+/// (#597): `None` ⇒ not masked; `Some(id)` ⇒ `id`'s profile (or its overlay,
+/// or its being unseen) is what erased the tool — `id == session` means the
+/// session's own profile, any other id an ancestor that clamped it. Lets a
+/// caller build a refusal message that says *whose* mask did it, instead of
+/// leaving "restricted by profile" ambiguous between the two.
+pub fn tool_mask_source(
+    active: &HashMap<SessionId, AgentProfile>,
+    guard: &SpawnGuard,
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
+    session: &SessionId,
+    tool: &str,
+) -> Option<SessionId> {
     // A link's own live tool overlay (#539, ADR-0149) overrides its profile
     // mask in both directions — a deny entry withdraws a profile-advertised
     // tool, an enable entry injects a masked one; no opinion falls back to
@@ -227,40 +245,40 @@ pub fn tool_masked(
     // A sponsored session is a permission root (ADR-0138): only its own (and
     // any sponsored ancestor's) advertised set masks it, not the chain above.
     if guard.is_sponsored(&current) {
-        match active.get(&current) {
-            Some(profile) => return !admits(&current, profile),
+        return match active.get(&current) {
+            Some(profile) if !admits(&current, profile) => Some(current),
+            Some(_) => None,
             // Unseen sponsored session ⇒ fail-closed (#156).
-            None => return true,
-        }
+            None => Some(current),
+        };
     }
     // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
     let mut visited = HashSet::new();
     while visited.insert(current.clone()) {
         match active.get(&current) {
-            Some(profile) if !admits(&current, profile) => return true,
+            Some(profile) if !admits(&current, profile) => return Some(current),
             Some(_) => {}
             // Unseen session in the chain ⇒ fail-closed (#156).
-            None => return true,
+            None => return Some(current),
         }
         match guard.parent_of(&current) {
             Some(parent) => {
                 // A sponsored ancestor (ADR-0138): check its mask too (it
                 // clamps this sub-tree) but stop the walk above it.
                 if guard.is_sponsored(&parent) {
-                    match active.get(&parent) {
-                        Some(profile) if !admits(&parent, profile) => return true,
+                    return match active.get(&parent) {
+                        Some(profile) if !admits(&parent, profile) => Some(parent),
+                        Some(_) => None,
                         // Unseen sponsored ancestor ⇒ fail-closed.
-                        None => return true,
-                        _ => {}
-                    }
-                    return false;
+                        None => Some(parent),
+                    };
                 }
                 current = parent;
             }
             None => break,
         }
     }
-    false
+    None
 }
 
 /// A skill's tool mask while "active" in a session (#400, ADR-0106): the
@@ -830,6 +848,113 @@ mod tests {
         assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
         // The parent (a root) keeps its own mask unchanged.
         assert!(tool_masked(&active, &guard, &HashMap::new(), &p, "edit"));
+    }
+
+    #[test]
+    fn tool_mask_source_names_the_clamping_ancestor_vs_own_profile() {
+        // #597: the source distinguishes "own profile lacks it" from "an
+        // ancestor's mask erased it" — the refusal message needs to tell
+        // them apart instead of a blanket "restricted by profile".
+        let parent = masked_profile(
+            "restricted",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+            Some(vec!["read"]),
+            Vec::new(),
+        );
+        let child = masked_profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+            Some(vec!["read", "edit"]),
+            Vec::new(),
+        );
+        let p = SessionId::new("parent");
+        let c = SessionId::new("child");
+        let mut active = HashMap::new();
+        active.insert(p.clone(), parent);
+        active.insert(c.clone(), child);
+        let mut guard = SpawnGuard::new();
+        guard.record_start(p.clone(), None);
+        guard.record_start(c.clone(), Some(p.clone()));
+
+        // `edit` is masked by the parent's narrower allowlist, not the child's own.
+        assert_eq!(
+            tool_mask_source(&active, &guard, &HashMap::new(), &c, "edit"),
+            Some(p.clone())
+        );
+        // `agent_spawn` is absent from the child's own allowlist too — the walk
+        // stops at the child itself.
+        assert_eq!(
+            tool_mask_source(&active, &guard, &HashMap::new(), &c, "agent_spawn"),
+            Some(c.clone())
+        );
+        // `read` survives the whole chain → not masked.
+        assert_eq!(
+            tool_mask_source(&active, &guard, &HashMap::new(), &c, "read"),
+            None
+        );
+    }
+
+    #[test]
+    fn plan_mask_no_longer_erases_call_bash_from_an_explore_child() {
+        // #597: `plan`'s own mask used to lack `call`/`bash`, so the ancestor
+        // clamp erased them from any `explore` child it spawned even though
+        // `explore.md` itself grants both (ask-graded). `plan.md` now carries
+        // both on its own mask so the intersection stops erasing them.
+        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
+        let plan = reg.get("plan").unwrap().clone();
+        let explore = reg.get("explore").unwrap().clone();
+
+        let p = SessionId::new("plan");
+        let c = SessionId::new("explore-child");
+        let mut active = HashMap::new();
+        active.insert(p.clone(), plan);
+        active.insert(c.clone(), explore);
+        let mut guard = SpawnGuard::new();
+        guard.record_start(p.clone(), None);
+        guard.record_start(c.clone(), Some(p.clone()));
+
+        assert!(
+            !tool_masked(&active, &guard, &HashMap::new(), &c, "call"),
+            "an explore child of plan must keep its own `call` access"
+        );
+        assert!(
+            !tool_masked(&active, &guard, &HashMap::new(), &c, "bash"),
+            "an explore child of plan must keep its own `bash` access"
+        );
+        // `edit` stays masked: plan's own mask still lacks it for children.
+        assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
+    }
+
+    #[test]
+    fn plan_child_explore_reaches_ask_on_a_real_call_dispatch() {
+        // #597 end-to-end: the mask fix alone isn't enough — the ancestor
+        // *permission* ceiling (`effective_permission`) also has to clear
+        // `call` for an actual dispatch, not just the mask. `plan`'s own
+        // coarse (no-arg) `call` grade is `Deny` (ADR-0114's `MULTI_GROUP`
+        // floor, tightened by `write: deny`), but a real invocation always
+        // carries its command as the argument, and `plan.md`'s `call(*): ask`
+        // arg-scoped rule refines exactly that case — reproducing the
+        // issue's `gh issue view 594` via `call`.
+        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
+        let plan = reg.get("plan").unwrap().clone();
+        let explore = reg.get("explore").unwrap().clone();
+
+        let p = SessionId::new("plan");
+        let c = SessionId::new("explore-child");
+        let mut active = HashMap::new();
+        active.insert(p.clone(), plan);
+        active.insert(c.clone(), explore);
+        let mut guard = SpawnGuard::new();
+        guard.record_start(p.clone(), None);
+        guard.record_start(c.clone(), Some(p.clone()));
+
+        assert_eq!(
+            effective_permission(&active, &guard, &c, "call", Some("gh issue view 594"), None),
+            Permission::Ask,
+            "a real `call` dispatch under an explore child of plan must reach Ask, not Deny"
+        );
     }
 
     #[test]
