@@ -32,12 +32,12 @@ fn ensure_shared_state_disabled() {
 
 fn test_http_client() -> HttpClient {
     ensure_shared_state_disabled();
-    HttpClient::new()
+    HttpClient::new().unwrap()
 }
 
 fn test_http_client_with(config: RetryConfig) -> HttpClient {
     ensure_shared_state_disabled();
-    HttpClient::with_config(config)
+    HttpClient::with_config(config).unwrap()
 }
 
 // ── mock server ─────────────────────────────────────────────────────────────
