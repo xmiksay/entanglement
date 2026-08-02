@@ -191,6 +191,24 @@ impl SharedGate {
     }
 }
 
+/// Sweep `${data_dir}/entanglement/endpoints/` for `.state`/`.lock` pairs
+/// that have gone idle for at least `max_idle` *and* carry no live lease,
+/// pending cool-down, or recent request (#551) — the artifact of a `/key`
+/// rotation, a catalog `base_url` edit, or a decommissioned provider, none of
+/// which ever evict the shared-state file their old pool key wrote. Intended
+/// as a best-effort startup sweep (mirrors `session_store::prune`'s role for
+/// session logs); a no-op when sharing is disabled ([`DISABLE_ENV`]) or the
+/// state directory can't be determined. Returns the number of pairs removed.
+pub fn prune_stale(max_idle: Duration) -> usize {
+    if std::env::var(DISABLE_ENV).as_deref() == Ok("1") {
+        return 0;
+    }
+    let Some(dir) = state_dir() else {
+        return 0;
+    };
+    shared_store::prune_orphaned(&dir, max_idle)
+}
+
 /// A point-in-time, cross-process view of one endpoint's shared gate — see
 /// [`SharedGate::peek`].
 #[derive(Debug, Clone, Copy)]
@@ -255,6 +273,44 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("endpoint.state");
         (dir, path)
+    }
+
+    #[test]
+    fn prune_stale_sweeps_the_resolved_state_dir() {
+        // End-to-end through the public `prune_stale` entry point (rather
+        // than `shared_store::prune_orphaned` directly): resolves the state
+        // dir the same way `SharedGate::new` does, so this exercises the
+        // actual path `main.rs`'s startup sweep will call.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stale_path = dir
+            .path()
+            .join(format!("{}.state", shared_store::hash_key("k")));
+        fs::write(
+            &stale_path,
+            serde_json::to_vec(&SharedState::default()).unwrap(),
+        )
+        .unwrap();
+        fs::File::open(&stale_path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(7200))
+            .unwrap();
+
+        std::env::set_var(STATE_DIR_ENV, dir.path());
+        let removed = prune_stale(Duration::from_secs(3600));
+        std::env::remove_var(STATE_DIR_ENV);
+
+        assert_eq!(removed, 1);
+        assert!(!stale_path.exists());
+    }
+
+    #[test]
+    fn prune_stale_is_a_noop_when_sharing_is_disabled() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(DISABLE_ENV, "1");
+        let removed = prune_stale(Duration::from_secs(0));
+        std::env::remove_var(DISABLE_ENV);
+        assert_eq!(removed, 0);
     }
 
     #[test]

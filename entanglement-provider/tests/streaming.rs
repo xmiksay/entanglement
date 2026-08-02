@@ -15,6 +15,31 @@ use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+// ── shared-state isolation (#551) ───────────────────────────────────────────
+
+/// Every test in this binary drives `execute_with_retry` against a local mock
+/// server, not a real endpoint — but without this, the cross-process shared
+/// endpoint state (#523) would still write real `.state`/`.lock` files into
+/// the developer's actual `${data_dir}/entanglement/endpoints/`. `Once`-guarded
+/// so it's cheap to call from every `HttpClient` constructor below and only
+/// ever sets the env var a single time for the whole binary.
+fn ensure_shared_state_disabled() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1");
+    });
+}
+
+fn test_http_client() -> HttpClient {
+    ensure_shared_state_disabled();
+    HttpClient::new()
+}
+
+fn test_http_client_with(config: RetryConfig) -> HttpClient {
+    ensure_shared_state_disabled();
+    HttpClient::with_config(config)
+}
+
 // ── mock server ─────────────────────────────────────────────────────────────
 
 /// Read one HTTP request off `stream` (headers + any `Content-Length` body) so
@@ -136,7 +161,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         None,
         fixed_model_concurrency(None),
         None,
-        HttpClient::new(),
+        test_http_client(),
     );
     let messages = vec![Message::user("hello")];
     let req = LlmRequest {
@@ -305,7 +330,7 @@ async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEven
         None,
         fixed_model_concurrency(None),
         None,
-        HttpClient::with_config(config),
+        test_http_client_with(config),
     );
     let messages = vec![Message::user("hi")];
     let req = LlmRequest {
@@ -393,7 +418,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         rate_limit_max_elapsed: Duration::from_millis(200),
         ..RetryConfig::default()
     };
-    let http = HttpClient::with_config(config);
+    let http = test_http_client_with(config);
     let messages = vec![Message::user("hi")];
     let req = || LlmRequest {
         system: "s",
@@ -613,7 +638,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
     let delay = Duration::from_millis(300);
     let (base_url, accept_times) = serve_sequential_with_delay(ok_body(), 2, delay).await;
 
-    let http = HttpClient::with_config(no_pacing_config());
+    let http = test_http_client_with(no_pacing_config());
     let mut llm_a = OpenAiLlm::new(
         base_url.as_str(),
         Some("k".into()),
@@ -694,7 +719,7 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
             "glm-5.2" => Some(5),
             _ => None,
         });
-    let http = HttpClient::with_config(no_pacing_config());
+    let http = test_http_client_with(no_pacing_config());
     let mut llm_a = OpenAiLlm::new(
         base_url.as_str(),
         Some("k".into()),
@@ -766,7 +791,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
     ])
     .await;
 
-    let http = HttpClient::with_config(no_pacing_config());
+    let http = test_http_client_with(no_pacing_config());
     let mut flash = OpenAiLlm::new(
         base_url.as_str(),
         Some("k".into()),
@@ -820,7 +845,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
     let delay = Duration::from_millis(200);
     let base_url = serve_concurrent(vec![(ok_body(), delay), (ok_body(), delay)]).await;
 
-    let http = HttpClient::with_config(no_pacing_config());
+    let http = test_http_client_with(no_pacing_config());
     let mut llm_a = OpenAiLlm::new(
         base_url.as_str(),
         Some("k".into()),
@@ -913,7 +938,7 @@ async fn endpoint_permit_frees_promptly_when_a_keep_alive_proxy_holds_the_body_o
     });
     let base_url = format!("http://{addr}");
 
-    let http = HttpClient::with_config(RetryConfig {
+    let http = test_http_client_with(RetryConfig {
         concurrency: 1,
         ..RetryConfig::default()
     });

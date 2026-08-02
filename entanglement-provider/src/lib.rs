@@ -38,11 +38,11 @@ pub mod provider_mcp;
 mod sse_frame;
 pub mod web_search;
 
-pub use anthropic::{anthropic_factory, AnthropicLlm};
+pub use anthropic::{anthropic_factory, AnthropicLlm, ANTHROPIC_BASE};
 pub use catalog::{
     Catalog, McpServerState, ModelEntry, ModelPricing, ProviderEntry, ProviderMcpServer, Wire,
 };
-pub use client::{HttpClient, RetryConfig, StreamGuard, ThrottleStatus};
+pub use client::{prune_stale, HttpClient, RetryConfig, StreamGuard, ThrottleStatus};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
     fixed_model_concurrency, stream_from_response, AuxLlmResolver, DummyLlm, EchoLlm,

@@ -41,7 +41,11 @@ use sse::{handle_frame, parse_frame, PendingTool};
 
 pub(crate) use request::coalesce_same_role;
 
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
+/// Default base — no path — mirroring [`crate::openai::OPENAI_BASE`]/
+/// [`crate::gemini::GEMINI_BASE`]. A catalog `base_url` (a proxy/gateway
+/// speaking the Anthropic wire) overrides this per #551; before that fix the
+/// URL was hard-coded and `base_url` silently ignored.
+pub const ANTHROPIC_BASE: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Fallback output cap when the request carries no
 /// [`GenerationParams::max_output_tokens`] (Anthropic *requires* `max_tokens`).
@@ -57,6 +61,10 @@ const MAX_PAUSE_CONTINUATIONS: usize = 6;
 #[derive(Clone)]
 pub struct AnthropicLlm {
     api_key: String,
+    /// Base URL, no trailing slash required — `/v1/messages` is appended per
+    /// request. Defaults to [`ANTHROPIC_BASE`]; a catalog `base_url` (a
+    /// proxy/gateway) overrides it (#551).
+    base_url: String,
     default_model: String,
     /// Fallback output cap ([`DEFAULT_MAX_TOKENS`]) used only when a request omits
     /// its own [`GenerationParams::max_output_tokens`] (#191).
@@ -86,6 +94,7 @@ pub struct AnthropicLlm {
 impl AnthropicLlm {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        base_url: impl Into<String>,
         api_key: impl Into<String>,
         default_model: impl Into<String>,
         rpm: Option<u32>,
@@ -97,6 +106,7 @@ impl AnthropicLlm {
     ) -> Self {
         Self {
             api_key: api_key.into(),
+            base_url: base_url.into(),
             default_model: default_model.into(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
             rpm,
@@ -110,14 +120,16 @@ impl AnthropicLlm {
 }
 
 /// Build an [`LlmFactory`] wired to Anthropic. Each session gets its own cloned
-/// [`AnthropicLlm`]. `rpm`/`concurrency = None` use the client's (or endpoint's)
-/// defaults; `model_concurrency` resolves a tighter per-model cap per request
-/// (`|_| None` disables it, #521, resolved per request rather than once at
-/// construction, #550); `web_search = Some(..)` requests provider-side web
-/// search (#305); `web_search_tool_version` selects the server-tool type when
-/// set (#481).
+/// [`AnthropicLlm`]. `base_url` overrides [`ANTHROPIC_BASE`] — a proxy/gateway
+/// catalog entry (#551); `rpm`/`concurrency = None` use the client's (or
+/// endpoint's) defaults; `model_concurrency` resolves a tighter per-model cap
+/// per request (`|_| None` disables it, #521, resolved per request rather than
+/// once at construction, #550); `web_search = Some(..)` requests provider-side
+/// web search (#305); `web_search_tool_version` selects the server-tool type
+/// when set (#481).
 #[allow(clippy::too_many_arguments)]
 pub fn anthropic_factory(
+    base_url: impl Into<String>,
     api_key: impl Into<String>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
@@ -128,6 +140,7 @@ pub fn anthropic_factory(
     http: HttpClient,
 ) -> crate::LlmFactory {
     let llm = AnthropicLlm::new(
+        base_url,
         api_key,
         default_model,
         rpm,
@@ -190,6 +203,10 @@ impl Llm for AnthropicLlm {
 
         let http = self.http.clone();
         let api_key = self.api_key.clone();
+        // Base defaults to `ANTHROPIC_BASE`; a catalog `base_url` (a
+        // proxy/gateway speaking the Anthropic wire) overrides it (#551) — the
+        // trim mirrors `openai`/`gemini`'s own request-URL construction.
+        let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let rpm = self.rpm;
         let concurrency = self.concurrency;
         // Resolved against *this* request's model, not baked in at
@@ -212,7 +229,7 @@ impl Llm for AnthropicLlm {
             loop {
                 let (response, guard) = http
                     .execute_with_retry(
-                        ANTHROPIC_API_URL,
+                        &url,
                         Some(&api_key),
                         rpm,
                         concurrency,
@@ -220,7 +237,7 @@ impl Llm for AnthropicLlm {
                         model_concurrency,
                         || {
                             http.client()
-                                .post(ANTHROPIC_API_URL)
+                                .post(&url)
                                 .header("x-api-key", &api_key)
                                 .header("anthropic-version", ANTHROPIC_VERSION)
                                 .json(&body)

@@ -156,6 +156,58 @@ fn prune(state: &mut SharedState, now: u64) {
     }
 }
 
+/// Delete `.state`/`.lock` pairs under `dir` that are both **idle** (the
+/// `.state` file's mtime is older than `max_idle`) and **empty** (no live
+/// lease, no pending cool-down, no request in the trailing RPM window, after
+/// running the same [`prune`] every real admission attempt applies) — an
+/// orphan left behind by a `/key` rotation or a catalog `base_url` change
+/// (#551): nothing else ever removes these files, so without this sweep they
+/// accumulate under the state directory forever. An endpoint still in active
+/// use always fails the "empty" check (a live lease or a fresh RPM-window
+/// timestamp) and is left untouched regardless of its mtime. Best-effort: a
+/// read/write failure on any one pair is skipped rather than propagated, so
+/// one bad file never stops the sweep. Returns the number of pairs removed.
+pub(super) fn prune_orphaned(dir: &Path, max_idle: Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let now = now_ms();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("state") {
+            continue;
+        }
+        let is_idle = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|modified| {
+                SystemTime::now()
+                    .duration_since(modified)
+                    .unwrap_or_default()
+                    >= max_idle
+            })
+            .unwrap_or(false);
+        if !is_idle {
+            continue;
+        }
+        let is_empty = with_locked_state(&path, |state| {
+            prune(state, now);
+            state.leases.is_empty()
+                && state.request_times_ms.is_empty()
+                && state.retry_after_until_ms.is_none()
+        });
+        if is_empty != Ok(true) {
+            continue;
+        }
+        if fs::remove_file(&path).is_ok() {
+            let _ = fs::remove_file(path.with_extension("lock"));
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Run `f` over the current on-disk state under an exclusive advisory lock on
 /// `path`'s `.lock` sibling, then persist whatever `f` mutated. Creates the
 /// parent directory on first use. `Err(())` covers every filesystem failure
@@ -381,6 +433,69 @@ mod tests {
             try_admit(&path, 100, 1, 222),
             Ok(Admission::Wait(_))
         ));
+    }
+
+    fn set_mtime_ago(path: &Path, ago: Duration) {
+        let modified = SystemTime::now() - ago;
+        fs::File::open(path)
+            .expect("open for mtime backdate")
+            .set_modified(modified)
+            .expect("set mtime");
+    }
+
+    #[test]
+    fn prune_orphaned_removes_idle_empty_pairs() {
+        // #551: an old `/key` rotation's endpoint has gone completely quiet —
+        // no live lease, no pending cool-down, no recent request — and its
+        // `.state`/`.lock` pair has sat untouched past `max_idle`. It must be
+        // swept, or it (and every other rotation before it) accumulates
+        // forever.
+        let (dir, path) = tmp_state_path();
+        fs::write(&path, serde_json::to_vec(&SharedState::default()).unwrap()).unwrap();
+        let lock_path = path.with_extension("lock");
+        fs::write(&lock_path, b"").unwrap();
+        set_mtime_ago(&path, Duration::from_secs(7200));
+
+        let removed = prune_orphaned(dir.path(), Duration::from_secs(3600));
+        assert_eq!(removed, 1);
+        assert!(!path.exists());
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn prune_orphaned_leaves_a_recently_touched_pair_alone() {
+        // An endpoint that's merely idle for a few seconds (well under
+        // `max_idle`) is not yet "orphaned" — deleting it would just make the
+        // very next request rebuild it from scratch, discarding real state.
+        let (dir, path) = tmp_state_path();
+        fs::write(&path, serde_json::to_vec(&SharedState::default()).unwrap()).unwrap();
+
+        let removed = prune_orphaned(dir.path(), Duration::from_secs(3600));
+        assert_eq!(removed, 0);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn prune_orphaned_leaves_an_idle_but_still_live_pair_alone() {
+        // Idle by mtime, but still holding a live (unexpired) lease — a
+        // long-running streamed request whose heartbeat just hasn't ticked
+        // yet must never be swept out from under it.
+        let (dir, path) = tmp_state_path();
+        let state = SharedState {
+            request_times_ms: Vec::new(),
+            retry_after_until_ms: None,
+            leases: vec![Lease {
+                id: 1,
+                pid: 111,
+                expires_at_ms: now_ms() + 60_000,
+            }],
+        };
+        fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+        set_mtime_ago(&path, Duration::from_secs(7200));
+
+        let removed = prune_orphaned(dir.path(), Duration::from_secs(3600));
+        assert_eq!(removed, 0);
+        assert!(path.exists());
     }
 
     #[test]
