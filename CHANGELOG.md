@@ -14,6 +14,197 @@ alternatives behind each design decision live in the ADRs under
 > must never edit it; there is deliberately no `[Unreleased]` section to append
 > to, because concurrent PRs each extending one conflict on every merge.
 
+## [0.6.0] - 2026-08-02
+
+A major feature release: multi-user mode, MCP OAuth, provider-bundled MCP
+servers, the plan tool + sponsored build child, per-purpose aux models, settable
+session metadata, pause/resume, shared endpoint state across instances, wire-
+visible throttle transitions, per-model concurrency caps, per-session tool
+overlay, glob patterns in agent tool masks, and ask_user list/retract/replace.
+Plus a robustness-fix batch (TUI UTF-8 panic handling, unbounded MCP buffer
+caps, enable TOCTOU race fix, registry cycle detection, detached task Holly
+clone abort at shutdown, Retry-After overflow clamping, mutex-poison labeling,
+reqwest builder failure propagation, built_in_registry parse failure surfacing).
+
+> **Wire-shape changes:** All backward-compatible — new `InMsg`/`OutEvent`
+> variants are additive, and new fields carry `#[serde(default)]`/`skip_serializing_if`
+> so old logs/clients still deserialize.
+> - New `InMsg` variants: `PauseSession`, `ResumeSession`, `ListQuestions`,
+>   `RetractQuestion`, `ReplaceQuestion`, `SetSessionMeta`, `SetToolOverlay`,
+>   `McpAuth`.
+> - New `OutEvent` variants: `Throttle`, `QuestionList`, `SessionMetaChanged`,
+>   `ToolOverlayChanged`, `McpAuthChanged`.
+> - New additive fields: `SessionStarted.user`, `Spawn.user`, `SessionInfo.user`
+>   (#522 multi-user); `Throttle.waiters` + `shared_leases` (#552/#523);
+>   `Plan.path` (#513); `McpServerStatus.auth` (ADR-0153).
+
+### Added
+
+- **Multi-user mode** (#522, ADR-0147): per-user providers, API keys, RPM limits,
+  and permissions via an embedder-supplied `UserId` type. The embedder owns user
+  creation/deletion and passes a `user` to `Holly::spawn_root`; sessions inherit
+  their user from their root (or from their predecessor on resume), and spawns
+  carry a `user` field that's ignored for children (they inherit). The runtime
+  sides of the API (key store, request limits, MCP tokens, endpoint leases) are
+  already keyed by user id; the protocol changes are additive only.
+- **MCP server OAuth** (#560, ADR-0153): an optional `oauth:` block on an MCP
+  server entry switches it from static-header auth to a browser-obtained bearer
+  token via RFC 9728/RFC 8414/RFC 7591 discovery + dynamic client registration +
+  PKCE S256. New `InMsg::McpAuth { name, action: Connect|Check|Disconnect }` /
+  `OutEvent::McpAuthChanged` are trusted-only (wire-refused), sharpening
+  ADR-0124. Credentials persist in managed `mcp-tokens.yml`. A `/mcp connect
+  <name>` TUI command launches the browser.
+- **Provider-bundled MCP servers** (#542, ADR-0152): the provider catalog can
+  advertise built-in MCP servers under a new `mcp_servers` map (keyed by name,
+  value is an `McpServerSpec`), enabled by default but disabled by a
+  `disabled: true` list or the existing server-level `disabled`. A three-state
+  enablement model (enabled/allowed/available-unconnected) rides in
+  `McpServerStatus`. Startup auto-connects all enabled servers; a `/mcp enable
+  <name>`/`disable <name>` pair toggles mid-session.
+- **One plan tool — file-backed plans and blocking review loop** (#513,
+  ADR-0145): `update_plan` is gone; the unified `plan` tool reads/writes
+  markdown files under `.entanglement/plans/` (root-contained, opt-in scratch
+  carve-out ADR-0142). A `/plan` command opens the TUI modal; submitting a plan
+  spawns a sponsored build child (ADR-0138) that parks until the user approves
+  the plan via `propose_plan` — a blocking approval cycle (the head sees a
+  parked `WaitingAgent` state, ADR-0139). The build's answer folds back as the
+  `plan` tool result, enabling plan/build cycling. Plan mask widened for explore
+  (ADR-0159).
+- **Per-purpose auxiliary models** (#560, ADR-0154): a managed `aux-models.yml`
+  maps purpose → `{provider, model}` for side transformations (`summarize`,
+  `session_title`). The runtime-side session-title generator and compaction both
+  use cheaper models when pinned, falling back to the primary or session model
+  respectively. Compaction honors the aux pin on context overflow (ADR-0103).
+  Session-title aux calls defer under contended primary concurrency (ADR-0158).
+- **Settable session metadata** (#553, ADR-0151): `InMsg::SetSessionMeta { name?,
+  action?, if_unset=false }` merges display metadata onto `Session.name` (a
+  session title, e.g. derived from the first prompt) and `Session.action` (what
+  the agent is doing now). Applied immediately (never stashed), always acks
+  with `OutEvent::SessionMetaChanged` carrying the full merged values. The TUI
+  `/name <text>` sets `name` for the active session; the title generator respects
+  `if_unset` and never clobbers a `/name` or a name restored by resume.
+- **Per-session tool overlay** (#539, ADR-0149): `InMsg::SetToolOverlay { entries:
+  [ToolOverlayEntry { pattern, allow, deny }] }` replaces the session's live
+  tool overlay — enable entries exist past the agent mask (graded `Ask|Allow`),
+  deny entries withdraw even profile-advertised tools. Full replacement, empty
+  clears. Trusted-only, wire-refused. Acked by `OutEvent::ToolOverlayChanged`.
+  The TUI `/enable`/`/disable` commands send over `Holly::send`.
+- **Glob patterns in the agent tool mask** (#537, ADR-0148): the
+  `disallowed_tools` denylist now accepts glob patterns (`*`/`?`), so a single
+  rule can block a whole tool family (e.g. `*bash*` blocks `bash`/`bash_output`
+  and even `call` bindings marshalling to bash). Mask resolution is now a
+  dependency-free glob engine in core (`tools::mask`).
+- **Pause/resume** (#516, ADR-0144): `InMsg::PauseSession`/`ResumeSession`
+  drive a `Session.paused: bool` that gates the next `Prompt`/`SetAgent`/`SetModel`/
+  `SetGeneration`/`Oneshot` onto the turn-stash queue (idle case) or holds the
+  drained batch's continuation into the next model round-trip (parked case). New
+  `AgentState::Paused` rides the TUI ship-cruise. Mid-stream pause is
+  unchanged — it rides the existing stash-and-replay mechanism. `Stop`/`Hibernate`
+  always win and neither clears it.
+- **Shared endpoint state across instances** (#523, ADR-0144 file-backed): two
+  `skutter` processes talking to the same `(endpoint, API key)` now share an
+  fd-lock-guarded file state under `${data_dir}/entanglement/endpoints/` covering
+  the RPM ledger, a lease-based in-flight concurrency count (crash-safe via TTL),
+  and the `Retry-After` cool-down. Falls back to pure in-process gating when the
+  state directory is unwritable or via `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1`.
+  (Note: number collision with ADR-0144 pause/resume; both accepted 2026-07-31.)
+- **Wire-visible throttle transitions** (#517, ADR-0141): the provider's per-
+  endpoint resilience pool was invisible to stdio/WS heads — a 429 stall showed
+  as an opaque `Thinking`. `OutEvent::Throttle { endpoint, throttled, in_flight,
+  cap, waiters, shared_leases?, retry_in_ms?, pacing_in_ms? }` joins the protocol
+  as an engine-global, no-`seq` lifecycle event emitted only on a transition,
+  not every poll. `spawn_throttle_responder` polls every 500ms.
+- **Per-model concurrency cap** (#521, ADR-0140): layered on the endpoint cap.
+  `ModelEntry` gains an optional `concurrency` catalog entry (YAML-only, no env
+  override). `EndpointState` gains a second semaphore per `(endpoint, model)`;
+  a request acquires the model permit *first*, then the endpoint permit, so a
+  tighter model never starves looser siblings sharing the endpoint. `ThrottleStatus`
+  reports whichever cap is tighter.
+- **Ask-user list/retract/replace** (#515, ADR-0146): `InMsg::ListQuestions {
+  correlation_id, session? }` queries every open `ask_user` question (or one
+  session's when `session` is set), answered by `OutEvent::QuestionList {
+  correlation_id, questions: [PendingQuestion {session,request_id,questions}] }`.
+  `InMsg::RetractQuestion { session,request_id }` withdraws an open question
+  without cancelling the turn — the orchestrator still replies with a withdrawal
+  note, unlike `Stop`'s silent unwind. `InMsg::ReplaceQuestion { session,request_id,
+  questions }` swaps the content in place and re-parks under the same `request_id`.
+- **Trusted scratch dir + plans-folder carve-out** (#524, ADR-0142): the
+  runtime's own scratch dir (`session_store::scratch_dir`) is consulted first by
+  `ExtraRootStore`, so the default `call`-output target needs no approval for
+  any tool in any profile. Separately, the built-in `plan` profile adds a
+  `write(.entanglement/plans/*.md): allow` rule carving out the plans folder for
+  the unified plan tool (ADR-0145) while keeping the rest of the read-only mask.
+- **Explore gains Ask-grade shell access** (#522, ADR-0137): the built-in
+  `explore` profile widens its mask to `[read,glob,grep,call,bash,rhai]` with the
+  exec triad graded `Ask` — each exec call parks at `WaitingApproval` for
+  explicit user approval, preserving read-only safety while providing an
+  escalation path for one-command inspections.
+- **Search tool CLI ergonomics** (#560, ADR-0150): `grep`/`glob` now default to
+  searching the working directory instead of requiring an explicit `.` argument,
+  matching common shell tool behavior (amends ADR-0016's empty-result contract).
+
+### Changed
+
+- **Trim advertised tool specs + conditional call-artifact header + 32 KiB MCP
+  result cap** (#582): `ToolSpec` advertisements trim the inner `input` schema
+  to 32 KiB before serialization (the actual JSON payload is untruncated), and
+  `ToolRequest` emits a header only when a tool call actually rides. MCP
+  results are capped at 32 KiB to prevent unbounded response buffering.
+- **MCP client mechanism moved into the provider** (#560, ADR-0153): the
+  streamable-HTTP transport + shared JSON-RPC helpers move to
+  `entanglement-provider::mcp`, while config/registry/permissions/token
+  file/browser stay runtime-side. The runtime drops its direct `reqwest` dep
+  and `mcp-http` becomes a pure compile gate.
+- **Normalize and stabilize the endpoint pool key** (#560, ADR-0156): endpoint
+  pool keys normalize `endpoint` URLs and API keys before hashing, so spelling
+  variations don't fragment resilience state. The hash is now stable across
+  restarts (`DefaultHasher` fixed).
+- **MCP HTTP transport shares the endpoint pool** (#560, ADR-0157): MCP HTTP
+  requests ride the same `HttpClient`/`EndpointPool` resilience layer as LLM
+  traffic, so the shared RPM/concurrency cap/Retry-After cool-down applies to MCP
+  calls too.
+
+### Fixed
+
+- **TUI diff UTF-8 panic handling**: unbounded MCP buffer caps, enable TOCTOU
+  race fix, registry cycle detection, detached task Holly clone abort at
+  shutdown, `Retry-After` overflow panic clamped (network-controlled).
+- **Abort detached tasks holding Holly clones at shutdown** to prevent orphaned
+  references.
+- **`Retry-After` overflow panic** (network-controlled) clamped.
+- **Cap `Retry-After` park**, race `stream()` vs `Stop`, sync lease release.
+- **Surface swallowed I/O errors in tool-exec + hook piping** instead of
+  silently dropping them.
+- **Label mutex-poison panics on MCP + tool-dispatch hot paths** for clearer
+  debugging.
+- **Propagate reqwest builder failure instead of panicking**.
+- **`built_in_registry` surfaces parse failure as `Result`** instead of panicking.
+- **TUI badge race** — subscribe before bootstrap `SetAgent`.
+- **Plan mask no longer erases explore's call/bash**.
+- **MCP required-param validation** now rejects missing required fields at tool
+  call time.
+- **Quarantine corrupt `mcp-tokens.yml`** on parse failure instead of crashing.
+- **Static-bearer MCP UX** — improved error messages and handling.
+- **Default-setup usability** (build/commit/run) improvements.
+- **Session-title generator no longer clobbers `/name`**.
+- **Errored sub-agent turn parks for steering** (ADR-0155): a child whose turn
+  errored now parks the parent turn instead of silently failing, allowing user
+  steering via mid-turn prompts.
+- **Per-model cap resolved per-request** — cap is enforced on each individual
+  request.
+- **Shared endpoint lease acquired after in-process permits** — correct ordering
+  to avoid deadlocks.
+- **Prompt-caching `cache_control` breakpoints** fixed for proper cache flushing.
+- **Page Up/Down in dialogs** now works correctly.
+- **`call` rejects shell-line input** — argv-only enforced.
+
+### Docs
+
+- **Two pre-tag audit fixes** (Phase 1a, 1b): `docs/architecture/protocol.md`
+  contract fields synced with `protocol.rs` (added 6 additive fields), and 28
+  missing ADR amendment back-links added to individual ADRs plus README status
+  cells.
+
 ## [0.5.0] - 2026-07-24
 
 The TUI attention panel + session-panel overhaul (background approvals are no
@@ -304,6 +495,7 @@ Initial (untagged) crates.io publish — the three-layer engine foundation
 streaming LLM providers, the stdio/TUI/`serve` heads, and the root-contained
 host tools.
 
+[0.6.0]: https://github.com/xmiksay/entanglement/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.5.0
 [0.4.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.4.0
 [0.3.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.3.0
