@@ -50,7 +50,7 @@ fn render_mcp(catalog: &Catalog, config: &Config, tokens: &McpTokenStore) -> Str
         let mut names: Vec<&String> = startup.keys().collect();
         names.sort();
         for name in names {
-            let cfg = &startup[name];
+            let cfg = &startup[name].config;
             let provider = provider_of
                 .get(name)
                 .map(String::as_str)

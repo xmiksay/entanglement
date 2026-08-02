@@ -11,6 +11,9 @@
 #![cfg(all(feature = "mcp-http", feature = "serve"))]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -21,9 +24,33 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use entanglement_runtime::mcp::HttpClient;
+// The shared per-endpoint pool (#559) — distinct from `mcp::HttpClient` above,
+// which is the MCP *transport*'s historical name (ADR-0153).
+use entanglement_provider::{HttpClient as PoolHttpClient, RetryConfig};
 
 const SESSION_ID: &str = "sess-abc123";
 const TOKEN: &str = "Bearer sekret-token";
+
+/// Every test here now drives its MCP calls through the shared endpoint pool
+/// (#559), which — without this — would write real `.state`/`.lock` files
+/// into the developer's actual `${data_dir}/entanglement/endpoints/`
+/// (mirrors `entanglement-provider/tests/streaming.rs`'s isolation guard).
+fn ensure_shared_state_disabled() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1");
+    });
+}
+
+fn test_http_client() -> PoolHttpClient {
+    ensure_shared_state_disabled();
+    PoolHttpClient::default()
+}
+
+fn test_http_client_with(config: RetryConfig) -> PoolHttpClient {
+    ensure_shared_state_disabled();
+    PoolHttpClient::with_config(config)
+}
 
 /// The `initialize` reply carries the session id; `tools/list` answers over SSE;
 /// `tools/call` answers with a lone JSON body — so one run exercises both shapes.
@@ -98,7 +125,7 @@ async fn http_transport_lists_and_calls_with_auth() {
     let url = spawn_server().await;
     let headers = HashMap::from([("Authorization".to_string(), TOKEN.to_string())]);
 
-    let client = HttpClient::connect("test", &url, &headers)
+    let client = HttpClient::connect("test", &url, &headers, test_http_client(), None)
         .await
         .expect("handshake");
 
@@ -123,9 +150,88 @@ async fn missing_token_is_rejected() {
     let url = spawn_server().await;
     // No Authorization header → the server 401s `tools/list`; the client surfaces
     // it as an error rather than hanging. (`initialize` is allowed through.)
-    let client = HttpClient::connect("test", &url, &HashMap::new())
+    let client = HttpClient::connect("test", &url, &HashMap::new(), test_http_client(), None)
         .await
         .expect("handshake");
     let err = client.list_tools().await.unwrap_err();
     assert!(format!("{err:#}").contains("401"), "got: {err:#}");
+}
+
+// ── #559: MCP traffic now shares the endpoint pool's concurrency cap ───────
+
+/// Tracks how many `tools/call` requests are in flight at once, so the test
+/// below can prove a concurrency-1 pool genuinely serializes MCP calls —
+/// before #559 this was structurally impossible, since `McpHttpClient` built
+/// its own bare `reqwest::Client` with no concurrency gate at all.
+#[derive(Clone, Default)]
+struct ConcurrencyTracker {
+    in_flight: Arc<AtomicUsize>,
+    max_seen: Arc<AtomicUsize>,
+}
+
+async fn mcp_slow_call(
+    State(tracker): State<ConcurrencyTracker>,
+    Json(req): Json<Value>,
+) -> Response {
+    let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+    let id = req.get("id").cloned();
+    match method {
+        "initialize" => Json(json!({
+            "jsonrpc": "2.0", "id": id,
+            "result": { "protocolVersion": "2025-03-26", "serverInfo": { "name": "test" } }
+        }))
+        .into_response(),
+        "notifications/initialized" => StatusCode::ACCEPTED.into_response(),
+        "tools/call" => {
+            let now = tracker.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            tracker.max_seen.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            tracker.in_flight.fetch_sub(1, Ordering::SeqCst);
+            Json(json!({
+                "jsonrpc": "2.0", "id": id,
+                "result": { "content": [ { "type": "text", "text": "ok" } ] }
+            }))
+            .into_response()
+        }
+        _ => (StatusCode::BAD_REQUEST, "unknown method").into_response(),
+    }
+}
+
+async fn spawn_slow_server() -> (String, ConcurrencyTracker) {
+    let tracker = ConcurrencyTracker::default();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let app = Router::new()
+        .route("/mcp", post(mcp_slow_call))
+        .with_state(tracker.clone());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://127.0.0.1:{port}/mcp"), tracker)
+}
+
+#[tokio::test]
+async fn mcp_calls_are_serialized_by_the_endpoint_concurrency_cap() {
+    let (url, tracker) = spawn_slow_server().await;
+    let http = test_http_client_with(RetryConfig {
+        concurrency: 1,
+        ..RetryConfig::default()
+    });
+    let client = HttpClient::connect("test", &url, &HashMap::new(), http, None)
+        .await
+        .expect("handshake");
+
+    let (a, b) = tokio::join!(
+        client.call_tool("ping", json!({})),
+        client.call_tool("ping", json!({})),
+    );
+    a.expect("tools/call a");
+    b.expect("tools/call b");
+
+    assert_eq!(
+        tracker.max_seen.load(Ordering::SeqCst),
+        1,
+        "two concurrent MCP calls through a concurrency-1 pool must never run \
+         simultaneously — the endpoint's concurrency permit is the guard"
+    );
 }

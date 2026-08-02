@@ -95,6 +95,14 @@ impl App {
         self.http_client.as_ref()?.throttle_status()
     }
 
+    /// The shared endpoint pool injected at startup (#559): the lazy `/enable
+    /// mcp`/session-tools-dialog connect path rides this so a bundled server's
+    /// traffic is metered like the LLM traffic sharing its provider key.
+    /// `None` in tests — callers fall back to an unshared default client.
+    pub(in crate::tui) fn http_client(&self) -> Option<&entanglement_provider::HttpClient> {
+        self.http_client.as_ref()
+    }
+
     /// Stores the chat viewport geometry + line provenance + rendered line text
     /// captured this frame so a later mouse click maps back to a transcript block
     /// and a drag-selection maps back to text.

@@ -22,16 +22,18 @@ pub use holly::{
 // the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
 pub use entanglement_provider::{
     content_text, stream_from_response, AuxLlmResolver, Catalog, ContentPart, DummyLlm, EchoLlm,
-    GenerationParams, GenerationResolver, ImageSource, Llm, LlmEvent, LlmFactory, LlmRequest,
-    LlmResponse, LlmStream, McpServerState, Message, MessageRole, ModelPricing, ModelResolver,
-    ProviderMcpServer, ReasoningEffort, ResolvedModel, StopReason, ToolCall, ToolSpec, Usage,
-    UserId, WebSearchConfig,
+    GenerationParams, GenerationResolver, HttpClient, ImageSource, Llm, LlmEvent, LlmFactory,
+    LlmRequest, LlmResponse, LlmStream, McpServerState, Message, MessageRole, ModelPricing,
+    ModelResolver, ProviderMcpServer, ReasoningEffort, ResolvedModel, StopReason, ToolCall,
+    ToolSpec, Usage, UserId, WebSearchConfig,
 };
 // The MCP client mechanism — transport + OAuth (ADR-0153) — also lives in the
 // leaf crate. Core carries no MCP *logic* (ADR-0067): this is a pass-through so
 // the runtime reaches these types on the same path `McpServerState` already
 // takes, including in the lean build that names no provider dependency of its
-// own. Nothing in core calls them.
+// own. Nothing in core calls them. `HttpClient` above (#559) is what the MCP
+// HTTP transport is handed so its traffic shares the same per-endpoint
+// pool/RPM/concurrency/retry as LLM traffic — not `McpHttpClient`'s own name.
 pub use entanglement_provider::mcp::{
     auth::{
         auth_required_of, is_auth_required, AccessTokenSource, AuthFlow, AuthOutcome, AuthRequired,

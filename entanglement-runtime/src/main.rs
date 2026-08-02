@@ -231,7 +231,7 @@ async fn build_config(
     let (startup_mcp, mcp_available) =
         mcp::AvailableMcp::partition(catalog, &user_config.mcp, secret_env.clone());
     let mcp_available = Arc::new(mcp_available);
-    let initial_mcp = mcp::connect(&startup_mcp, &mut tools, &secret_env).await;
+    let initial_mcp = mcp::connect(&startup_mcp, &mut tools, &secret_env, http_client).await;
     let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(initial_mcp));
     // Shared from here on (#372): `mcp_enable` needs the registry handle to
     // register a lazily-connected server's tools at enable time, so the
@@ -242,6 +242,7 @@ async fn build_config(
         mcp_available.clone(),
         &tools,
         mcp_active.clone(),
+        http_client.clone(),
     ));
     cfg.tool_specs = tools.read().unwrap().specs();
     // `read_raw` (rhai-only, see `script.rs`'s `parse_json`/`parse_yaml`)
@@ -1388,6 +1389,7 @@ async fn main() -> Result<()> {
         mcp_configs,
         mcp_available.clone(),
         catalog.key_envs(),
+        http_client.clone(),
     );
 
     // Live bash enablement (#498, ADR-0133): a runtime service answering

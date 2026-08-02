@@ -82,11 +82,17 @@ impl AvailableMcp {
     /// [`AvailableMcp`] roster (state `allowed`). `disabled` entries land in
     /// neither. The user's own map is returned untouched elsewhere
     /// (`ServerConfigs`) — bundled servers never join the persistence set.
+    ///
+    /// The startup set carries each entry's `key_env`/`provider` alongside its
+    /// config (the same [`AvailableServer`] shape as the roster, #559) rather
+    /// than a bare `McpServerConfig` — startup connect needs the bundling
+    /// provider's key resolved so its traffic shares the LLM endpoint's pool
+    /// key, and dropping that linkage here would leave no way to recover it.
     pub fn partition(
         catalog: &Catalog,
         user_mcp: &HashMap<String, McpServerConfig>,
         secret_env: Vec<String>,
-    ) -> (HashMap<String, McpServerConfig>, AvailableMcp) {
+    ) -> (HashMap<String, AvailableServer>, AvailableMcp) {
         let mut startup = HashMap::new();
         let mut servers = HashMap::new();
         let mut bundled_names = HashSet::new();
@@ -118,7 +124,7 @@ impl AvailableMcp {
                 };
                 match state {
                     McpServerState::Enabled if entry.key_ok() => {
-                        startup.insert(name.clone(), entry.config);
+                        startup.insert(name.clone(), entry);
                     }
                     McpServerState::Enabled | McpServerState::Disabled => {}
                     McpServerState::Allowed => {
@@ -133,7 +139,14 @@ impl AvailableMcp {
             }
             match cfg.effective_state() {
                 McpServerState::Enabled => {
-                    startup.insert(name.clone(), cfg.clone());
+                    startup.insert(
+                        name.clone(),
+                        AvailableServer {
+                            config: cfg.clone(),
+                            key_env: None,
+                            provider: None,
+                        },
+                    );
                 }
                 McpServerState::Allowed => {
                     servers.insert(

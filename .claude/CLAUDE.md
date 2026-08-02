@@ -199,8 +199,12 @@ never here**; each bullet is the claim + where to read it:
   provider-bundled servers with three-state activation
   (`enabled`/`allowed`/`disabled`, session-scoped lazy enablement); OAuth for
   protected servers (discovery + DCR + PKCE, tokens in a managed file,
-  `/mcp connect`). [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)/[ADR-0096](../docs/adr/0096-dynamic-toolregistry-sharedregistry.md)/[ADR-0097](../docs/adr/0097-live-mcp-server-management.md)/[ADR-0100](../docs/adr/0100-tui-mcp-command.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md).
+  `/mcp connect`). The HTTP transport shares the LLM endpoint pool — same
+  `HttpClient`, RPM/concurrency caps, 429 handling — keyed by the server's own
+  URL plus its bundling provider's key when known, so a provider-bundled
+  server's traffic counts against the same key budget its LLM endpoint
+  enforces. [gates & host tools](../docs/architecture/gates-and-host-tools.md),
+  [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)/[ADR-0096](../docs/adr/0096-dynamic-toolregistry-sharedregistry.md)/[ADR-0097](../docs/adr/0097-live-mcp-server-management.md)/[ADR-0100](../docs/adr/0100-tui-mcp-command.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0157](../docs/adr/0157-mcp-http-transport-shares-the-endpoint-pool.md).
 - **Live bash enablement**: `BashEnable`/`BashDisable` (trusted-only) register
   the exec pair mid-session, graded by the permission model, ceiling still
   wins. [gates & host tools](../docs/architecture/gates-and-host-tools.md),
