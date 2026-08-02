@@ -26,7 +26,7 @@ mod format;
 mod output;
 mod validate;
 
-use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
+use super::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
 use super::resolve_under_root;
 use super::sandbox::{self, SandboxPolicy};
 use crate::policy::SandboxResolver;
@@ -327,31 +327,41 @@ impl CallTool {
         }
 
         match outcome {
-            Ok(ExecOutcome::Completed(output)) => {
+            Ok(ExecOutcome::Completed { output, io_error }) => {
                 let notice = persist_output(&output_target, &output.stdout, &output.stderr).await?;
-                Ok(format_call_output(
-                    output.status.code(),
-                    &output.stdout,
-                    &output.stderr,
-                    parsed.tail,
-                    &output_target.rel,
-                    output_target.explicit,
-                    notice,
+                Ok(with_io_warning(
+                    format_call_output(
+                        output.status.code(),
+                        &output.stdout,
+                        &output.stderr,
+                        parsed.tail,
+                        &output_target.rel,
+                        output_target.explicit,
+                        notice,
+                    ),
+                    io_error,
                 ))
             }
             // Return the output buffered before the kill (tailed like a normal
             // result) alongside the notice — the prefix is often the diagnostic
             // the model needs (#169). The artifacts get the same partial bytes.
-            Ok(ExecOutcome::TimedOut { stdout, stderr }) => {
+            Ok(ExecOutcome::TimedOut {
+                stdout,
+                stderr,
+                io_error,
+            }) => {
                 let notice = persist_output(&output_target, &stdout, &stderr).await?;
-                Ok(format_call_streams(
-                    &format!("[killed: timed out after {secs}s]\n"),
-                    &stdout,
-                    &stderr,
-                    parsed.tail,
-                    &output_target.rel,
-                    output_target.explicit,
-                    notice,
+                Ok(with_io_warning(
+                    format_call_streams(
+                        &format!("[killed: timed out after {secs}s]\n"),
+                        &stdout,
+                        &stderr,
+                        parsed.tail,
+                        &output_target.rel,
+                        output_target.explicit,
+                        notice,
+                    ),
+                    io_error,
                 ))
             }
             Err(e) => Err(anyhow::anyhow!("call io error: {e}")),

@@ -192,18 +192,34 @@ struct Outcome {
     timed_out: bool,
     /// Combined stdout+stderr, trimmed — surfaced as the block reason.
     text: String,
+    /// A genuine I/O error reading the hook's stdout/stderr (#586) — a pipe
+    /// read failing outright, distinct from the clean EOF a process exit
+    /// produces. Unlike a stdin *write* failure (see [`invoke`], which only
+    /// logs one — a hook that never reads its input, e.g. `exit 0`, races the
+    /// pipe close against the write and legitimately sees a broken pipe on
+    /// every run), a read failure means the captured output itself is
+    /// genuinely incomplete, so it always counts as a non-success.
+    io_error: Option<String>,
 }
 
 impl Outcome {
-    /// A hook "succeeds" only on a clean exit 0; a non-zero code, a signal, or a
-    /// timeout all count as a failure/veto.
+    /// A hook "succeeds" only on a clean exit 0 with no I/O error; a non-zero
+    /// code, a signal, a timeout, or a genuine stdout/stderr read failure all
+    /// count as a failure/veto (#586: a run with unreadable output must not
+    /// silently pass).
     fn succeeded(&self) -> bool {
-        !self.timed_out && self.code == Some(0)
+        self.io_error.is_none() && !self.timed_out && self.code == Some(0)
     }
 
-    /// A human-readable reason for a non-success, preferring the command's own
-    /// output over a bare status.
+    /// A human-readable reason for a non-success, preferring an explicit I/O
+    /// error (the hook's own output otherwise) over a bare status.
     fn reason(&self) -> String {
+        if let Some(e) = &self.io_error {
+            return match self.text.is_empty() {
+                true => e.clone(),
+                false => format!("{e}; hook output: {}", self.text),
+            };
+        }
         if !self.text.is_empty() {
             return self.text.clone();
         }
@@ -225,6 +241,7 @@ fn spawn_failure(err: impl std::fmt::Display) -> Outcome {
         code: None,
         timed_out: false,
         text: format!("could not run hook: {err}"),
+        io_error: None,
     }
 }
 
@@ -256,26 +273,51 @@ async fn invoke(
         Ok(c) => c,
         Err(e) => return spawn_failure(e),
     };
-    // Write the payload on a detached task so a large input (a whole-file `write`)
-    // can't deadlock against an unread stdout pipe: the drain in
-    // `wait_or_kill_group` runs concurrently. Dropping the handle closes stdin.
-    if let Some(mut stdin) = child.stdin.take() {
+    // Write the payload on a joined (not detached) task so a large input (a
+    // whole-file `write`) can't deadlock against an unread stdout pipe — the
+    // drain in `wait_or_kill_group` runs concurrently — while still letting us
+    // observe a failed write (#586) instead of silently discarding it.
+    // Dropping the handle closes stdin.
+    let stdin_task = child.stdin.take().map(|mut stdin| {
         let body = payload.to_string();
-        tokio::spawn(async move {
-            let _ = stdin.write_all(body.as_bytes()).await;
-        });
+        tokio::spawn(async move { stdin.write_all(body.as_bytes()).await })
+    });
+
+    let exec_outcome = wait_or_kill_group(child, Duration::from_secs(spec.timeout_secs)).await;
+    let stdin_error = match stdin_task {
+        Some(t) => t.await.ok().and_then(|r| r.err()),
+        None => None,
+    };
+    if let Some(e) = stdin_error {
+        // Not folded into `io_error`/`succeeded()`: a hook that never reads
+        // its stdin (`exit 0`, `true`) races the pipe close against this
+        // write and legitimately sees a broken pipe on *every* run — vetoing
+        // on that would block tool calls for the common no-input hook
+        // pattern. Logged so a hook that *does* depend on stdin and got a
+        // truncated payload is still visible in the trace (#586).
+        tracing::warn!(
+            command = %spec.command,
+            error = %e,
+            "hook stdin write failed (payload may be truncated if the hook reads it)"
+        );
     }
 
-    match wait_or_kill_group(child, Duration::from_secs(spec.timeout_secs)).await {
-        Ok(ExecOutcome::Completed(out)) => Outcome {
-            code: out.status.code(),
+    match exec_outcome {
+        Ok(ExecOutcome::Completed { output, io_error }) => Outcome {
+            code: output.status.code(),
             timed_out: false,
-            text: combine(&out.stdout, &out.stderr),
+            text: combine(&output.stdout, &output.stderr),
+            io_error,
         },
-        Ok(ExecOutcome::TimedOut { stdout, stderr }) => Outcome {
+        Ok(ExecOutcome::TimedOut {
+            stdout,
+            stderr,
+            io_error,
+        }) => Outcome {
             code: None,
             timed_out: true,
             text: combine(&stdout, &stderr),
+            io_error,
         },
         Err(e) => spawn_failure(e),
     }
@@ -433,5 +475,33 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         assert_eq!(v["event"], "user_prompt_submit");
         assert_eq!(v["prompt"], "hello there");
+    }
+
+    /// #586: a genuine stdout/stderr read error must veto the hook even on a
+    /// clean exit 0 — the captured output can't be trusted to be the whole
+    /// story.
+    #[test]
+    fn outcome_with_io_error_never_succeeds_even_on_clean_exit() {
+        let outcome = Outcome {
+            code: Some(0),
+            timed_out: false,
+            text: String::new(),
+            io_error: Some("stdout read failed: broken pipe".to_string()),
+        };
+        assert!(!outcome.succeeded());
+        assert!(outcome.reason().contains("broken pipe"));
+    }
+
+    #[test]
+    fn outcome_reason_surfaces_io_error_alongside_hook_output() {
+        let outcome = Outcome {
+            code: Some(1),
+            timed_out: false,
+            text: "some hook output".to_string(),
+            io_error: Some("stdout read failed: oops".to_string()),
+        };
+        let reason = outcome.reason();
+        assert!(reason.contains("stdout read failed: oops"));
+        assert!(reason.contains("some hook output"));
     }
 }

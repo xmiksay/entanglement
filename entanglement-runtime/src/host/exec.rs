@@ -16,13 +16,24 @@ use tokio::process::{Child, Command};
 
 /// Outcome of running a child to completion or aborting it on timeout.
 pub enum ExecOutcome {
-    /// Child exited (any status); its fully-drained stdout/stderr.
-    Completed(Output),
+    /// Child exited (any status); its fully-drained stdout/stderr. `io_error`
+    /// is set when a pipe read failed before EOF (a genuine I/O error, not the
+    /// clean EOF a process exit produces) — the buffers then hold a silently
+    /// truncated prefix that callers must flag distinctly from normal output
+    /// (#586).
+    Completed {
+        output: Output,
+        io_error: Option<String>,
+    },
     /// The timeout elapsed and the process group was killed. Carries the
     /// stdout/stderr captured *before* the kill — the prefix a slow command
     /// printed is often the diagnostic the model needs, so it must not be
-    /// discarded along with the process (#169).
-    TimedOut { stdout: Vec<u8>, stderr: Vec<u8> },
+    /// discarded along with the process (#169). `io_error` as above (#586).
+    TimedOut {
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        io_error: Option<String>,
+    },
 }
 
 /// Put the child in its own process group so its entire descendant tree can be
@@ -85,13 +96,16 @@ pub async fn wait_or_kill_group(mut child: Child, dur: Duration) -> std::io::Res
     match tokio::time::timeout(dur, child.wait()).await {
         Ok(Ok(status)) => {
             kill_guard.disarm();
-            let stdout = out_task.await.unwrap_or_default();
-            let stderr = err_task.await.unwrap_or_default();
-            Ok(ExecOutcome::Completed(Output {
-                status,
-                stdout,
-                stderr,
-            }))
+            let (stdout, out_err) = out_task.await.unwrap_or_default();
+            let (stderr, err_err) = err_task.await.unwrap_or_default();
+            Ok(ExecOutcome::Completed {
+                output: Output {
+                    status,
+                    stdout,
+                    stderr,
+                },
+                io_error: combine_io_errors(out_err, err_err),
+            })
         }
         Ok(Err(e)) => {
             kill_guard.disarm();
@@ -109,21 +123,54 @@ pub async fn wait_or_kill_group(mut child: Child, dur: Duration) -> std::io::Res
             let _ = pid;
             // The group is dead, so every write end of the pipes is closed; the
             // readers return the prefix captured before the kill.
-            let stdout = out_task.await.unwrap_or_default();
-            let stderr = err_task.await.unwrap_or_default();
-            Ok(ExecOutcome::TimedOut { stdout, stderr })
+            let (stdout, out_err) = out_task.await.unwrap_or_default();
+            let (stderr, err_err) = err_task.await.unwrap_or_default();
+            Ok(ExecOutcome::TimedOut {
+                stdout,
+                stderr,
+                io_error: combine_io_errors(out_err, err_err),
+            })
         }
     }
 }
 
-/// Read a child pipe to EOF into a buffer, returning whatever was captured. A
-/// read error yields the bytes accumulated so far rather than losing them.
-async fn drain<R: AsyncRead + Unpin>(reader: Option<R>) -> Vec<u8> {
+/// Read a child pipe to EOF into a buffer, returning whatever was captured
+/// alongside the read error if one cut the drain short (#586) — a caller must
+/// be able to tell that apart from a clean EOF/byte-cap truncation instead of
+/// silently treating a short read as the whole story.
+async fn drain<R: AsyncRead + Unpin>(reader: Option<R>) -> (Vec<u8>, Option<std::io::Error>) {
     let mut buf = Vec::new();
     if let Some(mut r) = reader {
-        let _ = r.read_to_end(&mut buf).await;
+        if let Err(e) = r.read_to_end(&mut buf).await {
+            return (buf, Some(e));
+        }
     }
-    buf
+    (buf, None)
+}
+
+/// Merge the stdout/stderr drain errors into one message, or `None` if both
+/// pipes read cleanly to EOF.
+fn combine_io_errors(
+    stdout_err: Option<std::io::Error>,
+    stderr_err: Option<std::io::Error>,
+) -> Option<String> {
+    match (stdout_err, stderr_err) {
+        (None, None) => None,
+        (Some(e), None) => Some(format!("stdout read failed: {e}")),
+        (None, Some(e)) => Some(format!("stderr read failed: {e}")),
+        (Some(o), Some(e)) => Some(format!("stdout read failed: {o}; stderr read failed: {e}")),
+    }
+}
+
+/// Prepend a warning line to a formatted tool result when a stream drain hit a
+/// genuine I/O error (#586) — distinct from the byte-cap/timeout truncation
+/// already visible in the body, so a partial capture caused by a broken pipe
+/// isn't silently mistaken for the whole output. Shared by `bash` and `call`.
+pub fn with_io_warning(body: String, io_error: Option<String>) -> String {
+    match io_error {
+        Some(e) => format!("[warning: output capture failed — {e}]\n{body}"),
+        None => body,
+    }
 }
 
 /// SIGKILL every process in the group led by `pid` (pgid == leader pid, since
@@ -238,7 +285,7 @@ mod tests {
                     String::from_utf8_lossy(&stdout)
                 );
             }
-            ExecOutcome::Completed(_) => panic!("slept-past-deadline command should time out"),
+            ExecOutcome::Completed { .. } => panic!("slept-past-deadline command should time out"),
         }
     }
 
@@ -255,10 +302,37 @@ mod tests {
             .await
             .unwrap()
         {
-            ExecOutcome::Completed(output) => {
+            ExecOutcome::Completed { output, io_error } => {
                 assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hi");
+                assert!(io_error.is_none(), "clean read must not report an io_error");
             }
             ExecOutcome::TimedOut { .. } => panic!("fast command should not time out"),
         }
+    }
+
+    /// #586: a genuine pipe-read error (not a clean EOF) must surface as
+    /// `io_error` rather than being silently swallowed into a truncated buffer
+    /// indistinguishable from a normal short read.
+    #[tokio::test]
+    async fn drain_reports_read_error_distinct_from_eof() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use tokio::io::AsyncRead;
+
+        struct FailingReader;
+        impl AsyncRead for FailingReader {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Err(std::io::Error::other("simulated pipe failure")))
+            }
+        }
+
+        let (buf, err) = drain(Some(FailingReader)).await;
+        assert!(buf.is_empty());
+        let err = err.expect("a failing reader must yield Some(error)");
+        assert!(err.to_string().contains("simulated pipe failure"));
     }
 }
