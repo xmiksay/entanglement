@@ -570,7 +570,10 @@ the same permission profiles as `read`/`bash`.
     (#561).
 - **Proxy (`mcp::tool::McpTool`):** adapts one remote tool. `schema()` returns the
   server's `inputSchema` verbatim; `run()` JSON-decodes the model's input to the
-  `arguments` object, calls `tools/call`, and flattens the result's text content
+  `arguments` object, checks it against the schema's top-level `required` array
+  before ever contacting the server — a missing field bails with `` tool `name`
+  requires parameter `field` `` instead of a cryptic server-side JSON-RPC error
+  (#594) — then calls `tools/call` and flattens the result's text content
   (v1 is text-only — a non-text block is noted, an `isError` result prefixed).
   Advertised name **`mcp__<server>__<tool>`**, sanitized to the providers'
   `^[A-Za-z0-9_-]+$` rule, so it can't collide with a host tool or another server.
