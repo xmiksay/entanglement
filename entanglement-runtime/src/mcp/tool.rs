@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -68,6 +68,10 @@ impl Tool for McpTool {
         } else {
             serde_json::from_str(input).context("MCP tool arguments must be a JSON object")?
         };
+        // Reject a call missing a required parameter before it ever reaches the
+        // server (#594) — the server's own JSON-RPC validation error is far less
+        // legible to the model than naming the missing field ourselves.
+        check_required(&self.schema, &arguments, &self.name)?;
         let result = self.client.call_tool(&self.remote_name, arguments).await?;
         // MCP servers are the one tool source the runtime doesn't author — cap
         // their results with the same 32 KiB bound every host tool honors, so a
@@ -108,6 +112,27 @@ fn render_result(result: &Value) -> String {
     } else {
         body.to_string()
     }
+}
+
+/// Check `arguments` against `schema`'s top-level `required` array, bailing with
+/// a clear message naming the first missing field rather than letting the MCP
+/// server reject the call with a cryptic JSON-RPC error (#594).
+fn check_required(schema: &Value, arguments: &Value, name: &str) -> Result<()> {
+    let Some(required) = schema.get("required").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for field in required {
+        let Some(field) = field.as_str() else {
+            continue;
+        };
+        let present = arguments
+            .as_object()
+            .is_some_and(|obj| obj.contains_key(field));
+        if !present {
+            bail!("tool `{name}` requires parameter `{field}`");
+        }
+    }
+    Ok(())
 }
 
 /// The advertised, collision-free, sanitized name for `tool` on `server`
@@ -209,5 +234,67 @@ mod tests {
         let t = McpTool::new(dead_client(), "srv", def("x"));
         assert_eq!(t.description(), "a tool");
         assert_eq!(t.schema(), json!({ "type": "object", "properties": {} }));
+    }
+
+    fn def_with_required(name: &str, required: &[&str]) -> McpToolDef {
+        McpToolDef {
+            name: name.to_string(),
+            description: "a tool".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "required": required,
+            }),
+        }
+    }
+
+    #[test]
+    fn check_required_passes_when_no_required_array() {
+        let schema = json!({ "type": "object", "properties": {} });
+        assert!(check_required(&schema, &json!({}), "t").is_ok());
+    }
+
+    #[test]
+    fn check_required_passes_when_all_fields_present() {
+        let schema = json!({ "required": ["id"] });
+        assert!(check_required(&schema, &json!({ "id": "abc" }), "t").is_ok());
+    }
+
+    #[test]
+    fn check_required_rejects_missing_field() {
+        let schema = json!({ "required": ["id"] });
+        let err = check_required(&schema, &json!({}), "mcp__chess__get_puzzle").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "tool `mcp__chess__get_puzzle` requires parameter `id`"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_rejects_call_missing_a_required_parameter() {
+        let t = McpTool::new(
+            dead_client(),
+            "chess",
+            def_with_required("get_puzzle", &["id"]),
+        );
+        let err = t.run("{}").await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "tool `mcp__chess__get_puzzle` requires parameter `id`"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_rejects_empty_input_when_a_parameter_is_required() {
+        let t = McpTool::new(
+            dead_client(),
+            "chess",
+            def_with_required("get_puzzle", &["id"]),
+        );
+        let err = t.run("").await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "tool `mcp__chess__get_puzzle` requires parameter `id`"
+        );
     }
 }
