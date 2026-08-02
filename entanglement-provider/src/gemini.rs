@@ -72,6 +72,9 @@ pub struct GeminiLlm {
     /// concurrency permit layered under the endpoint permit.
     model_concurrency: ModelConcurrencyResolver,
     http: HttpClient,
+    /// Resolved `cachedContents` resource for the current system+tools
+    /// prefix (#587) — shared across every turn this session's clone makes.
+    cache: cache::CacheHandle,
 }
 
 impl GeminiLlm {
@@ -93,6 +96,7 @@ impl GeminiLlm {
             concurrency,
             model_concurrency,
             http,
+            cache: cache::CacheHandle::new(),
         }
     }
 }
@@ -132,7 +136,29 @@ impl Llm for GeminiLlm {
         // construction (#550) — a profile's `model:`-only pin can send a
         // request under a different model than `default_model`.
         let model_concurrency = (self.model_concurrency)(&model);
-        let body = build_body(req.system, req.messages, req.tools, req.generation);
+        // Best-effort context caching (#587): reuse or create a
+        // `cachedContents` resource for the stable system+tools prefix so it
+        // isn't re-billed at the full input rate on every turn, mirroring
+        // Anthropic's `cache_control` breakpoints (#566). Never blocks the
+        // turn on failure — `resolve` falls back to `None`.
+        let cached_content = self
+            .cache
+            .resolve(
+                &self.http,
+                &self.base_url,
+                &self.api_key,
+                &model,
+                req.system,
+                req.tools,
+            )
+            .await;
+        let body = build_body(
+            req.system,
+            req.messages,
+            req.tools,
+            req.generation,
+            cached_content.as_deref(),
+        );
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{base}/{model}:streamGenerateContent?alt=sse");
 
@@ -351,6 +377,7 @@ fn apply_usage(meta: &Value, usage: &mut Usage) {
     }
 }
 
+mod cache;
 mod request;
 use request::build_body;
 

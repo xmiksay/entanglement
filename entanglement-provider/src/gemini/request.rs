@@ -20,21 +20,63 @@ const HIGH_EFFORT_THINKING_BUDGET: u32 = 16_384;
 /// `thinkingConfig.thinkingBudget` tokens for [`ReasoningEffort::Medium`] (#374).
 const MEDIUM_EFFORT_THINKING_BUDGET: u32 = 4_096;
 
+/// Minimum combined system+tools size, in chars, worth attempting to cache
+/// (#587). A rough proxy for Gemini's undocumented-exact per-model minimum
+/// cacheable token count (on the order of 2k-4k tokens): below this, a
+/// `cachedContents` create call would just be rejected, so skip the round
+/// trip and inline `system`/`tools` as before.
+pub(super) const MIN_CACHEABLE_CHARS: usize = 16_384;
+
+/// Build a `streamGenerateContent` request body. `cached_content`, when set
+/// to a `cachedContents/...` resource name (#587), replaces the inline
+/// `systemInstruction`/`tools` — Gemini rejects a request that specifies
+/// both a cache and either field, since the cache already carries them.
 pub(super) fn build_body(
     system: &str,
     messages: &[Message],
     tools: &[ToolSpec],
     generation: Option<GenerationParams>,
+    cached_content: Option<&str>,
 ) -> Value {
     let mut body = json!({ "contents": convert_messages(messages) });
+    if let Some(name) = cached_content {
+        body["cachedContent"] = json!(name);
+    } else {
+        if !system.is_empty() {
+            body["systemInstruction"] = json!({ "parts": [{ "text": system }] });
+        }
+        if let Some(decls) = convert_tools(tools) {
+            body["tools"] = json!([{ "functionDeclarations": decls }]);
+        }
+    }
+    if let Some(cfg) = generation_config(generation) {
+        body["generationConfig"] = cfg;
+    }
+    body
+}
+
+/// Combined size of `system` + every tool's name/description/schema, in
+/// chars — the heuristic [`MIN_CACHEABLE_CHARS`] is compared against.
+pub(super) fn cache_prefix_size(system: &str, tools: &[ToolSpec]) -> usize {
+    system.len()
+        + tools
+            .iter()
+            .map(|t| t.name.len() + t.description.len() + t.schema.to_string().len())
+            .sum::<usize>()
+}
+
+/// Build the request body for Gemini's `cachedContents` create endpoint
+/// (#587), caching the same system+tools prefix `build_body` would otherwise
+/// inline every turn — the part of a request Anthropic's `cache_control`
+/// breakpoints already cover (#566) but that Gemini has no automatic
+/// equivalent for. `ttl` is a duration string, e.g. `"3600s"`.
+pub(super) fn build_cache_body(model: &str, system: &str, tools: &[ToolSpec], ttl: &str) -> Value {
+    let mut body = json!({ "model": format!("models/{model}"), "ttl": ttl });
     if !system.is_empty() {
         body["systemInstruction"] = json!({ "parts": [{ "text": system }] });
     }
     if let Some(decls) = convert_tools(tools) {
         body["tools"] = json!([{ "functionDeclarations": decls }]);
-    }
-    if let Some(cfg) = generation_config(generation) {
-        body["generationConfig"] = cfg;
     }
     body
 }
@@ -273,12 +315,56 @@ mod request_tests {
 
     #[test]
     fn body_has_contents_and_omits_empties() {
-        let body = build_body("", &[Message::user("hi")], &[], None);
+        let body = build_body("", &[Message::user("hi")], &[], None, None);
         assert_eq!(body["contents"][0]["role"], "user");
         assert_eq!(body["contents"][0]["parts"][0]["text"], "hi");
         assert!(body.get("systemInstruction").is_none());
         assert!(body.get("tools").is_none());
         assert!(body.get("generationConfig").is_none());
+    }
+
+    #[test]
+    fn cached_content_replaces_inline_system_and_tools() {
+        let spec = ToolSpec::new("greet", "say hi");
+        let body = build_body(
+            "be nice",
+            &[Message::user("hi")],
+            &[spec],
+            None,
+            Some("cachedContents/abc123"),
+        );
+        assert_eq!(body["cachedContent"], "cachedContents/abc123");
+        assert!(body.get("systemInstruction").is_none());
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn cache_body_carries_model_system_tools_and_ttl() {
+        let spec = ToolSpec::new("greet", "say hi");
+        let body = build_cache_body("gemini-2.5-flash", "be nice", &[spec], "3600s");
+        assert_eq!(body["model"], "models/gemini-2.5-flash");
+        assert_eq!(body["ttl"], "3600s");
+        assert_eq!(body["systemInstruction"]["parts"][0]["text"], "be nice");
+        assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "greet");
+    }
+
+    #[test]
+    fn cache_body_omits_system_and_tools_when_absent() {
+        let body = build_cache_body("gemini-2.5-flash", "", &[], "3600s");
+        assert!(body.get("systemInstruction").is_none());
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn cache_prefix_size_grows_with_system_and_tools() {
+        let empty = cache_prefix_size("", &[]);
+        let with_system = cache_prefix_size("a stable system prompt", &[]);
+        assert!(with_system > empty);
+        let with_tool = cache_prefix_size(
+            "a stable system prompt",
+            &[ToolSpec::new("t", "a tool description")],
+        );
+        assert!(with_tool > with_system);
     }
 
     #[test]
@@ -290,7 +376,7 @@ mod request_tests {
             thinking_budget_tokens: Some(1024),
             reasoning_effort: None,
         };
-        let body = build_body("be nice", &[Message::user("hi")], &[spec], Some(g));
+        let body = build_body("be nice", &[Message::user("hi")], &[spec], Some(g), None);
         assert_eq!(body["systemInstruction"]["parts"][0]["text"], "be nice");
         assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "greet");
         assert!((body["generationConfig"]["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
@@ -313,7 +399,7 @@ mod request_tests {
             thinking_budget_tokens: None,
             reasoning_effort: Some(ReasoningEffort::High),
         };
-        let body = build_body("", &[Message::user("hi")], &[], Some(g));
+        let body = build_body("", &[Message::user("hi")], &[], Some(g), None);
         assert_eq!(
             body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
             HIGH_EFFORT_THINKING_BUDGET
@@ -328,7 +414,7 @@ mod request_tests {
             thinking_budget_tokens: None,
             reasoning_effort: Some(ReasoningEffort::Low),
         };
-        let body = build_body("", &[Message::user("hi")], &[], Some(g));
+        let body = build_body("", &[Message::user("hi")], &[], Some(g), None);
         assert!(body["generationConfig"].get("thinkingConfig").is_none());
     }
 
@@ -340,7 +426,7 @@ mod request_tests {
             thinking_budget_tokens: Some(777),
             reasoning_effort: Some(ReasoningEffort::High),
         };
-        let body = build_body("", &[Message::user("hi")], &[], Some(g));
+        let body = build_body("", &[Message::user("hi")], &[], Some(g), None);
         assert_eq!(
             body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
             777
