@@ -6,7 +6,7 @@
 //! default-closed-stdin fix, carried over from `call` to `bash` — #389); use
 //! shell-native `< file` redirection if a command needs input.
 
-use super::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
+use super::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
 use super::jobs::JobRegistry;
 use super::sandbox::{self, SandboxPolicy};
 use super::truncate_head_tail;
@@ -232,17 +232,23 @@ impl BashTool {
         let child = cmd.spawn().with_context(|| "spawning bash command")?;
 
         match wait_or_kill_group(child, dur).await {
-            Ok(ExecOutcome::Completed(output)) => Ok(format_bash_output(
-                output.status.code(),
-                &output.stdout,
-                &output.stderr,
+            Ok(ExecOutcome::Completed { output, io_error }) => Ok(with_io_warning(
+                format_bash_output(output.status.code(), &output.stdout, &output.stderr),
+                io_error,
             )),
             // Return the output buffered before the kill alongside the notice —
             // the prefix is often the diagnostic the model needs (#169).
-            Ok(ExecOutcome::TimedOut { stdout, stderr }) => Ok(format_bash_streams(
-                &format!("[killed: timed out after {secs}s]\n"),
-                &stdout,
-                &stderr,
+            Ok(ExecOutcome::TimedOut {
+                stdout,
+                stderr,
+                io_error,
+            }) => Ok(with_io_warning(
+                format_bash_streams(
+                    &format!("[killed: timed out after {secs}s]\n"),
+                    &stdout,
+                    &stderr,
+                ),
+                io_error,
             )),
             Err(e) => Err(anyhow::anyhow!("bash io error: {e}")),
         }
@@ -291,6 +297,24 @@ mod tests {
     fn format_missing_code_reports_minus_one() {
         let out = format_bash_output(None, b"", b"");
         assert_eq!(out, "[exit -1]\n");
+    }
+
+    /// #586: a stream-read I/O error must surface as a leading warning, not
+    /// vanish into a body indistinguishable from a clean truncation.
+    #[test]
+    fn io_warning_prepended_when_drain_failed() {
+        let body = format_bash_output(Some(0), b"partial", b"");
+        let out = with_io_warning(body, Some("stdout read failed: broken pipe".to_string()));
+        assert_eq!(
+            out,
+            "[warning: output capture failed — stdout read failed: broken pipe]\n[exit 0]\npartial"
+        );
+    }
+
+    #[test]
+    fn io_warning_absent_when_drain_clean() {
+        let body = format_bash_output(Some(0), b"hi\n", b"");
+        assert_eq!(with_io_warning(body.clone(), None), body);
     }
 
     #[tokio::test]
