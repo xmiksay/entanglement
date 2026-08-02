@@ -33,7 +33,6 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::tool_names;
-use crate::tools::{Tool, ToolRegistry};
 
 // Via core's re-export (ADR-0053), not `entanglement_provider` directly —
 // that dep is optional (`provider` feature) and absent from the lean build.
@@ -42,6 +41,8 @@ pub use entanglement_core::{McpServerState, OauthConfig};
 pub mod available;
 pub mod browser;
 pub mod client;
+#[path = "connect.rs"]
+mod connect_impl;
 pub mod enable_tool;
 pub mod live;
 pub mod oauth_ops;
@@ -49,8 +50,16 @@ pub mod responder;
 pub mod stdio;
 pub mod tool;
 
-pub use available::AvailableMcp;
+pub use available::{AvailableMcp, AvailableServer};
 pub use client::{McpClient, McpToolDef};
+// Split out of this file along the 400-line file cap (#559, mirroring #556's
+// `available_enable.rs` split). `connect`/`needs_auth` are this module's own
+// public API (unchanged paths for embedders); the rest are crate-internal
+// helpers every connect path (startup, live `/mcp add`, lazy `/enable mcp`)
+// shares — re-exported so existing `super::`-qualified call sites in
+// `live.rs`/`available_enable.rs`/`responder.rs` resolve unchanged.
+pub use connect_impl::{connect, needs_auth};
+pub(crate) use connect_impl::{connect_client, register_tools, transport_label};
 pub use enable_tool::McpEnableTool;
 
 /// The handle bundle a head needs to drive per-session enablement of
@@ -241,148 +250,10 @@ pub fn capability_index(servers: &HashMap<String, McpServerConfig>) -> Result<Mc
     Ok(index)
 }
 
-/// `"stdio"` or `"http"`, for the [`McpServerStatus`][entanglement_core::McpServerStatus]
-/// wire label — meaningful only after [`McpServerConfig::transport`] has already
-/// validated the XOR, so it just reads back which field was set.
-pub(crate) fn transport_label(cfg: &McpServerConfig) -> String {
-    if cfg.command.is_some() {
-        "stdio"
-    } else {
-        "http"
-    }
-    .to_string()
-}
-
-/// Connect to every configured server and register its tools into `registry`.
-///
-/// Best-effort per server: a connect/handshake/`tools/list` failure is logged and
-/// skipped so one broken server can't stop startup. The registered [`McpTool`]s
-/// hold an `Arc<McpClient>`, so keeping them in `registry` keeps each server
-/// connection alive for the process lifetime — no separate handle to retain.
-/// Returns the servers that connected, seeding [`ActiveServers`] (#375) so a
-/// later live `/mcp list`/`remove` sees exactly what startup actually attached.
-/// `secret_env` (the catalog's provider API-key env vars, #164) is scrubbed
-/// from every stdio server's child environment.
-pub async fn connect(
-    servers: &HashMap<String, McpServerConfig>,
-    registry: &mut ToolRegistry,
-    secret_env: &[String],
-) -> HashMap<String, ActiveServer> {
-    let mut active = HashMap::new();
-    for (name, cfg) in servers {
-        if cfg.effective_state() != McpServerState::Enabled {
-            tracing::info!("MCP server `{name}` is not enabled at startup; skipping");
-            continue;
-        }
-        // An OAuth server with no stored credential is skipped *quietly* and
-        // reported as "needs auth" by `/mcp list` (ADR-0153) — attempting the
-        // connect would only produce a 401 and a scarier log line, and startup
-        // must never open a browser (that is `/mcp connect`'s job).
-        if needs_auth(name, cfg) {
-            tracing::info!(
-                "MCP server `{name}` needs authorization; run `/mcp connect {name}` to sign in"
-            );
-            continue;
-        }
-        match connect_one(name, cfg, registry, secret_env).await {
-            Ok((client, tools)) => {
-                active.insert(
-                    name.clone(),
-                    ActiveServer {
-                        client,
-                        tools,
-                        transport: transport_label(cfg),
-                    },
-                );
-            }
-            Err(e) => tracing::warn!("MCP server `{name}`: {e:#}"),
-        }
-    }
-    active
-}
-
-/// The two network-I/O awaits (connect + `tools/list`), with no registry
-/// involved — split out of the old single-shot `connect_one` (#375) so a live
-/// `mcp_add` can run these *before* taking the registry's write lock, never
-/// holding it across an `.await`.
-async fn connect_client(
-    name: &str,
-    cfg: &McpServerConfig,
-    secret_env: &[String],
-) -> Result<(std::sync::Arc<McpClient>, Vec<McpToolDef>)> {
-    #[cfg(feature = "mcp-http")]
-    let client =
-        McpClient::connect_with_auth(name, cfg, secret_env, oauth_token_source(name, cfg)).await?;
-    #[cfg(not(feature = "mcp-http"))]
-    let client = McpClient::connect(name, cfg, secret_env).await?;
-    let defs = client.list_tools().await?;
-    Ok((client, defs))
-}
-
-/// The OAuth bearer source for a server that declares an `oauth:` block
-/// (ADR-0153), or `None` for one authenticated by static headers (or not at
-/// all) — in which case the transport behaves exactly as it did pre-ADR-0153.
-///
-/// The store is built per call rather than held in a process-wide handle: it is
-/// only a resolved path (no I/O until a load), connects are rare, and building
-/// it here keeps `ENTANGLEMENT_MCP_TOKENS_FILE` honoured at the moment of use.
-#[cfg(feature = "mcp-http")]
-fn oauth_token_source(
-    name: &str,
-    cfg: &McpServerConfig,
-) -> Option<std::sync::Arc<dyn entanglement_core::AccessTokenSource>> {
-    cfg.oauth.as_ref()?;
-    let store: std::sync::Arc<dyn entanglement_core::TokenStore> =
-        std::sync::Arc::new(crate::config::McpTokenStore::load());
-    Some(std::sync::Arc::new(
-        entanglement_core::StoredTokenSource::new(name, store),
-    ))
-}
-
-/// Does this server want OAuth but have no stored credential yet (ADR-0153)?
-///
-/// Drives the "needs auth" state in `/mcp list` and the non-fatal startup skip:
-/// an unauthenticated OAuth server is a normal, recoverable condition (run
-/// `/mcp connect <name>`), not a transport failure worth alarming about.
-pub fn needs_auth(name: &str, cfg: &McpServerConfig) -> bool {
-    cfg.oauth.is_some() && !crate::config::McpTokenStore::load().has(name)
-}
-
-/// Register every discovered tool def into `registry`, synchronous (no
-/// `.await`) so it is safe to run under a held write lock. Returns the
-/// registered (already-namespaced) tool names.
-fn register_tools(
-    registry: &mut ToolRegistry,
-    client: &std::sync::Arc<McpClient>,
-    name: &str,
-    defs: Vec<McpToolDef>,
-) -> Vec<String> {
-    defs.into_iter()
-        .map(|def| {
-            let tool = McpTool::new(client.clone(), name, def);
-            let tool_name = tool.name().into_owned();
-            registry.register(tool);
-            tool_name
-        })
-        .collect()
-}
-
-async fn connect_one(
-    name: &str,
-    cfg: &McpServerConfig,
-    registry: &mut ToolRegistry,
-    secret_env: &[String],
-) -> Result<(std::sync::Arc<McpClient>, Vec<String>)> {
-    let (client, defs) = connect_client(name, cfg, secret_env).await?;
-    let count = defs.len();
-    let tools = register_tools(registry, &client, name, defs);
-    tracing::info!("MCP server `{name}`: registered {count} tool(s)");
-    Ok((client, tools))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::ToolRegistry;
 
     #[test]
     fn parses_a_stdio_block() {
@@ -450,11 +321,21 @@ headers:
         assert!(serde_yaml::from_str::<McpServerConfig>("command: x\ntyop: 1").is_err());
     }
 
+    /// Wrap a bare config as an unkeyed, non-bundled available entry — the
+    /// shape `partition`'s startup map now carries (#559).
+    fn available(config: McpServerConfig) -> AvailableServer {
+        AvailableServer {
+            config,
+            key_env: None,
+            provider: None,
+        }
+    }
+
     #[tokio::test]
     async fn disabled_server_registers_nothing() {
         let servers = HashMap::from([(
             "off".to_string(),
-            McpServerConfig {
+            available(McpServerConfig {
                 command: Some("definitely-not-a-real-binary-xyz".to_string()),
                 args: vec![],
                 env: HashMap::new(),
@@ -464,10 +345,11 @@ headers:
                 capabilities: HashMap::new(),
                 oauth: None,
                 state: None,
-            },
+            }),
         )]);
         let mut registry = ToolRegistry::new();
-        connect(&servers, &mut registry, &[]).await;
+        let http = entanglement_core::HttpClient::default();
+        connect(&servers, &mut registry, &[], &http).await;
         assert!(registry.is_empty());
     }
 
@@ -475,7 +357,7 @@ headers:
     async fn unspawnable_server_is_skipped_not_fatal() {
         let servers = HashMap::from([(
             "broken".to_string(),
-            McpServerConfig {
+            available(McpServerConfig {
                 command: Some("definitely-not-a-real-binary-xyz".to_string()),
                 args: vec![],
                 env: HashMap::new(),
@@ -485,11 +367,12 @@ headers:
                 capabilities: HashMap::new(),
                 oauth: None,
                 state: None,
-            },
+            }),
         )]);
         let mut registry = ToolRegistry::new();
+        let http = entanglement_core::HttpClient::default();
         // Must not panic or hang — the failure is logged and swallowed.
-        connect(&servers, &mut registry, &[]).await;
+        connect(&servers, &mut registry, &[], &http).await;
         assert!(registry.is_empty());
     }
 
@@ -497,7 +380,7 @@ headers:
     async fn unreachable_http_server_is_skipped_not_fatal() {
         let servers = HashMap::from([(
             "remote".to_string(),
-            McpServerConfig {
+            available(McpServerConfig {
                 command: None,
                 args: vec![],
                 env: HashMap::new(),
@@ -508,10 +391,11 @@ headers:
                 capabilities: HashMap::new(),
                 oauth: None,
                 state: None,
-            },
+            }),
         )]);
         let mut registry = ToolRegistry::new();
-        connect(&servers, &mut registry, &[]).await;
+        let http = entanglement_core::HttpClient::default();
+        connect(&servers, &mut registry, &[], &http).await;
         assert!(registry.is_empty());
     }
 }

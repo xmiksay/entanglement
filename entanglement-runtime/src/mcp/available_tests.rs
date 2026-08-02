@@ -89,6 +89,7 @@ fn user_override_merges_over_bundle_by_name() {
     assert!(startup
         .get("zread")
         .unwrap()
+        .config
         .url
         .as_deref()
         .unwrap()
@@ -125,7 +126,7 @@ fn user_override_colliding_with_a_bundle_keeps_effective_state_when_unset() {
          Enabled default, not the bundle's Allowed one"
     );
     assert_eq!(
-        startup.get("zread").unwrap().url.as_deref(),
+        startup.get("zread").unwrap().config.url.as_deref(),
         Some("https://my-zread.example/mcp")
     );
     assert!(!avail.available_names().contains(&"zread".to_string()));
@@ -216,9 +217,17 @@ async fn enable_unknown_server_errors() {
     let registry: SharedRegistry =
         std::sync::Arc::new(std::sync::RwLock::new(crate::tools::ToolRegistry::new()));
     let active: ActiveServers = std::sync::Arc::new(Mutex::new(HashMap::new()));
-    let err = enable_for_session(&avail, "nope", &SessionId::new("s"), &registry, &active)
-        .await
-        .unwrap_err();
+    let http = entanglement_core::HttpClient::default();
+    let err = enable_for_session(
+        &avail,
+        "nope",
+        &SessionId::new("s"),
+        &registry,
+        &active,
+        &http,
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("no available MCP server"), "{err}");
 }
 
@@ -240,7 +249,8 @@ async fn enable_startup_server_never_scopes_it() {
         },
     );
     let s = SessionId::new("s");
-    let tools = enable_for_session(&avail, "startup", &s, &registry, &active)
+    let http = entanglement_core::HttpClient::default();
+    let tools = enable_for_session(&avail, "startup", &s, &registry, &active, &http)
         .await
         .unwrap();
     assert_eq!(tools, vec!["mcp__startup__t".to_string()]);
@@ -280,7 +290,8 @@ async fn enable_already_connected_marks_only() {
         },
     );
     let s = SessionId::new("s");
-    let tools = enable_for_session(&avail, "srv", &s, &registry, &active)
+    let http = entanglement_core::HttpClient::default();
+    let tools = enable_for_session(&avail, "srv", &s, &registry, &active, &http)
         .await
         .unwrap();
     assert_eq!(tools, vec!["mcp__srv__t".to_string()]);
@@ -329,9 +340,10 @@ async fn concurrent_enable_of_the_same_server_does_not_panic_or_corrupt_state() 
 
     let session_a = SessionId::new("a");
     let session_b = SessionId::new("b");
+    let http = entanglement_core::HttpClient::default();
     let (r1, r2) = tokio::join!(
-        enable_for_session(&avail, "srv", &session_a, &registry, &active),
-        enable_for_session(&avail, "srv", &session_b, &registry, &active),
+        enable_for_session(&avail, "srv", &session_a, &registry, &active, &http),
+        enable_for_session(&avail, "srv", &session_b, &registry, &active, &http),
     );
     assert!(r1.is_err() && r2.is_err(), "both calls should fail cleanly");
     assert!(active.lock().unwrap().is_empty());

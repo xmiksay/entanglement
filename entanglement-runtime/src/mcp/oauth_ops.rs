@@ -33,7 +33,9 @@ pub struct PendingUrl {
 
 /// Run `action` for `server`. `on_url` is invoked once, mid-`Connect`, with the
 /// authorization URL — the responder uses it to emit the interim
-/// `McpAuthChanged` before the flow blocks on the browser.
+/// `McpAuthChanged` before the flow blocks on the browser. `http` (#559) is
+/// the shared endpoint pool the post-authorization reconnect rides.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     server: &str,
     action: McpAuthAction,
@@ -41,12 +43,13 @@ pub async fn run(
     registry: &SharedRegistry,
     active: &ActiveServers,
     secret_env: &[String],
+    http: &entanglement_core::HttpClient,
     on_url: impl FnOnce(PendingUrl),
 ) -> Result<AuthOutcome> {
     let store = McpTokenStore::load();
     match action {
         McpAuthAction::Connect => {
-            connect(server, configs, registry, active, secret_env, on_url).await
+            connect(server, configs, registry, active, secret_env, http, on_url).await
         }
         // Check and Disconnect are pure credential operations — they need the
         // store but neither the config nor a reconnect, so they delegate
@@ -67,12 +70,14 @@ pub async fn run(
 
 /// The full authorization-code flow, then a reconnect so the server's tools
 /// become usable without a restart.
+#[allow(clippy::too_many_arguments)]
 async fn connect(
     server: &str,
     configs: &ServerConfigs,
     registry: &SharedRegistry,
     active: &ActiveServers,
     secret_env: &[String],
+    http: &entanglement_core::HttpClient,
     on_url: impl FnOnce(PendingUrl),
 ) -> Result<AuthOutcome> {
     let cfg = resolve_config(server, configs)?;
@@ -112,7 +117,9 @@ async fn connect(
     // Now that a credential exists, connect for real. A failure here leaves the
     // credential stored (it is valid — the server is simply unreachable), so a
     // later retry needs no re-authorization.
-    if let Err(e) = super::live::mcp_reconnect(server, &cfg, registry, active, secret_env).await {
+    if let Err(e) =
+        super::live::mcp_reconnect(server, &cfg, registry, active, secret_env, http).await
+    {
         tracing::warn!(
             server = %server,
             "authorized, but connecting afterwards failed: {e:#} — the credential is stored; \
@@ -182,7 +189,8 @@ mod tests {
         let configs = configs_with(vec![("srv", http_server("https://ex/mcp", None))]);
         let registry = SharedRegistry::default();
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-        let err = connect("srv", &configs, &registry, &active, &[], |_| {})
+        let http = entanglement_core::HttpClient::default();
+        let err = connect("srv", &configs, &registry, &active, &[], &http, |_| {})
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no `oauth:` block"));
@@ -201,7 +209,8 @@ mod tests {
         let configs = configs_with(vec![("srv", cfg)]);
         let registry = SharedRegistry::default();
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-        let err = connect("srv", &configs, &registry, &active, &[], |_| {})
+        let http = entanglement_core::HttpClient::default();
+        let err = connect("srv", &configs, &registry, &active, &[], &http, |_| {})
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stdio transport"));

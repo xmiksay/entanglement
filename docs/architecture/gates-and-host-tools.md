@@ -473,8 +473,10 @@ the same permission profiles as `read`/`bash`.
   holds an `Arc<McpClient>` and only calls `list_tools`/`call_tool`, so it adapts
   whichever backs a server. Both share the handshake (`initialize` +
   `notifications/initialized`) then `tools/list` (discovery) / `tools/call`
-  (execution), a **60 s** per-request timeout so a hung server can't park a turn,
-  and the JSON-RPC result/error split (`client::jsonrpc_payload`).
+  (execution) and the JSON-RPC result/error split (`client::jsonrpc_payload`).
+  stdio keeps a flat **60 s** per-request timeout so a hung subprocess can't
+  park a turn; HTTP's per-request bound is now the shared endpoint pool's own
+  (below, [ADR-0157](../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)).
   - **stdio (`mcp::stdio::StdioClient`, #198):** one JSON-RPC 2.0 session over the
     spawned subprocess's stdio, newline-delimited frames. A background reader task
     demultiplexes responses to callers by JSON-RPC `id`; notifications are dropped,
@@ -515,6 +517,21 @@ the same permission profiles as `read`/`bash`.
     lean gate already sanctions. Re-exported as `mcp::HttpClient` under its
     historical name, still **public** so an embedder can build a per-tenant client
     with a per-user token and register its tools without the YAML path.
+    Every request rides the **shared per-endpoint pool** (✅ #559,
+    [ADR-0157](../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)) —
+    `connect`/`connect_authenticated` take the caller's `entanglement_provider::
+    HttpClient` (re-exported from core alongside `McpHttpClient` so the
+    `mcp-http`-only lean build still names no direct provider dependency) and
+    an optional `api_key`, and every `POST` goes through
+    `HttpClient::execute_with_retry` exactly like the LLM wire clients — the
+    same connection pool, RPM/concurrency caps, and 429/`Retry-After` handling,
+    keyed by `(this server's own URL, api_key)` so it gets its own bucket,
+    isolated from its provider's LLM endpoint. This closes the gap where a
+    provider-bundled server sharing its provider's key (below) issued
+    completely unmetered requests against that key's real rate limit. The
+    provider key is resolved from `AvailableServer.key_env` (below) at the
+    startup connect and the lazy `/enable mcp` connect; a live `/mcp add` or an
+    OAuth reconnect passes `api_key: None` (still pooled, just unkeyed).
   - **OAuth (✅ [ADR-0153](../adr/0153-mcp-server-oauth.md)):** a server entry may
     carry an optional `oauth:` block. Present — *even empty* — it switches that
     server from static-header auth to a browser-obtained bearer token, since most
@@ -684,6 +701,14 @@ Every MCP server now has a **three-state activation**
 `McpServerStatus` gains an optional `state` (`"enabled"`/`"allowed"`) and the
 responder's `McpList` snapshot appends available-unconnected servers
 (`connected: false`), which the TUI panel paints "available", not red.
+
+A bundled server's connect — startup (`enabled`) or lazy
+(`enable_for_session`, the `allowed` default's actual activation path) —
+resolves `AvailableServer.key_env` live and hands the value to the HTTP
+transport as `api_key` (✅ #559,
+[ADR-0157](../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)), so
+its traffic shares the shared endpoint pool's rate-limit budget with the
+provider's LLM endpoint using the same key — see §"MCP client" above.
 
 ### TUI `/mcp` command — [ADR-0100](../adr/0100-tui-mcp-command.md) (#373)
 

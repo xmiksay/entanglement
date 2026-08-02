@@ -58,7 +58,10 @@ pub type ServerConfigs = Arc<Mutex<HashMap<String, McpServerConfig>>>;
 ///
 /// The connect/list-tools awaits run *before* any lock is taken (#372: never
 /// hold a lock across `.await`); only the synchronous registration is done
-/// under the registry's write lock.
+/// under the registry's write lock. `http` (#559) is the shared endpoint pool
+/// the connect rides — a live `/mcp add` is always a user-declared server, so
+/// it carries no provider key (unkeyed, still pooled) bucket.
+#[allow(clippy::too_many_arguments)]
 pub async fn mcp_add(
     name: String,
     mut cfg: McpServerConfig,
@@ -66,6 +69,7 @@ pub async fn mcp_add(
     active: &ActiveServers,
     configs: &ServerConfigs,
     secret_env: &[String],
+    http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
     if cfg.disabled {
         bail!("cannot live-add a disabled MCP server `{name}` — omit `disabled` or set it false");
@@ -73,7 +77,7 @@ pub async fn mcp_add(
     if let Some(existing) = configs.lock().unwrap().get(&name).cloned() {
         carry_forward_unspecified_fields(&mut cfg, &existing, &name);
     }
-    let (client, defs) = connect_client(&name, &cfg, secret_env).await?;
+    let (client, defs) = connect_client(&name, &cfg, secret_env, http, None).await?;
     let prefix = format!("mcp__{name}__");
     let tools = {
         let mut reg = registry.write().unwrap();
@@ -134,15 +138,18 @@ fn carry_forward_unspecified_fields(
 /// authored `mcp:` block through serde and drop its comments for no reason.
 /// Otherwise identical to `mcp_add`'s upsert — old tools unregistered, old
 /// connection dropped, new tools registered — with the awaits kept outside
-/// every lock (#372).
+/// every lock (#372). `http` (#559) is the shared endpoint pool the connect
+/// rides; an OAuth-reconnected server authenticates via its bearer token, not
+/// a shared provider key, so it carries no `api_key` (unkeyed, still pooled).
 pub async fn mcp_reconnect(
     name: &str,
     cfg: &McpServerConfig,
     registry: &SharedRegistry,
     active: &ActiveServers,
     secret_env: &[String],
+    http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
-    let (client, defs) = connect_client(name, cfg, secret_env).await?;
+    let (client, defs) = connect_client(name, cfg, secret_env, http, None).await?;
     let prefix = format!("mcp__{name}__");
     let tools = {
         let mut reg = registry.write().unwrap();
@@ -308,7 +315,8 @@ mod tests {
         let mut cfg = stdio_cfg("definitely-not-a-real-binary-xyz");
         cfg.disabled = true;
 
-        let err = mcp_add("srv".into(), cfg, &registry, &active, &configs, &[])
+        let http = entanglement_core::HttpClient::default();
+        let err = mcp_add("srv".into(), cfg, &registry, &active, &configs, &[], &http)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("disabled"));
@@ -322,6 +330,7 @@ mod tests {
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
         let configs: ServerConfigs = Arc::new(Mutex::new(HashMap::new()));
 
+        let http = entanglement_core::HttpClient::default();
         let result = mcp_add(
             "broken".into(),
             stdio_cfg("definitely-not-a-real-binary-xyz"),
@@ -329,6 +338,7 @@ mod tests {
             &active,
             &configs,
             &[],
+            &http,
         )
         .await;
         assert!(result.is_err());

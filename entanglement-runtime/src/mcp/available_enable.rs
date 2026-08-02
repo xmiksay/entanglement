@@ -24,13 +24,17 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Enable an available server for `session` (#542): lazily connect + register
 /// its tools if this is the first enablement (no persistence — `ServerConfigs`
 /// and `config.yml` are never touched, unlike `mcp_add`), then mark the
-/// session. Returns the server's registered tool names.
+/// session. Returns the server's registered tool names. `http` (#559) is the
+/// shared endpoint pool the connect rides — a bundled server's own `key_env`
+/// (from its `AvailableServer` entry) is resolved live so its traffic shares
+/// pool-key identity with the LLM endpoint billed against the same key.
 pub async fn enable_for_session(
     avail: &AvailableMcp,
     name: &str,
     session: &SessionId,
     registry: &SharedRegistry,
     active: &ActiveServers,
+    http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
     let connected = active.lock().unwrap().get(name).map(|s| s.tools.clone());
     // A startup-`enabled` server is globally visible already — enabling it
@@ -69,9 +73,19 @@ pub async fn enable_for_session(
                         avail.available_names().join(", ")
                     );
                 };
+                let api_key = server
+                    .key_env
+                    .as_deref()
+                    .and_then(|var| std::env::var(var).ok());
                 let (client, defs) = match tokio::time::timeout(
                     CONNECT_TIMEOUT,
-                    connect_client(name, &server.config, &avail.secret_env),
+                    connect_client(
+                        name,
+                        &server.config,
+                        &avail.secret_env,
+                        http,
+                        api_key.as_deref(),
+                    ),
                 )
                 .await
                 {

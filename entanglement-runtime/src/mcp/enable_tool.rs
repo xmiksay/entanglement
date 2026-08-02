@@ -38,6 +38,7 @@ pub struct McpEnableTool {
     avail: Arc<AvailableMcp>,
     registry: WeakRegistry,
     active: ActiveServers,
+    http: entanglement_core::HttpClient,
 }
 
 #[derive(Deserialize)]
@@ -46,11 +47,17 @@ struct Input {
 }
 
 impl McpEnableTool {
-    pub fn new(avail: Arc<AvailableMcp>, registry: &SharedRegistry, active: ActiveServers) -> Self {
+    pub fn new(
+        avail: Arc<AvailableMcp>,
+        registry: &SharedRegistry,
+        active: ActiveServers,
+        http: entanglement_core::HttpClient,
+    ) -> Self {
         Self {
             avail,
             registry: Arc::downgrade(registry),
             active,
+            http,
         }
     }
 }
@@ -106,8 +113,15 @@ impl Tool for McpEnableTool {
             .registry
             .upgrade()
             .context("tool registry is no longer available")?;
-        let tools =
-            enable_for_session(&self.avail, &server, session, &registry, &self.active).await?;
+        let tools = enable_for_session(
+            &self.avail,
+            &server,
+            session,
+            &registry,
+            &self.active,
+            &self.http,
+        )
+        .await?;
         Ok(text_parts(format!(
             "MCP server `{server}` enabled for this session — {} tool(s) available from your \
              next round: {}",
@@ -135,6 +149,7 @@ mod tests {
             Arc::new(AvailableMcp::default()),
             &registry,
             Arc::new(Mutex::new(HashMap::new())),
+            entanglement_core::HttpClient::default(),
         );
         (tool, registry)
     }

@@ -143,12 +143,14 @@ pub(super) async fn lazy_enable_available(app: &mut App, pattern: &str) -> Resul
         return Ok(());
     }
     let session = app.active_session_id().clone();
+    let http = app.http_client().cloned().unwrap_or_default();
     crate::mcp::available::enable_for_session(
         &handles.avail,
         &server,
         &session,
         &handles.registry,
         &handles.active,
+        &http,
     )
     .await
     .map(|_| ())

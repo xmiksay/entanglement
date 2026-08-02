@@ -24,6 +24,11 @@ use std::sync::Arc;
 
 use entanglement_runtime::mcp::{HttpClient, McpClient, McpTool};
 use entanglement_runtime::ToolRegistry;
+// The shared per-endpoint pool (#559) — distinct from `mcp::HttpClient` above,
+// which is the MCP *transport*'s historical name (ADR-0153). A real embedder
+// builds one `PoolHttpClient` and shares it across every tenant's connect,
+// rather than one per call as this standalone example does.
+use entanglement_provider::HttpClient as PoolHttpClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -45,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         headers.insert("Authorization".to_string(), format!("Bearer {token}"));
     }
 
-    let http = HttpClient::connect("example", &url, &headers).await?;
+    let http = HttpClient::connect("example", &url, &headers, PoolHttpClient::new(), None).await?;
     let client: Arc<McpClient> = Arc::new(McpClient::Http(http));
 
     let mut registry = ToolRegistry::new();

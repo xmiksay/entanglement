@@ -31,6 +31,8 @@ use super::transport_label;
 /// available-but-unconnected `allowed` servers to `McpList` (keyless bundles
 /// stay silently absent) and routes a `McpRemove` of a lazily-connected
 /// bundled server to a plain disconnect instead of a config-map removal.
+/// `http` (#559) is the shared endpoint pool every live add/reconnect's HTTP
+/// transport rides.
 pub fn spawn_mcp_responder(
     holly: &Holly,
     registry: SharedRegistry,
@@ -38,6 +40,7 @@ pub fn spawn_mcp_responder(
     configs: ServerConfigs,
     avail: Arc<AvailableMcp>,
     secret_env: Vec<String>,
+    http: entanglement_core::HttpClient,
 ) -> tokio::task::JoinHandle<()> {
     let emitter = holly.clone();
     let mut inbound = holly.subscribe_inbound();
@@ -80,6 +83,7 @@ pub fn spawn_mcp_responder(
                                 &active,
                                 &configs,
                                 &secret_env,
+                                &http,
                             )
                             .await
                             {
@@ -132,6 +136,7 @@ pub fn spawn_mcp_responder(
                             let (registry, active, configs) =
                                 (registry.clone(), active.clone(), configs.clone());
                             let secret_env = secret_env.clone();
+                            let http = http.clone();
                             let op_name = name.clone();
                             auth_ops.spawn(async move {
                                 run_auth_op(
@@ -142,6 +147,7 @@ pub fn spawn_mcp_responder(
                                     &active,
                                     &configs,
                                     &secret_env,
+                                    &http,
                                 )
                                 .await;
                                 op_name
@@ -181,6 +187,7 @@ async fn run_auth_op(
     active: &ActiveServers,
     configs: &ServerConfigs,
     secret_env: &[String],
+    http: &entanglement_core::HttpClient,
 ) {
     let report = |status| emitter.emit_mcp_auth_changed(status);
     let interim_name = name.clone();
@@ -192,6 +199,7 @@ async fn run_auth_op(
         registry,
         active,
         secret_env,
+        http,
         move |pending| {
             if !pending.browser_opened {
                 tracing::info!(
@@ -397,6 +405,7 @@ mod tests {
             configs,
             Arc::new(AvailableMcp::default()),
             Vec::new(),
+            entanglement_core::HttpClient::default(),
         );
 
         holly
@@ -437,6 +446,7 @@ mod tests {
             configs,
             Arc::new(AvailableMcp::default()),
             Vec::new(),
+            entanglement_core::HttpClient::default(),
         );
 
         holly

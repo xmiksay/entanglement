@@ -23,17 +23,29 @@
 //! public so an embedder can build one directly with a per-user token and
 //! register its tools without going through the YAML config path.
 //!
+//! Every request rides the shared [`HttpClient`] endpoint pool (#559) — the
+//! same connection pool, RPM/concurrency caps, and 429/`Retry-After` handling
+//! LLM traffic gets — instead of an unmetered bare `reqwest::Client`. This
+//! matters for provider-bundled servers (z.ai's `web_search_prime`/
+//! `web_reader`/`zread`) that share their provider's API key: without this,
+//! a search-heavy turn's MCP calls silently bypassed the same key's LLM
+//! endpoint budget. `connect`/`connect_authenticated` take the caller's
+//! `HttpClient` and an optional `api_key` for pool-key identity; the server
+//! still gets its own [`EndpointState`](crate::client) bucket (keyed by its
+//! own URL), isolated from the LLM endpoint sharing its key.
+//!
 //! [spec]: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
+
+use crate::client::{HttpClient, StreamGuard};
 
 use super::auth::{AccessTokenSource, AuthRequired};
 use super::headers::build_headers;
@@ -54,17 +66,26 @@ const PROTOCOL_HEADER: &str = "MCP-Protocol-Version";
 /// metadata document (RFC 9728) that bootstraps OAuth discovery.
 const WWW_AUTHENTICATE: &str = "WWW-Authenticate";
 
-/// Whole-request ceiling — connect, send, and receive the full response. A hung
-/// server surfaces as a tool-failure the model sees rather than parking a turn.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-
 /// A live streamable-HTTP session with one MCP server.
 pub struct McpHttpClient {
     /// Server name from config — carried into every error message.
     server: String,
     /// The single JSON-RPC endpoint every request is `POST`ed to.
     url: String,
-    http: reqwest::Client,
+    /// The shared per-endpoint pool (#559): MCP traffic rides the same
+    /// connection pool, RPM/concurrency caps, and 429/`Retry-After` handling
+    /// as LLM traffic, instead of an unmetered bare `reqwest::Client`.
+    http: HttpClient,
+    /// The provider API key this server shares with its LLM endpoint (e.g.
+    /// z.ai's bundled `web_search_prime`/`web_reader`/`zread`, all billed
+    /// against `ZAI_API_KEY`), when known (#559) — feeds the pool key
+    /// alongside `url`, so this server still gets its *own* endpoint bucket
+    /// (keyed by its own URL, distinct from the LLM endpoint's — the MCP path
+    /// is plausibly a separate rate-limit domain server-side) while sharing
+    /// key-hash conventions with the LLM client. `None` for a user-declared
+    /// or OAuth-authenticated server, which gets an unkeyed (still pooled)
+    /// bucket.
+    api_key: Option<String>,
     /// Static per-server headers (auth etc.), already `${VAR}`-expanded.
     headers: HeaderMap,
     /// OAuth bearer-token source (ADR-0153). `None` for a server authenticated
@@ -81,44 +102,52 @@ pub struct McpHttpClient {
 
 impl McpHttpClient {
     /// Build a client against `url` with static `headers`, then complete the
-    /// handshake. Unchanged from the pre-ADR-0153 signature so every existing
-    /// call site and embedder keeps compiling.
+    /// handshake. `http` is the shared per-endpoint pool (#559) every request
+    /// rides; `api_key` is the provider key this server shares with its LLM
+    /// endpoint, if any (bundled servers), for pool-key identity — `None` for
+    /// a user-declared server, which still pools/rate-limits, just under an
+    /// unkeyed bucket.
     pub async fn connect(
         server: &str,
         url: &str,
         headers: &HashMap<String, String>,
+        http: HttpClient,
+        api_key: Option<String>,
     ) -> Result<Self> {
-        Self::connect_with(server, url, headers, None).await
+        Self::connect_with(server, url, headers, None, http, api_key).await
     }
 
     /// Build a client whose `Authorization` header comes from an OAuth token
     /// source (ADR-0153) rather than (or in addition to) static headers. The
     /// source is consulted per request and force-refreshed once on a `401`.
+    /// See [`connect`][Self::connect] for `http`/`api_key`.
     pub async fn connect_authenticated(
         server: &str,
         url: &str,
         headers: &HashMap<String, String>,
         auth: Arc<dyn AccessTokenSource>,
+        http: HttpClient,
+        api_key: Option<String>,
     ) -> Result<Self> {
-        Self::connect_with(server, url, headers, Some(auth)).await
+        Self::connect_with(server, url, headers, Some(auth), http, api_key).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_with(
         server: &str,
         url: &str,
         headers: &HashMap<String, String>,
         auth: Option<Arc<dyn AccessTokenSource>>,
+        http: HttpClient,
+        api_key: Option<String>,
     ) -> Result<Self> {
         let headers =
             build_headers(headers).with_context(|| format!("MCP server `{server}` headers"))?;
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .context("building MCP HTTP client")?;
         let client = Self {
             server: server.to_string(),
             url: url.to_string(),
             http,
+            api_key,
             headers,
             auth,
             protocol_version: Mutex::new(None),
@@ -182,11 +211,15 @@ impl McpHttpClient {
     }
 
     /// `POST` a JSON-RPC request and await its correlated response, whether the
-    /// server answers with a lone JSON body or an SSE stream.
+    /// server answers with a lone JSON body or an SSE stream. The endpoint's
+    /// concurrency permit (`_guard`) is held for this whole function — through
+    /// the SSE drain or the JSON body read — so an in-flight MCP call counts
+    /// against the endpoint's cap for its full duration, mirroring the LLM
+    /// clients' `spawn_byte_stream` (#559).
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        let response = self.send(&frame, method).await?;
+        let (response, _guard) = self.send(&frame, method).await?;
         self.capture_session_id(response.headers());
         if !response.status().is_success() {
             return Err(self.status_error(response, method).await);
@@ -207,7 +240,7 @@ impl McpHttpClient {
     /// `202 Accepted` with no body; anything 2xx is fine.
     async fn notify(&self, method: &str, params: Value) -> Result<()> {
         let frame = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        let response = self.send(&frame, method).await?;
+        let (response, _guard) = self.send(&frame, method).await?;
         self.capture_session_id(response.headers());
         if !response.status().is_success() {
             return Err(self.status_error(response, method).await);
@@ -215,35 +248,40 @@ impl McpHttpClient {
         Ok(())
     }
 
-    /// Send one request under the whole-request timeout, retrying exactly once
+    /// Send one request through the shared endpoint pool, retrying exactly once
     /// against a force-refreshed token when the server answers `401` and an
     /// OAuth source is wired. One retry only: a second `401` means the refresh
     /// itself is not enough (revoked grant, changed scopes) and the user has to
-    /// re-authorize.
-    async fn send(&self, frame: &Value, method: &str) -> Result<reqwest::Response> {
-        let response = self.post_once(frame, method, false).await?;
+    /// re-authorize. Connect/retry/backoff and 429/`Retry-After` pacing are
+    /// `HttpClient::execute_with_retry`'s job now (#559) — the old flat 60s
+    /// whole-request timeout is gone, the same tradeoff the LLM clients
+    /// already make: a 429 is patiently retried rather than treated as a hang.
+    async fn send(&self, frame: &Value, method: &str) -> Result<(reqwest::Response, StreamGuard)> {
+        let (response, guard) = self.post_once(frame, method, false).await?;
         if response.status() == StatusCode::UNAUTHORIZED && self.auth.is_some() {
             return self.post_once(frame, method, true).await;
         }
-        Ok(response)
+        Ok((response, guard))
     }
 
-    /// Build and send one `POST`, layering the static headers, the OAuth bearer
-    /// (when configured), the negotiated protocol version, and the session id.
+    /// Build and send one `POST` through the shared per-endpoint pool (#559),
+    /// layering the static headers, the OAuth bearer (when configured), the
+    /// negotiated protocol version, and the session id. The pool key is
+    /// `(self.url, self.api_key)` — this server's own bucket, isolated from
+    /// its provider's LLM endpoint, but sharing key-hash identity with it.
     async fn post_once(
         &self,
         frame: &Value,
         method: &str,
         force_refresh: bool,
-    ) -> Result<reqwest::Response> {
-        let mut req = self
-            .http
-            .post(&self.url)
-            .headers(self.headers.clone())
-            .header(CONTENT_TYPE, "application/json")
-            // Accept both shapes the streamable-HTTP server may answer with.
-            .header(ACCEPT, "application/json, text/event-stream")
-            .json(frame);
+    ) -> Result<(reqwest::Response, StreamGuard)> {
+        let mut headers = self.headers.clone();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        // Accept both shapes the streamable-HTTP server may answer with.
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
         if let Some(auth) = &self.auth {
             // A failure here (no stored token, refresh rejected) is itself an
             // authorization problem, not a transport one — surface it as such so
@@ -255,18 +293,39 @@ impl McpHttpClient {
                 })
                 .context(format!("obtaining an access token: {e}"))
             })?;
-            req = req.header(AUTHORIZATION, format!("Bearer {token}"));
+            let value = HeaderValue::from_str(&format!("Bearer {token}"))
+                .context("building the MCP bearer header")?;
+            headers.insert(AUTHORIZATION, value);
         }
-        if let Some(v) = self.protocol_version.lock().unwrap().as_deref() {
-            req = req.header(PROTOCOL_HEADER, v);
+        if let Some(v) = self.protocol_version.lock().unwrap().clone() {
+            let value =
+                HeaderValue::from_str(&v).context("building the MCP-Protocol-Version header")?;
+            headers.insert(PROTOCOL_HEADER, value);
         }
-        if let Some(sid) = self.session_id.lock().unwrap().as_deref() {
-            req = req.header(SESSION_HEADER, sid);
+        if let Some(sid) = self.session_id.lock().unwrap().clone() {
+            let value =
+                HeaderValue::from_str(&sid).context("building the Mcp-Session-Id header")?;
+            headers.insert(SESSION_HEADER, value);
         }
-        tokio::time::timeout(REQUEST_TIMEOUT, req.send())
+        self.http
+            .execute_with_retry(
+                &self.url,
+                self.api_key.as_deref(),
+                None,
+                None,
+                "",
+                None,
+                || {
+                    self.http
+                        .client()
+                        .post(&self.url)
+                        .headers(headers.clone())
+                        .json(frame)
+                        .send()
+                },
+            )
             .await
-            .map_err(|_| anyhow::anyhow!("MCP server `{}` timed out on `{method}`", self.server))?
-            .with_context(|| format!("MCP server `{}` `{method}`", self.server))
+            .map_err(|e| anyhow::anyhow!("MCP server `{}` `{method}`: {e}", self.server))
     }
 
     /// Turn a non-2xx response into an error, tagging a `401` with
