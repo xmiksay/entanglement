@@ -9,8 +9,18 @@
 //! `SetSessionMeta` frame the engine folds like any user-authored name.
 //!
 //! Best-effort throughout: a failed/empty/truncated generation is logged and
-//! dropped (the session keeps its default name). A session that already has a
-//! name (set via `/name`, or a resumed session) is left alone (#553), two ways:
+//! dropped (the session keeps its default name). Fired *alongside* the main
+//! turn by default — except when the resolved aux model's per-model
+//! concurrency cap is [`CONTENDED_CONCURRENCY_CEILING`] or below (#589): with
+//! only one permit available, the main turn's own request is guaranteed to
+//! hold it first, so firing concurrently would just have this generator's
+//! call block behind the main turn's for the whole turn regardless — the
+//! generator instead waits for the main turn's first `Done`/`Error` (bounded
+//! by [`DEFER_TIMEOUT`]) before making its aux call, so the two are sequenced
+//! rather than silently contending for a permit neither can win early.
+//!
+//! A session that already has a name (set via `/name`, or a resumed session)
+//! is left alone (#553), two ways:
 //! the `SetSessionMeta` this generator sends always carries `if_unset: true`,
 //! so a late generated title can never win a race against — or clobber — a
 //! name set (or already set before this process started) any other way; and on
@@ -26,15 +36,33 @@
 //! client to call.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use entanglement_core::{
     content_text, Holly, InMsg, LlmEvent, LlmRequest, Message, OutEvent, SessionId,
 };
 use futures::StreamExt;
+use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::aux_llm::AuxLlmRegistry;
 use crate::config::aux_models::Purpose;
+
+/// The per-model concurrency cap, at or below which firing the aux call
+/// alongside the main turn is treated as guaranteed contention rather than
+/// merely possible (#589): at a cap of 1 the main turn's own request already
+/// holds the endpoint/model's only permit, so the aux call is certain to
+/// block behind it, not just likely to. A cap above this is left to admit
+/// concurrently as before — with more than one permit, the aux call has a
+/// real chance to slot in for free.
+const CONTENDED_CONCURRENCY_CEILING: usize = 1;
+
+/// Upper bound on how long a deferred aux call waits for the main turn to
+/// settle before firing anyway (#589). A safety net, not the expected case: a
+/// turn that's merely slow still settles well inside this; one that never
+/// settles (parked on approval, `Stop`, an engine restart) must not strand the
+/// title forever — best-effort still means *eventually* best-effort.
+const DEFER_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The system prompt for the title generator: short, opinionated, asks for a
 /// terse label the sidebar can render. A title is display-only metadata, so the
@@ -102,12 +130,24 @@ pub fn spawn_session_title_generator(
                             titled.insert(session.clone());
                             let holly = holly.clone();
                             let registry = registry.clone();
+                            // Guaranteed contention (#589): the aux call would
+                            // certainly queue behind the main turn's own
+                            // request for the model's one permit, so subscribe
+                            // now — before the main turn's `Done` can possibly
+                            // fire — and wait for it rather than racing.
+                            let contended = registry
+                                .concurrency_cap(Purpose::SessionTitle)
+                                .is_some_and(|cap| cap <= CONTENDED_CONCURRENCY_CEILING);
+                            let settle_wait = contended.then(|| holly.subscribe());
                             // Tracked (not bare-detached): the generator must not
                             // block the inbound fan-out (a slow aux model would
                             // stall every later `InMsg`), but the task must still
                             // be reachable for abort at shutdown. A failure is
                             // logged + dropped.
                             inflight.spawn(async move {
+                                if let Some(mut outbound) = settle_wait {
+                                    wait_for_turn_settled(&mut outbound, &session).await;
+                                }
                                 let title = match generate_title(&registry, &prompt_text).await {
                                     Ok(t) => t,
                                     Err(e) => {
@@ -166,6 +206,33 @@ pub fn spawn_session_title_generator(
             }
         }
     })
+}
+
+/// Waits until `session`'s current turn settles (`Done` or `Error`) on
+/// `outbound`, or [`DEFER_TIMEOUT`] elapses, whichever comes first (#589).
+/// Best-effort like the rest of this module: a lagged receiver just keeps
+/// waiting (a missed delta can't be the settle signal itself) and a closed
+/// channel or an expired deadline both fall through to letting the caller
+/// fire its aux call anyway rather than stranding it.
+#[cfg(feature = "provider")]
+async fn wait_for_turn_settled(outbound: &mut broadcast::Receiver<OutEvent>, session: &SessionId) {
+    let deadline = tokio::time::sleep(DEFER_TIMEOUT);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => return,
+            ev = outbound.recv() => match ev {
+                Ok(OutEvent::Done { session: s, .. } | OutEvent::Error { session: s, .. })
+                    if s == *session =>
+                {
+                    return;
+                }
+                Ok(_) => continue,
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => return,
+            },
+        }
+    }
 }
 
 /// Ask the aux `session_title` LLM for a title for `first_prompt`. Returns
