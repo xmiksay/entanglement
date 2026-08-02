@@ -239,18 +239,18 @@ pub fn agent_spawn_spec(targets: &[&AgentProfile]) -> ToolSpec {
 }
 
 /// The blocking `agent` tool schema (#120). Same input shape as `agent_spawn`,
-/// but it waits for the sub-agent and returns its final answer directly.
+/// but it waits for the sub-agent and returns its final answer directly. The
+/// roster is disclosed once, on `agent_spawn` — repeating it here would bill
+/// every request twice for the same lines (`targets` still drives the enum).
 pub fn agent_spec(targets: &[&AgentProfile]) -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_TOOL,
-        format!(
-            "Delegate a focused subtask to a sub-agent and wait for its answer. \
-             Spawns the sub-agent, blocks until it finishes, and returns its \
-             final answer directly — the one-call path for a single delegation. \
-             To launch several sub-agents and let them run concurrently, use \
-             agent_spawn + agent_poll instead.\n\n{}",
-            roster(targets)
-        ),
+        "Delegate a focused subtask to a sub-agent and wait for its answer. \
+         Spawns the sub-agent, blocks until it finishes, and returns its \
+         final answer directly — the one-call path for a single delegation. \
+         To launch several sub-agents and let them run concurrently, use \
+         agent_spawn + agent_poll instead. Takes the same agents and arguments \
+         as `agent_spawn` — see its description for the roster.",
         agent_input_schema(targets),
     )
 }

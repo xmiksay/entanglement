@@ -102,42 +102,32 @@ pub fn rhai_spec() -> ToolSpec {
     ToolSpec::with_schema(
         RHAI_TOOL,
         "Run a Rhai script (https://rhai.rs) in a capability-sandboxed engine — \
-         the way to do multi-step logic in one call instead of shelling out to \
-         python/node. Rhai's syntax resembles Rust (fn, let) but it is NOT Rust: \
-         there is no `use`/`extern crate`, no std library, no crates — only the \
-         functions listed below exist for I/O; everything else (strings, arrays, \
-         maps, math, loops) is Rhai's own built-in stdlib, already available with \
-         no import. No filesystem, network, process, or env access beyond that: \
-         the only host functions bound are read(path), read(path, offset, limit) \
-         (returns \"{lineno}: {line}\" text — NOT parseable as JSON/YAML), \
-         read_raw(path) (exact file content, no line numbers — use this before \
-         parse_json/parse_yaml), glob(pattern), grep(pattern), grep(pattern, path), \
-         edit(path, old, new), edit(path, old, new, replace_all), write(path, \
-         content), exec(command), exec(command, args), exec(command, args, \
-         workdir) (argv exec, no shell — graded as the `call` tool; named \
-         exec() because `call` is a reserved Rhai keyword for function-pointer \
-         invocation), bash(command), bash(command, workdir) (shell exec via \
-         sh -c; only callable when the host has bash enabled — otherwise \
-         unknown-function) — `workdir` runs the command in that directory and \
-         is what a workdir-scoped permission rule (`tool{pattern}`) matches \
-         against, same as a direct `call`/`bash` tool call — each routed through \
-         the same permission \
-         checks as the equivalent tool call (read_raw graded identically to \
-         read), and each returns the tool's text output (throws on denial/ \
-         failure; catch with try/catch). exec/bash inherit a timeout clamped \
-         to this run's own remaining time budget, so a child process cannot \
-         outlive the script. Also bound (pure, no IO, no permission check — these \
-         transform a value already in the script, not a file): parse_json(str), \
-         to_json(value), parse_yaml(str), to_yaml(value) — parse throws on \
-         invalid input, so `try { parse_json(x) } catch(e) {...}` doubles as a \
-         syntax validator; JSON/YAML null becomes (); an integer outside i64 \
-         range silently widens to an approximate float (put large IDs in JSON as \
-         strings to avoid this, same convention as JS). Each is also callable as \
-         a method, e.g. read_raw(path).parse_json(). The script's last expression \
-         is returned (serialized); print(...) output is captured. Bounded: \
-         max_operations, string/array/map size caps, and a wall-clock timeout \
-         (default 5s, max 30s). \
-         Example: let cfg = read_raw(\"config.json\").parse_json(); let out = \"\"; \
+         multi-step logic in one call instead of shelling out to python/node. \
+         Syntax resembles Rust (fn, let) but is NOT Rust: no use/crates/std; \
+         Rhai's own stdlib (strings, arrays, maps, math, loops) is built in, no \
+         import. The ONLY host I/O bindings: read(path), read(path, offset, \
+         limit) — returns \"{lineno}: {line}\" text, NOT parseable as JSON/YAML; \
+         read_raw(path) — exact file content, use before parsing; glob(pattern); \
+         grep(pattern), grep(pattern, path); edit(path, old, new), edit(path, \
+         old, new, replace_all); write(path, content); exec(command), \
+         exec(command, args), exec(command, args, workdir) — argv exec, no \
+         shell, graded as the `call` tool (named exec because `call` is a \
+         reserved Rhai keyword); bash(command), bash(command, workdir) — sh -c, \
+         only when the host has bash enabled, otherwise unknown-function. Each \
+         binding passes the same permission checks as the equivalent tool call \
+         (read_raw graded as read; `workdir` is what a workdir-scoped rule \
+         `tool{pattern}` matches) and returns that tool's text output; \
+         denial/failure throws — catch with try/catch. exec/bash timeouts are \
+         clamped to the script's remaining budget. Pure converters (no IO, no \
+         permission check): parse_json(str), to_json(v), parse_yaml(str), \
+         to_yaml(v) — parse throws on invalid input (usable as a validator); \
+         JSON/YAML null becomes (); an integer outside i64 range silently \
+         widens to an approximate float (put large IDs in JSON as strings). All \
+         callable as methods, e.g. read_raw(path).parse_json(). The last \
+         expression is returned (serialized); print(...) output is captured. \
+         Bounded: max_operations, string/array/map size caps, wall-clock \
+         timeout (default 5s, max 30s). Example: \
+         let cfg = read_raw(\"config.json\").parse_json(); let out = \"\"; \
          for f in glob(\"*.rs\") { if f.contains(\"test\") { out += f + \"\\n\"; } } out",
         serde_json::json!({
             "type": "object",

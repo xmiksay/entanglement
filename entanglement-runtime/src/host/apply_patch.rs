@@ -63,7 +63,7 @@ impl Tool for ApplyPatchTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to the working directory."
+                    "description": "File path (relative)."
                 },
                 "patch": {
                     "type": "string",

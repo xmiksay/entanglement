@@ -1071,4 +1071,14 @@ fn specs_advertise_the_agent_family_names() {
         .unwrap();
     assert!(enum_names.iter().any(|n| n == "explore"));
     assert!(!enum_names.iter().any(|n| n == "build"));
+    // The roster is disclosed once — `agent` points at `agent_spawn` instead of
+    // repeating the same lines (token cost, #560 audit).
+    assert!(
+        !agent.description.contains("explore:"),
+        "no duplicate roster on `agent`"
+    );
+    assert!(
+        agent.description.contains("agent_spawn"),
+        "`agent` references the roster's home"
+    );
 }

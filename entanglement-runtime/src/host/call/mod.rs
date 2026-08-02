@@ -160,20 +160,14 @@ impl Tool for CallTool {
         Cow::Borrowed("call")
     }
     fn description(&self) -> &str {
-        "Execute a binary directly (argv, NO shell) rooted at the working \
-         directory (or `workdir`, if given): `command` + `args` are passed \
-         verbatim to exec — no `sh -c`, \
-         so pipes, globbing, `$VAR` expansion, and metacharacters are NOT \
-         interpreted. Prefer this over `bash` for a fixed command. Output is \
-         tailed to the last `tail` lines per stream (default 30 — command value \
-         concentrates at the end); pass `tail=0` deliberately for full output \
-         (still byte-capped). Returns `[exit N]`, tailed stdout, and a tailed \
-         `[stderr]` block. The full untruncated output is always persisted to a \
-         file — `output_file` if given, else an auto-named default artifact — \
-         named in the result header; `input_file` pipes a file to the child's \
-         stdin (omitted → stdin is closed, not inherited). Pass `workdir` to \
-         run in a subdirectory (validated under root) instead of reaching for \
-         `bash` just to `cd` first."
+        "Execute a binary directly (argv, NO shell) in the working directory \
+         (or `workdir`): `command` + `args` are passed verbatim to exec — no \
+         `sh -c`, so pipes, globbing, `$VAR` expansion, and metacharacters are \
+         NOT interpreted. Prefer this over `bash` for a fixed command. Returns \
+         `[exit N]`, stdout, and a `[stderr]` block, each tailed to its last \
+         `tail` lines (default 30 — command value concentrates at the end; \
+         `tail=0` for full output, still byte-capped). The full untruncated \
+         output is always persisted to a file (see `output_file`)."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -214,12 +208,14 @@ impl Tool for CallTool {
                         parent dirs are created); a `<output_file>.stderr` \
                         sibling is always written alongside. Omitted → an \
                         artifact is still written to a runtime-owned scratch dir \
-                        outside the project, its absolute path named in the result."
+                        outside the project; its absolute path is named in the \
+                        result only when the response was truncated."
                 },
                 "workdir": {
                     "type": "string",
                     "description": "Working directory for this call, relative to \
-                        the root (must stay under it). Defaults to the root."
+                        the root (must stay under it). Defaults to the root — \
+                        use this instead of `bash` just to `cd`."
                 }
             },
             "required": ["command"]
@@ -339,6 +335,7 @@ impl CallTool {
                     &output.stderr,
                     parsed.tail,
                     &output_target.rel,
+                    output_target.explicit,
                     notice,
                 ))
             }
@@ -353,6 +350,7 @@ impl CallTool {
                     &stderr,
                     parsed.tail,
                     &output_target.rel,
+                    output_target.explicit,
                     notice,
                 ))
             }
@@ -650,11 +648,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_artifact_created_and_path_named_when_no_output_file() {
+    async fn default_artifact_named_when_output_is_tailed() {
         let dir = TempDir::new();
         let tool = CallTool::new(dir.path.clone());
-        let input = serde_json::json!({ "command": "printf", "args": ["%s", "auto-artifact\n"] })
-            .to_string();
+        // tail=1 on two lines forces truncation, which is what makes the
+        // default artifact worth naming in the result.
+        let input = serde_json::json!({
+            "command": "printf",
+            "args": ["%s", "early\nauto-artifact\n"],
+            "tail": 1,
+        })
+        .to_string();
         let out = tool.run(&input).await.unwrap();
         let header = out
             .lines()
@@ -664,14 +668,32 @@ mod tests {
             header.contains(".entanglement/tmp/call-output/call-"),
             "got: {header}"
         );
-        let start = "[output: ".len();
-        let end = header.find("] [stderr:").expect("stderr sibling named");
-        let rel = &header[start..end];
+        assert!(
+            !header.contains("[stderr:"),
+            "empty stderr is not named: {header}"
+        );
+        let rel = header
+            .strip_prefix("[output: ")
+            .and_then(|h| h.strip_suffix(']'))
+            .expect("header shape");
         assert_eq!(
             std::fs::read_to_string(dir.path.join(rel)).unwrap(),
-            "auto-artifact\n"
+            "early\nauto-artifact\n",
+            "artifact holds the full untailed output"
         );
         assert!(dir.path.join(format!("{rel}.stderr")).exists());
+    }
+
+    #[tokio::test]
+    async fn small_default_output_names_no_artifact() {
+        let dir = TempDir::new();
+        let tool = CallTool::new(dir.path.clone());
+        let input = serde_json::json!({ "command": "printf", "args": ["%s", "hi\n"] }).to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert_eq!(
+            out, "[exit 0]\nhi\n",
+            "no artifact header on a full, small result"
+        );
     }
 
     #[tokio::test]
@@ -684,7 +706,8 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let input = serde_json::json!({
                     "command": "printf",
-                    "args": ["%s", format!("call-{i}\n")],
+                    "args": ["%s", format!("early\ncall-{i}\n")],
+                    "tail": 1,
                 })
                 .to_string();
                 tool.run(&input).await.unwrap()
