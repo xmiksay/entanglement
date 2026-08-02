@@ -130,7 +130,17 @@ impl Session {
                     pending_text.push_str(text);
                 }
                 OutEvent::ReasoningDelta { .. } => {
-                    // Reasoning is not stored in context; it's display-only.
+                    // The live *display* channel: not stored in context. The
+                    // replayable form of the same reasoning arrives as a
+                    // `ReasoningBlock` below, which is what the provider needs
+                    // back — folding the deltas too would double it.
+                }
+                OutEvent::ReasoningBlock { part, .. } => {
+                    // Captured thinking block: accumulated with the other
+                    // persisted content blocks and flushed into the same
+                    // assistant message, so a resumed parked turn can present it
+                    // to the provider exactly as the live turn would have.
+                    pending_search.push(part.clone());
                 }
                 OutEvent::ToolCallDelta { .. } => {
                     // Streaming arg fragments (#194) are display-only; the

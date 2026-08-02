@@ -123,7 +123,18 @@ Setup errors (the initial `stream()` call)
 surface as `Error` + `Done` with no partial to commit. A **mid-stream** failure
 is handled to keep the committed context aligned with what the user saw (#181,
 [ADR-0057](../adr/0057-mid-stream-error-partial-commit-and-retry.md)):
-if the stream drops *before any* `TextDelta`/`ReasoningDelta` is shown, core
+Reasoning arrives on two rails and only one reaches `Context`
+([ADR-0160](../adr/0160-extended-thinking-round-trip.md)): `LlmEvent::Reasoning`
+→ `OutEvent::ReasoningDelta` is the *display* rail, streamed and persisted but
+deliberately never folded into history (it counts as "shown" for the retry rule
+below); `LlmEvent::ContentBlock(ContentPart::Reasoning)` →
+`OutEvent::ReasoningBlock` is the *replay* rail, committed into the assistant
+`Message` alongside the round's text like a `ProviderSearch` block. The split
+exists because Anthropic requires the signed thinking block back on a parked
+turn's final assistant message, so a resumed session has to rebuild it — while
+the rendered text must stay out of the token estimator and compaction.
+
+If the stream drops *before any* `TextDelta`/`ReasoningDelta` is shown, core
 transparently **re-requests once** (`STREAM_RETRIES = 1`) — a clean re-stream the
 provider's own connect-level retry (ADR-0050) can't cover; if a delta was already
 shown, core instead **commits the partial** assistant message with an appended

@@ -81,8 +81,12 @@ That table is **catalog data, not hardcode** (#118): an embedded default
 OpenAI-compatible endpoint with zero code change. `ModelEntry` carries
 capability flags, pricing, an optional per-model `concurrency` cap
 ([ADR-0140](../docs/adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md)),
-and generation params gated onto every `LlmRequest` (incl. `reasoning_effort`,
-[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)).
+generation params gated onto every `LlmRequest` (incl. `reasoning_effort`,
+[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)),
+and the two extended-thinking knobs `thinking_style` (which Anthropic request
+shape — the adaptive form is mandatory on current models, the fixed-budget form
+400s there) and `replay_thinking` (whether captured thinking blocks are sent
+back; [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)).
 Precedence: **env > user YAML > embedded defaults**.
 
 Resilience is **per-endpoint** (keyed by a normalized base URL + a stable
@@ -135,7 +139,7 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | Que
           | McpList | McpChanged | McpAuthChanged | BashChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
-          | SkillActive | AmbiguousRetry | SearchResult
+          | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
 ```
 
 Load-bearing invariants — **the detail lives in the linked architecture doc,
@@ -248,6 +252,13 @@ never here**; each bullet is the claim + where to read it:
 - **Endpoint throttle transitions are wire-visible** (`OutEvent::Throttle`,
   engine-global, transition-only). [provider](../docs/architecture/provider.md),
   [ADR-0141](../docs/adr/0141-wire-visible-throttle-transitions.md).
+- **Reasoning has two rails**: `ReasoningDelta` renders (never folded into
+  `Context`), `ContentPart::Reasoning` + `ReasoningBlock` replays. Anthropic
+  requires the signed thinking block back on a parked turn's final assistant
+  message; capture is unconditional, replay is per-model
+  (`ModelEntry::replay_thinking`), and a foreign provider's block is dropped, not
+  degraded to text. [provider](../docs/architecture/provider.md),
+  [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md).
 - **Multi-user mode is an embedder library API** (`UserId` on the wire,
   per-user catalogs/keys/ceilings/grants on the existing seams); `serve`
   stays local single-user. [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md).

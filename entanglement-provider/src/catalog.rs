@@ -24,11 +24,17 @@
 //! is applied by the head when it reads a resolved [`ProviderEntry`].
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_yaml::Value;
+
+// User-file resolution + the pre-deserialization deep merge, split out for the
+// 400-line file cap. The merge semantics themselves stay documented above,
+// where a reader of `Catalog` needs them.
+mod merge;
+use merge::{merge_value, providers_file_path};
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
 
@@ -101,6 +107,26 @@ pub enum Wire {
     Gemini,
 }
 
+/// Which extended-thinking request shape a model accepts on the Anthropic wire.
+///
+/// Anthropic replaced the fixed-budget form with an adaptive one, and the two are
+/// mutually exclusive: the newer models reject `budget_tokens` outright. Which
+/// shape is legal is a per-model fact, so it lives in the catalog next to the
+/// other capability flags rather than being hardcoded in the client — a user can
+/// add a model to their `providers.yml` and pick the right shape with no code
+/// change, the same "catalog data, not hardcode" property `wire:` has (#118).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingStyle {
+    /// `thinking: {type: "enabled", budget_tokens: N}`. The default, so an
+    /// existing user `providers.yml` keeps working untouched.
+    #[default]
+    Budget,
+    /// `thinking: {type: "adaptive"}` plus `output_config.effort`. The model
+    /// decides how much to think; `budget_tokens` is rejected.
+    Adaptive,
+}
+
 /// One model plus its capability + pricing metadata.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -122,6 +148,27 @@ pub struct ModelEntry {
     /// on. Surfaces as Anthropic's `thinking.budget_tokens`.
     #[serde(default)]
     pub thinking_budget_tokens: Option<u32>,
+    /// Which extended-thinking request shape this model accepts. See
+    /// [`ThinkingStyle`]; only meaningful with `supports_thinking`. Unset means
+    /// [`ThinkingStyle::Budget`], preserving pre-existing behaviour.
+    #[serde(default)]
+    pub thinking_style: Option<ThinkingStyle>,
+    /// Whether captured thinking blocks are **sent back** to the provider on the
+    /// next request. Only meaningful with `supports_thinking`.
+    ///
+    /// `None` derives the answer from the wire: on Anthropic, replay is on
+    /// whenever thinking is enabled, because the API *requires* the unmodified
+    /// block on a tool round-trip and a silent `false` would surface as a 400 the
+    /// user cannot diagnose; every other wire defaults off. An explicit value
+    /// always wins, so a user can force replay off (to cut input tokens, or work
+    /// around a provider quirk) or on (an OpenAI-compatible endpoint that does
+    /// accept reasoning back) without a code change.
+    ///
+    /// This gates **replay only, never capture**: blocks are always assembled and
+    /// always persisted, so flipping the flag never rewrites history — it only
+    /// changes what the next request carries.
+    #[serde(default)]
+    pub replay_thinking: Option<bool>,
     #[serde(default = "default_true")]
     pub supports_temperature: bool,
     #[serde(default)]
@@ -216,6 +263,23 @@ impl ModelEntry {
             },
             reasoning_effort: self.default_reasoning_effort,
         }
+    }
+
+    /// Resolved [`ThinkingStyle`], defaulting to [`ThinkingStyle::Budget`]. Not
+    /// clamped by `supports_thinking`: with thinking off no `thinking` field is
+    /// emitted at all, so the style is simply never consulted.
+    pub fn resolved_thinking_style(&self) -> ThinkingStyle {
+        self.thinking_style.unwrap_or_default()
+    }
+
+    /// Whether thinking blocks replay to this model. `wire_default` is the
+    /// answer for a catalog that leaves `replay_thinking` unset — the calling
+    /// client knows its own wire, a [`ModelEntry`] does not. Clamped by
+    /// `supports_thinking` the way `thinking_budget_tokens` is in
+    /// [`generation_params`][Self::generation_params]: a model that cannot think
+    /// has nothing to replay.
+    pub fn replays_thinking(&self, wire_default: bool) -> bool {
+        self.supports_thinking && self.replay_thinking.unwrap_or(wire_default)
     }
 }
 
@@ -318,84 +382,6 @@ impl Catalog {
         }
         seen
     }
-}
-
-/// A resolved catalog-file location plus whether it came from an explicit
-/// `ENTANGLEMENT_PROVIDERS_FILE` override (vs the default `${config_dir}` path),
-/// so [`Catalog::load`] can be loud about a missing *explicit* override while
-/// staying quiet about a missing *default* (#204).
-struct CatalogFile {
-    path: PathBuf,
-    explicit: bool,
-}
-
-/// The user override file path: `${config_dir}/entanglement/providers.yml`,
-/// overridable via `ENTANGLEMENT_PROVIDERS_FILE`.
-fn providers_file_path() -> Option<CatalogFile> {
-    if let Some(p) = std::env::var_os(PROVIDERS_FILE_ENV) {
-        return Some(CatalogFile {
-            path: PathBuf::from(p),
-            explicit: true,
-        });
-    }
-    dirs::config_dir().map(|d| CatalogFile {
-        path: d.join("entanglement").join("providers.yml"),
-        explicit: false,
-    })
-}
-
-// ── merge ────────────────────────────────────────────────────────────────────
-
-/// Deep-merge `over` onto `base`. Mappings merge key-wise; the two keyed
-/// sequences (`providers` by `name`, `models` by `id`) merge by identity;
-/// everything else is replaced by `over`.
-fn merge_value(base: Value, over: Value) -> Value {
-    match (base, over) {
-        (Value::Mapping(mut base_map), Value::Mapping(over_map)) => {
-            for (key, over_val) in over_map {
-                let merged = match base_map.remove(&key) {
-                    Some(base_val) => match key.as_str() {
-                        Some("providers") => merge_seq_by(base_val, over_val, "name"),
-                        Some("models") => merge_seq_by(base_val, over_val, "id"),
-                        _ => merge_value(base_val, over_val),
-                    },
-                    None => over_val,
-                };
-                base_map.insert(key, merged);
-            }
-            Value::Mapping(base_map)
-        }
-        // Scalars and non-keyed sequences: the user value wins outright.
-        (_, over) => over,
-    }
-}
-
-/// Merge two sequences by a shared identity key: matching entries merge
-/// recursively (in the base's position), user-only entries append. On a type
-/// mismatch (either side isn't a sequence) the user value wins outright.
-fn merge_seq_by(base: Value, over: Value, id_key: &str) -> Value {
-    let mut base_seq = match base {
-        Value::Sequence(s) => s,
-        _ => return over,
-    };
-    let over_seq = match over {
-        Value::Sequence(s) => s,
-        other => return other,
-    };
-    for over_item in over_seq {
-        let over_id = over_item.get(id_key).cloned();
-        let pos = over_id
-            .as_ref()
-            .and_then(|oid| base_seq.iter().position(|b| b.get(id_key) == Some(oid)));
-        match pos {
-            Some(i) => {
-                let base_item = base_seq.remove(i);
-                base_seq.insert(i, merge_value(base_item, over_item));
-            }
-            None => base_seq.push(over_item),
-        }
-    }
-    Value::Sequence(base_seq)
 }
 
 #[cfg(test)]
@@ -681,6 +667,94 @@ mod tests {
             Some(200000),
             "sibling fields survive the merge untouched"
         );
+    }
+
+    #[test]
+    fn thinking_style_defaults_to_budget_and_is_user_overridable() {
+        // Unset everywhere in the embedded defaults, so every pre-existing user
+        // catalog keeps emitting the fixed-budget shape it emitted before.
+        let entry = Catalog::builtin()
+            .model("anthropic", "claude-sonnet-4-5")
+            .unwrap()
+            .clone();
+        assert_eq!(entry.thinking_style, None);
+        assert_eq!(entry.resolved_thinking_style(), ThinkingStyle::Budget);
+
+        // A user adding a current model picks the adaptive shape with no code
+        // change — the point of keeping this in the catalog (#118).
+        let c = merge_str(
+            "providers:\n\
+             \x20 - name: anthropic\n\
+             \x20   models:\n\
+             \x20     - id: claude-sonnet-4-5\n\
+             \x20       thinking_style: adaptive\n",
+        );
+        let merged = c.model("anthropic", "claude-sonnet-4-5").unwrap();
+        assert_eq!(merged.resolved_thinking_style(), ThinkingStyle::Adaptive);
+        assert_eq!(
+            merged.context_window,
+            Some(200000),
+            "sibling fields survive the merge untouched"
+        );
+    }
+
+    #[test]
+    fn replay_thinking_falls_back_to_the_wire_default() {
+        let c = merge_str(
+            "providers:\n\
+             \x20 - name: anthropic\n\
+             \x20   models:\n\
+             \x20     - id: claude-sonnet-4-5\n\
+             \x20       supports_thinking: true\n",
+        );
+        let entry = c.model("anthropic", "claude-sonnet-4-5").unwrap();
+        // Unset → the wire decides.
+        assert!(entry.replays_thinking(true));
+        assert!(!entry.replays_thinking(false));
+
+        // An explicit value overrides the wire default in both directions, so a
+        // user can force replay off to cut input tokens, or on for an endpoint
+        // the embedded defaults don't know about.
+        let off = merge_str(
+            "providers:\n\
+             \x20 - name: anthropic\n\
+             \x20   models:\n\
+             \x20     - id: claude-sonnet-4-5\n\
+             \x20       supports_thinking: true\n\
+             \x20       replay_thinking: false\n",
+        );
+        assert!(!off
+            .model("anthropic", "claude-sonnet-4-5")
+            .unwrap()
+            .replays_thinking(true));
+
+        let on = merge_str(
+            "providers:\n\
+             \x20 - name: zai\n\
+             \x20   models:\n\
+             \x20     - id: glm-5.2\n\
+             \x20       replay_thinking: true\n",
+        );
+        assert!(on.model("zai", "glm-5.2").unwrap().replays_thinking(false));
+    }
+
+    #[test]
+    fn replay_thinking_is_clamped_by_supports_thinking() {
+        // A model that cannot think has nothing to replay, so an over-eager
+        // `replay_thinking: true` is dropped rather than sent — mirrors how
+        // `generation_params` clamps `thinking_budget_tokens`.
+        let c = merge_str(
+            "providers:\n\
+             \x20 - name: anthropic\n\
+             \x20   models:\n\
+             \x20     - id: claude-sonnet-4-5\n\
+             \x20       supports_thinking: false\n\
+             \x20       replay_thinking: true\n",
+        );
+        assert!(!c
+            .model("anthropic", "claude-sonnet-4-5")
+            .unwrap()
+            .replays_thinking(true));
     }
 
     #[test]

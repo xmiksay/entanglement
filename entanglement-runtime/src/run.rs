@@ -290,6 +290,9 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // Persisted provider-side web-search block (#481): already rendered
         // live via `ReasoningDelta`'s query/source lines — nothing new to show.
         OutEvent::SearchResult { .. } => {}
+        // Captured extended-thinking block: the persistence rail for reasoning
+        // already rendered live via `ReasoningDelta` — nothing new to show.
+        OutEvent::ReasoningBlock { .. } => {}
         // LLM endpoint throttle transition (#517, ADR-0141): the wire-visible
         // counterpart to the TUI's `throttle_status()` poll — this is the
         // signal that reaches a non-TUI head, so it renders in full.

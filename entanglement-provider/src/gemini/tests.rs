@@ -162,6 +162,58 @@ fn usage_metadata_splits_cached_from_input() {
 }
 
 #[test]
+fn usage_metadata_folds_thoughts_into_output() {
+    // Gemini reports thinking tokens separately from `candidatesTokenCount`, but
+    // bills them as output — they must land in `output_tokens` or `cost_usd`
+    // under-reports for every thinking model.
+    let data = json!({
+        "candidates": [{ "content": { "parts": [] }, "finishReason": "STOP" }],
+        "usageMetadata": {
+            "promptTokenCount": 100,
+            "candidatesTokenCount": 12,
+            "thoughtsTokenCount": 500
+        }
+    });
+    let mut usage = Usage::default();
+    let mut fr = None;
+    let mut ordinal = 0;
+    handle_chunk(&data, &mut usage, &mut fr, &mut ordinal).unwrap();
+    assert_eq!(usage.output_tokens, Some(512));
+    assert_eq!(usage.input_tokens, Some(100));
+}
+
+#[test]
+fn usage_metadata_records_thoughts_without_candidates() {
+    // A pure-thinking chunk carries no `candidatesTokenCount`; the thinking tokens
+    // are still billed, so they must not be dropped.
+    let data = json!({
+        "candidates": [{ "content": { "parts": [] } }],
+        "usageMetadata": { "thoughtsTokenCount": 64 }
+    });
+    let mut usage = Usage::default();
+    let mut fr = None;
+    let mut ordinal = 0;
+    handle_chunk(&data, &mut usage, &mut fr, &mut ordinal).unwrap();
+    assert_eq!(usage.output_tokens, Some(64));
+}
+
+#[test]
+fn usage_metadata_without_thoughts_is_unchanged() {
+    // Non-thinking models report no `thoughtsTokenCount`; behaviour must match
+    // what it was before the fold.
+    let data = json!({
+        "candidates": [{ "content": { "parts": [] } }],
+        "usageMetadata": { "promptTokenCount": 40, "candidatesTokenCount": 7 }
+    });
+    let mut usage = Usage::default();
+    let mut fr = None;
+    let mut ordinal = 0;
+    handle_chunk(&data, &mut usage, &mut fr, &mut ordinal).unwrap();
+    assert_eq!(usage.output_tokens, Some(7));
+    assert_eq!(usage.input_tokens, Some(40));
+}
+
+#[test]
 fn stop_reason_mapping() {
     assert_eq!(StopReason::from_gemini("STOP"), StopReason::EndTurn);
     assert_eq!(StopReason::from_gemini("MAX_TOKENS"), StopReason::MaxTokens);

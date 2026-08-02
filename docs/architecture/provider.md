@@ -36,7 +36,11 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 - **`LlmEvent::Reasoning`** surfaces extended-thinking output (Anthropic
   `thinking`/`redacted_thinking` blocks, OpenAI `reasoning_content`) instead of
   dropping it; core re-emits it as a reasoning `OutEvent` heads render distinctly
-  from answer text.
+  from answer text. This is the *display* rail — it is deliberately never folded
+  into `Context`. The *replay* rail is a separate
+  `LlmEvent::ContentBlock(ContentPart::Reasoning)`
+  ([ADR-0160](../adr/0160-extended-thinking-round-trip.md)); both are emitted for
+  the same thinking. See **Extended thinking: capture and replay** below.
 - **`LlmEvent::ToolCallDelta`** (#194) streams a tool call's JSON arguments as
   they arrive — OpenAI `tool_calls[].function.arguments` fragments, Anthropic
   `input_json_delta.partial_json` — *before* the assembled `ToolCall` that both
@@ -533,7 +537,8 @@ z.ai's `web_search_prime`/`web_reader`/`zread` this way, key-gated on
 interpretation — the provider crate only carries the data. `ModelEntry`
 carries capability flags (`supports_thinking`,
 `supports_temperature`, `default_temperature`, `max_output_tokens`,
-`thinking_budget_tokens`) and **pricing** (USD/M tokens:
+`thinking_budget_tokens`, `thinking_style`, `replay_thinking`) and **pricing**
+(USD/M tokens:
 `input`/`output`/`cached_input`/`cache_write`, all optional). Lookups:
 `Catalog::{builtin,load,load_from}`, `provider(name)`, `model(provider,id)`,
 `model_by_id(id)`.
@@ -552,17 +557,64 @@ it onto every `LlmRequest { …, generation }`. Each client maps the present
 knobs to its wire and omits the rest: `OpenAiLlm` sends `temperature` +
 `max_tokens` + `reasoning_effort` (its native wire field — no thinking-budget
 channel); `AnthropicLlm` uses `max_output_tokens` in place of its
-`DEFAULT_MAX_TOKENS` fallback and emits `thinking { type: enabled,
-budget_tokens }` whenever a budget resolves (bumping `max_tokens` above the
-budget and dropping `temperature`, per Anthropic's constraints), else passes
-`temperature` through; `GeminiLlm` maps onto
-`generationConfig.thinkingConfig.thinkingBudget`. Neither Anthropic nor Gemini
-has a native effort field (#374,
+`DEFAULT_MAX_TOKENS` fallback and emits one of **two mutually exclusive
+thinking shapes** (below), else passes `temperature` through; `GeminiLlm` maps
+onto `generationConfig.thinkingConfig.thinkingBudget`. Neither Anthropic nor
+Gemini has a native effort field on the budget shape (#374,
 [ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)):
 an explicit `thinking_budget_tokens` always wins; absent one, `reasoning_effort`
 derives a budget from a fixed tier (`High`/`Medium`; `Low`/unset leaves
 thinking off) — conservative per-client constants, not catalog-driven, since
 the real per-model ceiling varies.
+
+**Anthropic thinking shapes (`ModelEntry::thinking_style`).** Anthropic replaced
+the fixed-budget form with an adaptive one and the newer models *reject*
+`budget_tokens` with a 400, so which shape is legal is a per-model catalog fact,
+not a client constant:
+
+| `thinking_style` | Emitted | Enabled by |
+| --- | --- | --- |
+| `budget` (default) | `thinking { type: enabled, budget_tokens }`, bumping `max_tokens` above the budget and dropping `temperature` | `thinking_budget_tokens`, else a `reasoning_effort` tier |
+| `adaptive` | `thinking { type: adaptive }` + `output_config.effort` | `reasoning_effort` only — a stale `thinking_budget_tokens` is ignored rather than 400ing, and there is no `max_tokens` bump |
+
+`budget` is the default so every pre-existing user `providers.yml` is unchanged;
+the embedded defaults ship `thinking_style: adaptive` on the current models
+(`claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`).
+
+### Extended thinking: capture and replay
+
+With thinking enabled, Anthropic requires the unmodified `thinking` /
+`redacted_thinking` block — signature intact — on the **final** assistant
+message whenever tool results are returned, which is exactly a parked turn
+([ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)). So
+reasoning cannot be display-only on that wire
+([ADR-0160](../adr/0160-extended-thinking-round-trip.md)).
+
+`ContentPart::Reasoning { provider, text, data }` carries it in history: `data`
+is the provider's own wire shape (Anthropic's `signature`, and whether the block
+was redacted, live inside it), `text` is the human-readable rendering and may be
+empty — current models omit thinking text by default while still signing the
+block, and such a block still has to replay.
+
+**Capture is unconditional. Replay is gated by `ModelEntry::replay_thinking`**
+(`Option<bool>`; `None` derives from the wire — Anthropic on whenever thinking
+is enabled, others off — and an explicit value always wins). The flag never
+affects capture, persistence, or rendering, so toggling it cannot rewrite a
+session log.
+
+| Wire | Capture | Replay when enabled |
+| --- | --- | --- |
+| Anthropic | `thinking` assembled across `thinking_delta` + `signature_delta`; `redacted_thinking` whole | verbatim, **first** in the block list, **last** assistant message only |
+| Gemini | thought-text parts | none — the load-bearing `thoughtSignature` round-trips via `ToolCall::provider_meta` (ADR-0085) |
+| OpenAI-compat | none on the wire | none |
+
+Three rules hold regardless of the flag: a block whose `provider` differs from
+the target renders **nothing** (stricter than `ProviderSearch`'s summary
+fallback — reasoning is not answer content); `ContentPart::as_text` returns
+`None` so reasoning stays out of `content_text`, compaction, and token
+estimation; and an unsigned thinking block is display-only, since Anthropic
+rejects one. Capturing the block also closes the older `pause_turn`
+mid-thinking-block gap — `assembled_blocks` now includes thinking.
 
 **Ollama `max_output_tokens` catalog default (#483):** the embedded `ollama`
 entries set `max_output_tokens` explicitly (8192/2048/4096 for

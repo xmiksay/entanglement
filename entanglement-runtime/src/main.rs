@@ -34,7 +34,7 @@ use clap::{Parser, Subcommand};
 use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId, UserId};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
-    ProviderEntry, ResolvedModel, WebSearchConfig, Wire,
+    ProviderEntry, ResolvedModel, ThinkingStyle, WebSearchConfig, Wire,
 };
 use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
@@ -585,6 +585,32 @@ fn web_search_tool_version(
         .and_then(|m| m.web_search_tool_version.clone())
 }
 
+/// Anthropic extended-thinking request shape for `model`: the catalog's
+/// `ModelEntry::thinking_style`, defaulting to the fixed-budget form so an
+/// existing user catalog keeps emitting exactly what it emitted before. Resolved
+/// inside [`anthropic_factory_for`] rather than passed in like
+/// `web_search_tool_version` — it applies to every request, not just the
+/// web-search ones, so threading it would make each call site repeat the lookup.
+fn thinking_style(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> ThinkingStyle {
+    catalog
+        .model(&entry.name, model)
+        .map(|m| m.resolved_thinking_style())
+        .unwrap_or_default()
+}
+
+/// Whether captured thinking blocks replay to `model`. The Anthropic wire
+/// default is **on**: the API requires the block back on a tool round-trip, and
+/// when thinking is off the setting is inert anyway (no blocks are captured, so
+/// there is nothing to send). That also makes `true` the right answer for a
+/// model absent from the catalog — a user pointing at an unlisted model still
+/// gets a valid request rather than a 400 they cannot diagnose.
+fn replay_thinking(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> bool {
+    catalog
+        .model(&entry.name, model)
+        .map(|m| m.replays_thinking(true))
+        .unwrap_or(true)
+}
+
 /// Anthropic-wire provider. Always keyed; base from env/catalog else the
 /// client's own default (#551, see [`anthropic_factory_for`]).
 fn anthropic_wire_config(
@@ -773,6 +799,8 @@ fn anthropic_factory_for(
         catalog.model_concurrency_resolver(&entry.name),
         web_search,
         web_search_tool_version,
+        thinking_style(entry, model, catalog),
+        replay_thinking(entry, model, catalog),
         http_client.clone(),
     ))
 }

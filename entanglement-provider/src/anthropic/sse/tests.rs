@@ -13,12 +13,154 @@ fn call(
         data,
         current_tool,
         current_text,
+        &mut None,
         assembled_blocks,
         &mut Usage::default(),
         &mut None,
         &mut false,
     )
     .unwrap()
+}
+
+/// Like [`call`] but threads the extended-thinking accumulator, which spans a
+/// `content_block_start` → `*_delta` → `content_block_stop` sequence.
+fn call_thinking(
+    event: &str,
+    data: Option<Value>,
+    current_thinking: &mut Option<PendingThinking>,
+    assembled_blocks: &mut Vec<Value>,
+) -> Vec<LlmEvent> {
+    handle_frame(
+        event,
+        data,
+        &mut None,
+        &mut None,
+        current_thinking,
+        assembled_blocks,
+        &mut Usage::default(),
+        &mut None,
+        &mut false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn thinking_block_assembles_text_and_signature_for_replay() {
+    let mut thinking = None;
+    let mut blocks = Vec::new();
+    call_thinking(
+        "content_block_start",
+        Some(json!({ "content_block": { "type": "thinking", "thinking": "" } })),
+        &mut thinking,
+        &mut blocks,
+    );
+    let d = call_thinking(
+        "content_block_delta",
+        Some(json!({ "delta": { "type": "thinking_delta", "thinking": "step " } })),
+        &mut thinking,
+        &mut blocks,
+    );
+    // The live display channel is unchanged by capture.
+    assert_eq!(d, vec![LlmEvent::Reasoning("step ".into())]);
+    call_thinking(
+        "content_block_delta",
+        Some(json!({ "delta": { "type": "thinking_delta", "thinking": "one" } })),
+        &mut thinking,
+        &mut blocks,
+    );
+    // The signature arrives on its own delta type and is load-bearing on replay.
+    call_thinking(
+        "content_block_delta",
+        Some(json!({ "delta": { "type": "signature_delta", "signature": "sig123" } })),
+        &mut thinking,
+        &mut blocks,
+    );
+    let evs = call_thinking("content_block_stop", None, &mut thinking, &mut blocks);
+
+    let expected = json!({ "type": "thinking", "thinking": "step one", "signature": "sig123" });
+    assert_eq!(
+        evs,
+        vec![LlmEvent::ContentBlock(ContentPart::reasoning(
+            "anthropic",
+            "step one",
+            expected.clone(),
+        ))]
+    );
+    // Also captured for `pause_turn` continuation — the gap this closes.
+    assert_eq!(blocks, vec![expected]);
+}
+
+#[test]
+fn thinking_block_with_empty_text_still_replays() {
+    // Current models omit thinking text by default but still sign the block;
+    // dropping it would break the next tool round-trip.
+    let mut thinking = None;
+    let mut blocks = Vec::new();
+    call_thinking(
+        "content_block_start",
+        Some(json!({ "content_block": { "type": "thinking" } })),
+        &mut thinking,
+        &mut blocks,
+    );
+    call_thinking(
+        "content_block_delta",
+        Some(json!({ "delta": { "type": "signature_delta", "signature": "sig" } })),
+        &mut thinking,
+        &mut blocks,
+    );
+    let evs = call_thinking("content_block_stop", None, &mut thinking, &mut blocks);
+    assert!(matches!(
+        evs.as_slice(),
+        [LlmEvent::ContentBlock(ContentPart::Reasoning { text, .. })] if text.is_empty()
+    ));
+    assert_eq!(blocks.len(), 1);
+}
+
+#[test]
+fn unsigned_thinking_block_is_not_captured_for_replay() {
+    // Anthropic rejects a thinking block whose signature is missing, so one that
+    // never received a `signature_delta` is display-only.
+    let mut thinking = None;
+    let mut blocks = Vec::new();
+    call_thinking(
+        "content_block_start",
+        Some(json!({ "content_block": { "type": "thinking" } })),
+        &mut thinking,
+        &mut blocks,
+    );
+    call_thinking(
+        "content_block_delta",
+        Some(json!({ "delta": { "type": "thinking_delta", "thinking": "hm" } })),
+        &mut thinking,
+        &mut blocks,
+    );
+    let evs = call_thinking("content_block_stop", None, &mut thinking, &mut blocks);
+    assert!(evs.is_empty(), "no replayable block without a signature");
+    assert!(blocks.is_empty());
+}
+
+#[test]
+fn redacted_thinking_block_is_captured_whole() {
+    // Redacted blocks arrive complete, carry no readable text, and must still be
+    // echoed back verbatim.
+    let block = json!({ "type": "redacted_thinking", "data": "encrypted-payload" });
+    let mut thinking = None;
+    let mut blocks = Vec::new();
+    let evs = call_thinking(
+        "content_block_start",
+        Some(json!({ "content_block": block.clone() })),
+        &mut thinking,
+        &mut blocks,
+    );
+    assert_eq!(
+        evs,
+        vec![LlmEvent::ContentBlock(ContentPart::reasoning(
+            "anthropic",
+            "",
+            block.clone(),
+        ))]
+    );
+    assert_eq!(blocks, vec![block]);
 }
 
 #[test]
@@ -207,6 +349,7 @@ fn usage_is_captured_from_frames() {
         } } })),
         &mut None,
         &mut None,
+        &mut None,
         &mut Vec::new(),
         &mut usage,
         &mut stop,
@@ -216,6 +359,7 @@ fn usage_is_captured_from_frames() {
     let _ = handle_frame(
         "message_delta",
         Some(json!({ "delta": { "stop_reason": "max_tokens" }, "usage": { "output_tokens": 7 } })),
+        &mut None,
         &mut None,
         &mut None,
         &mut Vec::new(),
@@ -240,6 +384,7 @@ fn pause_turn_stop_reason_sets_the_flag() {
     let _ = handle_frame(
         "message_delta",
         Some(json!({ "delta": { "stop_reason": "pause_turn" }, "usage": {} })),
+        &mut None,
         &mut None,
         &mut None,
         &mut Vec::new(),

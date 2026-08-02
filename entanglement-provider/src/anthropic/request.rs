@@ -4,7 +4,8 @@
 
 use crate::web_search::WebSearchConfig;
 use crate::{
-    ContentPart, GenerationParams, ImageSource, Message, MessageRole, ReasoningEffort, ToolSpec,
+    ContentPart, GenerationParams, ImageSource, Message, MessageRole, ReasoningEffort,
+    ThinkingStyle, ToolSpec,
 };
 use serde_json::{json, Value};
 
@@ -34,10 +35,12 @@ pub(super) fn build_body(
     generation: Option<GenerationParams>,
     web_search: Option<&WebSearchConfig>,
     web_search_tool_version: Option<&str>,
+    thinking_style: ThinkingStyle,
+    replay_thinking: bool,
 ) -> Value {
     let g = generation.unwrap_or_default();
     let mut max_tokens = g.max_output_tokens.unwrap_or(default_max_tokens);
-    let mut messages = convert_messages(messages);
+    let mut messages = convert_messages(messages, replay_thinking);
     place_history_breakpoint(&mut messages);
     let mut body = json!({
         "model": model,
@@ -68,47 +71,95 @@ pub(super) fn build_body(
     if !tool_entries.is_empty() {
         body["tools"] = Value::Array(tool_entries);
     }
-    // Extended thinking (#191): enable it with the resolved budget when the head
-    // set one. Anthropic requires `budget_tokens < max_tokens`, so bump the cap if
-    // the budget would swallow it; and with thinking on, `temperature` may only be
-    // its default, so it is omitted. Without a budget, temperature passes through.
-    // An explicit `thinking_budget_tokens` always wins; absent one, `reasoning_effort`
-    // (#374 — Anthropic has no effort concept of its own) derives a tier default:
-    // `High`/`Medium` enable thinking at a fixed budget, `Low`/unset leave it off.
+    // Extended thinking (#191). Anthropic has two mutually exclusive request
+    // shapes and the catalog says which one this model takes — the newer models
+    // reject `budget_tokens` with a 400, so the choice cannot be a client
+    // constant. With thinking on (either shape), `temperature` may only be its
+    // default, so it is omitted; with thinking off it passes through unchanged.
+    let thinking_on = match thinking_style {
+        ThinkingStyle::Budget => apply_budget_thinking(&mut body, &g, &mut max_tokens),
+        ThinkingStyle::Adaptive => apply_adaptive_thinking(&mut body, &g),
+    };
+    if !thinking_on {
+        if let Some(temp) = g.temperature {
+            body["temperature"] = json!(temp);
+        }
+    }
+    body
+}
+
+/// The fixed-budget shape: `thinking: {type: "enabled", budget_tokens: N}`.
+/// An explicit [`GenerationParams::thinking_budget_tokens`] always wins; absent
+/// one, `reasoning_effort` (#374 — Anthropic has no effort concept of its own on
+/// this shape) derives a tier default, with `Low`/unset leaving thinking off.
+/// Anthropic requires `budget_tokens < max_tokens`, so the cap is bumped when the
+/// budget would swallow it. Returns whether thinking was enabled.
+fn apply_budget_thinking(body: &mut Value, g: &GenerationParams, max_tokens: &mut u32) -> bool {
     let budget = g.thinking_budget_tokens.or(match g.reasoning_effort {
         Some(ReasoningEffort::High) => Some(HIGH_EFFORT_THINKING_BUDGET),
         Some(ReasoningEffort::Medium) => Some(MEDIUM_EFFORT_THINKING_BUDGET),
         Some(ReasoningEffort::Low) | None => None,
     });
-    if let Some(budget) = budget {
-        if budget >= max_tokens {
-            max_tokens = budget.saturating_add(MAX_TOKENS_BUDGET_HEADROOM);
-            body["max_tokens"] = json!(max_tokens);
-        }
-        body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
-    } else if let Some(temp) = g.temperature {
-        body["temperature"] = json!(temp);
+    let Some(budget) = budget else {
+        return false;
+    };
+    if budget >= *max_tokens {
+        *max_tokens = budget.saturating_add(MAX_TOKENS_BUDGET_HEADROOM);
+        body["max_tokens"] = json!(*max_tokens);
     }
-    body
+    body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+    true
+}
+
+/// The adaptive shape: `thinking: {type: "adaptive"}` plus `output_config.effort`,
+/// where the model decides how much to think. `budget_tokens` is rejected on this
+/// shape, so an explicit [`GenerationParams::thinking_budget_tokens`] is *not* an
+/// enable signal here — only `reasoning_effort` is, which is the knob that
+/// actually survives onto the wire. There is no `max_tokens` headroom bump: with
+/// no budget to swallow the cap, the existing value stands. Returns whether
+/// thinking was enabled.
+fn apply_adaptive_thinking(body: &mut Value, g: &GenerationParams) -> bool {
+    let Some(effort) = g.reasoning_effort else {
+        return false;
+    };
+    let effort = match effort {
+        ReasoningEffort::High => "high",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::Low => "low",
+    };
+    body["thinking"] = json!({ "type": "adaptive" });
+    body["output_config"] = json!({ "effort": effort });
+    true
 }
 
 /// Map entanglement's `Message` history to Anthropic's content-block format. Runs of
 /// consecutive tool-result messages are merged into a single `user` turn
 /// (Anthropic requires all `tool_result` blocks for a turn in one message).
-fn convert_messages(messages: &[Message]) -> Vec<Value> {
+///
+/// `replay_reasoning` enables replaying captured thinking blocks, and applies to
+/// the **last** assistant message only. That is exactly where Anthropic requires
+/// one — the turn whose tool results are coming back — and it is where the
+/// provider looks: earlier turns' thinking is stripped server-side, so resending
+/// it would spend input tokens on blocks that are discarded on arrival. History
+/// still keeps every block, so replay fidelity is unaffected.
+fn convert_messages(messages: &[Message], replay_reasoning: bool) -> Vec<Value> {
+    let last_assistant = messages
+        .iter()
+        .rposition(|m| m.role == MessageRole::Assistant);
     let mut out = Vec::new();
     let mut i = 0;
     while i < messages.len() {
         match messages[i].role {
             MessageRole::User => {
                 if !messages[i].content.is_empty() {
-                    let content = anthropic_blocks(&messages[i].content);
+                    let content = anthropic_blocks(&messages[i].content, false);
                     out.push(json!({ "role": "user", "content": content }));
                 }
                 i += 1;
             }
             MessageRole::Assistant => {
-                let mut blocks: Vec<Value> = anthropic_blocks(&messages[i].content);
+                let replay = replay_reasoning && last_assistant == Some(i);
+                let mut blocks: Vec<Value> = anthropic_blocks(&messages[i].content, replay);
                 for tc in &messages[i].tool_calls {
                     let input: Value =
                         serde_json::from_str(&tc.input).unwrap_or_else(|_| json!({}));
@@ -138,7 +189,7 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                     {
                         json!(messages[i].text())
                     } else {
-                        json!(anthropic_blocks(&messages[i].content))
+                        json!(anthropic_blocks(&messages[i].content, false))
                     };
                     results.push(json!({
                         "type": "tool_result",
@@ -216,23 +267,41 @@ pub(crate) fn coalesce_same_role(messages: Vec<Value>, content_key: &str) -> Vec
 /// block — one minted by a different provider (a message that crossed a live
 /// `/model` switch) is opaque here and dropped, matching the "replays only to
 /// the provider that minted it" contract (mirrors `ToolCall.provider_meta`).
-fn anthropic_blocks(content: &[ContentPart]) -> Vec<Value> {
-    content
-        .iter()
-        .filter_map(|p| match p {
-            ContentPart::Text { text } => Some(json!({ "type": "text", "text": text })),
+///
+/// [`ContentPart::Reasoning`] follows the same provider-match rule but is
+/// additionally gated on `replay_reasoning`, and is emitted **first**: Anthropic
+/// requires the thinking block to lead the assistant message. The turn loop
+/// appends content blocks after the round's text, so the ordering is restored
+/// here rather than constraining core.
+fn anthropic_blocks(content: &[ContentPart], replay_reasoning: bool) -> Vec<Value> {
+    let mut reasoning = Vec::new();
+    let mut rest = Vec::new();
+    for p in content {
+        match p {
+            ContentPart::Text { text } => rest.push(json!({ "type": "text", "text": text })),
             ContentPart::Image {
                 source: ImageSource::Base64 { media_type, data },
-            } => Some(json!({
+            } => rest.push(json!({
                 "type": "image",
                 "source": { "type": "base64", "media_type": media_type, "data": data },
             })),
             ContentPart::ProviderSearch { provider, data, .. } if provider == "anthropic" => {
-                Some(data.clone())
+                rest.push(data.clone())
             }
-            ContentPart::ProviderSearch { .. } => None,
-        })
-        .collect()
+            ContentPart::ProviderSearch { .. } => {}
+            ContentPart::Reasoning { provider, data, .. }
+                if replay_reasoning && provider == "anthropic" =>
+            {
+                reasoning.push(data.clone())
+            }
+            // Replay disabled for this model, or a block minted by another
+            // provider: an opaque signature is meaningless to anyone but its
+            // author, so drop it rather than degrade it to text.
+            ContentPart::Reasoning { .. } => {}
+        }
+    }
+    reasoning.extend(rest);
+    reasoning
 }
 
 fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {

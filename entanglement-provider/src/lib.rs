@@ -40,7 +40,8 @@ pub mod web_search;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm, ANTHROPIC_BASE};
 pub use catalog::{
-    Catalog, McpServerState, ModelEntry, ModelPricing, ProviderEntry, ProviderMcpServer, Wire,
+    Catalog, McpServerState, ModelEntry, ModelPricing, ProviderEntry, ProviderMcpServer,
+    ThinkingStyle, Wire,
 };
 pub use client::{prune_stale, HttpClient, RetryConfig, StreamGuard, ThrottleStatus};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};

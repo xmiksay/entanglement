@@ -1949,6 +1949,26 @@ pub enum OutEvent {
         seq: u64,
         part: ContentPart,
     },
+    /// A model's extended-thinking block was captured this round. Persisted and
+    /// seq-bearing for the same reason as `SearchResult`: `Session::replay` must
+    /// reconstruct the assistant message's content verbatim, including the
+    /// provider-native `data` payload, or a resumed parked turn cannot present
+    /// the block the provider requires on the next request.
+    ///
+    /// Distinct from `ReasoningDelta`, which carries the same reasoning as live
+    /// *display* text and is deliberately not folded into `Context`. This event
+    /// is the persistence rail; the delta is the rendering one, and both are
+    /// emitted for the same thinking.
+    ///
+    /// Capture — and therefore this event — is unconditional. Whether the block
+    /// is actually sent back is a separate, catalog-level decision
+    /// (`ModelEntry::replay_thinking`), so toggling replay never rewrites a
+    /// session log or changes what a head renders.
+    ReasoningBlock {
+        session: SessionId,
+        seq: u64,
+        part: ContentPart,
+    },
 }
 
 impl OutEvent {
@@ -1987,7 +2007,8 @@ impl OutEvent {
             | OutEvent::FileChange { session, .. }
             | OutEvent::SkillActive { session, .. }
             | OutEvent::AmbiguousRetry { session, .. }
-            | OutEvent::SearchResult { session, .. } => Some(session),
+            | OutEvent::SearchResult { session, .. }
+            | OutEvent::ReasoningBlock { session, .. } => Some(session),
             OutEvent::SessionList { .. }
             | OutEvent::QuestionList { .. }
             | OutEvent::McpList { .. }
@@ -2043,7 +2064,8 @@ impl OutEvent {
             | OutEvent::FileChange { seq, .. }
             | OutEvent::SkillActive { seq, .. }
             | OutEvent::AmbiguousRetry { seq, .. }
-            | OutEvent::SearchResult { seq, .. } => Some(*seq),
+            | OutEvent::SearchResult { seq, .. }
+            | OutEvent::ReasoningBlock { seq, .. } => Some(*seq),
         }
     }
 }
