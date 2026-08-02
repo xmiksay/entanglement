@@ -364,6 +364,15 @@ fn function_call_to_tool_call(fc: &Value, part: &Value, ordinal: usize) -> ToolC
 /// Fold Gemini's `usageMetadata` into the normalized [`Usage`]. `promptTokenCount`
 /// is the whole prompt including any cached read, so subtract the cached portion to
 /// keep `input_tokens` uncached (no double-count against catalog pricing, #192).
+///
+/// Thinking tokens are billed as output but reported *separately* from
+/// `candidatesTokenCount`, so `thoughtsTokenCount` is summed into `output_tokens`
+/// rather than given a `Usage` field of its own: the four `Usage` dimensions map
+/// 1:1 onto the four [`ModelPricing`](crate::ModelPricing) dimensions, and a fifth
+/// would have no rate to bill against. Anthropic and OpenAI already fold thinking
+/// into their output figure server-side, so this makes Gemini consistent with them
+/// instead of silently under-reporting `output_tokens` (and `cost_usd`) for every
+/// thinking model.
 fn apply_usage(meta: &Value, usage: &mut Usage) {
     let cached = meta.get("cachedContentTokenCount").and_then(|v| v.as_u64());
     if let Some(prompt) = meta.get("promptTokenCount").and_then(|v| v.as_u64()) {
@@ -372,8 +381,16 @@ fn apply_usage(meta: &Value, usage: &mut Usage) {
     if let Some(c) = cached {
         usage.cached_input_tokens = Some(c);
     }
-    if let Some(out) = meta.get("candidatesTokenCount").and_then(|v| v.as_u64()) {
-        usage.output_tokens = Some(out);
+    // A pure-thinking chunk reports thoughts with no `candidatesTokenCount`; still
+    // record it, or those tokens are billed by the provider and counted by nobody.
+    let candidates = meta.get("candidatesTokenCount").and_then(|v| v.as_u64());
+    let thoughts = meta.get("thoughtsTokenCount").and_then(|v| v.as_u64());
+    if candidates.is_some() || thoughts.is_some() {
+        usage.output_tokens = Some(
+            candidates
+                .unwrap_or(0)
+                .saturating_add(thoughts.unwrap_or(0)),
+        );
     }
 }
 
