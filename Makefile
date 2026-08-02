@@ -133,5 +133,12 @@ tag: verify ## cut a release tag (VERSION=v0.1.0 make tag): refuses dirty tree /
 	if [ "$(VERSION)" != "v$$pkg_version" ]; then \
 		echo "tag: VERSION=$(VERSION) does not match workspace.package.version $$pkg_version (bump Cargo.toml first)" >&2; exit 1; \
 	fi
+	@core_pin=$$(grep -o 'entanglement-core = { path = "entanglement-core", version = "[^"]*"' Cargo.toml | cut -d'"' -f4); \
+	provider_pin=$$(grep -o 'entanglement-provider = { path = "entanglement-provider", version = "[^"]*"' Cargo.toml | cut -d'"' -f4); \
+	pkg_version=$$($(CARGO) metadata --no-deps --format-version 1 | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4); \
+	if [ "$$core_pin" != "$$pkg_version" ] || [ "$$provider_pin" != "$$pkg_version" ]; then \
+		echo "tag: workspace.dependencies pins (core=$$core_pin, provider=$$provider_pin) do not match workspace.package.version $$pkg_version (bump Cargo.toml lines 18-19 too)" >&2; exit 1; \
+	fi
+	@grep -q "^## \[$(VERSION:v%=%)\]" CHANGELOG.md || (echo "tag: CHANGELOG.md has no '## [$(VERSION:v%=%)]' section (write the release notes first)" >&2; exit 1)
 	git tag -a "$(VERSION)" -m "$(VERSION)"
 	@echo "Tagged $(VERSION). Push with: git push origin $(VERSION)"
