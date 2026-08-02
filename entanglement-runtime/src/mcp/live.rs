@@ -48,12 +48,20 @@ pub type ServerConfigs = Arc<Mutex<HashMap<String, McpServerConfig>>>;
 /// replaces it instead of leaking the old connection. `cfg.disabled` is
 /// refused: a disabled server has nothing to connect live.
 ///
+/// `headers`/`env` left empty carry forward from the existing entry, if any
+/// (#561): the wire spec has no way to say "I didn't touch this field", so an
+/// empty map from `/mcp add <name> --url ...` re-adding a server *without*
+/// `--header` means "unspecified", not "clear the token" — there is no flag to
+/// explicitly blank a header. Silently replacing a bearer-authed entry with a
+/// headerless one reads as "auth stopped working" once the server reconnects
+/// with its anonymous (fewer-tool) surface.
+///
 /// The connect/list-tools awaits run *before* any lock is taken (#372: never
 /// hold a lock across `.await`); only the synchronous registration is done
 /// under the registry's write lock.
 pub async fn mcp_add(
     name: String,
-    cfg: McpServerConfig,
+    mut cfg: McpServerConfig,
     registry: &SharedRegistry,
     active: &ActiveServers,
     configs: &ServerConfigs,
@@ -61,6 +69,9 @@ pub async fn mcp_add(
 ) -> Result<Vec<String>> {
     if cfg.disabled {
         bail!("cannot live-add a disabled MCP server `{name}` — omit `disabled` or set it false");
+    }
+    if let Some(existing) = configs.lock().unwrap().get(&name).cloned() {
+        carry_forward_unspecified_fields(&mut cfg, &existing, &name);
     }
     let (client, defs) = connect_client(&name, &cfg, secret_env).await?;
     let prefix = format!("mcp__{name}__");
@@ -85,6 +96,34 @@ pub async fn mcp_add(
     }
     tracing::info!("MCP server `{name}`: live-added, {} tool(s)", tools.len());
     Ok(tools)
+}
+
+/// Carry `headers`/`env` forward from `existing` into `cfg` when `cfg` left
+/// them empty (#561), warning so the silent recovery is at least diagnosable.
+/// Any other field the caller *did* specify (`url`, `command`, `args`,
+/// `disabled`) always wins outright — only the two maps a bare re-add has no
+/// way to express "unspecified" get this treatment.
+fn carry_forward_unspecified_fields(
+    cfg: &mut McpServerConfig,
+    existing: &McpServerConfig,
+    name: &str,
+) {
+    if cfg.headers.is_empty() && !existing.headers.is_empty() {
+        tracing::warn!(
+            "MCP server `{name}`: re-added with no --header flags — keeping the \
+             existing {} header(s) instead of clobbering them",
+            existing.headers.len()
+        );
+        cfg.headers = existing.headers.clone();
+    }
+    if cfg.env.is_empty() && !existing.env.is_empty() {
+        tracing::warn!(
+            "MCP server `{name}`: re-added with no env overrides — keeping the \
+             existing {} env var(s) instead of clobbering them",
+            existing.env.len()
+        );
+        cfg.env = existing.env.clone();
+    }
 }
 
 /// Connect (or reconnect) a server **without touching `config.yml`** — the
@@ -212,6 +251,53 @@ mod tests {
             oauth: None,
             state: None,
         }
+    }
+
+    fn http_cfg(url: &str, headers: HashMap<String, String>) -> McpServerConfig {
+        McpServerConfig {
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            url: Some(url.to_string()),
+            headers,
+            disabled: false,
+            capabilities: HashMap::new(),
+            oauth: None,
+            state: None,
+        }
+    }
+
+    // #561: re-adding without `--header` must not clobber a stored bearer.
+    #[test]
+    fn carry_forward_keeps_existing_headers_when_new_spec_is_headerless() {
+        let existing = http_cfg(
+            "https://example.com/mcp",
+            HashMap::from([("Authorization".to_string(), "Bearer ${TOKEN}".to_string())]),
+        );
+        let mut cfg = http_cfg("https://example.com/mcp", HashMap::new());
+        carry_forward_unspecified_fields(&mut cfg, &existing, "srv");
+        assert_eq!(
+            cfg.headers.get("Authorization").map(String::as_str),
+            Some("Bearer ${TOKEN}")
+        );
+    }
+
+    // An explicit new header set always wins outright, never merges.
+    #[test]
+    fn carry_forward_leaves_an_explicit_new_header_set_untouched() {
+        let existing = http_cfg(
+            "https://example.com/mcp",
+            HashMap::from([("Authorization".to_string(), "Bearer old".to_string())]),
+        );
+        let mut cfg = http_cfg(
+            "https://example.com/mcp",
+            HashMap::from([("Authorization".to_string(), "Bearer new".to_string())]),
+        );
+        carry_forward_unspecified_fields(&mut cfg, &existing, "srv");
+        assert_eq!(
+            cfg.headers.get("Authorization").map(String::as_str),
+            Some("Bearer new")
+        );
     }
 
     #[tokio::test]

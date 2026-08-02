@@ -84,13 +84,23 @@ impl AvailableMcp {
         for provider in &catalog.providers {
             for (name, bundled) in &provider.mcp_servers {
                 bundled_names.insert(name.clone());
+                let user = user_mcp.get(name);
                 let mut cfg = bundled_config(bundled);
-                if let Some(user) = user_mcp.get(name) {
+                if let Some(user) = user {
                     cfg = merge_user_over_bundled(cfg, user);
                 }
                 // A bundled server with no explicit state is `allowed`, not
                 // `enabled` — the legacy-bool fallback is for user entries.
-                let state = cfg.state.unwrap_or(McpServerState::Allowed);
+                // But a user entry colliding with a bundled name (#561) is
+                // still a *user* entry: if the user set no explicit `state:`,
+                // its `effective_state()` (legacy `disabled:false` ⇒
+                // `Enabled`) must win over the bundled `Allowed` default, or a
+                // previously startup-connected user server silently demotes
+                // to lazy on the next restart.
+                let state = match user {
+                    Some(user) if user.state.is_none() => user.effective_state(),
+                    _ => cfg.state.unwrap_or(McpServerState::Allowed),
+                };
                 let key_env = provider.key_env.clone();
                 let entry = AvailableServer {
                     config: cfg,
@@ -189,9 +199,19 @@ impl AvailableMcp {
     /// session-scoped inverse (`/disable mcp <name>`). The connection itself
     /// stays up (other sessions may still use it); the spec filter simply
     /// hides it from this session again.
+    ///
+    /// Drops the map entry entirely once its session set empties (#561): an
+    /// entry present but empty is indistinguishable from "no sessions may see
+    /// this" in [`spec_visible`](Self::spec_visible)'s `Some(sessions) ⇒
+    /// sessions.contains(session)` check, so an enable→disable cycle would
+    /// otherwise hide the server's tools from *every* session until restart.
     pub fn mark_disabled(&self, server: &str, session: &SessionId) {
-        if let Some(sessions) = self.enabled.lock().unwrap().get_mut(server) {
+        let mut enabled = self.enabled.lock().unwrap();
+        if let Some(sessions) = enabled.get_mut(server) {
             sessions.remove(session);
+            if sessions.is_empty() {
+                enabled.remove(server);
+            }
         }
     }
 
