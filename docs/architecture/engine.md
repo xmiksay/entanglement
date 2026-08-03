@@ -482,8 +482,12 @@ synchronous relay): `agent_spawn` replies to the parent *immediately* with the
 child handle (`agent_id`) instead of parking the turn on the child's `Done`, so
 one turn can launch several sub-agents that then run concurrently. The launch
 task keeps watching the child and records its final answer + duration into a
-shared `AgentRegistry` (`runtime::agent_poll`) keyed by the handle. The parent
-collects a result with a second runtime-owned tool, `agent_poll { agent_id,
+shared `AgentRegistry` (`runtime::agent_poll`) keyed by the handle and scoped to
+the spawning parent (✅ #618): each entry also carries the parent `SessionId`
+recorded at `register`, so a lookup only resolves for that same parent — a
+session polling a handle it did not launch (even one it learned or guessed)
+gets the identical "no sub-agent found" `ToolOutput` as an unknown handle. The
+parent collects a result with a second runtime-owned tool, `agent_poll { agent_id,
 timeout_secs }` — also intercepted before permission resolution (it starts no
 session and touches no host resource): it blocks up to `timeout_secs` for that
 child and returns its answer (with elapsed time) as the tool `ToolOutput`, or a
