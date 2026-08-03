@@ -70,7 +70,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
 
-use crate::host::truncate_output;
+use crate::host::truncate_head_tail;
 use crate::pending::{self, PendingDecisions};
 use crate::permission::{
     min_permission, permission_chain, permission_workdir, skill_masked, tool_masked, ActiveSkill,
@@ -962,7 +962,10 @@ fn runtime_err(msg: &str) -> Box<EvalAltResult> {
 }
 
 /// Compose the tool output: captured `print` lines, then the serialized return
-/// value (or the error), bounded to [`crate::host::MAX_OUTPUT_BYTES`].
+/// value (or the error), bounded to [`crate::host::MAX_OUTPUT_BYTES`] with a
+/// head+tail split (#622) — the return value/error is the load-bearing part at
+/// the end, the same shape `bash`/`call`/`agent` now share instead of the
+/// head-only truncation this used to get.
 fn format_output(
     prints: String,
     eval_result: Result<Result<Dynamic, Box<EvalAltResult>>, tokio::task::JoinError>,
@@ -982,7 +985,7 @@ fn format_output(
         Ok(Err(e)) => out.push_str(&format!("rhai error: {e}")),
         Err(join) => out.push_str(&format!("rhai error: script task failed: {join}")),
     }
-    truncate_output(out)
+    truncate_head_tail(out)
 }
 
 /// Serialize a script's return value. Prefer JSON (arrays/maps/numbers/strings
@@ -1156,6 +1159,20 @@ mod tests {
             .unwrap();
         let captured = prints.lock().unwrap().clone();
         assert_eq!(captured, "hello\nworld\n");
+    }
+
+    /// #622: oversized output keeps a head + tail slice (not head-only), so a
+    /// return value/error at the end survives truncation.
+    #[test]
+    fn format_output_oversized_keeps_head_and_tail() {
+        use crate::host::MAX_OUTPUT_BYTES;
+        let prints = format!("HEAD_MARKER{}", "x".repeat(MAX_OUTPUT_BYTES * 2));
+        let engine = sandbox_engine(Duration::from_secs(5));
+        let v = engine.eval::<Dynamic>(r#""TAIL_MARKER""#).unwrap();
+        let out = format_output(prints, Ok(Ok(v)));
+        assert!(out.starts_with("HEAD_MARKER"), "head lost: {out}");
+        assert!(out.contains("TAIL_MARKER"), "tail lost: {out}");
+        assert!(out.contains("omitted from the middle"), "got: {out}");
     }
 
     #[test]

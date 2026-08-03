@@ -4,8 +4,8 @@
 //! black hole — the model spawns it, gets a job id back, and reads incremental
 //! output by polling. `kill: true` SIGKILLs the job's whole process group.
 
+use super::bounded_result;
 use super::jobs::{JobRegistry, JobStatus};
-use super::truncate_head_tail;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -76,38 +76,39 @@ fn format_poll(id: &str, poll: super::jobs::Poll) -> String {
         JobStatus::Exited(Some(code)) => format!("exited {code}"),
         JobStatus::Exited(None) => "exited (killed)".to_string(),
     };
-    let mut out = format!("[job {id}: {status}]\n");
+    let mut header = format!("[job {id}: {status}]\n");
     if poll.timed_out {
-        out.push_str(&format!(
+        header.push_str(&format!(
             "[killed: timed out after {}s]\n",
             poll.timeout_secs
         ));
     }
+    let mut body = String::new();
     if poll.stdout_dropped > 0 {
-        out.push_str(&format!(
+        body.push_str(&format!(
             "[{} bytes of older stdout dropped]\n",
             poll.stdout_dropped
         ));
     }
     let stdout = String::from_utf8_lossy(&poll.stdout);
     if !stdout.is_empty() {
-        out.push_str(&stdout);
+        body.push_str(&stdout);
     }
     if poll.stderr_dropped > 0 {
-        out.push_str(&format!(
+        body.push_str(&format!(
             "[{} bytes of older stderr dropped]\n",
             poll.stderr_dropped
         ));
     }
     let stderr = String::from_utf8_lossy(&poll.stderr);
     if !stderr.is_empty() {
-        out.push_str("[stderr]\n");
-        out.push_str(&stderr);
+        body.push_str("[stderr]\n");
+        body.push_str(&stderr);
     }
     if stdout.is_empty() && stderr.is_empty() {
-        out.push_str("(no new output)\n");
+        body.push_str("(no new output)\n");
     }
-    truncate_head_tail(out)
+    bounded_result(&header, body)
 }
 
 #[cfg(test)]
