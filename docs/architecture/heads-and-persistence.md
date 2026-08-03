@@ -201,7 +201,8 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   already renders as the transcript tail, so the panel covers background
   sessions only). Sessions are identifiable throughout: the sidebar, status
   bar, and sessions modal show an **8-char short id** instead of the full
-  UUID; the sidebar adds a dim per-session **first-prompt description line**
+  id (a legacy 36-char UUID or an ADR-0164 15-char `s-…` id — the truncation
+  is format-agnostic); the sidebar adds a dim per-session **first-prompt description line**
   (`SessionView::first_prompt`, captured on the first recorded user message
   and rebuilt by resume's Prompt replay) and distinct
   `needs approval`/`question` state words (queue-derived); the sessions modal
@@ -426,7 +427,7 @@ assistant/tool messages and the model appears to forget the conversation.
   first `InMsg::Prompt` in the same pass that finds `SessionStarted` (no extra
   I/O), truncates it to ~60 chars on a word boundary with `…`
   (`SessionMeta::first_prompt`), and both `skutter sessions` (DESCRIPTION column)
-  and the `/resume` rows render it beside the bare UUID. The in-memory
+  and the `/resume` rows render it beside the full session id. The in-memory
   `ListSessions`/`SessionList` supervisor query is unaffected (no capture-at-spawn).
 - **Mid-turn tails are resumable** (#271/#272,
   [ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)). A log

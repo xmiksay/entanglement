@@ -13,11 +13,12 @@
 //! the poll can report it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+
+use entanglement_core::{DefaultIdGen, IdGen, IdKind};
 
 /// Per-stream retention cap for a *not-yet-polled* background job. Bounds the
 /// worst case where the model spawns a chatty job and never polls it. Generous
@@ -64,15 +65,34 @@ pub struct Poll {
 
 /// Shared, cheaply-cloned registry of background jobs. One instance is built at
 /// startup and handed to both the `bash` spawner and the `bash_output` poller.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct JobRegistry {
     inner: Arc<Inner>,
 }
 
-#[derive(Default)]
 struct Inner {
     jobs: Mutex<HashMap<String, Arc<Job>>>,
-    counter: AtomicU64,
+    /// Mints `j-` job ids (ADR-0164) — replaces the old per-registry
+    /// `AtomicU64` counter, which restarted at 0 on every fresh `JobRegistry`
+    /// (the non-uniqueness bug ADR-0164 retires).
+    id_gen: Arc<dyn IdGen>,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Self {
+            jobs: Mutex::new(HashMap::new()),
+            id_gen: Arc::new(DefaultIdGen::new()),
+        }
+    }
+}
+
+impl Default for JobRegistry {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Inner::default()),
+        }
+    }
 }
 
 impl JobRegistry {
@@ -93,7 +113,7 @@ impl JobRegistry {
             pgid,
             state: Mutex::new(JobState::default()),
         });
-        let id = format!("bg-{}", self.inner.counter.fetch_add(1, Ordering::SeqCst));
+        let id = self.inner.id_gen.next(IdKind::Job);
         self.inner
             .jobs
             .lock()
@@ -250,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn poll_unknown_job_is_none() {
         let reg = JobRegistry::new();
-        assert!(reg.poll("bg-999", false).is_none());
+        assert!(reg.poll("j-unknown999", false).is_none());
     }
 
     #[test]

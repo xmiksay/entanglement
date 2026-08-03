@@ -184,8 +184,11 @@ transitive descendant alongside the target, so a spawned sub-agent is never left
 orphaned — running with no consumer for its answers and burning provider tokens.
 (This is the explicit-destroy path only; a parent `Stop` still does *not* cascade
 to un-polled `agent`/`agent_poll` children, ADR-0026.) Session ids are single-use: after
-`SessionEnded`, mint a fresh `SessionId::new_uuid()` rather than reuse a closed
-id (which would restart `seq` at 0). The supervisor routes to sessions with a
+`SessionEnded`, mint a fresh id — `SessionId::new_uuid()` (kept name for
+call-site compatibility; it mints the ADR-0164 `s-<hex>` scheme, not an actual
+UUID) or, when a `Holly` handle is in scope, `Holly::next_id(IdKind::Session)`
+to go through the engine's *configured* [`IdGen`](../adr/0164-short-sortable-kind-tagged-ids.md)
+— rather than reuse a closed id (which would restart `seq` at 0). The supervisor routes to sessions with a
 non-blocking `try_send` + bounded retry, shedding to a saturated session rather
 than parking its single loop and stalling every other session.
 

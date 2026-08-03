@@ -39,8 +39,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{
-    AgentProfile, AgentState, ApprovalScope, Holly, InMsg, OutEvent, Permission, PermissionProfile,
-    ProfileRegistry, SessionId, ToolCall,
+    AgentProfile, AgentState, ApprovalScope, Holly, IdKind, InMsg, OutEvent, Permission,
+    PermissionProfile, ProfileRegistry, SessionId, ToolCall,
 };
 
 use crate::tools::{SharedRegistry, ToolRegistry};
@@ -899,7 +899,7 @@ pub fn spawn_tool_executor_with_policy(
                             // as the tool result so the plan turn continues.
                             let sponsored = match spawn_guard.try_sponsor_spawn(&session) {
                                 Ok(()) => {
-                                    let child = SessionId::new_uuid();
+                                    let child = SessionId::new(holly.next_id(IdKind::Session));
                                     spawn_guard
                                         .record_sponsored_start(child.clone(), session.clone());
                                     Some(child)

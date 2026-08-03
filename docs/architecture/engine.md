@@ -397,6 +397,26 @@ catalog no longer knows — falls back **field-by-field to the session's own
 and strictly better than a fixed primary model, since a live `/model` switch
 keeps applying to compaction whenever no pin is set.
 
+**Id generation — the `id_gen` seam** ([ADR-0164](../adr/0164-short-sortable-kind-tagged-ids.md)).
+`EngineConfig.id_gen: Arc<dyn IdGen>` mints every session id, background-job
+id, and runtime-minted request/correlation id — never `Option`, unlike the
+resolver seams above, since there is always a scheme rather than an
+opt-in override. `IdGen::next(kind: IdKind) -> String` defaults to
+`DefaultIdGen`: `<kind>-<epoch-seconds hex><2-hex process salt><3-hex
+counter>`, 15 characters (`s-`/`j-`/`r-` for `Session`/`Job`/`Request`), with a
+process-global `(last_second, counter)` pair (module statics, not per-instance
+state) that makes "never twice" structural rather than probabilistic within
+one process, and waits for the next second rather than repeating on the
+4096/s counter budget. `Holly::next_id(kind)` clones the configured generator
+out at spawn time so any in-process embedder/head mints through the *same*
+generator (and, if overridden, the same policy) the engine itself would use.
+Scope is deliberately narrow: a `ToolCall.id` is provider-supplied on the wire
+and is never run through this — reformatting it broke Gemini (#444).
+`SessionId::new_uuid()` keeps its name for call-site compatibility but now
+mints the `s-` scheme, not a UUID; legacy UUID-form ids coexist indefinitely
+since `SessionId` is an opaque `String` newtype and the two shapes cannot
+collide.
+
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop *races* it via `tokio::select!` so a
 stalled stream can't delay cancel (#179); a **parked** turn is cancelled by

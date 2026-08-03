@@ -39,8 +39,17 @@ impl SessionId {
         Self(id.into())
     }
 
+    /// Mint a fresh session id via the default [`IdGen`][crate::id_gen::IdGen]
+    /// (ADR-0164: `s-<epoch-seconds hex><salt><counter>`, 15 chars). Kept name
+    /// for call-site compatibility even though the scheme is no longer a
+    /// UUID — every caller treats the result as an opaque string, and legacy
+    /// UUID-form ids coexist indefinitely (the two shapes cannot collide). A
+    /// `Holly` handle in scope should prefer
+    /// [`Holly::next_id`][crate::Holly::next_id] instead, which goes through
+    /// the engine's *configured* generator rather than always the default.
     pub fn new_uuid() -> Self {
-        Self(uuid::Uuid::new_v4().to_string())
+        use crate::id_gen::{DefaultIdGen, IdGen, IdKind};
+        Self(DefaultIdGen::new().next(IdKind::Session))
     }
 }
 
@@ -2076,22 +2085,25 @@ mod tests {
 
     #[test]
     fn session_id_new_uuid_generates_unique_ids() {
+        // ADR-0164: `new_uuid` mints the short kind-tagged scheme, not a UUID
+        // — this is the sole migration point the ADR calls out. No consumer
+        // in the tree parses a session id as a UUID (`SessionId` is an opaque
+        // string), so only this assertion needed to change.
         let id1 = SessionId::new_uuid();
         let id2 = SessionId::new_uuid();
         let id3 = SessionId::new_uuid();
 
-        assert_ne!(id1, id2, "UUIDs should be unique");
-        assert_ne!(id2, id3, "UUIDs should be unique");
-        assert_ne!(id1, id3, "UUIDs should be unique");
+        assert_ne!(id1, id2, "ids should be unique");
+        assert_ne!(id2, id3, "ids should be unique");
+        assert_ne!(id1, id3, "ids should be unique");
 
-        assert!(
-            uuid::Uuid::parse_str(&id1.0).is_ok(),
-            "SessionId should contain valid UUID string"
-        );
-        assert!(
-            uuid::Uuid::parse_str(&id2.0).is_ok(),
-            "SessionId should contain valid UUID string"
-        );
+        for id in [&id1, &id2, &id3] {
+            assert!(
+                id.0.starts_with("s-"),
+                "session id should be `s-` tagged: {id}"
+            );
+            assert_eq!(id.0.len(), 15, "session id should be 15 chars: {id}");
+        }
     }
 
     #[test]
