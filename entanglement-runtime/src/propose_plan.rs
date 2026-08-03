@@ -29,8 +29,10 @@
 //!   result flows back and the plan agent can cycle) but whose permission
 //!   resolution stops at the child — it runs with `build`'s own write-tool
 //!   permissions, no ancestor clamp. The plan agent parks on `WaitingAgent`
-//!   (ADR-0139) while the build runs; the build's **full final report** folds
-//!   back as the `propose_plan` tool result, so the plan agent has the
+//!   (ADR-0139) while the build runs; the build's final report folds back as
+//!   the `propose_plan` tool result — bounded and, if it overflows, paged via
+//!   a retained-output handle exactly like a bare `agent` answer (#614) —
+//!   so the plan agent has the
 //!   implementation outcome in context and is expected to review it against
 //!   the plan, update the plan file (e.g. phase checkboxes) via `write`/`edit`,
 //!   and either `propose_plan` the next phase or report done — a multi-phase
@@ -65,6 +67,7 @@ use tokio::sync::broadcast::Receiver;
 use crate::agent_registry::AgentRegistry;
 use crate::pending::{self, PendingDecisions};
 use crate::plan_files::PlanFileRegistry;
+use crate::retained_output::RetainedOutputRegistry;
 use crate::seam;
 use crate::tool_names::PROPOSE_PLAN_TOOL;
 
@@ -160,6 +163,7 @@ pub async fn run_propose_plan(
     holly: Holly,
     pending: PendingDecisions,
     registry: AgentRegistry,
+    retained: RetainedOutputRegistry,
     events_rx: Receiver<OutEvent>,
     plan_files: Arc<PlanFileRegistry>,
     root: PathBuf,
@@ -221,6 +225,7 @@ pub async fn run_propose_plan(
             launch_sponsored_build(
                 holly,
                 registry,
+                retained,
                 events_rx,
                 session,
                 request_id,
@@ -261,6 +266,7 @@ pub async fn run_propose_plan(
 async fn launch_sponsored_build(
     holly: Holly,
     registry: AgentRegistry,
+    retained: RetainedOutputRegistry,
     mut events_rx: Receiver<OutEvent>,
     session: SessionId,
     request_id: String,
@@ -329,11 +335,15 @@ async fn launch_sponsored_build(
     // agent has the implementation outcome in context and can revise +
     // re-propose (cycle, ADR-0138). Names the plan file (#513) so the agent
     // knows where to apply its review-loop edits without having to recall it.
+    // Bounded the same way a bare `agent` answer is (#614): capping alone would
+    // silently discard an overflowing report, so a truncated answer mints a
+    // retained-output handle `poll` can page the rest of.
     set_thinking(&holly, &session);
-    let output = format!(
-        "plan file: {plan_path}\n\nbuild completed in {:.1}s:\n\n{answer}",
+    let status = format!(
+        "plan file: {plan_path}\n\nbuild completed in {:.1}s:\n\n",
         elapsed.as_secs_f64()
     );
+    let output = crate::subagent::bound_answer(status, answer, &retained, Some(&session));
     seam::reply(&holly, session, request_id, output).await;
 }
 

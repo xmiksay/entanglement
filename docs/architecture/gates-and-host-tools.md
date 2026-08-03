@@ -356,7 +356,11 @@ shape) blocks by default (spawn-and-wait in one call) and, with `background:
 true`, hands back a handle immediately instead — both paths reply with `` sub-agent `id` completed in Ns:\n\n{answer} `` bounded by
 `bounded_result` (#622): the "completed in Ns" status line is kept verbatim,
 the answer gets the same head + tail byte cap as `bash`/`call`/`rhai` so a
-long answer's conclusion survives instead of growing the reply unbounded.
+long answer's conclusion survives instead of growing the reply unbounded. A
+truncated answer also mints a retained-output handle (#614) exactly like a
+truncated `call`/`bash` result, so the dropped middle isn't silently lost —
+`poll` pages it back. The sponsored-build reply `propose_plan` folds back on
+approval (ADR-0138) shares the same bounding + retained-output-handle helper.
 `poll { handle?, timeout_secs?, kill?, offset?, tail? }` (#605, ADR-0161
 §1-4, replacing `bash_output`/`agent_poll` outright — no aliases) is the
 single join tool for all three: it dispatches on the handle's kind prefix
@@ -376,8 +380,9 @@ still appears. `kill: true` SIGKILLs a job's process group; refused on a
 sub-agent or retained-output handle (nothing to cancel/kill in the latter
 case). An unknown (or not-the-caller's-own) handle is an *error*, adopting
 `agent_poll`'s convention over `bash_output`'s return-it-as-text. Retention
-is a `RetainedOutputRegistry` shared with `call` the same way `JobRegistry`
-is shared with `bash`/`call` — capped per-operation (256 KiB, keeping the
+is a `RetainedOutputRegistry` shared with `call`, `agent`, and the sponsored
+build reply `propose_plan` folds back (#614) the same way `JobRegistry` is
+shared with `bash`/`call` — capped per-operation (256 KiB, keeping the
 tail) and evicted on the same 15-minute-TTL/200-entry shape `JobRegistry`
 uses; overflow past that cap is reported in the poll result, never silent.
 Called with

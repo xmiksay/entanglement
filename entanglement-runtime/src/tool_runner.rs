@@ -846,6 +846,7 @@ pub fn spawn_tool_executor_with_policy(
                                     Ok(()) => {
                                         let child_events = holly.subscribe();
                                         let registry = registry.clone();
+                                        let retained = retained.clone();
                                         let holly = holly.clone();
                                         tokio::spawn(async move {
                                             // The default blocks and parks for the
@@ -857,6 +858,7 @@ pub fn spawn_tool_executor_with_policy(
                                                     holly,
                                                     child_events,
                                                     registry,
+                                                    retained,
                                                     session,
                                                     request_id,
                                                     input,
@@ -867,6 +869,7 @@ pub fn spawn_tool_executor_with_policy(
                                                     holly,
                                                     child_events,
                                                     registry,
+                                                    retained,
                                                     session,
                                                     request_id,
                                                     input,
@@ -927,6 +930,7 @@ pub fn spawn_tool_executor_with_policy(
                             // the resolved child id reaches the detached task.
                             let child_events = holly.subscribe();
                             let registry = registry.clone();
+                            let retained = retained.clone();
                             let pending = pending.clone();
                             let holly = holly.clone();
                             let plan_files = plan_files.clone();
@@ -969,6 +973,7 @@ pub fn spawn_tool_executor_with_policy(
                                         holly,
                                         pending,
                                         registry,
+                                        retained,
                                         child_events,
                                         plan_files,
                                         plan_root,
