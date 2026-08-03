@@ -10,8 +10,10 @@
 /// Tool name the model calls to ask the user a decision question (#90, ADR-0027).
 pub const ASK_USER_TOOL: &str = "ask_user";
 
-/// Tool name the model calls to await a launched sub-agent's answer (#89, ADR-0026).
-pub const AGENT_POLL_TOOL: &str = "agent_poll";
+/// Tool name the model calls to await a background `bash` job or a launched
+/// sub-agent (#605, ADR-0161) — replaces `bash_output`/`agent_poll` outright,
+/// no aliases.
+pub const POLL_TOOL: &str = "poll";
 
 /// Tool name the model calls to run a sandboxed script (ADR-0046, exec
 /// bindings added by ADR-0115).

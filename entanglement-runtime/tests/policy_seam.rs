@@ -149,6 +149,7 @@ fn spawn_with_policy(
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         reg.shared(),
+        entanglement_runtime::host::jobs::JobRegistry::new(),
         Arc::new(std::sync::RwLock::new(profiles)),
         Arc::new(std::sync::RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),

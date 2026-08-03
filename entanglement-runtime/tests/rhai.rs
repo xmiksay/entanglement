@@ -238,6 +238,7 @@ fn spawn_with_rhai_escape(
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         tools.shared(),
+        entanglement_runtime::host::jobs::JobRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
@@ -1129,6 +1130,7 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         tools.shared(),
+        entanglement_runtime::host::jobs::JobRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         skills,
         PermissionProfile::new(Permission::Allow),

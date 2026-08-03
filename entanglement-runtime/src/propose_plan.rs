@@ -62,7 +62,7 @@ use std::sync::Arc;
 use entanglement_core::{AgentProfile, AgentState, Holly, InMsg, OutEvent, SessionId, ToolSpec};
 use tokio::sync::broadcast::Receiver;
 
-use crate::agent_poll::AgentRegistry;
+use crate::agent_registry::AgentRegistry;
 use crate::pending::{self, PendingDecisions};
 use crate::plan_files::PlanFileRegistry;
 use crate::seam;
@@ -319,7 +319,7 @@ async fn launch_sponsored_build(
     let answer =
         crate::subagent::collect_child_answer(&holly, &session, &mut events_rx, &child).await;
     let elapsed = started.elapsed();
-    let _ = status_tx.send(crate::agent_poll::AgentStatus::Complete {
+    let _ = status_tx.send(crate::agent_registry::AgentStatus::Complete {
         answer: answer.clone(),
         elapsed,
     });

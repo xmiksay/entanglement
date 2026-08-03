@@ -1,7 +1,7 @@
 //! Shared seam plumbing for the runtime-owned tool orchestrators (#205).
 //!
 //! Every runtime-owned tool — the generic `tool_runner` dispatch plus
-//! `ask_user`, `propose_plan`, `rhai`, `agent_spawn`/`agent`, `agent_poll` —
+//! `ask_user`, `propose_plan`, `rhai`, `agent_spawn`/`agent`, `poll` —
 //! speaks the same #58 round-trip: it emits a request event, parks for the
 //! head's decision, and folds the outcome back as an [`InMsg::ToolResult`]. Two
 //! steps of that round-trip were copied across every module:

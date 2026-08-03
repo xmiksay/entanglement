@@ -231,7 +231,7 @@ pub(crate) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
 /// carry no file path or shell command (so [`permission_arg`] ignores them). The
 /// shapes are confirmed in source (#89/#90/#120/#124/#140/#141):
 /// `agent`/`agent_spawn` → the agent target (+ a truncated prompt);
-/// `agent_poll` → the `agent_id`; `ask_user` → a truncated `question`;
+/// `poll` → the `handle`; `ask_user` → a truncated `question`;
 /// `propose_plan` → `"plan"`; `update_tasks` → `"snapshot"`; `load_skill` → the
 /// `skill_name`. Returns `None` for every other tool or on malformed input, so
 /// the header falls back to the bare tool name.
@@ -245,7 +245,7 @@ fn orchestration_primary_arg(tool: &str, value: &serde_json::Value) -> Option<St
                 Some(agent.to_string())
             }
         }
-        "agent_poll" => value.get("agent_id")?.as_str().map(String::from),
+        "poll" => value.get("handle")?.as_str().map(String::from),
         "ask_user" => value
             .get("question")?
             .as_str()
@@ -435,9 +435,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_poll_returns_the_agent_id() {
+    fn poll_returns_the_handle() {
         assert_eq!(
-            tool_primary_arg("agent_poll", r#"{"agent_id":"abc123"}"#).as_deref(),
+            tool_primary_arg("poll", r#"{"handle":"abc123"}"#).as_deref(),
             Some("abc123")
         );
     }

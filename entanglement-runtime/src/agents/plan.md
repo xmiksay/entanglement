@@ -3,7 +3,7 @@ name: plan
 description: Planning agent — produces a plan without making changes.
 mode: primary
 include_brief: true
-tools: [read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, propose_plan, write, edit, call, bash]
+tools: [read, glob, grep, agent, agent_spawn, poll, ask_user, load_skill, propose_plan, write, edit, call, bash]
 permission:
   default: ask
   read: allow

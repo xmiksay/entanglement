@@ -28,7 +28,7 @@ pub struct BashTool {
     /// (`ZAI_API_KEY`, …) so a model-authored `env`/`printenv` can't read the
     /// engine's credentials (#164). Empty by default; wired from the catalog.
     secret_env: Vec<String>,
-    /// Background-job registry shared with `bash_output` (#170). A private
+    /// Background-job registry shared with `poll` (#170, #605). A private
     /// per-tool default keeps standalone/TUI construction working; the head wires
     /// the shared instance via [`BashTool::with_jobs`] so polls reach the jobs
     /// this tool spawned.
@@ -69,8 +69,8 @@ impl BashTool {
         self
     }
 
-    /// Share `jobs` with the paired `bash_output` tool so background jobs this
-    /// tool spawns are pollable (#170).
+    /// Share `jobs` with the runtime-owned `poll` tool so background jobs this
+    /// tool spawns are pollable (#170, #605).
     pub fn with_jobs(mut self, jobs: JobRegistry) -> Self {
         self.jobs = jobs;
         self
@@ -127,7 +127,7 @@ struct BashInput {
     /// Optional per-call working directory, resolved under the tool root.
     #[serde(default)]
     workdir: Option<String>,
-    /// Spawn detached and return a job id to poll via `bash_output` (#170).
+    /// Spawn detached and return a job id to poll via `poll` (#170, #605).
     #[serde(default)]
     run_in_background: bool,
     /// Keep only the last `tail` lines of stdout/stderr (default 30, matching
@@ -154,9 +154,9 @@ impl Tool for BashTool {
          output concentrates at the end; `tail=0` for full output, still \
          byte-capped with a head + tail slice so the trailing error survives). \
          Pass `run_in_background=true` to start a long job (build, dev server) \
-         detached and get a job id — poll it with `bash_output`. `timeout` \
-         still applies: a background job is killed once it outlives it, so \
-         pass a larger `timeout` (up to 600s) for a job that must outlive the \
+         detached and get a job id — poll it with `poll`. `timeout` still \
+         applies: a background job is killed once it outlives it, so pass a \
+         larger `timeout` (up to 600s) for a job that must outlive the \
          default 120s."
     }
     fn schema(&self) -> serde_json::Value {
@@ -183,7 +183,7 @@ impl Tool for BashTool {
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Start the command detached and return a job id \
-                        to poll with `bash_output` instead of blocking. Default false."
+                        to poll with `poll` instead of blocking. Default false."
                 },
                 "tail": {
                     "type": "integer",
@@ -241,11 +241,11 @@ impl BashTool {
         if parsed.run_in_background {
             let id = self
                 .jobs
-                .spawn(parsed.command.clone(), cmd, dur)
+                .spawn(parsed.command.clone(), cmd, dur, session.cloned())
                 .with_context(|| "spawning background bash command")?;
             return Ok(format!(
                 "[background job {id} started]\n\
-                 Poll with `bash_output` (job_id=\"{id}\") for incremental output; \
+                 Poll with `poll` (handle=\"{id}\") for incremental output; \
                  pass kill=true to stop it. Killed automatically after {secs}s if \
                  still running."
             ));
@@ -495,12 +495,15 @@ mod tests {
             .expect("job id in response")
             .to_string();
 
+        let caller = SessionId::new("test-caller");
         for _ in 0..50 {
-            let p = jobs.poll(&id, false).expect("job registered");
+            let p = jobs
+                .poll(&id, &caller, false, 1)
+                .await
+                .expect("job registered");
             if p.status == crate::host::jobs::JobStatus::Exited(Some(0)) {
                 return;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("background cat never exited — stdin was likely inherited, not closed");
     }
@@ -529,15 +532,13 @@ mod tests {
             .expect("job id in response")
             .to_string();
 
-        for _ in 0..100 {
-            let p = jobs.poll(&id, false).expect("job registered");
-            if p.timed_out {
-                assert_eq!(p.status, crate::host::jobs::JobStatus::Exited(None));
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        panic!("background job outran its timeout without being killed");
+        let caller = SessionId::new("test-caller");
+        let p = jobs
+            .poll(&id, &caller, false, 5)
+            .await
+            .expect("job registered");
+        assert!(p.timed_out, "job should have been killed by its timeout");
+        assert_eq!(p.status, crate::host::jobs::JobStatus::Exited(None));
     }
 
     #[tokio::test]

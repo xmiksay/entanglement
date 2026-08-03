@@ -482,25 +482,30 @@ synchronous relay): `agent_spawn` replies to the parent *immediately* with the
 child handle (`agent_id`) instead of parking the turn on the child's `Done`, so
 one turn can launch several sub-agents that then run concurrently. The launch
 task keeps watching the child and records its final answer + duration into a
-shared `AgentRegistry` (`runtime::agent_poll`) keyed by the handle and scoped to
-the spawning parent (✅ #618): each entry also carries the parent `SessionId`
-recorded at `register`, so a lookup only resolves for that same parent — a
-session polling a handle it did not launch (even one it learned or guessed)
-gets the identical "no sub-agent found" `ToolOutput` as an unknown handle. The
-parent collects a result with a second runtime-owned tool, `agent_poll { agent_id,
-timeout_secs }` — also intercepted before permission resolution (it starts no
-session and touches no host resource): it blocks up to `timeout_secs` for that
-child and returns its answer (with elapsed time) as the tool `ToolOutput`, or a
-still-running status on timeout so the model can poll again or do other work.
-Or, with `timeout_secs: 0`, blocks until the child completes (no caller-side
-bound, ADR-0123 — the same indefinite-wait path the blocking `agent` tool takes).
-For the single-delegation case, a third tool `agent { agent, prompt }` (✅ #120,
+shared `AgentRegistry` (`runtime::agent_registry`) keyed by the handle and
+scoped to the spawning parent (✅ #618): each entry also carries the parent
+`SessionId` recorded at `register`, so a lookup only resolves for that same
+parent — a session polling a handle it did not launch (even one it learned or
+guessed) gets the same "unknown handle" `ToolOutput` a genuinely nonexistent
+handle would (#605 adopts this error convention over `bash_output`'s former
+return-it-as-text). The parent collects a result with the runtime-owned join tool,
+`poll { handle, timeout_secs? }` (✅ #605, [ADR-0161](../adr/0161-unified-async-work-background-flag-and-one-poll.md),
+replacing the former `agent_poll`/`bash_output` outright) — also intercepted
+before permission resolution (it starts no session and touches no host
+resource): it dispatches on the handle's kind prefix (a sub-agent handle is a
+`s-` session id) to this same `AgentRegistry`, blocks up to `timeout_secs` for
+that child and returns its answer (with elapsed time) as the tool
+`ToolOutput`, or a still-running status on timeout so the model can poll
+again or do other work. Or, with `timeout_secs: 0`, blocks until the child
+completes (no caller-side bound, ADR-0123 — the same indefinite-wait path the
+blocking `agent` tool takes). For the single-delegation case, a third tool
+`agent { agent, prompt }` (✅ #120,
 [ADR-0033](../adr/0033-agent-tool-family-and-blocking-agent.md)) **blocks**: it runs
 the exact `agent_spawn` launch path (same guard, clamp, `Spawn`), then parks on
 the child's genuine completion and folds its answer directly into the
 `ToolOutput` — one call instead of launch-then-poll. It still records into the
 `AgentRegistry`, so a parent `Stop` while parked leaves the child collectable
-via `agent_poll`. Both routes share `subagent::collect_child_answer`, which
+via `poll`. Both routes share `subagent::collect_child_answer`, which
 does **not** treat a bare `Done` as final (✅ #562,
 [ADR-0155](../adr/0155-errored-subagent-turn-parks-for-steering.md)): the
 engine emits `Done` even for a turn that ended in `Error`

@@ -10,14 +10,15 @@
 //!   `Done`, so it never blocks the parent turn (ADR-0026 supersedes ADR-0022's
 //!   synchronous answer-relay). It then keeps watching the child in the same
 //!   detached task, recording the final answer + duration into the shared
-//!   [`AgentRegistry`] keyed by the handle; the parent collects it later with
-//!   `agent_poll` (see [`crate::agent_poll`]).
+//!   [`AgentRegistry`][crate::agent_registry::AgentRegistry] keyed by the
+//!   handle; the parent collects it later with `poll` (#605, formerly
+//!   `agent_poll`, see [`crate::poll`]).
 //! - `agent` (blocking, #120) — [`run_agent`] runs the exact same launch path
 //!   (guard, clamp, `Spawn`), but instead of handing back the handle it parks on
 //!   the child's *genuine* completion and folds the child's answer + elapsed
 //!   straight into the `ToolOutput` — the one-call path for a single delegation.
 //!   It still records into the registry, so a parent `Stop` while parked leaves
-//!   the child collectable via `agent_poll`.
+//!   the child collectable via `poll`.
 //!
 //! Both routes share [`collect_child_answer`], which waits past an errored turn
 //! with no usable answer instead of unblocking the parent on it (#562): the
@@ -37,7 +38,7 @@ use entanglement_core::{
 };
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
-use crate::agent_poll::{AgentRegistry, AgentStatus};
+use crate::agent_registry::{AgentRegistry, AgentStatus};
 use crate::seam::reply;
 use crate::tool_names::{AGENT_SPAWN_TOOL, AGENT_TOOL};
 
@@ -190,15 +191,18 @@ impl SpawnGuard {
 /// the safe default.
 const DEFAULT_SUBAGENT: &str = "explore";
 
-/// The per-profile spawn tool specs (#119, ADR-0040): the `agent_spawn`/`agent`/
-/// `agent_poll` triple advertised to a session running under `profile`, with the
-/// roster + `agent` enum scoped to exactly the profiles `profile` may spawn (its
+/// The per-profile spawn tool specs (#119, ADR-0040): the `agent_spawn`/`agent`
+/// pair advertised to a session running under `profile`, with the roster +
+/// `agent` enum scoped to exactly the profiles `profile` may spawn (its
 /// `spawnable_agents` allowlist ∩ the target-side mode gate). Empty when the
-/// profile may not spawn or has no valid targets — so the whole family is
-/// **withheld** from that session's model (the structural half of the gate; the
-/// runtime executor refuses a stale call regardless). Stored in
-/// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig] and
-/// appended by core's `run_turn` for the active profile.
+/// profile may not spawn or has no valid targets — so the pair is **withheld**
+/// from that session's model (the structural half of the gate; the runtime
+/// executor refuses a stale call regardless). `poll` (#605) is *not* part of
+/// this pair — it rides the shared `cfg.tool_specs` instead (like `ask_user`),
+/// since it also joins non-spawn job handles and so isn't conditioned on
+/// spawn capability alone; a profile still masks it via its own `tools:` list.
+/// Stored in [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig]
+/// and appended by core's `run_turn` for the active profile.
 pub fn spawn_specs_for(profile: &AgentProfile, registry: &ProfileRegistry) -> Vec<ToolSpec> {
     if !profile.may_spawn() {
         return Vec::new();
@@ -213,11 +217,7 @@ pub fn spawn_specs_for(profile: &AgentProfile, registry: &ProfileRegistry) -> Ve
     if targets.is_empty() {
         return Vec::new();
     }
-    vec![
-        agent_spawn_spec(&targets),
-        agent_spec(&targets),
-        crate::agent_poll::agent_poll_spec(),
-    ]
+    vec![agent_spawn_spec(&targets), agent_spec(&targets)]
 }
 
 /// The `agent_spawn` tool schema advertised to the model. The `targets` roster is
@@ -231,7 +231,7 @@ pub fn agent_spawn_spec(targets: &[&AgentProfile]) -> ToolSpec {
              immediately with an agent_id handle (it does not wait for the \
              sub-agent to finish), so you can launch several in a row and let \
              them run concurrently. Collect a sub-agent's answer by calling \
-             agent_poll with its agent_id. To delegate a single subtask and get \
+             poll with its agent_id. To delegate a single subtask and get \
              the answer in one call, use `agent` instead.\n\n{}",
             roster(targets)
         ),
@@ -250,7 +250,7 @@ pub fn agent_spec(targets: &[&AgentProfile]) -> ToolSpec {
          Spawns the sub-agent, blocks until it finishes, and returns its \
          final answer directly — the one-call path for a single delegation. \
          To launch several sub-agents and let them run concurrently, use \
-         agent_spawn + agent_poll instead. Takes the same agents and arguments \
+         agent_spawn + poll instead. Takes the same agents and arguments \
          as `agent_spawn` — see its description for the roster.",
         agent_input_schema(targets),
     )
@@ -302,7 +302,7 @@ enum LaunchMode {
 
 /// Orchestrate one `agent_spawn` call (ADR-0026): start a child session, reply
 /// to `parent` *immediately* with the child handle, then keep watching the child
-/// and record its answer + duration into `registry` for a later `agent_poll`.
+/// and record its answer + duration into `registry` for a later `poll` (#605).
 ///
 /// `events` must be a receiver subscribed *before* the [`InMsg::Spawn`] is sent
 /// (the caller subscribes synchronously), so the child's events — including its
@@ -331,7 +331,7 @@ pub async fn launch_subagent(
 /// launch path, then park on the child's genuine completion ([`collect_child_answer`])
 /// and fold its answer + elapsed straight into the `ToolOutput`. Still records
 /// into `registry`, so a parent `Stop` while parked leaves the child collectable
-/// via `agent_poll`.
+/// via `poll`.
 pub async fn run_agent(
     holly: Holly,
     events: Receiver<OutEvent>,
@@ -403,7 +403,7 @@ async fn launch(
             request_id.clone(),
             format!(
                 "Sub-agent launched under the `{agent}` profile. agent_id: {child}. \
-                 Call agent_poll with this agent_id to await its answer."
+                 Call poll with this agent_id to await its answer."
             ),
         )
         .await;
@@ -426,7 +426,7 @@ async fn launch(
 
     // Blocking: the parent parked on this call — fold the answer back directly.
     // If the parent already `Stop`ped, core cancels its turn and ignores this
-    // reply; the answer above stays collectable via `agent_poll`.
+    // reply; the answer above stays collectable via `poll`.
     if mode == LaunchMode::AwaitAnswer {
         reply(
             &holly,
@@ -443,7 +443,7 @@ async fn launch(
 /// [`crate::host::MAX_OUTPUT_BYTES`] with a head+tail split so a long answer's
 /// conclusion survives truncation — the same shape `bash`/`call`/`rhai` now
 /// share instead of returning an unbounded answer (#622). Shared by the
-/// blocking `agent` path ([`launch`]) and `agent_poll`.
+/// blocking `agent` path ([`launch`]) and `poll`.
 pub fn format_agent_answer(
     agent_id: impl std::fmt::Display,
     elapsed: Duration,
@@ -805,7 +805,7 @@ mod tests {
         let build = reg.get("build").unwrap();
         let specs = spawn_specs_for(build, &reg);
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec![AGENT_SPAWN_TOOL, AGENT_TOOL, "agent_poll"]);
+        assert_eq!(names, vec![AGENT_SPAWN_TOOL, AGENT_TOOL]);
         let enum_names = specs[0].schema["properties"]["agent"]["enum"]
             .as_array()
             .unwrap();

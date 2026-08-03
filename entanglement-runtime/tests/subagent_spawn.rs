@@ -1,6 +1,6 @@
 //! Integration tests for sub-agent spawn. Drives the real runtime tool
 //! executor: the parent model calls `agent_spawn`, which returns a handle
-//! immediately (#89, ADR-0026), then `agent_poll` awaits the child's answer.
+//! immediately (#89, ADR-0026), then `poll` awaits the child's answer.
 //! The blocking `agent` tool (#120, ADR-0033) spawns and waits in one call.
 //! Spawn limits (#76) and permission gating (#77) still apply per launch.
 
@@ -18,7 +18,7 @@ use entanglement_runtime::ToolRegistry;
 use tokio::sync::Notify;
 
 /// Pull an `agent_id` out of an `agent_spawn` result string (format:
-/// `… agent_id: <uuid>. Call agent_poll …`).
+/// `… agent_id: <uuid>. Call poll …`).
 fn extract_agent_id(s: &str) -> Option<String> {
     let start = s.find("agent_id: ")? + "agent_id: ".len();
     let rest = &s[start..];
@@ -86,8 +86,8 @@ impl Llm for SpawnPollLlm {
             Some(t) => match extract_agent_id(t) {
                 Some(id) => Ok(call(
                     "poll1",
-                    "agent_poll",
-                    format!(r#"{{"agent_id":"{id}","timeout_secs":5}}"#),
+                    "poll",
+                    format!(r#"{{"handle":"{id}","timeout_secs":5}}"#),
                 )),
                 // A refusal (no handle) or a poll result → finish.
                 None => Ok(finish("parent done")),
@@ -126,7 +126,7 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
     });
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    // Empty registry: `agent_spawn`/`agent_poll` are orchestration, handled
+    // Empty registry: `agent_spawn`/`poll` are orchestration, handled
     // before execution.
     spawn_tool_executor(
         &holly,
@@ -162,7 +162,7 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
                 if tool == "agent_spawn" && output.contains("agent_id:") {
                     saw_launch_handle = true;
                 }
-                if tool == "agent_poll" && output.contains("child-answer") {
+                if tool == "poll" && output.contains("child-answer") {
                     saw_polled_answer = true;
                 }
             }
@@ -184,7 +184,7 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
     );
     assert!(
         saw_polled_answer,
-        "agent_poll should surface the child's answer to the parent"
+        "poll should surface the child's answer to the parent"
     );
     assert!(
         parent_finished,
@@ -233,8 +233,8 @@ impl Llm for FanOutLlm {
         if let Some(id) = handles.get(polled) {
             return Ok(call(
                 "poll",
-                "agent_poll",
-                format!(r#"{{"agent_id":"{id}","timeout_secs":5}}"#),
+                "poll",
+                format!(r#"{{"handle":"{id}","timeout_secs":5}}"#),
             ));
         }
         if handles.is_empty() {
@@ -302,7 +302,7 @@ async fn two_sub_agents_fan_out_and_both_answers_are_polled() {
                 tool,
                 output,
                 ..
-            } if session == &parent && tool == "agent_poll" => {
+            } if session == &parent && tool == "poll" => {
                 if output.contains("child-a") {
                     got_a = true;
                 }
@@ -410,8 +410,8 @@ impl Llm for RecursiveLlm {
             Some(t) => match extract_agent_id(t) {
                 Some(id) => Ok(call(
                     "poll",
-                    "agent_poll",
-                    format!(r#"{{"agent_id":"{id}","timeout_secs":5}}"#),
+                    "poll",
+                    format!(r#"{{"handle":"{id}","timeout_secs":5}}"#),
                 )),
                 None => Ok(finish("done")),
             },
@@ -532,8 +532,8 @@ impl Llm for ExploreThenSpawnLlm {
             Some(t) => match extract_agent_id(t) {
                 Some(id) => Ok(call(
                     "poll",
-                    "agent_poll",
-                    format!(r#"{{"agent_id":"{id}","timeout_secs":5}}"#),
+                    "poll",
+                    format!(r#"{{"handle":"{id}","timeout_secs":5}}"#),
                 )),
                 None => Ok(finish("done")),
             },
@@ -638,7 +638,7 @@ async fn agent_blocks_and_returns_child_answer_in_one_call() {
 
 /// Parent delegates with the blocking `agent` tool, but the child is gated on a
 /// release signal so the parent is provably parked. After a `Stop`, the parent
-/// re-asks with `agent_poll` for the (now captured) child handle — proving the
+/// re-asks with `poll` for the (now captured) child handle — proving the
 /// answer stays collectable even though the blocking call was cancelled (#120).
 struct StopThenPollLlm {
     release: Arc<Notify>,
@@ -658,8 +658,8 @@ impl Llm for StopThenPollLlm {
             let id = self.poll_id.lock().unwrap().clone().unwrap_or_default();
             return Ok(call(
                 "poll1",
-                "agent_poll",
-                format!(r#"{{"agent_id":"{id}","timeout_secs":5}}"#),
+                "poll",
+                format!(r#"{{"handle":"{id}","timeout_secs":5}}"#),
             ));
         }
         // Any tool result folds back → finish.
@@ -709,7 +709,7 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
         .unwrap();
 
     // Wait for the child to start (the `agent` call is now parked on it), and
-    // capture the child's id — that handle is what a later `agent_poll` needs.
+    // capture the child's id — that handle is what a later `poll` needs.
     let child_id = loop {
         match tokio::time::timeout(Duration::from_secs(5), sub.recv())
             .await
@@ -753,10 +753,7 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
                 tool,
                 output,
                 ..
-            } if session == &parent
-                && tool == "agent_poll"
-                && output.contains("late-child-answer") =>
-            {
+            } if session == &parent && tool == "poll" && output.contains("late-child-answer") => {
                 polled_answer = true;
             }
             OutEvent::Done { session, .. } if session == &parent && polled_answer => {
@@ -769,7 +766,7 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
 
     assert!(
         polled_answer,
-        "the cancelled `agent` child's answer must remain collectable via agent_poll"
+        "the cancelled `agent` child's answer must remain collectable via poll"
     );
     assert!(
         parent_finished,
@@ -800,8 +797,8 @@ impl Llm for ZeroTimeoutPollLlm {
             Some(t) => match extract_agent_id(t) {
                 Some(id) => Ok(call(
                     "poll1",
-                    "agent_poll",
-                    format!(r#"{{"agent_id":"{id}","timeout_secs":0}}"#),
+                    "poll",
+                    format!(r#"{{"handle":"{id}","timeout_secs":0}}"#),
                 )),
                 // A poll result → finish.
                 None => Ok(finish("parent done")),
@@ -817,7 +814,7 @@ impl Llm for ZeroTimeoutPollLlm {
 }
 
 #[tokio::test]
-async fn agent_poll_zero_timeout_blocks_until_completion() {
+async fn poll_zero_timeout_blocks_until_completion() {
     let release = Arc::new(Notify::new());
     let r = release.clone();
     let cfg = EngineConfig {
@@ -848,7 +845,7 @@ async fn agent_poll_zero_timeout_blocks_until_completion() {
     // Drain until we've seen the spawn return a handle and a child start, but
     // NOT the poll result yet — the poll is parked on the child (the signal has
     // not been released). We confirm the park by observing the child is running
-    // without an agent_poll answer landing.
+    // without a poll answer landing.
     let mut child_started = false;
     let mut saw_launch_handle = false;
     let mut saw_poll_answer = false;
@@ -869,7 +866,7 @@ async fn agent_poll_zero_timeout_blocks_until_completion() {
                 if tool == "agent_spawn" && output.contains("agent_id:") {
                     saw_launch_handle = true;
                 }
-                if tool == "agent_poll" {
+                if tool == "poll" {
                     saw_poll_answer = true;
                 }
             }
@@ -894,7 +891,7 @@ async fn agent_poll_zero_timeout_blocks_until_completion() {
                 tool,
                 output,
                 ..
-            } if session == &parent && tool == "agent_poll" => {
+            } if session == &parent && tool == "poll" => {
                 assert!(
                     output.contains("zero-timeout-child-answer"),
                     "the timeout_secs:0 poll should return the child's answer, got: {output}"
@@ -1065,7 +1062,10 @@ fn specs_advertise_the_agent_family_names() {
     let build = reg.get("build").unwrap();
     let specs = entanglement_runtime::subagent::spawn_specs_for(build, &reg);
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, vec!["agent_spawn", "agent", "agent_poll"]);
+    // `poll` (#605) is no longer part of the per-profile spawn family — it
+    // rides the shared specs like `ask_user`, since it also joins non-spawn
+    // job handles.
+    assert_eq!(names, vec!["agent_spawn", "agent"]);
     let spawn = &specs[0];
     let agent = &specs[1];
     // Both spawning tools take the same `{ agent, prompt }` input shape.

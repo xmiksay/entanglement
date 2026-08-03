@@ -347,7 +347,7 @@ pub struct McpAuthStatus {
 // ┃ Live bash enablement (#498)
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// How a live-registered `bash`/`bash_output` pair is graded, carried by
+/// How a live-registered `bash` is graded, carried by
 /// [`InMsg::BashEnable`] and echoed back in [`OutEvent::BashChanged`] (#498,
 /// ADR-0133). Registering the tools live (mirroring the MCP `SharedRegistry`
 /// seam, #372/#375) is only half the feature — the enablement itself is
@@ -361,8 +361,8 @@ pub struct McpAuthStatus {
 ///   ([`PermissionProfile`]'s existing `tool(pattern)` syntax, #173) rather
 ///   than a bespoke mechanism. `None` is a blanket allow.
 ///
-/// Runtime-side, this overrides the session's own profile grade for `bash`/
-/// `bash_output` specifically while live-enabled (a profile authored before
+/// Runtime-side, this overrides the session's own profile grade for `bash`
+/// specifically while live-enabled (a profile authored before
 /// bash was live-enabled has no real opinion on it), but is still clamped by
 /// the config ceiling (#172) exactly like any other grade — a ceiling of
 /// `bash: deny` still wins over a live `Allow`.
@@ -744,7 +744,7 @@ pub struct AgentProfile {
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
     /// ⇒ derive from [`mode`][Self::mode]: a `Subagent` leaf defaults closed,
     /// every other mode open. When it (or the derived default) is `false`, the
-    /// whole `agent`/`agent_spawn`/`agent_poll` family is withheld from the model
+    /// whole `agent`/`agent_spawn` family is withheld from the model
     /// and refused at dispatch — the physical principle of #116 applied to spawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_spawn: Option<bool>,
@@ -814,7 +814,7 @@ impl AgentProfile {
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040).
     /// [`can_spawn`][Self::can_spawn] overrides the mode-derived default: a
     /// `Subagent` leaf defaults closed, every other mode open. When this is
-    /// `false` the runtime withholds the whole `agent`/`agent_spawn`/`agent_poll`
+    /// `false` the runtime withholds the whole `agent`/`agent_spawn`
     /// family and refuses a stale call.
     pub fn may_spawn(&self) -> bool {
         self.can_spawn.unwrap_or(self.mode != AgentMode::Subagent)
@@ -1089,20 +1089,20 @@ pub enum InMsg {
     /// [`Disconnect`][McpAuthAction::Disconnect] destroys one — neither may be
     /// driven by an untrusted wire peer.
     McpAuth { name: String, action: McpAuthAction },
-    /// Hot-register the `bash`/`bash_output` pair in the running process,
+    /// Hot-register `bash` in the running process,
     /// graded by `grade` (#498, ADR-0133) — the live counterpart to the
     /// startup-only `ENTANGLEMENT_ENABLE_BASH` env var. Engine-global like
     /// [`McpAdd`][InMsg::McpAdd] (the tool registry is process-wide, not
     /// per-session): a runtime responder registers the pair into the shared
     /// tool registry (a no-op if already registered) and installs `grade` as
-    /// the live permission override for `bash`/`bash_output`, still clamped by
+    /// the live permission override for `bash`, still clamped by
     /// the config ceiling (#172). On success emits
     /// [`OutEvent::BashChanged`] with `enabled: true`. **Trusted-only**
     /// (#472, ADR-0124, same rationale as `McpAdd`): live-enabling `bash`
     /// hands the model a full shell with no approval prompt when graded
     /// `Allow`, so this must never arrive over an untrusted wire.
     BashEnable { grade: BashGrade },
-    /// Unregister the `bash`/`bash_output` pair and clear the live grade
+    /// Unregister `bash` and clear the live grade
     /// override (#498, ADR-0133) — the counterpart to
     /// [`BashEnable`][InMsg::BashEnable]. A pair registered at startup via
     /// `ENTANGLEMENT_ENABLE_BASH` is unregistered the same way. On success
@@ -1584,7 +1584,7 @@ pub enum OutEvent {
     /// carrying `authorize_url` while the browser consent is pending, then
     /// again with the terminal `state` or `error`.
     McpAuthChanged { status: McpAuthStatus },
-    /// `bash`/`bash_output` were live-registered or unregistered (lifecycle
+    /// `bash` was live-registered or unregistered (lifecycle
     /// event, no `seq`), in reply to
     /// [`InMsg::BashEnable`]/[`InMsg::BashDisable`] (#498, ADR-0133).
     /// `grade` is the live permission override now in effect — `Some` when

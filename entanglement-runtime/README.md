@@ -26,9 +26,11 @@ the resolved state and which layer won each override).
 
 The root-contained quintet `read` / `write` / `edit` / `glob` / `grep`
 (canonicalizing, symlink-safe containment; `read` emits images as content
-blocks), the opt-in exec set `bash` / `call` / `bash_output`
+blocks), `call` (always registered) and the opt-in `bash`
 (`ENTANGLEMENT_ENABLE_BASH=1`; own process group, timeout returns partial
-output), and the sandboxed `rhai` scripting tool. External **MCP servers**
+output) — a background `bash` job (`run_in_background=true`) is joined with
+the runtime-owned `poll` tool — and the sandboxed `rhai` scripting tool.
+External **MCP servers**
 declared in the user config attach their tools as `mcp__<server>__<tool>`.
 Permission profiles (`Allow | Ask | Deny`, argument-scoped rules, persisted
 "always allow" grants, a user-config ceiling) govern every tool; lifecycle
