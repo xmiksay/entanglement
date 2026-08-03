@@ -77,6 +77,8 @@ impl SessionView {
             OutEvent::SessionList { .. } => false,
             // `ListQuestions` reply (#515) — session-less like `SessionList`.
             OutEvent::QuestionList { .. } => false,
+            // `ListOperations` reply (#607, ADR-0161 §6) — session-less too.
+            OutEvent::OperationList { .. } => false,
             // MCP ops (#375) and the bash-live ops (#498) are engine-global —
             // never routed to a per-session view (`handle_out_event` filters
             // them out, same as SessionList).

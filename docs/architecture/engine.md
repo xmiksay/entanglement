@@ -520,6 +520,16 @@ on a `Done` that carries a usable answer or the child's `SessionEnded`/
 `SessionHibernated`. Each re-arm emits an explanatory `OutEvent::Error` on the
 *parent* naming the child, so the user knows to steer it; `AgentState` stays
 `WaitingAgent` throughout (no new lifecycle state).
+Every `AgentRegistry` entry also carries the profile the child was launched
+under (#607), and a `snapshot(parent)` method lists every child a session has
+outstanding — completed entries included, since nothing here evicts them (the
+model sees an unclaimed answer sitting there rather than losing track of it).
+This backs the no-`handle` form of `poll` and the head-facing
+`InMsg::ListOperations` (ADR-0161 §6): "what do I still have running," the
+same ownership bookkeeping serving both the descendant check above and the
+listing, merged with an equivalent job-registry snapshot by
+`entanglement_runtime::operations::list_operations` — see
+[protocol](protocol.md) and [gates & host tools](gates-and-host-tools.md).
 Refusals (depth, budget, capability) are identical regardless of `background`
 — one shared guard path.
 Both reuse the #58 round-trip, so core's turn loop needs no notion of a

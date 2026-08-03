@@ -371,7 +371,7 @@ async fn launch(
     let child = SessionId::new(holly.next_id(IdKind::Session));
     // Register *before* sending Spawn so a poll can never precede the handle
     // (the parent only learns the id from the reply below, which comes after).
-    let (status_tx, started) = registry.register(child.clone(), parent.clone());
+    let (status_tx, started) = registry.register(child.clone(), parent.clone(), agent.clone());
 
     if holly
         .send(InMsg::Spawn {

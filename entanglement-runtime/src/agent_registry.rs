@@ -20,15 +20,29 @@ pub enum AgentStatus {
     Complete { answer: String, elapsed: Duration },
 }
 
-/// One tracked sub-agent: when it launched, which session spawned it, and a
-/// watch handle to observe its completion. The launch watcher owns the
-/// [`watch::Sender`]; every entry keeps a receiver so the last value survives
-/// the sender being dropped, letting a late poll still read a completed answer.
+/// One tracked sub-agent: when it launched, which session spawned it, under
+/// which profile, and a watch handle to observe its completion. The launch
+/// watcher owns the [`watch::Sender`]; every entry keeps a receiver so the
+/// last value survives the sender being dropped, letting a late poll still
+/// read a completed answer.
 #[derive(Clone)]
 struct Entry {
     started: Instant,
     parent: SessionId,
+    /// The profile the child was launched under — "what launched it" in a
+    /// #607 pending-operations listing.
+    agent: String,
     status: watch::Receiver<AgentStatus>,
+}
+
+/// One outstanding child launched by a session, as reported to a #607
+/// pending-operations listing.
+pub struct AgentOpInfo {
+    pub session: SessionId,
+    pub handle: String,
+    pub agent: String,
+    pub elapsed: Duration,
+    pub status: AgentStatus,
 }
 
 /// Shared table of launched sub-agents keyed by child `SessionId` (the handle
@@ -47,13 +61,15 @@ pub struct AgentRegistry {
 }
 
 impl AgentRegistry {
-    /// Register a freshly-launched child as `Running`, owned by `parent`.
-    /// Returns the sender the launch watcher flips to `Complete`, plus the
-    /// launch instant so it can report the same elapsed a poller would compute.
+    /// Register a freshly-launched child as `Running`, owned by `parent` and
+    /// launched under the `agent` profile. Returns the sender the launch
+    /// watcher flips to `Complete`, plus the launch instant so it can report
+    /// the same elapsed a poller would compute.
     pub fn register(
         &self,
         child: SessionId,
         parent: SessionId,
+        agent: String,
     ) -> (watch::Sender<AgentStatus>, Instant) {
         let (tx, rx) = watch::channel(AgentStatus::Running);
         let started = Instant::now();
@@ -62,6 +78,7 @@ impl AgentRegistry {
             Entry {
                 started,
                 parent,
+                agent,
                 status: rx,
             },
         );
@@ -87,6 +104,32 @@ impl AgentRegistry {
         self.lock()
             .get(child)
             .and_then(|e| (&e.parent == poller).then(|| (e.started, e.status.clone())))
+    }
+
+    /// Snapshot launched children (#607, ADR-0161 §6) — the no-handle listing
+    /// `poll`/`InMsg::ListOperations` answer with. `parent`, when set, scopes
+    /// to that launcher only (the `poll` tool's own use, always scoped to the
+    /// calling session); `None` spans every parent, mirroring
+    /// [`crate::questions::OpenQuestions::snapshot`]'s filter convention.
+    /// Unlike [`JobRegistry`][crate::host::jobs::JobRegistry], a completed
+    /// entry is never evicted here, so it stays listed until the model polls
+    /// it by handle — the model sees an unclaimed answer sitting there rather
+    /// than losing track of it. Sorted by handle for a deterministic reply.
+    pub fn snapshot(&self, parent: Option<&SessionId>) -> Vec<AgentOpInfo> {
+        let mut list: Vec<AgentOpInfo> = self
+            .lock()
+            .iter()
+            .filter(|(_, e)| parent.is_none_or(|p| p == &e.parent))
+            .map(|(child, e)| AgentOpInfo {
+                session: e.parent.clone(),
+                handle: child.to_string(),
+                agent: e.agent.clone(),
+                elapsed: e.started.elapsed(),
+                status: e.status.borrow().clone(),
+            })
+            .collect();
+        list.sort_by(|a, b| a.handle.cmp(&b.handle));
+        list
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<SessionId, Entry>> {
@@ -115,7 +158,7 @@ mod tests {
         let reg = AgentRegistry::default();
         let parent = SessionId::new("p1");
         let child = SessionId::new("c1");
-        let (tx, _started) = reg.register(child.clone(), parent.clone());
+        let (tx, _started) = reg.register(child.clone(), parent.clone(), "build".to_string());
         tx.send(AgentStatus::Complete {
             answer: "done".to_string(),
             elapsed: Duration::from_millis(3),
@@ -140,7 +183,7 @@ mod tests {
         let reg = AgentRegistry::default();
         let parent = SessionId::new("p3");
         let child = SessionId::new("c3");
-        reg.register(child.clone(), parent.clone());
+        reg.register(child.clone(), parent.clone(), "build".to_string());
         reg.forget(&child);
         assert!(reg.view(&parent, &child).is_none());
     }
@@ -154,9 +197,53 @@ mod tests {
         let parent = SessionId::new("owner");
         let stranger = SessionId::new("stranger");
         let child = SessionId::new("c4");
-        reg.register(child.clone(), parent.clone());
+        reg.register(child.clone(), parent.clone(), "build".to_string());
 
         assert!(reg.view(&stranger, &child).is_none());
         assert!(reg.view(&parent, &child).is_some());
+    }
+
+    #[tokio::test]
+    async fn snapshot_lists_only_the_parent_s_own_children() {
+        let reg = AgentRegistry::default();
+        let parent = SessionId::new("p5");
+        let stranger = SessionId::new("stranger5");
+        let child = SessionId::new("c5");
+        reg.register(child.clone(), parent.clone(), "reviewer".to_string());
+
+        let mine = reg.snapshot(Some(&parent));
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].session, parent);
+        assert_eq!(mine[0].handle, child.to_string());
+        assert_eq!(mine[0].agent, "reviewer");
+        assert_eq!(mine[0].status, AgentStatus::Running);
+
+        assert!(reg.snapshot(Some(&stranger)).is_empty());
+        assert_eq!(reg.snapshot(None).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn snapshot_still_lists_a_completed_child() {
+        // Unlike a job, a completed agent entry isn't evicted — it stays
+        // listed until the model polls it by handle (#607).
+        let reg = AgentRegistry::default();
+        let parent = SessionId::new("p6");
+        let child = SessionId::new("c6");
+        let (tx, _started) = reg.register(child.clone(), parent.clone(), "build".to_string());
+        tx.send(AgentStatus::Complete {
+            answer: "done".to_string(),
+            elapsed: Duration::from_millis(3),
+        })
+        .unwrap();
+
+        let mine = reg.snapshot(Some(&parent));
+        assert_eq!(mine.len(), 1);
+        assert_eq!(
+            mine[0].status,
+            AgentStatus::Complete {
+                answer: "done".to_string(),
+                elapsed: Duration::from_millis(3),
+            }
+        );
     }
 }

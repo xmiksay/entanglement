@@ -154,7 +154,9 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         // ListQuestions/RetractQuestion/ReplaceQuestion (#515) are engine-global
         // (or, for the latter two, resolved by the runtime exactly like
         // AnswerQuestion) like ListSessions — a runtime service answers them
-        // off the inbound fan-out, never a session task. None reach here.
+        // off the inbound fan-out, never a session task. ListOperations (#607)
+        // is the same shape: answered by the runtime's job/agent registries,
+        // never routed. None reach here.
         InMsg::Approve { .. }
         | InMsg::Reject { .. }
         | InMsg::AnswerQuestion { .. }
@@ -162,6 +164,7 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         | InMsg::ReplaceQuestion { .. }
         | InMsg::ListSessions { .. }
         | InMsg::ListQuestions { .. }
+        | InMsg::ListOperations { .. }
         | InMsg::McpList { .. }
         | InMsg::McpAdd { .. }
         | InMsg::McpRemove { .. }

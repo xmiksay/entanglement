@@ -271,7 +271,8 @@ async fn launch_sponsored_build(
     let prompt = wrap_plan(&plan);
     // Register the child in the agent-poll registry *before* sending Spawn so a
     // poll can never precede the handle (mirrors `launch` in subagent.rs).
-    let (status_tx, started) = registry.register(child.clone(), session.clone());
+    let (status_tx, started) =
+        registry.register(child.clone(), session.clone(), HANDOFF_PROFILE.to_string());
 
     if holly
         .send(InMsg::Spawn {

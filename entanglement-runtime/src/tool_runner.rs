@@ -473,15 +473,18 @@ pub fn spawn_tool_executor_with_policy(
             // unwind parked approvals, #167), fires the `user_prompt_submit` hooks
             // (#199) off each `Prompt`, resolves every `Approve`/`Reject`/
             // `Answer`/`RetractQuestion`/`ReplaceQuestion` (#515) to its parked
-            // waiter, and answers `InMsg::ListQuestions` (#515) directly from
-            // `open_questions` — a read-only snapshot query, not a decision, so
-            // it does not go through `pending`. One light map-lookup-per-frame
-            // loop drains far faster than a park loop, so it does not lag the
-            // way the per-task subscriptions it replaced did.
+            // waiter, and answers `InMsg::ListQuestions` (#515)/`InMsg::ListOperations`
+            // (#607) directly from `open_questions`/the job+agent registries — read-only
+            // snapshot queries, not decisions, so they don't go through `pending`.
+            // One light map-lookup-per-frame loop drains far faster than a park
+            // loop, so it does not lag the way the per-task subscriptions it
+            // replaced did.
             let cancels = cancels.clone();
             let hooks = hooks.clone();
             let pending = pending.clone();
             let open_questions = open_questions.clone();
+            let op_jobs = jobs.clone();
+            let op_agents = registry.clone();
             let emitter = holly.clone();
             let mut inbound = inbound;
             background.spawn(async move {
@@ -507,6 +510,17 @@ pub fn spawn_tool_executor_with_policy(
                         }) => {
                             let questions = open_questions.snapshot(session.as_ref());
                             emitter.emit_question_list(correlation_id, questions);
+                        }
+                        Ok(InMsg::ListOperations {
+                            correlation_id,
+                            session,
+                        }) => {
+                            let operations = crate::operations::list_operations(
+                                &op_jobs,
+                                &op_agents,
+                                session.as_ref(),
+                            );
+                            emitter.emit_operation_list(correlation_id, operations);
                         }
                         Ok(other) => {
                             if let Some((s, rid, decision)) = seam::Decision::from_inmsg(other) {

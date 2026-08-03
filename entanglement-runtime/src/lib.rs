@@ -62,6 +62,9 @@ pub mod mcp;
 // `multi_user::permission` is lean-library-safe (only entanglement-core + this
 // crate's own `policy`/`permission` modules).
 pub mod multi_user;
+// Pending-operations listing (#607, ADR-0161 §6): shared by `poll`'s
+// no-handle model surface and `InMsg::ListOperations`'s head surface.
+pub mod operations;
 pub mod pending;
 pub mod permission;
 pub mod permission_path;

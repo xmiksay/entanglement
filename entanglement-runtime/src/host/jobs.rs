@@ -37,19 +37,17 @@ use tokio::sync::Notify;
 
 use entanglement_core::{DefaultIdGen, IdGen, IdKind, SessionId};
 
+use eviction::{sweep, JOB_TTL, MAX_FINISHED_JOBS};
+
+mod eviction;
+mod list;
+
+pub use list::JobOpInfo;
+
 /// Per-stream retention cap for a *not-yet-polled* background job. Bounds the
 /// worst case where the model spawns a chatty job and never polls it. Generous
 /// enough that a normal build/test run polled at a sane cadence never drops.
 const MAX_JOB_BUFFER: usize = 256 * 1024;
-
-/// How long a finished job's entry stays in the registry before eviction —
-/// generous enough that a model polling at a normal cadence always sees the
-/// final status before it's gone (#621).
-const JOB_TTL: Duration = Duration::from_secs(15 * 60);
-
-/// Hard cap on retained *finished* job entries, independent of `JOB_TTL` —
-/// bounds a burst of many short jobs spawned faster than the TTL clears them.
-const MAX_FINISHED_JOBS: usize = 200;
 
 /// Terminal or in-progress state of a background job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +86,8 @@ struct Job {
     /// Wall-clock bound after which a still-running job is killed (#617) — the
     /// same `timeout` a foreground call takes, no longer ignored in background.
     timeout: Duration,
+    /// Launch instant, for a #607 pending-operations listing's elapsed time.
+    started: Instant,
     state: Mutex<JobState>,
     /// Woken on every new chunk of output and on exit (#605) — what lets `poll`
     /// wait instead of busy-draining an empty buffer.
@@ -169,6 +169,7 @@ impl JobRegistry {
             owner,
             pgid,
             timeout,
+            started: Instant::now(),
             state: Mutex::new(JobState::default()),
             notify: Notify::new(),
         });
@@ -317,37 +318,6 @@ fn snapshot(job: &Job) -> Poll {
         stderr_dropped: std::mem::take(&mut st.stderr_dropped),
         timed_out: st.timed_out,
         timeout_secs: job.timeout.as_secs(),
-    }
-}
-
-/// Pure eviction logic, extracted so it's testable without waiting on a real
-/// clock: remove finished entries older than `ttl`, then trim to `cap` by
-/// dropping the oldest-finished first. A job with no `finished_at` (still
-/// running) is never a candidate.
-fn sweep(jobs: &mut HashMap<String, Arc<Job>>, now: Instant, ttl: Duration, cap: usize) {
-    jobs.retain(|_, job| {
-        job.state
-            .lock()
-            .expect("job state poisoned")
-            .finished_at
-            .map(|at| now.saturating_duration_since(at) < ttl)
-            .unwrap_or(true)
-    });
-    if jobs.len() > cap {
-        let mut finished: Vec<(String, Instant)> = jobs
-            .iter()
-            .filter_map(|(id, job)| {
-                job.state
-                    .lock()
-                    .expect("job state poisoned")
-                    .finished_at
-                    .map(|at| (id.clone(), at))
-            })
-            .collect();
-        finished.sort_by_key(|(_, at)| *at);
-        for (id, _) in finished.into_iter().take(jobs.len() - cap) {
-            jobs.remove(&id);
-        }
     }
 }
 

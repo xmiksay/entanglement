@@ -244,6 +244,49 @@ pub struct PendingQuestion {
     pub questions: Questions,
 }
 
+/// Kind of pending operation in an [`OutEvent::OperationList`] snapshot (#607,
+/// ADR-0161 §6): a background `bash`/`call` job, or a launched sub-agent.
+/// Lifetimes differ — a job is an OS process owned by this engine process and
+/// cannot outlive it, while an agent handle is itself a session, so it
+/// persists across hibernation/resume however the session bookkeeping already
+/// does — the listing surfaces which kind an entry is precisely so a head can
+/// render that distinction instead of implying every entry behaves the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    Job,
+    Agent,
+}
+
+/// Terminal or in-progress state of a pending operation (#607). Mirrors the
+/// running/complete vocabulary `poll`'s single-handle join already reports.
+/// Unlike a finished job (evicted after a TTL), a completed agent stays
+/// listed until the model polls it by handle — a `Complete` entry here is an
+/// unclaimed answer, not stale data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationStatus {
+    Running,
+    Complete,
+}
+
+/// One outstanding background job or launched sub-agent, as reported in an
+/// [`OutEvent::OperationList`] snapshot (#607, ADR-0161 §6) — the "what do I
+/// still have running" answer, the no-handle counterpart to `poll`'s
+/// single-handle "how is this going." `session` is the operation's owner — a
+/// snapshot spanning every session (an unfiltered [`InMsg::ListOperations`])
+/// needs each entry to name its own, mirroring [`PendingQuestion`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationInfo {
+    pub session: SessionId,
+    pub kind: OperationKind,
+    pub handle: String,
+    /// What launched it: a job's command line, or an agent's profile name.
+    pub launched_by: String,
+    pub elapsed_secs: u64,
+    pub status: OperationStatus,
+}
+
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ┃ Live MCP server management (#375)
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1051,6 +1094,25 @@ pub enum InMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<SessionId>,
     },
+    /// Enumerate this engine's outstanding background `bash`/`call` jobs and
+    /// launched sub-agents (#607, ADR-0161 §6) — the head-facing counterpart
+    /// to `poll`'s no-handle model surface: "what do I still have running,"
+    /// answered by attributing every job/agent handle to the session that
+    /// launched it. `session`, when set, filters to that session's own
+    /// pending operations; `None` lists every session's — same optional-filter
+    /// convention as [`ListQuestions`][InMsg::ListQuestions]. Supervisor-global:
+    /// [`session`][InMsg::session] returns `None` for it regardless of the
+    /// filter, since it names no *routing* target — answered by the runtime
+    /// service that owns the job/agent registries, off the inbound fan-out,
+    /// not core. Wire-allowed: a read of the caller's own outstanding work,
+    /// mutating nothing. `correlation_id` pairs the reply
+    /// ([`OutEvent::OperationList`][crate::protocol::OutEvent::OperationList])
+    /// to this query, exactly like `ListSessions`/`ListQuestions`.
+    ListOperations {
+        correlation_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+    },
     /// Enumerate the engine's currently-attached MCP servers (#375). MCP config
     /// is global (not per-session), so — like [`ListSessions`][InMsg::ListSessions]
     /// — this is supervisor-global: core routes it to no session task, and it is
@@ -1337,9 +1399,10 @@ impl InMsg {
 
     /// The session this message targets, or `None` for a supervisor-global query
     /// that names no session — [`ListSessions`][InMsg::ListSessions],
-    /// [`ListQuestions`][InMsg::ListQuestions] (#515; its optional `session`
-    /// is a result *filter*, not a routing target — a `None` filter spans
-    /// every session), the MCP
+    /// [`ListQuestions`][InMsg::ListQuestions] (#515) and
+    /// [`ListOperations`][InMsg::ListOperations] (#607; both carry an optional
+    /// `session` that is a result *filter*, not a routing target — a `None`
+    /// filter spans every session), the MCP
     /// ops [`McpList`][InMsg::McpList]/[`McpAdd`][InMsg::McpAdd]/
     /// [`McpRemove`][InMsg::McpRemove] (#375; MCP config is engine-global, not
     /// per-session), and the bash-live ops
@@ -1375,6 +1438,7 @@ impl InMsg {
             | InMsg::Resume { session, .. } => Some(session),
             InMsg::ListSessions { .. }
             | InMsg::ListQuestions { .. }
+            | InMsg::ListOperations { .. }
             | InMsg::McpList { .. }
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
@@ -1420,7 +1484,10 @@ impl InMsg {
     /// former two withdraw/revise a question the *same* head already saw
     /// surfaced (no more privileged than answering it, which is already
     /// wire-allowed), and the latter is a read-only snapshot query, exactly
-    /// like `ListSessions`/`McpList`.
+    /// like `ListSessions`/`McpList`. [`ListOperations`][InMsg::ListOperations]
+    /// (#607, ADR-0161 §6) is wire-allowed for the same reason: it only reads
+    /// the caller's own outstanding background jobs/sub-agents, mutating
+    /// nothing.
     ///
     /// The executor submits `ToolResult`/`Spawn` over the privileged in-process
     /// [`Holly::send`][crate::Holly::send] (it holds the handle); a wire head uses
@@ -1445,6 +1512,7 @@ impl InMsg {
             | InMsg::ResumeSession { .. }
             | InMsg::ListSessions { .. }
             | InMsg::ListQuestions { .. }
+            | InMsg::ListOperations { .. }
             | InMsg::McpList { .. }
             | InMsg::ReplayFrom { .. }
             | InMsg::CloseSession { .. }
@@ -1482,6 +1550,7 @@ impl InMsg {
             InMsg::ResumeSession { .. } => "resume_session",
             InMsg::ListSessions { .. } => "list_sessions",
             InMsg::ListQuestions { .. } => "list_questions",
+            InMsg::ListOperations { .. } => "list_operations",
             InMsg::McpList { .. } => "mcp_list",
             InMsg::McpAdd { .. } => "mcp_add",
             InMsg::McpRemove { .. } => "mcp_remove",
@@ -1568,6 +1637,16 @@ pub enum OutEvent {
     QuestionList {
         correlation_id: String,
         questions: Vec<PendingQuestion>,
+    },
+    /// Snapshot of every currently-outstanding background job / launched
+    /// sub-agent (lifecycle event, no `seq`), in reply to
+    /// [`InMsg::ListOperations`] (#607, ADR-0161 §6) — same "session-less
+    /// enumeration" shape as [`QuestionList`][OutEvent::QuestionList].
+    /// Answered by the runtime service that owns the job/agent registries,
+    /// not core.
+    OperationList {
+        correlation_id: String,
+        operations: Vec<OperationInfo>,
     },
     /// Snapshot of every currently-attached MCP server (lifecycle event, no
     /// `seq`), in reply to [`InMsg::McpList`] (#375). Answered by the runtime
@@ -2021,6 +2100,7 @@ impl OutEvent {
             | OutEvent::ReasoningBlock { session, .. } => Some(session),
             OutEvent::SessionList { .. }
             | OutEvent::QuestionList { .. }
+            | OutEvent::OperationList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::McpAuthChanged { .. }
@@ -2032,7 +2112,7 @@ impl OutEvent {
     /// The monotonic per-session sequence number for a **content** event, or
     /// `None` for a point-in-time lifecycle/query event that carries no `seq`
     /// (`SessionStarted`, `SessionEnded`, `SessionList`, `QuestionList`,
-    /// `History`, `Status`, `AgentChanged`, `ModelChanged`,
+    /// `OperationList`, `History`, `Status`, `AgentChanged`, `ModelChanged`,
     /// `GenerationChanged`, `SessionMetaChanged`). Returning `Option`
     /// instead of a fake `0`
     /// (#160, ADR-0072) lets a head tell "seq 0" apart from "no seq" — the
@@ -2045,6 +2125,7 @@ impl OutEvent {
             | OutEvent::SessionHibernated { .. }
             | OutEvent::SessionList { .. }
             | OutEvent::QuestionList { .. }
+            | OutEvent::OperationList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::McpAuthChanged { .. }
@@ -2647,6 +2728,51 @@ mod tests {
                     options: vec![],
                     multi_select: false,
                 }]),
+            }],
+        };
+        assert_eq!(ev.seq(), None);
+        assert_eq!(ev.session(), None);
+        let json = serde_json::to_string(&ev).unwrap();
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+    }
+
+    #[test]
+    fn list_operations_is_session_less_with_an_optional_filter_and_wire_allowed() {
+        let global = InMsg::ListOperations {
+            correlation_id: "c1".into(),
+            session: None,
+        };
+        let filtered = InMsg::ListOperations {
+            correlation_id: "c2".into(),
+            session: Some(SessionId::new("s1")),
+        };
+        for msg in [&global, &filtered] {
+            // The filter is a data field, not a routing target — both forms
+            // are supervisor-global, mirroring `ListSessions`/`ListQuestions`.
+            assert_eq!(msg.session(), None, "{msg:?} is engine-global");
+            assert!(msg.wire_allowed());
+            assert_eq!(msg.variant_name(), "list_operations");
+            let json = serde_json::to_string(msg).unwrap();
+            assert_eq!(&serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+        }
+        // The `None` filter omits the field entirely (additive wire shape).
+        assert_eq!(
+            serde_json::to_string(&global).unwrap(),
+            r#"{"kind":"list_operations","correlation_id":"c1"}"#
+        );
+    }
+
+    #[test]
+    fn operation_list_event_is_session_less_and_seq_less() {
+        let ev = OutEvent::OperationList {
+            correlation_id: "c1".into(),
+            operations: vec![OperationInfo {
+                session: SessionId::new("s1"),
+                kind: OperationKind::Job,
+                handle: "j-abc".into(),
+                launched_by: "echo hi".into(),
+                elapsed_secs: 3,
+                status: OperationStatus::Running,
             }],
         };
         assert_eq!(ev.seq(), None);

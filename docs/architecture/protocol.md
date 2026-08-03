@@ -29,6 +29,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
          | ListQuestions{correlation_id,session?}   // supervisor-global query; every open ask_user question, or one session's when session is set → QuestionList reply (#515, ADR-0146)
+         | ListOperations{correlation_id,session?}   // supervisor-global query; every pending job/sub-agent, or one session's when session is set → OperationList reply (#607, ADR-0161 §6); wire-allowed — reads the caller's own outstanding work, mutates nothing
          | McpList{correlation_id}   // supervisor-global query; live MCP servers → McpList reply (#375)
          | McpAdd{name,config:McpServerSpec}   // hot-connect + persist to config.yml → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | McpRemove{name}   // hot-disconnect + persist removal → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
@@ -45,6 +46,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,us
          | SessionHibernated{session,ts}      // lifecycle, no seq; memory evicted, id NOT tombstoned (#318, ADR-0077)
          | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,profile,root,profile_detail?,user?}
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
+         | OperationList{correlation_id,operations:[OperationInfo]}   // reply to InMsg::ListOperations, no seq/session (#607, ADR-0161 §6); OperationInfo = {session,kind:"job"|"agent",handle,launched_by,elapsed_secs,status:"running"|"complete"}
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152); McpServerStatus.auth? = OAuth posture (ADR-0153)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
          | McpAuthChanged{status}   // MCP OAuth state change, no seq/session; reply to McpAuth — a Connect emits twice, interim authorize_url then outcome (ADR-0153)
@@ -113,6 +115,18 @@ All four variants are wire-allowed: list is read-only, and retract/replace are
 no more privileged than answering, which is already wire-allowed — the `serve`
 head's per-connection approval-ownership gate (#402, ADR-0107) covers all
 three decision variants alike.
+
+`ListOperations{correlation_id,session?}` (#607, ADR-0161 §6) mirrors
+`ListQuestions` exactly — same session-less-query shape, same optional-filter
+convention, same wire-allowed rationale (a read of the caller's own
+outstanding work, mutating nothing) — but is answered by
+`entanglement_runtime::operations::list_operations`, which merges a snapshot
+of the job registry (`JobRegistry`, owner-scoped, #605) and the sub-agent
+registry (`AgentRegistry`, parent-scoped, #618) rather than one dedicated map.
+It is `poll`'s head-facing counterpart: called with no `handle`, `poll` itself
+answers the same question for the model (see
+[gates & host tools](gates-and-host-tools.md)), sharing this exact function
+rather than duplicating the join logic.
 
 **Trusted/untrusted frame split** (#155, [ADR-0069](../adr/0069-trusted-untrusted-wire-frame-split.md)).
 `InMsg` has two entry points. `Holly::send` is **privileged in-process**: an
