@@ -28,7 +28,7 @@ The root-contained quintet `read` / `write` / `edit` / `glob` / `grep`
 (canonicalizing, symlink-safe containment; `read` emits images as content
 blocks), `call` (always registered) and the opt-in `bash`
 (`ENTANGLEMENT_ENABLE_BASH=1`; own process group, timeout returns partial
-output) — a background `bash` job (`run_in_background=true`) is joined with
+output) — a background `call`/`bash` job (`background=true`) is joined with
 the runtime-owned `poll` tool — and the sandboxed `rhai` scripting tool.
 External **MCP servers**
 declared in the user config attach their tools as `mcp__<server>__<tool>`.

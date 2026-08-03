@@ -62,9 +62,7 @@ use crate::skills::load_skill::parse_skill_id;
 use crate::skills::SkillRegistry;
 #[cfg(feature = "rhai")]
 use crate::tool_names::RHAI_TOOL;
-use crate::tool_names::{
-    AGENT_SPAWN_TOOL, AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL,
-};
+use crate::tool_names::{AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL};
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
 /// granted (#174): a session-scoped or persisted "always allow" grant lets an
@@ -122,10 +120,11 @@ async fn resolve_effective(
 /// the dispatch loop — both checked by the compiler's exhaustiveness rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Intercept {
-    /// `agent`/`agent_spawn`: session orchestration only (touches no host
-    /// resource), gated by the per-profile spawn control, not per-tool approval
-    /// (#60/#119/#120). The two variants share one guard path and differ only in
-    /// whether the launch blocks for the answer.
+    /// `agent`: session orchestration only (touches no host resource), gated by
+    /// the per-profile spawn control, not per-tool approval (#60/#119/#120;
+    /// #606, ADR-0161 §1). Blocks for the answer by default; the parsed
+    /// `background` flag picks the non-blocking launch instead — one guard
+    /// path, two return shapes.
     Spawn,
     /// `poll`: joins a background `bash` job or a launched sub-agent (#605,
     /// ADR-0161 §1-4, replacing `bash_output`/`agent_poll`) — it reads
@@ -152,7 +151,7 @@ impl Intercept {
     /// Route an (already-unmasked) tool by name.
     fn classify(tool: &str) -> Self {
         match tool {
-            AGENT_TOOL | AGENT_SPAWN_TOOL => Self::Spawn,
+            AGENT_TOOL => Self::Spawn,
             POLL_TOOL => Self::Poll,
             ASK_USER_TOOL => Self::AskUser,
             PROPOSE_PLAN_TOOL => Self::ProposePlan,
@@ -729,7 +728,7 @@ pub fn spawn_tool_executor_with_policy(
                     // allowlist/denylist, intersected down the ancestor chain —
                     // does not exist for this agent. Refuse before any other
                     // handling (spawn interception, permission), so even a
-                    // hallucinated call to a masked `edit`/`agent_spawn` is a
+                    // hallucinated call to a masked `edit`/`agent` is a
                     // hard boundary, not a persona nudge. Core already withholds
                     // the schema; this closes the gap if the model calls it anyway.
                     // #597: name *which* link's mask did it, not just "profile"
@@ -805,7 +804,7 @@ pub fn spawn_tool_executor_with_policy(
                             // ADR-0023 budget and the ADR-0024 clamp. Subscribe
                             // *before* handing off so the child's `Done` can't race
                             // ahead of the watcher.
-                            let blocking = tool == AGENT_TOOL;
+                            let blocking = !crate::subagent::is_background(&input);
                             let target = crate::subagent::target_agent(&input);
                             let refusal = {
                                 let active = active.lock().expect("active-profile mutex poisoned");
@@ -826,9 +825,10 @@ pub fn spawn_tool_executor_with_policy(
                                         let registry = registry.clone();
                                         let holly = holly.clone();
                                         tokio::spawn(async move {
-                                            // `agent` parks for the answer; `agent_spawn`
-                                            // hands the handle back at once — one guard
-                                            // path, two return shapes (#120).
+                                            // The default blocks and parks for the
+                                            // answer; `background: true` hands the
+                                            // handle back at once — one guard path,
+                                            // two return shapes (#120, #606).
                                             if blocking {
                                                 crate::subagent::run_agent(
                                                     holly,
@@ -1492,7 +1492,6 @@ mod tests {
     #[test]
     fn classify_maps_each_orchestration_tool_to_its_route() {
         assert_eq!(Intercept::classify(AGENT_TOOL), Intercept::Spawn);
-        assert_eq!(Intercept::classify(AGENT_SPAWN_TOOL), Intercept::Spawn);
         assert_eq!(Intercept::classify(POLL_TOOL), Intercept::Poll);
         assert_eq!(Intercept::classify(ASK_USER_TOOL), Intercept::AskUser);
         assert_eq!(

@@ -3,7 +3,7 @@
 //! per-question multi-select; #515: list/retract/replace an open question).
 //!
 //! The model calls `ask_user`; the executor intercepts it on `ToolExec` (before
-//! permission resolution, like `agent_spawn`), emits `OutEvent::UserQuestion`,
+//! permission resolution, like `agent`), emits `OutEvent::UserQuestion`,
 //! and parks for the head's `InMsg::AnswerQuestion`. Every answer is folded
 //! back as one `ToolResult` so the parent turn continues.
 

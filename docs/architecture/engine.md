@@ -468,17 +468,21 @@ and neither clears it — `Stop`'s resting-state emit reports `Paused` (not
 
 **Sub-agent spawn** (✅ #60, [ADR-0022](../adr/0022-subagent-spawn.md), builds on the
 [ADR-0021](../adr/0021-hierarchical-session-model.md) tree). The model calls a
-runtime-owned `agent_spawn { agent, prompt }` tool (renamed from `spawn_agent`,
-✅ #120, [ADR-0033](../adr/0033-agent-tool-family-and-blocking-agent.md)). The
-runtime executor
+runtime-owned `agent { agent, prompt, background? }` tool (renamed from
+`spawn_agent`, ✅ #120,
+[ADR-0033](../adr/0033-agent-tool-family-and-blocking-agent.md); the separate
+`agent_spawn` tool it was later split into is retired again, ✅ #606,
+[ADR-0161](../adr/0161-unified-async-work-background-flag-and-one-poll.md) —
+one tool, `background: bool` picks the return shape). The runtime executor
 intercepts it before per-tool permission resolution (it starts a session rather
 than touching a host resource), mints a child `SessionId`, and sends `InMsg::Spawn { session: child, parent, agent,
 prompt }`. The **supervisor** records `parent_links[child] = parent` and starts
 the child `session_loop` under the requested profile with the prompt queued — so
 the child's `SessionStarted` carries the parent link and the tree-walk helpers
-(`children_of` / `root_of`) reflect reality. Spawn is **non-blocking** (✅ #89,
+(`children_of` / `root_of`) reflect reality. `background: true` is
+**non-blocking** (✅ #89,
 [ADR-0026](../adr/0026-async-subagent-spawn-and-poll.md), supersedes ADR-0022's
-synchronous relay): `agent_spawn` replies to the parent *immediately* with the
+synchronous relay): the call replies to the parent *immediately* with the
 child handle (`agent_id`) instead of parking the turn on the child's `Done`, so
 one turn can launch several sub-agents that then run concurrently. The launch
 task keeps watching the child and records its final answer + duration into a
@@ -498,10 +502,9 @@ that child and returns its answer (with elapsed time) as the tool
 `ToolOutput`, or a still-running status on timeout so the model can poll
 again or do other work. Or, with `timeout_secs: 0`, blocks until the child
 completes (no caller-side bound, ADR-0123 — the same indefinite-wait path the
-blocking `agent` tool takes). For the single-delegation case, a third tool
-`agent { agent, prompt }` (✅ #120,
-[ADR-0033](../adr/0033-agent-tool-family-and-blocking-agent.md)) **blocks**: it runs
-the exact `agent_spawn` launch path (same guard, clamp, `Spawn`), then parks on
+default blocking `agent` call takes). For the single-delegation case, the
+**default** (`background` omitted or `false`) **blocks**: it runs the exact
+`background: true` launch path (same guard, clamp, `Spawn`), then parks on
 the child's genuine completion and folds its answer directly into the
 `ToolOutput` — one call instead of launch-then-poll. It still records into the
 `AgentRegistry`, so a parent `Stop` while parked leaves the child collectable
@@ -517,9 +520,9 @@ on a `Done` that carries a usable answer or the child's `SessionEnded`/
 `SessionHibernated`. Each re-arm emits an explanatory `OutEvent::Error` on the
 *parent* naming the child, so the user knows to steer it; `AgentState` stays
 `WaitingAgent` throughout (no new lifecycle state).
-Refusals (depth, budget, capability) are identical across `agent` and
-`agent_spawn` — one shared guard path.
-All three reuse the #58 round-trip, so core's turn loop needs no notion of a
+Refusals (depth, budget, capability) are identical regardless of `background`
+— one shared guard path.
+Both reuse the #58 round-trip, so core's turn loop needs no notion of a
 "child session". The runtime executor bounds the spawn
 tree (✅ #76, [ADR-0023](../adr/0023-subagent-spawn-limits.md)): a `SpawnGuard`
 folds parent links from `SessionStarted` and, before each spawn, refuses past a
@@ -540,13 +543,13 @@ deferred (see ADR-0022/0024).
 
 **Roster disclosure** (✅ #112, [ADR-0034](../adr/0034-file-based-agent-definitions.md);
 scoped ✅ #119, [ADR-0040](../adr/0040-per-profile-spawn-control.md)).
-The `agent`/`agent_spawn` tool descriptions carry one `name: description` line per
+The `agent` tool description carries one `name: description` line per
 spawnable agent, and the `agent` argument's schema constrains the name to an
 `enum` — so the model learns *who it may spawn* at the call site, and
 `description` is the one field of a definition ever exposed to a parent. The
 roster + enum are now **per-profile**: `subagent::spawn_specs_for` scopes them to
 exactly the profiles the spawning profile may target (its `spawnable_agents` ∩ the
-target-mode gate), and the whole `agent_*` triple lives in
+target-mode gate), and the single `agent` spec lives in
 `EngineConfig.profile_tool_specs` (empty when the profile may not spawn), so a
 `primary` like `build`/`plan` is never advertised as a target and an out-of-list
 spawn is a schema violation before an executor refusal. The related supervisor
@@ -562,7 +565,7 @@ The model calls a runtime-owned `ask_user { questions: [{question, options,
 multi_select}] }` tool — one call can batch several questions, each optionally
 `multi_select`; a typed "Other" answer is unconditional (no `allow_free_form`
 flag to opt into it, dropped in v2). The runtime executor (`ask_user.rs`)
-intercepts it on `ToolExec` — before permission resolution, like `agent_spawn`
+intercepts it on `ToolExec` — before permission resolution, like `agent`
 — emits a single dedicated `OutEvent::UserQuestion` carrying the whole
 `questions` array and parks at `WaitingAnswer` (#160,
 [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md): a question is not

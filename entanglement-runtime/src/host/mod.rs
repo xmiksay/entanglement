@@ -309,7 +309,7 @@ pub fn tail_lines(s: &str, tail: u32) -> (String, bool) {
 /// dropping), followed by `body` byte-capped under [`MAX_OUTPUT_BYTES`] with
 /// the same head+tail split as [`truncate_head_tail`] so a trailing
 /// error/answer survives. The one shape every result-bounded exec/agent tool
-/// now shares — `bash`, `poll`, `call`, `rhai`, and `agent`/`agent_spawn` —
+/// now shares — `bash`, `poll`, `call`, `rhai`, and `agent` —
 /// replacing the previous per-tool pick between head-only
 /// ([`truncate_output`]) and head+tail truncation with no stated rule (#622).
 pub fn bounded_result(status: &str, body: String) -> String {

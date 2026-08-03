@@ -50,8 +50,8 @@ fn tenant_of(session: &SessionId) -> &str {
 }
 ```
 
-A spawned sub-agent's id is minted by the runtime's `agent`/`agent_spawn` tool,
-not by your head, but it stays inside the same tenant's tree — child sessions
+A spawned sub-agent's id is minted by the runtime's `agent` tool, not by your
+head, but it stays inside the same tenant's tree — child sessions
 never cross the parent's namespace (spawn is always relative to a running
 session, `entanglement-core/src/holly.rs`'s `Spawn` arm), so filtering by root
 prefix already covers the whole subtree.

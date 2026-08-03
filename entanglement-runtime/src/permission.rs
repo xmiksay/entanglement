@@ -730,13 +730,7 @@ mod tests {
         let guard = SpawnGuard::new();
         assert!(!tool_masked(&active, &guard, &HashMap::new(), &s, "read"));
         assert!(tool_masked(&active, &guard, &HashMap::new(), &s, "edit"));
-        assert!(tool_masked(
-            &active,
-            &guard,
-            &HashMap::new(),
-            &s,
-            "agent_spawn"
-        ));
+        assert!(tool_masked(&active, &guard, &HashMap::new(), &s, "agent"));
         // An unseen session masks everything — fail-closed (#156). Even a tool a
         // seen profile would advertise (`read`) is refused until the session's
         // profile is known, so a dropped `SessionStarted` cannot un-mask a
@@ -883,10 +877,10 @@ mod tests {
             tool_mask_source(&active, &guard, &HashMap::new(), &c, "edit"),
             Some(p.clone())
         );
-        // `agent_spawn` is absent from the child's own allowlist too — the walk
+        // `agent` is absent from the child's own allowlist too — the walk
         // stops at the child itself.
         assert_eq!(
-            tool_mask_source(&active, &guard, &HashMap::new(), &c, "agent_spawn"),
+            tool_mask_source(&active, &guard, &HashMap::new(), &c, "agent"),
             Some(c.clone())
         );
         // `read` survives the whole chain → not masked.

@@ -72,7 +72,7 @@ pub fn render_expansion(
         }
         Some("glob") => expansion::render_glob_expansion(input, output, theme, available_width),
         Some("grep") => expansion::render_grep_expansion(input, output, theme, available_width),
-        Some("agent") | Some("agent_spawn") => {
+        Some("agent") => {
             let v: serde_json::Value =
                 serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
             render_prompt_body(
@@ -147,8 +147,8 @@ pub fn render_expansion(
     }
 }
 
-/// Wrap and indent a multi-line plain-text body (e.g. an `agent`/`agent_spawn`
-/// `prompt`). Word-wraps at `available_width - 4` so long prompts don't overflow
+/// Wrap and indent a multi-line plain-text body (e.g. an `agent` `prompt`).
+/// Word-wraps at `available_width - 4` so long prompts don't overflow
 /// horizontally, matching how assistant text runs are wrapped.
 fn render_prompt_body(prompt: &str, available_width: u16) -> Text<'static> {
     let mut lines = Vec::new();
@@ -458,27 +458,6 @@ mod tests {
     }
 
     #[test]
-    fn test_expansion_agent_spawn_renders_prompt() {
-        let result = render_expansion(
-            Some("agent_spawn"),
-            r#"{"agent":"explore","prompt":"find X"}"#,
-            "",
-            Theme::default(),
-            80,
-            &MarkdownRenderer::new(),
-        );
-        let text = flatten(&result);
-        assert!(
-            text.contains("find X"),
-            "agent_spawn expansion should render the prompt text"
-        );
-        assert!(
-            !text.contains('{'),
-            "agent_spawn expansion must not dump raw JSON braces: {text:?}"
-        );
-    }
-
-    #[test]
     fn test_expansion_agent_renders_prompt() {
         let result = render_expansion(
             Some("agent"),
@@ -492,6 +471,10 @@ mod tests {
         assert!(
             text.contains("wire it up"),
             "agent expansion should render the prompt text"
+        );
+        assert!(
+            !text.contains('{'),
+            "agent expansion must not dump raw JSON braces: {text:?}"
         );
     }
 

@@ -17,7 +17,7 @@
 //!    **not** resolve under the skill dir (a project-root path) is left untouched;
 //!    there is no implicit CWD fallback.
 //!
-//! Unlike `agent_spawn`/`ask_user`, `load_skill` is a **real host tool** in the
+//! Unlike `agent`/`ask_user`, `load_skill` is a **real host tool** in the
 //! [`ToolRegistry`](crate::tools::ToolRegistry): it reads the
 //! filesystem, so it goes through the *same* per-call permission gate as `read`
 //! (no special exemption). Permission (`Allow`/`Ask`/`Deny`) is the executor's

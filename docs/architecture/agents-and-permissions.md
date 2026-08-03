@@ -51,7 +51,7 @@ below realize one model:
   inspect`) as the mitigation rather than an enforced boundary
   ([ADR-0047](../adr/0047-local-trust-boundary.md)).
 - **Progressive disclosure, recursively** — the model sees only *descriptions*
-  until it acts: spawn-target `name: description` in the `agent`/`agent_spawn`
+  until it acts: spawn-target `name: description` in the `agent` tool
   schema (agents) → tier-1 `name: description` index in the prompt (skills) →
   full body on `load_skill` **or** preload (skills tier-2) → the definition body
   *becomes* a child's own assembled prompt at spawn.
@@ -357,7 +357,7 @@ below realize one model:
   | Profile | mode | tools mask | permission | spawn |
   | --- | --- | --- | --- | --- |
   | `build` (default) | primary | none — every registered tool exists | `default: allow` — everything Allow | may spawn `explore`/`debug` |
-  | `plan` | primary | `read, glob, grep, agent, agent_spawn, poll, ask_user, load_skill, propose_plan, write, edit, call, bash` — `call`/`bash` are on the mask only so a spawned `explore` child keeps its own access ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597) | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
+  | `plan` | primary | `read, glob, grep, agent, poll, ask_user, load_skill, propose_plan, write, edit, call, bash` — `call`/`bash` are on the mask only so a spawned `explore` child keeps its own access ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597) | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
   | `explore` | subagent | `read, glob, grep, call, bash, poll, rhai` | `default: deny`; read triad Allow, exec set at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — `poll` rides along with `bash` so a background job it starts is actually readable (#615/#605); `poll` is intercepted before permission resolution, so it carries no grade of its own | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
 
@@ -538,7 +538,7 @@ below realize one model:
   embedder-owned `Arc<RwLock<..>>` snapshot cache. `None` (the default) keeps the
   engine-global specs — a no-op for single-user heads. **(b) Enforcement:**
   `runtime::permission::tool_masked` refuses a masked `ToolExec` **first** — before
-  the `agent_spawn`/`agent`/`poll`/`ask_user` interceptions and permission —
+  the `agent`/`poll`/`ask_user` interceptions and permission —
   so a hallucinated masked call is a hard boundary, and the mask **intersects down
   the ancestor chain** (a child never gains a tool an ancestor lacked, mirroring
   ADR-0024's privilege ceiling). A sibling `tool_mask_source`
@@ -549,14 +549,14 @@ below realize one model:
   can say "restricted by its own profile" vs "restricted by ancestor agent
   `<name>`'s profile" instead of a blanket, unattributed "restricted by
   profile". `explore` is the reference read-only agent: `tools: [read, glob,
-  grep, call, bash, poll, rhai]` — no `edit`/`write`/`agent_spawn`, but
+  grep, call, bash, poll, rhai]` — no `edit`/`write`/`agent`, but
   `call`/`bash`/`rhai` are graded `Ask` (ADR-0137) rather than
   masked out, so a research child isn't hard-blocked from shell access, only
-  approval-gated on it. `poll` rides along with `bash` (#615/#605) so a
-  background job started via `bash{run_in_background: true}` is actually
+  approval-gated on it. `poll` rides along with `bash`/`call` (#615/#605/#606) so a
+  background job started via `bash{background: true}` (or `call{background: true}`) is actually
   readable, not a write-only dead end — `poll` itself is intercepted before
   permission resolution, so it carries no grade of its own.
-  It is also the **default** `agent_spawn`/`agent` target (`DEFAULT_SUBAGENT` in
+  It is also the **default** `agent` target (`DEFAULT_SUBAGENT` in
   `entanglement_runtime::subagent`) when the caller omits `agent` — the safe
   choice for an unscoped delegation. But it is also, by design, the *only*
   built-in `mode: subagent` leaf with an empty allowlist: a spawned agent that
@@ -596,8 +596,8 @@ below realize one model:
   `subagent` leaf) and *which* profiles it may spawn (`spawnable_agents`, omitted ⇒
   any spawnable target). Both ride the core `AgentProfile` with helpers
   (`may_spawn`, `spawn_target_allowed`, `spawnable_as_subagent`); core = semantics,
-  runtime = enforcement. **Structural half:** the `agent_spawn`/`agent`
-  pair moves out of the shared `tool_specs` into
+  runtime = enforcement. **Structural half:** the `agent`
+  spec moves out of the shared `tool_specs` into
   `EngineConfig.profile_tool_specs` (a `HashMap<profile, Vec<ToolSpec>>` the runtime
   fills via `subagent::spawn_specs_for`); the turn loop appends the active profile's
   entry (roster + `agent` enum scoped to who *it* may spawn, empty when it may not),
@@ -688,7 +688,7 @@ below realize one model:
   entry — see #524's carve-out below) and stays physically read-only apart
   from one carve-out (#524,
   [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)):
-  `tools: [read, glob, grep, agent, agent_spawn, poll, ask_user,
+  `tools: [read, glob, grep, agent, poll, ask_user,
   load_skill, propose_plan, write, edit, call, bash]` unmasks `write`/`edit`,
   but its permission rules (`write: deny` plus the argument-scoped
   `write(.entanglement/plans/*.md): allow`, fanned out to `edit`/`apply_patch`
@@ -786,7 +786,7 @@ below realize one model:
 - **Tier-2 skill loading (✅ #115, [ADR-0037](../adr/0037-load-skill-tool-deterministic-resolution.md)):**
   one generic `load_skill { skill_name }` tool (not one-per-skill) resolves a
   skill's body on demand. Unlike the orchestration-only runtime tools
-  (`agent_spawn`/`ask_user`/`poll`), it **reads the filesystem**, so it is a
+  (`agent`/`ask_user`/`poll`), it **reads the filesystem**, so it is a
   *real host tool* in the `ToolRegistry` (`entanglement_runtime::skills::load_skill::LoadSkillTool`,
   holding a shared `Arc<SkillRegistry>`) and flows through the *same* per-call
   gates as `read` — the permission profile and the #116 tool mask — with no

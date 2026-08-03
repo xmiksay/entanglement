@@ -105,7 +105,7 @@ impl BashTool {
             .stderr(std::process::Stdio::piped())
             // Close stdin explicitly rather than inherit the engine's real
             // stdin — the same leak ADR-0092 closed for `call` (#389). Applies
-            // to both the foreground and `run_in_background` paths, since both
+            // to both the foreground and `background` paths, since both
             // share this helper.
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
@@ -127,9 +127,11 @@ struct BashInput {
     /// Optional per-call working directory, resolved under the tool root.
     #[serde(default)]
     workdir: Option<String>,
-    /// Spawn detached and return a job id to poll via `poll` (#170, #605).
+    /// Spawn detached and return a job id to poll via `poll` (#170, #605; #606,
+    /// ADR-0161 §1 — renamed from `run_in_background` for symmetry with
+    /// `call`/`agent`'s `background` flag).
     #[serde(default)]
-    run_in_background: bool,
+    background: bool,
     /// Keep only the last `tail` lines of stdout/stderr (default 30, matching
     /// `call`; 0 for full output — still byte-capped). #622.
     #[serde(default = "default_tail")]
@@ -153,7 +155,7 @@ impl Tool for BashTool {
          block, each tailed to its last `tail` lines (default 30 — command \
          output concentrates at the end; `tail=0` for full output, still \
          byte-capped with a head + tail slice so the trailing error survives). \
-         Pass `run_in_background=true` to start a long job (build, dev server) \
+         Pass `background=true` to start a long job (build, dev server) \
          detached and get a job id — poll it with `poll`. `timeout` still \
          applies: a background job is killed once it outlives it, so pass a \
          larger `timeout` (up to 600s) for a job that must outlive the \
@@ -171,7 +173,7 @@ impl Tool for BashTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Timeout in seconds (default 120, capped at 600). \
-                        Also bounds run_in_background=true jobs — the job is killed \
+                        Also bounds background=true jobs — the job is killed \
                         once it outlives this, so raise it for a job that must run \
                         longer."
                 },
@@ -180,7 +182,7 @@ impl Tool for BashTool {
                     "description": "Working directory for this call, relative to \
                         the root (must stay under it). Defaults to the root."
                 },
-                "run_in_background": {
+                "background": {
                     "type": "boolean",
                     "description": "Start the command detached and return a job id \
                         to poll with `poll` instead of blocking. Default false."
@@ -238,7 +240,7 @@ impl BashTool {
         let secs = parsed.timeout.unwrap_or(120).min(MAX_BASH_TIMEOUT_SECONDS);
         let dur = std::time::Duration::from_secs(secs);
 
-        if parsed.run_in_background {
+        if parsed.background {
             let id = self
                 .jobs
                 .spawn(parsed.command.clone(), cmd, dur, session.cloned())
@@ -475,7 +477,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_in_background_closes_stdin_not_inherited() {
+    async fn background_closes_stdin_not_inherited() {
         // The more dangerous case (#389): a detached job holding the fd open
         // would race the engine's own stdin reader indefinitely. `cat` run in
         // the background must still see immediate EOF and exit promptly.
@@ -483,7 +485,7 @@ mod tests {
         let jobs = JobRegistry::new();
         let tool = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
         let out = tool
-            .run(r#"{"command":"cat","run_in_background":true}"#)
+            .run(r#"{"command":"cat","background":true}"#)
             .await
             .unwrap();
         let id = out
@@ -511,12 +513,12 @@ mod tests {
     /// #617: `timeout` must still apply once a job is backgrounded — a runaway
     /// dev server can no longer outlive the engine unbounded.
     #[tokio::test]
-    async fn run_in_background_is_killed_by_timeout() {
+    async fn background_is_killed_by_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let jobs = JobRegistry::new();
         let tool = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
         let out = tool
-            .run(r#"{"command":"sleep 30","run_in_background":true,"timeout":1}"#)
+            .run(r#"{"command":"sleep 30","background":true,"timeout":1}"#)
             .await
             .unwrap();
         assert!(

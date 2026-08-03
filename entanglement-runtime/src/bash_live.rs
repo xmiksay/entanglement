@@ -343,7 +343,7 @@ mod tests {
         let call = entanglement_core::ToolCall {
             id: "r1".to_string(),
             name: "bash".to_string(),
-            input: r#"{"command":"true","run_in_background":true}"#.to_string(),
+            input: r#"{"command":"true","background":true}"#.to_string(),
             provider_meta: None,
         };
         let snapshot = registry.read().unwrap().clone();

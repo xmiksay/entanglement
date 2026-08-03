@@ -1,5 +1,5 @@
-//! Background-job registry shared by `bash` (the spawner) and `poll` (the
-//! joiner, #605). A `bash` call with `run_in_background: true` spawns the
+//! Background-job registry shared by `bash`/`call` (the spawners) and `poll`
+//! (the joiner, #605). A `bash`/`call` call with `background: true` spawns the
 //! command in its own process group, registers it here owned by the spawning
 //! session, and returns immediately with a job id; `poll` waits on that id for
 //! the output captured **since the last poll** plus the job's status.
@@ -152,8 +152,8 @@ impl JobRegistry {
     /// the process exits **and** both streams have been fully drained, so a
     /// poll never reports `Exited` while output is still in flight. `timeout`
     /// bounds how long the job may run before its process group is killed
-    /// (#617) — the same deadline a foreground `bash` call already enforces,
-    /// previously ignored once `run_in_background` was set.
+    /// (#617) — the same deadline a foreground `bash`/`call` invocation already
+    /// enforces, previously ignored once `background` was set.
     pub fn spawn(
         &self,
         command: String,

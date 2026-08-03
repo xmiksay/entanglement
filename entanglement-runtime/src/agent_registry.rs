@@ -1,5 +1,5 @@
 //! [`AgentRegistry`] — the shared table of launched sub-agents, keyed by their
-//! handle (a child `SessionId`, minted by `agent_spawn`/`agent`). Records each
+//! handle (a child `SessionId`, minted by `agent`). Records each
 //! child's completion so a later `poll` (#605, formerly `agent_poll`, ADR-0026/
 //! ADR-0161) can collect the answer.
 
@@ -32,7 +32,7 @@ struct Entry {
 }
 
 /// Shared table of launched sub-agents keyed by child `SessionId` (the handle
-/// `agent_spawn` returns). Cloned into every launch/poll task — the `Arc<Mutex>`
+/// a `background: true` `agent` call returns). Cloned into every launch/poll task — the `Arc<Mutex>`
 /// is only ever held briefly to insert or clone a receiver, never across an
 /// `.await`, so pollers block on the watch channel, not the lock.
 ///
