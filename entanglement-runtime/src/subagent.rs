@@ -32,7 +32,7 @@
 use std::collections::{HashMap, HashSet};
 
 use entanglement_core::{
-    AgentProfile, AgentState, Holly, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec,
+    AgentProfile, AgentState, Holly, IdKind, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec,
 };
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
@@ -365,7 +365,7 @@ async fn launch(
     mode: LaunchMode,
 ) {
     let (agent, prompt) = parse_input(&input);
-    let child = SessionId::new_uuid();
+    let child = SessionId::new(holly.next_id(IdKind::Session));
     // Register *before* sending Spawn so a poll can never precede the handle
     // (the parent only learns the id from the reply below, which comes after).
     let (status_tx, started) = registry.register(child.clone());

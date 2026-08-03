@@ -139,12 +139,12 @@ fn switch_round_trip_preserves_scroll_and_agent() {
 }
 
 #[test]
-fn create_generates_unique_opaque_uuids() {
+fn create_generates_unique_kind_tagged_ids() {
     let base = SessionId::new("tui");
     let mut reg = SessionRegistry::new(base.clone());
     let s2 = reg.create();
     let s3 = reg.create();
-    // Each new session is a fresh v4 UUID — no `{base}-{ordinal}` suffix.
+    // Each new session is a fresh id — no `{base}-{ordinal}` suffix.
     assert_ne!(s2, s3);
     assert_ne!(s2, base);
     assert!(
@@ -152,10 +152,10 @@ fn create_generates_unique_opaque_uuids() {
         "no human-readable suffix: {}",
         s2.0
     );
-    // Canonical UUID shape: 36 chars, `8-4-4-4-12` hyphenation.
+    // ADR-0164 shape: `s-<epoch-seconds hex><salt><counter>`, 15 chars.
     for id in [&s2, &s3] {
-        assert_eq!(id.0.len(), 36, "uuid length: {}", id.0);
-        assert_eq!(id.0.matches('-').count(), 4, "uuid hyphens: {}", id.0);
+        assert!(id.0.starts_with("s-"), "kind-tagged: {}", id.0);
+        assert_eq!(id.0.len(), 15, "id length: {}", id.0);
     }
     assert_eq!(reg.active_id(), &s3);
 }
@@ -228,9 +228,10 @@ fn acceptance_new_session_created_on_first_prompt_and_appears_in_list() {
     reg.handle_out_event(event(&initial, 1, "first message"));
 
     let new_session = reg.create();
-    // A new session is an opaque v4 UUID, distinct from the initial id.
+    // A new session is a fresh kind-tagged id (ADR-0164), distinct from the
+    // initial id.
     assert_ne!(new_session, initial);
-    assert_eq!(new_session.to_string().len(), 36);
+    assert_eq!(new_session.to_string().len(), 15);
 
     let all = reg.all();
     assert_eq!(all.len(), 2, "New session appears in list");

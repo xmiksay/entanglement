@@ -10,6 +10,7 @@
 
 pub mod context;
 pub mod holly;
+pub mod id_gen;
 pub mod protocol;
 pub mod session;
 
@@ -18,6 +19,7 @@ pub use holly::{
     ConfigError, EngineConfig, Holly, ProfileRegistry, SystemPromptResolver, ToolSpecResolver,
     WireError,
 };
+pub use id_gen::{DefaultIdGen, IdGen, IdKind};
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
 // the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
 pub use entanglement_provider::{

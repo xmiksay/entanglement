@@ -31,7 +31,7 @@ use tool_runner::EscapeRoot;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, InMsg, ProfileRegistry, SessionId, UserId};
+use entanglement_core::{EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId, UserId};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
     ProviderEntry, ResolvedModel, ThinkingStyle, WebSearchConfig, Wire,
@@ -1485,7 +1485,7 @@ async fn main() -> Result<()> {
             let session_id = if let Some(resume_id) = &resume {
                 SessionId::new(resume_id.clone())
             } else {
-                SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0))
+                SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)))
             };
 
             if let Some(resume_id) = resume {
@@ -1529,7 +1529,8 @@ async fn main() -> Result<()> {
             .await
         }
         Some(Cmd::Pipe { session }) => {
-            let session_id = SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0));
+            let session_id =
+                SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)));
             pipe(&holly, &session_id).await
         }
         #[cfg(feature = "serve")]
@@ -1540,7 +1541,8 @@ async fn main() -> Result<()> {
             entanglement_runtime::serve::serve(holly.clone(), port, allow_origin).await
         }
         Some(Cmd::Tui { session, agent }) => {
-            let session_id = SessionId::new(session.unwrap_or_else(|| SessionId::new_uuid().0));
+            let session_id =
+                SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)));
             // Subscribe *before* the bootstrap `SetAgent` send below, matching
             // the "subscribe before send" convention `subagent.rs` follows for
             // spawned children — otherwise the session task can emit
@@ -1591,7 +1593,7 @@ async fn main() -> Result<()> {
             // - bare `skutter` (no prompt) → launch the TUI (the default head);
             // - `skutter "<prompt>"` → one implicit `run` turn, as before.
             if cli.prompt.is_empty() {
-                let session_id = SessionId::new_uuid();
+                let session_id = SessionId::new(holly.next_id(IdKind::Session));
                 // Subscribe before the bootstrap `SetAgent` send — see the
                 // matching comment on the `Cmd::Tui` arm above (#598).
                 let holly_sub = holly.subscribe();
@@ -1630,7 +1632,7 @@ async fn main() -> Result<()> {
                 )
                 .await
             } else {
-                let session_id = SessionId::new_uuid();
+                let session_id = SessionId::new(holly.next_id(IdKind::Session));
                 let agent = user_config.agent.clone();
                 if let Some(ref a) = agent {
                     holly

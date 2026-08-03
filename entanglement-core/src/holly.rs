@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc};
 
+use crate::id_gen::IdGen;
 use crate::protocol::{AgentState, InMsg, OutEvent, SessionId, SessionInfo};
 use crate::session::{session_loop, Session, SessionCmd};
 use entanglement_provider::ContentPart;
@@ -100,6 +101,12 @@ pub struct Holly {
     inbound: broadcast::Sender<InMsg>,
     /// Shared per-session seq counters (#157) — see [`SeqRegistry`].
     seqs: SeqRegistry,
+    /// The engine's configured id generator (ADR-0164), cloned out of
+    /// [`EngineConfig::id_gen`] at spawn time so an in-process embedder/head
+    /// can mint a fresh [`SessionId`]/job id/request id through the *same*
+    /// generator the engine itself would use, instead of reaching for a
+    /// hardcoded default.
+    id_gen: Arc<dyn IdGen>,
 }
 
 impl Holly {
@@ -110,6 +117,7 @@ impl Holly {
         let (inbound, _) = broadcast::channel::<InMsg>(INBOX_CAPACITY);
         let seqs: SeqRegistry = Arc::new(Mutex::new(HashMap::new()));
         let activity: ActivityRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let id_gen = cfg.id_gen.clone();
         let supervisor_events = events.clone();
         let supervisor_inbound = inbound.clone();
         let supervisor_seqs = seqs.clone();
@@ -129,7 +137,18 @@ impl Holly {
             events,
             inbound,
             seqs,
+            id_gen,
         }
+    }
+
+    /// Mint a fresh id of `kind` through the engine's configured
+    /// [`IdGen`][crate::id_gen::IdGen] (ADR-0164) — the sanctioned way for a
+    /// head/embedder to mint a new [`SessionId`], background-job id, or
+    /// runtime request/correlation id so it goes through the same generator
+    /// (and, for an embedder that overrides it, the same *policy*) the engine
+    /// itself uses internally.
+    pub fn next_id(&self, kind: crate::id_gen::IdKind) -> String {
+        self.id_gen.next(kind)
     }
 
     /// Push an [`InMsg`] into the engine — the **privileged in-process** entry

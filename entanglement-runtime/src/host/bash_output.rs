@@ -113,7 +113,7 @@ mod tests {
     async fn poll_unknown_job_is_clean_message() {
         let reg = JobRegistry::new();
         let tool = BashOutputTool::new(reg);
-        let out = tool.run(r#"{"job_id":"bg-404"}"#).await.unwrap();
+        let out = tool.run(r#"{"job_id":"j-unknown404"}"#).await.unwrap();
         assert!(out.contains("unknown job"), "{out}");
     }
 
@@ -139,10 +139,10 @@ mod tests {
             .await
             .unwrap();
         assert!(started.contains("background job"), "{started}");
-        // Extract the id ("bg-0") from the start notice.
+        // Extract the id (e.g. "j-6a708af0a1002", ADR-0164) from the start notice.
         let id = started
             .split_whitespace()
-            .find(|w| w.starts_with("bg-"))
+            .find(|w| w.starts_with("j-"))
             .unwrap()
             .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
         let poller = BashOutputTool::new(jobs);
