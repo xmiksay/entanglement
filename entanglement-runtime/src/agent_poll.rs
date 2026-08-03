@@ -24,6 +24,7 @@ use entanglement_core::{Holly, SessionId, ToolSpec};
 use tokio::sync::watch;
 
 use crate::seam::reply;
+use crate::subagent::format_agent_answer;
 use crate::tool_names::AGENT_POLL_TOOL;
 
 /// Default poll timeout when the model omits `timeout_secs`.
@@ -171,10 +172,7 @@ pub async fn run_agent_poll(
         // `wait_complete` is hang-safe (returns when the watch sender drops).
         match wait_complete(&mut rx).await {
             AgentStatus::Complete { answer, elapsed } => {
-                format!(
-                    "sub-agent `{agent_id}` completed in {:.1}s:\n\n{answer}",
-                    elapsed.as_secs_f64()
-                )
+                format_agent_answer(&agent_id, elapsed, answer)
             }
             AgentStatus::Running => unreachable!("wait_complete returns only on completion"),
         }
@@ -182,10 +180,7 @@ pub async fn run_agent_poll(
         match tokio::time::timeout(Duration::from_secs(timeout_secs), wait_complete(&mut rx)).await
         {
             Ok(AgentStatus::Complete { answer, elapsed }) => {
-                format!(
-                    "sub-agent `{agent_id}` completed in {:.1}s:\n\n{answer}",
-                    elapsed.as_secs_f64()
-                )
+                format_agent_answer(&agent_id, elapsed, answer)
             }
             // `wait_complete` only returns on completion; a running value never escapes.
             Ok(AgentStatus::Running) => unreachable!("wait_complete returns only on completion"),

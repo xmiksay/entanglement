@@ -43,7 +43,6 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
 const MAX_CALL_TIMEOUT_SECONDS: u64 = 600;
-const DEFAULT_TAIL: u32 = 30;
 
 pub struct CallTool {
     root: std::path::PathBuf,
@@ -151,7 +150,7 @@ struct CallInput {
 }
 
 fn default_tail() -> u32 {
-    DEFAULT_TAIL
+    super::DEFAULT_TAIL
 }
 
 #[async_trait]

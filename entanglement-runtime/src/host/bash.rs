@@ -9,7 +9,7 @@
 use super::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
 use super::jobs::JobRegistry;
 use super::sandbox::{self, SandboxPolicy};
-use super::truncate_head_tail;
+use super::{bounded_result, tail_lines, DEFAULT_TAIL};
 use crate::policy::SandboxResolver;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -130,6 +130,14 @@ struct BashInput {
     /// Spawn detached and return a job id to poll via `bash_output` (#170).
     #[serde(default)]
     run_in_background: bool,
+    /// Keep only the last `tail` lines of stdout/stderr (default 30, matching
+    /// `call`; 0 for full output — still byte-capped). #622.
+    #[serde(default = "default_tail")]
+    tail: u32,
+}
+
+fn default_tail() -> u32 {
+    DEFAULT_TAIL
 }
 
 #[async_trait]
@@ -141,13 +149,15 @@ impl Tool for BashTool {
         "Run a shell command (`sh -c`) rooted at the working directory (or \
          `workdir`), with the engine's full privileges (unsandboxed). Stdin is \
          closed, not inherited — use shell-native `< file` redirection if the \
-         command needs input. Returns `[exit N]`, stdout, and `[stderr]`; \
-         oversized output keeps a head + tail slice so the trailing error \
-         survives truncation. Pass `run_in_background=true` to start a long \
-         job (build, dev server) detached and get a job id — poll it with \
-         `bash_output`. `timeout` still applies: a background job is killed \
-         once it outlives it, so pass a larger `timeout` (up to 600s) for a \
-         job that must outlive the default 120s."
+         command needs input. Returns `[exit N]`, stdout, and a `[stderr]` \
+         block, each tailed to its last `tail` lines (default 30 — command \
+         output concentrates at the end; `tail=0` for full output, still \
+         byte-capped with a head + tail slice so the trailing error survives). \
+         Pass `run_in_background=true` to start a long job (build, dev server) \
+         detached and get a job id — poll it with `bash_output`. `timeout` \
+         still applies: a background job is killed once it outlives it, so \
+         pass a larger `timeout` (up to 600s) for a job that must outlive the \
+         default 120s."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -174,6 +184,12 @@ impl Tool for BashTool {
                     "type": "boolean",
                     "description": "Start the command detached and return a job id \
                         to poll with `bash_output` instead of blocking. Default false."
+                },
+                "tail": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Keep only the last N lines of each stream \
+                        (default 30). Use 0 for full output (still byte-capped)."
                 }
             },
             "required": ["command"]
@@ -239,7 +255,12 @@ impl BashTool {
 
         match wait_or_kill_group(child, dur).await {
             Ok(ExecOutcome::Completed { output, io_error }) => Ok(with_io_warning(
-                format_bash_output(output.status.code(), &output.stdout, &output.stderr),
+                format_bash_output(
+                    output.status.code(),
+                    &output.stdout,
+                    &output.stderr,
+                    parsed.tail,
+                ),
                 io_error,
             )),
             // Return the output buffered before the kill alongside the notice —
@@ -253,6 +274,7 @@ impl BashTool {
                     &format!("[killed: timed out after {secs}s]\n"),
                     &stdout,
                     &stderr,
+                    parsed.tail,
                 ),
                 io_error,
             )),
@@ -261,26 +283,33 @@ impl BashTool {
     }
 }
 
-fn format_bash_output(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String {
-    format_bash_streams(&format!("[exit {}]\n", code.unwrap_or(-1)), stdout, stderr)
+fn format_bash_output(code: Option<i32>, stdout: &[u8], stderr: &[u8], tail: u32) -> String {
+    format_bash_streams(
+        &format!("[exit {}]\n", code.unwrap_or(-1)),
+        stdout,
+        stderr,
+        tail,
+    )
 }
 
-/// Assemble `header` + stdout + a `[stderr]` block, then apply the byte cap.
-/// Shared by the exit path (`[exit N]`) and the timeout path (`[killed: …]`).
-fn format_bash_streams(header: &str, stdout: &[u8], stderr: &[u8]) -> String {
-    let mut out = String::from(header);
-    let stdout_str = String::from_utf8_lossy(stdout);
-    if !stdout_str.is_empty() {
-        out.push_str(&stdout_str);
+/// `header` (kept verbatim) + tailed stdout + a tailed `[stderr]` block, byte-
+/// capped. Shared by the exit path (`[exit N]`) and the timeout path
+/// (`[killed: …]`). Same shape `call` uses (#622): a `tail` knob line-trims
+/// each stream, then [`bounded_result`]'s head+tail byte cap is the outer
+/// bound so a trailing error surviving line-tailing (or `tail=0`) still
+/// survives byte truncation.
+fn format_bash_streams(header: &str, stdout: &[u8], stderr: &[u8], tail: u32) -> String {
+    let (stdout_tailed, _) = tail_lines(&String::from_utf8_lossy(stdout), tail);
+    let (stderr_tailed, _) = tail_lines(&String::from_utf8_lossy(stderr), tail);
+    let mut body = String::new();
+    if !stdout_tailed.is_empty() {
+        body.push_str(&stdout_tailed);
     }
-    let stderr_str = String::from_utf8_lossy(stderr);
-    if !stderr_str.is_empty() {
-        out.push_str("[stderr]\n");
-        out.push_str(&stderr_str);
+    if !stderr_tailed.is_empty() {
+        body.push_str("[stderr]\n");
+        body.push_str(&stderr_tailed);
     }
-    // Head+tail cap (#170): build/test output puts the load-bearing error at the
-    // end, so head-only truncation would drop exactly what the model needs.
-    truncate_head_tail(out)
+    bounded_result(header, body)
 }
 
 #[cfg(test)]
@@ -289,19 +318,19 @@ mod tests {
 
     #[test]
     fn format_includes_exit_and_stdout() {
-        let out = format_bash_output(Some(0), b"hello\n", b"");
+        let out = format_bash_output(Some(0), b"hello\n", b"", DEFAULT_TAIL);
         assert_eq!(out, "[exit 0]\nhello\n");
     }
 
     #[test]
     fn format_appends_stderr_section() {
-        let out = format_bash_output(Some(2), b"out\n", b"boom\n");
+        let out = format_bash_output(Some(2), b"out\n", b"boom\n", DEFAULT_TAIL);
         assert_eq!(out, "[exit 2]\nout\n[stderr]\nboom\n");
     }
 
     #[test]
     fn format_missing_code_reports_minus_one() {
-        let out = format_bash_output(None, b"", b"");
+        let out = format_bash_output(None, b"", b"", DEFAULT_TAIL);
         assert_eq!(out, "[exit -1]\n");
     }
 
@@ -309,7 +338,7 @@ mod tests {
     /// vanish into a body indistinguishable from a clean truncation.
     #[test]
     fn io_warning_prepended_when_drain_failed() {
-        let body = format_bash_output(Some(0), b"partial", b"");
+        let body = format_bash_output(Some(0), b"partial", b"", DEFAULT_TAIL);
         let out = with_io_warning(body, Some("stdout read failed: broken pipe".to_string()));
         assert_eq!(
             out,
@@ -319,8 +348,26 @@ mod tests {
 
     #[test]
     fn io_warning_absent_when_drain_clean() {
-        let body = format_bash_output(Some(0), b"hi\n", b"");
+        let body = format_bash_output(Some(0), b"hi\n", b"", DEFAULT_TAIL);
         assert_eq!(with_io_warning(body.clone(), None), body);
+    }
+
+    /// #622: bash's `tail` knob matches `call`'s — line-trims each stream
+    /// before the byte cap.
+    #[test]
+    fn format_tail_keeps_last_n_lines() {
+        let big: String = (1..=50).map(|i| format!("o{i}\n")).collect();
+        let out = format_bash_output(Some(0), big.as_bytes(), b"", 5);
+        assert!(out.contains("o50") && !out.contains("o40\n"), "{out}");
+        assert!(out.contains("earlier lines omitted"), "{out}");
+    }
+
+    #[test]
+    fn format_tail_zero_is_full_output() {
+        let big: String = (1..=50).map(|i| format!("o{i}\n")).collect();
+        let out = format_bash_output(Some(0), big.as_bytes(), b"", 0);
+        assert!(out.contains("o1\n") && out.contains("o50"), "{out}");
+        assert!(!out.contains("omitted"), "{out}");
     }
 
     #[tokio::test]
@@ -330,6 +377,20 @@ mod tests {
         let out = tool.run(r#"{"command":"echo hi"}"#).await.unwrap();
         assert!(out.starts_with("[exit 0]\n"), "{out}");
         assert!(out.contains("hi"), "{out}");
+    }
+
+    /// #622: the model can pass `tail` end-to-end, matching `call`'s knob.
+    #[tokio::test]
+    async fn run_tail_param_trims_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf());
+        let out = tool
+            .run(r#"{"command":"seq 1 50","tail":5}"#)
+            .await
+            .unwrap();
+        assert!(out.contains("50"), "{out}");
+        assert!(!out.contains("\n40\n"), "{out}");
+        assert!(out.contains("earlier lines omitted"), "{out}");
     }
 
     #[tokio::test]

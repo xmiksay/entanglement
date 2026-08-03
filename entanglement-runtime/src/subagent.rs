@@ -30,6 +30,7 @@
 //! profile exactly like the runtime's `propose_plan` / `update_tasks` state tools.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use entanglement_core::{
     AgentProfile, AgentState, Holly, IdKind, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec,
@@ -431,13 +432,30 @@ async fn launch(
             &holly,
             parent,
             request_id,
-            format!(
-                "sub-agent `{child}` completed in {:.1}s:\n\n{answer}",
-                elapsed.as_secs_f64()
-            ),
+            format_agent_answer(&child, elapsed, answer),
         )
         .await;
     }
+}
+
+/// Render a sub-agent's completion reply: the "completed in Xs" status line
+/// (kept verbatim) followed by its `answer`, bounded to
+/// [`crate::host::MAX_OUTPUT_BYTES`] with a head+tail split so a long answer's
+/// conclusion survives truncation — the same shape `bash`/`call`/`rhai` now
+/// share instead of returning an unbounded answer (#622). Shared by the
+/// blocking `agent` path ([`launch`]) and `agent_poll`.
+pub fn format_agent_answer(
+    agent_id: impl std::fmt::Display,
+    elapsed: Duration,
+    answer: String,
+) -> String {
+    crate::host::bounded_result(
+        &format!(
+            "sub-agent `{agent_id}` completed in {:.1}s:\n\n",
+            elapsed.as_secs_f64()
+        ),
+        answer,
+    )
 }
 
 /// Watch the child's event stream, accumulating its assistant text until the
@@ -559,6 +577,34 @@ mod tests {
 
     fn empty_engine() -> Holly {
         Holly::spawn(EngineConfig::default())
+    }
+
+    /// #622: a huge answer keeps a head + tail slice instead of growing the
+    /// reply unbounded — the status line always survives intact.
+    #[test]
+    fn format_agent_answer_bounds_a_huge_answer() {
+        use crate::host::MAX_OUTPUT_BYTES;
+        let mut answer = String::from("HEAD_MARKER");
+        answer.push_str(&"x".repeat(MAX_OUTPUT_BYTES * 2));
+        answer.push_str("TAIL_MARKER");
+        let out = format_agent_answer(SessionId::new("child-1"), Duration::from_secs(3), answer);
+        assert!(
+            out.starts_with("sub-agent `child-1` completed in 3.0s:\n\n"),
+            "status line dropped: {out}"
+        );
+        assert!(out.contains("HEAD_MARKER"), "head lost: {out}");
+        assert!(out.ends_with("TAIL_MARKER"), "tail lost: {out}");
+        assert!(out.contains("omitted from the middle"), "got: {out}");
+    }
+
+    #[test]
+    fn format_agent_answer_passes_through_small_answer() {
+        let out = format_agent_answer(
+            SessionId::new("child-1"),
+            Duration::from_secs(1),
+            "hi".to_string(),
+        );
+        assert_eq!(out, "sub-agent `child-1` completed in 1.0s:\n\nhi");
     }
 
     /// Drain `sub` for up to a short deadline, returning the first event

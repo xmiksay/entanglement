@@ -3,29 +3,7 @@
 //! dependency on process spawning — pure string formatting over already
 //! captured stdout/stderr bytes.
 
-use crate::host::{truncate_output, MAX_OUTPUT_BYTES};
-
-/// Keep only the last `tail` lines of `s`, reporting whether any were dropped.
-/// `tail == 0` disables line cutting (the byte cap still applies downstream).
-/// When lines are dropped, prepend a self-correction notice (ADR-0016) naming
-/// the count and `tail=0` escape hatch.
-pub(super) fn tail_lines(s: &str, tail: u32) -> (String, bool) {
-    if tail == 0 || s.is_empty() {
-        return (s.to_string(), false);
-    }
-    let lines: Vec<&str> = s.lines().collect();
-    let tail = tail as usize;
-    if lines.len() <= tail {
-        return (s.to_string(), false);
-    }
-    let omitted = lines.len() - tail;
-    let mut out = format!(
-        "(… {omitted} earlier lines omitted, tail={tail} — rerun with tail=0 for full output)\n"
-    );
-    out.push_str(&lines[lines.len() - tail..].join("\n"));
-    out.push('\n');
-    (out, true)
-}
+use crate::host::{bounded_result, tail_lines, MAX_OUTPUT_BYTES};
 
 /// Assemble `[exit N]` + tailed stdout + a tailed `[stderr]` block, then apply
 /// the 32 KiB byte cap (ADR-0008) as the outer bound. The line tail and byte cap
@@ -79,66 +57,38 @@ pub(super) fn format_call_streams(
         body.push_str(&stderr_tailed);
     }
 
-    let mut out = String::from(header);
+    let mut status = String::from(header);
     let truncated =
         stdout_dropped || stderr_dropped || header.len() + body.len() > MAX_OUTPUT_BYTES;
     if explicit || truncated {
-        // Right after the exit header, before the body, so the head-keeping
-        // byte cap can never drop it. The `.stderr` sibling is always written;
-        // it is only worth naming when there is stderr to read.
+        // Right after the exit header, before the body, so it always survives
+        // the body's byte cap. The `.stderr` sibling is always written; it is
+        // only worth naming when there is stderr to read.
         if stderr.is_empty() {
-            out.push_str(&format!("[output: {output_rel}]\n"));
+            status.push_str(&format!("[output: {output_rel}]\n"));
         } else {
-            out.push_str(&format!(
+            status.push_str(&format!(
                 "[output: {output_rel}] [stderr: {output_rel}.stderr]\n"
             ));
         }
     }
     if let Some(notice) = artifact_notice {
-        out.push_str(&notice);
+        status.push_str(&notice);
     }
-    out.push_str(&body);
-    // Belt-and-suspenders: with tail=0 (or very long lines) the assembled output
-    // can still exceed the context budget, so the 32 KiB byte cap
-    // ([`MAX_OUTPUT_BYTES`]) remains the outer bound. Its notice
-    // (`... [truncated: N bytes total]`) names the byte limit.
-    truncate_output(out)
+    // Belt-and-suspenders: with tail=0 (or very long lines) the assembled body
+    // can still exceed the context budget, so the head+tail byte cap
+    // ([`bounded_result`]) remains the outer bound — the same shape every
+    // exec/agent tool now shares (#622), so a trailing error in a huge single
+    // line isn't dropped the way head-only truncation would drop it.
+    bounded_result(&status, body)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn tail_keeps_last_n_and_notes_omitted() {
-        let body: String = (1..=100).map(|i| format!("line{i}\n")).collect();
-        let (out, dropped) = tail_lines(&body, 30);
-        assert!(dropped);
-        assert!(
-            out.starts_with(
-                "(… 70 earlier lines omitted, tail=30 — rerun with tail=0 for full output)\n"
-            ),
-            "got: {out}"
-        );
-        assert!(out.contains("line100"), "keeps the last line: {out}");
-        assert!(out.contains("line71"), "keeps 30th-from-end: {out}");
-        assert!(!out.contains("line70\n"), "drops the 31st-from-end: {out}");
-    }
-
-    #[test]
-    fn tail_zero_is_full_output() {
-        let body: String = (1..=100).map(|i| format!("line{i}\n")).collect();
-        let (out, dropped) = tail_lines(&body, 0);
-        assert_eq!(out, body);
-        assert!(!dropped, "no drop with tail=0");
-        assert!(!out.contains("omitted"), "no notice with tail=0");
-    }
-
-    #[test]
-    fn tail_under_threshold_is_untouched() {
-        let body = "a\nb\nc\n";
-        assert_eq!(tail_lines(body, 30), (body.to_string(), false));
-    }
+    // `tail_lines` itself now lives (and is tested) in `crate::host` — shared
+    // with `bash` (#622).
 
     #[test]
     fn format_renders_exit_and_separate_stderr() {
