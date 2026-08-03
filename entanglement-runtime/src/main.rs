@@ -23,8 +23,8 @@ mod tui;
 use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, bash_live, config, env_date, extra_roots, history, host, inspect, logging,
-    mcp, permission_path, persistence, plan_tasks, policy, propose_plan, session_store, skills,
-    subagent, system_prompt, throttle, tool_names, tool_runner, watch, SharedRegistry,
+    mcp, permission_path, persistence, plan_tasks, policy, poll, propose_plan, session_store,
+    skills, subagent, system_prompt, throttle, tool_names, tool_runner, watch, SharedRegistry,
     ToolRegistry,
 };
 use tool_runner::EscapeRoot;
@@ -68,8 +68,9 @@ use tui::tui;
 /// (argv exec, no shell), and `load_skill` are always registered, rooted at the
 /// current working directory, so the `build`/`plan`/`explore` permission
 /// profiles gate something real out of the box. `bash` (shell) stays opt-in:
-/// set `ENTANGLEMENT_ENABLE_BASH=1` to register `BashTool` and its
-/// `BashOutputTool` poller — they run unsandboxed with the engine's full
+/// set `ENTANGLEMENT_ENABLE_BASH=1` to register `BashTool` — its background
+/// jobs are joined with the always-available runtime-owned `poll` tool (#605),
+/// not a paired registry tool. Both run unsandboxed with the engine's full
 /// privileges by default (ADR-0009 / ADR-0010 / ADR-0045). `call` runs with the
 /// same full-privilege, unsandboxed-by-default execution but no shell means no
 /// injection surface, so its *registration* no longer rides `bash`'s opt-in gate
@@ -103,6 +104,7 @@ async fn build_config(
     Arc<bash_live::LiveBashState>,
     bash_live::BashToolConfig,
     policy::SandboxConfig,
+    host::JobRegistry,
 ) {
     let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
@@ -171,6 +173,12 @@ async fn build_config(
     // live handle and stay accurate across a later `/bash on`/`off`, not just
     // the startup state.
     let live_bash = bash_live::LiveBashState::new(bash_enabled);
+    // The one `JobRegistry` for this process's whole lifetime (#605): shared by
+    // `bash` (however/whenever it gets registered — at startup or via a later
+    // live `/bash on`) and `poll`'s job-handle path, so a background job is
+    // always pollable through whichever `BashTool` actually spawned it. This
+    // also closes #616's job-orphaning — there is only ever one registry.
+    let jobs = host::JobRegistry::new();
     let mut tools = register_default_tools(
         root.clone(),
         scratch_base,
@@ -179,15 +187,17 @@ async fn build_config(
         bash_enabled,
         sandbox_config.resolver(),
         live_bash.clone(),
+        jobs.clone(),
     );
     // `bash_tool_config` is what a later live `/bash on` needs to build a fresh
-    // `BashTool`/`BashOutputTool` pair on demand, mirroring this function's own
-    // bash arm in `register_default_tools`.
+    // `BashTool` on demand, mirroring this function's own bash arm in
+    // `register_default_tools`.
     let bash_tool_config = bash_live::BashToolConfig {
         root: root.clone(),
         extra_roots: Some(extra_root_store.clone()),
         secret_env: secret_env.clone(),
         sandbox_resolver: sandbox_config.resolver(),
+        jobs: jobs.clone(),
     };
     let escape_root = EscapeRoot {
         root: root.clone(),
@@ -284,6 +294,10 @@ async fn build_config(
     // `ask_user` is likewise runtime-owned (#90) but not a spawn tool: every
     // profile may surface a decision prompt, so it stays in the shared specs.
     cfg.tool_specs.push(ask_user::ask_user_spec());
+    // `poll` (#605, ADR-0161) is runtime-owned like `ask_user` but not a spawn
+    // tool either — it joins both background `bash` jobs and sub-agents, so it
+    // rides the shared specs rather than the per-profile spawn family.
+    cfg.tool_specs.push(poll::poll_spec());
     // `rhai` is a runtime-owned sandboxed script tool (#122, ADR-0046). Its
     // bindings are exactly the root-contained quintet, so it is no more
     // privileged than the always-registered tools and rides the shared specs
@@ -313,17 +327,21 @@ async fn build_config(
         live_bash,
         bash_tool_config,
         sandbox_config,
+        jobs,
     )
 }
 
 /// Assemble the tool registry: the root-contained quintet plus `call`
 /// (registered unconditionally — argv exec, no shell, ADR-0094) and, only when
-/// `bash_enabled`, the opt-in `bash`/`bash_output` pair sharing one job
-/// registry (ADR-0010/#170). `secret_env` (the catalog's provider API-key env
-/// vars, #164) is scrubbed from both exec tools' children. `sandbox_resolver`
+/// `bash_enabled`, the opt-in `bash` tool. `jobs` (#605) is the one
+/// process-lifetime `JobRegistry` `poll` was wired up with — shared here (not
+/// minted fresh) so a startup-registered `bash`'s background jobs are the same
+/// ones `poll` can see. `secret_env` (the catalog's provider API-key env vars,
+/// #164) is scrubbed from both exec tools' children. `sandbox_resolver`
 /// (#399/ADR-0104, #479) resolves both `bash` and `call`'s bubblewrap
 /// confinement per session/profile — a resolver that always returns
 /// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
+#[allow(clippy::too_many_arguments)]
 fn register_default_tools(
     root: std::path::PathBuf,
     scratch_base: Option<std::path::PathBuf>,
@@ -332,6 +350,7 @@ fn register_default_tools(
     bash_enabled: bool,
     sandbox_resolver: Arc<dyn policy::SandboxResolver>,
     live_bash: Arc<bash_live::LiveBashState>,
+    jobs: host::JobRegistry,
 ) -> ToolRegistry {
     let mut tools = host::host_tools_with_extra_roots(root.clone(), extra_roots.clone());
     let mut call = CallTool::new(root.clone())
@@ -346,16 +365,14 @@ fn register_default_tools(
     }
     tools.register(call);
     if bash_enabled {
-        let jobs = host::JobRegistry::new();
         let mut bash = BashTool::new(root.clone())
             .with_secret_env(secret_env.clone())
-            .with_jobs(jobs.clone())
+            .with_jobs(jobs)
             .with_sandbox_resolver(sandbox_resolver);
         if let Some(e) = &extra_roots {
             bash = bash.with_extra_roots(e.clone());
         }
         tools.register(bash);
-        tools.register(host::BashOutputTool::new(jobs));
     }
     tools
 }
@@ -1257,6 +1274,7 @@ async fn main() -> Result<()> {
         live_bash,
         bash_tool_config,
         sandbox_config,
+        jobs,
     ) = build_config(
         &catalog,
         &http_client,
@@ -1390,14 +1408,15 @@ async fn main() -> Result<()> {
             Some(escape_root.root.clone()),
         )
         // Live bash enablement (#498): a `/bash on` grade overrides the
-        // session's own profile for `bash`/`bash_output`, still clamped by
-        // the ceiling above.
+        // session's own profile for `bash`, still clamped by the ceiling
+        // above.
         .with_live_bash(live_bash.clone()),
     );
     let grants = Arc::new(DefaultGrantStore::load());
     let tool_executor = tool_runner::spawn_tool_executor_with_policy(
         &holly,
         tools.clone(),
+        jobs,
         live_profiles.clone(),
         live_skills.clone(),
         user_config.permissions.clone(),
@@ -1813,6 +1832,7 @@ mod tests {
             bash_enabled,
             std::sync::Arc::new(SandboxPolicy::none()),
             bash_live::LiveBashState::new(bash_enabled),
+            crate::host::JobRegistry::new(),
         )
         .specs()
         .into_iter()
@@ -1827,17 +1847,15 @@ mod tests {
     }
 
     #[test]
-    fn bash_and_bash_output_stay_opt_in() {
+    fn bash_stays_opt_in() {
         let names = tool_names(false);
         assert!(!names.contains(&"bash".to_string()), "{names:?}");
-        assert!(!names.contains(&"bash_output".to_string()), "{names:?}");
     }
 
     #[test]
-    fn bash_enabled_registers_bash_pair_and_call() {
+    fn bash_enabled_registers_bash_and_call() {
         let names = tool_names(true);
         assert!(names.contains(&"call".to_string()), "{names:?}");
         assert!(names.contains(&"bash".to_string()), "{names:?}");
-        assert!(names.contains(&"bash_output".to_string()), "{names:?}");
     }
 }

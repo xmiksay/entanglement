@@ -33,8 +33,8 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | McpAdd{name,config:McpServerSpec}   // hot-connect + persist to config.yml → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | McpRemove{name}   // hot-disconnect + persist removal → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | McpAuth{name,action}   // OAuth Connect|Check|Disconnect for an MCP server → McpAuthChanged (ADR-0153); trusted-only, wire-refused — a forged Connect opens a browser and mints a durable credential
-         | BashEnable{grade:BashGrade}   // hot-register bash/bash_output, graded Ask|Allow{pattern?} → BashChanged (#498, ADR-0133); trusted-only, wire-refused
-         | BashDisable   // hot-unregister bash/bash_output → BashChanged (#498, ADR-0133); trusted-only, wire-refused
+         | BashEnable{grade:BashGrade}   // hot-register bash, graded Ask|Allow{pattern?} → BashChanged (#498, ADR-0133); trusted-only, wire-refused
+         | BashDisable   // hot-unregister bash → BashChanged (#498, ADR-0133); trusted-only, wire-refused
          | ReplayFrom{session,correlation_id,after_seq}   // late-subscriber history fetch → History (#160, ADR-0072)
          | CloseSession{session}   // explicit destroy → SessionEnded, tombstones the id (#21)
          | HibernateSession{session}   // trusted-only: evict memory, NO tombstone → SessionHibernated, resumable (#318, ADR-0077)
@@ -48,7 +48,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,us
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152); McpServerStatus.auth? = OAuth posture (ADR-0153)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
          | McpAuthChanged{status}   // MCP OAuth state change, no seq/session; reply to McpAuth — a Connect emits twice, interim authorize_url then outcome (ADR-0153)
-         | BashChanged{enabled,grade?}   // bash/bash_output live-registered/unregistered, no seq; reply to BashEnable/BashDisable (#498, ADR-0133)
+         | BashChanged{enabled,grade?}   // bash live-registered/unregistered, no seq; reply to BashEnable/BashDisable (#498, ADR-0133)
          | Throttle{endpoint,throttled,in_flight,cap,waiters,shared_leases?,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
@@ -183,7 +183,7 @@ sub-tree (**#180**): the supervisor walks the child→parent links and closes ev
 transitive descendant alongside the target, so a spawned sub-agent is never left
 orphaned — running with no consumer for its answers and burning provider tokens.
 (This is the explicit-destroy path only; a parent `Stop` still does *not* cascade
-to un-polled `agent`/`agent_poll` children, ADR-0026.) Session ids are single-use: after
+to un-polled `agent`/`agent_spawn` children, ADR-0026 — collected via `poll`, #605.) Session ids are single-use: after
 `SessionEnded`, mint a fresh id — `SessionId::new_uuid()` (kept name for
 call-site compatibility; it mints the ADR-0164 `s-<hex>` scheme, not an actual
 UUID) or, when a `Holly` handle is in scope, `Holly::next_id(IdKind::Session)`

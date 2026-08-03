@@ -35,7 +35,6 @@ use crate::tools::ToolRegistry;
 
 pub mod apply_patch;
 pub mod bash;
-pub mod bash_output;
 mod brace;
 pub mod call;
 pub mod edit;
@@ -51,7 +50,6 @@ pub mod write;
 
 pub use apply_patch::ApplyPatchTool;
 pub use bash::BashTool;
-pub use bash_output::BashOutputTool;
 pub use call::CallTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
@@ -311,10 +309,9 @@ pub fn tail_lines(s: &str, tail: u32) -> (String, bool) {
 /// dropping), followed by `body` byte-capped under [`MAX_OUTPUT_BYTES`] with
 /// the same head+tail split as [`truncate_head_tail`] so a trailing
 /// error/answer survives. The one shape every result-bounded exec/agent tool
-/// now shares — `bash`/`bash_output`, `call`, `rhai`, and `agent`/
-/// `agent_spawn`/`agent_poll` — replacing the previous per-tool pick between
-/// head-only ([`truncate_output`]) and head+tail truncation with no stated rule
-/// (#622).
+/// now shares — `bash`, `poll`, `call`, `rhai`, and `agent`/`agent_spawn` —
+/// replacing the previous per-tool pick between head-only
+/// ([`truncate_output`]) and head+tail truncation with no stated rule (#622).
 pub fn bounded_result(status: &str, body: String) -> String {
     let budget = MAX_OUTPUT_BYTES.saturating_sub(status.len());
     let mut out = String::with_capacity(status.len() + body.len().min(budget));

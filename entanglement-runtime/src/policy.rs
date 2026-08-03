@@ -99,7 +99,7 @@ pub trait GrantStore: Send + Sync {
 /// executor wrappers) keeps the pre-#485 verbatim match. `live_bash` (#498,
 /// ADR-0133) is `None` for a caller that never wires live bash enablement
 /// (byte-identical to pre-#498 behavior); when `Some`, a live grade overrides
-/// the session's own profile for `bash`/`bash_output` specifically — see
+/// the session's own profile for `bash` specifically — see
 /// [`resolve`][Self::resolve].
 pub struct ProfileResolver {
     active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
@@ -122,9 +122,9 @@ impl ProfileResolver {
         }
     }
 
-    /// Wire in the live bash enablement state (#498) so `bash`/`bash_output`
-    /// calls consult its grade, when one is set, ahead of the session's own
-    /// profile. Chainable at construction, mirroring a builder-style opt-in.
+    /// Wire in the live bash enablement state (#498) so `bash` calls consult
+    /// its grade, when one is set, ahead of the session's own profile.
+    /// Chainable at construction, mirroring a builder-style opt-in.
     pub fn with_live_bash(mut self, live_bash: Arc<LiveBashState>) -> Self {
         self.live_bash = Some(live_bash);
         self
@@ -137,12 +137,14 @@ impl PermissionResolver for ProfileResolver {
         let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
         // A live bash enablement (#498) overrides the session's own profile
-        // for `bash`/`bash_output` specifically — a profile authored before
-        // bash was live-enabled has no real opinion on it. `grade()` is `None`
-        // when bash was never live-enabled (including the startup-only
+        // for `bash` specifically — a profile authored before bash was
+        // live-enabled has no real opinion on it. `grade()` is `None` when
+        // bash was never live-enabled (including the startup-only
         // `ENTANGLEMENT_ENABLE_BASH` path), which falls through to ordinary
         // per-profile resolution below, unchanged from pre-#498 behavior.
-        let live_grade = if matches!(tool, "bash" | "bash_output") {
+        // `poll` (#605) needs no entry here — it bypasses `ProfileResolver`
+        // entirely, intercepted before permission resolution.
+        let live_grade = if tool == "bash" {
             self.live_bash.as_ref().and_then(|s| s.grade())
         } else {
             None
@@ -491,7 +493,7 @@ mod tests {
     }
 
     /// #498: a live bash grade overrides the session's own profile for
-    /// `bash`/`bash_output`, but the config ceiling still clamps the result —
+    /// `bash`, but the config ceiling still clamps the result —
     /// a live `Allow` never bypasses a `bash: deny` base.
     #[tokio::test]
     async fn live_bash_grade_overrides_the_profile_but_not_the_ceiling() {
@@ -521,6 +523,7 @@ mod tests {
                 extra_roots: None,
                 secret_env: Vec::new(),
                 sandbox_resolver: Arc::new(crate::host::SandboxPolicy::none()),
+                jobs: crate::host::JobRegistry::new(),
             },
             entanglement_core::BashGrade::Allow { pattern: None },
         );
@@ -528,10 +531,6 @@ mod tests {
             resolver
                 .resolve(&session, "bash", r#"{"command":"rm -rf /"}"#)
                 .await,
-            Permission::Allow
-        );
-        assert_eq!(
-            resolver.resolve(&session, "bash_output", "{}").await,
             Permission::Allow
         );
 

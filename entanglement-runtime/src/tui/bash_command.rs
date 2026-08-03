@@ -1,6 +1,6 @@
-//! `/bash` subcommand parsing + wire dispatch (#498): live-enable/disable the
-//! `bash`/`bash_output` pair, graded by a `BashGrade` rather than a bare
-//! on/off. Kept in its own module — the same "past the 400-line cap" reasoning
+//! `/bash` subcommand parsing + wire dispatch (#498): live-enable/disable
+//! `bash`, graded by a `BashGrade` rather than a bare on/off. Kept in its own
+//! module — the same "past the 400-line cap" reasoning
 //! that split `mcp_command.rs`/`allow_command.rs` out of `commands.rs`/
 //! `event_loop.rs`. Issue 2: the help text is clap-derived (the
 //! [`super::command_args::BashArgs`] struct); the parser stays manual because

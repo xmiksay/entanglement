@@ -193,6 +193,7 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         tools.shared(),
+        entanglement_runtime::host::jobs::JobRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         skills,
         PermissionProfile::new(Permission::Allow),

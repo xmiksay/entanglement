@@ -80,11 +80,11 @@ pub fn render_expansion(
                 available_width,
             )
         }
-        Some("agent_poll") => {
+        Some("poll") => {
             let v: serde_json::Value =
                 serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            render_agent_poll_body(
-                v.get("agent_id").and_then(|s| s.as_str()).unwrap_or(""),
+            render_poll_body(
+                v.get("handle").and_then(|s| s.as_str()).unwrap_or(""),
                 v.get("timeout_secs").and_then(|t| t.as_u64()),
             )
         }
@@ -165,10 +165,10 @@ fn render_prompt_body(prompt: &str, available_width: u16) -> Text<'static> {
     Text::from(lines)
 }
 
-/// A compact `agent_id` + `timeout_secs` summary for an `agent_poll` body.
-fn render_agent_poll_body(agent_id: &str, timeout_secs: Option<u64>) -> Text<'static> {
+/// A compact `handle` + `timeout_secs` summary for a `poll` body.
+fn render_poll_body(handle: &str, timeout_secs: Option<u64>) -> Text<'static> {
     let mut lines = Vec::new();
-    lines.push(Line::from(format!("  agent_id: {agent_id}")));
+    lines.push(Line::from(format!("  handle: {handle}")));
     if let Some(t) = timeout_secs {
         lines.push(Line::from(format!("  timeout_secs: {t}")));
     }
@@ -565,10 +565,10 @@ mod tests {
     }
 
     #[test]
-    fn test_expansion_agent_poll_renders_id_and_timeout() {
+    fn test_expansion_poll_renders_handle_and_timeout() {
         let result = render_expansion(
-            Some("agent_poll"),
-            r#"{"agent_id":"abc","timeout_secs":60}"#,
+            Some("poll"),
+            r#"{"handle":"abc","timeout_secs":60}"#,
             "",
             Theme::default(),
             80,
@@ -577,7 +577,7 @@ mod tests {
         let text = flatten(&result);
         assert!(
             text.contains("abc") && text.contains("60"),
-            "agent_poll expansion should render the agent_id and timeout_secs: {text:?}"
+            "poll expansion should render the handle and timeout_secs: {text:?}"
         );
     }
 }

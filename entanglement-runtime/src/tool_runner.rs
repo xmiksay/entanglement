@@ -63,8 +63,7 @@ use crate::skills::SkillRegistry;
 #[cfg(feature = "rhai")]
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
-    AGENT_POLL_TOOL, AGENT_SPAWN_TOOL, AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL,
-    PROPOSE_PLAN_TOOL,
+    AGENT_SPAWN_TOOL, AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL,
 };
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
@@ -128,9 +127,10 @@ enum Intercept {
     /// (#60/#119/#120). The two variants share one guard path and differ only in
     /// whether the launch blocks for the answer.
     Spawn,
-    /// `agent_poll`: the join half of a non-blocking spawn (#89, ADR-0026) — it
-    /// reads accumulated spawn state, starting no session and touching no host.
-    AgentPoll,
+    /// `poll`: joins a background `bash` job or a launched sub-agent (#605,
+    /// ADR-0161 §1-4, replacing `bash_output`/`agent_poll`) — it reads
+    /// accumulated job/spawn state, starting no session and touching no host.
+    Poll,
     /// `ask_user`: a runtime-owned prompt tool (#90, ADR-0027) that surfaces a
     /// question to the head instead of running against the registry.
     AskUser,
@@ -153,7 +153,7 @@ impl Intercept {
     fn classify(tool: &str) -> Self {
         match tool {
             AGENT_TOOL | AGENT_SPAWN_TOOL => Self::Spawn,
-            AGENT_POLL_TOOL => Self::AgentPoll,
+            POLL_TOOL => Self::Poll,
             ASK_USER_TOOL => Self::AskUser,
             PROPOSE_PLAN_TOOL => Self::ProposePlan,
             #[cfg(feature = "rhai")]
@@ -169,7 +169,7 @@ impl Intercept {
     fn bypasses_permission(self) -> bool {
         matches!(
             self,
-            Self::Spawn | Self::AgentPoll | Self::AskUser | Self::ProposePlan
+            Self::Spawn | Self::Poll | Self::AskUser | Self::ProposePlan
         )
     }
 }
@@ -232,6 +232,12 @@ pub fn spawn_tool_executor_with_hooks(
     spawn_tool_executor_with_policy(
         holly,
         tools.shared(),
+        // No job registry shared with an external `BashTool` here — the
+        // convenience wrappers' (~30, test-only) callers never wire one up
+        // either, so a `poll` of a job id from this executor's own private
+        // registry is simply unreachable, matching pre-#605 behavior where
+        // these wrappers never registered `bash_output` against a shared one.
+        crate::host::jobs::JobRegistry::new(),
         wrap_profiles(profiles),
         wrap_skills(SkillRegistry::default()),
         base,
@@ -279,6 +285,11 @@ pub fn spawn_tool_executor_with_hooks(
 /// executor parses the `skill_id` its result carries, looks up that skill's
 /// `allowed_tools` here, and activates the session's skill mask —
 /// [`skill_masked`], layered after the #116 agent mask.
+///
+/// `jobs` (#605) is the same [`crate::host::jobs::JobRegistry`] the caller
+/// wires into its `BashTool` — shared so `poll`'s job-handle path reaches the
+/// jobs `bash` actually spawned; unlike `tools`/`skills`/`profiles` this isn't
+/// itself hot-swappable, only cheaply cloned (an `Arc` internally).
 /// Escape-root policy for the executor (ADR-0109): the canonical project `root`
 /// against which an out-of-root `read`/`edit`/`write` path or `bash`/`call`
 /// `workdir` is detected, plus the shared [`ExtraRootStore`] approvals are
@@ -306,6 +317,7 @@ impl EscapeRoot {
 pub fn spawn_tool_executor_with_policy(
     holly: &Holly,
     tools: SharedRegistry,
+    jobs: crate::host::jobs::JobRegistry,
     profiles: Arc<RwLock<ProfileRegistry>>,
     skills: Arc<RwLock<Arc<SkillRegistry>>>,
     base: PermissionProfile,
@@ -427,8 +439,8 @@ pub fn spawn_tool_executor_with_policy(
         // spawn decision below is race-free.
         let mut spawn_guard = crate::subagent::SpawnGuard::new();
         // Answer + timing per launched sub-agent, keyed by its handle (#89).
-        // Shared with the detached launch watchers and `agent_poll` tasks.
-        let registry = crate::agent_poll::AgentRegistry::default();
+        // Shared with the detached launch watchers and `poll` tasks (#605).
+        let registry = crate::agent_registry::AgentRegistry::default();
         // "Always allow" grants (#174), now a pluggable [`GrantStore`] trait
         // object (#311): the default persists to the managed file, a multi-tenant
         // embedder to its DB. Shared with the per-request dispatch tasks, which
@@ -852,12 +864,13 @@ pub fn spawn_tool_executor_with_policy(
                                 }
                             }
                         }
-                        Intercept::AgentPoll => {
+                        Intercept::Poll => {
                             let registry = registry.clone();
+                            let jobs = jobs.clone();
                             let holly = holly.clone();
                             tokio::spawn(async move {
-                                crate::agent_poll::run_agent_poll(
-                                    holly, registry, session, request_id, input,
+                                crate::poll::run_poll(
+                                    holly, jobs, registry, session, request_id, input,
                                 )
                                 .await;
                             });
@@ -1480,7 +1493,7 @@ mod tests {
     fn classify_maps_each_orchestration_tool_to_its_route() {
         assert_eq!(Intercept::classify(AGENT_TOOL), Intercept::Spawn);
         assert_eq!(Intercept::classify(AGENT_SPAWN_TOOL), Intercept::Spawn);
-        assert_eq!(Intercept::classify(AGENT_POLL_TOOL), Intercept::AgentPoll);
+        assert_eq!(Intercept::classify(POLL_TOOL), Intercept::Poll);
         assert_eq!(Intercept::classify(ASK_USER_TOOL), Intercept::AskUser);
         assert_eq!(
             Intercept::classify(PROPOSE_PLAN_TOOL),
@@ -1515,7 +1528,7 @@ mod tests {
         // The spawn/poll/prompt/plan routes touch no host resource; `rhai`
         // resolves permission itself and the generic path *is* the decision.
         assert!(Intercept::Spawn.bypasses_permission());
-        assert!(Intercept::AgentPoll.bypasses_permission());
+        assert!(Intercept::Poll.bypasses_permission());
         assert!(Intercept::AskUser.bypasses_permission());
         assert!(Intercept::ProposePlan.bypasses_permission());
         #[cfg(feature = "rhai")]

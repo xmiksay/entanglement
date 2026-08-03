@@ -145,6 +145,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         tools.shared(),
+        entanglement_runtime::host::jobs::JobRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,

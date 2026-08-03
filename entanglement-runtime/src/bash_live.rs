@@ -1,7 +1,9 @@
-//! Live bash enablement (#498, ADR-0133): register the `bash`/`bash_output`
-//! pair in a running process, graded by a [`BashGrade`] rather than a bare
-//! on/off — mirrors the `SharedRegistry` live-MCP-management seam (#372/#375,
-//! `crate::mcp::live`/`crate::mcp::responder`).
+//! Live bash enablement (#498, ADR-0133): register `bash` in a running
+//! process, graded by a [`BashGrade`] rather than a bare on/off — mirrors the
+//! `SharedRegistry` live-MCP-management seam (#372/#375, `crate::mcp::live`/
+//! `crate::mcp::responder`). `poll` (#605) needs no matching live-registration
+//! step: it is always available, dispatching on whatever handle it's given —
+//! a job id from a `bash` that was never enabled is simply unknown to it.
 //!
 //! [`LiveBashState`] is the shared handle [`crate::policy::ProfileResolver`]
 //! consults and [`spawn_bash_responder`] mutates off the inbound fan-out.
@@ -14,7 +16,7 @@ use entanglement_core::{BashGrade, Holly, InMsg, Permission, PermissionProfile};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::extra_roots::ExtraRootStore;
-use crate::host::{BashOutputTool, BashTool, JobRegistry};
+use crate::host::{BashTool, JobRegistry};
 use crate::policy::SandboxResolver;
 use crate::tools::SharedRegistry;
 
@@ -38,8 +40,8 @@ impl LiveBashState {
         })
     }
 
-    /// Whether `bash`/`bash_output` are currently registered — via the startup
-    /// env var or a live [`InMsg::BashEnable`], either way.
+    /// Whether `bash` is currently registered — via the startup env var or a
+    /// live [`InMsg::BashEnable`], either way.
     pub fn is_enabled(&self) -> bool {
         self.registered.load(Ordering::SeqCst)
     }
@@ -66,9 +68,10 @@ impl LiveBashState {
 /// [`BashGrade::Ask`] is a flat `Ask` default; [`BashGrade::Allow`] with no
 /// pattern is a flat `Allow`; with a command pattern it stays `Ask` by default
 /// and adds an argument-scoped `bash(pattern): allow` rule (the existing
-/// `tool(pattern)` syntax, #173) so only matching commands are pre-approved —
-/// `bash_output` has no command to match, so it falls through to that same
-/// `Ask` default in the narrowed case.
+/// `tool(pattern)` syntax, #173) so only matching commands are pre-approved.
+/// `poll` (#605) never consults this — it bypasses permission resolution
+/// entirely, so there is no "no command to match" case to fall through here
+/// anymore.
 pub fn grade_profile(grade: &BashGrade) -> PermissionProfile {
     match grade {
         BashGrade::Ask => PermissionProfile::new(Permission::Ask),
@@ -79,26 +82,30 @@ pub fn grade_profile(grade: &BashGrade) -> PermissionProfile {
     }
 }
 
-/// Everything [`bash_enable`] needs to build a fresh `BashTool`/`BashOutputTool`
-/// pair, mirroring `register_default_tools`'s bash arm in `main.rs` — captured
-/// once at startup and handed to the bash responder, since it has no other way
-/// to reach these values. `sandbox_resolver` (#479) is the same per-profile
-/// resolver `register_default_tools` wires into the startup-registered pair,
-/// so a live-enabled `bash` respects a profile's `sandbox:` override exactly
-/// like one registered at startup.
+/// Everything [`bash_enable`] needs to build a fresh `BashTool`, mirroring
+/// `register_default_tools`'s bash arm in `main.rs` — captured once at startup
+/// and handed to the bash responder, since it has no other way to reach these
+/// values. `sandbox_resolver` (#479) is the same per-profile resolver
+/// `register_default_tools` wires into the startup-registered tool, so a
+/// live-enabled `bash` respects a profile's `sandbox:` override exactly like
+/// one registered at startup. `jobs` (#605) is the *same* [`JobRegistry`]
+/// `poll` was wired up with at startup — reusing it here (instead of minting a
+/// fresh one per enable, the pre-#605 behavior) is what makes a job started
+/// after a live `/bash on` actually pollable, and incidentally fixes #616's
+/// job-orphaning: there is only ever one registry to orphan from.
 #[derive(Clone)]
 pub struct BashToolConfig {
     pub root: PathBuf,
     pub extra_roots: Option<Arc<ExtraRootStore>>,
     pub secret_env: Vec<String>,
     pub sandbox_resolver: Arc<dyn SandboxResolver>,
+    pub jobs: JobRegistry,
 }
 
-/// Register `bash`/`bash_output` into `registry` (a no-op if already
-/// present — idempotent, so a repeated `/bash on` just updates the grade) and
-/// install `grade` as the live permission override. Mirrors
-/// `mcp::live::mcp_add`'s "mutate the registry, then record the new state"
-/// shape.
+/// Register `bash` into `registry` (a no-op if already present — idempotent,
+/// so a repeated `/bash on` just updates the grade) and install `grade` as the
+/// live permission override. Mirrors `mcp::live::mcp_add`'s "mutate the
+/// registry, then record the new state" shape.
 pub fn bash_enable(
     registry: &SharedRegistry,
     state: &Arc<LiveBashState>,
@@ -108,28 +115,25 @@ pub fn bash_enable(
     {
         let mut reg = registry.write().unwrap();
         if !reg.contains("bash") {
-            let jobs = JobRegistry::new();
             let mut bash = BashTool::new(config.root.clone())
                 .with_secret_env(config.secret_env.clone())
-                .with_jobs(jobs.clone())
+                .with_jobs(config.jobs.clone())
                 .with_sandbox_resolver(config.sandbox_resolver.clone());
             if let Some(e) = &config.extra_roots {
                 bash = bash.with_extra_roots(e.clone());
             }
             reg.register(bash);
-            reg.register(BashOutputTool::new(jobs));
         }
     }
     state.set(grade);
 }
 
-/// Unregister `bash`/`bash_output` and clear the live grade override. Mirrors
+/// Unregister `bash` and clear the live grade override. Mirrors
 /// `mcp::live::mcp_remove`.
 pub fn bash_disable(registry: &SharedRegistry, state: &Arc<LiveBashState>) {
     {
         let mut reg = registry.write().unwrap();
         reg.unregister("bash");
-        reg.unregister("bash_output");
     }
     state.clear();
 }
@@ -191,6 +195,7 @@ mod tests {
             extra_roots: None,
             secret_env: Vec::new(),
             sandbox_resolver: Arc::new(crate::host::SandboxPolicy::none()),
+            jobs: JobRegistry::new(),
         }
     }
 
@@ -198,14 +203,12 @@ mod tests {
     fn grade_profile_ask_is_flat_ask() {
         let p = grade_profile(&BashGrade::Ask);
         assert_eq!(p.resolve("bash", Some("git status")), Permission::Ask);
-        assert_eq!(p.resolve("bash_output", None), Permission::Ask);
     }
 
     #[test]
     fn grade_profile_blanket_allow_is_flat_allow() {
         let p = grade_profile(&BashGrade::Allow { pattern: None });
         assert_eq!(p.resolve("bash", Some("rm -rf /")), Permission::Allow);
-        assert_eq!(p.resolve("bash_output", None), Permission::Allow);
     }
 
     #[test]
@@ -215,19 +218,15 @@ mod tests {
         });
         assert_eq!(p.resolve("bash", Some("git status")), Permission::Allow);
         assert_eq!(p.resolve("bash", Some("rm -rf /")), Permission::Ask);
-        // `bash_output` has no command to match the pattern against, so it
-        // falls through to the narrowed grade's `Ask` default.
-        assert_eq!(p.resolve("bash_output", None), Permission::Ask);
     }
 
     #[test]
-    fn bash_enable_registers_the_pair_and_records_the_grade() {
+    fn bash_enable_registers_bash_and_records_the_grade() {
         let registry: SharedRegistry = Arc::new(StdRwLock::new(ToolRegistry::new()));
         let state = LiveBashState::new(false);
         assert!(!state.is_enabled());
         bash_enable(&registry, &state, &test_config(), BashGrade::Ask);
         assert!(registry.read().unwrap().contains("bash"));
-        assert!(registry.read().unwrap().contains("bash_output"));
         assert!(state.is_enabled());
         assert_eq!(state.grade(), Some(BashGrade::Ask));
     }
@@ -255,7 +254,6 @@ mod tests {
         bash_enable(&registry, &state, &test_config(), BashGrade::Ask);
         bash_disable(&registry, &state);
         assert!(!registry.read().unwrap().contains("bash"));
-        assert!(!registry.read().unwrap().contains("bash_output"));
         assert!(!state.is_enabled());
         assert_eq!(state.grade(), None);
     }
@@ -314,5 +312,52 @@ mod tests {
         }
         assert!(!registry.read().unwrap().contains("bash"));
         handle.abort();
+    }
+
+    /// #605 (fixes #616 as a side effect): a live-enabled `bash` reuses the
+    /// `JobRegistry` the config was built with — the same one `poll` was
+    /// wired up with at startup — instead of minting a fresh, disconnected
+    /// one per enable. A job started right after enabling must be pollable
+    /// through that shared registry.
+    #[tokio::test]
+    async fn bash_enable_shares_the_configured_job_registry() {
+        let registry: SharedRegistry = Arc::new(StdRwLock::new(ToolRegistry::new()));
+        let state = LiveBashState::new(false);
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = JobRegistry::new();
+        let config = BashToolConfig {
+            root: dir.path().to_path_buf(),
+            extra_roots: None,
+            secret_env: Vec::new(),
+            sandbox_resolver: Arc::new(crate::host::SandboxPolicy::none()),
+            jobs: jobs.clone(),
+        };
+        bash_enable(
+            &registry,
+            &state,
+            &config,
+            BashGrade::Allow { pattern: None },
+        );
+
+        let session = entanglement_core::SessionId::new("s1");
+        let call = entanglement_core::ToolCall {
+            id: "r1".to_string(),
+            name: "bash".to_string(),
+            input: r#"{"command":"true","run_in_background":true}"#.to_string(),
+            provider_meta: None,
+        };
+        let snapshot = registry.read().unwrap().clone();
+        let started = snapshot.execute(&call, &session).await;
+        let text = entanglement_core::content_text(&started);
+        let id = text
+            .split_whitespace()
+            .find(|w| w.starts_with("j-"))
+            .unwrap()
+            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .to_string();
+
+        // The registry `bash_enable` was given sees the job the live-enabled
+        // `bash` spawned — they are the same instance, not two independent ones.
+        assert!(jobs.poll(&id, &session, false, 5).await.is_some());
     }
 }

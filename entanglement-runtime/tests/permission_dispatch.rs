@@ -817,6 +817,7 @@ fn spawn_two_read_calls_rooted(
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         reg.shared(),
+        entanglement_runtime::host::jobs::JobRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
@@ -1056,6 +1057,7 @@ fn spawn_scripted_calls_rooted(
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         reg.shared(),
+        entanglement_runtime::host::jobs::JobRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),

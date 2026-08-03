@@ -59,4 +59,4 @@ is the default and is fine for most dev loops. To hit a real backend:
 
 - `ENTANGLEMENT_PROVIDER` = `zai` (primary) | `openai` | `ollama` | `anthropic` | `gemini` | `echo`; or auto-detected by key presence (z.ai first).
 - `<PROV>_API_KEY` / `<PROV>_MODEL` / `<PROV>_API_BASE` (legacy `<PROV>_BASE` still accepted; Ollama is keyless).
-- `ENTANGLEMENT_ENABLE_BASH=1` — **opt-in**: registers the exec pair `bash` + `bash_output`. Off by default. `call` (argv exec, no shell) is registered **unconditionally** (ADR-0093). Both run unsandboxed by default but can be bubblewrap-confined via `ENTANGLEMENT_SANDBOX=bwrap` (ADR-0104/0134). The sandboxed `rhai` script tool needs no opt-in.
+- `ENTANGLEMENT_ENABLE_BASH=1` — **opt-in**: registers `bash`; its background jobs (`run_in_background=true`) are joined with the always-available runtime-owned `poll` tool (#605), not a paired registry tool. Off by default. `call` (argv exec, no shell) is registered **unconditionally** (ADR-0093). Both run unsandboxed by default but can be bubblewrap-confined via `ENTANGLEMENT_SANDBOX=bwrap` (ADR-0104/0134). The sandboxed `rhai` script tool needs no opt-in.
