@@ -145,7 +145,9 @@ impl Tool for BashTool {
          oversized output keeps a head + tail slice so the trailing error \
          survives truncation. Pass `run_in_background=true` to start a long \
          job (build, dev server) detached and get a job id — poll it with \
-         `bash_output`."
+         `bash_output`. `timeout` still applies: a background job is killed \
+         once it outlives it, so pass a larger `timeout` (up to 600s) for a \
+         job that must outlive the default 120s."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -159,7 +161,9 @@ impl Tool for BashTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Timeout in seconds (default 120, capped at 600). \
-                        Ignored when run_in_background=true."
+                        Also bounds run_in_background=true jobs — the job is killed \
+                        once it outlives this, so raise it for a job that must run \
+                        longer."
                 },
                 "workdir": {
                     "type": "string",
@@ -215,20 +219,22 @@ impl BashTool {
         let policy = self.sandbox_resolver.resolve(session);
         let mut cmd = self.build_command(&parsed.command, &cwd, &policy);
 
+        let secs = parsed.timeout.unwrap_or(120).min(MAX_BASH_TIMEOUT_SECONDS);
+        let dur = std::time::Duration::from_secs(secs);
+
         if parsed.run_in_background {
             let id = self
                 .jobs
-                .spawn(parsed.command.clone(), cmd)
+                .spawn(parsed.command.clone(), cmd, dur)
                 .with_context(|| "spawning background bash command")?;
             return Ok(format!(
                 "[background job {id} started]\n\
                  Poll with `bash_output` (job_id=\"{id}\") for incremental output; \
-                 pass kill=true to stop it."
+                 pass kill=true to stop it. Killed automatically after {secs}s if \
+                 still running."
             ));
         }
 
-        let secs = parsed.timeout.unwrap_or(120);
-        let dur = std::time::Duration::from_secs(secs.min(MAX_BASH_TIMEOUT_SECONDS));
         let child = cmd.spawn().with_context(|| "spawning bash command")?;
 
         match wait_or_kill_group(child, dur).await {
@@ -436,6 +442,41 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("background cat never exited — stdin was likely inherited, not closed");
+    }
+
+    /// #617: `timeout` must still apply once a job is backgrounded — a runaway
+    /// dev server can no longer outlive the engine unbounded.
+    #[tokio::test]
+    async fn run_in_background_is_killed_by_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = JobRegistry::new();
+        let tool = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
+        let out = tool
+            .run(r#"{"command":"sleep 30","run_in_background":true,"timeout":1}"#)
+            .await
+            .unwrap();
+        assert!(
+            out.contains("Killed automatically after 1s"),
+            "start notice should mention the bound: {out}"
+        );
+        let id = out
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("[background job ")
+                    .and_then(|rest| rest.strip_suffix(" started]"))
+            })
+            .expect("job id in response")
+            .to_string();
+
+        for _ in 0..100 {
+            let p = jobs.poll(&id, false).expect("job registered");
+            if p.timed_out {
+                assert_eq!(p.status, crate::host::jobs::JobStatus::Exited(None));
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("background job outran its timeout without being killed");
     }
 
     #[tokio::test]

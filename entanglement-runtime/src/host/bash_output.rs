@@ -77,6 +77,12 @@ fn format_poll(id: &str, poll: super::jobs::Poll) -> String {
         JobStatus::Exited(None) => "exited (killed)".to_string(),
     };
     let mut out = format!("[job {id}: {status}]\n");
+    if poll.timed_out {
+        out.push_str(&format!(
+            "[killed: timed out after {}s]\n",
+            poll.timeout_secs
+        ));
+    }
     if poll.stdout_dropped > 0 {
         out.push_str(&format!(
             "[{} bytes of older stdout dropped]\n",
@@ -158,5 +164,35 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("background job never reached exited 0");
+    }
+
+    /// #617: a background job that outlives its timeout is reported as killed,
+    /// with the bound that was enforced, not silently left running.
+    #[tokio::test]
+    async fn bash_background_job_reports_timeout_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = JobRegistry::new();
+        let bash = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
+        let started = bash
+            .run(r#"{"command":"sleep 30","run_in_background":true,"timeout":1}"#)
+            .await
+            .unwrap();
+        let id = started
+            .split_whitespace()
+            .find(|w| w.starts_with("j-"))
+            .unwrap()
+            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+        let poller = BashOutputTool::new(jobs);
+        for _ in 0..100 {
+            let out = poller
+                .run(&serde_json::json!({ "job_id": id }).to_string())
+                .await
+                .unwrap();
+            if out.contains("killed: timed out after 1s") {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("poll never reported the timeout kill");
     }
 }

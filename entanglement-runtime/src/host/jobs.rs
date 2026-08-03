@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
@@ -43,12 +44,20 @@ struct JobState {
     stdout_dropped: u64,
     stderr_dropped: u64,
     finished: Option<Option<i32>>,
+    /// Set by the timeout task (#617) when it kills the group because the job
+    /// outran its bound — distinguishes an enforced deadline from a `kill=true`
+    /// poll, which also lands as `Exited(None)`.
+    timed_out: bool,
 }
 
 struct Job {
     command: String,
     /// Group leader pid (== pgid). `None` if the child had no pid.
     pgid: Option<u32>,
+    /// Wall-clock bound after which a still-running job is killed (#617) — the
+    /// same `timeout` a foreground call takes, no longer ignored in the
+    /// background path.
+    timeout: Duration,
     state: Mutex<JobState>,
 }
 
@@ -61,6 +70,10 @@ pub struct Poll {
     pub stderr: Vec<u8>,
     pub stdout_dropped: u64,
     pub stderr_dropped: u64,
+    /// The job was killed because it exceeded its timeout, not by an explicit
+    /// `bash_output` `kill=true` poll (#617).
+    pub timed_out: bool,
+    pub timeout_secs: u64,
 }
 
 /// Shared, cheaply-cloned registry of background jobs. One instance is built at
@@ -104,13 +117,22 @@ impl JobRegistry {
     /// caller) as a background job, returning its id. Drain tasks capture its
     /// output incrementally; a reaper flips the status once the process exits
     /// **and** both streams have been fully drained, so a poll never reports
-    /// `Exited` while output is still in flight.
-    pub fn spawn(&self, command: String, mut cmd: Command) -> std::io::Result<String> {
+    /// `Exited` while output is still in flight. `timeout` bounds how long the
+    /// job may run before its process group is killed (#617) — the same
+    /// deadline a foreground `bash` call already enforces, previously ignored
+    /// once `run_in_background` was set.
+    pub fn spawn(
+        &self,
+        command: String,
+        mut cmd: Command,
+        timeout: Duration,
+    ) -> std::io::Result<String> {
         let mut child = cmd.spawn()?;
         let pgid = child.id();
         let job = Arc::new(Job {
             command,
             pgid,
+            timeout,
             state: Mutex::new(JobState::default()),
         });
         let id = self.inner.id_gen.next(IdKind::Job);
@@ -122,6 +144,7 @@ impl JobRegistry {
 
         let out = tokio::spawn(drain(child.stdout.take(), job.clone(), Stream::Stdout));
         let err = tokio::spawn(drain(child.stderr.take(), job.clone(), Stream::Stderr));
+        let deadline_job = job.clone();
         tokio::spawn(async move {
             // Wait for exit, then join the drains so every buffered byte lands
             // before the status flips — a poll seeing `Exited` has the full tail.
@@ -129,6 +152,27 @@ impl JobRegistry {
             let _ = out.await;
             let _ = err.await;
             job.state.lock().expect("job state poisoned").finished = Some(code);
+        });
+
+        tokio::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            let still_running = deadline_job
+                .state
+                .lock()
+                .expect("job state poisoned")
+                .finished
+                .is_none();
+            if still_running {
+                #[cfg(unix)]
+                if let Some(pid) = deadline_job.pgid {
+                    super::exec::kill_process_group(pid);
+                }
+                deadline_job
+                    .state
+                    .lock()
+                    .expect("job state poisoned")
+                    .timed_out = true;
+            }
         });
         Ok(id)
     }
@@ -162,6 +206,8 @@ impl JobRegistry {
             stderr: std::mem::take(&mut st.stderr),
             stdout_dropped: std::mem::take(&mut st.stdout_dropped),
             stderr_dropped: std::mem::take(&mut st.stderr_dropped),
+            timed_out: st.timed_out,
+            timeout_secs: job.timeout.as_secs(),
         })
     }
 }
@@ -227,7 +273,11 @@ mod tests {
     async fn spawn_poll_captures_output_and_exit() {
         let reg = JobRegistry::new();
         let id = reg
-            .spawn("echo hi".into(), sh("echo hi; echo boom 1>&2"))
+            .spawn(
+                "echo hi".into(),
+                sh("echo hi; echo boom 1>&2"),
+                Duration::from_secs(60),
+            )
             .unwrap();
         // Give the reaper time to finish and flip status.
         for _ in 0..50 {
@@ -246,7 +296,11 @@ mod tests {
     async fn poll_is_incremental_then_drains() {
         let reg = JobRegistry::new();
         let id = reg
-            .spawn("echo one; sleep 30".into(), sh("echo one; sleep 30"))
+            .spawn(
+                "echo one; sleep 30".into(),
+                sh("echo one; sleep 30"),
+                Duration::from_secs(60),
+            )
             .unwrap();
         // First poll eventually sees "one" while still running.
         let mut seen = false;
@@ -265,6 +319,29 @@ mod tests {
         assert!(p2.stdout.is_empty(), "second poll should be drained");
         // Kill it so the test process group doesn't leak.
         let _ = reg.poll(&id, true);
+    }
+
+    /// #617: a background job must be killed once it outlives its timeout,
+    /// not left running forever just because `run_in_background` was set.
+    #[tokio::test]
+    async fn spawn_kills_job_that_outlives_timeout() {
+        let reg = JobRegistry::new();
+        let id = reg
+            .spawn(
+                "sleep 30".into(),
+                sh("sleep 30"),
+                Duration::from_millis(200),
+            )
+            .unwrap();
+        for _ in 0..100 {
+            let p = reg.poll(&id, false).unwrap();
+            if p.timed_out {
+                assert_eq!(p.status, JobStatus::Exited(None));
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("job was not killed by its timeout");
     }
 
     #[tokio::test]
