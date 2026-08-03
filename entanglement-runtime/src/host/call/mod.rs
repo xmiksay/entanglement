@@ -12,12 +12,15 @@
 //! `input_file` is read before spawn and piped to the child's stdin (no
 //! `input_file` → stdin is explicitly closed, not inherited from the engine);
 //! `output_file` gets the full untruncated stdout, with a `<output_file>.stderr`
-//! sibling always written alongside. With no `output_file` an artifact is still
-//! written, auto-named under a runtime-owned per-project **scratch dir** outside
-//! the repo (`session_store::scratch_dir`, wired via [`CallTool::with_scratch_base`])
-//! so it neither pollutes the workdir nor re-triggers the definitions watcher;
-//! its absolute path is named in the result header. Standalone/test constructors
-//! with no scratch base fall back to `<root>/.entanglement/tmp/call-output/`.
+//! sibling always written alongside. With no `output_file`, a result that
+//! overflows its tail/byte cap is retained in memory instead (#608, ADR-0161
+//! §7, [`crate::retained_output::RetainedOutputRegistry`]) and paged via
+//! `poll` — no scratch file, no absolute path spent in the result.
+//!
+//! **A truncated result keeps its handle either way** (ADR-0161 §7): with no
+//! `output_file` the handle pages the retained text; with an explicit
+//! `output_file` the file already holds the full text, so the handle just
+//! lets `poll` report that path back.
 //!
 //! `background: true` (#606, ADR-0161 §1) spawns detached into the shared
 //! [`JobRegistry`] instead — the same mechanism `bash` uses — and returns a job
@@ -38,25 +41,19 @@ mod validate;
 use super::jobs::JobRegistry;
 use super::sandbox::SandboxPolicy;
 use crate::policy::SandboxResolver;
+use crate::retained_output::RetainedOutputRegistry;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 const MAX_CALL_TIMEOUT_SECONDS: u64 = 600;
 
 pub struct CallTool {
     root: std::path::PathBuf,
-    /// Where a default (no `output_file`) artifact is written: a runtime-owned
-    /// per-project scratch dir *outside* the repo (`session_store::scratch_dir`)
-    /// so a routine `call` neither pollutes the workdir nor re-triggers the
-    /// definitions watcher. `None` falls back to `<root>/.entanglement/tmp` for
-    /// the standalone/test constructors that have no session context.
-    scratch_base: Option<PathBuf>,
     /// Env vars scrubbed from the child before spawn — the provider API keys
     /// (`ZAI_API_KEY`, …) so a model-authored binary can't read the engine's
     /// credentials (#164). The no-shell design doesn't help here: a plain
@@ -82,18 +79,24 @@ pub struct CallTool {
     /// wires the shared instance via [`CallTool::with_jobs`] so polls reach the
     /// jobs this tool spawned.
     jobs: JobRegistry,
+    /// Retained-output registry shared with `poll` (#608): a truncated
+    /// blocking result's full text (or, with an explicit `output_file`, just
+    /// the path) is registered here under a fresh handle. A private per-tool
+    /// default keeps standalone/TUI construction working; the head wires the
+    /// shared instance via [`CallTool::with_retained_output`].
+    retained: RetainedOutputRegistry,
 }
 
 impl CallTool {
     pub fn new(root: std::path::PathBuf) -> Self {
         Self {
             root,
-            scratch_base: None,
             secret_env: Vec::new(),
             sandbox_resolver: Arc::new(SandboxPolicy::none()),
             extra_roots: None,
             bash_status: None,
             jobs: JobRegistry::new(),
+            retained: RetainedOutputRegistry::new(),
         }
     }
 
@@ -113,11 +116,10 @@ impl CallTool {
         self
     }
 
-    /// Write default (no `output_file`) artifacts under `scratch_base` — the
-    /// per-project scratch dir from `session_store::scratch_dir`, outside the
-    /// repo and every watched tree.
-    pub fn with_scratch_base(mut self, scratch_base: PathBuf) -> Self {
-        self.scratch_base = Some(scratch_base);
+    /// Share `retained` with the runtime-owned `poll` tool so a truncated
+    /// blocking result's handle is pollable (#608).
+    pub fn with_retained_output(mut self, retained: RetainedOutputRegistry) -> Self {
+        self.retained = retained;
         self
     }
 
@@ -188,11 +190,12 @@ impl Tool for CallTool {
          NOT interpreted. Prefer this over `bash` for a fixed command. Returns \
          `[exit N]`, stdout, and a `[stderr]` block, each tailed to its last \
          `tail` lines (default 30 — command value concentrates at the end; \
-         `tail=0` for full output, still byte-capped). The full untruncated \
-         output is always persisted to a file (see `output_file`). Pass \
-         `background=true` to start a long process (build, dev server) \
-         detached and get a job id — poll it with `poll`; refused together \
-         with `input_file`/`output_file`."
+         `tail=0` for full output, still byte-capped). A result that overflows \
+         the cap keeps a handle either way: with no `output_file`, poll it to \
+         page the retained remainder; with an `output_file`, poll it to be \
+         reminded of that path. Pass `background=true` to start a long process \
+         (build, dev server) detached and get a job id — poll it with `poll`; \
+         refused together with `input_file`/`output_file`."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -231,10 +234,10 @@ impl Tool for CallTool {
                     "description": "Path (relative to the root, not `workdir`) to \
                         write the full, untruncated raw stdout to (missing \
                         parent dirs are created); a `<output_file>.stderr` \
-                        sibling is always written alongside. Omitted → an \
-                        artifact is still written to a runtime-owned scratch dir \
-                        outside the project; its absolute path is named in the \
-                        result only when the response was truncated."
+                        sibling is always written alongside. Omitted → nothing \
+                        is written to disk; if the response is truncated, the \
+                        full text is retained and pollable via the handle named \
+                        in the result."
                 },
                 "workdir": {
                     "type": "string",
@@ -327,9 +330,9 @@ impl CallTool {
         )?;
         foreground::run_foreground(
             &self.root,
-            self.scratch_base.as_deref(),
             self.sandbox_resolver.as_ref(),
             &self.secret_env,
+            &self.retained,
             session,
             &cwd,
             &parsed.command,
@@ -349,6 +352,7 @@ mod tests {
     use super::*;
     use crate::host::sandbox;
     use crate::host::MAX_OUTPUT_BYTES;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -633,41 +637,38 @@ mod tests {
         assert!(dir.path.join("nested/deep/out.txt.stderr").exists());
     }
 
+    /// #608: with no `output_file`, a tailed result mints a pollable
+    /// retained-output handle instead of a scratch-file path — nothing is
+    /// written to disk, and the handle's full text is reachable via `poll`.
     #[tokio::test]
-    async fn default_artifact_named_when_output_is_tailed() {
+    async fn tailed_output_with_no_file_mints_a_pollable_handle() {
         let dir = TempDir::new();
-        let tool = CallTool::new(dir.path.clone());
-        // tail=1 on two lines forces truncation, which is what makes the
-        // default artifact worth naming in the result.
+        let retained = crate::retained_output::RetainedOutputRegistry::new();
+        let tool = CallTool::new(dir.path.clone()).with_retained_output(retained.clone());
+        let session = SessionId::new("s1");
+        // tail=1 on two lines forces truncation, which is what mints a handle.
         let input = serde_json::json!({
             "command": "printf",
             "args": ["%s", "early\nauto-artifact\n"],
             "tail": 1,
         })
         .to_string();
-        let out = tool.run(&input).await.unwrap();
-        let header = out
-            .lines()
-            .find(|l| l.starts_with("[output: "))
-            .expect("header names the artifact path");
+        let out = tool.run_for_session(&session, "r1", &input).await.unwrap();
+        let out = entanglement_core::content_text(&out);
+        let handle = out
+            .split("handle=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("handle in the response");
+        assert!(handle.starts_with("o-"), "{handle}");
         assert!(
-            header.contains(".entanglement/tmp/call-output/call-"),
-            "got: {header}"
+            !dir.path.join(".entanglement").exists(),
+            "nothing should be written to disk"
         );
-        assert!(
-            !header.contains("[stderr:"),
-            "empty stderr is not named: {header}"
-        );
-        let rel = header
-            .strip_prefix("[output: ")
-            .and_then(|h| h.strip_suffix(']'))
-            .expect("header shape");
-        assert_eq!(
-            std::fs::read_to_string(dir.path.join(rel)).unwrap(),
-            "early\nauto-artifact\n",
-            "artifact holds the full untailed output"
-        );
-        assert!(dir.path.join(format!("{rel}.stderr")).exists());
+        let page = retained
+            .page(handle, &session, 0, 30)
+            .expect("handle is pollable");
+        assert!(page.text.contains("early") && page.text.contains("auto-artifact"));
     }
 
     #[tokio::test]
@@ -682,10 +683,14 @@ mod tests {
         );
     }
 
+    /// #608: concurrent truncated calls each mint their own handle — no
+    /// collisions, since ids come from the shared `IdGen`, not a filename.
     #[tokio::test]
-    async fn concurrent_calls_do_not_collide_on_default_filenames() {
+    async fn concurrent_calls_do_not_collide_on_retained_handles() {
         let dir = TempDir::new();
-        let tool = std::sync::Arc::new(CallTool::new(dir.path.clone()));
+        let retained = crate::retained_output::RetainedOutputRegistry::new();
+        let tool =
+            std::sync::Arc::new(CallTool::new(dir.path.clone()).with_retained_output(retained));
         let mut handles = Vec::new();
         for i in 0..8 {
             let tool = tool.clone();
@@ -699,18 +704,16 @@ mod tests {
                 tool.run(&input).await.unwrap()
             }));
         }
-        let mut headers = std::collections::HashSet::new();
+        let mut seen = std::collections::HashSet::new();
         for h in handles {
             let out = h.await.unwrap();
-            let header = out
-                .lines()
-                .find(|l| l.starts_with("[output: "))
+            let handle = out
+                .split("handle=\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
                 .unwrap()
                 .to_string();
-            assert!(
-                headers.insert(header),
-                "default artifact filenames collided"
-            );
+            assert!(seen.insert(handle), "retained-output handles collided");
         }
     }
 

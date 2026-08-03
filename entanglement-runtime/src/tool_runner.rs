@@ -237,6 +237,10 @@ pub fn spawn_tool_executor_with_hooks(
         // registry is simply unreachable, matching pre-#605 behavior where
         // these wrappers never registered `bash_output` against a shared one.
         crate::host::jobs::JobRegistry::new(),
+        // Same story for retained output (#608): no external `CallTool` shares
+        // this private registry either, so a truncated call from one of these
+        // wrappers' callers never mints a handle in the first place.
+        crate::retained_output::RetainedOutputRegistry::new(),
         wrap_profiles(profiles),
         wrap_skills(SkillRegistry::default()),
         base,
@@ -288,7 +292,11 @@ pub fn spawn_tool_executor_with_hooks(
 /// `jobs` (#605) is the same [`crate::host::jobs::JobRegistry`] the caller
 /// wires into its `BashTool` — shared so `poll`'s job-handle path reaches the
 /// jobs `bash` actually spawned; unlike `tools`/`skills`/`profiles` this isn't
-/// itself hot-swappable, only cheaply cloned (an `Arc` internally).
+/// itself hot-swappable, only cheaply cloned (an `Arc` internally). `retained`
+/// (#608) is the same story for
+/// [`crate::retained_output::RetainedOutputRegistry`]: the caller's
+/// `CallTool` writes a truncated result's full text there, `poll`'s
+/// retained-output-handle path reads it back.
 /// Escape-root policy for the executor (ADR-0109): the canonical project `root`
 /// against which an out-of-root `read`/`edit`/`write` path or `bash`/`call`
 /// `workdir` is detected, plus the shared [`ExtraRootStore`] approvals are
@@ -317,6 +325,7 @@ pub fn spawn_tool_executor_with_policy(
     holly: &Holly,
     tools: SharedRegistry,
     jobs: crate::host::jobs::JobRegistry,
+    retained: crate::retained_output::RetainedOutputRegistry,
     profiles: Arc<RwLock<ProfileRegistry>>,
     skills: Arc<RwLock<Arc<SkillRegistry>>>,
     base: PermissionProfile,
@@ -881,10 +890,11 @@ pub fn spawn_tool_executor_with_policy(
                         Intercept::Poll => {
                             let registry = registry.clone();
                             let jobs = jobs.clone();
+                            let retained = retained.clone();
                             let holly = holly.clone();
                             tokio::spawn(async move {
                                 crate::poll::run_poll(
-                                    holly, jobs, registry, session, request_id, input,
+                                    holly, jobs, registry, retained, session, request_id, input,
                                 )
                                 .await;
                             });

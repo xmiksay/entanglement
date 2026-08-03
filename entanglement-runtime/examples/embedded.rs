@@ -104,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         &holly,
         tools.shared(),
         host::jobs::JobRegistry::new(),
+        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),

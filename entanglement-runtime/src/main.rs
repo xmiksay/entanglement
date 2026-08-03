@@ -23,9 +23,9 @@ mod tui;
 use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, bash_live, config, env_date, extra_roots, history, host, inspect, logging,
-    mcp, permission_path, persistence, plan_tasks, policy, poll, propose_plan, session_store,
-    skills, subagent, system_prompt, throttle, tool_names, tool_runner, watch, SharedRegistry,
-    ToolRegistry,
+    mcp, permission_path, persistence, plan_tasks, policy, poll, propose_plan, retained_output,
+    session_store, skills, subagent, system_prompt, throttle, tool_names, tool_runner, watch,
+    SharedRegistry, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -105,6 +105,7 @@ async fn build_config(
     bash_live::BashToolConfig,
     policy::SandboxConfig,
     host::JobRegistry,
+    retained_output::RetainedOutputRegistry,
 ) {
     let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
@@ -148,10 +149,11 @@ async fn build_config(
     // means unsandboxed, full-privilege execution, matching every release
     // before this.
     let sandbox_config = policy::SandboxConfig::from_env();
-    // Per-project scratch dir for default `call` artifacts — outside the repo,
-    // so a routine `call` neither pollutes the workdir nor re-triggers the
-    // definitions watcher. Best-effort: if the data dir is unavailable, `call`
-    // falls back to its legacy in-repo `.entanglement/tmp` location.
+    // Per-project scratch dir (#524, ADR-0142) — a pre-trusted write location
+    // the model is steered toward over `/tmp` (see `system_prompt`'s env
+    // block). `call`'s own default-output artifact used to live here too;
+    // since #608 that output is retained in memory instead (`retained`
+    // below), so this is purely the general-purpose scratch carve-out now.
     let scratch_base = session_store::scratch_dir(&root).ok();
     // Escape-root approval store (ADR-0109): shared by the host tools (which
     // consult it to relax containment for an approved out-of-root path) and the
@@ -179,15 +181,20 @@ async fn build_config(
     // always pollable through whichever `BashTool` actually spawned it. This
     // also closes #616's job-orphaning — there is only ever one registry.
     let jobs = host::JobRegistry::new();
+    // The one `RetainedOutputRegistry` for this process's whole lifetime
+    // (#608): shared by `call` (which writes a truncated result's full text
+    // there) and `poll`'s retained-output-handle path (which reads it back) —
+    // the same shared-instance shape `jobs` above uses.
+    let retained = retained_output::RetainedOutputRegistry::new();
     let mut tools = register_default_tools(
         root.clone(),
-        scratch_base,
         Some(extra_root_store.clone()),
         secret_env.clone(),
         bash_enabled,
         sandbox_config.resolver(),
         live_bash.clone(),
         jobs.clone(),
+        retained.clone(),
     );
     // `bash_tool_config` is what a later live `/bash on` needs to build a fresh
     // `BashTool` on demand, mirroring this function's own bash arm in
@@ -328,6 +335,7 @@ async fn build_config(
         bash_tool_config,
         sandbox_config,
         jobs,
+        retained,
     )
 }
 
@@ -336,31 +344,32 @@ async fn build_config(
 /// `bash_enabled`, the opt-in `bash` tool. `jobs` (#605; #606) is the one
 /// process-lifetime `JobRegistry` `poll` was wired up with — shared with both
 /// exec tools (not minted fresh) so a `call background=true`/startup-registered
-/// `bash`'s background jobs are the same ones `poll` can see. `secret_env` (the
-/// catalog's provider API-key env vars, #164) is scrubbed from both exec tools'
-/// children. `sandbox_resolver` (#399/ADR-0104, #479) resolves both `bash` and
-/// `call`'s bubblewrap confinement per session/profile — a resolver that always
-/// returns `SandboxPolicy::none()` leaves their spawn behavior unchanged.
+/// `bash`'s background jobs are the same ones `poll` can see. `retained`
+/// (#608) is likewise the one process-lifetime `RetainedOutputRegistry` `poll`
+/// was wired up with, shared with `call` so a truncated blocking result's
+/// handle is pollable. `secret_env` (the catalog's provider API-key env vars,
+/// #164) is scrubbed from both exec tools' children. `sandbox_resolver`
+/// (#399/ADR-0104, #479) resolves both `bash` and `call`'s bubblewrap
+/// confinement per session/profile — a resolver that always returns
+/// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
 #[allow(clippy::too_many_arguments)]
 fn register_default_tools(
     root: std::path::PathBuf,
-    scratch_base: Option<std::path::PathBuf>,
     extra_roots: Option<Arc<extra_roots::ExtraRootStore>>,
     secret_env: Vec<String>,
     bash_enabled: bool,
     sandbox_resolver: Arc<dyn policy::SandboxResolver>,
     live_bash: Arc<bash_live::LiveBashState>,
     jobs: host::JobRegistry,
+    retained: retained_output::RetainedOutputRegistry,
 ) -> ToolRegistry {
     let mut tools = host::host_tools_with_extra_roots(root.clone(), extra_roots.clone());
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
         .with_sandbox_resolver(sandbox_resolver.clone())
         .with_bash_status(live_bash)
-        .with_jobs(jobs.clone());
-    if let Some(base) = scratch_base {
-        call = call.with_scratch_base(base);
-    }
+        .with_jobs(jobs.clone())
+        .with_retained_output(retained);
     if let Some(e) = &extra_roots {
         call = call.with_extra_roots(e.clone());
     }
@@ -1276,6 +1285,7 @@ async fn main() -> Result<()> {
         bash_tool_config,
         sandbox_config,
         jobs,
+        retained,
     ) = build_config(
         &catalog,
         &http_client,
@@ -1418,6 +1428,7 @@ async fn main() -> Result<()> {
         &holly,
         tools.clone(),
         jobs,
+        retained,
         live_profiles.clone(),
         live_skills.clone(),
         user_config.permissions.clone(),
@@ -1770,7 +1781,7 @@ fn format_relative(ts_ms: u64) -> String {
 mod tests {
     use super::{launches_tui_head, register_default_tools, Cmd};
     use crate::host::SandboxPolicy;
-    use entanglement_runtime::bash_live;
+    use entanglement_runtime::{bash_live, retained_output};
 
     #[test]
     fn tui_head_covers_bare_skutter_and_explicit_subcommand() {
@@ -1828,12 +1839,12 @@ mod tests {
         register_default_tools(
             root,
             None,
-            None,
             Vec::new(),
             bash_enabled,
             std::sync::Arc::new(SandboxPolicy::none()),
             bash_live::LiveBashState::new(bash_enabled),
             crate::host::JobRegistry::new(),
+            retained_output::RetainedOutputRegistry::new(),
         )
         .specs()
         .into_iter()
