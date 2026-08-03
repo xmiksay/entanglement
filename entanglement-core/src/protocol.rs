@@ -699,8 +699,8 @@ pub enum AgentMode {
 /// Profiles are **file-defined** in the runtime (markdown + YAML frontmatter,
 /// ADR-0034): `name`/`mode`/`model`/`permission` come from the frontmatter and
 /// `system_prompt` is the file body. `description` drives delegation matching —
-/// it is the one field disclosed to a spawning model (via the `agent`/
-/// `agent_spawn` tool descriptions).
+/// it is the one field disclosed to a spawning model (via the `agent` tool
+/// description).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub name: String,
@@ -744,8 +744,8 @@ pub struct AgentProfile {
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
     /// ⇒ derive from [`mode`][Self::mode]: a `Subagent` leaf defaults closed,
     /// every other mode open. When it (or the derived default) is `false`, the
-    /// whole `agent`/`agent_spawn` family is withheld from the model
-    /// and refused at dispatch — the physical principle of #116 applied to spawn.
+    /// `agent` tool is withheld from the model and refused at dispatch — the
+    /// physical principle of #116 applied to spawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_spawn: Option<bool>,
     /// Allowlist of agent names this profile may spawn (#119, ADR-0040). `None` ⇒
@@ -814,8 +814,8 @@ impl AgentProfile {
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040).
     /// [`can_spawn`][Self::can_spawn] overrides the mode-derived default: a
     /// `Subagent` leaf defaults closed, every other mode open. When this is
-    /// `false` the runtime withholds the whole `agent`/`agent_spawn`
-    /// family and refuses a stale call.
+    /// `false` the runtime withholds the `agent` tool and refuses a stale
+    /// call.
     pub fn may_spawn(&self) -> bool {
         self.can_spawn.unwrap_or(self.mode != AgentMode::Subagent)
     }
@@ -1250,9 +1250,10 @@ pub enum InMsg {
     /// fork (ADR-0110), which sets `predecessor = Some(source)` to record the
     /// session it succeeds *without* joining the source's spawn sub-tree (so
     /// closing the source doesn't cascade onto the successor). The runtime's
-    /// `agent_spawn` tool (or blocking `agent`) issues the child form, then relays
-    /// the child's final answer back to the parent as a tool result — core needs
-    /// no notion of "child session" in its loop.
+    /// `agent` tool (blocking by default, `background: true` for the detached
+    /// form) issues the child form, then relays the child's final answer back
+    /// to the parent as a tool result — core needs no notion of "child
+    /// session" in its loop.
     Spawn {
         session: SessionId,
         #[serde(default)]
@@ -3088,7 +3089,7 @@ mod tests {
         assert!(p.advertises_tool("read"));
         assert!(p.advertises_tool("grep"));
         assert!(!p.advertises_tool("edit"));
-        assert!(!p.advertises_tool("agent_spawn"));
+        assert!(!p.advertises_tool("agent"));
     }
 
     #[test]

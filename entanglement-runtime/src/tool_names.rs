@@ -35,11 +35,10 @@ pub const BINDING_TOOLS: [&str; 7] = ["read", "glob", "grep", "edit", "write", "
 /// tool, `update_plan` removed).
 pub const PROPOSE_PLAN_TOOL: &str = "propose_plan";
 
-/// Tool name the model calls to spawn a sub-agent (non-blocking; renamed from
-/// `spawn_agent` in #120).
-pub const AGENT_SPAWN_TOOL: &str = "agent_spawn";
-
-/// Tool name the model calls to spawn a sub-agent and block for its answer (#120).
+/// Tool name the model calls to spawn a sub-agent — blocks for its answer by
+/// default; `background: true` returns a handle immediately instead, joined
+/// later with `poll` (#120; #606, ADR-0161 §1 — replaces the separate
+/// `agent_spawn` tool it was renamed from).
 pub const AGENT_TOOL: &str = "agent";
 
 /// Records the user-facing task checklist (shared, general bookkeeping).

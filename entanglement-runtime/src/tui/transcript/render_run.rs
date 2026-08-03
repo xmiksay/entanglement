@@ -229,15 +229,15 @@ pub(crate) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
 
 /// A readable collapsed-header hint for the orchestration tools, whose inputs
 /// carry no file path or shell command (so [`permission_arg`] ignores them). The
-/// shapes are confirmed in source (#89/#90/#120/#124/#140/#141):
-/// `agent`/`agent_spawn` → the agent target (+ a truncated prompt);
+/// shapes are confirmed in source (#89/#90/#120/#124/#140/#141/#606):
+/// `agent` → the agent target (+ a truncated prompt);
 /// `poll` → the `handle`; `ask_user` → a truncated `question`;
 /// `propose_plan` → `"plan"`; `update_tasks` → `"snapshot"`; `load_skill` → the
 /// `skill_name`. Returns `None` for every other tool or on malformed input, so
 /// the header falls back to the bare tool name.
 fn orchestration_primary_arg(tool: &str, value: &serde_json::Value) -> Option<String> {
     match tool {
-        "agent" | "agent_spawn" => {
+        "agent" => {
             let agent = value.get("agent")?.as_str()?;
             if let Some(prompt) = value.get("prompt").and_then(|p| p.as_str()) {
                 Some(format!("{agent}  {}", truncate_to_width(prompt, 40)))
@@ -408,27 +408,24 @@ mod tests {
     }
 
     #[test]
-    fn agent_spawn_returns_target_and_truncated_prompt() {
-        let arg = tool_primary_arg(
-            "agent_spawn",
-            r#"{"agent":"explore","prompt":"find the thing"}"#,
-        )
-        .expect("agent_spawn should yield a primary arg");
+    fn agent_returns_target_and_truncated_prompt() {
+        let arg = tool_primary_arg("agent", r#"{"agent":"explore","prompt":"find the thing"}"#)
+            .expect("agent should yield a primary arg");
         assert!(
             arg.contains("explore"),
-            "agent_spawn header must name the target: {arg:?}"
+            "agent header must name the target: {arg:?}"
         );
         assert!(
             arg.contains("find the thing"),
-            "agent_spawn header should surface the prompt: {arg:?}"
+            "agent header should surface the prompt: {arg:?}"
         );
     }
 
     #[test]
-    fn agent_spawn_long_prompt_is_truncated() {
+    fn agent_long_prompt_is_truncated() {
         let long_prompt = "x".repeat(80);
         let input = format!(r#"{{"agent":"explore","prompt":"{long_prompt}"}}"#);
-        let arg = tool_primary_arg("agent_spawn", &input).expect("primary arg");
+        let arg = tool_primary_arg("agent", &input).expect("primary arg");
         // The prompt portion is budgeted to 40 display columns + ellipsis.
         assert!(arg.contains("explore"));
         assert!(arg.contains('…'), "long prompt must be truncated: {arg:?}");

@@ -80,7 +80,7 @@ const AGENTS_DIR_ENV: &str = "ENTANGLEMENT_AGENTS_DIR";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentDefinition {
-    /// Unique id; what `agent_spawn { agent }` / `SetAgent` reference.
+    /// Unique id; what `agent { agent }` / `SetAgent` reference.
     name: String,
     /// One-line summary; the only field disclosed to a spawning model.
     description: String,
@@ -1191,7 +1191,7 @@ mod tests {
             "propose_plan"
         ));
         assert!(plan.advertises_tool("read"));
-        assert!(plan.advertises_tool("agent_spawn"));
+        assert!(plan.advertises_tool("agent"));
         assert!(plan.advertises_tool("load_skill"));
         assert!(plan.advertises_tool("propose_plan"));
         assert!(plan.advertises_tool("edit"));
@@ -1259,7 +1259,7 @@ mod tests {
         assert_eq!(explore.permission.for_tool("write"), Permission::Deny);
         assert!(!explore.advertises_tool("edit"));
         assert!(!explore.advertises_tool("write"));
-        assert!(!explore.advertises_tool("agent_spawn"));
+        assert!(!explore.advertises_tool("agent"));
 
         // `debug`: a spawnable sub-agent with `build`'s own permissions (allow
         // everything, inherit-all tool mask) so it can actually compile/run tests

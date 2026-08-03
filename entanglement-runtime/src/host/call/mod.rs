@@ -19,28 +19,33 @@
 //! its absolute path is named in the result header. Standalone/test constructors
 //! with no scratch base fall back to `<root>/.entanglement/tmp/call-output/`.
 //!
+//! `background: true` (#606, ADR-0161 §1) spawns detached into the shared
+//! [`JobRegistry`] instead — the same mechanism `bash` uses — and returns a job
+//! id to `poll` immediately rather than blocking. It is refused alongside
+//! `input_file`/`output_file`: a backgrounded job's output streams through
+//! `poll`, not a file artifact, and `input_file`'s stdin-feed has no running
+//! wait to pipe into once the call has already returned.
+//!
 //! Like `bash`, an opt-in bubblewrap confinement layer is available
 //! (ADR-0104, [`SandboxPolicy`]).
 
+mod background;
+mod foreground;
 mod format;
 mod output;
 mod validate;
 
-use super::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
-use super::resolve_under_root;
-use super::sandbox::{self, SandboxPolicy};
+use super::jobs::JobRegistry;
+use super::sandbox::SandboxPolicy;
 use crate::policy::SandboxResolver;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
-use format::{format_call_output, format_call_streams};
-use output::{persist_output, resolve_output_target};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 
 const MAX_CALL_TIMEOUT_SECONDS: u64 = 600;
 
@@ -72,6 +77,11 @@ pub struct CallTool {
     /// out of the box, doesn't exist. `None` (the standalone/test constructor
     /// path) is treated as "unavailable".
     bash_status: Option<Arc<crate::bash_live::LiveBashState>>,
+    /// Background-job registry shared with `bash` and `poll` (#606). A private
+    /// per-tool default keeps standalone/TUI construction working; the head
+    /// wires the shared instance via [`CallTool::with_jobs`] so polls reach the
+    /// jobs this tool spawned.
+    jobs: JobRegistry,
 }
 
 impl CallTool {
@@ -83,6 +93,7 @@ impl CallTool {
             sandbox_resolver: Arc::new(SandboxPolicy::none()),
             extra_roots: None,
             bash_status: None,
+            jobs: JobRegistry::new(),
         }
     }
 
@@ -92,6 +103,13 @@ impl CallTool {
         extra: std::sync::Arc<crate::extra_roots::ExtraRootStore>,
     ) -> Self {
         self.extra_roots = Some(extra);
+        self
+    }
+
+    /// Share `jobs` with the runtime-owned `poll` tool so background jobs this
+    /// tool spawns are pollable (#606).
+    pub fn with_jobs(mut self, jobs: JobRegistry) -> Self {
+        self.jobs = jobs;
         self
     }
 
@@ -147,6 +165,11 @@ struct CallInput {
     /// Optional per-call working directory, resolved under the tool root.
     #[serde(default)]
     workdir: Option<String>,
+    /// Spawn detached and return a job id to poll via `poll` instead of
+    /// blocking (#606, ADR-0161 §1). Refused alongside `input_file`/
+    /// `output_file` — see the module doc for why.
+    #[serde(default)]
+    background: bool,
 }
 
 fn default_tail() -> u32 {
@@ -166,7 +189,10 @@ impl Tool for CallTool {
          `[exit N]`, stdout, and a `[stderr]` block, each tailed to its last \
          `tail` lines (default 30 — command value concentrates at the end; \
          `tail=0` for full output, still byte-capped). The full untruncated \
-         output is always persisted to a file (see `output_file`)."
+         output is always persisted to a file (see `output_file`). Pass \
+         `background=true` to start a long process (build, dev server) \
+         detached and get a job id — poll it with `poll`; refused together \
+         with `input_file`/`output_file`."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -215,6 +241,12 @@ impl Tool for CallTool {
                     "description": "Working directory for this call, relative to \
                         the root (must stay under it). Defaults to the root — \
                         use this instead of `bash` just to `cd`."
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Start the command detached and return a job id \
+                        to poll with `poll` instead of blocking. Refused together \
+                        with input_file/output_file. Default false."
                 }
             },
             "required": ["command"]
@@ -258,25 +290,34 @@ impl CallTool {
         let secs = parsed.timeout.unwrap_or(120);
         let dur = std::time::Duration::from_secs(secs.min(MAX_CALL_TIMEOUT_SECONDS));
 
-        // Validate + read input_file, resolve the output target, and resolve
-        // workdir *before* spawning — a bad path (escape, missing input_file,
-        // non-directory workdir) must never launch the child (#381, #386).
-        let stdin_data = match &parsed.input_file {
-            Some(rel) => {
-                let abs = resolve_under_root(&self.root, rel)?;
-                Some(
-                    tokio::fs::read(&abs)
-                        .await
-                        .with_context(|| format!("reading input_file `{rel}`"))?,
-                )
+        if parsed.background {
+            if parsed.input_file.is_some() || parsed.output_file.is_some() {
+                anyhow::bail!(
+                    "call: background=true cannot be combined with input_file/output_file \
+                     — a background job streams through `poll`, not a file artifact"
+                );
             }
-            None => None,
-        };
-        let output_target = resolve_output_target(
-            &self.root,
-            self.scratch_base.as_deref(),
-            &parsed.output_file,
-        )?;
+            let cwd = super::resolve_workdir_or_grant(
+                &self.root,
+                self.extra_roots.as_deref(),
+                "call",
+                request_id,
+                parsed.workdir.as_deref(),
+            )?;
+            return background::spawn_background(
+                &self.root,
+                self.sandbox_resolver.as_ref(),
+                &self.secret_env,
+                &self.jobs,
+                session,
+                &cwd,
+                &parsed.command,
+                &parsed.args,
+                dur,
+            )
+            .await;
+        }
+
         let cwd = super::resolve_workdir_or_grant(
             &self.root,
             self.extra_roots.as_deref(),
@@ -284,93 +325,29 @@ impl CallTool {
             request_id,
             parsed.workdir.as_deref(),
         )?;
-
-        let policy = self.sandbox_resolver.resolve(session);
-        let mut cmd = sandbox::command(&policy, &self.root, &parsed.command, &parsed.args);
-        cmd.current_dir(&cwd)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            // No `input_file` → close stdin explicitly rather than inherit the
-            // engine's real stdin, an unintentional leak until now (#381).
-            .stdin(if stdin_data.is_some() {
-                std::process::Stdio::piped()
-            } else {
-                std::process::Stdio::null()
-            })
-            .kill_on_drop(true);
-        // Own process group so a timeout kills the whole tree, not just the
-        // direct child (a launched server/pipeline would otherwise orphan — #168).
-        own_process_group(&mut cmd);
-        for var in &self.secret_env {
-            cmd.env_remove(var);
-        }
-        let mut child = cmd
-            .spawn()
-            // A missing binary (or non-exec target) surfaces here — return it as
-            // tool output, never panic (ADR-0016 clean-error contract).
-            .with_context(|| format!("spawning `{}`", parsed.command))?;
-
-        // Feed stdin concurrently with draining stdout/stderr (below) so a
-        // chatty child can't deadlock against a full pipe buffer either way.
-        let stdin_task = match (child.stdin.take(), stdin_data) {
-            (Some(mut stdin), Some(data)) => Some(tokio::spawn(async move {
-                let _ = stdin.write_all(&data).await;
-                // `stdin` drops here, closing the pipe (EOF) once fully written.
-            })),
-            _ => None,
-        };
-
-        let outcome = wait_or_kill_group(child, dur).await;
-        if let Some(t) = stdin_task {
-            let _ = t.await;
-        }
-
-        match outcome {
-            Ok(ExecOutcome::Completed { output, io_error }) => {
-                let notice = persist_output(&output_target, &output.stdout, &output.stderr).await?;
-                Ok(with_io_warning(
-                    format_call_output(
-                        output.status.code(),
-                        &output.stdout,
-                        &output.stderr,
-                        parsed.tail,
-                        &output_target.rel,
-                        output_target.explicit,
-                        notice,
-                    ),
-                    io_error,
-                ))
-            }
-            // Return the output buffered before the kill (tailed like a normal
-            // result) alongside the notice — the prefix is often the diagnostic
-            // the model needs (#169). The artifacts get the same partial bytes.
-            Ok(ExecOutcome::TimedOut {
-                stdout,
-                stderr,
-                io_error,
-            }) => {
-                let notice = persist_output(&output_target, &stdout, &stderr).await?;
-                Ok(with_io_warning(
-                    format_call_streams(
-                        &format!("[killed: timed out after {secs}s]\n"),
-                        &stdout,
-                        &stderr,
-                        parsed.tail,
-                        &output_target.rel,
-                        output_target.explicit,
-                        notice,
-                    ),
-                    io_error,
-                ))
-            }
-            Err(e) => Err(anyhow::anyhow!("call io error: {e}")),
-        }
+        foreground::run_foreground(
+            &self.root,
+            self.scratch_base.as_deref(),
+            self.sandbox_resolver.as_ref(),
+            &self.secret_env,
+            session,
+            &cwd,
+            &parsed.command,
+            &parsed.args,
+            &parsed.input_file,
+            &parsed.output_file,
+            parsed.tail,
+            secs,
+            dur,
+        )
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::sandbox;
     use crate::host::MAX_OUTPUT_BYTES;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -761,6 +738,115 @@ mod tests {
             stderr_on_disk.contains("late"),
             "artifact must hold buffered stderr: {stderr_on_disk}"
         );
+    }
+
+    /// #606: `background=true` returns a job id instead of blocking, and the
+    /// spawned process is reachable via the shared [`JobRegistry`] — the same
+    /// mechanism `bash` uses.
+    #[tokio::test]
+    async fn background_spawns_detached_and_is_pollable() {
+        let dir = TempDir::new();
+        let jobs = JobRegistry::new();
+        let tool = CallTool::new(dir.path.clone()).with_jobs(jobs.clone());
+        let input = serde_json::json!({
+            "command": "echo",
+            "args": ["hi"],
+            "background": true,
+        })
+        .to_string();
+        let out = tool.run(&input).await.unwrap();
+        let id = out
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("[background job ")
+                    .and_then(|rest| rest.strip_suffix(" started]"))
+            })
+            .expect("job id in response")
+            .to_string();
+
+        let caller = SessionId::new("test-caller");
+        for _ in 0..50 {
+            let p = jobs
+                .poll(&id, &caller, false, 1)
+                .await
+                .expect("job registered");
+            if p.status == crate::host::jobs::JobStatus::Exited(Some(0)) {
+                return;
+            }
+        }
+        panic!("background call never exited");
+    }
+
+    /// #606, mirroring bash's #617: `timeout` still bounds a backgrounded call.
+    #[tokio::test]
+    async fn background_is_killed_by_timeout() {
+        let dir = TempDir::new();
+        let jobs = JobRegistry::new();
+        let tool = CallTool::new(dir.path.clone()).with_jobs(jobs.clone());
+        let input = serde_json::json!({
+            "command": "sleep",
+            "args": ["30"],
+            "background": true,
+            "timeout": 1,
+        })
+        .to_string();
+        let out = tool.run(&input).await.unwrap();
+        assert!(
+            out.contains("Killed automatically after 1s"),
+            "start notice should mention the bound: {out}"
+        );
+        let id = out
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("[background job ")
+                    .and_then(|rest| rest.strip_suffix(" started]"))
+            })
+            .expect("job id in response")
+            .to_string();
+
+        let caller = SessionId::new("test-caller");
+        let p = jobs
+            .poll(&id, &caller, false, 5)
+            .await
+            .expect("job registered");
+        assert!(p.timed_out, "job should have been killed by its timeout");
+    }
+
+    /// #606: a backgrounded job's output streams through `poll`, not a file
+    /// artifact — `input_file` (whose stdin-feed has no running wait to pipe
+    /// into once the call has already returned) is refused up front, before
+    /// anything spawns.
+    #[tokio::test]
+    async fn background_rejects_input_file() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path.join("in.txt"), "hi").unwrap();
+        let tool = CallTool::new(dir.path.clone());
+        let input = serde_json::json!({
+            "command": "cat",
+            "background": true,
+            "input_file": "in.txt",
+        })
+        .to_string();
+        let err = tool.run(&input).await.unwrap_err();
+        assert!(err.to_string().contains("background=true"), "{err}");
+    }
+
+    /// #606: same refusal for `output_file` — a backgrounded job has no
+    /// foreground wait to persist an artifact from.
+    #[tokio::test]
+    async fn background_rejects_output_file() {
+        let dir = TempDir::new();
+        let tool = CallTool::new(dir.path.clone());
+        let input = serde_json::json!({
+            "command": "echo",
+            "args": ["hi"],
+            "background": true,
+            "output_file": "out.txt",
+        })
+        .to_string();
+        let err = tool.run(&input).await.unwrap_err();
+        assert!(err.to_string().contains("background=true"), "{err}");
+        assert!(!dir.path.join("out.txt").exists());
     }
 
     fn bwrap_policy(network: bool) -> SandboxPolicy {

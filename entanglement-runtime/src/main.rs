@@ -333,14 +333,14 @@ async fn build_config(
 
 /// Assemble the tool registry: the root-contained quintet plus `call`
 /// (registered unconditionally — argv exec, no shell, ADR-0094) and, only when
-/// `bash_enabled`, the opt-in `bash` tool. `jobs` (#605) is the one
-/// process-lifetime `JobRegistry` `poll` was wired up with — shared here (not
-/// minted fresh) so a startup-registered `bash`'s background jobs are the same
-/// ones `poll` can see. `secret_env` (the catalog's provider API-key env vars,
-/// #164) is scrubbed from both exec tools' children. `sandbox_resolver`
-/// (#399/ADR-0104, #479) resolves both `bash` and `call`'s bubblewrap
-/// confinement per session/profile — a resolver that always returns
-/// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
+/// `bash_enabled`, the opt-in `bash` tool. `jobs` (#605; #606) is the one
+/// process-lifetime `JobRegistry` `poll` was wired up with — shared with both
+/// exec tools (not minted fresh) so a `call background=true`/startup-registered
+/// `bash`'s background jobs are the same ones `poll` can see. `secret_env` (the
+/// catalog's provider API-key env vars, #164) is scrubbed from both exec tools'
+/// children. `sandbox_resolver` (#399/ADR-0104, #479) resolves both `bash` and
+/// `call`'s bubblewrap confinement per session/profile — a resolver that always
+/// returns `SandboxPolicy::none()` leaves their spawn behavior unchanged.
 #[allow(clippy::too_many_arguments)]
 fn register_default_tools(
     root: std::path::PathBuf,
@@ -356,7 +356,8 @@ fn register_default_tools(
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
         .with_sandbox_resolver(sandbox_resolver.clone())
-        .with_bash_status(live_bash);
+        .with_bash_status(live_bash)
+        .with_jobs(jobs.clone());
     if let Some(base) = scratch_base {
         call = call.with_scratch_base(base);
     }

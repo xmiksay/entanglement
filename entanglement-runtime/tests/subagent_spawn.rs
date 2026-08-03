@@ -1,8 +1,9 @@
 //! Integration tests for sub-agent spawn. Drives the real runtime tool
-//! executor: the parent model calls `agent_spawn`, which returns a handle
-//! immediately (#89, ADR-0026), then `poll` awaits the child's answer.
-//! The blocking `agent` tool (#120, ADR-0033) spawns and waits in one call.
-//! Spawn limits (#76) and permission gating (#77) still apply per launch.
+//! executor: the parent model calls `agent { background: true }`, which
+//! returns a handle immediately (#89, ADR-0026; #606, ADR-0161), then `poll`
+//! awaits the child's answer. The default (blocking) `agent` call (#120,
+//! ADR-0033) spawns and waits in one call. Spawn limits (#76) and permission
+//! gating (#77) still apply per launch.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,8 +18,8 @@ use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::ToolRegistry;
 use tokio::sync::Notify;
 
-/// Pull an `agent_id` out of an `agent_spawn` result string (format:
-/// `… agent_id: <uuid>. Call poll …`).
+/// Pull an `agent_id` out of a `background: true` `agent` result string
+/// (format: `… agent_id: <uuid>. Call poll …`).
 fn extract_agent_id(s: &str) -> Option<String> {
     let start = s.find("agent_id: ")? + "agent_id: ".len();
     let rest = &s[start..];
@@ -66,11 +67,12 @@ fn last_user<'a>(req: &'a LlmRequest<'_>) -> &'a str {
 }
 
 /// A content-routing LLM shared by the parent and its spawned child. The parent
-/// launches a sub-agent, then polls its handle to collect the answer; the child
-/// answers directly. Parameterized by the profile the parent spawns under and
-/// the child's answer, so it drives the limit/gating tests too.
+/// launches a sub-agent with `background: true`, then polls its handle to
+/// collect the answer; the child answers directly. Parameterized by the
+/// profile the parent spawns under and the child's answer, so it drives the
+/// limit/gating tests too.
 struct SpawnPollLlm {
-    agent_spawn: &'static str,
+    target: &'static str,
     child_answer: &'static str,
 }
 
@@ -92,13 +94,13 @@ impl Llm for SpawnPollLlm {
                 // A refusal (no handle) or a poll result → finish.
                 None => Ok(finish("parent done")),
             },
-            // First parent turn: launch a sub-agent.
+            // First parent turn: launch a sub-agent, non-blocking.
             None => Ok(call(
                 "spawn1",
-                "agent_spawn",
+                "agent",
                 format!(
-                    r#"{{"agent":"{}","prompt":"child-task"}}"#,
-                    self.agent_spawn
+                    r#"{{"agent":"{}","prompt":"child-task","background":true}}"#,
+                    self.target
                 ),
             )),
         }
@@ -121,12 +123,12 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
     // Spawns `explore` (a valid Subagent-mode target). A `primary` like `build`
     // is no longer a spawnable target (#119): the target-mode gate refuses it.
     let cfg = config(|| SpawnPollLlm {
-        agent_spawn: "explore",
+        target: "explore",
         child_answer: "child-answer",
     });
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
-    // Empty registry: `agent_spawn`/`poll` are orchestration, handled
+    // Empty registry: `agent`/`poll` are orchestration, handled
     // before execution.
     spawn_tool_executor(
         &holly,
@@ -159,7 +161,7 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
                 output,
                 ..
             } if session == &parent => {
-                if tool == "agent_spawn" && output.contains("agent_id:") {
+                if tool == "agent" && output.contains("agent_id:") {
                     saw_launch_handle = true;
                 }
                 if tool == "poll" && output.contains("child-answer") {
@@ -180,7 +182,7 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
     );
     assert!(
         saw_launch_handle,
-        "agent_spawn should return an agent_id handle immediately"
+        "agent background=true should return an agent_id handle immediately"
     );
     assert!(
         saw_polled_answer,
@@ -244,14 +246,14 @@ impl Llm for FanOutLlm {
                 tool_calls: vec![
                     ToolCall {
                         id: "s1".into(),
-                        name: "agent_spawn".into(),
-                        input: r#"{"agent":"explore","prompt":"task-a"}"#.into(),
+                        name: "agent".into(),
+                        input: r#"{"agent":"explore","prompt":"task-a","background":true}"#.into(),
                         provider_meta: None,
                     },
                     ToolCall {
                         id: "s2".into(),
-                        name: "agent_spawn".into(),
-                        input: r#"{"agent":"explore","prompt":"task-b"}"#.into(),
+                        name: "agent".into(),
+                        input: r#"{"agent":"explore","prompt":"task-b","background":true}"#.into(),
                         provider_meta: None,
                     },
                 ],
@@ -417,8 +419,8 @@ impl Llm for RecursiveLlm {
             },
             None => Ok(call(
                 "spawn",
-                "agent_spawn",
-                r#"{"agent":"worker","prompt":"recurse"}"#.into(),
+                "agent",
+                r#"{"agent":"worker","prompt":"recurse","background":true}"#.into(),
             )),
         }
     }
@@ -426,27 +428,28 @@ impl Llm for RecursiveLlm {
 
 #[tokio::test]
 async fn read_only_subagent_cannot_spawn() {
-    // A Subagent-mode `explore` leaf is refused the spawn *capability* (#77).
-    assert_leaf_spawn_refused("agent_spawn").await;
+    // A Subagent-mode `explore` leaf is refused the spawn *capability* (#77),
+    // whether the call is non-blocking (`background: true`) …
+    assert_leaf_spawn_refused(true).await;
 }
 
 #[tokio::test]
 async fn read_only_subagent_cannot_use_blocking_agent() {
-    // Refusal parity (#120): the blocking `agent` shares `agent_spawn`'s guard
-    // path, so a read-only leaf is refused it identically.
-    assert_leaf_spawn_refused("agent").await;
+    // … or the default blocking call (#120) — one guard path, so both flag
+    // values are refused identically.
+    assert_leaf_spawn_refused(false).await;
 }
 
 /// Drive a root that spawns a read-only `explore` child; the child (a
-/// Subagent-mode leaf) tries to spawn again with `leaf_tool` and must be refused
-/// the capability. Asserts exactly one child starts and the refusal is relayed —
-/// shared by the `agent_spawn` and `agent` parity tests.
-async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
+/// Subagent-mode leaf) tries to spawn again — with `background` either flag
+/// value — and must be refused the capability. Asserts exactly one child
+/// starts and the refusal is relayed.
+async fn assert_leaf_spawn_refused(background: bool) {
     // Isolate the ADR-0024 capability gate from the #116 tool mask: give this
-    // test's `explore` an allowlist that *advertises* the spawn tools, so the
+    // test's `explore` an allowlist that *advertises* `agent`, so the
     // mask does not preempt — the refusal must then come from the Subagent-mode
     // capability gate ("cannot spawn"), not the mask ("not available"). (The
-    // stock `explore` masks the spawn tools too; that path is covered by the
+    // stock `explore` masks `agent` too; that path is covered by the
     // `tool_mask` tests.)
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
@@ -462,7 +465,6 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
             "read".into(),
             "glob".into(),
             "grep".into(),
-            "agent_spawn".into(),
             "agent".into(),
         ]),
         disallowed_tools: Vec::new(),
@@ -471,9 +473,7 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
         sandbox: None,
     });
     let cfg = EngineConfig {
-        llm_factory: Arc::new(move || {
-            Box::new(ExploreThenSpawnLlm { tool: leaf_tool }) as Box<dyn Llm>
-        }),
+        llm_factory: Arc::new(move || Box::new(ExploreThenSpawnLlm { background }) as Box<dyn Llm>),
         profiles: profiles.clone(),
         ..EngineConfig::default()
     };
@@ -508,21 +508,23 @@ async fn assert_leaf_spawn_refused(leaf_tool: &'static str) {
 
     assert!(
         saw_capability_refusal,
-        "the explore child's `{leaf_tool}` call should be refused as a capability"
+        "the explore child's `agent` call (background={background}) should be \
+         refused as a capability"
     );
     // root(0) + one explore child = 2 sessions; the child's spawn never starts a grandchild.
     assert_eq!(
         sessions_started, 2,
-        "a read-only sub-agent must not start a grandchild via `{leaf_tool}`"
+        "a read-only sub-agent must not start a grandchild via `agent` (background={background})"
     );
 }
 
-/// The root spawns an `explore` sub-agent (always via non-blocking `agent_spawn`)
-/// and polls it; the child (same factory) tries to spawn again with `tool` and is
-/// refused, so the chain stops at one child. Parametrized so the leaf's tool is
-/// either `agent_spawn` or the blocking `agent` — both hit the same guard.
+/// The root spawns an `explore` sub-agent (non-blocking `background: true`)
+/// and polls it; the child (same factory) tries to spawn again — with
+/// `background` either flag value — and is refused, so the chain stops at one
+/// child. Parametrized so both the non-blocking and blocking paths hit the
+/// same guard.
 struct ExploreThenSpawnLlm {
-    tool: &'static str,
+    background: bool,
 }
 
 #[async_trait]
@@ -539,8 +541,11 @@ impl Llm for ExploreThenSpawnLlm {
             },
             None => Ok(call(
                 "spawn",
-                self.tool,
-                r#"{"agent":"explore","prompt":"look"}"#.into(),
+                "agent",
+                format!(
+                    r#"{{"agent":"explore","prompt":"look","background":{}}}"#,
+                    self.background
+                ),
             )),
         }
     }
@@ -803,11 +808,11 @@ impl Llm for ZeroTimeoutPollLlm {
                 // A poll result → finish.
                 None => Ok(finish("parent done")),
             },
-            // First parent turn: launch a sub-agent.
+            // First parent turn: launch a sub-agent, non-blocking.
             None => Ok(call(
                 "spawn1",
-                "agent_spawn",
-                r#"{"agent":"explore","prompt":"child-task"}"#.into(),
+                "agent",
+                r#"{"agent":"explore","prompt":"child-task","background":true}"#.into(),
             )),
         }
     }
@@ -863,7 +868,7 @@ async fn poll_zero_timeout_blocks_until_completion() {
                 output,
                 ..
             })) if session == parent => {
-                if tool == "agent_spawn" && output.contains("agent_id:") {
+                if tool == "agent" && output.contains("agent_id:") {
                     saw_launch_handle = true;
                 }
                 if tool == "poll" {
@@ -874,7 +879,10 @@ async fn poll_zero_timeout_blocks_until_completion() {
         }
     }
     assert!(child_started, "the child should start under the parent");
-    assert!(saw_launch_handle, "agent_spawn should return a handle");
+    assert!(
+        saw_launch_handle,
+        "agent background=true should return a handle"
+    );
     assert!(
         !saw_poll_answer,
         "the timeout_secs:0 poll must NOT return while the child is still running"
@@ -977,7 +985,7 @@ async fn spawn_of_a_primary_target_is_refused() {
     // `build` tries to spawn `plan`, a primary entry agent — the target-mode gate
     // refuses it before a child is minted (#119).
     let cfg = config(|| SpawnPollLlm {
-        agent_spawn: "plan",
+        target: "plan",
         child_answer: "unused",
     });
     let profiles = cfg.profiles.clone();
@@ -1004,7 +1012,7 @@ async fn spawn_outside_the_allowlist_is_refused() {
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| {
             Box::new(SpawnPollLlm {
-                agent_spawn: "helper",
+                target: "helper",
                 child_answer: "unused",
             }) as Box<dyn Llm>
         }),
@@ -1034,7 +1042,7 @@ async fn primary_with_can_spawn_false_cannot_spawn() {
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| {
             Box::new(SpawnPollLlm {
-                agent_spawn: "explore",
+                target: "explore",
                 child_answer: "unused",
             }) as Box<dyn Llm>
         }),
@@ -1053,10 +1061,11 @@ async fn primary_with_can_spawn_false_cannot_spawn() {
 }
 
 #[test]
-fn specs_advertise_the_agent_family_names() {
-    // The rename + new blocking tool are reflected in the advertised specs (#120).
-    // The family is now per-profile (#119): `spawn_specs_for` scopes the roster +
-    // enum to who the spawning profile may target.
+fn specs_advertise_the_agent_tool_with_a_background_flag() {
+    // #606, ADR-0161 §1: `agent_spawn` is retired — one `agent` tool carries a
+    // `background` flag instead. The family is per-profile (#119):
+    // `spawn_specs_for` scopes the roster + enum to who the spawning profile
+    // may target.
     let reg =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let build = reg.get("build").unwrap();
@@ -1065,30 +1074,22 @@ fn specs_advertise_the_agent_family_names() {
     // `poll` (#605) is no longer part of the per-profile spawn family — it
     // rides the shared specs like `ask_user`, since it also joins non-spawn
     // job handles.
-    assert_eq!(names, vec!["agent_spawn", "agent"]);
-    let spawn = &specs[0];
-    let agent = &specs[1];
-    // Both spawning tools take the same `{ agent, prompt }` input shape.
-    assert_eq!(spawn.schema, agent.schema);
+    assert_eq!(names, vec!["agent"]);
+    let agent = &specs[0];
     // The scoped roster is disclosed in both the description and the enum: only
     // spawnable targets (explore), never the primaries (build/plan).
     assert!(
-        spawn.description.contains("explore:"),
+        agent.description.contains("explore:"),
         "roster in description"
     );
-    let enum_names = spawn.schema["properties"]["agent"]["enum"]
+    let enum_names = agent.schema["properties"]["agent"]["enum"]
         .as_array()
         .unwrap();
     assert!(enum_names.iter().any(|n| n == "explore"));
     assert!(!enum_names.iter().any(|n| n == "build"));
-    // The roster is disclosed once — `agent` points at `agent_spawn` instead of
-    // repeating the same lines (token cost, #560 audit).
-    assert!(
-        !agent.description.contains("explore:"),
-        "no duplicate roster on `agent`"
-    );
-    assert!(
-        agent.description.contains("agent_spawn"),
-        "`agent` references the roster's home"
+    assert_eq!(
+        agent.schema["properties"]["background"]["type"],
+        serde_json::json!("boolean"),
+        "the input schema carries a background flag"
     );
 }

@@ -279,7 +279,7 @@ impl ProfileRegistry {
     }
 
     /// Every registered profile, name-sorted for a stable roster (the runtime
-    /// discloses this to a spawning model — see the `agent`/`agent_spawn` tool
+    /// discloses this to a spawning model — see the `agent` tool
     /// descriptions). Sorting keeps the advertised order deterministic across
     /// runs regardless of `HashMap` iteration order.
     pub fn iter(&self) -> impl Iterator<Item = &AgentProfile> {

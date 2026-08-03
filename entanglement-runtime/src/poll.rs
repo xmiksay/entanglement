@@ -1,6 +1,8 @@
 //! `poll` — the single join tool for background work (#605, ADR-0161 §1-4).
 //!
-//! Replaces `bash_output` and `agent_poll` outright — no aliases. Dispatches on
+//! Replaces `bash_output` and `agent_poll` outright — no aliases (and, with
+//! #606, is the only way to join a `background: true` `bash`/`call`/`agent`
+//! launch — `agent_spawn` is gone). Dispatches on
 //! the handle's kind prefix (ADR-0164) to [`crate::host::jobs::JobRegistry`]
 //! (`j-`, a background `bash` job) or [`crate::agent_registry::AgentRegistry`]
 //! (anything else — a sub-agent handle, itself a `s-` session id). Waits up to
@@ -48,23 +50,23 @@ const MAX_TIMEOUT_SECS: u64 = 600;
 pub fn poll_spec() -> ToolSpec {
     ToolSpec::with_schema(
         POLL_TOOL,
-        "Wait on a handle from a background bash job (run_in_background=true) or a \
-         sub-agent launched with agent_spawn. Blocks up to timeout_secs for \
-         something to report — new output or exit for a job, the final answer for \
-         a sub-agent — then returns a running/complete status plus text. A job \
-         poll returns only the output produced since the last poll (drained, so \
-         each call sees only what's new); a sub-agent poll returns its final \
-         answer once complete and can be called again safely. Pass kill: true to \
-         SIGKILL a job's process group (refused for a sub-agent handle — not \
-         supported). Pass timeout_secs: 0 to block until the handle reaches a \
-         terminal state.",
+        "Wait on a handle from a background bash/call job (background=true) or a \
+         sub-agent launched with agent (background=true). Blocks up to \
+         timeout_secs for something to report — new output or exit for a job, \
+         the final answer for a sub-agent — then returns a running/complete \
+         status plus text. A job poll returns only the output produced since \
+         the last poll (drained, so each call sees only what's new); a \
+         sub-agent poll returns its final answer once complete and can be \
+         called again safely. Pass kill: true to SIGKILL a job's process group \
+         (refused for a sub-agent handle — not supported). Pass timeout_secs: 0 \
+         to block until the handle reaches a terminal state.",
         serde_json::json!({
             "type": "object",
             "properties": {
                 "handle": {
                     "type": "string",
-                    "description": "The handle to await: a job id from bash \
-                        run_in_background=true, or an agent_id from agent_spawn."
+                    "description": "The handle to await: a job id from bash/call \
+                        background=true, or an agent_id from agent background=true."
                 },
                 "timeout_secs": {
                     "type": "integer",
@@ -141,8 +143,8 @@ async fn resolve(
     input: &str,
 ) -> String {
     let Some(parsed) = parse_input(input) else {
-        return "poll: missing handle — pass the id returned by bash \
-                (run_in_background=true) or agent_spawn."
+        return "poll: missing handle — pass the id returned by bash/call/agent \
+                (background=true)."
             .to_string();
     };
 
@@ -218,8 +220,7 @@ fn kill_refused_message(handle: &str) -> String {
 fn unknown_handle(handle: &str) -> String {
     format!(
         "poll: unknown handle `{handle}` — it was never launched from this \
-         session (use the id returned by bash run_in_background=true or \
-         agent_spawn)."
+         session (use the id returned by bash/call/agent background=true)."
     )
 }
 
@@ -340,11 +341,7 @@ mod tests {
         let bash = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
         let session = SessionId::new("s1");
         let started = bash
-            .run_for_session(
-                &session,
-                "r1",
-                r#"{"command":"echo hi","run_in_background":true}"#,
-            )
+            .run_for_session(&session, "r1", r#"{"command":"echo hi","background":true}"#)
             .await
             .unwrap();
         let started_text = entanglement_core::content_text(&started);
@@ -382,11 +379,7 @@ mod tests {
         let bash = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
         let owner = SessionId::new("owner");
         let started = bash
-            .run_for_session(
-                &owner,
-                "r1",
-                r#"{"command":"echo hi","run_in_background":true}"#,
-            )
+            .run_for_session(&owner, "r1", r#"{"command":"echo hi","background":true}"#)
             .await
             .unwrap();
         let started_text = entanglement_core::content_text(&started);

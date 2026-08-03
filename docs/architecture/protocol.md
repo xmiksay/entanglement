@@ -183,7 +183,7 @@ sub-tree (**#180**): the supervisor walks the child→parent links and closes ev
 transitive descendant alongside the target, so a spawned sub-agent is never left
 orphaned — running with no consumer for its answers and burning provider tokens.
 (This is the explicit-destroy path only; a parent `Stop` still does *not* cascade
-to un-polled `agent`/`agent_spawn` children, ADR-0026 — collected via `poll`, #605.) Session ids are single-use: after
+to un-polled `agent { background: true }` children, ADR-0026 — collected via `poll`, #605.) Session ids are single-use: after
 `SessionEnded`, mint a fresh id — `SessionId::new_uuid()` (kept name for
 call-site compatibility; it mints the ADR-0164 `s-<hex>` scheme, not an actual
 UUID) or, when a `Holly` handle is in scope, `Holly::next_id(IdKind::Session)`

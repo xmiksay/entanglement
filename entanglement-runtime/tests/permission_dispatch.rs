@@ -111,7 +111,7 @@ fn spawn_with_bash_call(input: &str) -> Holly {
 /// Built-ins plus an `askbash` profile that *advertises* bash (no tool mask) but
 /// grades it `Ask` — none of the built-ins default to `Ask` on bash (build is
 /// `Allow`-by-default, explore/plan grade it explicitly but `plan` is normally
-/// masked to it via `agent_spawn` delegation rather than calling it directly),
+/// masked to it via `agent` delegation rather than calling it directly),
 /// so the Ask dispatch path needs a dedicated profile.
 fn ask_bash_registry() -> ProfileRegistry {
     let mut profiles =

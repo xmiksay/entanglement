@@ -3,7 +3,7 @@
 //! per-question multi-select — supersedes parts of ADR-0027; #515: list/
 //! retract/replace an open question).
 //!
-//! Like `agent_spawn` (ADR-0022), `ask_user` is a runtime-owned tool intercepted
+//! Like `agent` (ADR-0022), `ask_user` is a runtime-owned tool intercepted
 //! on [`OutEvent::ToolExec`] *before* permission resolution: it touches no host
 //! resource, so it bypasses the permission profile. When the model calls it,
 //! [`run_ask_user`] surfaces the questions to the head via a dedicated
@@ -40,7 +40,7 @@ use crate::seam;
 use crate::tool_names::ASK_USER_TOOL;
 
 /// The `ask_user` tool schema advertised to the model. Appended to the engine's
-/// `tool_specs` alongside the host quintet and `agent_spawn`.
+/// `tool_specs` alongside the host quintet and `agent`.
 pub fn ask_user_spec() -> ToolSpec {
     ToolSpec::with_schema(
         ASK_USER_TOOL,

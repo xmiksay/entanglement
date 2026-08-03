@@ -155,7 +155,7 @@ async fn ownerless_job_is_visible_to_any_caller() {
 }
 
 /// #617: a background job must be killed once it outlives its timeout,
-/// not left running forever just because `run_in_background` was set.
+/// not left running forever just because `background` was set.
 #[tokio::test]
 async fn spawn_kills_job_that_outlives_timeout() {
     let reg = JobRegistry::new();
