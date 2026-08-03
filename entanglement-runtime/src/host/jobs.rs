@@ -11,10 +11,19 @@
 //! each buffer is still capped at [`MAX_JOB_BUFFER`]; overflow drops the
 //! **oldest** bytes (the tail — the live tip — is what matters) and is counted so
 //! the poll can report it.
+//!
+//! A *finished* job's entry — its command string and final exit state — used to
+//! live in the map for the registry's entire lifetime (#621). It's now evicted
+//! [`JOB_TTL`] after it finishes, or sooner if the number of finished entries
+//! exceeds [`MAX_FINISHED_JOBS`] (oldest-finished evicted first). Eviction is a
+//! lazy sweep run from `spawn`/`poll` rather than a dedicated background task —
+//! the registry has no event loop of its own and both entry points are already
+//! called at a cadence that keeps the map bounded. Running jobs are never
+//! evicted; only a real process exit retires an entry.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
@@ -25,6 +34,15 @@ use entanglement_core::{DefaultIdGen, IdGen, IdKind};
 /// worst case where the model spawns a chatty job and never polls it. Generous
 /// enough that a normal build/test run polled at a sane cadence never drops.
 const MAX_JOB_BUFFER: usize = 256 * 1024;
+
+/// How long a finished job's entry stays in the registry before eviction —
+/// generous enough that a model polling at a normal cadence always sees the
+/// final status before it's gone (#621).
+const JOB_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// Hard cap on retained *finished* job entries, independent of `JOB_TTL` —
+/// bounds a burst of many short jobs spawned faster than the TTL clears them.
+const MAX_FINISHED_JOBS: usize = 200;
 
 /// Terminal or in-progress state of a background job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +66,9 @@ struct JobState {
     /// outran its bound — distinguishes an enforced deadline from a `kill=true`
     /// poll, which also lands as `Exited(None)`.
     timed_out: bool,
+    /// Set alongside `finished`, once the process exits — the eviction clock
+    /// starts here, not at spawn time (#621).
+    finished_at: Option<Instant>,
 }
 
 struct Job {
@@ -127,6 +148,7 @@ impl JobRegistry {
         mut cmd: Command,
         timeout: Duration,
     ) -> std::io::Result<String> {
+        self.evict_expired();
         let mut child = cmd.spawn()?;
         let pgid = child.id();
         let job = Arc::new(Job {
@@ -151,7 +173,9 @@ impl JobRegistry {
             let code = child.wait().await.ok().and_then(|s| s.code());
             let _ = out.await;
             let _ = err.await;
-            job.state.lock().expect("job state poisoned").finished = Some(code);
+            let mut st = job.state.lock().expect("job state poisoned");
+            st.finished = Some(code);
+            st.finished_at = Some(Instant::now());
         });
 
         tokio::spawn(async move {
@@ -177,9 +201,20 @@ impl JobRegistry {
         Ok(id)
     }
 
+    /// Remove finished job entries whose `JOB_TTL` has elapsed, then — if still
+    /// over `MAX_FINISHED_JOBS` — evict the oldest-finished until back under it.
+    /// Running jobs are never touched. Called from `spawn`/`poll` (the registry's
+    /// only two entry points) so the map stays bounded without a dedicated sweep
+    /// task (#621).
+    fn evict_expired(&self) {
+        let mut jobs = self.inner.jobs.lock().expect("job registry poisoned");
+        sweep(&mut jobs, Instant::now(), JOB_TTL, MAX_FINISHED_JOBS);
+    }
+
     /// Poll a job for output since the last poll. `kill` SIGKILLs the whole
     /// process group first. Returns `None` if the id is unknown.
     pub fn poll(&self, id: &str, kill: bool) -> Option<Poll> {
+        self.evict_expired();
         let job = self
             .inner
             .jobs
@@ -209,6 +244,37 @@ impl JobRegistry {
             timed_out: st.timed_out,
             timeout_secs: job.timeout.as_secs(),
         })
+    }
+}
+
+/// Pure eviction logic, extracted so it's testable without waiting on a real
+/// clock: remove finished entries older than `ttl`, then trim to `cap` by
+/// dropping the oldest-finished first. A job with no `finished_at` (still
+/// running) is never a candidate.
+fn sweep(jobs: &mut HashMap<String, Arc<Job>>, now: Instant, ttl: Duration, cap: usize) {
+    jobs.retain(|_, job| {
+        job.state
+            .lock()
+            .expect("job state poisoned")
+            .finished_at
+            .map(|at| now.saturating_duration_since(at) < ttl)
+            .unwrap_or(true)
+    });
+    if jobs.len() > cap {
+        let mut finished: Vec<(String, Instant)> = jobs
+            .iter()
+            .filter_map(|(id, job)| {
+                job.state
+                    .lock()
+                    .expect("job state poisoned")
+                    .finished_at
+                    .map(|at| (id.clone(), at))
+            })
+            .collect();
+        finished.sort_by_key(|(_, at)| *at);
+        for (id, _) in finished.into_iter().take(jobs.len() - cap) {
+            jobs.remove(&id);
+        }
     }
 }
 
@@ -256,107 +322,4 @@ fn push_capped(buf: &mut Vec<u8>, dropped: &mut u64, data: &[u8]) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sh(script: &str) -> Command {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", script])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        super::super::exec::own_process_group(&mut cmd);
-        cmd
-    }
-
-    #[tokio::test]
-    async fn spawn_poll_captures_output_and_exit() {
-        let reg = JobRegistry::new();
-        let id = reg
-            .spawn(
-                "echo hi".into(),
-                sh("echo hi; echo boom 1>&2"),
-                Duration::from_secs(60),
-            )
-            .unwrap();
-        // Give the reaper time to finish and flip status.
-        for _ in 0..50 {
-            let p = reg.poll(&id, false).unwrap();
-            if p.status == JobStatus::Exited(Some(0)) {
-                assert_eq!(String::from_utf8_lossy(&p.stdout).trim(), "hi");
-                assert_eq!(String::from_utf8_lossy(&p.stderr).trim(), "boom");
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        panic!("job never reached Exited(0)");
-    }
-
-    #[tokio::test]
-    async fn poll_is_incremental_then_drains() {
-        let reg = JobRegistry::new();
-        let id = reg
-            .spawn(
-                "echo one; sleep 30".into(),
-                sh("echo one; sleep 30"),
-                Duration::from_secs(60),
-            )
-            .unwrap();
-        // First poll eventually sees "one" while still running.
-        let mut seen = false;
-        for _ in 0..50 {
-            let p = reg.poll(&id, false).unwrap();
-            if String::from_utf8_lossy(&p.stdout).contains("one") {
-                assert_eq!(p.status, JobStatus::Running);
-                seen = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(seen, "first poll never saw the emitted line");
-        // A poll drains the buffer, so the immediate next poll has no new output.
-        let p2 = reg.poll(&id, false).unwrap();
-        assert!(p2.stdout.is_empty(), "second poll should be drained");
-        // Kill it so the test process group doesn't leak.
-        let _ = reg.poll(&id, true);
-    }
-
-    /// #617: a background job must be killed once it outlives its timeout,
-    /// not left running forever just because `run_in_background` was set.
-    #[tokio::test]
-    async fn spawn_kills_job_that_outlives_timeout() {
-        let reg = JobRegistry::new();
-        let id = reg
-            .spawn(
-                "sleep 30".into(),
-                sh("sleep 30"),
-                Duration::from_millis(200),
-            )
-            .unwrap();
-        for _ in 0..100 {
-            let p = reg.poll(&id, false).unwrap();
-            if p.timed_out {
-                assert_eq!(p.status, JobStatus::Exited(None));
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        panic!("job was not killed by its timeout");
-    }
-
-    #[tokio::test]
-    async fn poll_unknown_job_is_none() {
-        let reg = JobRegistry::new();
-        assert!(reg.poll("j-unknown999", false).is_none());
-    }
-
-    #[test]
-    fn push_capped_drops_oldest_over_cap() {
-        let mut buf = Vec::new();
-        let mut dropped = 0;
-        let big = vec![b'x'; MAX_JOB_BUFFER + 100];
-        push_capped(&mut buf, &mut dropped, &big);
-        assert_eq!(buf.len(), MAX_JOB_BUFFER);
-        assert_eq!(dropped, 100);
-    }
-}
+mod tests;
