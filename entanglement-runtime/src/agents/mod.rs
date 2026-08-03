@@ -1245,9 +1245,13 @@ mod tests {
         assert!(explore.advertises_tool("grep"));
         assert!(explore.advertises_tool("call"));
         assert!(explore.advertises_tool("bash"));
+        // #615: `bash_output` rides along with `bash` so a background job
+        // `explore` starts is actually readable, not a write-only dead-end.
+        assert!(explore.advertises_tool("bash_output"));
         assert!(explore.advertises_tool("rhai"));
         assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
         assert_eq!(explore.permission.for_tool("bash"), Permission::Ask);
+        assert_eq!(explore.permission.for_tool("bash_output"), Permission::Ask);
         assert_eq!(explore.permission.for_tool("call"), Permission::Ask);
         assert_eq!(explore.permission.for_tool("rhai"), Permission::Ask);
         assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);

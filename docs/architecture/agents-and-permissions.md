@@ -357,8 +357,8 @@ below realize one model:
   | Profile | mode | tools mask | permission | spawn |
   | --- | --- | --- | --- | --- |
   | `build` (default) | primary | none — every registered tool exists | `default: allow` — everything Allow | may spawn `explore`/`debug` |
-  | `plan` | primary | `read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, propose_plan, write, edit` — no exec | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
-  | `explore` | subagent | `read, glob, grep, call, bash, rhai` | `default: deny`; read triad Allow, exec triad at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) | cannot spawn |
+  | `plan` | primary | `read, glob, grep, agent, agent_spawn, agent_poll, ask_user, load_skill, propose_plan, write, edit, call, bash` — `call`/`bash` are on the mask only so a spawned `explore` child keeps its own access ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597) | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
+  | `explore` | subagent | `read, glob, grep, call, bash, bash_output, rhai` | `default: deny`; read triad Allow, exec set at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — `bash_output` rides along with `bash` so a background job it starts is actually readable (#615) | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
 
   Three cross-cutting facts complete the picture: **(1)** `bash`/`bash_output`
@@ -549,9 +549,12 @@ below realize one model:
   can say "restricted by its own profile" vs "restricted by ancestor agent
   `<name>`'s profile" instead of a blanket, unattributed "restricted by
   profile". `explore` is the reference read-only agent: `tools: [read, glob,
-  grep, call, bash, rhai]` — no `edit`/`write`/`agent_spawn`, but `call`/`bash`/
-  `rhai` are graded `Ask` (ADR-0137) rather than masked out, so a research
-  child isn't hard-blocked from shell access, only approval-gated on it.
+  grep, call, bash, bash_output, rhai]` — no `edit`/`write`/`agent_spawn`, but
+  `call`/`bash`/`bash_output`/`rhai` are graded `Ask` (ADR-0137) rather than
+  masked out, so a research child isn't hard-blocked from shell access, only
+  approval-gated on it. `bash_output` rides along with `bash` (#615) so a
+  background job started via `bash{run_in_background: true}` is actually
+  readable, not a write-only dead end.
   It is also the **default** `agent_spawn`/`agent` target (`DEFAULT_SUBAGENT` in
   `entanglement_runtime::subagent`) when the caller omits `agent` — the safe
   choice for an unscoped delegation. But it is also, by design, the *only*
