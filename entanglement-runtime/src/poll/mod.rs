@@ -234,11 +234,16 @@ async fn resolve(
     } else if is_retained_handle(&parsed.handle) {
         resolve_retained(retained, session, &parsed)
     } else {
-        resolve_agent(agents, session, parsed).await
+        resolve_agent(agents, retained, session, parsed).await
     }
 }
 
-async fn resolve_agent(agents: &AgentRegistry, session: &SessionId, parsed: PollInput) -> String {
+async fn resolve_agent(
+    agents: &AgentRegistry,
+    retained: &RetainedOutputRegistry,
+    session: &SessionId,
+    parsed: PollInput,
+) -> String {
     if parsed.kill {
         return kill_refused_message(&parsed.handle);
     }
@@ -255,7 +260,7 @@ async fn resolve_agent(agents: &AgentRegistry, session: &SessionId, parsed: Poll
         // the watch sender drops).
         match wait_complete(&mut rx).await {
             AgentStatus::Complete { answer, elapsed } => {
-                format_agent_answer(&parsed.handle, elapsed, answer)
+                format_agent_answer(&parsed.handle, elapsed, answer, retained, Some(session))
             }
             AgentStatus::Running => unreachable!("wait_complete returns only on completion"),
         }
@@ -267,7 +272,7 @@ async fn resolve_agent(agents: &AgentRegistry, session: &SessionId, parsed: Poll
         .await
         {
             Ok(AgentStatus::Complete { answer, elapsed }) => {
-                format_agent_answer(&parsed.handle, elapsed, answer)
+                format_agent_answer(&parsed.handle, elapsed, answer, retained, Some(session))
             }
             Ok(AgentStatus::Running) => unreachable!("wait_complete returns only on completion"),
             Err(_) => format!(

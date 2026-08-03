@@ -41,6 +41,8 @@ use entanglement_core::{
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 use crate::agent_registry::{AgentRegistry, AgentStatus};
+use crate::host::MAX_OUTPUT_BYTES;
+use crate::retained_output::RetainedOutputRegistry;
 use crate::seam::reply;
 use crate::tool_names::AGENT_TOOL;
 
@@ -312,6 +314,7 @@ pub async fn launch_subagent(
     holly: Holly,
     events: Receiver<OutEvent>,
     registry: AgentRegistry,
+    retained: RetainedOutputRegistry,
     parent: SessionId,
     request_id: String,
     input: String,
@@ -320,6 +323,7 @@ pub async fn launch_subagent(
         holly,
         events,
         registry,
+        retained,
         parent,
         request_id,
         input,
@@ -337,6 +341,7 @@ pub async fn run_agent(
     holly: Holly,
     events: Receiver<OutEvent>,
     registry: AgentRegistry,
+    retained: RetainedOutputRegistry,
     parent: SessionId,
     request_id: String,
     input: String,
@@ -345,6 +350,7 @@ pub async fn run_agent(
         holly,
         events,
         registry,
+        retained,
         parent,
         request_id,
         input,
@@ -358,10 +364,12 @@ pub async fn run_agent(
 /// they reply: a detached launch hands the handle back before watching the
 /// child; a blocking launch watches first, then replies the answer. Both
 /// record the answer into `registry`.
+#[allow(clippy::too_many_arguments)]
 async fn launch(
     holly: Holly,
     mut events: Receiver<OutEvent>,
     registry: AgentRegistry,
+    retained: RetainedOutputRegistry,
     parent: SessionId,
     request_id: String,
     input: String,
@@ -432,9 +440,9 @@ async fn launch(
     if mode == LaunchMode::AwaitAnswer {
         reply(
             &holly,
-            parent,
+            parent.clone(),
             request_id,
-            format_agent_answer(&child, elapsed, answer),
+            format_agent_answer(&child, elapsed, answer, &retained, Some(&parent)),
         )
         .await;
     }
@@ -446,18 +454,45 @@ async fn launch(
 /// conclusion survives truncation — the same shape `bash`/`call`/`rhai` now
 /// share instead of returning an unbounded answer (#622). Shared by the
 /// blocking `agent` path ([`launch`]) and `poll`.
+///
+/// Capping alone would trade a context blow-up for silently discarded work
+/// (#614), so a truncated answer also mints a retained-output handle
+/// (`owner`-scoped, the same "work you might still have questions about" rule
+/// `call` follows) that `poll` pages the rest of.
 pub fn format_agent_answer(
     agent_id: impl std::fmt::Display,
     elapsed: Duration,
     answer: String,
+    retained: &RetainedOutputRegistry,
+    owner: Option<&SessionId>,
 ) -> String {
-    crate::host::bounded_result(
-        &format!(
-            "sub-agent `{agent_id}` completed in {:.1}s:\n\n",
-            elapsed.as_secs_f64()
-        ),
-        answer,
-    )
+    let status = format!(
+        "sub-agent `{agent_id}` completed in {:.1}s:\n\n",
+        elapsed.as_secs_f64()
+    );
+    bound_answer(status, answer, retained, owner)
+}
+
+/// Shared truncation-with-a-handle shape for a sub-agent's answer: `status` is
+/// kept verbatim, `answer` gets [`crate::host::bounded_result`]'s head+tail
+/// byte cap, and if the combined result would overflow, the *full* `answer`
+/// is registered with `retained` (scoped to `owner`) so `poll` can page past
+/// the cap instead of the excess vanishing (#614). Shared by
+/// [`format_agent_answer`] and the sponsored-build reply in `propose_plan`,
+/// whose status line names the plan file too.
+pub(crate) fn bound_answer(
+    mut status: String,
+    answer: String,
+    retained: &RetainedOutputRegistry,
+    owner: Option<&SessionId>,
+) -> String {
+    if status.len() + answer.len() > MAX_OUTPUT_BYTES {
+        let handle = retained.register_text(owner.cloned(), answer.clone());
+        status.push_str(&format!(
+            "[answer truncated — poll(handle=\"{handle}\") for the rest]\n"
+        ));
+    }
+    crate::host::bounded_result(&status, answer)
 }
 
 /// Watch the child's event stream, accumulating its assistant text until the
@@ -601,7 +636,14 @@ mod tests {
         let mut answer = String::from("HEAD_MARKER");
         answer.push_str(&"x".repeat(MAX_OUTPUT_BYTES * 2));
         answer.push_str("TAIL_MARKER");
-        let out = format_agent_answer(SessionId::new("child-1"), Duration::from_secs(3), answer);
+        let retained = RetainedOutputRegistry::new();
+        let out = format_agent_answer(
+            SessionId::new("child-1"),
+            Duration::from_secs(3),
+            answer,
+            &retained,
+            None,
+        );
         assert!(
             out.starts_with("sub-agent `child-1` completed in 3.0s:\n\n"),
             "status line dropped: {out}"
@@ -613,12 +655,50 @@ mod tests {
 
     #[test]
     fn format_agent_answer_passes_through_small_answer() {
+        let retained = RetainedOutputRegistry::new();
         let out = format_agent_answer(
             SessionId::new("child-1"),
             Duration::from_secs(1),
             "hi".to_string(),
+            &retained,
+            None,
         );
         assert_eq!(out, "sub-agent `child-1` completed in 1.0s:\n\nhi");
+    }
+
+    /// #614: a truncated answer isn't just capped — it mints a retained-output
+    /// handle so `poll` can page the rest, scoped to the given `owner`.
+    #[test]
+    fn format_agent_answer_truncation_mints_a_retained_handle() {
+        use crate::host::MAX_OUTPUT_BYTES;
+        let answer = "x".repeat(MAX_OUTPUT_BYTES * 2);
+        let retained = RetainedOutputRegistry::new();
+        let owner = SessionId::new("parent-1");
+        let out = format_agent_answer(
+            SessionId::new("child-1"),
+            Duration::from_secs(2),
+            answer.clone(),
+            &retained,
+            Some(&owner),
+        );
+        let handle = out
+            .lines()
+            .find_map(|l| l.split("poll(handle=\"").nth(1))
+            .and_then(|s| s.split('"').next())
+            .expect("handle in output");
+        let page = retained
+            .page(handle, &owner, 0, 0)
+            .expect("retained entry exists for the owner");
+        assert!(
+            page.text.contains(&answer[answer.len() - 100..]),
+            "full answer recoverable via the handle"
+        );
+        assert!(
+            retained
+                .page(handle, &SessionId::new("stranger"), 0, 0)
+                .is_none(),
+            "handle is scoped to the owner"
+        );
     }
 
     /// Drain `sub` for up to a short deadline, returning the first event
