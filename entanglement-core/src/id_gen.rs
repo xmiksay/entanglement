@@ -23,6 +23,10 @@ pub enum IdKind {
     Job,
     /// Runtime-minted request/correlation id.
     Request,
+    /// Retained output from a completed operation that overflowed its
+    /// tail/byte cap (#608, ADR-0161 §7) — a blocking `call` that truncated,
+    /// paged the rest of the way via `poll`.
+    Output,
 }
 
 impl IdKind {
@@ -31,6 +35,7 @@ impl IdKind {
             IdKind::Session => 's',
             IdKind::Job => 'j',
             IdKind::Request => 'r',
+            IdKind::Output => 'o',
         }
     }
 }
@@ -128,6 +133,7 @@ mod tests {
             (IdKind::Session, 's'),
             (IdKind::Job, 'j'),
             (IdKind::Request, 'r'),
+            (IdKind::Output, 'o'),
         ] {
             let id = gen.next(kind);
             assert_eq!(id.len(), 15, "unexpected length for {id}");

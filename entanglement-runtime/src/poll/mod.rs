@@ -4,23 +4,39 @@
 //! #606, is the only way to join a `background: true` `bash`/`call`/`agent`
 //! launch — `agent_spawn` is gone). Dispatches on
 //! the handle's kind prefix (ADR-0164) to [`crate::host::jobs::JobRegistry`]
-//! (`j-`, a background `bash` job) or [`crate::agent_registry::AgentRegistry`]
-//! (anything else — a sub-agent handle, itself a `s-` session id). Waits up to
-//! `timeout_secs` (default 60, cap 600, `0` = wait until terminal) for
-//! something to report:
+//! (`j-`, a background `bash` job),
+//! [`crate::retained_output::RetainedOutputRegistry`] (`o-`, a completed
+//! operation's output that overflowed its cap — #608, ADR-0161 §7), or
+//! [`crate::agent_registry::AgentRegistry`] (anything else — a sub-agent
+//! handle, itself a `s-` session id). Waits up to `timeout_secs` (default 60,
+//! cap 600, `0` = wait until terminal) for something to report:
 //!
 //! - a **job** poll ends on new output *or* exit, whichever comes first, and
 //!   returns the incremental delta since the last poll — still destructive,
 //!   still `mem::take` (mirrors `bash_output`'s drain);
+//! - a **retained-output** poll never waits (the operation already finished)
+//!   and instead pages the text with `offset`/`tail` — see below;
 //! - an **agent** poll ends only on the child's completion and returns its
 //!   final answer — idempotent, a later poll of the same handle repeats it
 //!   (mirrors `agent_poll`'s `watch`-channel wait).
 //!
-//! `kill: true` SIGKILLs a job's process group; refused on an agent handle —
-//! cancelling a child is a distinct authorization gate ADR-0033 deferred, and
-//! this ADR does not open it. An unknown (or not-the-caller's-own) handle is an
-//! *error*, adopting `agent_poll`'s convention over `bash_output`'s
-//! return-it-as-text.
+//! `kill: true` SIGKILLs a job's process group; refused on an agent or
+//! retained-output handle — cancelling a child is a distinct authorization
+//! gate ADR-0033 deferred, and a retained-output entry has nothing running to
+//! kill. An unknown (or not-the-caller's-own) handle is an *error*, adopting
+//! `agent_poll`'s convention over `bash_output`'s return-it-as-text.
+//!
+//! **`offset`/`tail` page a retained-output handle** (#608, ADR-0161 §7): the
+//! operation registry that already holds a completed operation now holds its
+//! output too, so the model can read the remainder without a scratch file.
+//! `offset` (default 0) is a 0-based line index into the retained text;
+//! `tail` (default 30, matching `call`'s own default and for the same reason —
+//! value concentrates at the end) is how many lines to return from there,
+//! `0` meaning the rest, still byte-capped. A retained entry whose operation
+//! had an explicit `output_file` (a real file the model asked for, not a
+//! truncation workaround) is named instead of paged — the one place a path
+//! still appears. `offset`/`tail` are ignored for job/agent handles, which
+//! have their own shape.
 //!
 //! Called with **no `handle`** (#607, ADR-0161 §6), `poll` instead lists this
 //! session's own pending operations — every outstanding job/sub-agent it
@@ -32,8 +48,10 @@
 //! *before* permission resolution (ADR-0161 §3): it starts nothing and touches
 //! no host resource — it only reads state a previously-graded launch produced.
 //! The descendant check (§4) is the same ownership scoping `JobRegistry`/
-//! `AgentRegistry` already enforce: a handle is only ever visible to the
-//! session that launched it.
+//! `AgentRegistry`/`RetainedOutputRegistry` already enforce: a handle is only
+//! ever visible to the session that launched it.
+
+mod retained;
 
 use std::time::Duration;
 
@@ -42,52 +60,84 @@ use tokio::sync::watch;
 
 use crate::agent_registry::{AgentRegistry, AgentStatus};
 use crate::host::jobs::{JobRegistry, JobStatus, Poll as JobPoll};
+use crate::retained_output::RetainedOutputRegistry;
 use crate::seam::reply;
 use crate::subagent::format_agent_answer;
 use crate::tool_names::POLL_TOOL;
+use retained::{is_retained_handle, resolve_retained};
 
 /// Default poll timeout when the model omits `timeout_secs`.
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Upper bound on a single poll's wait so one call can't park the parent turn
 /// indefinitely — the model is expected to poll again rather than block forever.
 const MAX_TIMEOUT_SECS: u64 = 600;
+/// Default page size for a retained-output poll (#608) — the same default
+/// `call`'s own `tail` uses, for the same reason (value concentrates at the
+/// end of a normal result, so an unbounded first page would reintroduce the
+/// context blow-up the cap exists to prevent).
+const DEFAULT_TAIL: u32 = crate::host::DEFAULT_TAIL;
 
 /// The `poll` tool schema advertised to the model.
 pub fn poll_spec() -> ToolSpec {
     ToolSpec::with_schema(
         POLL_TOOL,
-        "Wait on a handle from a background bash/call job (background=true) or a \
-         sub-agent launched with agent (background=true). Blocks up to \
-         timeout_secs for something to report — new output or exit for a job, \
-         the final answer for a sub-agent — then returns a running/complete \
-         status plus text. A job poll returns only the output produced since \
-         the last poll (drained, so each call sees only what's new); a \
-         sub-agent poll returns its final answer once complete and can be \
-         called again safely. Pass kill: true to SIGKILL a job's process group \
-         (refused for a sub-agent handle — not supported). Pass timeout_secs: 0 \
-         to block until the handle reaches a terminal state. Call with no \
-         handle at all to instead list this session's own pending operations \
-         — every background job/sub-agent still outstanding, with kind, \
-         handle, launcher, elapsed time, and status.",
+        "Wait on a handle from a background bash/call job (background=true), a \
+         sub-agent launched with agent (background=true), or a completed \
+         operation's retained output (returned alongside a truncated call \
+         result). Blocks up to timeout_secs for something to report — new \
+         output or exit for a job, the final answer for a sub-agent — then \
+         returns a running/complete status plus text. A job poll returns only \
+         the output produced since the last poll (drained, so each call sees \
+         only what's new); a sub-agent poll returns its final answer once \
+         complete and can be called again safely; a retained-output poll \
+         never waits (the operation already finished) and instead pages the \
+         text with offset/tail — offset (default 0) is a 0-based line index, \
+         tail (default 30, matching call's own default) is how many lines to \
+         return from there, 0 meaning the rest (still byte-capped). When the \
+         operation had an explicit output_file, the poll result names that \
+         path instead of paging text. Pass kill: true to SIGKILL a job's \
+         process group (refused for a sub-agent or retained-output handle — \
+         not supported). Pass timeout_secs: 0 to block until the handle \
+         reaches a terminal state. Call with no handle at all to instead list \
+         this session's own pending operations — every background \
+         job/sub-agent still outstanding, with kind, handle, launcher, \
+         elapsed time, and status.",
         serde_json::json!({
             "type": "object",
             "properties": {
                 "handle": {
                     "type": "string",
                     "description": "The handle to await: a job id from bash/call \
-                        background=true, or an agent_id from agent background=true. \
+                        background=true, an agent_id from agent background=true, or a \
+                        retained-output id returned alongside a truncated call result. \
                         Omit to list this session's pending operations instead."
                 },
                 "timeout_secs": {
                     "type": "integer",
                     "description": "Max seconds to wait this poll before returning a \
                         still-running status. Defaults to 60, capped at 600. 0 means \
-                        wait indefinitely for a terminal state."
+                        wait indefinitely for a terminal state. Ignored for a \
+                        retained-output handle, which never waits."
                 },
                 "kill": {
                     "type": "boolean",
                     "description": "Terminate a background job's process group \
-                        before reading. Refused for a sub-agent handle. Default false."
+                        before reading. Refused for a sub-agent or retained-output \
+                        handle. Default false."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "0-based line index to start paging a \
+                        retained-output handle's text from. Default 0. Ignored for \
+                        job/agent handles."
+                },
+                "tail": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "How many lines to return from offset for a \
+                        retained-output handle (default 30). 0 returns the rest, \
+                        still byte-capped. Ignored for job/agent handles."
                 }
             }
         }),
@@ -98,6 +148,8 @@ struct PollInput {
     handle: String,
     timeout_secs: u64,
     kill: bool,
+    offset: u32,
+    tail: u32,
 }
 
 /// Parse the `poll` tool input. `None` when `handle` is missing/empty or the
@@ -115,15 +167,26 @@ fn parse_input(input: &str) -> Option<PollInput> {
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .min(MAX_TIMEOUT_SECS);
     let kill = v.get("kill").and_then(|k| k.as_bool()).unwrap_or(false);
+    let offset = v
+        .get("offset")
+        .and_then(|o| o.as_u64())
+        .unwrap_or(0)
+        .min(u32::MAX as u64) as u32;
+    let tail = v
+        .get("tail")
+        .and_then(|t| t.as_u64())
+        .unwrap_or(DEFAULT_TAIL as u64)
+        .min(u32::MAX as u64) as u32;
     Some(PollInput {
         handle,
         timeout_secs,
         kill,
+        offset,
+        tail,
     })
 }
 
-/// A job id (ADR-0164's `j-` prefix) vs. everything else, which is a sub-agent
-/// handle (itself a `s-` session id).
+/// A job id (ADR-0164's `j-` prefix).
 fn is_job_handle(handle: &str) -> bool {
     handle.starts_with("j-")
 }
@@ -135,11 +198,12 @@ pub async fn run_poll(
     holly: Holly,
     jobs: JobRegistry,
     agents: AgentRegistry,
+    retained: RetainedOutputRegistry,
     session: SessionId,
     request_id: String,
     input: String,
 ) {
-    let output = resolve(&jobs, &agents, &session, &input).await;
+    let output = resolve(&jobs, &agents, &retained, &session, &input).await;
     reply(&holly, session, request_id, output).await;
 }
 
@@ -148,6 +212,7 @@ pub async fn run_poll(
 async fn resolve(
     jobs: &JobRegistry,
     agents: &AgentRegistry,
+    retained: &RetainedOutputRegistry,
     session: &SessionId,
     input: &str,
 ) -> String {
@@ -166,6 +231,8 @@ async fn resolve(
             Some(p) => format_job_poll(&parsed.handle, p),
             None => unknown_handle(&parsed.handle),
         }
+    } else if is_retained_handle(&parsed.handle) {
+        resolve_retained(retained, session, &parsed)
     } else {
         resolve_agent(agents, session, parsed).await
     }
@@ -215,12 +282,22 @@ async fn resolve_agent(agents: &AgentRegistry, session: &SessionId, parsed: Poll
 }
 
 /// ADR-0161 §2: `kill: true` is refused on a sub-agent handle — cancelling a
-/// child is a distinct authorization gate this ADR does not open.
+/// child is a distinct authorization gate this ADR does not open. Also
+/// refused on a retained-output handle (#608) — there is nothing running left
+/// to kill.
 fn kill_refused_message(handle: &str) -> String {
-    format!(
-        "poll: kill is not supported for sub-agent handle `{handle}` — \
-         cancelling a running sub-agent isn't available yet."
-    )
+    if is_retained_handle(handle) {
+        format!(
+            "poll: kill is not supported for retained-output handle `{handle}` \
+             — the operation it pages already finished; there is nothing \
+             running to kill."
+        )
+    } else {
+        format!(
+            "poll: kill is not supported for sub-agent handle `{handle}` — \
+             cancelling a running sub-agent isn't available yet."
+        )
+    }
 }
 
 /// Unknown-handle error text (ADR-0161 §2): adopts `agent_poll`'s convention
@@ -230,7 +307,8 @@ fn kill_refused_message(handle: &str) -> String {
 fn unknown_handle(handle: &str) -> String {
     format!(
         "poll: unknown handle `{handle}` — it was never launched from this \
-         session (use the id returned by bash/call/agent background=true)."
+         session (use the id returned by bash/call/agent background=true, or \
+         the retained-output id returned alongside a truncated call result)."
     )
 }
 
@@ -321,6 +399,19 @@ mod tests {
         assert_eq!(clamped.timeout_secs, MAX_TIMEOUT_SECS);
     }
 
+    /// #608: `offset` defaults to 0, `tail` defaults to 30 (matching `call`).
+    #[test]
+    fn parse_input_defaults_offset_and_tail() {
+        let p = parse_input(r#"{"handle":"o-abc"}"#).unwrap();
+        assert_eq!(p.offset, 0);
+        assert_eq!(p.tail, DEFAULT_TAIL);
+        assert_eq!(DEFAULT_TAIL, 30);
+
+        let explicit = parse_input(r#"{"handle":"o-abc","offset":30,"tail":50}"#).unwrap();
+        assert_eq!(explicit.offset, 30);
+        assert_eq!(explicit.tail, 50);
+    }
+
     #[test]
     fn parse_input_missing_handle_yields_none() {
         assert!(parse_input(r#"{"timeout_secs":5}"#).is_none());
@@ -331,6 +422,7 @@ mod tests {
     fn is_job_handle_matches_the_j_prefix_only() {
         assert!(is_job_handle("j-6a708af0a1002"));
         assert!(!is_job_handle("s-6a708af0a1002"));
+        assert!(!is_job_handle("o-6a708af0a1002"));
         assert!(!is_job_handle("anything-else"));
     }
 
@@ -360,14 +452,15 @@ mod tests {
         // `running`. Poll again (bounded, so a real regression still fails
         // fast) until the terminal status lands.
         let agents = AgentRegistry::default();
+        let retained = RetainedOutputRegistry::new();
         let input = serde_json::json!({"handle": id, "timeout_secs": 5}).to_string();
-        let mut out = resolve(&jobs, &agents, &session, &input).await;
+        let mut out = resolve(&jobs, &agents, &retained, &session, &input).await;
         assert!(out.contains("hi"), "{out}");
         for _ in 0..50 {
             if out.contains("exited 0") {
                 break;
             }
-            out = resolve(&jobs, &agents, &session, &input).await;
+            out = resolve(&jobs, &agents, &retained, &session, &input).await;
         }
         assert!(out.contains("exited 0"), "{out}");
     }
@@ -396,6 +489,7 @@ mod tests {
         let out = resolve(
             &jobs,
             &AgentRegistry::default(),
+            &RetainedOutputRegistry::new(),
             &stranger,
             &serde_json::json!({"handle": id}).to_string(),
         )
@@ -414,6 +508,7 @@ mod tests {
         let out = resolve(
             &JobRegistry::new(),
             &agents,
+            &RetainedOutputRegistry::new(),
             &parent,
             &serde_json::json!({"handle": child.to_string(), "kill": true}).to_string(),
         )
@@ -430,6 +525,7 @@ mod tests {
         let out = resolve(
             &JobRegistry::new(),
             &AgentRegistry::default(),
+            &RetainedOutputRegistry::new(),
             &session,
             &serde_json::json!({"handle": "s-nonexistent"}).to_string(),
         )
@@ -445,6 +541,7 @@ mod tests {
         let empty = resolve(
             &JobRegistry::new(),
             &AgentRegistry::default(),
+            &RetainedOutputRegistry::new(),
             &session,
             "{}",
         )
@@ -454,7 +551,8 @@ mod tests {
         let agents = AgentRegistry::default();
         let child = SessionId::new("s-child9");
         agents.register(child.clone(), session.clone(), "reviewer".to_string());
-        let out = resolve(&JobRegistry::new(), &agents, &session, "{}").await;
+        let retained = RetainedOutputRegistry::new();
+        let out = resolve(&JobRegistry::new(), &agents, &retained, &session, "{}").await;
         assert!(
             out.contains(&child.to_string()) && out.contains("reviewer"),
             "{out}"
@@ -462,7 +560,14 @@ mod tests {
 
         // Malformed (non-JSON) input also falls through to the listing rather
         // than a parse error — `parse_input` gates both cases identically.
-        let malformed = resolve(&JobRegistry::new(), &agents, &session, "not json").await;
+        let malformed = resolve(
+            &JobRegistry::new(),
+            &agents,
+            &retained,
+            &session,
+            "not json",
+        )
+        .await;
         assert!(malformed.contains(&child.to_string()), "{malformed}");
     }
 
@@ -480,9 +585,10 @@ mod tests {
         })
         .unwrap();
 
+        let retained = RetainedOutputRegistry::new();
         let input = serde_json::json!({"handle": child.to_string()}).to_string();
-        let first = resolve(&JobRegistry::new(), &agents, &parent, &input).await;
-        let second = resolve(&JobRegistry::new(), &agents, &parent, &input).await;
+        let first = resolve(&JobRegistry::new(), &agents, &retained, &parent, &input).await;
+        let second = resolve(&JobRegistry::new(), &agents, &retained, &parent, &input).await;
         assert_eq!(first, second);
         assert!(first.contains("done"), "{first}");
     }

@@ -1,7 +1,7 @@
 //! `call`'s default (blocking) exec path: read an optional `input_file`,
-//! resolve the output artifact, spawn, wait (or time out), persist the
-//! output, and format the tailed result. Split out of `mod.rs` (issue #451)
-//! — the counterpart to `background.rs`'s detached path.
+//! resolve an explicit output artifact if any, spawn, wait (or time out),
+//! persist the output, and format the tailed result. Split out of `mod.rs`
+//! (issue #451) — the counterpart to `background.rs`'s detached path.
 
 use super::format::{format_call_output, format_call_streams};
 use super::output::{persist_output, resolve_output_target};
@@ -9,7 +9,9 @@ use crate::host::exec::{own_process_group, wait_or_kill_group, with_io_warning, 
 use crate::host::resolve_under_root;
 use crate::host::sandbox;
 use crate::policy::SandboxResolver;
+use crate::retained_output::RetainedOutputRegistry;
 use anyhow::{Context, Result};
+use entanglement_core::SessionId;
 use std::path::Path;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -20,10 +22,10 @@ use tokio::io::AsyncWriteExt;
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_foreground(
     root: &Path,
-    scratch_base: Option<&Path>,
     sandbox_resolver: &dyn SandboxResolver,
     secret_env: &[String],
-    session: Option<&entanglement_core::SessionId>,
+    retained: &RetainedOutputRegistry,
+    session: Option<&SessionId>,
     cwd: &Path,
     command: &str,
     args: &[String],
@@ -47,7 +49,7 @@ pub(super) async fn run_foreground(
         }
         None => None,
     };
-    let output_target = resolve_output_target(root, scratch_base, output_file)?;
+    let output_target = resolve_output_target(root, output_file)?;
 
     let policy = sandbox_resolver.resolve(session);
     let mut cmd = sandbox::command(&policy, root, command, args);
@@ -89,40 +91,47 @@ pub(super) async fn run_foreground(
         let _ = t.await;
     }
 
+    let output_rel = output_target.as_ref().map(|t| t.rel.as_str());
+
     match outcome {
         Ok(ExecOutcome::Completed { output, io_error }) => {
-            let notice = persist_output(&output_target, &output.stdout, &output.stderr).await?;
+            if let Some(target) = &output_target {
+                persist_output(target, &output.stdout, &output.stderr).await?;
+            }
             Ok(with_io_warning(
                 format_call_output(
                     output.status.code(),
                     &output.stdout,
                     &output.stderr,
                     tail,
-                    &output_target.rel,
-                    output_target.explicit,
-                    notice,
+                    output_rel,
+                    retained,
+                    session,
                 ),
                 io_error,
             ))
         }
         // Return the output buffered before the kill (tailed like a normal
         // result) alongside the notice — the prefix is often the diagnostic
-        // the model needs (#169). The artifacts get the same partial bytes.
+        // the model needs (#169). The artifact (if any) gets the same partial
+        // bytes.
         Ok(ExecOutcome::TimedOut {
             stdout,
             stderr,
             io_error,
         }) => {
-            let notice = persist_output(&output_target, &stdout, &stderr).await?;
+            if let Some(target) = &output_target {
+                persist_output(target, &stdout, &stderr).await?;
+            }
             Ok(with_io_warning(
                 format_call_streams(
                     &format!("[killed: timed out after {secs}s]\n"),
                     &stdout,
                     &stderr,
                     tail,
-                    &output_target.rel,
-                    output_target.explicit,
-                    notice,
+                    output_rel,
+                    retained,
+                    session,
                 ),
                 io_error,
             ))
