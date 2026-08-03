@@ -262,6 +262,21 @@ impl Holly {
         });
     }
 
+    /// Broadcast a runtime-authored [`OutEvent::OperationList`] reply to an
+    /// [`InMsg::ListOperations`] query (#607, ADR-0161 §6). Engine-global like
+    /// [`emit_question_list`][Self::emit_question_list]: no `seq`, no counter
+    /// touched.
+    pub fn emit_operation_list(
+        &self,
+        correlation_id: String,
+        operations: Vec<crate::protocol::OperationInfo>,
+    ) {
+        let _ = self.events.send(OutEvent::OperationList {
+            correlation_id,
+            operations,
+        });
+    }
+
     /// Broadcast a runtime-authored [`OutEvent::McpList`] reply to an
     /// [`InMsg::McpList`] query (#375). Engine-global like
     /// [`emit_history`][Self::emit_history]: no `seq`, no counter touched.
@@ -468,12 +483,12 @@ async fn supervisor(
         }
 
         // Every remaining variant is session-scoped except `ListSessions`
-        // (handled above), `ListQuestions` (#515), and the MCP ops
-        // `McpList`/`McpAdd`/`McpRemove` (#375): each carries no session either
-        // (`ListQuestions`'s optional filter is a data field, not a routing
-        // target) — they are answered by a runtime service off the `inbound`
-        // fan-out above, never routed here, so they simply fall through to
-        // this `continue`.
+        // (handled above), `ListQuestions` (#515), `ListOperations` (#607),
+        // and the MCP ops `McpList`/`McpAdd`/`McpRemove` (#375): each carries
+        // no session either (`ListQuestions`/`ListOperations`'s optional
+        // filter is a data field, not a routing target) — they are answered
+        // by a runtime service off the `inbound` fan-out above, never routed
+        // here, so they simply fall through to this `continue`.
         let Some(session_id) = msg.session().cloned() else {
             continue;
         };

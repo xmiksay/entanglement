@@ -357,7 +357,7 @@ true`, hands back a handle immediately instead — both paths reply with `` sub-
 `bounded_result` (#622): the "completed in Ns" status line is kept verbatim,
 the answer gets the same head + tail byte cap as `bash`/`call`/`rhai` so a
 long answer's conclusion survives instead of growing the reply unbounded.
-`poll { handle, timeout_secs?, kill? }` (#605, ADR-0161 §1-4, replacing
+`poll { handle?, timeout_secs?, kill? }` (#605, ADR-0161 §1-4, replacing
 `bash_output`/`agent_poll` outright — no aliases) is the single join tool for
 both: it dispatches on the handle's kind prefix (ADR-0164) to the job
 registry (`j-`) or the sub-agent registry (a `s-` session id), waiting up to
@@ -366,7 +366,21 @@ output/exit (job) or the final answer (agent) — the delta-vs-final
 distinction rides the `running`/`complete` status, not the tool name. `kill:
 true` SIGKILLs a job's process group; refused on a sub-agent handle. An
 unknown (or not-the-caller's-own) handle is an *error*, adopting
-`agent_poll`'s convention over `bash_output`'s return-it-as-text. `poll` is
+`agent_poll`'s convention over `bash_output`'s return-it-as-text. Called with
+**no `handle`** (#607, ADR-0161 §6), `poll` instead lists this session's own
+pending operations — every outstanding job/sub-agent it launched, with kind,
+handle, launcher, elapsed time, and status — via
+`entanglement_runtime::operations::list_operations`, shared with the
+head-facing `InMsg::ListOperations` → `OutEvent::OperationList` (wire-allowed,
+same read-only-snapshot rationale as `ListQuestions`). Attribution rides the
+*same* ownership bookkeeping the single-handle join already needs: `JobRegistry`
+tracks each job's owning `SessionId` (#605) and `AgentRegistry` each child's
+launching parent + profile (#618, #607) — one mechanism serving both. Lifetime
+is deliberately not uniform across kinds: an agent handle is itself a session,
+so a completed entry stays listed until polled by handle (never evicted,
+unlike a finished job's TTL-bounded entry); a background job is an OS process
+owned by this engine process and cannot outlive it — a resumed session can
+therefore legitimately show agents and no jobs. `poll` is
 intercepted before permission resolution exactly like `agent`
 — it starts nothing and touches no host resource, only reading state a
 previously-graded launch produced —

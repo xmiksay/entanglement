@@ -197,6 +197,7 @@ fn finished_job(finished_at: Instant) -> Arc<Job> {
         owner: None,
         pgid: None,
         timeout: Duration::from_secs(60),
+        started: Instant::now(),
         state: Mutex::new(JobState {
             finished: Some(Some(0)),
             finished_at: Some(finished_at),
@@ -212,6 +213,7 @@ fn running_job() -> Arc<Job> {
         owner: None,
         pgid: None,
         timeout: Duration::from_secs(60),
+        started: Instant::now(),
         state: Mutex::new(JobState::default()),
         notify: Notify::new(),
     })

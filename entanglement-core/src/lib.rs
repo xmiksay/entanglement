@@ -49,7 +49,7 @@ pub use entanglement_provider::mcp::auth::check as mcp_auth_check;
 pub use entanglement_provider::mcp::auth::disconnect as mcp_auth_disconnect;
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, BashGrade, FileChangeKind, InMsg,
-    McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, OutEvent,
-    PendingQuestion, Permission, PermissionProfile, ProfileDetail, Question, QuestionOption,
-    Questions, SessionId, SessionInfo, ToolOverlayEntry,
+    McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, OperationInfo,
+    OperationKind, OperationStatus, OutEvent, PendingQuestion, Permission, PermissionProfile,
+    ProfileDetail, Question, QuestionOption, Questions, SessionId, SessionInfo, ToolOverlayEntry,
 };

@@ -22,6 +22,12 @@
 //! *error*, adopting `agent_poll`'s convention over `bash_output`'s
 //! return-it-as-text.
 //!
+//! Called with **no `handle`** (#607, ADR-0161 §6), `poll` instead lists this
+//! session's own pending operations — every outstanding job/sub-agent it
+//! launched, with kind, handle, launcher, elapsed time, and status — via
+//! [`crate::operations::list_operations`], the same listing
+//! `InMsg::ListOperations`/`OutEvent::OperationList` expose to a head.
+//!
 //! Like `agent_poll` before it, `poll` is runtime-owned and intercepted
 //! *before* permission resolution (ADR-0161 §3): it starts nothing and touches
 //! no host resource — it only reads state a previously-graded launch produced.
@@ -59,14 +65,18 @@ pub fn poll_spec() -> ToolSpec {
          sub-agent poll returns its final answer once complete and can be \
          called again safely. Pass kill: true to SIGKILL a job's process group \
          (refused for a sub-agent handle — not supported). Pass timeout_secs: 0 \
-         to block until the handle reaches a terminal state.",
+         to block until the handle reaches a terminal state. Call with no \
+         handle at all to instead list this session's own pending operations \
+         — every background job/sub-agent still outstanding, with kind, \
+         handle, launcher, elapsed time, and status.",
         serde_json::json!({
             "type": "object",
             "properties": {
                 "handle": {
                     "type": "string",
                     "description": "The handle to await: a job id from bash/call \
-                        background=true, or an agent_id from agent background=true."
+                        background=true, or an agent_id from agent background=true. \
+                        Omit to list this session's pending operations instead."
                 },
                 "timeout_secs": {
                     "type": "integer",
@@ -79,8 +89,7 @@ pub fn poll_spec() -> ToolSpec {
                     "description": "Terminate a background job's process group \
                         before reading. Refused for a sub-agent handle. Default false."
                 }
-            },
-            "required": ["handle"]
+            }
         }),
     )
 }
@@ -143,9 +152,10 @@ async fn resolve(
     input: &str,
 ) -> String {
     let Some(parsed) = parse_input(input) else {
-        return "poll: missing handle — pass the id returned by bash/call/agent \
-                (background=true)."
-            .to_string();
+        // No handle (#607, ADR-0161 §6): list this session's own pending
+        // operations instead of joining a single one.
+        let ops = crate::operations::list_operations(jobs, agents, Some(session));
+        return crate::operations::format_operations(&ops);
     };
 
     if is_job_handle(&parsed.handle) {
@@ -324,14 +334,6 @@ mod tests {
         assert!(!is_job_handle("anything-else"));
     }
 
-    #[test]
-    fn missing_handle_message_names_both_launchers() {
-        // Exercises `resolve`'s guidance text indirectly via the same string
-        // `parse_input` gates on — kept in sync by construction (both live in
-        // this module).
-        assert!(parse_input("{}").is_none());
-    }
-
     /// End-to-end: `bash` starts a background job owned by a session, `poll`
     /// waits it to completion and sees the exit status + output (#605).
     #[tokio::test]
@@ -407,7 +409,7 @@ mod tests {
         let agents = AgentRegistry::default();
         let parent = SessionId::new("parent");
         let child = SessionId::new("s-child");
-        agents.register(child.clone(), parent.clone());
+        agents.register(child.clone(), parent.clone(), "build".to_string());
 
         let out = resolve(
             &JobRegistry::new(),
@@ -435,17 +437,33 @@ mod tests {
         assert!(out.starts_with("poll: unknown handle"), "{out}");
     }
 
+    /// #607, ADR-0161 §6: called with no handle at all, `poll` lists this
+    /// session's pending operations instead of erroring.
     #[tokio::test]
-    async fn missing_handle_replies_with_guidance() {
+    async fn no_handle_lists_pending_operations() {
         let session = SessionId::new("s3");
-        let out = resolve(
+        let empty = resolve(
             &JobRegistry::new(),
             &AgentRegistry::default(),
             &session,
             "{}",
         )
         .await;
-        assert!(out.contains("missing handle"), "{out}");
+        assert_eq!(empty, "poll: no pending operations for this session.");
+
+        let agents = AgentRegistry::default();
+        let child = SessionId::new("s-child9");
+        agents.register(child.clone(), session.clone(), "reviewer".to_string());
+        let out = resolve(&JobRegistry::new(), &agents, &session, "{}").await;
+        assert!(
+            out.contains(&child.to_string()) && out.contains("reviewer"),
+            "{out}"
+        );
+
+        // Malformed (non-JSON) input also falls through to the listing rather
+        // than a parse error — `parse_input` gates both cases identically.
+        let malformed = resolve(&JobRegistry::new(), &agents, &session, "not json").await;
+        assert!(malformed.contains(&child.to_string()), "{malformed}");
     }
 
     /// A completed sub-agent poll is idempotent — a second poll of the same
@@ -455,7 +473,7 @@ mod tests {
         let agents = AgentRegistry::default();
         let parent = SessionId::new("parent2");
         let child = SessionId::new("s-child2");
-        let (tx, _started) = agents.register(child.clone(), parent.clone());
+        let (tx, _started) = agents.register(child.clone(), parent.clone(), "build".to_string());
         tx.send(AgentStatus::Complete {
             answer: "done".to_string(),
             elapsed: Duration::from_millis(5),
