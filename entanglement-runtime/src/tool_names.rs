@@ -96,3 +96,81 @@ pub fn is_read_capability_member(tool: &str) -> bool {
         .find(|(name, _)| *name == "read")
         .is_some_and(|(_, members)| members.contains(&tool))
 }
+
+/// The compile-time vocabulary of literal tool names a mask entry or
+/// permission rule key can spell out (#623): the root-contained quintet plus
+/// `apply_patch`, the exec pair, [`RHAI_TOOL`], and every runtime-owned tool.
+/// Deliberately independent of what's *actually registered* this run —
+/// `bash`/`rhai` are env/feature-gated and MCP tools connect after profiles
+/// load — so a config naming a real but currently-inactive tool never
+/// false-positives here. Exists solely for [`is_recognized_mask_entry`]; not
+/// the advertised roster (see `ToolRegistry::specs`/`names` for that).
+const KNOWN_TOOL_NAMES: &[&str] = &[
+    "read",
+    "glob",
+    "grep",
+    "edit",
+    "write",
+    "apply_patch",
+    "bash",
+    "call",
+    RHAI_TOOL,
+    ASK_USER_TOOL,
+    POLL_TOOL,
+    PROPOSE_PLAN_TOOL,
+    AGENT_TOOL,
+    UPDATE_TASKS_TOOL,
+    LOAD_SKILL_TOOL,
+    "read_raw",
+    "mcp_enable",
+];
+
+/// Whether `entry` — one item from an agent's `tools:`/`disallowed_tools:`
+/// mask, or the tool part of a `permission:` rule key — names something a
+/// stale-config check can vouch for (#623): a known literal tool name
+/// ([`KNOWN_TOOL_NAMES`]), a capability key ([`is_capability_name`]), a
+/// `*`/`?` wildcard pattern (ADR-0148 — matched dynamically, so it can't be
+/// checked against a fixed list), or an MCP tool (`mcp__<server>__<tool>`,
+/// unknowable until the server connects, #426). Anything else is very likely
+/// a stale or typo'd name — e.g. a tool retired by a rename (#605/#606:
+/// `bash_output`/`agent_poll`/`agent_spawn` replaced by `poll`/`agent`) —
+/// worth a startup warning so a masked-out config doesn't silently degrade
+/// (ADR-0161 "Config churn", ADR-0166).
+pub fn is_recognized_mask_entry(entry: &str) -> bool {
+    entry.contains('*')
+        || entry.contains('?')
+        || entry.starts_with("mcp__")
+        || is_capability_name(entry)
+        || KNOWN_TOOL_NAMES.contains(&entry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_known_literal_tool_names() {
+        for name in KNOWN_TOOL_NAMES {
+            assert!(is_recognized_mask_entry(name), "{name} should be known");
+        }
+    }
+
+    #[test]
+    fn recognizes_capabilities_globs_and_mcp_tools() {
+        assert!(is_recognized_mask_entry("read"));
+        assert!(is_recognized_mask_entry("write"));
+        assert!(is_recognized_mask_entry("call"));
+        assert!(is_recognized_mask_entry("*"));
+        assert!(is_recognized_mask_entry("mcp__*"));
+        assert!(is_recognized_mask_entry("mcp__docs__search"));
+        assert!(is_recognized_mask_entry("bash(git *)"));
+    }
+
+    #[test]
+    fn flags_removed_and_typo_d_tool_names() {
+        assert!(!is_recognized_mask_entry("bash_output"));
+        assert!(!is_recognized_mask_entry("agent_poll"));
+        assert!(!is_recognized_mask_entry("agent_spawn"));
+        assert!(!is_recognized_mask_entry("raed"));
+    }
+}

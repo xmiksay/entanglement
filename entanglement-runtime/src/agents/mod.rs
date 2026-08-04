@@ -593,7 +593,55 @@ fn build_profile(
         skills = skills_in_prompt,
         "assembled agent system prompt",
     );
+    warn_unrecognized_mask_entries(&profile);
     Ok(profile)
+}
+
+/// Warn on a `tools`/`disallowed_tools` mask entry or `permission` rule key
+/// that names nothing [`tool_names::is_recognized_mask_entry`] can vouch for
+/// (#623) — most likely a stale or typo'd tool name, e.g. one retired by a
+/// rename (`bash_output`/`agent_poll`/`agent_spawn` → `poll`/`agent`,
+/// #605/#606). Today an unrecognized mask entry silently masks nothing and an
+/// unrecognized permission-rule key silently never matches, so a stale config
+/// degrades quietly instead of failing loud; this surfaces the drift at load
+/// time instead of leaving it to be noticed the hard way (ADR-0161 "Config
+/// churn", ADR-0166). Deliberately a warning, not a load error: an entry this
+/// function can't vouch for might still be a not-yet-connected MCP tool this
+/// process just hasn't discovered the exact spelling of, so aborting the load
+/// would be the wrong failure mode.
+fn warn_unrecognized_mask_entries(profile: &AgentProfile) {
+    let mask_entries = profile
+        .tools
+        .iter()
+        .flatten()
+        .map(|t| ("tools", t.as_str()))
+        .chain(
+            profile
+                .disallowed_tools
+                .iter()
+                .map(|t| ("disallowed_tools", t.as_str())),
+        );
+    for (field, entry) in mask_entries {
+        if !tool_names::is_recognized_mask_entry(entry) {
+            tracing::warn!(
+                agent = %profile.name,
+                field,
+                entry,
+                "agent tool mask names an unrecognized tool — check for a stale or renamed tool name",
+            );
+        }
+    }
+    for (key, _) in &profile.permission.rules {
+        let (tool, _) = split_capability_key(key);
+        if !tool_names::is_recognized_mask_entry(tool) {
+            tracing::warn!(
+                agent = %profile.name,
+                field = "permission",
+                entry = %key,
+                "agent permission rule names an unrecognized tool — check for a stale or renamed tool name",
+            );
+        }
+    }
 }
 
 /// Resolve a definition's `skills:` preload (#117) to rendered bodies via the
@@ -1366,6 +1414,26 @@ mod tests {
         assert_eq!(p.model, None);
         // Omitted permission ⇒ allow-all.
         assert_eq!(p.permission.for_tool("edit"), Permission::Allow);
+    }
+
+    #[test]
+    fn unrecognized_mask_and_permission_entries_warn_but_do_not_fail_the_load() {
+        // #623: a stale/renamed tool name (e.g. a config that predates
+        // #605/#606's `bash_output`/`agent_poll`/`agent_spawn` → `poll`/`agent`
+        // rename) must not brick startup — it degrades to a `tracing::warn!`
+        // (unobservable here with no test subscriber wired) while the profile
+        // still loads with the mask/rule intact verbatim.
+        let p = parse(
+            "---\nname: x\ndescription: d\ntools: [read, agent_spawn]\n\
+             disallowed_tools: [bash_output]\npermission:\n  agent_poll: ask\n---\nbody",
+        )
+        .unwrap();
+        assert_eq!(
+            p.tools.as_deref(),
+            Some(&["read".to_string(), "agent_spawn".to_string()][..])
+        );
+        assert_eq!(p.disallowed_tools, vec!["bash_output".to_string()]);
+        assert_eq!(p.permission.for_tool("agent_poll"), Permission::Ask);
     }
 
     #[test]
