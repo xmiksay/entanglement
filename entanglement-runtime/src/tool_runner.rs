@@ -62,7 +62,9 @@ use crate::skills::load_skill::parse_skill_id;
 use crate::skills::SkillRegistry;
 #[cfg(feature = "rhai")]
 use crate::tool_names::RHAI_TOOL;
-use crate::tool_names::{AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL};
+use crate::tool_names::{
+    AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL,
+};
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
 /// granted (#174): a session-scoped or persisted "always allow" grant lets an
@@ -126,6 +128,13 @@ enum Intercept {
     /// `background` flag picks the non-blocking launch instead — one guard
     /// path, two return shapes.
     Spawn,
+    /// `agent_send`: sends a follow-up prompt to a sub-agent already launched
+    /// with `agent` — steer a running child, follow up a finished one, or
+    /// re-engage a `propose_plan` sponsored build (#609, ADR-0162). Session
+    /// orchestration only, like `Spawn` — gated by
+    /// [`crate::agent_registry::AgentRegistry::begin_send`]'s ownership +
+    /// lifecycle check instead of per-tool approval.
+    AgentSend,
     /// `poll`: joins a background `bash` job or a launched sub-agent (#605,
     /// ADR-0161 §1-4, replacing `bash_output`/`agent_poll`) — it reads
     /// accumulated job/spawn state, starting no session and touching no host.
@@ -152,6 +161,7 @@ impl Intercept {
     fn classify(tool: &str) -> Self {
         match tool {
             AGENT_TOOL => Self::Spawn,
+            AGENT_SEND_TOOL => Self::AgentSend,
             POLL_TOOL => Self::Poll,
             ASK_USER_TOOL => Self::AskUser,
             PROPOSE_PLAN_TOOL => Self::ProposePlan,
@@ -168,7 +178,7 @@ impl Intercept {
     fn bypasses_permission(self) -> bool {
         matches!(
             self,
-            Self::Spawn | Self::Poll | Self::AskUser | Self::ProposePlan
+            Self::Spawn | Self::AgentSend | Self::Poll | Self::AskUser | Self::ProposePlan
         )
     }
 }
@@ -559,6 +569,11 @@ pub fn spawn_tool_executor_with_policy(
                     ..
                 }) => {
                     spawn_guard.record_start(session.clone(), parent.clone());
+                    // A head-driven resume (ADR-0112) re-emits `SessionStarted`
+                    // for a previously-hibernated child (#609, ADR-0162 §4) — a
+                    // no-op for any other session, since a fresh registration is
+                    // already `Live` and an untracked id has no entry to update.
+                    registry.mark_live(&session);
                     let started_profile = profiles
                         .read()
                         .expect("agent-profile registry lock poisoned")
@@ -614,8 +629,22 @@ pub fn spawn_tool_executor_with_policy(
                         overlays.insert(session, entries);
                     }
                 }
-                Ok(OutEvent::SessionEnded { session, .. })
-                | Ok(OutEvent::SessionHibernated { session, .. }) => {
+                Ok(ev @ OutEvent::SessionEnded { .. })
+                | Ok(ev @ OutEvent::SessionHibernated { .. }) => {
+                    let session = ev
+                        .session()
+                        .cloned()
+                        .expect("SessionEnded/SessionHibernated always carry a session");
+                    // Fold the lifecycle transition into the agent registry
+                    // (#609, ADR-0162 §4) so `agent_send` can refuse a closed
+                    // or hibernated child instead of letting the supervisor's
+                    // lazy-`Prompt` path silently respawn it blank. A no-op
+                    // for a session this registry never tracked.
+                    if matches!(ev, OutEvent::SessionHibernated { .. }) {
+                        registry.mark_hibernated(&session);
+                    } else {
+                        registry.mark_closed(&session);
+                    }
                     // Drop the closed session's in-memory grants (#174); persisted
                     // "always" grants survive.
                     grants.forget_session(&session);
@@ -889,6 +918,32 @@ pub fn spawn_tool_executor_with_policy(
                                     }
                                 }
                             }
+                        }
+                        Intercept::AgentSend => {
+                            // No spawn-budget/depth gate here (#609): this is a
+                            // *reply* into an already-authorized child, not a
+                            // new spawn — `AgentRegistry::begin_send` (run
+                            // inside the task) is the whole gate: ownership
+                            // (only the launching session may send) plus the
+                            // lifecycle check (ADR-0162 §4). Subscribe *before*
+                            // handing off, mirroring `Spawn`, so the child's
+                            // events can't race ahead of the watcher.
+                            let child_events = holly.subscribe();
+                            let registry = registry.clone();
+                            let retained = retained.clone();
+                            let holly = holly.clone();
+                            tokio::spawn(async move {
+                                crate::agent_send::run_agent_send(
+                                    holly,
+                                    child_events,
+                                    registry,
+                                    retained,
+                                    session,
+                                    request_id,
+                                    input,
+                                )
+                                .await;
+                            });
                         }
                         Intercept::Poll => {
                             let registry = registry.clone();
@@ -1521,6 +1576,7 @@ mod tests {
     #[test]
     fn classify_maps_each_orchestration_tool_to_its_route() {
         assert_eq!(Intercept::classify(AGENT_TOOL), Intercept::Spawn);
+        assert_eq!(Intercept::classify(AGENT_SEND_TOOL), Intercept::AgentSend);
         assert_eq!(Intercept::classify(POLL_TOOL), Intercept::Poll);
         assert_eq!(Intercept::classify(ASK_USER_TOOL), Intercept::AskUser);
         assert_eq!(
@@ -1556,6 +1612,7 @@ mod tests {
         // The spawn/poll/prompt/plan routes touch no host resource; `rhai`
         // resolves permission itself and the generic path *is* the decision.
         assert!(Intercept::Spawn.bypasses_permission());
+        assert!(Intercept::AgentSend.bypasses_permission());
         assert!(Intercept::Poll.bypasses_permission());
         assert!(Intercept::AskUser.bypasses_permission());
         assert!(Intercept::ProposePlan.bypasses_permission());

@@ -276,7 +276,7 @@ guessing again:
   build/test output, a script's return value, or a sub-agent's answer put the
   load-bearing part (the error, the result, the conclusion) at the end, so
   head-only truncation would drop exactly what the model needs (#170, unified
-  across `bash`/`call`/`rhai`/`agent`/`poll`
+  across `bash`/`call`/`rhai`/`agent`/`agent_send`/`poll`
   as one shape with a stated rule, #622); a `bounded_result` status line (an
   exit/job header, a "completed in Ns" line) is kept verbatim and uncounted
   against the cap, only the body is split. `grep`'s per-file **scan** cap (how
@@ -346,7 +346,7 @@ controls *existence* per profile, and the profile controls *dispatch*
 being always-registered does not change what a non-`build` profile can do with
 it.
 
-Five **runtime-owned orchestration tools** are *not* in the registry — the
+Six **runtime-owned orchestration tools** are *not* in the registry — the
 `tool_runner` intercepts them on `ToolExec` before permission resolution (they
 touch no host resource) and advertises their schemas separately: `agent {
 agent, prompt, background? }` (renamed from `spawn_agent`, ADR-0022; §5,
@@ -360,7 +360,38 @@ long answer's conclusion survives instead of growing the reply unbounded. A
 truncated answer also mints a retained-output handle (#614) exactly like a
 truncated `call`/`bash` result, so the dropped middle isn't silently lost —
 `poll` pages it back. The sponsored-build reply `propose_plan` folds back on
-approval (ADR-0138) shares the same bounding + retained-output-handle helper.
+approval (ADR-0138) shares the same bounding + retained-output-handle helper,
+and — since #609, ADR-0162 §5 — names the build child's `agent_id` in that
+reply too.
+
+`agent_send { agent_id, prompt, background? }` (#609, ADR-0162) is a launcher
+against an *existing* session instead of a fresh one: it sends
+`InMsg::Prompt` to a child `agent` (or a sponsored `propose_plan` build)
+already produced, so the same session picks its turn back up with its
+accumulated context rather than starting over. It carries the same
+`background` flag and shares `agent`'s guard path — [`AgentRegistry::begin_send`]
+resolves ownership (only the launching session may send — the ADR-0161 §4
+descendant check, generalized: `agent_send` is a *write* verb on the
+registry, so this scoping is a hard prerequisite rather than a hardening
+pass) and the child's session lifecycle in one lock acquisition before
+anything is sent. A handle that isn't the caller's own, or was never
+launched at all, refuses with the same "unknown agent_id" message either
+way. A **closed** (tombstoned) child refuses clearly — its id is spent
+(ADR-0028). A **hibernated** child refuses loudly rather than silently: a
+fresh `Prompt` at a hibernated id would otherwise fall into the supervisor's
+lazy-respawn path and come back as a *blank* session wearing the right id,
+discarding its context — the idle-TTL sweep (ADR-0090) makes this the likely
+failure, not a corner case, so `agent_send` never sends until the lifecycle
+check confirms the child is still live. Only a **live** child is actually
+sent the prompt; the default (blocking) path then reuses
+`collect_child_answer` to wait for its *next* answer (not its first) and
+folds it back the same way the blocking `agent` path does; `background: true`
+returns immediately and the follow-up answer is collected later with `poll`,
+exactly like a `background: true` launch. The lifecycle itself is folded from
+the engine-wide `SessionStarted`/`SessionHibernated`/`SessionEnded` broadcast
+— any session's transition, not just this executor's own — into the same
+`AgentRegistry` entry `poll` already reads.
+
 `poll { handle?, timeout_secs?, kill?, offset?, tail? }` (#605, ADR-0161
 §1-4, replacing `bash_output`/`agent_poll` outright — no aliases) is the
 single join tool for all three: it dispatches on the handle's kind prefix

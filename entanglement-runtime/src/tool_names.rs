@@ -41,6 +41,14 @@ pub const PROPOSE_PLAN_TOOL: &str = "propose_plan";
 /// `agent_spawn` tool it was renamed from).
 pub const AGENT_TOOL: &str = "agent";
 
+/// Tool name the model calls to send a follow-up prompt to a sub-agent it
+/// already launched — steer one still working, follow up with one that
+/// finished, or re-engage a `propose_plan` build child for another round
+/// (#609, ADR-0162). Blocks for the child's next answer by default, exactly
+/// like [`AGENT_TOOL`]; `background: true` returns immediately, joined later
+/// with [`POLL_TOOL`].
+pub const AGENT_SEND_TOOL: &str = "agent_send";
+
 /// Records the user-facing task checklist (shared, general bookkeeping).
 pub const UPDATE_TASKS_TOOL: &str = "update_tasks";
 
@@ -119,6 +127,7 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     POLL_TOOL,
     PROPOSE_PLAN_TOOL,
     AGENT_TOOL,
+    AGENT_SEND_TOOL,
     UPDATE_TASKS_TOOL,
     LOAD_SKILL_TOOL,
     "read_raw",

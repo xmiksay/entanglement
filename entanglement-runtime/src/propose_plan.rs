@@ -31,13 +31,16 @@
 //!   permissions, no ancestor clamp. The plan agent parks on `WaitingAgent`
 //!   (ADR-0139) while the build runs; the build's final report folds back as
 //!   the `propose_plan` tool result — bounded and, if it overflows, paged via
-//!   a retained-output handle exactly like a bare `agent` answer (#614) —
+//!   a retained-output handle exactly like a bare `agent` answer (#614), and
+//!   **naming the child's `agent_id`** (#609, ADR-0162 §5) —
 //!   so the plan agent has the
 //!   implementation outcome in context and is expected to review it against
 //!   the plan, update the plan file (e.g. phase checkboxes) via `write`/`edit`,
-//!   and either `propose_plan` the next phase or report done — a multi-phase
-//!   plan → build → review loop. The build child sees the accepted plan in its
-//!   outline via an `OutEvent::Plan` snapshot (B6).
+//!   and either `propose_plan` the next phase, `agent_send` the same build
+//!   child another round of feedback instead of spawning a fresh one, or
+//!   report done — a multi-phase plan → build → review loop. The build child
+//!   sees the accepted plan in its outline via an `OutEvent::Plan` snapshot
+//!   (B6).
 //! - **Reject + reason** → the existing rejection fold-back (`tool
 //!   \`propose_plan\` rejected: <reason>`); the model revises and re-proposes in
 //!   the same turn, no new code.
@@ -92,9 +95,11 @@ pub fn propose_plan_spec() -> ToolSpec {
          as-is — it must be the file you most recently read, wrote, or edited; \
          a file changed by someone else since is refused, re-read it first). \
          The user approves or rejects: on approval the plan is handed off to a \
-         `build` session and its full final report is returned as this call's \
-         result — review it against the plan, update the plan file (e.g. phase \
-         checkboxes), and call propose_plan again for the next phase, or stop \
+         `build` session and its full final report — including that session's \
+         agent_id — is returned as this call's result — review it against the \
+         plan, update the plan file (e.g. phase checkboxes), and either call \
+         propose_plan again for the next phase, or agent_send that agent_id \
+         another round of feedback instead of starting a fresh build, or stop \
          once the plan is fully implemented. On rejection you receive their \
          reason and should revise and call propose_plan again.",
         serde_json::json!({
@@ -334,13 +339,15 @@ async fn launch_sponsored_build(
     // Fold the build's answer back as the propose_plan tool result, so the plan
     // agent has the implementation outcome in context and can revise +
     // re-propose (cycle, ADR-0138). Names the plan file (#513) so the agent
-    // knows where to apply its review-loop edits without having to recall it.
-    // Bounded the same way a bare `agent` answer is (#614): capping alone would
-    // silently discard an overflowing report, so a truncated answer mints a
-    // retained-output handle `poll` can page the rest of.
+    // knows where to apply its review-loop edits without having to recall it,
+    // and the child's agent_id (#609, ADR-0162 §5) so the plan agent can
+    // `agent_send` the same build child another round instead of spawning a
+    // fresh one. Bounded the same way a bare `agent` answer is (#614): capping
+    // alone would silently discard an overflowing report, so a truncated
+    // answer mints a retained-output handle `poll` can page the rest of.
     set_thinking(&holly, &session);
     let status = format!(
-        "plan file: {plan_path}\n\nbuild completed in {:.1}s:\n\n",
+        "plan file: {plan_path}\n\nbuild `{child}` completed in {:.1}s:\n\n",
         elapsed.as_secs_f64()
     );
     let output = crate::subagent::bound_answer(status, answer, &retained, Some(&session));

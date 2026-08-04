@@ -357,7 +357,7 @@ below realize one model:
   | Profile | mode | tools mask | permission | spawn |
   | --- | --- | --- | --- | --- |
   | `build` (default) | primary | none — every registered tool exists | `default: allow` — everything Allow | may spawn `explore`/`debug` |
-  | `plan` | primary | `read, glob, grep, agent, poll, ask_user, load_skill, propose_plan, write, edit, call, bash` — `call`/`bash` are on the mask only so a spawned `explore` child keeps its own access ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597) | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
+  | `plan` | primary | `read, glob, grep, agent, agent_send, poll, ask_user, load_skill, propose_plan, write, edit, call, bash` — `call`/`bash` are on the mask only so a spawned `explore` child keeps its own access ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597); `agent_send` (#609, [ADR-0162](../adr/0162-agent-send-supervising-a-sub-agent.md)) is what lets the plan agent re-engage the same sponsored `build` child for another review round instead of spawning a fresh one each phase | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
   | `explore` | subagent | `read, glob, grep, call, bash, poll, rhai` | `default: deny`; read triad Allow, exec set at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — `poll` rides along with `bash` so a background job it starts is actually readable (#615/#605); `poll` is intercepted before permission resolution, so it carries no grade of its own | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
 
@@ -538,7 +538,7 @@ below realize one model:
   embedder-owned `Arc<RwLock<..>>` snapshot cache. `None` (the default) keeps the
   engine-global specs — a no-op for single-user heads. **(b) Enforcement:**
   `runtime::permission::tool_masked` refuses a masked `ToolExec` **first** — before
-  the `agent`/`poll`/`ask_user` interceptions and permission —
+  the `agent`/`agent_send`/`poll`/`ask_user` interceptions and permission —
   so a hallucinated masked call is a hard boundary, and the mask **intersects down
   the ancestor chain** (a child never gains a tool an ancestor lacked, mirroring
   ADR-0024's privilege ceiling). A sibling `tool_mask_source`
@@ -708,7 +708,7 @@ below realize one model:
   entry — see #524's carve-out below) and stays physically read-only apart
   from one carve-out (#524,
   [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)):
-  `tools: [read, glob, grep, agent, poll, ask_user,
+  `tools: [read, glob, grep, agent, agent_send, poll, ask_user,
   load_skill, propose_plan, write, edit, call, bash]` unmasks `write`/`edit`,
   but its permission rules (`write: deny` plus the argument-scoped
   `write(.entanglement/plans/*.md): allow`, fanned out to `edit`/`apply_patch`
@@ -806,7 +806,7 @@ below realize one model:
 - **Tier-2 skill loading (✅ #115, [ADR-0037](../adr/0037-load-skill-tool-deterministic-resolution.md)):**
   one generic `load_skill { skill_name }` tool (not one-per-skill) resolves a
   skill's body on demand. Unlike the orchestration-only runtime tools
-  (`agent`/`ask_user`/`poll`), it **reads the filesystem**, so it is a
+  (`agent`/`agent_send`/`ask_user`/`poll`), it **reads the filesystem**, so it is a
   *real host tool* in the `ToolRegistry` (`entanglement_runtime::skills::load_skill::LoadSkillTool`,
   holding a shared `Arc<SkillRegistry>`) and flows through the *same* per-call
   gates as `read` — the permission profile and the #116 tool mask — with no

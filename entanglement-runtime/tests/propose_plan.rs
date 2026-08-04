@@ -288,7 +288,7 @@ async fn approve_spawns_sponsored_build_and_folds_answer_back() {
                 ..
             } if session == &sid && tool == PROPOSE_PLAN_TOOL => {
                 assert!(
-                    output.contains("build completed"),
+                    output.contains("completed in"),
                     "approve must fold the build result back: {output}"
                 );
                 assert!(
@@ -299,6 +299,14 @@ async fn approve_spawns_sponsored_build_and_folds_answer_back() {
                     output.contains(".entanglement/plans/s1.md"),
                     "the tool result must name the plan file's location (#513): {output}"
                 );
+                if let Some(child) = &build_session {
+                    assert!(
+                        output.contains(&child.to_string()),
+                        "the tool result must name the build child's agent_id \
+                         (#609, ADR-0162 §5), so the plan agent can agent_send \
+                         it another round: {output}"
+                    );
+                }
                 got_output = true;
             }
             OutEvent::Done { session, .. } if session == &sid => break,

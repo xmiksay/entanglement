@@ -1073,8 +1073,10 @@ fn specs_advertise_the_agent_tool_with_a_background_flag() {
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
     // `poll` (#605) is no longer part of the per-profile spawn family — it
     // rides the shared specs like `ask_user`, since it also joins non-spawn
-    // job handles.
-    assert_eq!(names, vec!["agent"]);
+    // job handles. `agent_send` (#609, ADR-0162) rides alongside `agent`
+    // here instead, since it's equally only useful to a spawn-capable
+    // profile.
+    assert_eq!(names, vec!["agent", "agent_send"]);
     let agent = &specs[0];
     // The scoped roster is disclosed in both the description and the enum: only
     // spawnable targets (explore), never the primaries (build/plan).
