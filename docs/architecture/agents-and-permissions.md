@@ -566,6 +566,26 @@ below realize one model:
   inherits `build`'s allow-everything/plan-authority-closed shape exactly) —
   full read/write/execute, still never selected unless the caller names it
   explicitly (`{"agent": "debug", ...}`).
+- **Startup warning for stale tool names in a mask or permission rule (✅ #623,
+  [ADR-0166](../adr/0166-migration-note-and-startup-warning-for-stale-tool-names.md)):**
+  a `tools`/`disallowed_tools` mask entry (above) or a `permission:` rule key
+  (#418/#425 above) that matches nothing doesn't error — it just silently stops
+  masking/grading anything, which is exactly what happens to a config written
+  against a tool a later rename removed (e.g. #605/#606's `bash_output`/
+  `agent_poll`/`agent_spawn` → `poll`/`agent`; ADR-0033's "renames are free"
+  covers session logs, not these). `tool_names::is_recognized_mask_entry`
+  checks each entry against a fixed, compile-time vocabulary of every literal
+  tool name in the codebase (deliberately independent of what's registered
+  *this run* — `bash`/`rhai` are env/feature-gated and MCP tools connect after
+  profiles load, so deriving "known" from the live `ToolRegistry` would
+  false-positive an inactive-but-real tool), a capability key, a `*`/`?` glob
+  (ADR-0148), or an `mcp__*` name. `agents::warn_unrecognized_mask_entries`
+  runs on every parsed profile (every layer, including the built-ins) and
+  `tracing::warn!`s each miss — visible by default (`warn` is the fallback log
+  level) but never a load error, since an unrecognized entry is a heuristic
+  hit, not a certainty. Persisted grants (`grants.yml`) are deliberately left
+  unchecked: a stale grant key is inert by construction (exact-match against a
+  live call), so nothing degrades quietly there the way a mask/rule does.
 - **In-app tool-allowlist editing (✅ #330, [ADR-0083](../adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)):**
   editing a mask materializes a user-layer override, not a new config surface —
   the layered loader already shadows a same-`name` definition, built-in
