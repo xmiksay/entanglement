@@ -387,37 +387,8 @@ pub struct McpAuthStatus {
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ┃ Live bash enablement (#498)
+// ┃ Session tool overlay (#539, ADR-0149; live bash enablement folded in, ADR-0163)
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// How a live-registered `bash` is graded, carried by
-/// [`InMsg::BashEnable`] and echoed back in [`OutEvent::BashChanged`] (#498,
-/// ADR-0133). Registering the tools live (mirroring the MCP `SharedRegistry`
-/// seam, #372/#375) is only half the feature — the enablement itself is
-/// expressed *through the permission model* rather than a bare on/off:
-///
-/// - [`BashGrade::Ask`] — the safe default: every `bash` call still goes
-///   through the normal [`OutEvent::ToolRequest`] approval prompt.
-/// - [`BashGrade::Allow`] — grants permission outright; an optional command
-///   `pattern` narrows the grant to matching commands only (e.g. `git *`),
-///   materializing an argument-scoped rule like `bash(git *): allow`
-///   ([`PermissionProfile`]'s existing `tool(pattern)` syntax, #173) rather
-///   than a bespoke mechanism. `None` is a blanket allow.
-///
-/// Runtime-side, this overrides the session's own profile grade for `bash`
-/// specifically while live-enabled (a profile authored before
-/// bash was live-enabled has no real opinion on it), but is still clamped by
-/// the config ceiling (#172) exactly like any other grade — a ceiling of
-/// `bash: deny` still wins over a live `Allow`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum BashGrade {
-    Ask,
-    Allow {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pattern: Option<String>,
-    },
-}
 
 /// One entry of a session's live tool overlay (#539, ADR-0149): a `*`/`?`
 /// wildcard `pattern` (the ADR-0148 mask semantics — `mcp__chessbase__*` for a
@@ -425,13 +396,24 @@ pub enum BashGrade {
 /// [`InMsg::SetToolOverlay`] to make matching tools exist — or, with `deny:
 /// true`, **not** exist — for **this session** regardless of the active agent
 /// profile's `tools:`/`disallowed_tools:` mask. For an enable entry, `allow:
-/// false` (the default, mirroring [`BashGrade::Ask`]) still routes every
-/// matching call through the approval prompt; `allow: true` grants permission
-/// outright — both runtime-side and still clamped by the config ceiling
-/// (#172), exactly like a live bash grade (#498). A deny entry withdraws
-/// matching tools from the session (its `allow` is meaningless and ignored);
-/// deny beats enable beats the profile, mirroring the mask's own
-/// denylist-first rule.
+/// false` (the default) still routes every matching call through the
+/// approval prompt; `allow: true` grants permission outright — both
+/// runtime-side and still clamped by the config ceiling (#172). A deny entry
+/// withdraws matching tools from the session (its `allow`/`arg_pattern` are
+/// meaningless and ignored); deny beats enable beats the profile, mirroring
+/// the mask's own denylist-first rule.
+///
+/// `arg_pattern` (ADR-0163, #611) narrows an enable entry's grant to matching
+/// **command arguments** rather than the whole tool — the live-bash grade
+/// this ADR absorbed (formerly `BashGrade::Allow { pattern }`). Do not
+/// confuse it with `pattern` above: `pattern` is a **tool-name** glob
+/// (ADR-0148 mask semantics, e.g. `bash`, `mcp__chessbase__*`); `arg_pattern`
+/// is a **command-argument** pattern (e.g. `git *`) materializing an
+/// argument-scoped `tool(arg_pattern): allow` rule (ADR-0114/#173's
+/// `tool(pattern)` syntax) on top of a flat `Ask` default, fanned out over
+/// every tool `pattern` matches. `None` (the default for every existing
+/// entry, `#[serde(default)]`) leaves an enable entry's grant flat — `allow`
+/// alone decides it, as before this field existed. Ignored on a deny entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOverlayEntry {
     pub pattern: String,
@@ -439,6 +421,8 @@ pub struct ToolOverlayEntry {
     pub allow: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deny: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arg_pattern: Option<String>,
 }
 
 impl ToolOverlayEntry {
@@ -447,6 +431,7 @@ impl ToolOverlayEntry {
             pattern: pattern.into(),
             allow: false,
             deny: false,
+            arg_pattern: None,
         }
     }
 
@@ -455,6 +440,7 @@ impl ToolOverlayEntry {
             pattern: pattern.into(),
             allow: false,
             deny: true,
+            arg_pattern: None,
         }
     }
 
@@ -1151,27 +1137,6 @@ pub enum InMsg {
     /// [`Disconnect`][McpAuthAction::Disconnect] destroys one — neither may be
     /// driven by an untrusted wire peer.
     McpAuth { name: String, action: McpAuthAction },
-    /// Hot-register `bash` in the running process,
-    /// graded by `grade` (#498, ADR-0133) — the live counterpart to the
-    /// startup-only `ENTANGLEMENT_ENABLE_BASH` env var. Engine-global like
-    /// [`McpAdd`][InMsg::McpAdd] (the tool registry is process-wide, not
-    /// per-session): a runtime responder registers the pair into the shared
-    /// tool registry (a no-op if already registered) and installs `grade` as
-    /// the live permission override for `bash`, still clamped by
-    /// the config ceiling (#172). On success emits
-    /// [`OutEvent::BashChanged`] with `enabled: true`. **Trusted-only**
-    /// (#472, ADR-0124, same rationale as `McpAdd`): live-enabling `bash`
-    /// hands the model a full shell with no approval prompt when graded
-    /// `Allow`, so this must never arrive over an untrusted wire.
-    BashEnable { grade: BashGrade },
-    /// Unregister `bash` and clear the live grade
-    /// override (#498, ADR-0133) — the counterpart to
-    /// [`BashEnable`][InMsg::BashEnable]. A pair registered at startup via
-    /// `ENTANGLEMENT_ENABLE_BASH` is unregistered the same way. On success
-    /// emits [`OutEvent::BashChanged`] with `enabled: false`.
-    /// **Trusted-only** (#472, ADR-0124) like [`BashEnable`][InMsg::BashEnable]:
-    /// it mutates engine-global tool registration.
-    BashDisable,
     /// Fetch a session's persisted content history from `after_seq` onward, for a
     /// head that subscribed late and missed the live broadcast (#160, ADR-0072).
     /// Answered out-of-core by the runtime's history responder — which owns the
@@ -1281,9 +1246,9 @@ pub enum InMsg {
     /// Always succeeds and always emits `ToolOverlayChanged` with the full
     /// effective list (mirroring [`SetGeneration`][InMsg::SetGeneration]);
     /// deferred while a turn is live (stash replay), like `SetAgent`.
-    /// **Trusted-only** (not wire-allowed), same rationale as
-    /// [`BashEnable`][InMsg::BashEnable]: it can hand the model tools with no
-    /// restart and — with `allow: true` — no approval prompt.
+    /// **Trusted-only** (not wire-allowed, #472, ADR-0124): it can hand the
+    /// model tools with no restart and — with `allow: true` — no approval
+    /// prompt.
     SetToolOverlay {
         session: SessionId,
         entries: Vec<ToolOverlayEntry>,
@@ -1402,12 +1367,10 @@ impl InMsg {
     /// [`ListQuestions`][InMsg::ListQuestions] (#515) and
     /// [`ListOperations`][InMsg::ListOperations] (#607; both carry an optional
     /// `session` that is a result *filter*, not a routing target — a `None`
-    /// filter spans every session), the MCP
+    /// filter spans every session), and the MCP
     /// ops [`McpList`][InMsg::McpList]/[`McpAdd`][InMsg::McpAdd]/
     /// [`McpRemove`][InMsg::McpRemove] (#375; MCP config is engine-global, not
-    /// per-session), and the bash-live ops
-    /// [`BashEnable`][InMsg::BashEnable]/[`BashDisable`][InMsg::BashDisable]
-    /// (#498; the tool registry is likewise engine-global). Every other
+    /// per-session). Every other
     /// variant, including the session-scoped [`ReplayFrom`][InMsg::ReplayFrom]
     /// query and [`RetractQuestion`][InMsg::RetractQuestion]/
     /// [`ReplaceQuestion`][InMsg::ReplaceQuestion] (#515, resolved by the
@@ -1442,9 +1405,7 @@ impl InMsg {
             | InMsg::McpList { .. }
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
-            | InMsg::BashEnable { .. }
-            | InMsg::McpAuth { .. }
-            | InMsg::BashDisable => None,
+            | InMsg::McpAuth { .. } => None,
         }
     }
 
@@ -1471,13 +1432,11 @@ impl InMsg {
     ///   file*, not an unauthenticated wire frame. Trusted heads (the TUI
     ///   `/mcp` command) keep both via [`Holly::send`][crate::Holly::send];
     ///   `McpList` is read-only and stays wire-allowed.
-    /// - [`BashEnable`][InMsg::BashEnable]/[`BashDisable`][InMsg::BashDisable]
-    ///   (#498, ADR-0133, same rationale as `McpAdd`/`McpRemove`): live-enabling
-    ///   `bash` hands the model a full shell, optionally graded `Allow` with no
-    ///   approval prompt at all — a wire frame must never grant that.
     /// - [`SetToolOverlay`][InMsg::SetToolOverlay] (#539, ADR-0149, same
-    ///   rationale as `BashEnable`): injects tools past the agent mask,
-    ///   optionally graded `allow` with no approval prompt.
+    ///   rationale as `McpAdd`/`McpRemove`): injects tools past the agent
+    ///   mask — including, per ADR-0163 (#611), live-enabling a lazily-
+    ///   registrable built-in like `bash` — optionally graded `allow` with no
+    ///   approval prompt.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -1528,8 +1487,6 @@ impl InMsg {
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
             | InMsg::McpAuth { .. }
-            | InMsg::BashEnable { .. }
-            | InMsg::BashDisable
             | InMsg::SetToolOverlay { .. } => false,
         }
     }
@@ -1555,8 +1512,6 @@ impl InMsg {
             InMsg::McpAdd { .. } => "mcp_add",
             InMsg::McpRemove { .. } => "mcp_remove",
             InMsg::McpAuth { .. } => "mcp_auth",
-            InMsg::BashEnable { .. } => "bash_enable",
-            InMsg::BashDisable => "bash_disable",
             InMsg::ReplayFrom { .. } => "replay_from",
             InMsg::CloseSession { .. } => "close_session",
             InMsg::HibernateSession { .. } => "hibernate_session",
@@ -1664,21 +1619,11 @@ pub enum OutEvent {
     /// carrying `authorize_url` while the browser consent is pending, then
     /// again with the terminal `state` or `error`.
     McpAuthChanged { status: McpAuthStatus },
-    /// `bash` was live-registered or unregistered (lifecycle
-    /// event, no `seq`), in reply to
-    /// [`InMsg::BashEnable`]/[`InMsg::BashDisable`] (#498, ADR-0133).
-    /// `grade` is the live permission override now in effect — `Some` when
-    /// `enabled` is `true`, `None` when `false`.
-    BashChanged {
-        enabled: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        grade: Option<BashGrade>,
-    },
     /// An LLM endpoint's throttle posture changed (lifecycle event, no `seq`,
     /// #517). The provider's per-endpoint resilience pool (`HttpClient`, ADR-0050/
     /// ADR-0111) is **engine-global, not per-session** — many sessions can share
     /// one endpoint, and one throttled endpoint never blocks another — so this
-    /// mirrors [`McpChanged`][OutEvent::McpChanged]/[`BashChanged`][OutEvent::BashChanged]'s
+    /// mirrors [`McpChanged`][OutEvent::McpChanged]'s
     /// shape rather than naming a session. Emitted by the runtime's throttle
     /// responder polling `HttpClient::throttle_statuses()` (it alone owns the
     /// `HttpClient`), **only on a transition** — entering/leaving a 429 cool-down,
@@ -2104,7 +2049,6 @@ impl OutEvent {
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::McpAuthChanged { .. }
-            | OutEvent::BashChanged { .. }
             | OutEvent::Throttle { .. } => None,
         }
     }
@@ -2129,7 +2073,6 @@ impl OutEvent {
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::McpAuthChanged { .. }
-            | OutEvent::BashChanged { .. }
             | OutEvent::Throttle { .. }
             | OutEvent::History { .. }
             | OutEvent::Status { .. }
@@ -2227,7 +2170,7 @@ mod tests {
         }
         .wire_allowed());
         assert!(!InMsg::McpRemove { name: "srv".into() }.wire_allowed());
-        // The live tool overlay is trusted-only (#539, ADR-0149, the BashEnable
+        // The live tool overlay is trusted-only (#539, ADR-0149, the McpAdd
         // rationale): it injects tools past the agent mask, optionally graded
         // `allow` with no approval prompt — never wire-grantable.
         assert!(!InMsg::SetToolOverlay {

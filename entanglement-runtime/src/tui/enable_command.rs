@@ -4,12 +4,13 @@
 //! either the same way (`/disable ...` upserts a **deny** entry, withdrawing
 //! even a profile-advertised tool for this session; bare `/disable` clears
 //! the whole overlay), or open the session-tools checklist dialog (bare
-//! `/enable`). Kept in its own module mirroring
-//! `mcp_command.rs`/`bash_command.rs` (the raw-text re-parse pattern), since
-//! `commands.rs`/`event_loop.rs` are past the 400-line cap. Issue 2: the
-//! `mcp`/`tool` subcommand grammar is now clap-derived
-//! ([`crate::tui::command_args::parse_enable_via_clap`]); this module maps the
-//! parsed pieces onto [`EnableCommand`].
+//! `/enable`). Also the fold-in point for live bash enablement (ADR-0163,
+//! #611 — `/enable tool bash [--allow [<pattern>]]` supersedes the old
+//! `/bash on|off`). Kept in its own module mirroring `mcp_command.rs` (the
+//! raw-text re-parse pattern), since `commands.rs`/`event_loop.rs` are past
+//! the 400-line cap. Issue 2: the `mcp`/`tool` subcommand grammar is now
+//! clap-derived ([`crate::tui::command_args::parse_enable_via_clap`]); this
+//! module maps the parsed pieces onto [`EnableCommand`].
 
 use entanglement_core::{Holly, InMsg, SessionId, ToolOverlayEntry};
 
@@ -24,8 +25,15 @@ pub enum EnableCommand {
     /// Bare `/enable`: open the session-tools checklist dialog.
     Show,
     /// Upsert one enable entry on the active session (drops a same-pattern
-    /// deny entry — the two are mutually exclusive per pattern).
-    Enable { pattern: String, allow: bool },
+    /// deny entry — the two are mutually exclusive per pattern). `arg_pattern`
+    /// (ADR-0163, #611) narrows `allow` to matching command arguments only —
+    /// `--allow git *` on `/enable tool bash` — and is `None` for a flat
+    /// grade or when `allow` is `false`.
+    Enable {
+        pattern: String,
+        allow: bool,
+        arg_pattern: Option<String>,
+    },
     /// Upsert one **deny** entry (drops a same-pattern enable entry):
     /// matching tools stop existing for this session, even ones the profile
     /// advertises.
@@ -35,10 +43,10 @@ pub enum EnableCommand {
 }
 
 /// Parse `/enable ...` / `/disable ...` — Issue 2 delegates to clap
-/// ([`parse_enable_via_clap`]) and maps the parsed `(target, allow)` onto
-/// [`EnableCommand`]. `enabling` selects which command's grammar `text` is
-/// parsed under. A bare `/disable` (or its `/disable all` alias) clears the
-/// whole overlay.
+/// ([`parse_enable_via_clap`]) and maps the parsed `(target, allow,
+/// arg_pattern)` onto [`EnableCommand`]. `enabling` selects which command's
+/// grammar `text` is parsed under. A bare `/disable` (or its `/disable all`
+/// alias) clears the whole overlay.
 pub fn parse_enable_args(text: &str, enabling: bool) -> Result<EnableCommand, String> {
     // `/disable all` is an alias for bare `/disable` (Clear) — not a clap
     // subcommand, so intercept it before clap rejects `all` as unrecognized.
@@ -52,14 +60,18 @@ pub fn parse_enable_args(text: &str, enabling: bool) -> Result<EnableCommand, St
             return Ok(EnableCommand::Clear);
         }
     }
-    let (target, allow) = parse_enable_via_clap(text, enabling)?;
+    let (target, allow, arg_pattern) = parse_enable_via_clap(text, enabling)?;
     match (enabling, target) {
         (true, None) => Ok(EnableCommand::Show),
         (false, None) => Ok(EnableCommand::Clear),
         (_, Some(EnableTarget::Mcp { server })) => {
             let pattern = format!("mcp__{server}__*");
             if enabling {
-                Ok(EnableCommand::Enable { pattern, allow })
+                Ok(EnableCommand::Enable {
+                    pattern,
+                    allow,
+                    arg_pattern,
+                })
             } else {
                 Ok(EnableCommand::Disable { pattern })
             }
@@ -69,6 +81,7 @@ pub fn parse_enable_args(text: &str, enabling: bool) -> Result<EnableCommand, St
                 Ok(EnableCommand::Enable {
                     pattern: name,
                     allow,
+                    arg_pattern,
                 })
             } else {
                 Ok(EnableCommand::Disable { pattern: name })
@@ -81,12 +94,16 @@ pub fn parse_enable_args(text: &str, enabling: bool) -> Result<EnableCommand, St
 /// list from the app's tracked mirror and sends `InMsg::SetToolOverlay`
 /// (full replacement — the confirmation folds back via
 /// `App::handle_tool_overlay_changed`). A parse error renders as a status line
-/// instead of hitting the engine, mirroring `send_mcp`/`send_bash`.
+/// instead of hitting the engine, mirroring `send_mcp`.
 pub(super) async fn send_enable(app: &mut App, holly: &Holly, text: &str, enabling: bool) {
     match parse_enable_args(text, enabling) {
         Ok(EnableCommand::Show) => app.open_session_tools_dialog(),
-        Ok(EnableCommand::Enable { pattern, allow }) => {
-            upsert_enable(app, holly, pattern, allow).await;
+        Ok(EnableCommand::Enable {
+            pattern,
+            allow,
+            arg_pattern,
+        }) => {
+            upsert_enable(app, holly, pattern, allow, arg_pattern).await;
         }
         Ok(EnableCommand::Disable { pattern }) => {
             upsert_deny(app, holly, pattern).await;
@@ -106,8 +123,16 @@ pub(super) async fn send_enable(app: &mut App, holly: &Holly, text: &str, enabli
 /// *available* (`allowed`-state, #542) server, this first lazily connects it —
 /// the same path the `mcp_enable` tool takes — and scopes its visibility to
 /// this session; a connect failure renders as a status line and skips the
-/// overlay entirely.
-pub(super) async fn upsert_enable(app: &mut App, holly: &Holly, pattern: String, allow: bool) {
+/// overlay entirely. `arg_pattern` (ADR-0163, #611) narrows `allow` to
+/// matching command arguments only — the fold-in of the pre-ADR-0163
+/// `/bash on --allow <pattern>` grade.
+pub(super) async fn upsert_enable(
+    app: &mut App,
+    holly: &Holly,
+    pattern: String,
+    allow: bool,
+    arg_pattern: Option<String>,
+) {
     if let Err(message) = lazy_enable_available(app, &pattern).await {
         app.record_enable_error(message);
         return;
@@ -119,6 +144,7 @@ pub(super) async fn upsert_enable(app: &mut App, holly: &Holly, pattern: String,
         pattern,
         allow,
         deny: false,
+        arg_pattern,
     });
     send_overlay(holly, session, entries).await;
 }
@@ -226,6 +252,7 @@ mod tests {
             Ok(EnableCommand::Enable {
                 pattern: "mcp__chessbase__*".to_string(),
                 allow: false,
+                arg_pattern: None,
             })
         );
     }
@@ -237,6 +264,7 @@ mod tests {
             Ok(EnableCommand::Enable {
                 pattern: "mcp__chessbase__evaluate".to_string(),
                 allow: true,
+                arg_pattern: None,
             })
         );
         assert_eq!(
@@ -244,6 +272,24 @@ mod tests {
             Ok(EnableCommand::Enable {
                 pattern: "bash".to_string(),
                 allow: false,
+                arg_pattern: None,
+            })
+        );
+    }
+
+    /// ADR-0163, #611: `/enable tool bash --allow git *` narrows the grant to
+    /// commands matching `git *` — the fold-in of the pre-ADR-0163
+    /// `/bash on --allow git *` grade. The multi-word pattern rejoins
+    /// verbatim with single spaces (clap's `--allow` alone would only ever
+    /// capture the first token).
+    #[test]
+    fn parse_enable_tool_allow_with_arg_pattern() {
+        assert_eq!(
+            parse_enable_args("/enable tool bash --allow git *", true),
+            Ok(EnableCommand::Enable {
+                pattern: "bash".to_string(),
+                allow: true,
+                arg_pattern: Some("git *".to_string()),
             })
         );
     }
@@ -312,6 +358,7 @@ mod tests {
                 pattern: "read".to_string(),
                 allow: false,
                 deny: false,
+                arg_pattern: None,
             },
             ToolOverlayEntry::deny("bash"),
         ];
@@ -331,6 +378,7 @@ mod tests {
             pattern: "mcp__zread__*".to_string(),
             allow: false,
             deny: false,
+            arg_pattern: None,
         }];
         let err = lazy_enable_entries(&mut app, &entries)
             .await

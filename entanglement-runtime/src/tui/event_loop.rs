@@ -151,6 +151,7 @@ pub(super) async fn handle_event(
                                     holly,
                                     format!("mcp__{name}__*"),
                                     false,
+                                    None,
                                 )
                                 .await;
                             }
@@ -525,13 +526,6 @@ pub(super) async fn handle_event(
                                             }
                                             if cmd == crate::tui::commands::Command::Allow {
                                                 crate::tui::allow_command::send_allow(app, &text);
-                                                return Ok(false);
-                                            }
-                                            if cmd == crate::tui::commands::Command::Bash {
-                                                crate::tui::bash_command::send_bash(
-                                                    app, holly, &text,
-                                                )
-                                                .await;
                                                 return Ok(false);
                                             }
                                             if cmd == crate::tui::commands::Command::Enable
@@ -1230,7 +1224,7 @@ mod tests {
         let mut app = App::new_for_test(sid);
         app.init_head_context(
             dir.path().to_path_buf(),
-            crate::bash_live::LiveBashState::new(false),
+            crate::bash_live::BashRegistered::new(false),
         );
         let holly = engine();
         let mut rx = holly.subscribe_inbound();

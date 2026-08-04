@@ -673,7 +673,7 @@ fn app_in_temp_dir(sid: SessionId) -> (App, tempfile::TempDir) {
     let mut app = App::new_for_test(sid);
     app.init_head_context(
         dir.path().to_path_buf(),
-        crate::bash_live::LiveBashState::new(false),
+        crate::bash_live::BashRegistered::new(false),
     );
     (app, dir)
 }

@@ -25,10 +25,10 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | PauseSession | ResumeSession
           | SetAgent | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
+          | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status
           | AgentChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
-          | McpList | McpChanged | McpAuthChanged | BashChanged | Throttle
+          | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange

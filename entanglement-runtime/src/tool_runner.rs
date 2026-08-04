@@ -1151,20 +1151,19 @@ pub fn spawn_tool_executor_with_policy(
                             // The DB-backed resolver runs in the task, never the loop.
                             let chain = ancestor_chain(&spawn_guard, &session);
                             let resolver = resolver.clone();
-                            // The session's live overlay grade for this call
-                            // (#539, ADR-0149), resolved before spawning like the
-                            // chain snapshot above: a matching entry replaces the
-                            // profile chain's grade with Ask (default) or Allow —
-                            // still ceiling-clamped inside `dispatch`.
-                            let overlay_grade = overlays.get(&session).and_then(|entries| {
-                                entanglement_core::ToolOverlayEntry::find(entries, &tool).map(|e| {
-                                    if e.allow {
-                                        Permission::Allow
-                                    } else {
-                                        Permission::Ask
-                                    }
+                            // The session's live overlay entry for this call
+                            // (#539, ADR-0149; `arg_pattern` #611/ADR-0163),
+                            // resolved before spawning like the chain snapshot
+                            // above: a matching entry replaces the profile
+                            // chain's grade — still ceiling-clamped inside
+                            // `dispatch`, which also has the `arg`/`workdir`
+                            // an `arg_pattern` rule needs to resolve against.
+                            let overlay_entry = overlays
+                                .get(&session)
+                                .and_then(|entries| {
+                                    entanglement_core::ToolOverlayEntry::find(entries, &tool)
                                 })
-                            });
+                                .cloned();
                             let ceiling = base.clone();
                             // Snapshot before spawning (#372) — see the Rhai arm above.
                             let tools = tools.read().expect("tool registry lock poisoned").clone();
@@ -1191,7 +1190,7 @@ pub fn spawn_tool_executor_with_policy(
                                     &hooks,
                                     &pending,
                                     escape_root.as_ref(),
-                                    overlay_grade,
+                                    overlay_entry,
                                     &ceiling,
                                     session,
                                     request_id,
@@ -1239,12 +1238,14 @@ async fn dispatch(
     hooks: &Hooks,
     pending: &crate::pending::PendingDecisions,
     escape_root: Option<&EscapeRoot>,
-    // The session's live overlay grade for this call (#539, ADR-0149): `Some`
-    // when a `ToolOverlayEntry` matched the tool — it replaces the profile
-    // chain's grade (that override is the overlay's point; the injecting head
-    // is trusted), clamped against `ceiling` below so the config permission
-    // ceiling (#172) still wins.
-    overlay_grade: Option<Permission>,
+    // The session's live overlay entry for this call (#539, ADR-0149;
+    // `arg_pattern` #611/ADR-0163): `Some` when a `ToolOverlayEntry` matched
+    // the tool — [`overlay_entry_grade`][crate::permission::overlay_entry_grade]
+    // materializes it into a profile that replaces the profile chain's grade
+    // (that override is the overlay's point; the injecting head is trusted),
+    // clamped against `ceiling` below so the config permission ceiling (#172)
+    // still wins.
+    overlay_entry: Option<entanglement_core::ToolOverlayEntry>,
     ceiling: &PermissionProfile,
     session: SessionId,
     request_id: String,
@@ -1276,14 +1277,16 @@ async fn dispatch(
     // grant lookup (`apply_grant`) and grant record (on approval) provably
     // share one key.
     let arg = grading_arg(&tool, &input, escape_root.map(|er| er.root.as_path()));
-    let base_perm = match overlay_grade {
-        Some(grade) => clamp_to_base(
-            grade,
-            ceiling,
-            &tool,
-            arg.as_deref(),
-            crate::permission::permission_workdir(&tool, &input).as_deref(),
-        ),
+    let workdir = crate::permission::permission_workdir(&tool, &input);
+    let base_perm = match overlay_entry {
+        Some(entry) => {
+            let grade = crate::permission::overlay_entry_grade(&tool, &entry).resolve_scoped(
+                &tool,
+                arg.as_deref(),
+                workdir.as_deref(),
+            );
+            clamp_to_base(grade, ceiling, &tool, arg.as_deref(), workdir.as_deref())
+        }
         None => resolve_effective(resolver, chain, &tool, &input).await,
     };
     let perm = apply_grant(grants, &session, &tool, arg.as_deref(), base_perm);

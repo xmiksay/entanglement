@@ -185,7 +185,7 @@ impl App {
             pending_compact_fork: None,
             inspect: Default::default(),
             root: PathBuf::from("."),
-            live_bash: crate::bash_live::LiveBashState::new(false),
+            live_bash: crate::bash_live::BashRegistered::new(false),
             mention: MentionPopup::new(FileIndex::default()),
             slash: crate::tui::slash_popup::SlashPopup::new(),
             quit_pending: false,

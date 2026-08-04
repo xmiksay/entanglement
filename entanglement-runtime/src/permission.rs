@@ -394,6 +394,29 @@ pub fn clamp_to_base(
     min_permission(perm, base.resolve_scoped(tool, arg, workdir))
 }
 
+/// The [`PermissionProfile`] an **enable** [`ToolOverlayEntry`] materializes
+/// into for `tool` (ADR-0163, #611 — folds live bash enablement's
+/// `BashGrade::Allow { pattern }` into the generic overlay): `allow: false`
+/// is a flat `Ask`; `allow: true` with no `arg_pattern` is a flat `Allow`;
+/// `allow: true` with `arg_pattern: Some(p)` stays `Ask` by default and adds
+/// an argument-scoped `tool(p): allow` rule (the existing `tool(pattern)`
+/// syntax, #173/ADR-0114) so only matching commands are pre-approved. `tool`
+/// is the *concrete* tool name being dispatched, not the entry's own
+/// name-glob `pattern` — an entry like `mcp__chessbase__*` fans this out over
+/// every tool it matches. `arg_pattern` is ignored when `allow` is `false`:
+/// the entry's own grammar (`--allow [<pattern>]`) never produces that
+/// combination, and narrowing an `Ask` down from itself has no meaning. A
+/// deny entry is never passed here — `tool_masked`/`tool_mask_source`
+/// withdraw it before a grade decision is even reached.
+pub fn overlay_entry_grade(tool: &str, entry: &ToolOverlayEntry) -> PermissionProfile {
+    match (entry.allow, entry.arg_pattern.as_deref()) {
+        (true, Some(pattern)) => PermissionProfile::new(Permission::Ask)
+            .with(format!("{tool}({pattern})"), Permission::Allow),
+        (true, None) => PermissionProfile::new(Permission::Allow),
+        (false, _) => PermissionProfile::new(Permission::Ask),
+    }
+}
+
 /// A session's own permission for a `tool` call; an unseen session defaults to
 /// `Deny` — **fail-closed** (#156). The executor folds its per-session profile
 /// map from the lossy `SessionStarted`/`AgentChanged` broadcast, so under burst a

@@ -110,28 +110,6 @@ pub struct AllowArgs {
     pub path: String,
 }
 
-/// `/bash on [--allow [<pattern>] | --ask] | /bash off` (#498, ADR-0133).
-#[derive(Parser, Debug)]
-#[command(name = "/bash")]
-pub struct BashArgs {
-    /// `on` (default) or `off`.
-    pub state: BashState,
-    /// `--ask` grades every call through the normal approval prompt.
-    #[arg(long)]
-    pub ask: bool,
-    /// `--allow [<pattern>]` blanket-allows, or scopes to an argument glob.
-    /// `Some(None)` = blanket; `Some(Some(pat))` = scoped; the trailing free-form
-    /// pattern rejoins verbatim with single spaces.
-    #[arg(long)]
-    pub allow: Option<Option<String>>,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
-pub enum BashState {
-    On,
-    Off,
-}
-
 /// `/enable`/`/disable` subcommand target (#539, ADR-0149): an MCP server
 /// (`mcp <server>` ⇒ `mcp__<server>__*`) or a bare tool name / glob
 /// (`tool <name>`).
@@ -143,9 +121,16 @@ pub enum EnableTarget {
     Tool { name: String },
 }
 
-/// `/enable mcp <server> | tool <name> [--allow]` (bare `/enable` opens the
-/// session-tools dialog; `--allow` is enable-only). `--allow` is `global` so it
-/// parses after the `mcp`/`tool` subcommand (`/enable tool bash --allow`).
+/// `/enable mcp <server> | tool <name> [--allow [<pattern>]]` (bare `/enable`
+/// opens the session-tools dialog; `--allow` is enable-only). `--allow` is
+/// `global` so it parses after the `mcp`/`tool` subcommand
+/// (`/enable tool bash --allow`). The optional trailing `<pattern>` (ADR-0163,
+/// #611 — folds live bash enablement's `--allow [<pattern>]` into this one
+/// command surface) is a free-form, possibly multi-word command-argument glob
+/// (`git *`) that doesn't map onto clap's single-token option-value model, so
+/// [`super::command_args::parse_enable_via_clap`] splits it off and rejoins it
+/// verbatim *before* this struct ever sees it — `allow` here only ever
+/// resolves to whether the bare flag was present.
 #[derive(Parser, Debug)]
 #[command(name = "/enable")]
 pub struct EnableArgs {

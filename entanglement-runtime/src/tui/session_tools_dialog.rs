@@ -132,6 +132,7 @@ impl SessionToolsDialog {
                     pattern: row.name.clone(),
                     allow: row.allow,
                     deny: false,
+                    arg_pattern: None,
                 }),
                 (false, true) => Some(ToolOverlayEntry::deny(row.name.clone())),
                 _ => None,
@@ -181,6 +182,7 @@ mod tests {
                     pattern: "mcp__docs__search".into(),
                     allow: true,
                     deny: false,
+                    arg_pattern: None,
                 },
             ]
         );
