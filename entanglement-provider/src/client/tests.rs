@@ -462,6 +462,162 @@ async fn request_send_failure_is_transient() {
     );
 }
 
+// ── header-phase timeout (#658) ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn header_timeout_retries_and_recovers_when_the_server_replies_late() {
+    // The incident: a server accepts the connection, takes the request, then
+    // goes silent — no headers, no error. Before #658 this hung
+    // `execute_with_retry` forever. The header-phase timeout must fire, drop
+    // the silent connection, and retry against a fresh one — exactly the
+    // recovery the incident report observed once the dead TCP connection was
+    // killed manually.
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        // First connection: accept, drain the request, then hold the socket
+        // open and silent — never write headers. Handled on its own thread so
+        // it can't block accepting the retry's connection below.
+        if let Ok((mut sock, _)) = listener.accept() {
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                std::thread::sleep(Duration::from_secs(3));
+            });
+        }
+        // Second connection (the retry): reply normally.
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf);
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello",
+            );
+            let _ = sock.flush();
+        }
+    });
+
+    let http = HttpClient::with_config(RetryConfig {
+        max_attempts: 3,
+        initial_backoff: Duration::from_millis(10),
+        max_backoff: Duration::from_millis(10),
+        rpm: 100_000, // effectively no pacing gap between attempts
+        response_header_timeout: Duration::from_millis(80),
+        ..RetryConfig::default()
+    })
+    .unwrap();
+
+    let url = format!("http://{addr}/");
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        http.execute_with_retry(&url, None, None, None, "test-model", None, || {
+            http.client().get(&url).send()
+        }),
+    )
+    .await
+    .expect("must not hang past the header timeout + one retry");
+
+    let (response, _guard) = result.expect("the second attempt must succeed");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn header_timeout_exhausted_after_max_attempts_returns_a_typed_error() {
+    // A server that stays silent on *every* attempt must surface a clear,
+    // typed error once the retry budget is spent — not hang forever.
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        while let Ok((mut sock, _)) = listener.accept() {
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                std::thread::sleep(Duration::from_secs(3));
+            });
+        }
+    });
+
+    let http = HttpClient::with_config(RetryConfig {
+        max_attempts: 2,
+        initial_backoff: Duration::from_millis(5),
+        max_backoff: Duration::from_millis(5),
+        rpm: 100_000,
+        response_header_timeout: Duration::from_millis(50),
+        ..RetryConfig::default()
+    })
+    .unwrap();
+
+    let url = format!("http://{addr}/");
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        http.execute_with_retry(&url, None, None, None, "test-model", None, || {
+            http.client().get(&url).send()
+        }),
+    )
+    .await
+    .expect("must not hang past 2 attempts × the header timeout");
+
+    match result {
+        Err(RetryError::HeaderTimeout(timeout, attempts)) => {
+            assert_eq!(timeout, Duration::from_millis(50));
+            assert_eq!(attempts, 2);
+        }
+        Err(other) => panic!("expected RetryError::HeaderTimeout, got {other}"),
+        Ok(_) => panic!("expected RetryError::HeaderTimeout, got Ok"),
+    }
+}
+
+#[tokio::test]
+async fn header_timeout_does_not_apply_once_headers_have_arrived() {
+    // The header-phase timeout must bound only the wait *for* headers. Once a
+    // `Response` exists, liveness is `spawn_byte_stream`'s own per-chunk
+    // `STREAM_IDLE_TIMEOUT` watchdog — a slow-but-alive body that outlives
+    // `response_header_timeout` must still complete normally (must not
+    // regress the #241 guarantee that a long healthy stream runs to
+    // completion).
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf);
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n",
+            );
+            let _ = sock.flush();
+            // Headers are already out; the body now drips slower than the
+            // header-phase timeout but well inside the idle-gap one.
+            std::thread::sleep(Duration::from_millis(150));
+            let _ = sock.write_all(b"hello");
+            let _ = sock.flush();
+        }
+    });
+
+    let http = HttpClient::with_config(RetryConfig {
+        rpm: 100_000,
+        response_header_timeout: Duration::from_millis(60),
+        ..RetryConfig::default()
+    })
+    .unwrap();
+
+    let url = format!("http://{addr}/");
+    let (response, _guard) = tokio::time::timeout(
+        Duration::from_secs(5),
+        http.execute_with_retry(&url, None, None, None, "test-model", None, || {
+            http.client().get(&url).send()
+        }),
+    )
+    .await
+    .expect("must not hang")
+    .expect("headers arrive within the header timeout even though the body is still slow");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body = response.text().await.expect("read body");
+    assert_eq!(body, "hello");
+}
+
 #[test]
 fn parse_retry_after_reads_delta_seconds() {
     let mut headers = reqwest::header::HeaderMap::new();

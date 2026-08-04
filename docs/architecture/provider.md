@@ -345,16 +345,27 @@ primary-model call risks contending for the same permit (see the *Per-purpose
 auxiliary models* section of the [heads & persistence
 doc](heads-and-persistence.md), [ADR-0158](../adr/0158-defer-session-title-aux-call-under-contended-primary-concurrency.md)).
 
-**Timeouts — connect + idle-gap, not whole-request** (#241): the shared
-`reqwest::Client` is built with `connect_timeout` only (30s to establish TCP+TLS).
-A fixed whole-request `.timeout()` would abort a long *healthy* LLM stream
-mid-turn (and its partials, already consumed, aren't retryable) — and its 300s
-ceiling was also what capped `Stop` cancel latency (#179). Instead liveness on
-the streamed body is enforced per chunk: `client::spawn_byte_stream` forwards the
-SSE bytes over an mpsc channel under a `tokio::time::timeout(STREAM_IDLE_TIMEOUT,
-…)` watchdog (120s idle gap), so a slow-but-alive stream runs to completion while
-a hung one dies fast. Both `OpenAiLlm`, `AnthropicLlm`, and `GeminiLlm` use this
-one helper. **The pump also races every read against the consumer dropping its
+**Timeouts — connect + await-headers + idle-gap, not whole-request** (#241,
+#658): the shared `reqwest::Client` is built with `connect_timeout` only (30s
+to establish TCP+TLS). A fixed whole-request `.timeout()` would abort a long
+*healthy* LLM stream mid-turn (and its partials, already consumed, aren't
+retryable) — and its 300s ceiling was also what capped `Stop` cancel latency
+(#179). Between TCP+TLS establishment and the streamed body sits a third gap
+`connect_timeout` and the idle-gap watchdog don't cover: a server that accepts
+the connection and takes the request but never writes response headers. Before
+#658 that hung `execute_with_retry` forever, pinning the endpoint's
+concurrency permit and cross-process lease. `execute_with_retry` now wraps the
+await-headers `request_fn()` call in `tokio::time::timeout(response_header_timeout,
+…)` (`RetryConfig::response_header_timeout`, default 120s, aligned with
+`STREAM_IDLE_TIMEOUT`); an elapsed timeout drops the silent connection and is
+classified exactly like a transient transport fault, so it retries through the
+same path up to `max_attempts` before surfacing `RetryError::HeaderTimeout`.
+Once headers do arrive, liveness on the streamed body is enforced per chunk:
+`client::spawn_byte_stream` forwards the SSE bytes over an mpsc channel under a
+`tokio::time::timeout(STREAM_IDLE_TIMEOUT, …)` watchdog (120s idle gap), so a
+slow-but-alive stream runs to completion while a hung one dies fast. Both
+`OpenAiLlm`, `AnthropicLlm`, and `GeminiLlm` use this one helper. **The pump
+also races every read against the consumer dropping its
 receiver** (`tokio::select!` against `tx.closed()`, #552): before this, the
 `StreamGuard` it holds (the endpoint/model permits and the cross-process lease)
 released only on the pump's *next* chunk-send failure or the idle-gap timeout

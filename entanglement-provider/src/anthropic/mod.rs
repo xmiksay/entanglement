@@ -281,6 +281,12 @@ impl Llm for AnthropicLlm {
                         crate::client::RetryError::RateLimited => {
                             anyhow::anyhow!("anthropic rate limited: gave up waiting for the endpoint to clear")
                         }
+                        crate::client::RetryError::HeaderTimeout(timeout, attempts) => {
+                            anyhow::anyhow!(
+                                "anthropic request failed: no response headers within \
+                                 {timeout:?} after {attempts} attempt(s)"
+                            )
+                        }
                     })?;
 
                 let response = ensure_success(response).await?;

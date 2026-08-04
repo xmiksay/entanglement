@@ -208,6 +208,10 @@ impl Llm for OpenAiLlm {
                 crate::client::RetryError::RateLimited => anyhow::anyhow!(
                     "openai-compat rate limited: gave up waiting for the endpoint to clear"
                 ),
+                crate::client::RetryError::HeaderTimeout(timeout, attempts) => anyhow::anyhow!(
+                    "openai-compat request failed: no response headers within {timeout:?} \
+                     after {attempts} attempt(s)"
+                ),
             })?;
 
         if !response.status().is_success() {
