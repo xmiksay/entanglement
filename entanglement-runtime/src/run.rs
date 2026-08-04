@@ -163,9 +163,8 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // `ListOperations` reply (#607, ADR-0161 §6): same shape, and the
         // one-shot head never issues it either.
         OutEvent::OperationList { .. } => {}
-        // MCP ops (#375) and the bash-live ops (#498) are engine-global
-        // queries/commands; the one-shot head never issues them, so nothing to
-        // render.
+        // MCP ops (#375) are engine-global queries/commands; the one-shot
+        // head never issues them, so nothing to render.
         OutEvent::McpList { .. } => {}
         OutEvent::McpChanged { .. } => {}
         // MCP OAuth progress (ADR-0153). The authorize URL is always printed —
@@ -180,7 +179,6 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
                 writeln!(out, "✓ {} · {state}", status.name)?
             }
         }
-        OutEvent::BashChanged { .. } => {}
         // History is a late-subscriber query reply (#160); the one-shot head
         // never issues `ReplayFrom`, so nothing to render.
         OutEvent::History { .. } => {}

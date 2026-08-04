@@ -310,12 +310,6 @@ async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
             app.open_session_tools_dialog();
         } else if cmd == crate::tui::commands::Command::Disable {
             app.set_input_text("/disable ".to_string());
-        } else if cmd == crate::tui::commands::Command::Bash {
-            let _ = holly
-                .send(InMsg::BashEnable {
-                    grade: super::bash_command::default_grade(),
-                })
-                .await;
         } else if cmd == crate::tui::commands::Command::Stop {
             let _ = holly
                 .send(InMsg::Stop {
@@ -730,16 +724,6 @@ pub(super) async fn handle_command_palette_event(
                     // input instead so a palette pick can't wipe it by accident
                     // (the `/allow` "no sensible default" reasoning, #486).
                     app.set_input_text("/disable ".to_string());
-                } else if cmd == crate::tui::commands::Command::Bash {
-                    // The palette carries no trailing `on`/`off` args (#498), so
-                    // a picked `/bash` always live-enables with the shared safe
-                    // default — the same one `bash_command::parse_bash_on`'s
-                    // bare-arg arm falls back to, kept in one place.
-                    let _ = holly
-                        .send(InMsg::BashEnable {
-                            grade: super::bash_command::default_grade(),
-                        })
-                        .await;
                 } else if cmd == crate::tui::commands::Command::Stop {
                     // Lifecycle commands (#6): the palette carries no `--all`
                     // flag, so a picked `/stop` acts on the active session only

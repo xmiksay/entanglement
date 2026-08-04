@@ -101,7 +101,7 @@ async fn build_config(
     mcp::ActiveServers,
     Arc<mcp::AvailableMcp>,
     EscapeRoot,
-    Arc<bash_live::LiveBashState>,
+    Arc<bash_live::BashRegistered>,
     bash_live::BashToolConfig,
     policy::SandboxConfig,
     host::JobRegistry,
@@ -166,15 +166,17 @@ async fn build_config(
         extra_root_store = extra_root_store.with_scratch(scratch.clone());
     }
     let extra_root_store = Arc::new(extra_root_store);
-    // Live bash enablement (#498, ADR-0133): `live_bash` starts seeded from the
-    // startup `bash_enabled` (so the TUI `!bash` gate and `ProfileResolver`
-    // reflect it uniformly) but with no grade override — a startup-registered
-    // pair still resolves through the session's own profile, unchanged from
-    // pre-#498 behavior. Created *before* `register_default_tools` (rather than
-    // after, as pre-#554) so `call`'s shape-check error (#554) can read the same
-    // live handle and stay accurate across a later `/bash on`/`off`, not just
-    // the startup state.
-    let live_bash = bash_live::LiveBashState::new(bash_enabled);
+    // Live bash registration (#498, ADR-0133; folded into the session tool
+    // overlay, #611/ADR-0163): `live_bash` starts seeded from the startup
+    // `bash_enabled` (so the TUI `!bash` gate reflects it) and flips to `true`
+    // the moment a later `/enable tool bash` lazily registers it (ADR-0163
+    // §2). Created *before* `register_default_tools` (rather than after, as
+    // pre-#554) so `call`'s shape-check error (#554) can read the same live
+    // handle and stay accurate across a later enable, not just the startup
+    // state. Unlike the pre-ADR-0163 `LiveBashState`, it carries no grade —
+    // that's a per-session overlay concern now, resolved by
+    // `permission::overlay_entry_grade`, not this process-global flag.
+    let live_bash = bash_live::BashRegistered::new(bash_enabled);
     // The one `JobRegistry` for this process's whole lifetime (#605): shared by
     // `bash` (however/whenever it gets registered — at startup or via a later
     // live `/bash on`) and `poll`'s job-handle path, so a background job is
@@ -359,7 +361,7 @@ fn register_default_tools(
     secret_env: Vec<String>,
     bash_enabled: bool,
     sandbox_resolver: Arc<dyn policy::SandboxResolver>,
-    live_bash: Arc<bash_live::LiveBashState>,
+    live_bash: Arc<bash_live::BashRegistered>,
     jobs: host::JobRegistry,
     retained: retained_output::RetainedOutputRegistry,
 ) -> ToolRegistry {
@@ -1410,19 +1412,13 @@ async fn main() -> Result<()> {
     // below (#329), so a persisted "always allow" grant another skutter
     // instance recorded is visible on the next reload.
     let active = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(
-        ProfileResolver::new(
-            active.clone(),
-            user_config.permissions.clone(),
-            // Root-relative arg normalization (#485, ADR-0125): cloned before
-            // `escape_root` moves into `spawn_tool_executor_with_policy` below.
-            Some(escape_root.root.clone()),
-        )
-        // Live bash enablement (#498): a `/bash on` grade overrides the
-        // session's own profile for `bash`, still clamped by the ceiling
-        // above.
-        .with_live_bash(live_bash.clone()),
-    );
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        active.clone(),
+        user_config.permissions.clone(),
+        // Root-relative arg normalization (#485, ADR-0125): cloned before
+        // `escape_root` moves into `spawn_tool_executor_with_policy` below.
+        Some(escape_root.root.clone()),
+    ));
     let grants = Arc::new(DefaultGrantStore::load());
     let tool_executor = tool_runner::spawn_tool_executor_with_policy(
         &holly,
@@ -1458,11 +1454,17 @@ async fn main() -> Result<()> {
         http_client.clone(),
     );
 
-    // Live bash enablement (#498, ADR-0133): a runtime service answering
-    // `BashEnable`/`BashDisable` off the inbound fan-out, mirroring the MCP
-    // responder above — it alone holds `tools` + `live_bash`.
-    let bash_responder_handle =
-        bash_live::spawn_bash_responder(&holly, tools.clone(), live_bash.clone(), bash_tool_config);
+    // Lazily-registrable built-ins (#611, ADR-0163 §2): a runtime service
+    // watching the outbound broadcast for `OutEvent::ToolOverlayChanged` and
+    // registering `bash` into `tools` the moment a session's overlay enables
+    // it — the fold-in of the pre-ADR-0163 `BashEnable`/`BashDisable`
+    // responder, mirroring the MCP responder above.
+    let bash_responder_handle = bash_live::spawn_lazy_builtin_responder(
+        &holly,
+        tools.clone(),
+        bash_tool_config,
+        live_bash.clone(),
+    );
 
     // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141): polls
     // the shared `HttpClient` (the same one injected into the TUI at
@@ -1842,7 +1844,7 @@ mod tests {
             Vec::new(),
             bash_enabled,
             std::sync::Arc::new(SandboxPolicy::none()),
-            bash_live::LiveBashState::new(bash_enabled),
+            bash_live::BashRegistered::new(bash_enabled),
             crate::host::JobRegistry::new(),
             retained_output::RetainedOutputRegistry::new(),
         )

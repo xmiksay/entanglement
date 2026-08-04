@@ -306,17 +306,10 @@ impl Holly {
         let _ = self.events.send(OutEvent::McpAuthChanged { status });
     }
 
-    /// Broadcast a runtime-authored [`OutEvent::BashChanged`] reply to
-    /// [`InMsg::BashEnable`]/[`InMsg::BashDisable`] (#498, ADR-0133). No `seq` —
-    /// a point-in-time engine-global lifecycle event, not session content.
-    pub fn emit_bash_changed(&self, enabled: bool, grade: Option<crate::protocol::BashGrade>) {
-        let _ = self.events.send(OutEvent::BashChanged { enabled, grade });
-    }
-
     /// Broadcast a runtime-authored [`OutEvent::Throttle`] transition (#517,
     /// ADR-0141; `waiters`/`shared_leases` added #552). No `seq` — a
     /// point-in-time engine-global lifecycle event, not session content,
-    /// exactly like [`emit_bash_changed`][Self::emit_bash_changed].
+    /// exactly like [`emit_mcp_changed`][Self::emit_mcp_changed].
     #[allow(clippy::too_many_arguments)]
     pub fn emit_throttle(
         &self,

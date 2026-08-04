@@ -2,8 +2,9 @@
 //! the `OutEvent::ToolOverlayChanged` reply to the `InMsg::SetToolOverlay` wire
 //! op `enable_command` sends, tracks the per-session overlay list the commands
 //! read to compute their full-replacement update, and owns the bare-`/enable`
-//! session-tools checklist dialog. Confirmations and parse errors render as a
-//! transcript status line, mirroring `App::record_bash_error`/`handle_bash_changed`.
+//! session-tools checklist dialog. Confirmations (including a live bash
+//! enablement, ADR-0163 #611) and parse errors render as a transcript status
+//! line.
 
 use entanglement_core::{AgentProfile, SessionId, ToolOverlayEntry};
 use ratatui::widgets::ListState;

@@ -2,7 +2,6 @@ mod allow_command;
 mod app;
 mod attention;
 mod aux_command;
-mod bash_command;
 mod clipboard;
 mod command_args;
 mod command_palette;
@@ -80,7 +79,7 @@ pub async fn tui(
     aux_models: std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>,
     mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     root: std::path::PathBuf,
-    live_bash: std::sync::Arc<crate::bash_live::LiveBashState>,
+    live_bash: std::sync::Arc<crate::bash_live::BashRegistered>,
     tool_roster: Vec<String>,
     http_client: HttpClient,
     configured_editor: Option<String>,

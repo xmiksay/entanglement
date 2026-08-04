@@ -299,14 +299,17 @@ below realize one model:
   is skipped in the merge (`read_layer`), and changes nothing until edited; it
   only exists as a discoverable starting point. Best-effort: a write failure is
   logged, never fatal.
-- **Live bash enablement composes with the ceiling too (✅ #498,
-  [ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md)):** a
-  live `/bash on --allow` grade (`bash_live::LiveBashState`) overrides the
-  session's own profile for `bash` specifically via
-  `ProfileResolver`'s opt-in `with_live_bash`, but the result still passes
+- **Live tool-overlay grades compose with the ceiling too (✅ #498/#539,
+  originally [ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md),
+  generalized by
+  [ADR-0163](../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md),
+  #611):** a live `/enable tool bash --allow` grade — a session
+  `ToolOverlayEntry` — overrides the session's own profile for that tool
+  specifically via `tool_runner`'s generic overlay-grade dispatch
+  (`permission::overlay_entry_grade`), but the result still passes
   through `clamp_to_base` unconditionally — a config ceiling of `bash: deny`
   still wins over a live `Allow`, same as it wins over any agent profile's own
-  `Allow`.
+  `Allow`. This composes for any tool the overlay enables, not only `bash`.
 - **Managed provider-key env file (✅ #220):** a sibling
   `${config_dir}/entanglement/.env` (path override `ENTANGLEMENT_ENV_FILE`) holds
   the provider API keys outside any repo (`entanglement-runtime/src/config/env_file.rs`).
@@ -364,7 +367,8 @@ below realize one model:
 
   Three cross-cutting facts complete the picture: **(1)** `bash` is
   opt-in — until registered (startup `ENTANGLEMENT_ENABLE_BASH=1`, or live
-  `/bash on`, #498/[ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md))
+  `/enable tool bash`, #498/#611,
+  [ADR-0163](../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md))
   it doesn't exist for *any* profile and the only exec tool is `call` (single
   argv, no shell). **(2)** an active skill's `allowed_tools` (ADR-0106) is a
   **literal exact-name** mask — no capability fan-out — so an exec-capable
@@ -505,18 +509,29 @@ below realize one model:
   write-capable) — enabling MCP
   for them is a user/project-layer override adding a pattern to `tools:`.
   **A session-scoped escape hatch layers on top** (✅ #539,
-  [ADR-0149](../adr/0149-per-session-tool-overlay.md)): the live **tool
-  overlay** — `InMsg::SetToolOverlay` (trusted-only) replaces a per-session
-  list of `ToolOverlayEntry { pattern, allow, deny }` overriding the
-  profile's mask in both directions (an enable entry makes matching tools
-  exist past allowlist *and* denylist; a deny entry withdraws even
-  profile-advertised ones — deny > enable > profile), surviving `SetAgent`
-  and replay. Core's advertisement filter and `tool_masked` apply the same
-  disposition — per chain link, so a parent's overlay covers its spawn
-  sub-tree; the generic dispatch route replaces the chain's grade with an
-  enable entry's `Ask` (default)/`Allow`, still ceiling-clamped. The TUI
-  drives it via `/enable mcp <server>` / `/enable tool <name>` [`--allow`]
-  and `/disable` (upserts a deny; bare = reset), the bare-`/enable`
+  [ADR-0149](../adr/0149-per-session-tool-overlay.md); live bash enablement
+  folded in, #611,
+  [ADR-0163](../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)):
+  the live **tool overlay** — `InMsg::SetToolOverlay` (trusted-only) replaces
+  a per-session list of `ToolOverlayEntry { pattern, allow, deny, arg_pattern? }`
+  overriding the profile's mask in both directions (an enable entry makes
+  matching tools exist past allowlist *and* denylist; a deny entry withdraws
+  even profile-advertised ones — deny > enable > profile), surviving
+  `SetAgent` and replay. Core's advertisement filter and `tool_masked` apply
+  the same disposition — per chain link, so a parent's overlay covers its
+  spawn sub-tree; the generic dispatch route replaces the chain's grade with
+  an enable entry's `Ask` (default)/`Allow`, the latter optionally narrowed by
+  `arg_pattern` (ADR-0163) to an argument-scoped `tool(arg_pattern): allow`
+  rule instead of a blanket grant — still ceiling-clamped. When an enable
+  entry's name-glob matches a closed, runtime-fixed table of
+  lazily-registrable built-ins (`bash` is the only member today, ADR-0163
+  §2), it also registers that built-in into the process-wide `SharedRegistry`
+  on demand — the fold-in of the pre-ADR-0163 bespoke `BashEnable`/
+  `BashDisable` pair. The TUI drives it via `/enable mcp <server>` /
+  `/enable tool <name>` [`--allow [<pattern>]`] and `/disable` (upserts a
+  deny; bare = reset) — `/enable tool bash [--allow [<pattern>]]` is now the
+  one command surface for live bash enablement too, superseding the old
+  `/bash on|off` — the bare-`/enable`
   session-tools checklist dialog (checkboxes over the full roster seeded
   from effective availability; `Enter` submits the overlay as a diff
   against the profile), and the `/mcp` panel's `e`/`d` keys on the

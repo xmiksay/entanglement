@@ -25,9 +25,10 @@ const SHELL_METACHARS: &[char] = &['|', '&', ';', '<', '>', '$', '`', '(', ')', 
 /// well-formed call passing that same path *with* `args` is untouched regardless.
 ///
 /// `bash_available` (#554) picks which fix the error suggests for a metachar
-/// line: `bash` is opt-in (`ENTANGLEMENT_ENABLE_BASH=1` or a live `/bash on`),
-/// so pointing at it unconditionally used to send a model chasing a tool that,
-/// out of the box, isn't registered at all — a dead end it can't self-correct.
+/// line: `bash` is opt-in (`ENTANGLEMENT_ENABLE_BASH=1` or a live
+/// `/enable tool bash`, #611/ADR-0163), so pointing at it unconditionally
+/// used to send a model chasing a tool that, out of the box, isn't
+/// registered at all — a dead end it can't self-correct.
 pub(super) fn check_no_shell(command: &str, args: &[String], bash_available: bool) -> Result<()> {
     let trimmed = command.trim();
     let looks_like_path =
@@ -58,7 +59,8 @@ pub(super) fn check_no_shell(command: &str, args: &[String], bash_available: boo
         "a shell, which isn't available here (`bash` is opt-in and not \
          registered) — split into repeated `call`s, use the `rhai` tool's \
          scripting for multi-step logic, or ask the user to enable `bash` \
-         (`ENTANGLEMENT_ENABLE_BASH=1` at startup, or `/bash on` in the TUI)"
+         (`ENTANGLEMENT_ENABLE_BASH=1` at startup, or `/enable tool bash` \
+         in the TUI)"
     };
     bail!(
         "`call` runs one executable with NO shell: put the program name in \

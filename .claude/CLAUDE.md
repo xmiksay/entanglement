@@ -118,7 +118,7 @@ feature that reads it):
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` | replace the whole user agents/skills layer (also the cross-vendor opt-out) |
 | `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_AUX_MODELS_FILE` / `ENTANGLEMENT_MCP_TOKENS_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the six managed runtime files |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
-| `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register `bash` at startup (the TUI `/bash on` command, #498, live-registers instead); its background jobs join with the always-available `poll` tool (#605), not a paired registry tool |
+| `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register `bash` at startup (the TUI `/enable tool bash` command, #498/#611, live-registers instead); its background jobs join with the always-available `poll` tool (#605), not a paired registry tool |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide; opt-in to keep network (#399, #479) |
 | `ENTANGLEMENT_ECHO_FULL=1` | `EchoLlm` appends the full system text (debugging) |
 | `ENTANGLEMENT_TUI_NOTIFY=1` / `ENTANGLEMENT_TUI_NO_MOUSE` | TUI desktop-notification opt-in / mouse opt-out |
@@ -134,9 +134,9 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | PauseSession | ResumeSession
           | SetAgent | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | BashEnable | BashDisable | HibernateSession (trusted-only) | Resume (internal, not serialized)
+          | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
-          | McpList | McpChanged | McpAuthChanged | BashChanged | Throttle
+          | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
           | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
@@ -167,7 +167,7 @@ never here**; each bullet is the claim + where to read it:
 - **Trusted/untrusted frame split**: `Holly::send` is privileged;
   `send_from_wire` enforces a fail-closed allowlist (`ToolResult`, `Spawn`,
   `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`, `McpAuth`,
-  `BashEnable`/`BashDisable`, `SetToolOverlay` refused).
+  `SetToolOverlay` refused).
   [protocol](../docs/architecture/protocol.md),
   [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)/[ADR-0124](../docs/adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md).
 - **Session-multiplexed**: every frame carries `SessionId`; `(session, seq)` is
@@ -209,15 +209,18 @@ never here**; each bullet is the claim + where to read it:
   server's traffic counts against the same key budget its LLM endpoint
   enforces. [gates & host tools](../docs/architecture/gates-and-host-tools.md),
   [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)/[ADR-0096](../docs/adr/0096-dynamic-toolregistry-sharedregistry.md)/[ADR-0097](../docs/adr/0097-live-mcp-server-management.md)/[ADR-0100](../docs/adr/0100-tui-mcp-command.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0157](../docs/adr/0157-mcp-http-transport-shares-the-endpoint-pool.md).
-- **Live bash enablement**: `BashEnable`/`BashDisable` (trusted-only) register
-  the exec pair mid-session, graded by the permission model, ceiling still
-  wins. [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0133](../docs/adr/0133-live-bash-enablement-graded-by-permission.md).
 - **Agent tool masks**: entries are glob patterns; a per-session tool overlay
   (`SetToolOverlay`, trusted-only) injects/withdraws tools past the profile
-  mask; in-app allowlist editing materializes a user-layer override file.
+  mask, an enable entry optionally `arg_pattern`-narrowed to an
+  argument-scoped grade; in-app allowlist editing materializes a user-layer
+  override file. **Live bash enablement** is folded into this same overlay
+  (`/enable tool bash [--allow [<pattern>]]`, superseding the old bespoke
+  `BashEnable`/`BashDisable` pair): an enable entry matching a closed table of
+  lazily-registrable built-ins (`bash` only, today) also registers it into
+  the shared tool registry on demand.
   [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md).
+  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
+  [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)/[ADR-0163](../docs/adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md).
 - **Skills**: layered definitions with cross-vendor discovery; a loaded
   skill's `allowed_tools` gates the rest of the turn (agent mask still applies
   first). [agents & permissions](../docs/architecture/agents-and-permissions.md),

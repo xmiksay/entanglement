@@ -121,6 +121,7 @@ async fn tool_overlay_replay_fidelity() {
                 pattern: "bash".into(),
                 allow: true,
                 deny: false,
+                arg_pattern: None,
             },
         ]),
     ];

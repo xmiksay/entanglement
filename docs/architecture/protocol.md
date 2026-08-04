@@ -24,7 +24,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
          | SetSessionMeta{session,name?,action?,if_unset=false}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151); if_unset=true applies `name` only when the session has none yet — the session-title generator's guard against clobbering a `/name` or a name restored by resume (#553)
-         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow), deny entries withdraw even profile-advertised tools (#539, ADR-0149); full replacement, empty clears; trusted-only, wire-refused
+         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow, optionally arg_pattern-narrowed), deny entries withdraw even profile-advertised tools (#539, ADR-0149; arg_pattern + closed-table lazy built-in registration e.g. bash #611, ADR-0163); full replacement, empty clears; trusted-only, wire-refused
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
@@ -34,8 +34,6 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | McpAdd{name,config:McpServerSpec}   // hot-connect + persist to config.yml → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | McpRemove{name}   // hot-disconnect + persist removal → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | McpAuth{name,action}   // OAuth Connect|Check|Disconnect for an MCP server → McpAuthChanged (ADR-0153); trusted-only, wire-refused — a forged Connect opens a browser and mints a durable credential
-         | BashEnable{grade:BashGrade}   // hot-register bash, graded Ask|Allow{pattern?} → BashChanged (#498, ADR-0133); trusted-only, wire-refused
-         | BashDisable   // hot-unregister bash → BashChanged (#498, ADR-0133); trusted-only, wire-refused
          | ReplayFrom{session,correlation_id,after_seq}   // late-subscriber history fetch → History (#160, ADR-0072)
          | CloseSession{session}   // explicit destroy → SessionEnded, tombstones the id (#21)
          | HibernateSession{session}   // trusted-only: evict memory, NO tombstone → SessionHibernated, resumable (#318, ADR-0077)
@@ -50,7 +48,6 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,us
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152); McpServerStatus.auth? = OAuth posture (ADR-0153)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
          | McpAuthChanged{status}   // MCP OAuth state change, no seq/session; reply to McpAuth — a Connect emits twice, interim authorize_url then outcome (ADR-0153)
-         | BashChanged{enabled,grade?}   // bash live-registered/unregistered, no seq; reply to BashEnable/BashDisable (#498, ADR-0133)
          | Throttle{endpoint,throttled,in_flight,cap,waiters,shared_leases?,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
@@ -150,16 +147,16 @@ the TUI `/mcp` path is unaffected since it sends over the privileged
 `Connect` opens a browser and mints a durable credential, a forged
 `Disconnect` destroys one, and even `Check` mutates state by refreshing — so
 unlike the read-only `McpList`, none of the three actions is wire-allowed),
-and `BashEnable`/`BashDisable`
-([ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md), #498,
-same rationale as `McpAdd`/`McpRemove`: a blanket-`Allow` live-enable hands the
-model a full shell with no approval prompt, so a wire frame must never grant
-it — the TUI `/bash` command likewise sends over `Holly::send`), and
-`SetToolOverlay` (#539,
-[ADR-0149](../adr/0149-per-session-tool-overlay.md), the `BashEnable`
-rationale again: it injects tools past the agent mask, optionally graded
-`allow` with no approval prompt — the TUI `/enable`/`/disable` commands send
-over `Holly::send`). `wire_allowed`
+and `SetToolOverlay` (#539,
+[ADR-0149](../adr/0149-per-session-tool-overlay.md), the `McpAdd` rationale
+again: it injects tools past the agent mask, optionally graded `allow` with no
+approval prompt — including, per ADR-0163 (#611), lazily registering a
+closed-table built-in like `bash`, folding in the bespoke
+`BashEnable`/`BashDisable` pair (#498,
+[ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md), now
+superseded) this same way — the TUI `/enable`/`/disable` commands (incl.
+`/enable tool bash [--allow [<pattern>]]`) send over `Holly::send`).
+`wire_allowed`
 is an explicit exhaustive allowlist `match`
 (ADR-0124), so a new variant is wire-refused until deliberately opted in — a
 compile error to skip, mirroring `session()`/`variant_name()`. The executor
@@ -394,8 +391,9 @@ so an already-named resumed session skips the aux call on its next prompt too
 (see [heads & persistence §6d](heads-and-persistence.md)).
 
 **Live tool overlay — `InMsg::SetToolOverlay`** (#539,
-[ADR-0149](../adr/0149-per-session-tool-overlay.md)).
-`SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny}]}`
+[ADR-0149](../adr/0149-per-session-tool-overlay.md); live bash enablement
+folded in, #611, [ADR-0163](../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)).
+`SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}`
 **replaces** the session's live tool overlay: `*`/`?` patterns (the ADR-0148
 mask semantics) that override the active profile's
 `tools:`/`disallowed_tools:` mask in both directions — an enable entry makes
@@ -410,14 +408,27 @@ which is also what persistence logs and `Session::replay` folds back (by
 overwrite), so a resumed session keeps its overlay. Session-scoped by design:
 it survives `SetAgent` (overriding the profile is its point) and dies with
 the session. `allow: false` (default) grades matching calls `Ask`; `allow:
-true` grades them `Allow` — the grade replaces the profile chain's resolution
+true` grades them `Allow`, optionally narrowed by `arg_pattern` (ADR-0163) to
+an argument-scoped `tool(arg_pattern): allow` rule instead of a blanket grant
+— the grade replaces the profile chain's resolution
 on the runtime's generic dispatch route, still clamped by the config
 permission ceiling (a deny entry has no grade; it removes the tool ahead of
-any permission decision). Mask disposition is per ancestor-chain link, so a
-parent's overlay also covers its spawn sub-tree. Trusted-only (wire-refused,
-the `BashEnable` rationale); the TUI drives it via `/enable`/`/disable`, the
-bare-`/enable` session-tools checklist dialog (the overlay as a diff against
-the profile mask), and the `/mcp` panel's `e`/`d` server keys.
+any permission decision). Don't confuse `pattern` (a tool-name glob) with
+`arg_pattern` (a command-argument glob) — the two mean different things
+despite the near-identical name. Mask disposition is per ancestor-chain link,
+so a parent's overlay also covers its spawn sub-tree. When an enable entry's
+name-glob matches an entry in a closed, runtime-fixed table of
+lazily-registrable built-ins (`bash` is the only member today), it also
+triggers that built-in's registration into the process-wide `SharedRegistry`
+— the mask-level overlay alone can only *reveal* a tool the registry already
+holds, not conjure one that was never registered (e.g. `bash` without
+`ENTANGLEMENT_ENABLE_BASH=1`); this table is what lets `/enable tool bash`
+work without the startup env var. Trusted-only (wire-refused, the `McpAdd`
+rationale); the TUI drives it via `/enable`/`/disable` (incl.
+`/enable tool bash [--allow [<pattern>]]`, superseding the old
+`/bash on|off`), the bare-`/enable` session-tools checklist dialog (the
+overlay as a diff against the profile mask), and the `/mcp` panel's `e`/`d`
+server keys.
 Stash-deferred while a turn is live, like `SetAgent`/`SetModel`.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/0004-structured-plan-and-task-events.md)

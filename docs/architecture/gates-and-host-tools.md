@@ -218,8 +218,8 @@ guessing again:
 - **The trust boundary for exec, stated plainly:** root containment applies to
   a `bash`/`call` invocation's **`workdir` only, never its command body** —
   `escape_root_target` inspects no command line, so `bash: allow` (or a live
-  `BashEnable { Allow }`) hands the model the engine process's full local
-  privileges: it can read/write any path the process can, outside root
+  tool-overlay `allow: true` entry, #611/ADR-0163) hands the model the engine
+  process's full local privileges: it can read/write any path the process can, outside root
   included. The layers that actually bound an exec tool are the permission
   profile (whether/what it may run), the config ceiling (#172), and the opt-in
   bubblewrap sandbox below — not filesystem containment, which governs only
@@ -318,20 +318,30 @@ guessing again:
   when `ENTANGLEMENT_ENABLE_BASH=1`, because `bash` runs arbitrary shell code
   (ADR-0009). `bash` shares its `JobRegistry` with the always-available
   `poll` tool (#605) — background jobs are pollable regardless of whether
-  `bash` itself is registered at startup or later via `/bash on`, since it's
-  the same registry either way. `EngineConfig::default()` ships an empty
-  registry (embedders opt in via `host_tools`).
-  **Live enablement** ([ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md),
-  #498): the env var is startup-only — `bash_live::spawn_bash_responder`
-  answers `InMsg::BashEnable { grade: BashGrade }`/`BashDisable` off the
-  inbound fan-out (engine-global, trusted-only like `McpAdd`/`McpRemove`,
-  #472/ADR-0124) to register/unregister `bash` into the live
-  `SharedRegistry` mid-session — the TUI `/bash on [--allow [<pattern>]|--ask]
-  | off` command. The enablement grade (`Ask` or `Allow`, optionally narrowed
-  to an argument-scoped `bash(pattern)` rule) overrides the session's own
-  profile for `bash` specifically via `ProfileResolver`'s opt-in
-  `with_live_bash`, still clamped by the config permission ceiling (#172) —
-  a `bash: deny` ceiling wins over a live `Allow`.
+  `bash` itself is registered at startup or later via `/enable tool bash`,
+  since it's the same registry either way (one long-lived registry, never
+  minted fresh per enable — ADR-0163 §3). `EngineConfig::default()` ships an
+  empty registry (embedders opt in via `host_tools`).
+  **Live enablement** (#498, originally
+  [ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md); folded
+  into the session tool overlay, #611,
+  [ADR-0163](../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)):
+  the env var is startup-only — a trusted head instead sends
+  `InMsg::SetToolOverlay` with a `bash` enable entry, the same generic op that
+  enables an MCP server or any other tool (#539, ADR-0149). `bash_live`'s
+  runtime responder watches the outbound `OutEvent::ToolOverlayChanged`
+  broadcast and, when an enable entry matches `bash` — the one member of a
+  closed, runtime-fixed table of lazily-registrable built-ins (ADR-0163
+  §2) — registers it into the live `SharedRegistry` mid-session (a no-op if
+  already present). The TUI command is `/enable tool bash [--allow
+  [<pattern>]]` / `/disable tool bash`, the same surface every other tool
+  uses. The overlay entry's grade (`allow: false` ⇒ `Ask`; `allow: true` ⇒
+  `Allow`, optionally narrowed by `arg_pattern` to an argument-scoped
+  `bash(pattern)` rule, ADR-0163 §1) overrides the session's own profile for
+  `bash` specifically via `tool_runner`'s generic overlay-grade dispatch
+  (`permission::overlay_entry_grade`), still clamped by the config permission
+  ceiling (#172) — a `bash: deny` ceiling wins over a live `Allow`. Unlike the
+  pre-ADR-0163 `BashGrade`, this composes for *any* tool, not just `bash`.
 
 The inherit-all profiles (`build`, `debug`; `tools: None`) advertise
 `edit`/`write`/`apply_patch`/`bash`/`call` and auto-allow them (default
