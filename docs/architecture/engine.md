@@ -532,6 +532,46 @@ listing, merged with an equivalent job-registry snapshot by
 [protocol](protocol.md) and [gates & host tools](gates-and-host-tools.md).
 Refusals (depth, budget, capability) are identical regardless of `background`
 — one shared guard path.
+
+**Sub-agent follow-up** (✅ #609, [ADR-0162](../adr/0162-agent-send-supervising-a-sub-agent.md)).
+A child can be talked to more than once: `agent_send { agent_id, prompt,
+background? }` sends `InMsg::Prompt` at an existing child (an `agent` launch
+or a sponsored `propose_plan` build, whose reply now names its `agent_id`
+too, ADR-0162 §5) instead of minting a new `InMsg::Spawn` — the child session
+task stays alive after its turn ends, so the fresh prompt starts a new turn
+on its accumulated context rather than losing it. No protocol change was
+needed: `collect_child_answer` already ends its wait on any `Done` carrying
+text, so a child that concludes "I'm blocked, advise" already unparks its
+parent — only the reply verb was missing. The runtime executor intercepts
+`agent_send` the same way as `agent` (before permission resolution, no
+per-tool grade), but the gate is different: no spawn depth/budget check (this
+sends into an *already-authorized* child, not a new one) but a mandatory
+ownership + lifecycle check, `AgentRegistry::begin_send(poller, child)`,
+resolved in one lock acquisition so there is no window between "is this
+live" and "mint the follow-up's watch channel." Ownership generalizes the
+`poll` descendant check (ADR-0161 §4) to a *write* verb — a handle is only
+ever sendable by the session that launched it, the same "unknown agent_id"
+message for a stranger's guess as for an outright-nonexistent id. Lifecycle
+is the load-bearing half: `AgentRegistry` now tracks each tracked child's
+session as `Live`/`Hibernated`/`Closed`, folded from the engine-wide
+`SessionStarted`/`SessionHibernated`/`SessionEnded` broadcast (any session's
+transition, not just this executor's own) so it stays current independent of
+whether `agent_send` itself was ever called. A **closed** (tombstoned) child
+refuses clearly (its id is spent, ADR-0028); a **hibernated** child refuses
+*loudly* rather than silently — sending it a fresh `Prompt` would otherwise
+fall into the supervisor's lazy-respawn path (`holly.rs`'s unknown-session
+`Prompt` handling) and come back as a *blank* session wearing the right id,
+discarding its context. Only a `Live` child is ever actually sent the
+prompt; the default (blocking) path then reuses `collect_child_answer`
+exactly like the blocking `agent` route — waiting for the child's *next*
+`Done`, not its first — and `background: true` returns immediately, joined
+later with `poll` on the same handle. `agent_send` is the reply half of an
+escalation loop that needed no new mechanism: a child's blocked/errored
+conclusion is an ordinary tool result the parent reads and decides what to
+do with, then answers via `agent_send`, which parks again for the child's
+next result — the parent is always the one investigating before it replies,
+never answering blind.
+
 Both reuse the #58 round-trip, so core's turn loop needs no notion of a
 "child session". The runtime executor bounds the spawn
 tree (✅ #76, [ADR-0023](../adr/0023-subagent-spawn-limits.md)): a `SpawnGuard`

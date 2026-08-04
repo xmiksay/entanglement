@@ -20,11 +20,31 @@ pub enum AgentStatus {
     Complete { answer: String, elapsed: Duration },
 }
 
+/// A tracked child's session lifecycle, as observed by the tool executor's
+/// engine-wide lifecycle fold (#609, ADR-0162 §4) — independent of
+/// [`AgentStatus`], which tracks whether the *current* launch/send has an
+/// answer yet, not whether the underlying session still exists. `agent_send`
+/// consults this before ever queuing a `Prompt`: a closed or hibernated child
+/// must refuse clearly rather than let the supervisor's lazy-`Prompt` path
+/// silently respawn a *blank* session wearing the right id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildLifecycle {
+    /// The child's session task is live (or has never been torn down).
+    Live,
+    /// Evicted from memory but resumable (`SessionHibernated`, ADR-0077) —
+    /// the id is genuine but its context is gone from this process; sending
+    /// it a fresh `Prompt` would lazily respawn it blank (ADR-0162 §4).
+    Hibernated,
+    /// Tombstoned (`SessionEnded`, always a `CloseSession` cascade) — the id
+    /// is spent and can never run again (ADR-0028).
+    Closed,
+}
+
 /// One tracked sub-agent: when it launched, which session spawned it, under
-/// which profile, and a watch handle to observe its completion. The launch
-/// watcher owns the [`watch::Sender`]; every entry keeps a receiver so the
-/// last value survives the sender being dropped, letting a late poll still
-/// read a completed answer.
+/// which profile, its last-known session lifecycle, and a watch handle to
+/// observe its completion. The launch watcher owns the [`watch::Sender`];
+/// every entry keeps a receiver so the last value survives the sender being
+/// dropped, letting a late poll still read a completed answer.
 #[derive(Clone)]
 struct Entry {
     started: Instant,
@@ -33,6 +53,28 @@ struct Entry {
     /// #607 pending-operations listing.
     agent: String,
     status: watch::Receiver<AgentStatus>,
+    lifecycle: ChildLifecycle,
+}
+
+/// Result of [`AgentRegistry::begin_send`] — the outcome `agent_send` refuses
+/// or proceeds on (#609, ADR-0162 §4).
+pub enum SendOutcome {
+    /// Accepted: the child is `poller`'s own and live. Carries the fresh
+    /// watch sender to flip once the follow-up turn completes, plus the
+    /// instant it started (mirrors [`AgentRegistry::register`]'s return).
+    Ok(watch::Sender<AgentStatus>, Instant),
+    /// No such handle was ever launched by `poller` — either it doesn't
+    /// exist at all, or it belongs to a different session (#618's ownership
+    /// scoping, generalized: the same message either way, so a stranger's
+    /// guess can't confirm existence).
+    Unknown,
+    /// The child's session is tombstoned (`CloseSession` cascade, ADR-0028)
+    /// — the id is spent and can never run again.
+    Closed,
+    /// The child's session is hibernated (ADR-0077) — evicted from memory
+    /// but resumable. `agent_send` must not silently respawn it blank; the
+    /// caller needs a head-driven resume (ADR-0112) first.
+    Hibernated,
 }
 
 /// One outstanding child launched by a session, as reported to a #607
@@ -80,6 +122,7 @@ impl AgentRegistry {
                 parent,
                 agent,
                 status: rx,
+                lifecycle: ChildLifecycle::Live,
             },
         );
         (tx, started)
@@ -89,6 +132,68 @@ impl AgentRegistry {
     /// stray handle can't linger as perpetually `Running`.
     pub fn forget(&self, child: &SessionId) {
         self.lock().remove(child);
+    }
+
+    /// Record `child`'s session as hibernated (#609, ADR-0162 §4) — folded
+    /// from an engine-wide `OutEvent::SessionHibernated` by the tool executor
+    /// regardless of which session emitted it. A no-op for an id this
+    /// registry never tracked (not every hibernating session is a launched
+    /// sub-agent).
+    pub fn mark_hibernated(&self, child: &SessionId) {
+        if let Some(e) = self.lock().get_mut(child) {
+            e.lifecycle = ChildLifecycle::Hibernated;
+        }
+    }
+
+    /// Record `child`'s session as closed/tombstoned (#609, ADR-0162 §4) —
+    /// folded from an engine-wide `OutEvent::SessionEnded`, which only ever
+    /// fires on a `CloseSession` cascade (ADR-0028). Terminal: nothing marks
+    /// a closed entry live again.
+    pub fn mark_closed(&self, child: &SessionId) {
+        if let Some(e) = self.lock().get_mut(child) {
+            e.lifecycle = ChildLifecycle::Closed;
+        }
+    }
+
+    /// Record `child`'s session as live again (#609, ADR-0162 §4) — folded
+    /// from an engine-wide `OutEvent::SessionStarted`, which a head-driven
+    /// resume (ADR-0112) re-emits for a previously-hibernated id. A no-op for
+    /// a fresh registration (already `Live`) or an untracked id.
+    pub fn mark_live(&self, child: &SessionId) {
+        if let Some(e) = self.lock().get_mut(child) {
+            e.lifecycle = ChildLifecycle::Live;
+        }
+    }
+
+    /// Begin an `agent_send` call against `child`, as seen by `poller`
+    /// (#609, ADR-0162): the same ownership scoping [`Self::view`] enforces,
+    /// plus the lifecycle check ADR-0162 §4 requires, resolved in one lock
+    /// acquisition so there is no gap between "is this live" and "mint the
+    /// new watch channel" for a session ending concurrently to slip through.
+    /// On [`SendOutcome::Ok`], mints a fresh `Running` watch channel for the
+    /// follow-up turn (mirroring [`Self::register`]) and returns its sender —
+    /// `poll` (and a later `agent_send`) observes this channel from now on,
+    /// so the prior launch/send's answer, if already `Complete`, is
+    /// superseded the moment a new send is accepted.
+    pub fn begin_send(&self, poller: &SessionId, child: &SessionId) -> SendOutcome {
+        let mut map = self.lock();
+        let Some(entry) = map.get_mut(child) else {
+            return SendOutcome::Unknown;
+        };
+        if &entry.parent != poller {
+            return SendOutcome::Unknown;
+        }
+        match entry.lifecycle {
+            ChildLifecycle::Closed => SendOutcome::Closed,
+            ChildLifecycle::Hibernated => SendOutcome::Hibernated,
+            ChildLifecycle::Live => {
+                let (tx, rx) = watch::channel(AgentStatus::Running);
+                let started = Instant::now();
+                entry.started = started;
+                entry.status = rx;
+                SendOutcome::Ok(tx, started)
+            }
+        }
     }
 
     /// A poller's view of `child`, as seen by `poller`: its launch instant and
@@ -243,6 +348,111 @@ mod tests {
             AgentStatus::Complete {
                 answer: "done".to_string(),
                 elapsed: Duration::from_millis(3),
+            }
+        );
+    }
+
+    /// #609: a fresh registration is `Live`, and `begin_send` accepts it —
+    /// the common case `agent_send` takes for a running or idle child.
+    #[tokio::test]
+    async fn begin_send_accepts_a_live_owned_child() {
+        let reg = AgentRegistry::default();
+        let parent = SessionId::new("p7");
+        let child = SessionId::new("c7");
+        reg.register(child.clone(), parent.clone(), "build".to_string());
+
+        assert!(matches!(
+            reg.begin_send(&parent, &child),
+            SendOutcome::Ok(..)
+        ));
+    }
+
+    #[tokio::test]
+    async fn begin_send_is_unknown_for_a_stranger_or_missing_handle() {
+        let reg = AgentRegistry::default();
+        let parent = SessionId::new("p8");
+        let stranger = SessionId::new("stranger8");
+        let child = SessionId::new("c8");
+        reg.register(child.clone(), parent.clone(), "build".to_string());
+
+        assert!(matches!(
+            reg.begin_send(&stranger, &child),
+            SendOutcome::Unknown
+        ));
+        assert!(matches!(
+            reg.begin_send(&parent, &SessionId::new("nope")),
+            SendOutcome::Unknown
+        ));
+    }
+
+    #[tokio::test]
+    async fn begin_send_refuses_a_closed_child() {
+        let reg = AgentRegistry::default();
+        let parent = SessionId::new("p9");
+        let child = SessionId::new("c9");
+        reg.register(child.clone(), parent.clone(), "build".to_string());
+        reg.mark_closed(&child);
+
+        assert!(matches!(
+            reg.begin_send(&parent, &child),
+            SendOutcome::Closed
+        ));
+    }
+
+    #[tokio::test]
+    async fn begin_send_refuses_a_hibernated_child() {
+        let reg = AgentRegistry::default();
+        let parent = SessionId::new("p10");
+        let child = SessionId::new("c10");
+        reg.register(child.clone(), parent.clone(), "build".to_string());
+        reg.mark_hibernated(&child);
+
+        assert!(matches!(
+            reg.begin_send(&parent, &child),
+            SendOutcome::Hibernated
+        ));
+
+        // A resumed child (`SessionStarted` re-fires) goes back to `Live`.
+        reg.mark_live(&child);
+        assert!(matches!(
+            reg.begin_send(&parent, &child),
+            SendOutcome::Ok(..)
+        ));
+    }
+
+    /// #609: `begin_send`'s `Ok` mints a fresh channel, so a poll issued
+    /// after a new send observes `Running` again even if the prior
+    /// launch/send had already completed.
+    #[tokio::test]
+    async fn begin_send_resets_status_to_running() {
+        let reg = AgentRegistry::default();
+        let parent = SessionId::new("p12");
+        let child = SessionId::new("c12");
+        let (tx, _started) = reg.register(child.clone(), parent.clone(), "build".to_string());
+        tx.send(AgentStatus::Complete {
+            answer: "first answer".to_string(),
+            elapsed: Duration::from_millis(1),
+        })
+        .unwrap();
+
+        let SendOutcome::Ok(new_tx, _started) = reg.begin_send(&parent, &child) else {
+            panic!("expected Ok");
+        };
+        let (_started, rx) = reg.view(&parent, &child).expect("entry present");
+        assert_eq!(*rx.borrow(), AgentStatus::Running);
+
+        new_tx
+            .send(AgentStatus::Complete {
+                answer: "second answer".to_string(),
+                elapsed: Duration::from_millis(2),
+            })
+            .unwrap();
+        let (_started, rx) = reg.view(&parent, &child).expect("entry present");
+        assert_eq!(
+            *rx.borrow(),
+            AgentStatus::Complete {
+                answer: "second answer".to_string(),
+                elapsed: Duration::from_millis(2),
             }
         );
     }

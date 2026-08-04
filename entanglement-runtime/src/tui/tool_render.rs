@@ -88,6 +88,15 @@ pub fn render_expansion(
                 v.get("timeout_secs").and_then(|t| t.as_u64()),
             )
         }
+        Some("agent_send") => {
+            let v: serde_json::Value =
+                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+            render_agent_send_body(
+                v.get("agent_id").and_then(|s| s.as_str()).unwrap_or(""),
+                v.get("prompt").and_then(|p| p.as_str()).unwrap_or(""),
+                available_width,
+            )
+        }
         Some("ask_user") => {
             let v: serde_json::Value =
                 serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
@@ -172,6 +181,15 @@ fn render_poll_body(handle: &str, timeout_secs: Option<u64>) -> Text<'static> {
     if let Some(t) = timeout_secs {
         lines.push(Line::from(format!("  timeout_secs: {t}")));
     }
+    Text::from(lines)
+}
+
+/// An `agent_id` line followed by the prompt body — the `agent_send` (#609)
+/// counterpart of `render_prompt_body`, naming which sub-agent the follow-up
+/// prompt is going to.
+fn render_agent_send_body(agent_id: &str, prompt: &str, available_width: u16) -> Text<'static> {
+    let mut lines = vec![Line::from(format!("  agent_id: {agent_id}"))];
+    lines.extend(render_prompt_body(prompt, available_width).lines);
     Text::from(lines)
 }
 
@@ -544,6 +562,25 @@ mod tests {
         assert!(
             !text.contains('{'),
             "load_skill expansion must not dump raw JSON braces: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_expansion_agent_send_renders_agent_id_and_prompt() {
+        let result = render_expansion(
+            Some("agent_send"),
+            r#"{"agent_id":"s-abc123","prompt":"focus on Y instead"}"#,
+            "",
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let text = flatten(&result);
+        assert!(text.contains("s-abc123"), "{text:?}");
+        assert!(text.contains("focus on Y instead"), "{text:?}");
+        assert!(
+            !text.contains('{'),
+            "agent_send expansion must not dump raw JSON braces: {text:?}"
         );
     }
 

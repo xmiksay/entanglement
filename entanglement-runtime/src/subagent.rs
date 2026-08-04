@@ -209,6 +209,11 @@ const DEFAULT_SUBAGENT: &str = "explore";
 /// `tools:` list. Stored in
 /// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig] and
 /// appended by core's `run_turn` for the active profile.
+///
+/// `agent_send` (#609, ADR-0162) rides alongside `agent` here rather than the
+/// shared `cfg.tool_specs` `poll` uses: it is only ever useful against a
+/// handle `agent`/a sponsored `propose_plan` build already produced, so a
+/// profile that can't spawn has no legitimate use for it either.
 pub fn spawn_specs_for(profile: &AgentProfile, registry: &ProfileRegistry) -> Vec<ToolSpec> {
     if !profile.may_spawn() {
         return Vec::new();
@@ -223,7 +228,7 @@ pub fn spawn_specs_for(profile: &AgentProfile, registry: &ProfileRegistry) -> Ve
     if targets.is_empty() {
         return Vec::new();
     }
-    vec![agent_spec(&targets)]
+    vec![agent_spec(&targets), crate::agent_send::agent_send_spec()]
 }
 
 /// The `agent` tool schema advertised to the model (#606, ADR-0161 §1 —
@@ -909,7 +914,7 @@ mod tests {
         let build = reg.get("build").unwrap();
         let specs = spawn_specs_for(build, &reg);
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec![AGENT_TOOL]);
+        assert_eq!(names, vec![AGENT_TOOL, crate::tool_names::AGENT_SEND_TOOL]);
         let enum_names = specs[0].schema["properties"]["agent"]["enum"]
             .as_array()
             .unwrap();
