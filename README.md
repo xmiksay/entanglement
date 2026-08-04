@@ -63,8 +63,9 @@ A session runs under an **agent profile** — `{ name, description, mode, model,
 system_prompt, permission, tools, disallowed_tools, can_spawn,
 spawnable_agents }`. Switch the *primary* profile with `SetAgent`; the cycle is
 `build ↔ plan` — `explore` and `debug` are `mode: subagent`, so they are
-filtered out of the primary cycle and only reachable via spawn. Built-ins:
-`build`, `plan`, `explore`, `debug`.
+filtered out of the primary cycle and only reachable via spawn; `research` is
+`mode: all` — selectable via `/agent research` (kept out of the Tab cycle) *and*
+a spawn target. Built-ins: `build`, `plan`, `explore`, `debug`, `research`.
 
 The permission profile (`Allow | Ask | Deny` per tool, name-or-`*` or
 argument-scoped `tool(pattern)`) drives the approval flow. `build` allows
@@ -73,8 +74,12 @@ from one carve-out — `write`/`edit` succeed only under `.entanglement/plans/`
 (#524, ADR-0142), the file a plan lives in (#513, ADR-0145) — `explore` is
 the deny profile (read-only), the default spawn target; `debug` carries
 `build`'s own allow-everything permission (read/write/execute) for a spawned
-sub-agent that actually needs to reproduce, fix, and verify a bug. Permission
-resolution and approval live entirely in the runtime (#59).
+sub-agent that actually needs to reproduce, fix, and verify a bug; `research`
+is the read-only Q&A entry agent (ADR-0167) — write denied with no carve-out,
+shell ask-graded per command, and it may spawn **only** further `research`
+agents, so its delegation subtree can never widen into a write-capable
+profile. Permission resolution and approval live entirely in the runtime
+(#59).
 
 A plan is a **file** (`.entanglement/plans/<id>.md`), not an in-memory
 snapshot: the plan agent's one tool, `propose_plan(content | path)`,

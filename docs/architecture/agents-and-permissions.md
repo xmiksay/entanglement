@@ -324,8 +324,8 @@ below realize one model:
   (the system prompt), discovered at startup by the **runtime**
   (`entanglement_runtime::agents::load_registry`) into a `ProfileRegistry`. Three
   layers, later wins on a `name` collision: embedded built-ins (`build`/`plan`/
-  `explore`/`debug`, shipped as `include_str!` `.md` and parsed through the *same*
-  loader)
+  `explore`/`debug`/`research`, shipped as `include_str!` `.md` and parsed
+  through the *same* loader)
   < user (`~/.claude/agents/*.md` then `${config_dir}/entanglement/agents/*.md`)
   < project (`.claude/agents` then `.agents/agents` then
   `<root>/.entanglement/agents/*.md`). Editing a built-in = dropping a same-`name`
@@ -344,12 +344,12 @@ below realize one model:
   authorship (`propose_plan`, ✅ #231/#513, below) and the plan-accept handoff
   (#141) complete the agent hierarchy. The built-ins are defined **once**, here as
   markdown (#201): core carries only the `build` profile its `resolve()` fallback
-  needs (it can't parse frontmatter, so it holds no `plan`/`explore`/`debug` copy
-  to drift from these files). Embedders using core directly get that single
+  needs (it can't parse frontmatter, so it holds no `plan`/`explore`/`debug`/
+  `research` copy to drift from these files). Embedders using core directly get that single
   `build` fallback via `ProfileRegistry::new()`; the runtime rebuilds the full set
   from the embedded markdown (`entanglement_runtime::agents::built_in_registry`).
   Add your own with `ProfileRegistry::insert`.
-- **Default restriction map (the built-in quartet, at a glance):** what a
+- **Default restriction map (the built-in quintet, at a glance):** what a
   session can actually do out of the box, per profile — the product of the
   tool mask (which tools *exist*) and the permission ladder (how an existing
   tool grades). Source of truth: `entanglement-runtime/src/agents/*.md`.
@@ -360,6 +360,7 @@ below realize one model:
   | `plan` | primary | `read, glob, grep, agent, poll, ask_user, load_skill, propose_plan, write, edit, call, bash` — `call`/`bash` are on the mask only so a spawned `explore` child keeps its own access ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597) | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
   | `explore` | subagent | `read, glob, grep, call, bash, poll, rhai` | `default: deny`; read triad Allow, exec set at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — `poll` rides along with `bash` so a background job it starts is actually readable (#615/#605); `poll` is intercepted before permission resolution, so it carries no grade of its own | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
+  | `research` | all | `read, glob, grep, agent, poll, ask_user, load_skill, call, bash, rhai` — no write tools, no `propose_plan` | `default: ask`; `read: allow`; `write: deny` with **no** carve-out; exec at `Ask` via `call(*): ask` + a literal `rhai: ask` (the [ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md) grading pattern; posture per [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — the global read-only Q&A entry agent ([ADR-0167](../adr/0167-embedded-research-agent-profile.md)) | may spawn **only** `research` — the self-only allowlist transitively closes the subtree |
 
   Three cross-cutting facts complete the picture: **(1)** `bash` is
   opt-in — until registered (startup `ENTANGLEMENT_ENABLE_BASH=1`, or live
@@ -499,8 +500,9 @@ below realize one model:
   (`plan_tasks::explicitly_allowlists`) stays literal-exact, so a wildcard
   widens the mask without granting `propose_plan`, mirroring `tools: None`.
   Skill `allowed_tools` (#400), permission tool-name keys, and
-  `spawnable_agents` deliberately stay exact; built-in `plan`/`explore` masks
-  are unchanged (an MCP tool can be arbitrarily write-capable) — enabling MCP
+  `spawnable_agents` deliberately stay exact; built-in `plan`/`explore`/
+  `research` masks are unchanged (an MCP tool can be arbitrarily
+  write-capable) — enabling MCP
   for them is a user/project-layer override adding a pattern to `tools:`.
   **A session-scoped escape hatch layers on top** (✅ #539,
   [ADR-0149](../adr/0149-per-session-tool-overlay.md)): the live **tool

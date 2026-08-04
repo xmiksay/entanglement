@@ -333,12 +333,16 @@ guessing again:
   `with_live_bash`, still clamped by the config permission ceiling (#172) —
   a `bash: deny` ceiling wins over a live `Allow`.
 
-`edit`/`write`/`apply_patch`/`bash`/`call` are advertised only to the inherit-all
-`build` profile (`tools: None`), which auto-allows them (default `Allow`). The `plan`
-and `explore` profiles set an explicit `tools` allowlist that omits them
-(#116/#140, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)), so
-the tools are **masked out** of those profiles entirely — never advertised, so
-no `Allow`/`Ask`/`Deny` default is reached for them there. Registration is
+The inherit-all profiles (`build`, `debug`; `tools: None`) advertise
+`edit`/`write`/`apply_patch`/`bash`/`call` and auto-allow them (default
+`Allow`). The masked profiles carve differently
+(#116/#140, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)):
+`plan`'s allowlist carries `write`/`edit` (graded `deny` outside the
+plans-folder carve-out, ADR-0142) and `call`/`bash` (for the ADR-0159
+ancestor-clamp reason, graded `ask` per dispatch); `explore` and `research`
+mask the write tools out entirely — never advertised, so no
+`Allow`/`Ask`/`Deny` default is reached for them there — while advertising
+`call`/`bash`/`rhai` at `Ask` grade (ADR-0137/ADR-0167). Registration is
 orthogonal to both mask and profile: it controls whether the tool is advertised
 at all (unconditional for `call`, opt-in for `bash`), the mask
 controls *existence* per profile, and the profile controls *dispatch*

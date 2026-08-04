@@ -94,14 +94,20 @@ impl Llm for SpawnPollLlm {
                 // A refusal (no handle) or a poll result → finish.
                 None => Ok(finish("parent done")),
             },
-            // First parent turn: launch a sub-agent, non-blocking.
+            // First parent turn: launch a sub-agent, non-blocking. An empty
+            // `target` omits the `agent` key to exercise the default-target
+            // fill-in (`DEFAULT_SUBAGENT`).
             None => Ok(call(
                 "spawn1",
                 "agent",
-                format!(
-                    r#"{{"agent":"{}","prompt":"child-task","background":true}}"#,
-                    self.target
-                ),
+                if self.target.is_empty() {
+                    r#"{"prompt":"child-task","background":true}"#.to_string()
+                } else {
+                    format!(
+                        r#"{{"agent":"{}","prompt":"child-task","background":true}}"#,
+                        self.target
+                    )
+                },
             )),
         }
     }
@@ -1058,6 +1064,128 @@ async fn primary_with_can_spawn_false_cannot_spawn() {
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     assert_root_spawn_refused(&holly, "cannot spawn").await;
+}
+
+/// Switch `session` to `agent` (auto-creating the session actor) and wait for
+/// the `AgentChanged` ack, so the next prompt runs under that profile.
+async fn set_agent(holly: &Holly, session: &SessionId, agent: &str) {
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::SetAgent {
+            session: session.clone(),
+            agent: agent.into(),
+        })
+        .await
+        .unwrap();
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        if matches!(&ev, OutEvent::AgentChanged { agent: a, .. } if a == agent) {
+            return;
+        }
+    }
+    panic!("no AgentChanged ack for `{agent}`");
+}
+
+#[tokio::test]
+async fn research_spawns_research() {
+    // ADR-0167: `research` (`mode: all`) is both an entry agent and its own
+    // spawn target — a research root delegating to a research child works end
+    // to end, and the child runs under the `research` profile.
+    let cfg = config(|| SpawnPollLlm {
+        target: "research",
+        child_answer: "child-answer",
+    });
+    let profiles = cfg.profiles.clone();
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+
+    let root = SessionId::new("root");
+    set_agent(&holly, &root, "research").await;
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(root.clone(), "parent-task"))
+        .await
+        .unwrap();
+
+    let mut child_profile: Option<String> = None;
+    let mut saw_polled_answer = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        match &ev {
+            OutEvent::SessionStarted {
+                parent: Some(p),
+                profile,
+                root: false,
+                ..
+            } if p == &root => child_profile = Some(profile.clone()),
+            OutEvent::ToolOutput {
+                session,
+                tool,
+                output,
+                ..
+            } if session == &root && tool == "poll" && output.contains("child-answer") => {
+                saw_polled_answer = true;
+            }
+            OutEvent::Done { session, .. } if session == &root && saw_polled_answer => break,
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        child_profile.as_deref(),
+        Some("research"),
+        "the child should run under the `research` profile"
+    );
+    assert!(saw_polled_answer, "poll should surface the child's answer");
+}
+
+#[tokio::test]
+async fn research_spawn_of_non_research_is_refused() {
+    // ADR-0167: `explore` is a perfectly valid Subagent-mode target, but it is
+    // off research's self-only allowlist — refused before a child is minted,
+    // so the research subtree can never widen into another profile.
+    let cfg = config(|| SpawnPollLlm {
+        target: "explore",
+        child_answer: "unused",
+    });
+    let profiles = cfg.profiles.clone();
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+
+    let root = SessionId::new("root");
+    set_agent(&holly, &root, "research").await;
+    assert_root_spawn_refused(&holly, "not allowed to spawn").await;
+}
+
+#[tokio::test]
+async fn research_spawn_without_agent_falls_to_default_and_is_refused() {
+    // A spawn omitting `agent` falls to `DEFAULT_SUBAGENT` (`explore`), which
+    // research's self-only allowlist refuses — the prompt body tells the model
+    // to always name `agent: research` explicitly.
+    let cfg = config(|| SpawnPollLlm {
+        target: "",
+        child_answer: "unused",
+    });
+    let profiles = cfg.profiles.clone();
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+
+    let root = SessionId::new("root");
+    set_agent(&holly, &root, "research").await;
+    assert_root_spawn_refused(&holly, "not allowed to spawn").await;
 }
 
 #[test]

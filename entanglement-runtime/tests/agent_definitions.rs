@@ -61,10 +61,45 @@ fn built_ins_present_without_any_files() {
     assert!(reg.get("build").is_some());
     assert!(reg.get("plan").is_some());
     assert!(reg.get("explore").is_some());
+    assert!(reg.get("research").is_some());
     // The built-in `explore` came through the loader unchanged.
     assert_eq!(
         reg.get("explore").unwrap().permission.for_tool("edit"),
         Permission::Deny
+    );
+}
+
+#[test]
+fn user_layer_shadows_built_in_research() {
+    // ADR-0167: the user layer is the intended tweak path for the embedded
+    // `research` profile — a same-name file replaces the whole definition,
+    // permission block included.
+    let user = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    write_agent(
+        user.path(),
+        "research.md",
+        "---\nname: research\ndescription: user research\nmode: all\npermission:\n  default: deny\n  read: allow\n---\nuser research prompt",
+    );
+
+    let reg = load_with_dirs(Some(user.path()), project.path());
+    let research = reg.get("research").unwrap();
+    assert_eq!(research.description, "user research");
+    assert_eq!(research.system_prompt, "user research prompt");
+    // The override's permission block replaced the built-in's wholesale:
+    // exec is now hard-denied, not ask-graded.
+    assert_eq!(
+        research.permission.resolve("bash", Some("git log")),
+        Permission::Deny
+    );
+    // And without the file, the embedded definition is what loads.
+    let reg = load_with_dirs(None, project.path());
+    assert_eq!(
+        reg.get("research")
+            .unwrap()
+            .permission
+            .resolve("bash", Some("git log")),
+        Permission::Ask
     );
 }
 
