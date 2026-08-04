@@ -526,9 +526,9 @@ mod tests {
         let resolved = resolve_registry(root).unwrap();
         std::env::remove_var(SKILLS_DIR_ENV);
 
-        // Name-sorted: the built-in `commit` sorts before the project `zzz`.
+        // Name-sorted: the built-ins (`commit`, `rhai`) sort before the project `zzz`.
         let names: Vec<&str> = resolved.iter().map(|r| r.meta.name.as_str()).collect();
-        assert_eq!(names, vec!["commit", "zzz"]);
+        assert_eq!(names, vec!["commit", "rhai", "zzz"]);
         let zzz = resolved.iter().find(|r| r.meta.name == "zzz").unwrap();
         assert_eq!(zzz.layer, SkillLayer::Project);
         assert!(zzz.shadowed.is_empty(), "unique skill shadows nothing");
