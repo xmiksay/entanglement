@@ -585,6 +585,17 @@ impl HttpClient {
     /// rather than sleeping past it. Transient transport faults and 5xx retry
     /// up to `max_attempts`; a permanent 4xx or an exhausted retryable is
     /// returned as `Ok`.
+    ///
+    /// `retry` overrides the pool's own [`RetryConfig`] for this call only —
+    /// `None` uses the pool default, exactly like before this parameter
+    /// existed. The RPM/concurrency/shared-lease admission gates above are
+    /// unaffected either way (they key off `endpoint`, not `config`): only
+    /// the failure-path knobs (`max_attempts`, backoff, `response_header_
+    /// timeout`) change. Exists for a caller with a legitimately different
+    /// patience budget than ordinary LLM traffic — e.g. a startup MCP
+    /// handshake that should fail fast rather than eat the LLM-tuned retry
+    /// ladder (#660) — while still riding the same endpoint's RPM/
+    /// concurrency/429 admission as everyone else.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_with_retry<F, Fut>(
         &self,
@@ -594,6 +605,7 @@ impl HttpClient {
         concurrency: Option<usize>,
         model: &str,
         model_concurrency: Option<usize>,
+        retry: Option<RetryConfig>,
         request_fn: F,
     ) -> Result<(reqwest::Response, StreamGuard), RetryError>
     where
@@ -602,7 +614,7 @@ impl HttpClient {
     {
         let endpoint = self.endpoint(&pool_key(endpoint, api_key), rpm, concurrency);
         let model_slot = model_concurrency.map(|cap| endpoint.model_slot(model, cap));
-        let config = self.pool.config;
+        let config = retry.unwrap_or(self.pool.config);
         // `attempt` bounds only *genuine failures* (5xx / transport faults). A
         // 429 is "wait your turn": it retries until it clears (not counted here),
         // bounded overall by `rate_limit_max_elapsed`.

@@ -188,6 +188,7 @@ impl Llm for OpenAiLlm {
                 self.concurrency,
                 &model,
                 model_concurrency,
+                None,
                 || {
                     let mut request = self.http.client().post(&url);
                     if let Some(key) = &self.api_key {

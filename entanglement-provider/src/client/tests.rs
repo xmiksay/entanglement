@@ -194,6 +194,7 @@ async fn model_permit_wait_does_not_hold_the_shared_cross_process_lease() {
                 Some(3),
                 "glm-4.7-flash",
                 Some(1),
+                None,
                 || async {
                     std::future::pending::<Result<reqwest::Response, reqwest::Error>>().await
                 },
@@ -510,7 +511,7 @@ async fn header_timeout_retries_and_recovers_when_the_server_replies_late() {
     let url = format!("http://{addr}/");
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        http.execute_with_retry(&url, None, None, None, "test-model", None, || {
+        http.execute_with_retry(&url, None, None, None, "test-model", None, None, || {
             http.client().get(&url).send()
         }),
     )
@@ -551,7 +552,7 @@ async fn header_timeout_exhausted_after_max_attempts_returns_a_typed_error() {
     let url = format!("http://{addr}/");
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        http.execute_with_retry(&url, None, None, None, "test-model", None, || {
+        http.execute_with_retry(&url, None, None, None, "test-model", None, None, || {
             http.client().get(&url).send()
         }),
     )
@@ -605,7 +606,7 @@ async fn header_timeout_does_not_apply_once_headers_have_arrived() {
     let url = format!("http://{addr}/");
     let (response, _guard) = tokio::time::timeout(
         Duration::from_secs(5),
-        http.execute_with_retry(&url, None, None, None, "test-model", None, || {
+        http.execute_with_retry(&url, None, None, None, "test-model", None, None, || {
             http.client().get(&url).send()
         }),
     )

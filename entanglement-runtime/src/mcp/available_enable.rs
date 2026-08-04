@@ -85,6 +85,7 @@ pub async fn enable_for_session(
                         &avail.secret_env,
                         http,
                         api_key.as_deref(),
+                        None,
                     ),
                 )
                 .await

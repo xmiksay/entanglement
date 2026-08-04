@@ -181,6 +181,7 @@ impl Llm for GeminiLlm {
                 self.concurrency,
                 &model,
                 model_concurrency,
+                None,
                 || {
                     self.http
                         .client()
