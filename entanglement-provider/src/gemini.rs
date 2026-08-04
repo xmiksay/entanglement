@@ -192,19 +192,11 @@ impl Llm for GeminiLlm {
                 },
             )
             .await
-            .map_err(|e| match e {
-                crate::client::RetryError::Permanent(e) => {
-                    anyhow::anyhow!("gemini request failed: {e}")
-                }
-                crate::client::RetryError::Exhausted(attempts, e) => {
-                    anyhow::anyhow!("gemini request failed after {attempts} attempts: {e}")
-                }
-                crate::client::RetryError::RateLimited => {
-                    anyhow::anyhow!(
-                        "gemini rate limited: gave up waiting for the endpoint to clear"
-                    )
-                }
-            })?;
+            // `RetryError`'s own `Display` (thiserror) already carries the
+            // per-variant detail (attempts, elapsed timeout, ...); just
+            // prefix it with the provider so mixed-provider logs stay
+            // attributable.
+            .map_err(|e| anyhow::anyhow!("gemini request failed: {e}"))?;
 
         if !response.status().is_success() {
             let status = response.status();

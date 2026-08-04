@@ -77,7 +77,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use futures::StreamExt;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 mod shared_state;
 mod shared_store;
@@ -141,6 +141,18 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// runs to completion; a hung one still dies fast (#241).
 pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Default bound on the await-response-headers phase: from the moment the
+/// request is handed to `reqwest` until a `Response` (headers) comes back.
+/// [`CONNECT_TIMEOUT`] only bounds TCP+TLS establishment and
+/// [`STREAM_IDLE_TIMEOUT`] only starts once a `Response` exists — a server
+/// that accepts the connection, takes the request, then goes silent before
+/// writing headers falls between both guards and hangs forever, pinning the
+/// endpoint's concurrency permit and cross-process lease (#658). Aligned with
+/// `STREAM_IDLE_TIMEOUT` since both bound the same kind of liveness gap, just
+/// on either side of the headers. Overridable per pool via
+/// [`RetryConfig::response_header_timeout`].
+const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Retry/rate-limit tuning applied per endpoint. Defaults match the historical
 /// shared client (5 attempts, 200ms→30s backoff, 50 RPM) — now *per endpoint*
 /// rather than global. `max_attempts`/`initial_backoff`/`max_backoff` bound the
@@ -165,6 +177,11 @@ pub struct RetryConfig {
     /// Total wall-clock a 429 retries before surfacing as an error (so a
     /// saturated endpoint fails a turn instead of hanging its parent forever).
     pub rate_limit_max_elapsed: Duration,
+    /// Bound on the await-response-headers phase (#658) — see
+    /// [`RESPONSE_HEADER_TIMEOUT`] for why this guard exists. A field (not a
+    /// bare const) so tests can shrink it instead of waiting out the real
+    /// value.
+    pub response_header_timeout: Duration,
 }
 
 impl Default for RetryConfig {
@@ -178,6 +195,7 @@ impl Default for RetryConfig {
             rate_limit_initial_backoff: RATE_LIMIT_INITIAL_BACKOFF,
             rate_limit_max_backoff: RATE_LIMIT_MAX_BACKOFF,
             rate_limit_max_elapsed: RATE_LIMIT_MAX_ELAPSED,
+            response_header_timeout: RESPONSE_HEADER_TIMEOUT,
         }
     }
 }
@@ -667,8 +685,37 @@ impl HttpClient {
                 }
             };
 
-            match request_fn().await {
-                Ok(response) => {
+            // Bounded by `response_header_timeout` (#658): a server that accepts
+            // the connection and takes the request but never writes headers
+            // would otherwise hang here forever, past both `CONNECT_TIMEOUT`
+            // (establishment only) and `STREAM_IDLE_TIMEOUT` (which needs a
+            // `Response` to have started). An elapsed timeout drops the
+            // in-flight future — aborting the silent connection — and is
+            // classified exactly like a transient transport fault so the
+            // retry loop below re-issues it.
+            match timeout(config.response_header_timeout, request_fn()).await {
+                Err(_elapsed) => {
+                    drop(permit);
+                    drop(model_permit);
+                    drop(shared_lease);
+                    attempt += 1;
+                    if attempt >= config.max_attempts {
+                        return Err(RetryError::HeaderTimeout(
+                            config.response_header_timeout,
+                            attempt,
+                        ));
+                    }
+                    tracing::warn!(
+                        attempt,
+                        max_attempts = config.max_attempts,
+                        timeout = ?config.response_header_timeout,
+                        backoff = ?backoff,
+                        "no response headers within timeout, retrying after backoff"
+                    );
+                    sleep(backoff).await;
+                    backoff = next_backoff(backoff, config.max_backoff);
+                }
+                Ok(Ok(response)) => {
                     let status = response.status();
                     // Success: recover the endpoint's pacing a notch, hand back
                     // the response together with the held concurrency permits.
@@ -758,8 +805,8 @@ impl HttpClient {
                     sleep(delay).await;
                     backoff = next_backoff(backoff, config.max_backoff);
                 }
-                Err(e) if !is_transient_error(&e) => return Err(RetryError::Permanent(e)),
-                Err(e) => {
+                Ok(Err(e)) if !is_transient_error(&e) => return Err(RetryError::Permanent(e)),
+                Ok(Err(e)) => {
                     drop(permit);
                     drop(model_permit);
                     drop(shared_lease);
@@ -1031,6 +1078,14 @@ pub enum RetryError {
     /// inspect.
     #[error("rate limited: gave up waiting for the endpoint's retry-after cool-down to clear")]
     RateLimited,
+    /// The server accepted the connection and the request but never wrote
+    /// response headers within [`RESPONSE_HEADER_TIMEOUT`], on every attempt up
+    /// to `max_attempts` (#658).
+    #[error(
+        "no response headers within {0:?} after {1} attempt(s): server accepted the request \
+         but never replied"
+    )]
+    HeaderTimeout(Duration, u32),
 }
 
 #[cfg(test)]
