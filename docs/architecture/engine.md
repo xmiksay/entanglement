@@ -680,8 +680,9 @@ parks the script on the standard `ToolRequest` → `Approve`/`Reject` round-trip
 **resolved once per function per run** (the first `edit` asks; approval covers the
 rest). Because the bindings *are* the always-registered quintet, `rhai` is
 precisely as privileged as those tools — so it is registered by default in the
-shared `tool_specs`, and a profile gates it like any tool (a read-only `explore`
-with `tools: [read, glob, grep]` never sees it). The executor intercepts `rhai`
+shared `tool_specs`, and a profile gates it like any tool (a profile whose
+`tools` allowlist omits `rhai` never sees it; the read-only `explore`/`research`
+profiles advertise it at `Ask` grade instead). The executor intercepts `rhai`
 before the generic dispatch (it needs the per-session profile state to snapshot
 each binding's mask + clamped permission); its *own* Allow/Ask/Deny is resolved
 the same way as any host tool. Rhai's engine is sync, so the script runs under

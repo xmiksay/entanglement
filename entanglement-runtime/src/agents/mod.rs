@@ -16,7 +16,7 @@
 //! Three layers, later wins on a `name` collision:
 //!
 //! 1. **built-in** — embedded [`include_str!`] files (`build`, `plan`,
-//!    `explore`, `debug`), parsed through the *same* loader. Editing a built-in
+//!    `explore`, `debug`, `research`), parsed through the *same* loader. Editing a built-in
 //!    is just dropping a same-`name` file in a higher layer; there is no special
 //!    "edit built-ins" code path.
 //! 2. **user** — `~/.claude/agents/*.md` (cross-vendor, lenient), then
@@ -70,6 +70,7 @@ const BUILT_INS: &[(&str, &str)] = &[
     ("plan.md", include_str!("plan.md")),
     ("explore.md", include_str!("explore.md")),
     ("debug.md", include_str!("debug.md")),
+    ("research.md", include_str!("research.md")),
 ];
 
 /// Env var overriding the user agents directory (tests + non-XDG setups).
@@ -1167,12 +1168,12 @@ mod tests {
     }
 
     #[test]
-    fn built_in_registry_resolves_all_four_profiles() {
+    fn built_in_registry_resolves_all_five_profiles() {
         // Exercises the public seam itself (#585): a parse failure here comes
         // back as an `Err` an embedder can handle, not a panic baked into the
         // function.
         let reg = built_in_registry().expect("embedded built-ins must parse");
-        for name in ["build", "plan", "explore", "debug"] {
+        for name in ["build", "plan", "explore", "debug", "research"] {
             assert!(reg.get(name).is_some(), "missing built-in `{name}`");
         }
     }
@@ -1311,8 +1312,8 @@ mod tests {
 
         // `debug`: a spawnable sub-agent with `build`'s own permissions (allow
         // everything, inherit-all tool mask) so it can actually compile/run tests
-        // to verify a fix — unlike read-only `explore`, the only other spawn
-        // target, it never gets stuck unable to execute.
+        // to verify a fix — unlike the read-only spawn targets (`explore`,
+        // `research`), it never gets stuck unable to execute.
         let debug = reg.get("debug").expect("debug built-in");
         assert_eq!(debug.mode, AgentMode::Subagent);
         assert!(debug.spawnable_as_subagent());
@@ -1324,6 +1325,59 @@ mod tests {
             debug,
             "propose_plan"
         ));
+
+        // `research` (ADR-0167): the global read-only Q&A agent — entry-capable
+        // *and* a spawn target (`mode: all`), unlike subagent-leaf `explore`,
+        // and with no plan authorship or plans-folder carve-out, unlike `plan`.
+        let research = reg.get("research").expect("research built-in");
+        assert_eq!(research.mode, AgentMode::All);
+        assert_eq!(research.permission.for_tool("read"), Permission::Allow);
+        assert_eq!(research.permission.for_tool("grep"), Permission::Allow);
+        assert_eq!(research.permission.for_tool("glob"), Permission::Allow);
+        // `write: deny` fans to the whole write capability, with no carve-out
+        // anywhere — the mask omits the write tools too, so this is belt and
+        // suspenders.
+        assert_eq!(research.permission.for_tool("edit"), Permission::Deny);
+        assert_eq!(research.permission.for_tool("write"), Permission::Deny);
+        assert_eq!(
+            research.permission.resolve("write", Some("src/main.rs")),
+            Permission::Deny
+        );
+        assert!(!research.advertises_tool("edit"));
+        assert!(!research.advertises_tool("write"));
+        assert!(!research.advertises_tool("propose_plan"));
+        // Same multi-group floor as `plan` (ADR-0114/ADR-0159): `call`'s coarse
+        // grade is dragged to `Deny` by `write: deny`, while the arg-scoped
+        // `call(*): ask` governs every real dispatch; the later literal
+        // `rhai: ask` out-ranks the floor for `rhai` by last-match.
+        assert_eq!(research.permission.for_tool("call"), Permission::Deny);
+        assert_eq!(research.permission.for_tool("bash"), Permission::Ask);
+        assert_eq!(research.permission.for_tool("rhai"), Permission::Ask);
+        assert_eq!(
+            research.permission.resolve("call", Some("git log")),
+            Permission::Ask
+        );
+        assert_eq!(
+            research
+                .permission
+                .resolve("bash", Some("git blame src/lib.rs")),
+            Permission::Ask
+        );
+        for tool in [
+            "read", "glob", "grep", "agent", "poll", "call", "bash", "rhai",
+        ] {
+            assert!(
+                research.advertises_tool(tool),
+                "research must advertise `{tool}`"
+            );
+        }
+        // Self-only spawn closure: research may spawn, but only research —
+        // the subtree can never widen into a write-capable profile.
+        assert!(research.may_spawn());
+        assert!(research.spawnable_as_subagent());
+        assert!(research.spawn_target_allowed("research"));
+        assert!(!research.spawn_target_allowed("build"));
+        assert!(!research.spawn_target_allowed("explore"));
     }
 
     #[test]
