@@ -558,10 +558,11 @@ session as `Live`/`Hibernated`/`Closed`, folded from the engine-wide
 transition, not just this executor's own) so it stays current independent of
 whether `agent_send` itself was ever called. A **closed** (tombstoned) child
 refuses clearly (its id is spent, ADR-0028); a **hibernated** child refuses
-*loudly* rather than silently — sending it a fresh `Prompt` would otherwise
-fall into the supervisor's lazy-respawn path (`holly.rs`'s unknown-session
-`Prompt` handling) and come back as a *blank* session wearing the right id,
-discarding its context. Only a `Live` child is ever actually sent the
+*loudly* rather than silently at this layer too — belt-and-suspenders with
+the supervisor's own refusal (`holly.rs`'s lazy-`Prompt` path knows a session
+id is a spawned child via `parent_links`, which survives hibernation
+specifically so it can refuse a known child instead of blank-respawning it
+under `build`, ADR-0168/#639). Only a `Live` child is ever actually sent the
 prompt; the default (blocking) path then reuses `collect_child_answer`
 exactly like the blocking `agent` route — waiting for the child's *next*
 `Done`, not its first — and `background: true` returns immediately, joined

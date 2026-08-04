@@ -162,10 +162,9 @@ async fn resume_cascades_over_a_live_spawned_child() {
     .await;
 
     // `ListSessions` must show the child live again, with its real parent —
-    // not merely absent (never touched) or present-but-rootless (the lazy
-    // blank-respawn `holly.rs` falls back to for an unknown live id, which
-    // would show `parent: None` because the cascade never re-registered the
-    // `parent_links` edge hibernation tore down).
+    // not merely absent, which is what happens if this cascade is skipped:
+    // the child stays a known-but-not-live id, and the lazy-`Prompt` path
+    // refuses to touch it instead of resuming it (issue #639).
     let corr = "q".to_string();
     holly
         .send(InMsg::ListSessions {
