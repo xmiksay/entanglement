@@ -224,7 +224,7 @@ pub struct SkillResolution {
     pub meta: SkillMeta,
     /// Which precedence layer the winner came from.
     pub layer: SkillLayer,
-    /// The winner's origin (`built-in (commit.md)` or a file path).
+    /// The winner's origin (`built-in (rhai.md)` or a file path).
     pub source: String,
     /// Lower-layer definitions of the same name the winner overrode, in
     /// precedence order — `(layer, source)` each. Empty when nothing was shadowed.
@@ -343,49 +343,10 @@ mod tests {
             let s = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
             reg.insert(s);
         }
-        let commit = reg.get("commit").expect("commit built-in");
-        assert!(!commit.user_only);
-        assert_eq!(commit.root_dir, None);
-        assert!(commit.body.contains("Conventional Commit"));
-        assert_eq!(
-            commit.allowed_tools.as_deref(),
-            Some(
-                &[
-                    "bash".to_string(),
-                    "call".to_string(),
-                    "read".to_string(),
-                    "grep".to_string(),
-                    "glob".to_string(),
-                    "write".to_string(),
-                    "edit".to_string(),
-                    "apply_patch".to_string(),
-                    "load_skill".to_string(),
-                ][..]
-            )
-        );
-        // `bash` is opt-in; the always-registered `call` must stay in the mask
-        // or the skill can't inspect staged changes in a default (bash-off) run.
-        assert!(
-            commit
-                .allowed_tools
-                .as_deref()
-                .unwrap()
-                .contains(&"call".to_string()),
-            "commit skill must allow `call` — bash is opt-in"
-        );
-        // #554: a narrow `[bash, call, read, grep]` mask disarmed editing for the
-        // rest of the turn once the skill loaded (ADR-0106) — "fix the bug and
-        // commit it" lost write/edit/apply_patch/glob/load_skill mid-turn.
-        for tool in ["write", "edit", "apply_patch", "glob", "load_skill"] {
-            assert!(
-                commit
-                    .allowed_tools
-                    .as_deref()
-                    .unwrap()
-                    .contains(&tool.to_string()),
-                "commit skill must not disarm `{tool}` for the rest of the turn"
-            );
-        }
+        let rhai = reg.get("rhai").expect("rhai built-in");
+        assert!(!rhai.user_only);
+        assert_eq!(rhai.root_dir, None);
+        assert!(rhai.body.contains("Rhai"));
     }
 
     #[test]
@@ -476,43 +437,43 @@ mod tests {
         let user = root.join("user-skills");
         write_skill(
             &user,
-            "commit",
-            "---\nname: commit\ndescription: my override\n---\nx",
+            "rhai",
+            "---\nname: rhai\ndescription: my override\n---\nx",
         );
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         std::env::set_var(SKILLS_DIR_ENV, &user);
         let reg = load_registry(root).unwrap();
         std::env::remove_var(SKILLS_DIR_ENV);
 
-        assert_eq!(reg.get("commit").unwrap().description, "my override");
+        assert_eq!(reg.get("rhai").unwrap().description, "my override");
     }
 
     #[test]
     fn resolve_registry_surfaces_layer_winner_and_shadowed() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        // A user override of the built-in `commit` skill: project wins nothing
+        // A user override of the built-in `rhai` skill: project wins nothing
         // here, so `user` is the winner and the built-in is shadowed.
         let user = root.join("user-skills");
         write_skill(
             &user,
-            "commit",
-            "---\nname: commit\ndescription: user commit\n---\nx",
+            "rhai",
+            "---\nname: rhai\ndescription: user rhai\n---\nx",
         );
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         std::env::set_var(SKILLS_DIR_ENV, &user);
         let resolved = resolve_registry(root).unwrap();
         std::env::remove_var(SKILLS_DIR_ENV);
 
-        let commit = resolved
+        let rhai = resolved
             .iter()
-            .find(|r| r.meta.name == "commit")
-            .expect("commit resolved");
-        assert_eq!(commit.layer, SkillLayer::User);
-        assert_eq!(commit.meta.description, "user commit");
+            .find(|r| r.meta.name == "rhai")
+            .expect("rhai resolved");
+        assert_eq!(rhai.layer, SkillLayer::User);
+        assert_eq!(rhai.meta.description, "user rhai");
         // The built-in it overrode is recorded, not swallowed.
-        assert_eq!(commit.shadowed.len(), 1, "built-in should be shadowed");
-        assert_eq!(commit.shadowed[0].0, SkillLayer::BuiltIn);
+        assert_eq!(rhai.shadowed.len(), 1, "built-in should be shadowed");
+        assert_eq!(rhai.shadowed[0].0, SkillLayer::BuiltIn);
     }
 
     #[test]
@@ -526,9 +487,9 @@ mod tests {
         let resolved = resolve_registry(root).unwrap();
         std::env::remove_var(SKILLS_DIR_ENV);
 
-        // Name-sorted: the built-ins (`commit`, `rhai`) sort before the project `zzz`.
+        // Name-sorted: the built-in `rhai` sorts before the project `zzz`.
         let names: Vec<&str> = resolved.iter().map(|r| r.meta.name.as_str()).collect();
-        assert_eq!(names, vec!["commit", "rhai", "zzz"]);
+        assert_eq!(names, vec!["rhai", "zzz"]);
         let zzz = resolved.iter().find(|r| r.meta.name == "zzz").unwrap();
         assert_eq!(zzz.layer, SkillLayer::Project);
         assert!(zzz.shadowed.is_empty(), "unique skill shadows nothing");

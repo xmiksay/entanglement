@@ -14,10 +14,7 @@ use crate::layers::Strictness;
 /// Embedded stock skills, parsed through the same loader as user/project files.
 /// `(filename, contents)` — the filename only feeds parse-error messages; the
 /// skill's identity is its frontmatter `name`.
-pub(super) const BUILT_INS: &[(&str, &str)] = &[
-    ("commit.md", include_str!("commit.md")),
-    ("rhai.md", include_str!("rhai.md")),
-];
+pub(super) const BUILT_INS: &[(&str, &str)] = &[("rhai.md", include_str!("rhai.md"))];
 
 /// Env var overriding the user skills directory (tests + non-XDG setups).
 pub(super) const SKILLS_DIR_ENV: &str = "ENTANGLEMENT_SKILLS_DIR";
@@ -26,7 +23,7 @@ pub(super) const SKILLS_DIR_ENV: &str = "ENTANGLEMENT_SKILLS_DIR";
 pub(super) const SKILL_FILE: &str = "SKILL.md";
 
 /// A discovered `SKILL.md` *before* parsing: which layer it came from (#186), a
-/// display label for its origin (`built-in (commit.md)` or the file path), the
+/// display label for its origin (`built-in (rhai.md)` or the file path), the
 /// pre-resolved `root_dir`, and the raw file content.
 pub(super) struct RawSkill {
     pub(super) layer: SkillLayer,
