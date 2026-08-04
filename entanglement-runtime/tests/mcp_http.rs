@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -23,7 +23,8 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
-use entanglement_runtime::mcp::HttpClient;
+use entanglement_runtime::mcp::{connect, AvailableServer, HttpClient, McpServerConfig};
+use entanglement_runtime::tools::ToolRegistry;
 // The shared per-endpoint pool (#559) — distinct from `mcp::HttpClient` above,
 // which is the MCP *transport*'s historical name (ADR-0153).
 use entanglement_provider::{HttpClient as PoolHttpClient, RetryConfig};
@@ -125,7 +126,7 @@ async fn http_transport_lists_and_calls_with_auth() {
     let url = spawn_server().await;
     let headers = HashMap::from([("Authorization".to_string(), TOKEN.to_string())]);
 
-    let client = HttpClient::connect("test", &url, &headers, test_http_client(), None)
+    let client = HttpClient::connect("test", &url, &headers, test_http_client(), None, None)
         .await
         .expect("handshake");
 
@@ -150,9 +151,16 @@ async fn missing_token_is_rejected() {
     let url = spawn_server().await;
     // No Authorization header → the server 401s `tools/list`; the client surfaces
     // it as an error rather than hanging. (`initialize` is allowed through.)
-    let client = HttpClient::connect("test", &url, &HashMap::new(), test_http_client(), None)
-        .await
-        .expect("handshake");
+    let client = HttpClient::connect(
+        "test",
+        &url,
+        &HashMap::new(),
+        test_http_client(),
+        None,
+        None,
+    )
+    .await
+    .expect("handshake");
     let err = client.list_tools().await.unwrap_err();
     assert!(format!("{err:#}").contains("401"), "got: {err:#}");
 }
@@ -217,7 +225,7 @@ async fn mcp_calls_are_serialized_by_the_endpoint_concurrency_cap() {
         concurrency: 1,
         ..RetryConfig::default()
     });
-    let client = HttpClient::connect("test", &url, &HashMap::new(), http, None)
+    let client = HttpClient::connect("test", &url, &HashMap::new(), http, None, None)
         .await
         .expect("handshake");
 
@@ -233,5 +241,106 @@ async fn mcp_calls_are_serialized_by_the_endpoint_concurrency_cap() {
         1,
         "two concurrent MCP calls through a concurrency-1 pool must never run \
          simultaneously — the endpoint's concurrency permit is the guard"
+    );
+}
+
+// ── #660: startup connect fails fast and fans out concurrently ─────────────
+
+fn http_server_cfg(url: &str) -> McpServerConfig {
+    McpServerConfig {
+        command: None,
+        args: vec![],
+        env: HashMap::new(),
+        url: Some(url.to_string()),
+        headers: HashMap::new(),
+        oauth: None,
+        disabled: false,
+        capabilities: HashMap::new(),
+        state: None,
+    }
+}
+
+fn available(config: McpServerConfig) -> AvailableServer {
+    AvailableServer {
+        config,
+        key_env: None,
+        provider: None,
+    }
+}
+
+/// Effectively no RPM pacing gap between requests — isolates the timing
+/// assertions below from the endpoint pool's *default* 50-RPM baseline
+/// spacing (1.2s between any two calls to the same endpoint, unrelated to
+/// #660's retry-ladder/concurrency fix) so they measure only what this fix
+/// changes.
+fn unpaced_http_client() -> PoolHttpClient {
+    test_http_client_with(RetryConfig {
+        rpm: 1_000_000,
+        ..RetryConfig::default()
+    })
+}
+
+/// A bound-then-dropped listener: nothing answers on this port, so a connect
+/// attempt gets an immediate OS-level `ECONNREFUSED` — a deterministic
+/// stand-in for "the configured MCP server just isn't running" (#660).
+async fn closed_port_url() -> String {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}/mcp")
+}
+
+#[tokio::test]
+async fn startup_connect_fails_fast_on_a_closed_port() {
+    let url = closed_port_url().await;
+    let servers = HashMap::from([("dead".to_string(), available(http_server_cfg(&url)))]);
+    let mut registry = ToolRegistry::new();
+    let http = unpaced_http_client();
+
+    let started = Instant::now();
+    let active = connect(&servers, &mut registry, &[], &http).await;
+    let elapsed = started.elapsed();
+
+    assert!(active.is_empty());
+    assert!(registry.is_empty());
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "a closed-port MCP server must fail fast, not ride the LLM-tuned retry \
+         ladder (5 attempts, ~10s) — took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn startup_connect_runs_servers_concurrently_and_a_healthy_one_still_connects() {
+    let dead_a = closed_port_url().await;
+    let dead_b = closed_port_url().await;
+    let healthy_url = spawn_server().await;
+    // `spawn_server`'s handler 401s any non-handshake call without the token
+    // (see `mcp` above), so the healthy entry needs the auth header the dead
+    // ones don't.
+    let mut healthy_cfg = http_server_cfg(&healthy_url);
+    healthy_cfg
+        .headers
+        .insert("Authorization".to_string(), TOKEN.to_string());
+    let servers = HashMap::from([
+        ("dead-a".to_string(), available(http_server_cfg(&dead_a))),
+        ("dead-b".to_string(), available(http_server_cfg(&dead_b))),
+        ("healthy".to_string(), available(healthy_cfg)),
+    ]);
+    let mut registry = ToolRegistry::new();
+    let http = unpaced_http_client();
+
+    let started = Instant::now();
+    let active = connect(&servers, &mut registry, &[], &http).await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(active.len(), 1, "only the healthy server should connect");
+    assert!(active.contains_key("healthy"));
+    assert_eq!(registry.specs().len(), 1);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "two dead servers connecting concurrently (not one after another) plus \
+         one healthy connect must land well under the old sequential cost of \
+         ~10s per dead server — took {elapsed:?}"
     );
 }

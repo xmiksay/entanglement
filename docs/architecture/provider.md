@@ -427,7 +427,13 @@ transition, so a stdio/WS head sees the same stall the TUI renders directly
 (ADR-0141 — engine-global, not per-session, matching this pool's own
 per-endpoint model). `RetryConfig` (`max_attempts`, `initial_backoff`,
 `max_backoff`, `rpm`) tunes the *failure* path; `HttpClient::with_config` +
-`RetryConfig::no_retry()` build variants (tests use the latter). This
+`RetryConfig::no_retry()` build variants (tests use the latter).
+`execute_with_retry` also takes a **per-call** `retry: Option<RetryConfig>`
+override (#660) — `None` uses the pool's own config unchanged (every LLM
+client passes `None`); a caller with a legitimately different patience
+budget (the MCP startup handshake, [ADR-0169](../adr/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md))
+can swap just the failure-path knobs while still riding the same endpoint's
+RPM/concurrency/429 admission as everyone else. This
 per-endpoint state is the reason a session carries **no** per-session connection
 handle: the `LlmSession` newtype was collapsed to a plain `Box<dyn Llm>` (#195,
 [ADR-0062](../adr/0062-collapse-llmsession-placeholder-newtype.md)) — resilience

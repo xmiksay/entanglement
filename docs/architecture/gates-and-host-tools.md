@@ -713,6 +713,16 @@ the same permission profiles as `read`/`bash`.
   is absent," never a startup failure. The stdio path lives in the **lean library**;
   the HTTP path rides the `mcp-http` feature, so an embedder gets stdio tool servers
   with no CLI/TUI/transport dependency and opts into HTTP by enabling the feature.
+  `mcp::connect` fans every server's connect+handshake+`tools/list` out
+  **concurrently** (`tokio::task::JoinSet`) rather than one after another, and
+  the HTTP transport's `initialize`/`notifications/initialized` handshake rides
+  a **fast-fail retry override** (2 attempts, a short fixed backoff, a short
+  response-header deadline) instead of the shared endpoint pool's LLM-tuned
+  ladder — so one unreachable server costs a fraction of a second instead of
+  ~10s, and no longer serializes behind every other configured server
+  (✅ #660, [ADR-0169](../adr/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md)).
+  A live `/mcp add`/`/mcp connect`/`mcp_enable` connect keeps the pool's
+  patient default — only the startup path passes the override.
 
 ### Live add/remove/list — [ADR-0096](../adr/0096-dynamic-toolregistry-sharedregistry.md) + [ADR-0097](../adr/0097-live-mcp-server-management.md) (#372, #375)
 

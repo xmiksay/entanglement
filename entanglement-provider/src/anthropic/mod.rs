@@ -261,6 +261,7 @@ impl Llm for AnthropicLlm {
                         concurrency,
                         &request_model,
                         model_concurrency,
+                        None,
                         || {
                             http.client()
                                 .post(&url)

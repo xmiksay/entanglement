@@ -82,7 +82,7 @@ pub async fn mcp_add(
     {
         carry_forward_unspecified_fields(&mut cfg, &existing, &name);
     }
-    let (client, defs) = connect_client(&name, &cfg, secret_env, http, None).await?;
+    let (client, defs) = connect_client(&name, &cfg, secret_env, http, None, None).await?;
     let prefix = format!("mcp__{name}__");
     let tools = {
         let mut reg = registry.write().expect("tool registry lock poisoned");
@@ -157,7 +157,7 @@ pub async fn mcp_reconnect(
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
-    let (client, defs) = connect_client(name, cfg, secret_env, http, None).await?;
+    let (client, defs) = connect_client(name, cfg, secret_env, http, None, None).await?;
     let prefix = format!("mcp__{name}__");
     let tools = {
         let mut reg = registry.write().expect("tool registry lock poisoned");
