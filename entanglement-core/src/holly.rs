@@ -570,8 +570,8 @@ async fn supervisor(
             // — is re-materialized too, the same way `CloseSession`/
             // `HibernateSession` cascade over the sub-tree on teardown. Without
             // this, a resumed parent's `children` mirror lists ids with no task
-            // behind them, and touching one lazily respawns it *blank*
-            // (`holly.rs`'s lazy-`Prompt` path), silently discarding its history.
+            // behind them, and touching one hits the lazy-`Prompt` path's
+            // known-child refusal (issue #639) instead of actually resuming.
             let mut queue: Vec<SessionId> = children;
             let mut cursor = 0;
             while cursor < queue.len() {
@@ -623,9 +623,9 @@ async fn supervisor(
             // An unknown spawn target must not silently escalate to `build` (the
             // most-privileged default): `resolve` would fall back there, so a
             // typo'd `Spawn` would launch a full coding agent. `get` + a
-            // supervisor error refuses instead (#119). The lazy-Prompt path below
-            // still uses `resolve` — that fallback is a blank user session, not a
-            // model-chosen spawn target.
+            // supervisor error refuses instead (#119). The lazy-Prompt path
+            // below still uses `resolve`, but only for a genuinely fresh id —
+            // a known sub-agent child refuses the same way (issue #639).
             let profile = match cfg.profiles.get(agent) {
                 Some(p) => p.clone(),
                 None => {
@@ -739,26 +739,37 @@ async fn supervisor(
                 );
                 continue;
             }
+            // A `parent_links` entry with a real parent means this id is a
+            // known sub-agent child, not a fresh id — hibernation deliberately
+            // leaves this map entry in place (unlike `session_meta`) so this
+            // check can catch it (issue #639). Silently blank-respawning it
+            // here would both discard its history and re-create it under
+            // `build`'s permission profile and tool mask, the exact
+            // escalation the unknown-`Spawn`-target case above refuses.
+            // Refuse and point the caller at `Resume` instead.
+            if parent_links.get(&session_id).cloned().flatten().is_some() {
+                emit_supervisor_error(
+                    &events,
+                    &seqs,
+                    &session_id,
+                    "session id belongs to a hibernated sub-agent child; Resume it before prompting instead of respawning it blank",
+                );
+                continue;
+            }
+            // A genuinely fresh id (no `parent_links` entry, or one recorded
+            // with no parent — e.g. a hibernated `/compact` successor root)
+            // keeps the lazy-Prompt path's single-user convenience: an unknown
+            // session id auto-creates a blank root under `build`.
             let profile = cfg.profiles.resolve(DEFAULT_PROFILE);
-            let parent = parent_links.get(&session_id).cloned().flatten();
-            // The lazy-Prompt path has no `InMsg::Spawn.user` to consult — it's
-            // the single-user convenience entry point (an unknown session id
-            // auto-creates a blank root). A child spawned under a known parent
-            // (e.g. re-created after the parent task raced ahead) still inherits
-            // (#522); a genuine fresh root here has no user (single-user mode).
-            let user = parent
-                .as_ref()
-                .and_then(|p| session_meta.get(p))
-                .and_then(|m| m.user.clone());
             session_meta.insert(
                 session_id.clone(),
                 SessionInfo {
                     session: session_id.clone(),
-                    parent: parent.clone(),
+                    parent: None,
                     profile: profile.name.clone(),
-                    root: parent.is_none(),
+                    root: true,
                     profile_detail: Some(profile.detail()),
-                    user: user.clone(),
+                    user: None,
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -769,7 +780,7 @@ async fn supervisor(
             let activity2 = activity.clone();
             tokio::spawn(async move {
                 session_loop(
-                    sid, srx, ev, cfg2, profile, None, parent, None, user, seqs2, activity2,
+                    sid, srx, ev, cfg2, profile, None, None, None, None, seqs2, activity2,
                 )
                 .await
             });
@@ -892,10 +903,17 @@ fn collect_subtree(
 }
 
 /// Evict `root` plus its whole spawn sub-tree: tear down each live task, drop
-/// its meta/parent-link entries, and record **no** tombstone so every id stays
+/// its `session_meta` entry, and record **no** tombstone so every id stays
 /// resumable (#318, ADR-0077). Shared by the `HibernateSession` handler and the
 /// idle-TTL sweep (#363) — the only two paths that decide a session should be
 /// evicted.
+///
+/// `parent_links` is deliberately **not** torn down here (issue #639): it's
+/// the only record of "this id is a sub-agent child" that survives eviction,
+/// and the lazy-`Prompt` path in the main loop consults it precisely so a
+/// hibernated child can't be silently blank-respawned under the most-
+/// privileged default profile. It's still cleaned up on `CloseSession`, so a
+/// tombstoned id doesn't linger forever.
 async fn hibernate_subtree(
     root: &SessionId,
     sessions: &mut HashMap<SessionId, mpsc::Sender<SessionCmd>>,
@@ -914,7 +932,6 @@ async fn hibernate_subtree(
             let _ = tx.send(SessionCmd::Hibernate).await;
         }
         session_meta.remove(&victim);
-        parent_links.remove(&victim);
         // Deliberately NOT inserted into `closed`: the id is evictable and
         // rebuildable, never spent.
     }

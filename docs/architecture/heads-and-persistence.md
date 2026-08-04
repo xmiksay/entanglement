@@ -421,8 +421,10 @@ assistant/tool messages and the model appears to forget the conversation.
   (a `SessionStarted` with no matching `SessionEnded`/`SessionHibernated`),
   mirroring `CloseSession`/`HibernateSession`'s teardown cascade in reverse. A
   parent resumed after a crash/hibernation can still reach and continue its
-  sub-agents instead of them silently vanishing (a lazy-respawn under an
-  untouched child id would otherwise come back blank, with no prior history).
+  sub-agents instead of them silently vanishing (touching an untouched child
+  id would otherwise hit the lazy-`Prompt` path's known-child refusal,
+  [ADR-0168](../adr/0168-lazy-prompt-refuses-a-known-hibernated-child.md)/#639,
+  rather than actually resuming it).
   Both listings carry a **first-prompt snippet** (#327): `list_sessions` captures the
   first `InMsg::Prompt` in the same pass that finds `SessionStarted` (no extra
   I/O), truncates it to ~60 chars on a word boundary with `…`
