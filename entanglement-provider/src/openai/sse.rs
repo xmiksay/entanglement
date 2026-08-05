@@ -108,15 +108,15 @@ pub(super) fn handle_chunk(
     }
 
     // Provider-side web search (#305): z.ai streams the source list as a
-    // `web_search` array. Its exact placement in the streaming wire is unverified,
-    // so scan defensively at the top level and inside the delta; each source
-    // surfaces as one Reasoning line (cited answer text already flows as `Text`),
-    // plus one persisted `ContentBlock` (#481) so citations survive into a later
-    // turn's history instead of vanishing with the round.
+    // `web_search` array, a top-level sibling of `choices` on the same final
+    // chunk that carries `finish_reason`/`usage` — confirmed against a live
+    // Coding Plan key (#625, ADR-0171); it never nests under
+    // `choices[0].delta`, so that scan site (carried defensively since the
+    // #305 MVP) is gone. Each source surfaces as one Reasoning line (cited
+    // answer text already flows as `Text`), plus one persisted `ContentBlock`
+    // (#481) so citations survive into a later turn's history instead of
+    // vanishing with the round.
     emit_web_search(data.get("web_search"), &mut out);
-    if let Some(arr) = data.pointer("/choices/0/delta/web_search") {
-        emit_web_search(Some(arr), &mut out);
-    }
 
     let Some(choice) = data.pointer("/choices/0") else {
         return Ok(out);
@@ -222,10 +222,10 @@ pub(super) fn flush_pending_tools(
 /// `summary` (rendered as plain text by every converter, #481's
 /// `assistant_text`) is the whole persisted representation; there is no opaque
 /// `data` payload worth keeping beyond the entries themselves, which ride in
-/// `data` unmodified only so a future verified shape (item 3 of #481) has
-/// something to refine without another wire change. A non-array (or an entry
-/// with neither title nor link) is ignored — this is a best-effort, defensive
-/// surface.
+/// `data` unmodified. A non-array (or an entry with neither title nor link) is
+/// ignored — this stays a best-effort surface since invocation itself is
+/// model-decided (the search tool being offered doesn't guarantee the model
+/// calls it), even though the placement is now confirmed (#625).
 fn emit_web_search(value: Option<&Value>, out: &mut Vec<LlmEvent>) {
     let Some(entries) = value.and_then(|v| v.as_array()) else {
         return;
