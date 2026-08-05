@@ -1151,19 +1151,21 @@ pub fn spawn_tool_executor_with_policy(
                             // The DB-backed resolver runs in the task, never the loop.
                             let chain = ancestor_chain(&spawn_guard, &session);
                             let resolver = resolver.clone();
-                            // The session's live overlay entry for this call
-                            // (#539, ADR-0149; `arg_pattern` #611/ADR-0163),
-                            // resolved before spawning like the chain snapshot
-                            // above: a matching entry replaces the profile
-                            // chain's grade — still ceiling-clamped inside
-                            // `dispatch`, which also has the `arg`/`workdir`
-                            // an `arg_pattern` rule needs to resolve against.
-                            let overlay_entry = overlays
-                                .get(&session)
-                                .and_then(|entries| {
-                                    entanglement_core::ToolOverlayEntry::find(entries, &tool)
-                                })
-                                .cloned();
+                            // The nearest ancestor-chain link with a live
+                            // overlay entry for this call (#539, ADR-0149;
+                            // `arg_pattern` #611/ADR-0163; chain reach #628),
+                            // resolved before spawning like the chain
+                            // snapshot above: a matching entry replaces the
+                            // profile chain's grade — still ceiling-clamped
+                            // inside `dispatch`, which also has the
+                            // `arg`/`workdir` an `arg_pattern` rule needs to
+                            // resolve against. Walking the whole chain (not
+                            // just `session` itself) is what lets a parent's
+                            // overlay grade reach a child that has none of
+                            // its own, mirroring `tool_mask_source`'s
+                            // per-link existence walk.
+                            let overlay_entry =
+                                crate::permission::overlay_grade_entry(&overlays, &chain, &tool);
                             let ceiling = base.clone();
                             // Snapshot before spawning (#372) — see the Rhai arm above.
                             let tools = tools.read().expect("tool registry lock poisoned").clone();
@@ -1238,9 +1240,10 @@ async fn dispatch(
     hooks: &Hooks,
     pending: &crate::pending::PendingDecisions,
     escape_root: Option<&EscapeRoot>,
-    // The session's live overlay entry for this call (#539, ADR-0149;
-    // `arg_pattern` #611/ADR-0163): `Some` when a `ToolOverlayEntry` matched
-    // the tool — [`overlay_entry_grade`][crate::permission::overlay_entry_grade]
+    // The nearest ancestor-chain link's live overlay entry for this call
+    // (#539, ADR-0149; `arg_pattern` #611/ADR-0163; chain reach #628):
+    // `Some` when a `ToolOverlayEntry` matched the tool at `session` or one
+    // of its ancestors — [`overlay_entry_grade`][crate::permission::overlay_entry_grade]
     // materializes it into a profile that replaces the profile chain's grade
     // (that override is the overlay's point; the injecting head is trusted),
     // clamped against `ceiling` below so the config permission ceiling (#172)

@@ -310,6 +310,12 @@ below realize one model:
   through `clamp_to_base` unconditionally — a config ceiling of `bash: deny`
   still wins over a live `Allow`, same as it wins over any agent profile's own
   `Allow`. This composes for any tool the overlay enables, not only `bash`.
+  The grade override reaches past the exact session that set it, too (✅
+  #539/#628): `permission::overlay_grade_entry` walks the same
+  nearest-link-first ancestor chain the mask's `tool_masked` already does,
+  and the `rhai` `BindingPolicy` snapshot consults the identical lookup —
+  closing the deferral where a script's `bash()` binding or a spawned child
+  with no overlay of its own still graded through the plain profile chain.
 - **Managed provider-key env file (✅ #220):** a sibling
   `${config_dir}/entanglement/.env` (path override `ENTANGLEMENT_ENV_FILE`) holds
   the provider API keys outside any repo (`entanglement-runtime/src/config/env_file.rs`).
@@ -519,10 +525,15 @@ below realize one model:
   even profile-advertised ones — deny > enable > profile), surviving
   `SetAgent` and replay. Core's advertisement filter and `tool_masked` apply
   the same disposition — per chain link, so a parent's overlay covers its
-  spawn sub-tree; the generic dispatch route replaces the chain's grade with
-  an enable entry's `Ask` (default)/`Allow`, the latter optionally narrowed by
-  `arg_pattern` (ADR-0163) to an argument-scoped `tool(arg_pattern): allow`
-  rule instead of a blanket grant — still ceiling-clamped. When an enable
+  spawn sub-tree; the grade override reaches the same way (✅ #628,
+  `permission::overlay_grade_entry`): the nearest ancestor-chain link
+  (session's own first) carrying an enable entry replaces the chain's grade
+  with that entry's `Ask` (default)/`Allow`, the latter optionally narrowed
+  by `arg_pattern` (ADR-0163) to an argument-scoped `tool(arg_pattern):
+  allow` rule instead of a blanket grant — still ceiling-clamped — for both
+  the generic dispatch route and the `rhai` `BindingPolicy` snapshot (a
+  script's `bash()` binding grades identically to a direct `bash` call).
+  When an enable
   entry's name-glob matches a closed, runtime-fixed table of
   lazily-registrable built-ins (`bash` is the only member today, ADR-0163
   §2), it also registers that built-in into the process-wide `SharedRegistry`

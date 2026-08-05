@@ -342,6 +342,12 @@ guessing again:
   (`permission::overlay_entry_grade`), still clamped by the config permission
   ceiling (#172) — a `bash: deny` ceiling wins over a live `Allow`. Unlike the
   pre-ADR-0163 `BashGrade`, this composes for *any* tool, not just `bash`.
+  The lookup that finds the applicable entry (`permission::overlay_grade_entry`)
+  walks the session's ancestor chain nearest-first (✅ #628), so a `bash()`
+  binding run from inside a `rhai` script grades identically to a direct
+  `bash` call — the `BindingPolicy` snapshot consults the same lookup — and a
+  spawned child with no overlay of its own inherits its parent's grade, not
+  just the mask that lets the tool exist for it.
 
 The inherit-all profiles (`build`, `debug`; `tools: None`) advertise
 `edit`/`write`/`apply_patch`/`bash`/`call` and auto-allow them (default
