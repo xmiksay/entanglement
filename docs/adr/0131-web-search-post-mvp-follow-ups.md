@@ -1,6 +1,6 @@
 # 0131. Web search post-MVP follow-ups — persisted results, `pause_turn` continuation, version flag
 
-- Status: Accepted
+- Status: Accepted — Amended by [0171](0171-zai-streaming-web-search-placement-confirmed.md)
 - Date: 2026-07-22
 - Amends [0075](0075-provider-side-web-search-mvp.md) (provider-side web search
   MVP), closing three of its four "Accepted MVP limitations" — persistence,
@@ -109,19 +109,21 @@ so the final `OutEvent::Usage` reports the true multi-request total.
 
 ### 3. z.ai streaming placement — verification result
 
-**Attempted, not achieved.** The environment #481 was implemented in had
-neither a `ZAI_API_KEY` nor outbound network access, so
+> **[0171](0171-zai-streaming-web-search-placement-confirmed.md) (2026-08-06)
+> closes this item** (#625): verified live against a working Coding Plan key.
+> `web_search` is a top-level sibling of `choices`, delivered once on the
+> final chunk alongside `finish_reason`/`usage`; it never nests under
+> `choices[0].delta`. `handle_chunk` now scans only the confirmed site. See
+> 0171 for the full result, including the model-decided-invocation finding.
+
+**Attempted, not achieved (as of this ADR).** The environment #481 was
+implemented in had neither a `ZAI_API_KEY` nor outbound network access, so
 `ENTANGLEMENT_LOG_BODIES=1` could not be run against a live Coding Plan
 endpoint. The defensive parser (`openai::sse::handle_chunk` scanning both the
 chunk's top level and `choices[0].delta` for a `web_search` array) is
 unchanged from the #305 MVP; the worst-case behavior is still the
-cited-text-only floor ADR-0075 accepted. This item stays open — see the
+cited-text-only floor ADR-0075 accepted. This item stayed open — see the
 deferred-work ledger row for #481 — pending a run with real credentials.
-Whoever closes it should tighten `handle_chunk` to the confirmed placement
-(dropping whichever scan site turns out unused) and update this ADR's status
-line to record the confirmed shape, or supersede this section with a new ADR
-if the confirmed shape changes the persisted `ContentPart::ProviderSearch`
-`data` payload's contract.
 
 ### 4. Anthropic web-search tool version as catalog data
 
@@ -154,8 +156,9 @@ capability flags off `ModelEntry`, not off a user-supplied knob).
   one POST per call; `pause_turn` handling adds real (if bounded) latency and
   request-count variance to a turn that trips it, but this is strictly better
   than the prior silent end-of-turn.
-- Item 3 (z.ai streaming placement) stays unverified — tracked, not closed.
-  The deferred-work ledger row for #481 stays open until it lands.
+- Item 3 (z.ai streaming placement) stayed unverified until
+  [0171](0171-zai-streaming-web-search-placement-confirmed.md) closed it
+  (#625); the deferred-work ledger row for #481 has moved to Resolved.
 
 ## Rejected alternatives
 

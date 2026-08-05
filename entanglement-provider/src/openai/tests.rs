@@ -503,9 +503,11 @@ fn web_search_tool_rides_alongside_function_tools() {
 
 #[test]
 fn web_search_array_surfaces_as_reasoning_and_content_block() {
-    // A chunk carrying a `web_search` source array (defensive top-level
-    // placement) yields one Reasoning line per entry, no Text/ToolCall, plus
-    // one persisted ContentBlock (#481) summarizing the same lines.
+    // A chunk carrying a `web_search` source array — a top-level sibling of
+    // `choices`, the placement confirmed live against a Coding Plan key
+    // (#625, ADR-0171) — yields one Reasoning line per entry, no
+    // Text/ToolCall, plus one persisted ContentBlock (#481) summarizing the
+    // same lines.
     let data = json!({ "web_search": [
         { "title": "Rust async", "link": "https://docs.rs/async" },
         { "title": "Tokio", "url": "https://tokio.rs" },
@@ -528,6 +530,19 @@ fn web_search_array_surfaces_as_reasoning_and_content_block() {
 #[test]
 fn chunk_without_web_search_array_emits_no_reasoning() {
     let data = json!({ "choices": [{ "delta": { "content": "hi" } }] });
+    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
+    assert_eq!(evs, vec![LlmEvent::Text("hi".into())]);
+}
+
+#[test]
+fn web_search_array_nested_under_delta_is_not_scanned() {
+    // The pre-#625 defensive scan also checked `choices[0].delta.web_search`;
+    // live verification confirmed z.ai never places it there (always a
+    // top-level sibling of `choices`), so that scan site was dropped. A
+    // payload shaped that way must not surface as a search result.
+    let data = json!({ "choices": [{ "delta": { "content": "hi", "web_search": [
+        { "title": "Rust async", "link": "https://docs.rs/async" },
+    ] } }] });
     let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
     assert_eq!(evs, vec![LlmEvent::Text("hi".into())]);
 }

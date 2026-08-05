@@ -188,14 +188,16 @@ Gemini) reads only `summary`, rendered as plain text — z.ai's cited answer
 already flows as `Text`, and its own `web_search` source array now also emits a
 `ContentBlock(provider: "zai")` alongside the existing `Reasoning` lines, so
 citations from either provider survive into a later turn's history instead of
-vanishing with the round. The z.ai array's streaming placement is still parsed
-defensively (checked at the top level and inside `choices[0].delta`); #481
-attempted live verification against a real Coding Plan key but neither a key nor
-network egress was available in that environment, so the shape stays
-**unconfirmed** — the parser is unchanged from the #305 MVP and the worst case is
-still the cited-text-only floor; a future run with `ENTANGLEMENT_LOG_BODIES=1`
-against a live key should close this out (tracked at
-[ADR-0131](../adr/0131-web-search-post-mvp-follow-ups.md) §3).
+vanishing with the round. The z.ai array's streaming placement is **confirmed**
+(#625, [ADR-0171](../adr/0171-zai-streaming-web-search-placement-confirmed.md),
+verified live against a working Coding Plan key): it is a top-level sibling of
+`choices`, delivered once on the same final chunk that carries
+`finish_reason`/`usage`, never nested under `choices[0].delta` — `handle_chunk`
+scans only that top-level site. Verification also surfaced that invocation is
+model-decided, not guaranteed by the tool being offered: a turn can stream to
+completion with no `web_search` key at all if the model chooses not to call the
+search tool, which is the concrete instance of the cited-text-only floor ADR-0075
+already accepted as the worst case.
 A long-running search can end an Anthropic response with `stop_reason:
 "pause_turn"` instead of a confident stop; `anthropic::mod` owns continuing it
 entirely client-side (#481) — `sse::handle_frame` accumulates every finalized
