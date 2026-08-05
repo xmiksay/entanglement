@@ -807,11 +807,22 @@ Every MCP server now has a **three-state activation**
   connects (`available::enable_for_session` — `mcp_add` minus persistence)
   and marks the calling session in `AvailableMcp`; the runtime's
   `tool_spec_resolver` then filters a lazily-connected server's specs to its
-  enabling sessions, so enablement is **session-scoped and ephemeral**
+  enabling sessions **and their spawn descendants** (✅ #630,
+  `available_lifecycle::ancestor_enabled` walks a child→parent map
+  `spawn_mcp_responder` folds off `SessionStarted`, resolved live so an
+  ancestor's enable that happens after the child already exists is picked up
+  too — a second, independent copy of the same links `subagent::SpawnGuard`
+  tracks, since that one stays deliberately single-threaded inside the tool
+  executor's own loop), so enablement is **session-scoped and ephemeral**
   (`/disable mcp <name>` unmarks; the connection stays up for others). The
   bundled-entry default. Availability is **key presence read live** from the
   process env, so a `/key` save unlocks a bundle with no restart; keyless ⇒
-  silently absent everywhere.
+  silently absent everywhere. Both the enablement marks and the parent links
+  are dropped on `SessionEnded` (`available_lifecycle::forget_session`, same
+  responder fold) so neither grows for the process lifetime — deliberately
+  **not** on `SessionHibernated`, since a lazy enable is never logged for
+  replay the way the #539 tool overlay is, so clearing it there would strand
+  a resumed session with no way to get its tools back short of re-enabling.
 - **`disabled`** — invisible; only a config edit lifts it.
 
 `McpServerStatus` gains an optional `state` (`"enabled"`/`"allowed"`) and the

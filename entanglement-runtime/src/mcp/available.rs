@@ -6,11 +6,14 @@
 //! `mcp:` entries** whose `state` is `allowed`. An available server is not
 //! connected and its tools don't exist — until a user (`/enable mcp <name>`)
 //! or the agent itself (the `mcp_enable` tool) enables it, which lazily
-//! connects it and marks it visible **for that session only**: the runtime's
-//! `tool_spec_resolver` filters a lazily-connected server's specs to its
-//! enabling sessions, so enablement is session-ephemeral — nothing persists,
-//! and `ServerConfigs`/`save_mcp` never see a bundled server (durable state
-//! changes are config edits, by design).
+//! connects it and marks it visible **for that session and its spawn
+//! sub-tree** (#630): the runtime's `tool_spec_resolver` filters a
+//! lazily-connected server's specs to its enabling sessions and their
+//! descendants, so enablement is session-ephemeral — nothing persists, and
+//! `ServerConfigs`/`save_mcp` never see a bundled server (durable state
+//! changes are config edits, by design). Both the enablement marks and the
+//! parent links feeding the descendant walk are dropped on `SessionEnded`
+//! (`forget_session`), so neither grows for the process lifetime.
 //!
 //! Key gating is read **live** from the process env on every availability
 //! check, so a `/key` save (which `set_var`s the key) unlocks a provider's
@@ -30,6 +33,10 @@ use super::McpServerConfig;
 #[path = "available_enable.rs"]
 mod enable;
 pub use enable::{disconnect, enable_for_session};
+
+#[path = "available_lifecycle.rs"]
+mod lifecycle;
+pub use lifecycle::{forget_session, record_parent};
 
 /// One available-but-not-startup-connected server: its resolved config (bundled
 /// definition field-merged with any same-name user `mcp:` override), the env
@@ -73,6 +80,17 @@ pub struct AvailableMcp {
     /// live connection/subprocess) with nothing left holding a reference to
     /// unregister or drop them.
     connecting: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    /// child → parent, folded from `OutEvent::SessionStarted` (#630). Lets
+    /// [`spec_visible`](Self::spec_visible) walk a session's ancestry so a
+    /// spawned child inherits whichever ancestor enabled a lazy server,
+    /// resolved live rather than snapshotted at spawn time — an ancestor's
+    /// enable that happens *after* the child already exists is picked up too.
+    /// A second, independent fold of the same `SessionStarted` broadcast
+    /// `crate::subagent::SpawnGuard` already tracks: duplicated here rather
+    /// than shared, since `SpawnGuard` deliberately stays single-threaded
+    /// inside the tool executor's own event loop, while this map is read from
+    /// the `tool_spec_resolver` closure running per-session inside core.
+    parents: Mutex<HashMap<SessionId, Option<SessionId>>>,
 }
 
 impl AvailableMcp {
@@ -168,6 +186,7 @@ impl AvailableMcp {
                 enabled: Mutex::new(HashMap::new()),
                 secret_env,
                 connecting: Mutex::new(HashMap::new()),
+                parents: Mutex::new(HashMap::new()),
             },
         )
     }
@@ -193,8 +212,9 @@ impl AvailableMcp {
     }
 
     /// Whether `tool_name`'s specs are visible to `session` (#542): a tool of
-    /// a lazily-connected server is visible only to sessions that enabled it;
-    /// everything else (host tools, startup-connected servers) passes.
+    /// a lazily-connected server is visible only to sessions that enabled it
+    /// or an ancestor of it (#630, `lifecycle::ancestor_enabled`) — everything
+    /// else (host tools, startup-connected servers) passes.
     pub fn spec_visible(&self, tool_name: &str, session: &SessionId) -> bool {
         let Some(server) = tool_name
             .strip_prefix("mcp__")
@@ -202,15 +222,14 @@ impl AvailableMcp {
         else {
             return true;
         };
-        match self
+        let enabled = self
             .enabled
             .lock()
-            .expect("available-server enablement mutex poisoned")
-            .get(server)
-        {
-            Some(sessions) => sessions.contains(session),
-            None => true,
-        }
+            .expect("available-server enablement mutex poisoned");
+        let Some(sessions) = enabled.get(server) else {
+            return true;
+        };
+        sessions.contains(session) || lifecycle::ancestor_enabled(self, sessions, session)
     }
 
     /// Mark `server` enabled for `session` (idempotent).

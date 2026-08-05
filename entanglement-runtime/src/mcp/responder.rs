@@ -16,12 +16,14 @@
 
 use std::sync::Arc;
 
-use entanglement_core::{Holly, InMsg, McpAction, McpAuthAction, McpAuthStatus, McpServerStatus};
+use entanglement_core::{
+    Holly, InMsg, McpAction, McpAuthAction, McpAuthStatus, McpServerStatus, OutEvent,
+};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::tools::SharedRegistry;
 
-use super::available::AvailableMcp;
+use super::available::{self, AvailableMcp};
 use super::live::{mcp_add, mcp_list, mcp_remove, ActiveServers, ServerConfigs};
 use super::transport_label;
 
@@ -33,6 +35,16 @@ use super::transport_label;
 /// bundled server to a plain disconnect instead of a config-map removal.
 /// `http` (#559) is the shared endpoint pool every live add/reconnect's HTTP
 /// transport rides.
+///
+/// Also folds the engine-wide `SessionStarted`/`SessionEnded` broadcast into
+/// `avail`'s own lifecycle bookkeeping (#630): a `SessionStarted` records the
+/// new session's parent, so a spawned child inherits whichever ancestor
+/// enabled a lazy server (`avail.spec_visible`'s ancestor walk); a
+/// `SessionEnded` drops the ended session from both that parent map and every
+/// server's enablement set, so neither grows for the process lifetime. This
+/// is the only place that owns `avail` across the whole engine lifetime, so
+/// it is the natural fold point — mirrors `bash_live::spawn_lazy_builtin_responder`'s
+/// own outbound-broadcast fold, just for a different `OutEvent` pair.
 pub fn spawn_mcp_responder(
     holly: &Holly,
     registry: SharedRegistry,
@@ -44,6 +56,7 @@ pub fn spawn_mcp_responder(
 ) -> tokio::task::JoinHandle<()> {
     let emitter = holly.clone();
     let mut inbound = holly.subscribe_inbound();
+    let mut outbound = holly.subscribe();
 
     tokio::spawn(async move {
         // Tracks the detached `McpAuth` ops below so they're reachable at
@@ -67,6 +80,32 @@ pub fn spawn_mcp_responder(
                 Some(done) = auth_ops.join_next(), if !auth_ops.is_empty() => {
                     if let Ok(name) = done {
                         in_flight_auth.remove(&name);
+                    }
+                }
+                ev = outbound.recv() => {
+                    match ev {
+                        Ok(OutEvent::SessionStarted { session, parent, .. }) => {
+                            available::record_parent(&avail, session, parent);
+                        }
+                        Ok(OutEvent::SessionEnded { session, .. }) => {
+                            available::forget_session(&avail, &session);
+                        }
+                        Ok(_) => {}
+                        // A dropped broadcast frame under lag can only delay
+                        // (b)'s cleanup or (a)'s inheritance link until the
+                        // next matching event — `SessionStarted` never
+                        // recurs for the same id outside a hibernate/resume
+                        // cycle (which re-emits it), and a missed
+                        // `SessionEnded` just means the stale marks live a
+                        // little longer, self-correcting the next time this
+                        // responder catches up. Never data loss the way a
+                        // dropped `McpAdd`/`McpRemove` reply would be.
+                        Err(RecvError::Lagged(n)) => {
+                            tracing::warn!(
+                                "MCP responder lagged, skipped {n} outbound events"
+                            );
+                        }
+                        Err(RecvError::Closed) => break,
                     }
                 }
                 msg = inbound.recv() => {
@@ -492,5 +531,122 @@ mod tests {
         assert!(registry.read().unwrap().is_empty());
         assert!(active.lock().unwrap().is_empty());
         handle.abort();
+    }
+
+    /// #630, end to end through the live responder wiring: (a) a session
+    /// spawned under a parent that had a lazy server enabled inherits its
+    /// visibility, and (b) once the parent's session ends, both its own mark
+    /// and the child's inherited one are gone — while an unrelated session
+    /// that also enabled the same server keeps its own visibility (the #561
+    /// "last session drops the entry" semantics don't fire here, so this
+    /// isn't just re-testing that the whole server reverted to globally
+    /// visible).
+    #[tokio::test]
+    async fn responder_folds_session_lifecycle_into_available_mcp() {
+        let holly = empty_engine();
+        let mut sub = holly.subscribe();
+        let registry: SharedRegistry = Arc::new(RwLock::new(ToolRegistry::new()));
+        let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
+        let configs: ServerConfigs = Arc::new(Mutex::new(HashMap::new()));
+        let avail = Arc::new(AvailableMcp::default());
+        let handle = spawn_mcp_responder(
+            &holly,
+            registry,
+            active,
+            configs,
+            avail.clone(),
+            Vec::new(),
+            entanglement_core::HttpClient::new().unwrap(),
+        );
+
+        let parent = entanglement_core::SessionId::new("630-parent");
+        let child = entanglement_core::SessionId::new("630-child");
+        let other = entanglement_core::SessionId::new("630-other");
+
+        holly
+            .send(InMsg::prompt(parent.clone(), "hi"))
+            .await
+            .unwrap();
+        recv_until(
+            &mut sub,
+            |e| matches!(e, OutEvent::Done { session, .. } if *session == parent),
+        )
+        .await;
+        // Simulates a prior `mcp_enable("zread")` on both sessions — the real
+        // path connects a server, which this test has no need to do. `other`
+        // stays enabled throughout so the server's `enabled` entry never
+        // empties out and reverts to globally visible (#561) — this test is
+        // about *parent*'s own mark and *child*'s inherited one specifically.
+        avail.mark_enabled("zread", &parent);
+        avail.mark_enabled("zread", &other);
+
+        holly
+            .send(InMsg::Spawn {
+                session: child.clone(),
+                parent: Some(parent.clone()),
+                predecessor: None,
+                agent: "build".into(),
+                prompt: "subtask".into(),
+                user: None,
+            })
+            .await
+            .unwrap();
+        recv_until(
+            &mut sub,
+            |e| matches!(e, OutEvent::Done { session, .. } if *session == child),
+        )
+        .await;
+
+        // The responder folds `SessionStarted` off its own subscription,
+        // independent of `sub` above — poll instead of racing a single recv.
+        wait_until(|| avail.spec_visible("mcp__zread__search_doc", &child)).await;
+
+        holly
+            .send(InMsg::CloseSession {
+                session: parent.clone(),
+            })
+            .await
+            .unwrap();
+        recv_until(
+            &mut sub,
+            |e| matches!(e, OutEvent::SessionEnded { session, .. } if *session == parent),
+        )
+        .await;
+
+        wait_until(|| !avail.spec_visible("mcp__zread__search_doc", &parent)).await;
+        assert!(
+            !avail.spec_visible("mcp__zread__search_doc", &child),
+            "the child's inherited visibility must die with the parent's own mark"
+        );
+        assert!(
+            avail.spec_visible("mcp__zread__search_doc", &other),
+            "an unrelated session that also enabled it must be untouched"
+        );
+        handle.abort();
+    }
+
+    async fn recv_until(
+        sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
+        pred: impl Fn(&OutEvent) -> bool,
+    ) {
+        loop {
+            let ev = tokio::time::timeout(std::time::Duration::from_secs(2), sub.recv())
+                .await
+                .expect("timed out waiting for event")
+                .unwrap();
+            if pred(&ev) {
+                return;
+            }
+        }
+    }
+
+    async fn wait_until(mut pred: impl FnMut() -> bool) {
+        for _ in 0..100 {
+            if pred() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(pred(), "condition never became true within the deadline");
     }
 }
