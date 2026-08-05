@@ -115,6 +115,7 @@ dirs = { workspace = true }
 # Host tool dependencies
 glob = { workspace = true }
 regex = { workspace = true }
+ignore = { workspace = true }
 # Process-group kill for the exec tools (`bash`/`call`) on timeout/cancel (#168).
 libc = { workspace = true }
 async-trait = { workspace = true }

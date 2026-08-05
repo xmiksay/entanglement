@@ -48,6 +48,11 @@ rpassword = "7"
 # (ADR-0008). `glob` drives glob + grep file enumeration; `regex` drives grep.
 glob = "0.3"
 regex = "1"
+# ripgrep's gitignore-aware directory walker (#629, ADR-0008 named this seam):
+# `list_files` walks with it instead of raw `glob` so `.gitignore`'d trees
+# (`target/`, `node_modules/`) don't consume the walk budget or pollute
+# results. Runtime-only, pure Rust.
+ignore = "0.4"
 # Unix syscalls for the exec tools: process-group kill on timeout/cancel so a
 # command's grandchildren can't orphan (#168). Runtime-only, cross/lean-clean.
 libc = "0.2"

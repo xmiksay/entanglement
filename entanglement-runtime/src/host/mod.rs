@@ -856,6 +856,112 @@ mod tests {
         );
     }
 
+    /// #629/ADR-0170: a root `.gitignore` entry is honored with no `exclude`
+    /// needed — the concrete `target/`/`node_modules/` problem the issue named.
+    #[test]
+    fn list_files_honors_root_gitignore() {
+        let dir = TempDir::new();
+        fs::write(dir.join(".gitignore"), "target/\nnode_modules/\n").unwrap();
+        fs::write(dir.join("src/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("target/debug/build.log"), "x\n").unwrap();
+        fs::write(dir.join("node_modules/pkg/index.js"), "x\n").unwrap();
+        let list = list_files(&dir.path, "**/*", &[]).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with("src/a.rs")), "{names:?}");
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("target") || n.contains("node_modules")),
+            ".gitignore'd trees leaked: {names:?}"
+        );
+    }
+
+    /// #629/ADR-0170: a nested `.gitignore` (not just the root one) is
+    /// respected, matching real git/ripgrep behavior.
+    #[test]
+    fn list_files_honors_nested_gitignore() {
+        let dir = TempDir::new();
+        fs::write(dir.join("crate/.gitignore"), "build/\n").unwrap();
+        fs::write(dir.join("crate/src/a.rs"), "x\n").unwrap();
+        fs::write(dir.join("crate/build/out.o"), "x\n").unwrap();
+        let list = list_files(&dir.path, "**/*", &[]).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("crate/src/a.rs")),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("build/out.o")),
+            "nested .gitignore'd tree leaked: {names:?}"
+        );
+    }
+
+    /// #629/ADR-0170: `.gitignore` is honored even when `root` isn't (yet) a
+    /// real git repository — `require_git(false)`, so a freshly scaffolded
+    /// project doesn't need `git init` first for this to kick in.
+    #[test]
+    fn list_files_honors_gitignore_without_a_git_repo() {
+        let dir = TempDir::new();
+        assert!(!dir.join(".git").exists());
+        fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(dir.join("kept.txt"), "x\n").unwrap();
+        fs::write(dir.join("ignored.txt"), "x\n").unwrap();
+        let list = list_files(&dir.path, "**/*", &[]).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with("kept.txt")), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n.ends_with("ignored.txt")),
+            "{names:?}"
+        );
+    }
+
+    /// #482 × #629/ADR-0170: a durable extra-root grant is a deliberate,
+    /// narrow escape hatch onto a specific external directory — its own
+    /// `.gitignore` must not silently hide files the grant was approved to
+    /// expose.
+    #[test]
+    fn list_files_extra_root_grant_bypasses_the_granted_dirs_own_gitignore() {
+        use crate::extra_roots::ExtraRootStore;
+
+        let dir = TempDir::new();
+        let outside = TempDir::new();
+        fs::write(outside.join(".gitignore"), "lib.rs\n").unwrap();
+        fs::write(outside.join("lib.rs"), "x\n").unwrap();
+        let canon_outside = outside.path.canonicalize().unwrap();
+
+        let store = ExtraRootStore::ephemeral();
+        store.record(
+            "read",
+            &canon_outside,
+            entanglement_core::ApprovalScope::Session,
+            "req-1",
+        );
+
+        let pattern = format!("{}/**/*", outside.path.display());
+        let list = list_files_with_extra_roots(&dir.path, &pattern, &[], Some(&store)).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("lib.rs")),
+            "granted external file must not be hidden by its own .gitignore: {names:?}"
+        );
+    }
+
     /// An invalid exclude pattern errors rather than being silently ignored.
     #[test]
     fn list_files_rejects_invalid_exclude_pattern() {
