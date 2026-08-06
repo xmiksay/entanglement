@@ -73,7 +73,8 @@ use tokio::sync::oneshot;
 use crate::host::truncate_head_tail;
 use crate::pending::{self, PendingDecisions};
 use crate::permission::{
-    min_permission, permission_chain, permission_workdir, skill_masked, tool_masked, ActiveSkill,
+    ancestor_chain, min_permission, overlay_entry_grade, overlay_grade_entry, permission_chain,
+    permission_workdir, skill_masked, tool_masked, ActiveSkill,
 };
 use crate::permission_path::grading_arg;
 use crate::seam;
@@ -180,6 +181,19 @@ pub struct BindingPolicy {
     skill_masked: HashMap<&'static str, String>,
     /// Profiles folded least-privilege for each call: `[own, ancestors…, base]`.
     chain: Vec<PermissionProfile>,
+    /// The overlay entry that overrides a binding's grade, keyed by binding
+    /// name (#628, closing the ADR-0149 deferral): the nearest
+    /// ancestor-chain link with a live overlay entry for that binding, same
+    /// lookup [`overlay_grade_entry`] gives `tool_runner::dispatch` — so a
+    /// script's `bash()` under an overlay (its own session's or an
+    /// ancestor's) grades the same way a direct `bash` call would, instead
+    /// of always falling through to `chain` below.
+    overlay: HashMap<&'static str, ToolOverlayEntry>,
+    /// The config permission ceiling (#172) an overlay grade still clamps
+    /// against — the same `base` already folded into `chain`'s last element
+    /// for the non-overlay path, kept as its own field so the overlay path
+    /// doesn't need to assume where in `chain` it landed.
+    base: PermissionProfile,
     /// The project root a path-arg binding's argument is normalized relative
     /// to before matching (#485, ADR-0125) — mirrors `tool_runner::dispatch`'s
     /// use of `grading_arg`. `None` keeps the pre-#485 verbatim match.
@@ -187,13 +201,14 @@ pub struct BindingPolicy {
 }
 
 impl BindingPolicy {
-    /// Snapshot each binding's agent mask, active-skill mask, and the effective
-    /// permission chain for `session`, appending the user config's global
-    /// ceiling (#172) so the quintet bindings honor the same `permissions`
-    /// floor — including its argument-scoped rules (#173) — as a direct tool
-    /// call. `active_skill` is the same session-keyed map `tool_runner`'s
-    /// generic route checks via [`skill_masked`] — pass an empty map where no
-    /// skill can be active (tests, or a caller with no skills wired).
+    /// Snapshot each binding's agent mask, active-skill mask, overlay grade,
+    /// and the effective permission chain for `session`, appending the user
+    /// config's global ceiling (#172) so the quintet bindings honor the same
+    /// `permissions` floor — including its argument-scoped rules (#173) — as
+    /// a direct tool call. `active_skill` is the same session-keyed map
+    /// `tool_runner`'s generic route checks via [`skill_masked`] — pass an
+    /// empty map where no skill can be active (tests, or a caller with no
+    /// skills wired).
     pub fn capture(
         active: &HashMap<SessionId, AgentProfile>,
         guard: &SpawnGuard,
@@ -205,9 +220,9 @@ impl BindingPolicy {
     ) -> Self {
         // The session's live tool overlay (#539, ADR-0149) reaches the binding
         // *mask* through `tool_masked` below (an overlay-admitted `bash` binding
-        // exists); its Ask/Allow grade override applies only to the generic
-        // dispatch route — a binding's grade still resolves through the profile
-        // chain (documented ADR-0149 deferral).
+        // exists), and now its Ask/Allow grade override too (#628) via `overlay`
+        // below — mirroring `tool_runner::dispatch`'s per-link chain walk
+        // instead of resolving only through the profile chain.
         let masked: HashSet<&'static str> = BINDING_TOOLS
             .into_iter()
             .filter(|tool| tool_masked(active, guard, overlays, session, tool))
@@ -219,26 +234,38 @@ impl BindingPolicy {
                 skill_masked(active_skill, session, tool).map(|skill_id| (tool, skill_id))
             })
             .collect();
+        let session_chain = ancestor_chain(guard, session);
+        let overlay: HashMap<&'static str, ToolOverlayEntry> = BINDING_TOOLS
+            .into_iter()
+            .filter(|tool| !masked.contains(tool))
+            .filter_map(|tool| {
+                overlay_grade_entry(overlays, &session_chain, tool).map(|entry| (tool, entry))
+            })
+            .collect();
         let mut chain = permission_chain(active, guard, session);
         chain.push(base.clone());
         BindingPolicy {
             masked,
             skill_masked,
             chain,
+            overlay,
+            base: base.clone(),
             root: root.map(Path::to_path_buf),
         }
     }
 
     /// Resolve one binding call: masked tools do not exist; a tool the active
-    /// skill excludes is refused next; otherwise the grade is the
-    /// least-privileged across the whole chain for this tool + argument (+
-    /// `workdir` for `exec`/`bash`, #480). `read_raw` is graded and masked as
-    /// an alias of `read` — it is not in `BINDING_TOOLS`/a profile's
-    /// `tools`/`disallowed_tools` at all (never advertised, see
-    /// [`crate::host::ReadRawTool`]), so without this alias a profile that
-    /// restricts `read` would be silently bypassed by a script reaching for
-    /// the unlabeled raw path instead. The same alias applies to the skill
-    /// mask, for the same reason.
+    /// skill excludes is refused next; a tool with an overlay grade (#628)
+    /// resolves that entry clamped to the config ceiling, replacing the
+    /// profile chain exactly as `tool_runner::dispatch` does for a direct
+    /// call; otherwise the grade is the least-privileged across the whole
+    /// chain for this tool + argument (+ `workdir` for `exec`/`bash`, #480).
+    /// `read_raw` is graded and masked as an alias of `read` — it is not in
+    /// `BINDING_TOOLS`/a profile's `tools`/`disallowed_tools` at all (never
+    /// advertised, see [`crate::host::ReadRawTool`]), so without this alias a
+    /// profile that restricts `read` would be silently bypassed by a script
+    /// reaching for the unlabeled raw path instead. The same alias applies to
+    /// the skill mask and the overlay lookup, for the same reason.
     fn decide(&self, tool: &'static str, input: &str) -> Decision {
         let tool = if tool == "read_raw" { "read" } else { tool };
         if self.masked.contains(tool) {
@@ -249,12 +276,26 @@ impl BindingPolicy {
         }
         let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
-        let perm = self.chain.iter().fold(Permission::Allow, |acc, p| {
-            min_permission(
-                acc,
-                p.resolve_scoped(tool, arg.as_deref(), workdir.as_deref()),
-            )
-        });
+        let perm = match self.overlay.get(tool) {
+            Some(entry) => {
+                let grade = overlay_entry_grade(tool, entry).resolve_scoped(
+                    tool,
+                    arg.as_deref(),
+                    workdir.as_deref(),
+                );
+                min_permission(
+                    grade,
+                    self.base
+                        .resolve_scoped(tool, arg.as_deref(), workdir.as_deref()),
+                )
+            }
+            None => self.chain.iter().fold(Permission::Allow, |acc, p| {
+                min_permission(
+                    acc,
+                    p.resolve_scoped(tool, arg.as_deref(), workdir.as_deref()),
+                )
+            }),
+        };
         Decision::Perm(perm)
     }
 }
@@ -1219,6 +1260,90 @@ mod tests {
         // `glob` survives the mask but only its default Ask grade.
         assert!(matches!(
             policy.decide("glob", "{}"),
+            Decision::Perm(Permission::Ask)
+        ));
+    }
+
+    /// #628: a live tool overlay's grade override now reaches a `rhai`
+    /// binding, not just the generic dispatch route — a `bash()` binding
+    /// under a session's own `Allow` overlay entry runs without the
+    /// profile's own `Ask` default, and a spawned child with no overlay of
+    /// its own inherits the grade from its parent's, mirroring the mask's
+    /// existing per-link reach (`tool_overlay_admits_past_mask_per_link`).
+    #[test]
+    fn binding_policy_honors_the_overlay_grade_and_reaches_a_child() {
+        use entanglement_core::{AgentMode, PermissionProfile, ToolOverlayEntry};
+
+        let profile = AgentProfile {
+            name: "build".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            provider: None,
+            // The profile alone would ask before running `bash`.
+            permission: PermissionProfile::new(Permission::Ask),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+            sandbox: None,
+        };
+        let parent = SessionId::new("parent");
+        let child = SessionId::new("child");
+        let mut active = HashMap::new();
+        active.insert(parent.clone(), profile.clone());
+        active.insert(child.clone(), profile);
+        let mut guard = SpawnGuard::new();
+        guard.record_start(parent.clone(), None);
+        guard.record_start(child.clone(), Some(parent.clone()));
+
+        let mut overlays = HashMap::new();
+        overlays.insert(
+            parent.clone(),
+            vec![ToolOverlayEntry {
+                pattern: "bash".into(),
+                allow: true,
+                deny: false,
+                arg_pattern: None,
+            }],
+        );
+        let base = PermissionProfile::new(Permission::Allow);
+
+        // The overlay session's own binding grades Allow, bypassing the
+        // profile's Ask default.
+        let parent_policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &overlays,
+            &parent,
+            &base,
+            None,
+            &HashMap::new(),
+        );
+        assert!(matches!(
+            parent_policy.decide("bash", "{}"),
+            Decision::Perm(Permission::Allow)
+        ));
+
+        // The child has no overlay of its own, but inherits the parent's
+        // grade for the same binding.
+        let child_policy = BindingPolicy::capture(
+            &active,
+            &guard,
+            &overlays,
+            &child,
+            &base,
+            None,
+            &HashMap::new(),
+        );
+        assert!(matches!(
+            child_policy.decide("bash", "{}"),
+            Decision::Perm(Permission::Allow)
+        ));
+        // An unrelated binding is untouched by the overlay and still asks.
+        assert!(matches!(
+            child_policy.decide("edit", "{}"),
             Decision::Perm(Permission::Ask)
         ));
     }

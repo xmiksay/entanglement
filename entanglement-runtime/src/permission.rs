@@ -417,6 +417,31 @@ pub fn overlay_entry_grade(tool: &str, entry: &ToolOverlayEntry) -> PermissionPr
     }
 }
 
+/// The overlay entry that decides `tool`'s **grade** for a call resolved
+/// through `chain` (nearest session first, the same ordering
+/// [`ancestor_chain`] produces) — the grade-side counterpart to
+/// `tool_mask_source`'s per-link existence walk (#628, closing the ADR-0149
+/// "child sessions" deferral). The first link, walking outward from the
+/// call's own session, whose overlay carries an enable entry for `tool`
+/// wins: a session's own overlay beats an ancestor's, and a parent's overlay
+/// grade now reaches its spawn sub-tree exactly as its mask already does.
+/// `None` ⇒ no link in the chain has an opinion — the ordinary profile-chain
+/// resolution stands. A deny entry never reaches this lookup: `tool_masked`/
+/// `tool_mask_source` withdraw the tool before a grade decision is reached,
+/// so `ToolOverlayEntry::find` (enable-only) is the right primitive here.
+pub fn overlay_grade_entry(
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
+    chain: &[SessionId],
+    tool: &str,
+) -> Option<ToolOverlayEntry> {
+    chain.iter().find_map(|session| {
+        overlays
+            .get(session)
+            .and_then(|entries| ToolOverlayEntry::find(entries, tool))
+            .cloned()
+    })
+}
+
 /// A session's own permission for a `tool` call; an unseen session defaults to
 /// `Deny` — **fail-closed** (#156). The executor folds its per-session profile
 /// map from the lossy `SessionStarted`/`AgentChanged` broadcast, so under burst a
@@ -1112,6 +1137,52 @@ mod tests {
             &c,
             "mcp__docs__search"
         ));
+    }
+
+    /// #628: `overlay_grade_entry` walks the same ancestor chain the mask
+    /// already does — a parent's overlay grade now reaches a child that has
+    /// none of its own, and the child's own overlay (nearer in the chain)
+    /// still wins when both have an opinion.
+    #[test]
+    fn overlay_grade_entry_reaches_down_the_ancestor_chain() {
+        let parent = SessionId::new("parent");
+        let child = SessionId::new("child");
+        let mut guard = SpawnGuard::new();
+        guard.record_start(parent.clone(), None);
+        guard.record_start(child.clone(), Some(parent.clone()));
+        let chain_from_child = ancestor_chain(&guard, &child);
+
+        let mut overlays = HashMap::new();
+        overlays.insert(
+            parent.clone(),
+            vec![ToolOverlayEntry {
+                pattern: "mcp__docs__*".into(),
+                allow: true,
+                deny: false,
+                arg_pattern: None,
+            }],
+        );
+
+        // No overlay of its own — the child inherits the parent's entry.
+        assert_eq!(
+            overlay_grade_entry(&overlays, &chain_from_child, "mcp__docs__search"),
+            Some(overlays[&parent][0].clone())
+        );
+        // No link in the chain has an opinion on an unrelated tool.
+        assert!(overlay_grade_entry(&overlays, &chain_from_child, "bash").is_none());
+
+        // The child's own overlay entry, when present, wins over the
+        // parent's (nearest link first).
+        overlays.insert(child.clone(), vec![ToolOverlayEntry::ask("mcp__docs__*")]);
+        let own = overlay_grade_entry(&overlays, &chain_from_child, "mcp__docs__search").unwrap();
+        assert!(!own.allow);
+
+        // From the parent's own chain, only the parent's entry is in scope.
+        let chain_from_parent = ancestor_chain(&guard, &parent);
+        assert_eq!(
+            overlay_grade_entry(&overlays, &chain_from_parent, "mcp__docs__search"),
+            Some(overlays[&parent][0].clone())
+        );
     }
 
     #[test]
