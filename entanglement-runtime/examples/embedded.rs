@@ -28,6 +28,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::permission::permission_arg;
+use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{GrantStore, PermissionResolver};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::{host, tool_runner};
@@ -114,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
         Hooks::default(),
         None,
         entanglement_runtime::policy::SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
     );
 
     let acme = SessionId::new(format!("acme:{}", SessionId::new_uuid()));

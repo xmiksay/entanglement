@@ -665,6 +665,21 @@ first emitting an `OutEvent::Plan { content, path }` snapshot for the plan
 session's own display, then a standard `OutEvent::ToolRequest` carrying the
 resolved `{content, path}` JSON regardless of which the model sent.
 
+The staleness guard above only fires at the *next* `propose_plan(path=...)`
+call; a dedicated, debounced plans-folder watch (#627,
+[ADR-0173](../adr/0173-watcher-driven-plan-file-changed-notice.md),
+`entanglement-runtime/src/plan_watch.rs`) surfaces the same out-of-band-edit
+detection live instead. It reuses `watch.rs`'s `spawn_debounced_watcher`
+primitive only — never its agent/skill/config `LiveDefinitions` reload, a
+deliberately unrelated reload action — and shares the exact same
+`PlanFileRegistry` instance as the staleness guard and the `FileChange`
+listener: a debounced firing re-hashes every currently bound file, and a
+mismatch both self-heals the registry (so the guard doesn't also refuse the
+next resubmit) and emits a session-scoped `OutEvent::PlanChanged { path, hash
+}`, which the TUI folds into the session's transcript as a durable notice.
+
+
+
 **Approve** spawns a **sponsored** `build` child of the plan session
 (ADR-0138) — a parent-child link (result return, session-tree visibility)
 whose permission resolution **stops at the child**: its own profile stands,

@@ -484,7 +484,12 @@ below realize one model:
   output artifact under `.entanglement/tmp/`) never enters the map and never
   triggers a reload. That non-definition write was the main source of reload spam
   before the restriction; the file-set filter plus the hash gate (not just
-  `stat()`) eliminate it.
+  `stat()`) eliminate it. `.entanglement/plans/` is deliberately **not** one of
+  the watched trees here — a plan-file edit is a different reload action
+  entirely (nothing to reload, just a live notice), covered by its own
+  dedicated watch (`plan_watch.rs`, #627) that reuses only the
+  `spawn_debounced_watcher` primitive below, not `LiveDefinitions`; see
+  [engine](engine.md) for that watcher's own detail.
 - **Physical tool restriction (✅ #116, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)):**
   an agent's `tools` allowlist / `disallowed_tools` denylist masks its tool set —
   `registry ∩ allowlist − denylist` — on *both* sides of the core↔runtime seam,
@@ -705,7 +710,11 @@ below realize one model:
   intended review loop) never trips it, while an edit the runtime never saw
   execute does. `content` mode is exempt (an explicit full overwrite is
   "last writer wins" by construction); a first touch of a `path` (no prior
-  binding, e.g. a user-seeded file, #514) is never stale.
+  binding, e.g. a user-seeded file, #514) is never stale. The guard itself
+  only fires at the *next* `propose_plan(path=...)` call; a dedicated
+  debounced plans-folder watch surfaces the same detection live as
+  `OutEvent::PlanChanged` (#627, ADR-0173) — see [engine](engine.md) for the
+  watcher's own detail.
   Acceptance rides the **existing tool-approval round-trip** (#59): the
   executor (`propose_plan.rs`) intercepts it on `ToolExec` after the #116
   mask check (same interception family as `ask_user`) and **force-parks it

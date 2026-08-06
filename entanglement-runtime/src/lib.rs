@@ -73,6 +73,7 @@ pub mod permission_path;
 pub mod persistence;
 pub mod plan_files;
 pub mod plan_tasks;
+pub mod plan_watch;
 pub mod policy;
 // The `poll` join tool (#605, ADR-0161 §1-4) — replaces `bash_output`/
 // `agent_poll` outright.

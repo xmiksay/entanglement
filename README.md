@@ -31,8 +31,8 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | Que
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
-          | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
-          | SkillActive | AmbiguousRetry | SearchResult (engine → harness)
+          | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
+          | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock (engine → harness)
 ```
 
 Every frame is **session-scoped** (one connection multiplexes many sessions via
