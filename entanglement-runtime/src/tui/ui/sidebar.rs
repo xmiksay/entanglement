@@ -344,6 +344,7 @@ mod tests {
             root: parent.is_none(),
             ts: 1,
             user: None,
+            sponsored: false,
         });
     }
 

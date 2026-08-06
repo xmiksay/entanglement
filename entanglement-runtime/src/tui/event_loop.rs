@@ -88,6 +88,12 @@ pub(super) async fn handle_event(
                     return Ok(app.handle_quit_key());
                 }
                 app.clear_quit_pending();
+                // Cascade-vs-detach `Stop` confirm (#626) — a blocking modal,
+                // checked ahead of everything else so it can't be typed through.
+                if app.showing_stop_confirm() {
+                    return crate::tui::stop_command::handle_stop_confirm_event(app, holly, key)
+                        .await;
+                }
                 if app.showing_sessions_modal() {
                     return handle_sessions_modal_event(app, holly, key).await;
                 }
@@ -455,6 +461,10 @@ pub(super) async fn handle_event(
                             // same `InMsg::Stop` Esc already sends in approval
                             // mode. The app no longer quits on Esc; `/exit` and
                             // the two-stage Ctrl+C remain the quit paths.
+                            // Routed through `request_stop` (#626): a plan
+                            // session parked on a live sponsored build child
+                            // arms the cascade-vs-detach confirm instead of
+                            // sending `Stop` right away.
                             if app.mention_visible() {
                                 app.hide_mention();
                             } else if app.slash_visible() {
@@ -462,11 +472,8 @@ pub(super) async fn handle_event(
                             } else if app.is_input_multiline() {
                                 app.set_input_multiline(false);
                             } else {
-                                let _ = holly
-                                    .send(InMsg::Stop {
-                                        session: app.active_session_id().clone(),
-                                    })
-                                    .await;
+                                let target = app.active_session_id().clone();
+                                crate::tui::stop_command::request_stop(app, holly, target).await;
                             }
                         }
                         KeyCode::Enter => {
@@ -812,10 +819,13 @@ async fn send_name(app: &mut App, holly: &Holly, text: &str) {
         .await;
 }
 
-/// Send `/stop [--all]` as one [`InMsg::Stop`] per live session (#6): the bare
-/// form cancels the active session's in-flight turn (the same wire message the
-/// repurposed Esc sends); `--all` fans out to every live session. A parse error
-/// (unknown argument) is rendered as a status line instead.
+/// Send `/stop [--all]` (#6): the bare form routes through
+/// `stop_command::request_stop` (#626) — the same cascade-vs-detach-aware
+/// path the repurposed Esc uses — so a plan session parked on a live
+/// sponsored build child offers the choice instead of always detaching;
+/// `--all` fans out a raw `InMsg::Stop` to every live session, bypassing the
+/// confirm. A parse error (unknown argument) is rendered as a status line
+/// instead.
 async fn send_stop(app: &mut App, holly: &Holly, text: &str) {
     let all = match crate::tui::commands::parse_all_flag(text, crate::tui::commands::Command::Stop)
     {
@@ -826,19 +836,21 @@ async fn send_stop(app: &mut App, holly: &Holly, text: &str) {
         }
     };
     if all {
-        for (id, _) in app.sessions() {
-            let _ = holly
-                .send(InMsg::Stop {
-                    session: id.clone(),
-                })
-                .await;
+        // `--all` fans out a raw `Stop` to every live session, bypassing the
+        // cascade-vs-detach confirm (#626) — a bulk action re-confirming per
+        // session would defeat its own purpose, so this form keeps the
+        // pre-#626 detach-always semantics.
+        let ids: Vec<_> = app
+            .sessions()
+            .into_iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let _ = holly.send(InMsg::Stop { session: id }).await;
         }
     } else {
-        let _ = holly
-            .send(InMsg::Stop {
-                session: app.active_session_id().clone(),
-            })
-            .await;
+        let target = app.active_session_id().clone();
+        crate::tui::stop_command::request_stop(app, holly, target).await;
     }
 }
 

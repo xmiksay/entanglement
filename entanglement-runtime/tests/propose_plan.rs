@@ -832,10 +832,15 @@ async fn stop_on_the_plan_session_detaches_the_build_child_which_keeps_running()
         if let OutEvent::SessionStarted {
             session,
             parent: Some(p),
+            sponsored,
             ..
         } = &ev
         {
             if p == &sid {
+                // #626: the TUI's cascade-vs-detach confirm modal disambiguates
+                // `WaitingAgent`'s two callers by this flag — a sponsored build
+                // child must announce it, unlike a plain `agent`-spawned one.
+                assert!(sponsored, "a propose_plan build child must be sponsored");
                 build_session = Some(session.clone());
                 break;
             }

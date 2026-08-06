@@ -59,8 +59,14 @@ impl SessionView {
     /// if it changed anything the UI needs to redraw for.
     pub fn apply_event(&mut self, event: OutEvent) -> bool {
         match event {
-            OutEvent::SessionStarted { parent, ts, .. } => {
+            OutEvent::SessionStarted {
+                parent,
+                ts,
+                sponsored,
+                ..
+            } => {
                 self.parent = parent;
+                self.sponsored = sponsored;
                 self.started_ms = Some(ts);
                 true
             }

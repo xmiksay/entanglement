@@ -106,6 +106,7 @@ mod tests {
                 root: true,
                 ts: 0,
                 user: None,
+                sponsored: false,
             }),
             out(text(1)),
             out(text(2)),

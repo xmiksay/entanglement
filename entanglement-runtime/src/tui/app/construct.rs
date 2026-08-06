@@ -191,6 +191,7 @@ impl App {
             quit_pending: false,
             quit_pending_at: None,
             toast: None,
+            pending_stop_confirm: None,
         }
     }
 }

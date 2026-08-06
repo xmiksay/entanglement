@@ -244,7 +244,16 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   (`tui/modal_events.rs`) — `s` stops its turn, `p` pauses, `r` resumes — the
   modal staying open so several sessions can be acted on in a row, plus
   `d`/`Delete` to delete the highlighted session's log (§6b below; a live
-  session is refused with a status line). `/name <text>` sets the session's
+  session is refused with a status line). **Every single-target `Stop` site**
+  (bare `Esc`, `/stop`'s bare form, the sessions modal's `s`, the command
+  palette's `/stop` pick) routes through `tui/stop_command.rs::request_stop`
+  (#626, [ADR-0172](../adr/0172-tui-stop-cascade-vs-detach-confirm-modal.md)):
+  if the target is `WaitingAgent` with a live sponsored `propose_plan` build
+  child (`OutEvent::SessionStarted.sponsored`), it arms a confirm modal
+  (`c` cascades — stops the child too; `Enter`/`y`/`d` detaches, the pre-#626
+  default; `Esc`/`n` cancels) instead of sending `Stop` immediately;
+  otherwise behavior is unchanged. `/stop --all` bypasses the confirm and
+  keeps raw fan-out semantics. `/name <text>` sets the session's
   display name via `InMsg::SetSessionMeta`
   ([ADR-0151](../adr/0151-settable-session-metadata.md)); the sidebar and
   sessions modal prefer the name over the short id and the live `action` over

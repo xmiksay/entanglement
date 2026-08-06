@@ -31,6 +31,7 @@ async fn spawned_child_prompt_is_persisted_and_replayable() {
             agent: "build".into(),
             prompt: "child task".into(),
             user: None,
+            sponsored: false,
         })
         .await
         .expect("send spawn");

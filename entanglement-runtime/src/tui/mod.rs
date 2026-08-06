@@ -32,6 +32,7 @@ mod session_tree;
 mod session_view;
 mod sessions;
 mod slash_popup;
+mod stop_command;
 mod theme;
 mod tool_render;
 mod tools_dialog;

@@ -121,11 +121,13 @@ impl Session {
                     predecessor,
                     user,
                     profile,
+                    sponsored,
                     ..
                 } => {
                     session.parent = parent.clone();
                     session.predecessor = predecessor.clone();
                     session.user = user.clone();
+                    session.sponsored = *sponsored;
                     // Seed from the session's own authoritative statement of what
                     // it was spawned as (#638), rather than depending solely on a
                     // later `AgentChanged` record surviving in the log — a hole in
@@ -419,6 +421,7 @@ mod tests {
             root: parent.is_none(),
             ts: 0,
             user: None,
+            sponsored: false,
         }
     }
 

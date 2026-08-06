@@ -291,6 +291,7 @@ fn replay_reconstructs_generation_and_profile_generation() {
                 root: true,
                 ts: 0,
                 user: None,
+                sponsored: false,
             },
         ),
         (
@@ -340,6 +341,7 @@ fn replay_a_later_model_changed_still_wins_generation_stays() {
                 root: true,
                 ts: 0,
                 user: None,
+                sponsored: false,
             },
         ),
         (

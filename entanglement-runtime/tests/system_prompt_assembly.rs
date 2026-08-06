@@ -128,6 +128,7 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
                 agent: agent.into(),
                 prompt: "task".into(),
                 user: None,
+                sponsored: false,
             })
             .await
             .unwrap();

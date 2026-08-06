@@ -693,6 +693,7 @@ fn seed_session_log(cwd: &std::path::Path, id: &SessionId) {
             root: true,
             ts: 1000,
             user: None,
+            sponsored: false,
         }),
     );
     append(cwd, id, &record).expect("seed append");

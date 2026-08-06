@@ -29,6 +29,7 @@ fn list_sessions_takes_the_last_session_meta_name() {
             root: true,
             ts: 1000,
             user: None,
+            sponsored: false,
         }),
         meta(&sid, "first name"),
         meta(&child, "child name"),

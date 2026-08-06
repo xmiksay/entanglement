@@ -65,6 +65,7 @@ async fn a_root_spawn_carries_its_explicit_user() {
             agent: "build".into(),
             prompt: "hi".into(),
             user: Some(alice.clone()),
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -117,6 +118,7 @@ async fn a_spawned_child_inherits_its_parents_user_without_being_told() {
             agent: "build".into(),
             prompt: "hi".into(),
             user: Some(alice.clone()),
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -136,6 +138,7 @@ async fn a_spawned_child_inherits_its_parents_user_without_being_told() {
             agent: "build".into(),
             prompt: "subtask".into(),
             user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -183,6 +186,7 @@ async fn list_sessions_surfaces_each_sessions_user() {
                 agent: "build".into(),
                 prompt: "hi".into(),
                 user: Some(user),
+                sponsored: false,
             })
             .await
             .unwrap();

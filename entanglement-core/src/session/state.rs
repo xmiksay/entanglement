@@ -109,6 +109,14 @@ pub struct Session {
     /// API key instead of the process-global one. Reconstructed on replay from
     /// [`SessionStarted`][crate::protocol::OutEvent::SessionStarted].
     pub user: Option<UserId>,
+    /// Sponsored `propose_plan` build child (ADR-0138) vs. a plain sub-agent
+    /// spawn (#626) — mirrors [`InMsg::Spawn`][crate::protocol::InMsg::Spawn]'s
+    /// `sponsored`. Set once at spawn, never mutated, like
+    /// [`parent`][Self::parent]. Reconstructed on replay from
+    /// [`SessionStarted`][crate::protocol::OutEvent::SessionStarted] so a head
+    /// resuming a hibernated plan/build pair can still disambiguate
+    /// `AgentState::WaitingAgent`'s two callers.
+    pub sponsored: bool,
     /// Cumulative token usage + cost across every model round-trip this session
     /// has run (#192). Each `LlmEvent::Finish` folds its normalized `Usage` in
     /// here and emits the per-round-trip delta as [`OutEvent::Usage`].
@@ -171,6 +179,7 @@ impl Session {
             children: Vec::new(),
             predecessor: None,
             user: None,
+            sponsored: false,
             usage: SessionUsage::default(),
             turn: None,
             name: None,

@@ -394,6 +394,7 @@ async fn launch(
             agent: agent.clone(),
             prompt,
             user: None,
+            sponsored: false, // not a sponsored propose_plan build (#626)
         })
         .await
         .is_err()

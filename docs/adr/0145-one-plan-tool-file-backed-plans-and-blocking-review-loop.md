@@ -1,9 +1,14 @@
 # 0145. One plan tool: file-backed plans, a staleness guard, and a blocking review loop
 
-- Status: Accepted
+- Status: Amended by [0172](0172-tui-stop-cascade-vs-detach-confirm-modal.md)
 - Date: 2026-07-31
 - Supersedes: [ADR-0049](0049-plan-task-tools-as-runtime-state-tools.md)'s `update_plan` half (its `update_tasks` half is unaffected)
 - Amends: [ADR-0138](0138-sponsored-build-child-and-propose-plan-cycle.md) (the blocking wait gains a documented, cancellable Stop story), [ADR-0042](0042-plan-acceptance-via-propose-plan-approval-roundtrip.md) (`propose_plan`'s schema)
+
+> **[0172](0172-tui-stop-cascade-vs-detach-confirm-modal.md) (2026-08-06)
+> closes the "No TUI stop-cascade-vs-detach modal" item below** (#626): a new
+> `sponsored: bool` wire field disambiguates `WaitingAgent`'s two callers, and
+> the TUI now offers the cascade-vs-detach choice interactively.
 
 ## Context
 
@@ -223,15 +228,18 @@ as before; `path` is additive.
   (see Decision) — accepted as strictly stronger than mtime for correctness,
   weaker only in that it can't distinguish "touched but byte-identical" from
   "never touched," which the guard doesn't need to.
-- **No TUI stop-cascade-vs-detach modal.** The TUI currently has **no general
-  "interrupt the in-flight turn" keybinding at all** outside the
+- ~~**No TUI stop-cascade-vs-detach modal.**~~ The TUI currently has **no
+  general "interrupt the in-flight turn" keybinding at all** outside the
   approval/`ask_user`-question-parked `Esc` paths (`WaitingAgent` is neither)
   — `Ctrl+C` is a two-stage **quit**, not a turn-level `Stop`. Building the
   modal properly means first adding that missing general capability, which
   is its own scoped piece of work, not a `propose_plan`-specific one. Logged
   in [`../deferred-work-ledger.md`](../deferred-work-ledger.md). The backend
   primitive (detach vs. two-`Stop`-cascade) is implemented and tested either
-  way; only the interactive prompt is deferred.
+  way; only the interactive prompt is deferred. **Closed by
+  [0172](0172-tui-stop-cascade-vs-detach-confirm-modal.md)**: the prerequisite
+  general `Stop` keybinding shipped separately (#6), and 0172 adds the wire
+  disambiguation (`sponsored: bool`) plus the interactive confirm.
 - **No watcher-driven "plan updated by user" transcript notice.** The #329
   watcher (`watch.rs`) is purpose-built for agent/skill/config *definition*
   reload (`LiveDefinitions`, a different reload action entirely) — bolting a

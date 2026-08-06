@@ -146,6 +146,11 @@ pub struct SessionInfo {
     /// [`InMsg::Spawn`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<UserId>,
+    /// Sponsored `propose_plan` build child (ADR-0138), vs. a plain sub-agent
+    /// spawn — see the matching field on [`InMsg::Spawn`]. `#[serde(default)]`
+    /// for the same terseness reason.
+    #[serde(default)]
+    pub sponsored: bool,
 }
 
 /// One labelled choice in a model-driven [`OutEvent::UserQuestion`] prompt
@@ -1300,6 +1305,18 @@ pub enum InMsg {
         /// re-specify it). `None` (single-user mode) is the default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user: Option<UserId>,
+        /// Whether this is a **sponsored** child of a `propose_plan` build
+        /// handoff (ADR-0138) rather than a plain sub-agent spawn (the
+        /// blocking/backgrounded `agent`/`agent_send` tools). Set by the
+        /// runtime's tool executor, which already runs the `SpawnGuard`
+        /// sponsor check before issuing this `Spawn`; core only relays it
+        /// through to [`SessionStarted`][OutEvent::SessionStarted] /
+        /// [`SessionInfo`] so a head can disambiguate `AgentState::WaitingAgent`'s
+        /// two callers (#626) without engine-side sponsorship bookkeeping.
+        /// `#[serde(default)]` keeps every non-sponsored spawn (the overwhelming
+        /// majority) terse on the wire.
+        #[serde(default)]
+        sponsored: bool,
     },
     /// Resume a session from replayed log records (internal, not serialized).
     #[serde(skip)]
@@ -1562,6 +1579,13 @@ pub enum OutEvent {
         /// embedder re-supplying it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user: Option<UserId>,
+        /// Mirrors [`InMsg::Spawn`]'s `sponsored` (#626): a sponsored
+        /// `propose_plan` build child vs. a plain sub-agent spawn, so a head can
+        /// disambiguate `AgentState::WaitingAgent`'s two callers without engine-
+        /// side sponsorship bookkeeping. `#[serde(default)]` for the same
+        /// terseness reason.
+        #[serde(default)]
+        sponsored: bool,
     },
     /// Session ended (lifecycle event, no `seq`). Emits when a session exits.
     SessionEnded { session: SessionId, ts: u64 },
@@ -2144,6 +2168,7 @@ mod tests {
             agent: "build".into(),
             prompt: "go".into(),
             user: None,
+            sponsored: false,
         }
         .wire_allowed());
         assert!(!InMsg::Resume {
@@ -2570,6 +2595,7 @@ mod tests {
                     root: true,
                     profile_detail: None,
                     user: None,
+                    sponsored: false,
                 },
                 SessionInfo {
                     session: SessionId::new("child"),
@@ -2577,6 +2603,7 @@ mod tests {
                     profile: "explore".into(),
                     root: false,
                     user: None,
+                    sponsored: false,
                     profile_detail: Some(ProfileDetail {
                         mode: AgentMode::Subagent,
                         tools: Some(vec!["read".into(), "glob".into()]),
@@ -2960,6 +2987,44 @@ mod tests {
                 session: SessionId::new("s"),
                 agent: "plan".into(),
                 profile_detail: None,
+            }
+        );
+    }
+
+    #[test]
+    fn session_started_carries_sponsored_and_stays_backward_compatible() {
+        // #626: a sponsored `propose_plan` build child's `SessionStarted` round-
+        // trips `sponsored: true`, disambiguating it from a plain sub-agent spawn.
+        let ev = OutEvent::SessionStarted {
+            session: SessionId::new("child"),
+            parent: Some(SessionId::new("plan")),
+            predecessor: None,
+            profile: "build".into(),
+            model: None,
+            root: false,
+            ts: 0,
+            user: None,
+            sponsored: true,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+
+        // An older head's persisted frame (no `sponsored` key) still deserializes
+        // — the field defaults to `false`, so a pre-#626 log never misreports a
+        // plain spawn as sponsored.
+        let legacy = r#"{"kind":"session_started","session":"s","parent":null,"profile":"build","model":null,"root":true,"ts":0}"#;
+        assert_eq!(
+            serde_json::from_str::<OutEvent>(legacy).unwrap(),
+            OutEvent::SessionStarted {
+                session: SessionId::new("s"),
+                parent: None,
+                predecessor: None,
+                profile: "build".into(),
+                model: None,
+                root: true,
+                ts: 0,
+                user: None,
+                sponsored: false,
             }
         );
     }

@@ -235,6 +235,11 @@ pub struct SessionView {
     /// description line prefers it over `first_prompt` when set.
     action: Option<String>,
     parent: Option<SessionId>,
+    /// Sponsored `propose_plan` build child (ADR-0138) vs. a plain sub-agent
+    /// spawn (#626), from the same `SessionStarted` as `parent` — lets a head
+    /// disambiguate `AgentState::WaitingAgent`'s two callers before offering
+    /// the cascade-vs-detach `Stop` confirm.
+    sponsored: bool,
     /// Wall-clock (ms since epoch) the session started / ended, from
     /// `SessionStarted` / `SessionEnded`. Drives the live spawn-duration shown
     /// for sub-agent (child) sessions in the sessions list (#89, ADR-0026).
@@ -282,6 +287,7 @@ impl SessionView {
             name: None,
             action: None,
             parent: None,
+            sponsored: false,
             started_ms: None,
             ended_ms: None,
             expanded_blocks: HashSet::new(),
@@ -583,6 +589,11 @@ impl SessionView {
 
     pub fn parent(&self) -> Option<&SessionId> {
         self.parent.as_ref()
+    }
+
+    /// Whether this session is a sponsored `propose_plan` build child (#626).
+    pub fn sponsored(&self) -> bool {
+        self.sponsored
     }
 
     /// Elapsed run time in whole seconds given the current wall clock (`now_ms`,

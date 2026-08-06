@@ -480,6 +480,7 @@ fn replay_rebinds_and_reconstructs_memory() {
                 root: true,
                 ts: 0,
                 user: None,
+                sponsored: false,
             },
         ),
         (

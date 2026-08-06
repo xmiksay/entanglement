@@ -176,6 +176,7 @@ pub(crate) async fn session_loop(
     parent: Option<SessionId>,
     predecessor: Option<SessionId>,
     user: Option<UserId>,
+    sponsored: bool,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
 ) {
@@ -205,6 +206,14 @@ pub(crate) async fn session_loop(
     // multi-user identity.
     let effective_user = s.user.clone().or_else(|| user.clone());
     s.user = effective_user.clone();
+    // Same resumed-takes-precedence shape, `bool`-flavored: a resumed session
+    // already carries the correct value in `s.sponsored` (reconstructed by
+    // replay from its own `SessionStarted` log record) and the caller passes
+    // `false` for the param on that path so it can't clobber a `true`; a fresh
+    // spawn's `s.sponsored` starts at the `Session::new_empty` default
+    // (`false`), so the param carries the real value there instead (#626).
+    let effective_sponsored = s.sponsored || sponsored;
+    s.sponsored = effective_sponsored;
 
     let _ = events.send(OutEvent::SessionStarted {
         session: session.clone(),
@@ -215,6 +224,7 @@ pub(crate) async fn session_loop(
         root,
         ts,
         user: effective_user,
+        sponsored: effective_sponsored,
     });
     // Publish this session's shared seq counter so the runtime can mint a fresh
     // seq for events it authors while the session is parked (#157). Registered
