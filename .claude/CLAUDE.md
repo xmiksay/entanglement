@@ -272,6 +272,12 @@ never here**; each bullet is the claim + where to read it:
 - **Multi-user mode is an embedder library API** (`UserId` on the wire,
   per-user catalogs/keys/ceilings/grants on the existing seams); `serve`
   stays local single-user. [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md).
+  An **authenticated multi-user wire head is designed, not yet built**: a
+  pluggable `WireAuthenticator` binds a `UserId` to a connection at WS-upgrade
+  time, the authenticated connection handler becomes the trusted `Spawn`
+  author (zero change to the wire-refused allowlist) to populate
+  `SessionUserRegistry`, and per-user approval ownership layers ahead of
+  ADR-0107's existing per-connection ownership. [ADR-0174](../docs/adr/0174-authenticated-multi-user-wire-head.md).
 
 | Topic | Module |
 | --- | --- |

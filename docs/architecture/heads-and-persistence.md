@@ -122,6 +122,14 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   (logged, dropped, connection unaffected) — every other `InMsg` variant is
   unaffected by ownership. Released on disconnect, so a still-parked approval
   is reclaimable rather than deadlocked behind a client that went away.
+  `serve` itself stays local/single-user/unauthenticated exactly as scoped
+  above; an **authenticated multi-user mode is designed but not yet built**
+  ([ADR-0174](../adr/0174-authenticated-multi-user-wire-head.md)): an opt-in
+  `WireAuthenticator` would bind a `UserId` to a connection at WS-upgrade
+  time, the connection handler would become the trusted `Spawn` author
+  (mirroring the [ADR-0147](../adr/0147-multi-user-mode-embedder-api.md)
+  embedder-library pattern) to populate `SessionUserRegistry`, and a hard
+  per-user check would layer ahead of the `SessionOwners` ownership above.
 - **TUI** (`skutter tui`): opencode-style terminal UI over `subscribe()`. Uses
   ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
   (ADR-0013), inline tool approval cards (ADR-0014), and rich markdown
