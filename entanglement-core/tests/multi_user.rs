@@ -223,3 +223,76 @@ async fn list_sessions_surfaces_each_sessions_user() {
     assert_eq!(alice_info.user, Some(alice));
     assert_eq!(bob_info.user, Some(bob));
 }
+
+#[tokio::test]
+async fn an_empty_prompt_spawn_starts_idle_until_a_real_prompt_arrives() {
+    // #674 (ADR-0174): a head authoring a trusted `Spawn` purely to bind a
+    // session's `user` sends `prompt: ""` and relays the client's real
+    // `Prompt` separately — the empty spawn prompt must not run a model turn
+    // (which would stash the relayed prompt as mid-turn steering).
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingLlm(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Llm for CountingLlm {
+        async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(stream_from_response(LlmResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+            }))
+        }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls2 = calls.clone();
+    let holly = Holly::spawn(EngineConfig {
+        llm_factory: Arc::new(move || Box::new(CountingLlm(calls2.clone())) as Box<dyn Llm>),
+        ..EngineConfig::default()
+    });
+    let mut sub = holly.subscribe();
+    let root = SessionId::new("idle-root");
+
+    holly
+        .send(InMsg::Spawn {
+            session: root.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "build".into(),
+            prompt: String::new(),
+            user: Some(UserId::new("alice")),
+            sponsored: false,
+        })
+        .await
+        .unwrap();
+    let ev = recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::SessionStarted { session, .. } if *session == root),
+    )
+    .await;
+    let OutEvent::SessionStarted { user, .. } = ev else {
+        unreachable!()
+    };
+    assert_eq!(user, Some(UserId::new("alice")));
+
+    // Give a wrongly-queued empty turn time to run, then assert none did.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "no turn on an empty spawn prompt"
+    );
+
+    // The relayed real prompt runs an ordinary turn.
+    holly
+        .send(InMsg::prompt(root.clone(), "hello"))
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == root),
+    )
+    .await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
