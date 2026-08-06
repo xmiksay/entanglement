@@ -161,6 +161,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         None,
         fixed_model_concurrency(None),
         None,
+        false,
         test_http_client(),
     );
     let messages = vec![Message::user("hello")];
@@ -170,6 +171,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         messages: &messages,
         tools: &[],
         generation: None,
+        cache_key: None,
     };
     let stream = llm.stream(req).await.expect("stream should start");
     stream
@@ -330,6 +332,7 @@ async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEven
         None,
         fixed_model_concurrency(None),
         None,
+        false,
         test_http_client_with(config),
     );
     let messages = vec![Message::user("hi")];
@@ -339,6 +342,7 @@ async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEven
         messages: &messages,
         tools: &[],
         generation: None,
+        cache_key: None,
     };
     let stream = llm
         .stream(req)
@@ -426,6 +430,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         messages: &messages,
         tools: &[],
         generation: None,
+        cache_key: None,
     };
 
     // Caller A hits the 429 and gives up well within its own
@@ -439,6 +444,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         None,
         fixed_model_concurrency(None),
         None,
+        false,
         http.clone(),
     );
     let _ = tokio::time::timeout(Duration::from_secs(2), llm_a.stream(req()))
@@ -456,6 +462,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         None,
         fixed_model_concurrency(None),
         None,
+        false,
         http,
     );
     let start = Instant::now();
@@ -647,6 +654,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
         None,
         fixed_model_concurrency(Some(1)),
         None,
+        false,
         http.clone(),
     );
     let mut llm_b = OpenAiLlm::new(
@@ -657,6 +665,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
         None,
         fixed_model_concurrency(Some(1)),
         None,
+        false,
         http,
     );
     let messages = vec![Message::user("hi")];
@@ -666,6 +675,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
         messages: &messages,
         tools: &[],
         generation: None,
+        cache_key: None,
     };
 
     let (a, b) = tokio::join!(
@@ -728,6 +738,7 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
         None,
         resolver.clone(),
         None,
+        false,
         http.clone(),
     );
     let mut llm_b = OpenAiLlm::new(
@@ -738,6 +749,7 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
         None,
         resolver,
         None,
+        false,
         http,
     );
     let messages = vec![Message::user("hi")];
@@ -747,6 +759,7 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
         messages: &messages,
         tools: &[],
         generation: None,
+        cache_key: None,
     };
 
     let (a, b) = tokio::join!(
@@ -800,6 +813,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
         None,
         fixed_model_concurrency(Some(1)),
         None,
+        false,
         http.clone(),
     );
     let mut glm52 = OpenAiLlm::new(
@@ -810,6 +824,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
         None,
         fixed_model_concurrency(Some(5)),
         None,
+        false,
         http,
     );
     let messages = vec![Message::user("hi")];
@@ -819,6 +834,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
         messages: &messages,
         tools: &[],
         generation: None,
+        cache_key: None,
     };
 
     let flash_events = flash.stream(req()).await.expect("flash starts");
@@ -854,6 +870,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         None,
         fixed_model_concurrency(None), // no per-model cap
         None,
+        false,
         http.clone(),
     );
     let mut llm_b = OpenAiLlm::new(
@@ -864,6 +881,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         None,
         fixed_model_concurrency(None),
         None,
+        false,
         http,
     );
     let messages = vec![Message::user("hi")];
@@ -873,6 +891,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         messages: &messages,
         tools: &[],
         generation: None,
+        cache_key: None,
     };
 
     let start = Instant::now();
@@ -950,6 +969,7 @@ async fn endpoint_permit_frees_promptly_when_a_keep_alive_proxy_holds_the_body_o
         None,
         fixed_model_concurrency(None),
         None,
+        false,
         http.clone(),
     );
     let messages = vec![Message::user("hello")];
@@ -959,6 +979,7 @@ async fn endpoint_permit_frees_promptly_when_a_keep_alive_proxy_holds_the_body_o
         messages: &messages,
         tools: &[],
         generation: None,
+        cache_key: None,
     };
     let stream = llm.stream(req).await.expect("stream should start");
     let events: Vec<_> = stream.collect().await;

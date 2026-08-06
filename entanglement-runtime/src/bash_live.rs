@@ -345,7 +345,9 @@ mod tests {
         assert!(visibility.visible("bash", &s1, &avail));
 
         holly
-            .send(entanglement_core::InMsg::CloseSession { session: s1.clone() })
+            .send(entanglement_core::InMsg::CloseSession {
+                session: s1.clone(),
+            })
             .await
             .unwrap();
         for _ in 0..50 {

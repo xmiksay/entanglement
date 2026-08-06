@@ -272,6 +272,8 @@ async fn oneshot_text(
         messages,
         tools: &[],
         generation,
+        // One-shot aux request: a distinct prefix, so no session cache key.
+        cache_key: None,
     };
     let mut stream = llm.stream(req).await?;
     let mut text = String::new();
