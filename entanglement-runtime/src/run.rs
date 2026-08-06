@@ -238,7 +238,12 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         }
         // Runtime plumbing (#58): execution round-trip, not user-facing.
         OutEvent::ToolExec { .. } => {}
-        OutEvent::ToolOutput { output, .. } => writeln!(out, "= {output}")?,
+        // `is_error` (#636, ADR-0176) picks the sigil — the text itself is
+        // unchanged, so a denied/failed call was always readable, just not
+        // visually distinct from a success at a glance.
+        OutEvent::ToolOutput {
+            output, is_error, ..
+        } => writeln!(out, "{} {output}", if *is_error { '✗' } else { '=' })?,
         OutEvent::TaskList { content, .. } => {
             writeln!(out, "▢ tasks:")?;
             for line in content.lines() {

@@ -328,7 +328,7 @@ mod tests {
         };
         let snapshot = registry.read().unwrap().clone();
         let started = snapshot.execute(&call, &session).await;
-        let text = entanglement_core::content_text(&started);
+        let text = entanglement_core::content_text(&started.content);
         let id = text
             .split_whitespace()
             .find(|w| w.starts_with("j-"))

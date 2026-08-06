@@ -25,25 +25,43 @@ use entanglement_core::{ApprovalScope, ContentPart, Holly, InMsg, Question, Sess
 /// Fold a **text** tool result back to core as the #58 `ToolResult`, completing
 /// the parked `ToolExec` round-trip. The text-producing tools (denials, refusals,
 /// `rhai`, `ask_user`, …) all end here; an empty string folds to no content
-/// parts, matching a text-only tool message.
-pub async fn reply(holly: &Holly, session: SessionId, request_id: String, output: String) {
+/// parts, matching a text-only tool message. `is_error` (#636, ADR-0176) is the
+/// caller's own classification of whether the call ran to completion — denials,
+/// refusals, and unknown/masked-tool messages pass `true`; acks and answers pass
+/// `false` — carried as a real field on [`InMsg::ToolResult`]/
+/// [`OutEvent::ToolOutput`] alongside the still-unchanged text.
+pub async fn reply(
+    holly: &Holly,
+    session: SessionId,
+    request_id: String,
+    output: String,
+    is_error: bool,
+) {
     let content = if output.is_empty() {
         Vec::new()
     } else {
         vec![ContentPart::text(output)]
     };
-    reply_content(holly, session, request_id, content).await;
+    reply_content(holly, session, request_id, content, is_error, None).await;
 }
 
 /// Fold a **multimodal** tool result back to core (#221) — `read` uses this to
 /// return an image content block. Other callers use the text [`reply`].
+/// `duration_ms` (#636, ADR-0176) is `Some` only from the generic host-tool
+/// dispatch (`run_and_reply`), which is the one caller that actually measures
+/// execution wall-clock; every other route (denials, refusals, orchestrated
+/// tools) passes `None`.
 pub async fn reply_content(
     holly: &Holly,
     session: SessionId,
     request_id: String,
     content: Vec<ContentPart>,
+    is_error: bool,
+    duration_ms: Option<u64>,
 ) {
-    let _ = holly.submit_tool_result(session, request_id, content).await;
+    let _ = holly
+        .submit_tool_result(session, request_id, content, is_error, duration_ms)
+        .await;
 }
 
 /// The head's answer to a parked tool round-trip, already filtered to the

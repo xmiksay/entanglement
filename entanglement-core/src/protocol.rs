@@ -977,11 +977,25 @@ pub enum InMsg {
     /// [`ContentPart`]s (#221) — text today, an image block when `read` opens an
     /// image file. A serde back-compat shim accepts the legacy text-only
     /// `output: "…"` shape so pre-migration logs still deserialize.
+    ///
+    /// `is_error`/`duration_ms` (#636, ADR-0176) are a **structured side channel**
+    /// alongside `content` — the runtime already knows whether a call was denied,
+    /// masked, refused, or actually executed, and how long execution took; these
+    /// fields carry that as real data instead of only as a textual marker inside
+    /// `content` (`` tool `X` denied by permission profile ``, `` tool `X` failed:
+    /// … ``). `content`'s text is unchanged — a human/model reading it still needs
+    /// the marker — this is additive for anything that wants to branch on the
+    /// outcome without parsing text. Both default (`false`/`None`) so a pre-#636
+    /// log or a hand-built `InMsg::tool_result` still deserializes/round-trips.
     ToolResult {
         session: SessionId,
         request_id: String,
         #[serde(alias = "output", default, deserialize_with = "de_prompt_content")]
         content: Vec<ContentPart>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
     /// Answer a pending model-driven `ask_user` call (`request_id` from
     /// [`OutEvent::UserQuestion`]). Like [`Approve`][InMsg::Approve]/
@@ -1359,6 +1373,8 @@ impl InMsg {
             session,
             request_id: request_id.into(),
             content,
+            is_error: false,
+            duration_ms: None,
         }
     }
 
@@ -1867,6 +1883,12 @@ pub enum OutEvent {
     /// for the common text-only case (heads read `output`), populated with the
     /// image block(s) when `read` opens an image so **replay** reconstructs the
     /// model's view faithfully instead of degrading it to the placeholder.
+    ///
+    /// `is_error`/`duration_ms` (#636, ADR-0176) mirror the same fields on
+    /// [`InMsg::ToolResult`] — the display-side half of the structured side
+    /// channel, so a head can style a failed call (denied/masked/refused, or the
+    /// tool itself erroring) without pattern-matching `output`'s text. Both
+    /// default off so a pre-#636 log replays unchanged.
     ToolOutput {
         session: SessionId,
         seq: u64,
@@ -1875,6 +1897,10 @@ pub enum OutEvent {
         output: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         content: Vec<ContentPart>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
     /// Full snapshot of the session's task outline (sent on every change).
     /// Markdown, typically a `- [ ]`/`- [x]` checklist — displayed to the user
@@ -2336,10 +2362,38 @@ mod tests {
             session: SessionId::new("s1"),
             request_id: "r1".into(),
             content: vec![ContentPart::image("image/png", "AAAA")],
+            is_error: false,
+            duration_ms: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: InMsg = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn tool_result_is_error_and_duration_round_trip() {
+        let msg = InMsg::ToolResult {
+            session: SessionId::new("s1"),
+            request_id: "r1".into(),
+            content: vec![ContentPart::text(
+                "tool `bash` denied by permission profile",
+            )],
+            is_error: true,
+            duration_ms: Some(42),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"is_error\":true"), "{json}");
+        assert!(json.contains("\"duration_ms\":42"), "{json}");
+        let back: InMsg = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn tool_result_omits_default_error_fields() {
+        let json =
+            serde_json::to_string(&InMsg::tool_result(SessionId::new("s1"), "r1", "ok")).unwrap();
+        assert!(!json.contains("is_error"), "{json}");
+        assert!(!json.contains("duration_ms"), "{json}");
     }
 
     #[test]

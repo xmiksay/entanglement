@@ -89,6 +89,8 @@ fn tool_output(seq: u64, request_id: &str, tool: &str, output: &str) -> OutEvent
         tool: tool.into(),
         output: output.into(),
         content: vec![],
+        is_error: false,
+        duration_ms: None,
     }
 }
 

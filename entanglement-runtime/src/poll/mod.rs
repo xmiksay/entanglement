@@ -204,7 +204,12 @@ pub async fn run_poll(
     input: String,
 ) {
     let output = resolve(&jobs, &agents, &retained, &session, &input).await;
-    reply(&holly, session, request_id, output).await;
+    // `poll`'s result folds several outcomes (running/complete/list/unknown
+    // handle) into one status-line-then-body string; distinguishing them as
+    // `is_error` (#636, ADR-0176) is left to a follow-up — `poll` is a
+    // runtime-owned orchestration route (like `agent`/`ask_user`), not the
+    // generic host-tool dispatch this pass audited.
+    reply(&holly, session, request_id, output, false).await;
 }
 
 /// The `poll` join logic: dispatch on handle kind, wait, and render the result

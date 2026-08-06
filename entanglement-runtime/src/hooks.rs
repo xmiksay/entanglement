@@ -144,14 +144,17 @@ impl Hooks {
     }
 
     /// Run the `post_tool_use` hooks for `tool` in order, observing the tool's
-    /// `output`. Purely side-effecting: a non-zero exit is logged, never fed back
-    /// to the model.
+    /// `output` and `is_error` (#636, ADR-0176). Purely side-effecting: a
+    /// non-zero exit is logged, never fed back to the model — and `is_error`
+    /// itself cannot rewrite `content` either, it only lets a hook branch on the
+    /// outcome instead of re-parsing `output`'s text.
     pub async fn run_post_tool_use(
         &self,
         session: &SessionId,
         tool: &str,
         input: &str,
         output: &str,
+        is_error: bool,
     ) {
         for spec in self.post_tool_use.iter().filter(|s| s.matches_tool(tool)) {
             let payload = json!({
@@ -160,6 +163,7 @@ impl Hooks {
                 "tool": tool,
                 "input": parse_input(input),
                 "output": output,
+                "is_error": is_error,
             });
             let outcome = invoke(spec, HookEvent::PostToolUse, Some(tool), session, payload).await;
             if !outcome.succeeded() {
@@ -455,9 +459,31 @@ mod tests {
             ..Default::default()
         };
         hooks
-            .run_post_tool_use(&SessionId::new("s"), "write", "{}", "wrote file")
+            .run_post_tool_use(&SessionId::new("s"), "write", "{}", "wrote file", false)
             .await;
         assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn post_hook_payload_carries_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.json");
+        let hooks = Hooks {
+            post_tool_use: vec![spec(&format!("cat > {}", out.display()))],
+            ..Default::default()
+        };
+        hooks
+            .run_post_tool_use(
+                &SessionId::new("s"),
+                "bash",
+                "{}",
+                "tool `bash` denied by permission profile",
+                true,
+            )
+            .await;
+        let written = std::fs::read_to_string(&out).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(v["is_error"], true);
     }
 
     #[tokio::test]

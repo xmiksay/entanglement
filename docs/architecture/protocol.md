@@ -12,8 +12,9 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          //   content: [{type:text,text} | {type:image,source:{type:base64,media_type,data}}]; legacy `text:"…"` still deserializes (#197, ADR-0064)
          | Reject{session,request_id,reason?}                         // runtime, not core (#59)
          //   scope: once (default) | session | always  — persisted grants (#174, ADR-0052)
-         | ToolResult{session,request_id,content:[ContentPart]}   // runtime → core: tool ran (#58)
+         | ToolResult{session,request_id,content:[ContentPart],is_error=false,duration_ms?}   // runtime → core: tool ran (#58)
          //   content: text, or an image block when `read` opens an image (#221); legacy `output:"…"` still deserializes
+         //   is_error/duration_ms (#636, ADR-0176): structured side channel alongside content's still-unchanged text — denied/masked/refused/unknown-tool/errored calls set is_error; duration_ms is measured once, generically, around the whole host-tool dispatch
          | AnswerQuestion{session,request_id,answers:[[string]],answer?}  // ask_user answer(s) → runtime (#90, #488); answers = one inner vec per question; legacy answer:"…" still deserializes, folds to [[answer]] in seam::Decision::from_inmsg
          | RetractQuestion{session,request_id}   // withdraw an open ask_user question without cancelling the turn (#515, ADR-0146) — the orchestrator still replies (withdrawal note), unlike Stop's silent unwind
          | ReplaceQuestion{session,request_id,questions:[Question]}   // swap an open ask_user question's content in place; re-parks under the same request_id, not terminal (#515, ADR-0146)
@@ -64,7 +65,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,us
          | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
          | ToolExec{session,seq,request_id,tool,input,agent}   // core → runtime: dispatch it (#58/#59); agent = active profile name for authoritative gating (#156)
          | UserQuestion{session,seq,request_id,questions:[Question]}  // ask_user prompt(s), one call → one event (#90, #488); questions flattens onto the wire (Questions newtype); legacy question/options/allow_free_form still deserializes into a one-element vec
-         | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart]}   // output = display text; content carries an image result for faithful replay (#221)
+         | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart],is_error=false,duration_ms?}   // output = display text; content carries an image result for faithful replay (#221); is_error/duration_ms mirror InMsg::ToolResult's structured side channel (#636, ADR-0176) — a head can style a failed call without parsing output's text
          | TaskList{session,seq,content}      // full outline snapshot (markdown)
          | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?}  // per-round-trip usage + cost (#192)
          | Error{session,seq,message}

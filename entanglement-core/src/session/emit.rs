@@ -134,12 +134,15 @@ pub(crate) fn emit_tool_exec(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_tool_output(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
     request_id: &str,
     tool: &str,
     content: Vec<ContentPart>,
+    is_error: bool,
+    duration_ms: Option<u64>,
     seq: &AtomicU64,
 ) {
     // Heads render text; an image result shows a short placeholder. The full
@@ -155,6 +158,8 @@ pub(crate) fn emit_tool_output(
         tool: tool.to_string(),
         output,
         content: if has_image { content } else { Vec::new() },
+        is_error,
+        duration_ms,
     });
 }
 

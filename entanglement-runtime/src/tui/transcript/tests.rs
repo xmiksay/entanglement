@@ -212,6 +212,8 @@ fn tool_op_expands_to_show_body_and_check_when_done() {
         tool: "bash".to_string(),
         output: "SECRETBODY".to_string(),
         content: vec![],
+        is_error: false,
+        duration_ms: None,
     });
 
     // Folded but collapsed: a ✓ header, no body.
@@ -681,6 +683,8 @@ fn narrow_widths_do_not_panic() {
         tool: "read".to_string(),
         output: "file body".to_string(),
         content: vec![],
+        is_error: false,
+        duration_ms: None,
     });
     app.handle_out_event(OutEvent::Error {
         session: sid.clone(),

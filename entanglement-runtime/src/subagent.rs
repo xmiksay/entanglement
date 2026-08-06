@@ -405,6 +405,7 @@ async fn launch(
             parent,
             request_id,
             "sub-agent spawn failed: engine inbox closed".to_string(),
+            true,
         )
         .await;
         return;
@@ -421,6 +422,7 @@ async fn launch(
                 "Sub-agent launched under the `{agent}` profile. agent_id: {child}. \
                  Call poll with this agent_id to await its answer."
             ),
+            false,
         )
         .await;
     } else {
@@ -449,6 +451,7 @@ async fn launch(
             parent.clone(),
             request_id,
             format_agent_answer(&child, elapsed, answer, &retained, Some(&parent)),
+            false,
         )
         .await;
     }

@@ -83,6 +83,34 @@ pub(crate) fn text_parts(text: String) -> Vec<ContentPart> {
     }
 }
 
+/// Outcome of [`ToolRegistry::execute`] (#636, ADR-0176): `content` plus
+/// whether the tool failed to run at all — an `Err` from [`Tool::run_for_session`]
+/// or an unknown name — as a real `bool` instead of only a `` tool `X` failed: … ``
+/// marker buried inside `content`'s text. This is the boundary where the
+/// structured side channel originates; `is_error` rides from here through
+/// [`crate::tool_runner::run_and_reply`]'s [`crate::seam::reply_content`] call up
+/// to [`entanglement_core::OutEvent::ToolOutput`].
+pub struct ToolExecution {
+    pub content: Vec<ContentPart>,
+    pub is_error: bool,
+}
+
+impl ToolExecution {
+    fn ok(content: Vec<ContentPart>) -> Self {
+        Self {
+            content,
+            is_error: false,
+        }
+    }
+
+    fn err(content: Vec<ContentPart>) -> Self {
+        Self {
+            content,
+            is_error: true,
+        }
+    }
+}
+
 /// Named lookup of tools. Cloning is cheap (tools are shared behind `Arc`), so
 /// one registry built in config is cloned into every session.
 #[derive(Clone, Default)]
@@ -176,22 +204,27 @@ impl ToolRegistry {
     }
 
     /// Execute a model-requested [`ToolCall`] for a given session, returning the
-    /// result as multimodal [`ContentPart`]s (#221) — text for most tools, an
-    /// image block for `read` on an image. Unknown tools and failures yield a text
-    /// part the engine feeds back to the model rather than erroring the run.
-    /// `session` (#360) lets a session-aware tool (e.g. a multi-tenant embedder's
-    /// per-tenant MCP dispatch) tell callers apart; the executor already has it at
-    /// every call site (`resolve_effective` takes it too). `call.id` is the
-    /// request id, threaded to [`Tool::run_for_session`] as-is (#449) — it is
-    /// already the same identifier the executor uses for the `ToolExec`/
-    /// `ToolResult` round-trip, so no separate id is minted here.
-    pub async fn execute(&self, call: &ToolCall, session: &SessionId) -> Vec<ContentPart> {
+    /// result as a [`ToolExecution`] (#636, ADR-0176) — multimodal
+    /// [`ContentPart`]s (#221, text for most tools, an image block for `read` on
+    /// an image) plus whether the call failed to run at all. Unknown tools and
+    /// failures still yield an explanatory text part the engine feeds back to the
+    /// model rather than erroring the run — `is_error` is additive, not a
+    /// replacement for that text. `session` (#360) lets a session-aware tool
+    /// (e.g. a multi-tenant embedder's per-tenant MCP dispatch) tell callers
+    /// apart; the executor already has it at every call site (`resolve_effective`
+    /// takes it too). `call.id` is the request id, threaded to
+    /// [`Tool::run_for_session`] as-is (#449) — it is already the same identifier
+    /// the executor uses for the `ToolExec`/`ToolResult` round-trip, so no
+    /// separate id is minted here.
+    pub async fn execute(&self, call: &ToolCall, session: &SessionId) -> ToolExecution {
         match self.tools.get(call.name.as_str()) {
             Some(tool) => match tool.run_for_session(session, &call.id, &call.input).await {
-                Ok(content) => content,
-                Err(e) => text_parts(format!("tool `{}` failed: {e}", call.name)),
+                Ok(content) => ToolExecution::ok(content),
+                Err(e) => {
+                    ToolExecution::err(text_parts(format!("tool `{}` failed: {e}", call.name)))
+                }
             },
-            None => text_parts(self.unknown_tool_message(&call.name)),
+            None => ToolExecution::err(text_parts(self.unknown_tool_message(&call.name))),
         }
     }
 
@@ -280,7 +313,8 @@ mod tests {
                 &dummy_session(),
             )
             .await;
-        assert_eq!(out, vec![ContentPart::text("hi")]);
+        assert_eq!(out.content, vec![ContentPart::text("hi")]);
+        assert!(!out.is_error);
     }
 
     #[tokio::test]
@@ -297,8 +331,9 @@ mod tests {
                 &dummy_session(),
             )
             .await;
-        assert_eq!(out.len(), 1);
-        assert!(out[0].as_text().unwrap().contains("unknown tool"));
+        assert_eq!(out.content.len(), 1);
+        assert!(out.content[0].as_text().unwrap().contains("unknown tool"));
+        assert!(out.is_error);
     }
 
     #[test]
@@ -354,9 +389,9 @@ mod tests {
         };
         let alice = reg.execute(&call, &SessionId::new("alice")).await;
         let bob = reg.execute(&call, &SessionId::new("bob")).await;
-        assert_eq!(alice[0].as_text().unwrap(), "alice");
-        assert_eq!(bob[0].as_text().unwrap(), "bob");
-        assert_ne!(alice, bob);
+        assert_eq!(alice.content[0].as_text().unwrap(), "alice");
+        assert_eq!(bob.content[0].as_text().unwrap(), "bob");
+        assert_ne!(alice.content, bob.content);
     }
 
     #[test]
