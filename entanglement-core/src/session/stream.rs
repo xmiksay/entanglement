@@ -73,6 +73,10 @@ pub(super) async fn stream_round(
             messages: s.ctx.messages(),
             tools: specs,
             generation,
+            // Session-stable implicit-cache routing hint (#673): the same key
+            // every turn keeps a multi-instance provider routing this
+            // session's requests to the same cache shard.
+            cache_key: Some(session.0.as_str()),
         };
         tracing::debug!(
             messages_count = req.messages.len(),

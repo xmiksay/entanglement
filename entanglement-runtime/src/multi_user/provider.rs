@@ -184,6 +184,7 @@ fn resolve_for_user(
                 concurrency,
                 model_concurrency,
                 web_search,
+                entry.prompt_cache_key,
                 http_client.clone(),
             )
         }
@@ -277,6 +278,7 @@ mod tests {
                 rpm,
                 concurrency: None,
                 mcp_servers: Default::default(),
+                prompt_cache_key: false,
                 default_model: "glm-5.2".into(),
                 models: vec![ModelEntry {
                     id: "glm-5.2".into(),

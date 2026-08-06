@@ -86,6 +86,15 @@ pub struct ProviderEntry {
     /// defaults with a user `providers.yml` key-wise for free.
     #[serde(default)]
     pub mcp_servers: HashMap<String, ProviderMcpServer>,
+    /// Whether this endpoint accepts OpenAI's `prompt_cache_key` implicit-cache
+    /// routing hint (#673). Off by default; the embedded defaults enable it
+    /// only for providers verified to accept the field — an endpoint that
+    /// rejects unknown body fields would otherwise 400 on every request. A
+    /// user `providers.yml` can flip it for any OpenAI-compat endpoint (the
+    /// #118 "catalog data, not hardcode" property). Openai-wire only; the
+    /// other wires have no equivalent field and ignore it.
+    #[serde(default)]
+    pub prompt_cache_key: bool,
 }
 
 // Split to `crate::provider_mcp` for the 400-line file cap; re-exported here
@@ -632,6 +641,28 @@ mod tests {
         let g47 = glm47.generation_params();
         assert!(!glm47.supports_temperature);
         assert_eq!(g47.temperature, None);
+    }
+
+    #[test]
+    fn prompt_cache_key_defaults_off_and_is_user_overridable() {
+        // Off by default (#673) — only endpoints verified to tolerate the
+        // extra body field opt in; the embedded defaults enable OpenAI proper.
+        assert!(!Catalog::builtin().provider("zai").unwrap().prompt_cache_key);
+        assert!(
+            Catalog::builtin()
+                .provider("openai")
+                .unwrap()
+                .prompt_cache_key
+        );
+        // A user file can flip it for any OpenAI-compat endpoint without
+        // touching sibling fields (the #118 catalog-data property).
+        let c = merge_str(
+            "providers:\n\
+             \x20 - name: zai\n\
+             \x20   prompt_cache_key: true\n",
+        );
+        assert!(c.provider("zai").unwrap().prompt_cache_key);
+        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
     }
 
     #[test]

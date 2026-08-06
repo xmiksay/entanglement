@@ -22,10 +22,10 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, bash_live, config, env_date, extra_roots, history, host, inspect, logging,
-    mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
-    propose_plan, retained_output, session_store, skills, subagent, system_prompt, throttle,
-    tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
+    agents, ask_user, bash_live, builtin_visibility, config, env_date, extra_roots, history, host,
+    inspect, logging, mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch,
+    policy, poll, propose_plan, retained_output, session_store, skills, subagent, system_prompt,
+    throttle, tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -103,6 +103,7 @@ async fn build_config(
     EscapeRoot,
     Arc<bash_live::BashRegistered>,
     bash_live::BashToolConfig,
+    Arc<builtin_visibility::BuiltinVisibility>,
     policy::SandboxConfig,
     host::JobRegistry,
     retained_output::RetainedOutputRegistry,
@@ -177,6 +178,11 @@ async fn build_config(
     // that's a per-session overlay concern now, resolved by
     // `permission::overlay_entry_grade`, not this process-global flag.
     let live_bash = bash_live::BashRegistered::new(bash_enabled);
+    // Advertisement scoping for lazily-registered built-ins (#673, ADR-0178):
+    // a startup-registered `bash` stays visible to every session; a later
+    // per-session overlay enable is visible only to that session's sub-tree.
+    let builtin_visibility =
+        builtin_visibility::BuiltinVisibility::new(bash_enabled.then(|| "bash".to_string()));
     // The one `JobRegistry` for this process's whole lifetime (#605): shared by
     // `bash` (however/whenever it gets registered — at startup or via a later
     // live `/bash on`) and `poll`'s job-handle path, so a background job is
@@ -335,6 +341,7 @@ async fn build_config(
         escape_root,
         live_bash,
         bash_tool_config,
+        builtin_visibility,
         sandbox_config,
         jobs,
         retained,
@@ -778,6 +785,7 @@ fn openai_factory_for(
         resolve_concurrency(entry),
         catalog.model_concurrency_resolver(&entry.name),
         web_search,
+        entry.prompt_cache_key,
         http_client.clone(),
     ))
 }
@@ -1285,6 +1293,7 @@ async fn main() -> Result<()> {
         escape_root,
         live_bash,
         bash_tool_config,
+        builtin_visibility,
         sandbox_config,
         jobs,
         retained,
@@ -1349,6 +1358,7 @@ async fn main() -> Result<()> {
     {
         let tools = tools.clone();
         let avail = mcp_available.clone();
+        let builtins = builtin_visibility.clone();
         #[allow(unused_mut)] // only mutated when the `rhai` feature is on
         let mut runtime_owned_specs =
             vec![plan_tasks::update_tasks_spec(), ask_user::ask_user_spec()];
@@ -1361,13 +1371,22 @@ async fn main() -> Result<()> {
             // (ADR-0098) and is graded/masked as an alias of `read`, which only
             // holds if a profile author never sees it to configure separately.
             // A lazily-connected `allowed` MCP server's tools (#542) are
-            // additionally scoped to the sessions that enabled them.
+            // additionally scoped to the sessions that enabled them, and a
+            // lazily-registered built-in (`bash`, ADR-0178) to the sessions
+            // whose own overlay chain enabled it — otherwise one session's
+            // `/enable tool bash` would rewrite every other session's
+            // advertised tools array mid-session (prompt-cache bust + a tool
+            // nobody there opted into).
             let mut specs: Vec<_> = tools
                 .read()
                 .unwrap()
                 .specs()
                 .into_iter()
-                .filter(|s| s.name != "read_raw" && avail.spec_visible(&s.name, session))
+                .filter(|s| {
+                    s.name != "read_raw"
+                        && avail.spec_visible(&s.name, session)
+                        && builtins.visible(&s.name, session, &avail)
+                })
                 .collect();
             specs.extend(runtime_owned_specs.iter().cloned());
             // Sorted by name (#566): `specs()` is already sorted, but appending
@@ -1474,6 +1493,7 @@ async fn main() -> Result<()> {
         tools.clone(),
         bash_tool_config,
         live_bash.clone(),
+        builtin_visibility.clone(),
     );
 
     // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141): polls
@@ -1841,6 +1861,7 @@ mod tests {
             default_model: "test-model".to_string(),
             models: Vec::new(),
             mcp_servers: Default::default(),
+            prompt_cache_key: false,
         }
     }
 

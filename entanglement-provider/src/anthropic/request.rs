@@ -46,10 +46,15 @@ pub(super) fn build_body(
         "model": model,
         "max_tokens": max_tokens,
         // Standard breakpoint placement (#566): end of tools, end of system,
-        // second-to-last user turn. Anthropic's fixed render order is
+        // second-to-last user turn (plus a deeper history anchor, #673).
+        // Anthropic's fixed render order is
         // tools → system → messages, and without a `cache_control` anywhere the
         // whole request re-bills at the full input rate every round — the system
         // block plus every tool schema (~10 KB) and the entire growing history.
+        // Deliberately not size-gated: a below-minimum prefix (an aux one-shot's
+        // tiny system string) is documented as processed normally with the
+        // marker inert — no error, no surcharge — so a gate would only buy a
+        // token estimator to maintain.
         "system": [{
             "type": "text",
             "text": system,
@@ -207,12 +212,29 @@ fn convert_messages(messages: &[Message], replay_reasoning: bool) -> Vec<Value> 
     coalesce_same_role(out, "content")
 }
 
-/// Mark the standard third breakpoint (#566): the last content block of the
-/// second-to-last `user`-role message. The final user turn is the one most
-/// likely to still change (a steered/edited retry), so anchoring one turn
-/// earlier gives every prior round — the bulk of a growing conversation — a
-/// stable, cacheable prefix without re-marking it on every request. Falls back
-/// to the single user message present when there's only one.
+/// Mark the history breakpoints (#566, #673): the last content block of the
+/// second-to-last `user`-role message, plus a second, deeper anchor on the
+/// fourth-to-last. The final user turn is the one most likely to still change
+/// (a steered/edited retry), so anchoring one turn earlier gives every prior
+/// round — the bulk of a growing conversation — a stable, cacheable prefix
+/// without re-marking it on every request.
+///
+/// The deeper anchor (#673) exists because Anthropic's cache lookup only
+/// scans ~20 content blocks upstream of each explicit breakpoint: the near
+/// anchor advances every round, and one round can append several user-role
+/// messages (the prompt plus one merged tool-result turn per batch), so a
+/// large parallel tool batch alone can push the previous round's cached
+/// entry out of the lookback window — re-writing the whole history span from
+/// the tools/system prefix at the cache-write rate. A second marker two user
+/// turns further back guarantees a match point that survives the near
+/// anchor's neighborhood changing. `nth(3)` rather than `nth(2)` because
+/// adjacent user indexes are often the same round (tool-result turns), which
+/// would put both anchors inside one round's churn.
+///
+/// Falls back to the single user message present when there's only one, and
+/// never marks the same block twice — with system (1) + tools (1) + history
+/// (≤2) the request carries at most 4 markers, exactly the API cap (a 5th is
+/// a 400, locked in by test).
 fn place_history_breakpoint(messages: &mut [Value]) {
     let user_idxs: Vec<usize> = messages
         .iter()
@@ -220,15 +242,21 @@ fn place_history_breakpoint(messages: &mut [Value]) {
         .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
         .map(|(i, _)| i)
         .collect();
-    let Some(&idx) = user_idxs.iter().rev().nth(1).or_else(|| user_idxs.last()) else {
-        return;
-    };
-    if let Some(last_block) = messages[idx]
-        .get_mut("content")
-        .and_then(Value::as_array_mut)
-        .and_then(|blocks| blocks.last_mut())
-    {
-        last_block["cache_control"] = json!({ "type": "ephemeral" });
+    let near = user_idxs.iter().rev().nth(1).or_else(|| user_idxs.last());
+    let deep = user_idxs.iter().rev().nth(3);
+    let mut marked: Vec<usize> = Vec::with_capacity(2);
+    for &idx in near.into_iter().chain(deep) {
+        if marked.contains(&idx) {
+            continue;
+        }
+        if let Some(last_block) = messages[idx]
+            .get_mut("content")
+            .and_then(Value::as_array_mut)
+            .and_then(|blocks| blocks.last_mut())
+        {
+            last_block["cache_control"] = json!({ "type": "ephemeral" });
+            marked.push(idx);
+        }
     }
 }
 

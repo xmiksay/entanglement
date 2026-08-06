@@ -345,6 +345,13 @@ pub struct LlmRequest<'a> {
     /// Resolved generation knobs (temperature / max-tokens / thinking budget).
     /// `None` ⇒ the backend's own defaults for every knob (#191).
     pub generation: Option<GenerationParams>,
+    /// Stable per-conversation routing hint for provider-side implicit prompt
+    /// caching (#673) — the session id, in practice. A wire that has a native
+    /// field for it sends it (OpenAI's `prompt_cache_key`, catalog-gated per
+    /// provider); every other backend ignores it. `None` on one-shot aux
+    /// requests (summarize / session-title), whose prefix shares nothing with
+    /// the session's own.
+    pub cache_key: Option<&'a str>,
 }
 
 /// A boxed, owned, sendable stream of model events. `'static` so the session
@@ -641,6 +648,7 @@ mod tests {
             messages,
             tools,
             generation: None,
+            cache_key: None,
         }
     }
 
