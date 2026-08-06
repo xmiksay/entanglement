@@ -99,12 +99,18 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 - **Explicit `cache_control` breakpoints** (#566) — Anthropic caching is opt-in
   per content block, unlike z.ai/OpenAI-compat's implicit whole-prefix caching;
   without a marker every round re-bills the full system + tool schemas + growing
-  history at the uncached rate. `anthropic::request::build_body` places the
-  standard three: the last `system` block (also covers the `tools` array before
+  history at the uncached rate. `anthropic::request::build_body` places four:
+  the last `system` block (also covers the `tools` array before
   it in the fixed tools → system → messages render order), the last `tools`
-  entry, and the last content block of the second-to-last `user`-role message
-  (`place_history_breakpoint`) — the final turn is left unmarked since it's the
-  one most likely to still change on a steered/edited retry.
+  entry, and the last content block of the second-to-last **and**
+  fourth-to-last `user`-role messages
+  (`place_history_breakpoint`; deduped on short histories) — the final turn is
+  left unmarked since it's the one most likely to still change on a
+  steered/edited retry, and the deeper anchor (#673) guarantees a cache match
+  even when one round appends more user-role messages (merged tool-result
+  turns from a big parallel batch) than the ~20-block lookback Anthropic
+  scans upstream of a marker. Four is exactly the API's marker cap, locked in
+  by test.
 - `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
   [ADR-0085](../adr/0085-gemini-native-wire-and-opaque-provider-meta.md)): the
   compat endpoint drops `thoughtSignature`, the opaque per-call token a 2.5
