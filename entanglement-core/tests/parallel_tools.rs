@@ -296,6 +296,8 @@ async fn image_tool_result_folds_into_context_and_event() {
             session: sid.clone(),
             request_id: "a".into(),
             content: vec![image.clone()],
+            is_error: false,
+            duration_ms: None,
         })
         .await
         .unwrap();

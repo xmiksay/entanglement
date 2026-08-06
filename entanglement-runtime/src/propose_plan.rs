@@ -181,14 +181,14 @@ pub async fn run_propose_plan(
     let plan_input = match parse_plan_input(&input) {
         Ok(p) => p,
         Err(msg) => {
-            seam::reply(&holly, session, request_id, msg).await;
+            seam::reply(&holly, session, request_id, msg, true).await;
             return;
         }
     };
     let resolution = match resolve_plan(&root, &session, &plan_files, plan_input) {
         Ok(r) => r,
         Err(msg) => {
-            seam::reply(&holly, session, request_id, msg).await;
+            seam::reply(&holly, session, request_id, msg, true).await;
             return;
         }
     };
@@ -248,7 +248,7 @@ pub async fn run_propose_plan(
                 resolution.rel_path,
                 reason.as_deref().unwrap_or("user")
             );
-            seam::reply(&holly, session, request_id, output).await;
+            seam::reply(&holly, session, request_id, output, true).await;
         }
         // `Stop` (and a closed inbox) unwind silently; `Answer`/`Retract`/
         // `Replace` never target a `propose_plan` request id (they are
@@ -308,6 +308,7 @@ async fn launch_sponsored_build(
             session,
             request_id,
             "sponsored build spawn failed: engine inbox closed".to_string(),
+            true,
         )
         .await;
         return;
@@ -355,7 +356,7 @@ async fn launch_sponsored_build(
         elapsed.as_secs_f64()
     );
     let output = crate::subagent::bound_answer(status, answer, &retained, Some(&session));
-    seam::reply(&holly, session, request_id, output).await;
+    seam::reply(&holly, session, request_id, output, false).await;
 }
 
 fn set_thinking(holly: &Holly, session: &SessionId) {

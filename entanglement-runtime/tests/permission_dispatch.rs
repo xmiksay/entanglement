@@ -173,6 +173,23 @@ async fn allow_runs_without_approval() {
             .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output == "ran: echo hi")),
         "Allow should run the tool; got {events:?}"
     );
+    // #636/ADR-0176: a cleared tool's structured side channel says so — no
+    // parsing `output` for a `[exit N]`/failure marker required.
+    let out = events
+        .iter()
+        .find(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output == "ran: echo hi"))
+        .unwrap();
+    match out {
+        OutEvent::ToolOutput {
+            is_error,
+            duration_ms,
+            ..
+        } => {
+            assert!(!is_error, "a cleared tool run must not be is_error");
+            assert!(duration_ms.is_some(), "duration_ms must be measured");
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[tokio::test]
@@ -221,6 +238,19 @@ async fn deny_refuses_without_request() {
             .iter()
             .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("denied"))),
         "Deny should report a denial; got {events:?}"
+    );
+    // #636/ADR-0176: the denial is now also a real field, not just the
+    // `` denied by permission profile `` marker in `output`.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput {
+                output,
+                is_error: true,
+                ..
+            } if output.contains("denied")
+        )),
+        "Deny must set is_error; got {events:?}"
     );
     assert!(
         !events.iter().any(
@@ -661,6 +691,18 @@ async fn unknown_tool_is_rejected_before_the_permission_ladder() {
             .any(|e| matches!(e, OutEvent::ToolOutput { output, .. }
             if output.contains("unknown tool") && output.contains("did you mean `bash`"))),
         "expected an immediate unknown-tool reply with a closest-match hint; got {events:?}"
+    );
+    // #636/ADR-0176: unknown-tool is a structural failure — is_error must say so.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput {
+                output,
+                is_error: true,
+                ..
+            } if output.contains("unknown tool")
+        )),
+        "unknown tool must set is_error; got {events:?}"
     );
 }
 

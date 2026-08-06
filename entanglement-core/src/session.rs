@@ -101,12 +101,16 @@ fn cap_meta_field(s: String) -> String {
 #[derive(Debug, Clone)]
 pub(crate) enum SessionCmd {
     Prompt(Vec<ContentPart>),
-    /// Output of a runtime-executed tool (`request_id`, multimodal `content`) —
-    /// resolves a pending [`OutEvent::ToolExec`] round-trip (#58). `content` is
-    /// text today, an image block when `read` opens an image (#221). Approval
-    /// (`Approve`/`Reject`) is no longer a core command: the runtime tool executor
-    /// owns it (#59) and never reaches the session loop.
-    ToolResult(String, Vec<ContentPart>),
+    /// Output of a runtime-executed tool (`request_id`, multimodal `content`,
+    /// `is_error`, `duration_ms`) — resolves a pending [`OutEvent::ToolExec`]
+    /// round-trip (#58). `content` is text today, an image block when `read`
+    /// opens an image (#221). `is_error`/`duration_ms` (#636, ADR-0176) ride
+    /// straight through to [`OutEvent::ToolOutput`] — the structured side
+    /// channel is display-only, so it does not feed `Context` (the model still
+    /// only sees `content`'s text). Approval (`Approve`/`Reject`) is no longer a
+    /// core command: the runtime tool executor owns it (#59) and never reaches
+    /// the session loop.
+    ToolResult(String, Vec<ContentPart>, bool, Option<u64>),
     SetAgent(String),
     /// Switch the live model/provider (`provider`, `model`) — #218. Re-resolves
     /// against [`EngineConfig::model_resolver`][crate::EngineConfig] and rebuilds
@@ -627,7 +631,7 @@ pub(crate) async fn session_loop(
             // the drained batch does *not* re-enter `drive_turn`: the next
             // model round-trip is exactly what `Paused` holds back, and
             // `Unpause` continues it without a fresh prompt.
-            Some(SessionCmd::ToolResult(id, content)) => {
+            Some(SessionCmd::ToolResult(id, content, is_error, duration_ms)) => {
                 match s.turn.as_mut().and_then(|t| t.resolve(&id)) {
                     Some(call) => {
                         emit_tool_output(
@@ -636,6 +640,8 @@ pub(crate) async fn session_loop(
                             &call.id,
                             &call.name,
                             content.clone(),
+                            is_error,
+                            duration_ms,
                             &s.seq,
                         );
                         s.ctx.push_tool_content(&call.id, content);

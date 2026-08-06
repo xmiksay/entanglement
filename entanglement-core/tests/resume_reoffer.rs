@@ -160,6 +160,8 @@ async fn resume_of_drained_tail_continues_the_turn_without_reoffer() {
             tool: "read".into(),
             output: "content".into(),
             content: vec![],
+            is_error: false,
+            duration_ms: None,
         },
     ));
 

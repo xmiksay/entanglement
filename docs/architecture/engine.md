@@ -45,6 +45,10 @@ confident stop** → `Done`. A round that returns no tool calls with an
 Batch calls thereby execute **concurrently**, not serially in call order
 (#270, [ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md));
 a stale, duplicate, or unknown `ToolResult` is dropped with a debug trace.
+`ToolResult`'s `is_error`/`duration_ms` fields (#636,
+[ADR-0176](../adr/0176-structured-tool-result-is-error-and-duration-fields.md))
+ride straight through to the emitted `ToolOutput` — display-only, so they never
+feed `Context`; the model still sees only the text.
 **Every** tool call takes the runtime round-trip; core holds no executable tools
 and runs nothing inline — the built-ins were removed in #231
 ([ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)), and the

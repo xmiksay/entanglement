@@ -134,6 +134,7 @@ pub async fn run_agent_send(
             parent,
             request_id,
             "agent_send: requires a non-empty `agent_id` and `prompt`".to_string(),
+            true,
         )
         .await;
         return;
@@ -143,7 +144,7 @@ pub async fn run_agent_send(
     let (status_tx, started) = match begin(&registry, &parent, &child, &parsed.agent_id) {
         Ok(v) => v,
         Err(refusal) => {
-            reply(&holly, parent, request_id, refusal).await;
+            reply(&holly, parent, request_id, refusal, true).await;
             return;
         }
     };
@@ -162,6 +163,7 @@ pub async fn run_agent_send(
             parent,
             request_id,
             "agent_send: engine inbox closed".to_string(),
+            true,
         )
         .await;
         return;
@@ -176,6 +178,7 @@ pub async fn run_agent_send(
                 "Prompt sent to sub-agent `{child}`. It does not wait for an \
                  answer — call poll with this agent_id to await its reply."
             ),
+            false,
         )
         .await;
     } else {
@@ -195,6 +198,7 @@ pub async fn run_agent_send(
             parent.clone(),
             request_id,
             format_agent_answer(&child, elapsed, answer, &retained, Some(&parent)),
+            false,
         )
         .await;
     }

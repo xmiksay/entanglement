@@ -337,6 +337,7 @@ pub async fn run_rhai(
                 session,
                 request_id,
                 format!("rhai: invalid input: {e}"),
+                true,
             )
             .await;
             return;
@@ -353,7 +354,7 @@ pub async fn run_rhai(
     match self_perm {
         Permission::Deny => {
             let out = format!("tool `{RHAI_TOOL}` denied by permission profile");
-            seam::reply(&holly, session, request_id, out).await;
+            seam::reply(&holly, session, request_id, out, true).await;
             return;
         }
         Permission::Ask => {
@@ -371,7 +372,7 @@ pub async fn run_rhai(
                 Approval::Rejected(reason) => {
                     set_state(&holly, &session, AgentState::Thinking);
                     let out = format!("tool `{RHAI_TOOL}` rejected: {reason}");
-                    seam::reply(&holly, session, request_id, out).await;
+                    seam::reply(&holly, session, request_id, out, true).await;
                     return;
                 }
                 // Stop unwinds silently: core cancels the turn on the same Stop.
@@ -383,7 +384,7 @@ pub async fn run_rhai(
 
     // A Stop during a binding approval returns `None` and unwinds silently: core
     // cancels the turn on the same Stop, so no ToolResult is owed.
-    if let Some(output) = execute_script(
+    if let Some((output, is_error)) = execute_script(
         &tools,
         &policy,
         escape_root.as_ref(),
@@ -397,13 +398,17 @@ pub async fn run_rhai(
     )
     .await
     {
-        seam::reply(&holly, session, request_id, output).await;
+        seam::reply(&holly, session, request_id, output, is_error).await;
     }
 }
 
 /// Run the engine under `spawn_blocking` and service its binding calls on this
-/// async task until it finishes. Returns the tool output, or `None` if a `Stop`
-/// arrived mid-script (the turn is being cancelled, so no reply is owed).
+/// async task until it finishes. Returns the tool output plus whether the
+/// script itself errored (a thrown/uncaught Rhai exception or a panicked
+/// `spawn_blocking` join, #636/ADR-0176 — distinct from an individual binding's
+/// denial, which the script sees as a catchable exception and may recover
+/// from), or `None` if a `Stop` arrived mid-script (the turn is being
+/// cancelled, so no reply is owed).
 #[allow(clippy::too_many_arguments)]
 async fn execute_script(
     tools: &ToolRegistry,
@@ -416,7 +421,7 @@ async fn execute_script(
     script: String,
     timeout: Duration,
     stop: Arc<AtomicBool>,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     let (tx, mut rx) = mpsc::unbounded_channel::<BindingCall>();
     let prints = Arc::new(Mutex::new(String::new()));
     let engine_prints = prints.clone();
@@ -634,7 +639,7 @@ async fn exec(
     request_id: &str,
     call: &BindingCall,
 ) -> String {
-    let content = tools
+    let execution = tools
         .execute(
             &ToolCall {
                 id: request_id.to_string(),
@@ -645,7 +650,7 @@ async fn exec(
             session,
         )
         .await;
-    entanglement_core::content_text(&content)
+    entanglement_core::content_text(&execution.content)
 }
 
 /// Outcome of a parked approval round-trip. `Approved` carries the scope
@@ -1002,7 +1007,7 @@ fn runtime_err(msg: &str) -> Box<EvalAltResult> {
 fn format_output(
     prints: String,
     eval_result: Result<Result<Dynamic, Box<EvalAltResult>>, tokio::task::JoinError>,
-) -> String {
+) -> (String, bool) {
     let mut out = String::new();
     if !prints.is_empty() {
         out.push_str(&prints);
@@ -1010,15 +1015,22 @@ fn format_output(
             out.push('\n');
         }
     }
-    match eval_result {
+    let is_error = match eval_result {
         Ok(Ok(value)) => {
             out.push_str("=> ");
             out.push_str(&serialize_return(&value));
+            false
         }
-        Ok(Err(e)) => out.push_str(&format!("rhai error: {e}")),
-        Err(join) => out.push_str(&format!("rhai error: script task failed: {join}")),
-    }
-    truncate_head_tail(out)
+        Ok(Err(e)) => {
+            out.push_str(&format!("rhai error: {e}"));
+            true
+        }
+        Err(join) => {
+            out.push_str(&format!("rhai error: script task failed: {join}"));
+            true
+        }
+    };
+    (truncate_head_tail(out), is_error)
 }
 
 /// Serialize a script's return value. Prefer JSON (arrays/maps/numbers/strings
@@ -1202,18 +1214,29 @@ mod tests {
         let prints = format!("HEAD_MARKER{}", "x".repeat(MAX_OUTPUT_BYTES * 2));
         let engine = sandbox_engine(Duration::from_secs(5));
         let v = engine.eval::<Dynamic>(r#""TAIL_MARKER""#).unwrap();
-        let out = format_output(prints, Ok(Ok(v)));
+        let (out, is_error) = format_output(prints, Ok(Ok(v)));
         assert!(out.starts_with("HEAD_MARKER"), "head lost: {out}");
         assert!(out.contains("TAIL_MARKER"), "tail lost: {out}");
         assert!(out.contains("omitted from the middle"), "got: {out}");
+        assert!(!is_error);
     }
 
     #[test]
     fn format_output_combines_prints_and_return() {
         let engine = sandbox_engine(Duration::from_secs(5));
         let v = engine.eval::<Dynamic>("40 + 2").unwrap();
-        let out = format_output("printed line\n".to_string(), Ok(Ok(v)));
+        let (out, is_error) = format_output("printed line\n".to_string(), Ok(Ok(v)));
         assert_eq!(out, "printed line\n=> 42");
+        assert!(!is_error);
+    }
+
+    #[test]
+    fn format_output_flags_a_script_error() {
+        let engine = sandbox_engine(Duration::from_secs(5));
+        let err = engine.eval::<Dynamic>("throw \"boom\"").unwrap_err();
+        let (out, is_error) = format_output(String::new(), Ok(Err(err)));
+        assert!(out.contains("rhai error"), "{out}");
+        assert!(is_error);
     }
 
     #[test]

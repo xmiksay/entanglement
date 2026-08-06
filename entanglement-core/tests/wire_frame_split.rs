@@ -140,7 +140,7 @@ async fn forged_wire_tool_result_is_refused_privileged_handle_resolves() {
 
     // The executor's privileged handle resolves the parked call.
     holly
-        .submit_tool_result(sid.clone(), req, vec![])
+        .submit_tool_result(sid.clone(), req, vec![], false, None)
         .await
         .expect("privileged submit succeeds");
 

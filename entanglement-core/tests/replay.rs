@@ -171,6 +171,8 @@ async fn single_tool_turn_replay_fidelity() {
                 tool: "read".to_string(),
                 output: "file content".to_string(),
                 content: vec![],
+                is_error: false,
+                duration_ms: None,
             },
         ),
         (
@@ -254,6 +256,8 @@ async fn multi_tool_turn_replay_fidelity() {
                 tool: "read".to_string(),
                 output: "content a".to_string(),
                 content: vec![],
+                is_error: false,
+                duration_ms: None,
             },
         ),
         (
@@ -265,6 +269,8 @@ async fn multi_tool_turn_replay_fidelity() {
                 tool: "read".to_string(),
                 output: "content b".to_string(),
                 content: vec![],
+                is_error: false,
+                duration_ms: None,
             },
         ),
         (
@@ -549,6 +555,8 @@ fn tool_output_record(
             tool: "read".to_string(),
             output: out.to_string(),
             content: vec![],
+            is_error: false,
+            duration_ms: None,
         },
     )
 }

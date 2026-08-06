@@ -188,16 +188,23 @@ impl Holly {
     /// untrusted [`send_from_wire`][Self::send_from_wire] path so a `ToolResult`
     /// is never forgeable off the wire. A thin wrapper over the privileged
     /// [`send`][Self::send]; the executor holds a `Holly`, so it is trusted.
+    /// `is_error`/`duration_ms` (#636, ADR-0176) are the structured side channel
+    /// — whether the call was denied/masked/refused/errored, and how long
+    /// execution took — carried alongside `content`'s text.
     pub async fn submit_tool_result(
         &self,
         session: SessionId,
         request_id: String,
         content: Vec<ContentPart>,
+        is_error: bool,
+        duration_ms: Option<u64>,
     ) -> Result<(), mpsc::error::SendError<InMsg>> {
         self.send(InMsg::ToolResult {
             session,
             request_id,
             content,
+            is_error,
+            duration_ms,
         })
         .await
     }

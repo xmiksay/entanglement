@@ -199,6 +199,8 @@ async fn set_session_meta_applies_immediately_while_a_turn_is_parked() {
             session: sid.clone(),
             request_id: "r1".to_string(),
             content: vec![entanglement_core::ContentPart::text("tool says hi")],
+            is_error: false,
+            duration_ms: None,
         })
         .await
         .unwrap();

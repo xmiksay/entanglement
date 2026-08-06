@@ -43,7 +43,7 @@ use entanglement_core::{
     PermissionProfile, ProfileRegistry, SessionId, ToolCall,
 };
 
-use crate::tools::{SharedRegistry, ToolRegistry};
+use crate::tools::{SharedRegistry, ToolExecution, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::cancel::{CancelAllOnDrop, CancelRegistry, TaskCanceller};
@@ -830,7 +830,7 @@ pub fn spawn_tool_executor_with_policy(
                                     agent_name.as_deref().unwrap_or("unknown")
                                 )
                             };
-                            seam::reply(&holly, session, request_id, output).await;
+                            seam::reply(&holly, session, request_id, output, true).await;
                         });
                         continue;
                     }
@@ -850,7 +850,7 @@ pub fn spawn_tool_executor_with_policy(
                                 "tool `{tool}` is not available while skill `{skill_id}` is \
                                  active (restricted by its allowed_tools)"
                             );
-                            seam::reply(&holly, session, request_id, output).await;
+                            seam::reply(&holly, session, request_id, output, true).await;
                         });
                         continue;
                     }
@@ -887,7 +887,7 @@ pub fn spawn_tool_executor_with_policy(
                             if let Some(refusal) = refusal {
                                 let holly = holly.clone();
                                 tokio::spawn(async move {
-                                    seam::reply(&holly, session, request_id, refusal).await;
+                                    seam::reply(&holly, session, request_id, refusal, true).await;
                                 });
                             } else {
                                 match spawn_guard.try_spawn(&session) {
@@ -932,7 +932,8 @@ pub fn spawn_tool_executor_with_policy(
                                     Err(refusal) => {
                                         let holly = holly.clone();
                                         tokio::spawn(async move {
-                                            seam::reply(&holly, session, request_id, refusal).await;
+                                            seam::reply(&holly, session, request_id, refusal, true)
+                                                .await;
                                         });
                                     }
                                 }
@@ -1024,7 +1025,7 @@ pub fn spawn_tool_executor_with_policy(
                                     let sess = session.clone();
                                     let rid = request_id.clone();
                                     tokio::spawn(async move {
-                                        seam::reply(&holly, sess, rid, refusal).await;
+                                        seam::reply(&holly, sess, rid, refusal, true).await;
                                     });
                                     None
                                 }
@@ -1286,7 +1287,7 @@ async fn dispatch(
     // registry check.
     if !tools.contains(&tool) && !crate::plan_tasks::is_state_tool(&tool) {
         let output = tools.unknown_tool_message(&tool);
-        seam::reply(holly, session, request_id, output).await;
+        seam::reply(holly, session, request_id, output, true).await;
         return;
     }
     // Resolve + apply grants first (matching the pre-seam order where `perm` was
@@ -1313,7 +1314,7 @@ async fn dispatch(
     };
     let perm = apply_grant(grants, &session, &tool, arg.as_deref(), base_perm);
     if let Some(reason) = hooks.run_pre_tool_use(&session, &tool, &input).await {
-        seam::reply(holly, session, request_id, reason).await;
+        seam::reply(holly, session, request_id, reason, true).await;
         return;
     }
     // Escape-root gate (ADR-0109): a `read`/`edit`/`write` path or `bash`/`call`
@@ -1344,7 +1345,7 @@ async fn dispatch(
         }
         Permission::Deny => {
             let output = format!("tool `{tool}` denied by permission profile");
-            seam::reply(holly, session, request_id, output).await;
+            seam::reply(holly, session, request_id, output, true).await;
         }
         // Either the profile said `Ask`, or an out-of-root access forced one.
         _ => {
@@ -1454,7 +1455,7 @@ async fn await_decision(
                 "tool `{tool}` rejected: {}",
                 reason.as_deref().unwrap_or("user")
             );
-            seam::reply(holly, session, request_id, output).await;
+            seam::reply(holly, session, request_id, output, true).await;
         }
         // `Stop` (and a closed inbox) unwind silently; `Answer`/`Retract`/
         // `Replace` never target a tool-approval request id (they are
@@ -1489,16 +1490,24 @@ async fn run_and_reply(
                 .expect("is_state_tool ⇒ state_event is Some")
         });
         let ack = crate::plan_tasks::ack(&tool);
-        hooks.run_post_tool_use(&session, &tool, &input, &ack).await;
-        seam::reply(holly, session, request_id, ack).await;
+        hooks
+            .run_post_tool_use(&session, &tool, &input, &ack, false)
+            .await;
+        seam::reply(holly, session, request_id, ack, false).await;
         return;
     }
     // Every other tool executes against the host registry, returning multimodal
-    // content (a text result, or an image block for `read` on an image, #221).
-    // `edit`/`write` record their change into the capture scope (#202); the
-    // executor mints a fresh `FileChange` seq (#157) and broadcasts the audit
-    // event before replying with the `ToolResult`.
-    let content = crate::file_change::capture_and_emit(
+    // content (a text result, or an image block for `read` on an image, #221)
+    // plus `is_error` (#636, ADR-0176). `edit`/`write` record their change into
+    // the capture scope (#202); the executor mints a fresh `FileChange` seq
+    // (#157) and broadcasts the audit event before replying with the
+    // `ToolResult`. `duration_ms` is measured around the whole execution —
+    // generic across every host tool, unlike `is_error` which the registry
+    // itself classifies — so a slow `bash`/`call` is visible without either
+    // parsing its `[exit N]` header or threading a bespoke timer through every
+    // `Tool` impl.
+    let started = std::time::Instant::now();
+    let execution = crate::file_change::capture_and_emit(
         holly,
         &session,
         tools.execute(
@@ -1512,6 +1521,8 @@ async fn run_and_reply(
         ),
     )
     .await;
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let ToolExecution { content, is_error } = execution;
     let output_text = entanglement_core::content_text(&content);
     // #400, ADR-0106: a successful `load_skill` activates the session's
     // skill-scoped tool mask for the rest of this turn — parsed from the
@@ -1521,11 +1532,21 @@ async fn run_and_reply(
         activate_skill(holly, skills, active_skill, &session, &output_text);
     }
     // `post_tool_use` (#199) observes the result before it is folded back — a
-    // pure side-effect (formatter/telemetry); it cannot rewrite `content`.
+    // pure side-effect (formatter/telemetry); it cannot rewrite `content`, but
+    // it now also observes `is_error` (#636) so a hook can branch on outcome
+    // without re-parsing `output`.
     hooks
-        .run_post_tool_use(&session, &tool, &input, &output_text)
+        .run_post_tool_use(&session, &tool, &input, &output_text, is_error)
         .await;
-    seam::reply_content(holly, session, request_id, content).await;
+    seam::reply_content(
+        holly,
+        session,
+        request_id,
+        content,
+        is_error,
+        Some(duration_ms),
+    )
+    .await;
 }
 
 /// Activate `session`'s skill mask (#400, ADR-0106) from a `load_skill` result:

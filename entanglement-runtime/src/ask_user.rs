@@ -236,7 +236,7 @@ pub async fn run_ask_user(
                 open.remove(&session, &request_id);
                 holly.emit_status(&session, AgentState::Thinking);
                 let output = fold_answers(&questions, &answers);
-                seam::reply(&holly, session, request_id, output).await;
+                seam::reply(&holly, session, request_id, output, false).await;
                 return;
             }
             // #515: withdraw without cancelling the rest of the turn — unlike
@@ -250,6 +250,7 @@ pub async fn run_ask_user(
                     session,
                     request_id,
                     "The user withdrew this question without answering.".to_string(),
+                    false,
                 )
                 .await;
                 return;
