@@ -29,29 +29,26 @@
 //! [ADR-0048]: ../../docs/adr/0048-serve-head-local-trust-model.md
 //! [ADR-0107]: ../../docs/adr/0107-ws-per-connection-approval-ownership.md
 
+pub mod auth;
+mod socket;
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
-    },
+    extract::{ws::WebSocketUpgrade, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
     Router,
 };
-use entanglement_core::{Holly, IdKind, InMsg, SessionId, WireError};
-use futures::{SinkExt, StreamExt};
-use tokio::sync::broadcast::error::RecvError;
+use entanglement_core::{Holly, SessionId};
 
-/// Keep an idle socket (and any NAT/proxy in front of a raw client) alive.
-const PING_INTERVAL: Duration = Duration::from_secs(30);
+pub use auth::{ServeAuth, StaticTokenAuthenticator, WireAuthenticator};
+use socket::handle_socket;
 
 /// Identifies one WS connection for the lifetime of the process; minted from
 /// `ServeState::next_conn_id`.
@@ -99,34 +96,67 @@ struct ServeState {
     /// `Some` → only browsers presenting this exact `Origin` may connect; `None`
     /// → accept every origin (raw clients send none). Opt-in per ADR-0048.
     allowed_origin: Option<String>,
+    /// `Some` → the opt-in authenticated mode (#674, ADR-0174): every WS
+    /// upgrade must present a resolvable bearer credential. `None` keeps the
+    /// ADR-0048 unauthenticated local posture byte-for-byte.
+    auth: Option<ServeAuth>,
     next_conn_id: AtomicU64,
     session_owners: SessionOwners,
 }
 
 /// Bind `127.0.0.1:port` (loopback-only, ADR-0048) and serve the WS head until
 /// Ctrl-C. The bind is the required non-public control, so no non-loopback bind
-/// is offered.
-pub async fn serve(holly: Holly, port: u16, allowed_origin: Option<String>) -> Result<()> {
+/// is offered — even authenticated mode stays loopback (a deployment that
+/// wants more terminates TLS in front, per ADR-0174 §5).
+pub async fn serve(
+    holly: Holly,
+    port: u16,
+    allowed_origin: Option<String>,
+    auth: Option<ServeAuth>,
+) -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding serve head to {addr}"))?;
     let local = listener.local_addr().unwrap_or(addr);
-    tracing::info!(%local, "serve head listening (ws: /ws)");
-    eprintln!("skutter serve: http://{local}  (WebSocket: ws://{local}/ws)");
+    let authed = if auth.is_some() {
+        " (authenticated)"
+    } else {
+        ""
+    };
+    tracing::info!(%local, "serve head listening (ws: /ws){authed}");
+    eprintln!("skutter serve: http://{local}  (WebSocket: ws://{local}/ws){authed}");
 
-    axum::serve(listener, router(holly, allowed_origin))
+    axum::serve(listener, router_with_auth(holly, allowed_origin, auth))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("serve head")
 }
 
-/// Build the axum router. Split from [`serve`] so tests can drive the handlers
-/// over their own ephemeral listener.
+/// Build the axum router in the default, unauthenticated posture (ADR-0048).
+/// Split from [`serve`] so tests can drive the handlers over their own
+/// ephemeral listener.
 pub fn router(holly: Holly, allowed_origin: Option<String>) -> Router {
+    router_with_auth(holly, allowed_origin, None)
+}
+
+/// [`router`] plus the opt-in authenticated mode (#674, ADR-0174): with
+/// `auth` set, the WS upgrade requires a resolvable `Authorization: Bearer`
+/// credential, the connection handler becomes the trusted `Spawn` author for
+/// the sessions it authenticates, and a broadcast maintainer keeps
+/// [`ServeAuth::registry`] in sync with spawned children and ended sessions.
+pub fn router_with_auth(
+    holly: Holly,
+    allowed_origin: Option<String>,
+    auth: Option<ServeAuth>,
+) -> Router {
+    if let Some(auth) = &auth {
+        auth::spawn_registry_maintainer(&holly, auth.registry.clone());
+    }
     let state = Arc::new(ServeState {
         holly,
         allowed_origin,
+        auth,
         next_conn_id: AtomicU64::new(0),
         session_owners: SessionOwners::default(),
     });
@@ -163,125 +193,23 @@ async fn ws_upgrade(
         );
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
-}
-
-/// One connection: relay every `OutEvent` out, route every inbound frame in.
-async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
-    let (mut sink, mut stream) = socket.split();
-    let mut sub = state.holly.subscribe();
-    // A per-connection default session lets a bare-text frame become a `Prompt`,
-    // matching the stdio `pipe` head's scripting affordance.
-    let default_session = SessionId::new(state.holly.next_id(IdKind::Session));
-    // Identifies this connection for approval ownership (#402, ADR-0107).
-    let conn_id = state.next_conn_id.fetch_add(1, Ordering::Relaxed);
-
-    // Outbound pump: fan-out events as JSON text frames; a periodic ping keeps an
-    // otherwise-silent socket alive.
-    let out = tokio::spawn(async move {
-        let mut ping = tokio::time::interval(PING_INTERVAL);
-        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                ev = sub.recv() => match ev {
-                    Ok(ev) => {
-                        let json = match serde_json::to_string(&ev) {
-                            Ok(j) => j,
-                            Err(e) => {
-                                tracing::warn!("serve: unserializable OutEvent dropped: {e}");
-                                continue;
-                            }
-                        };
-                        if sink.send(Message::Text(json.into())).await.is_err() {
-                            break; // client hung up
-                        }
-                    }
-                    // A lag is a dropped-events gap, not end-of-stream (#158): keep
-                    // relaying so the socket self-heals instead of dying silently.
-                    Err(RecvError::Lagged(n)) => {
-                        tracing::warn!("serve: ws relay lagged, skipped {n} events");
-                    }
-                    Err(RecvError::Closed) => break,
-                },
-                _ = ping.tick() => {
-                    if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
-                        break;
-                    }
+    // Authenticated mode (#674, ADR-0174 §1): resolve the bearer credential at
+    // the upgrade, before any WS traffic — an unauthenticated peer never even
+    // opens a socket to probe `wire_allowed()`. The resolved `UserId` binds to
+    // this connection (its `ConnId`) for the connection's whole lifetime.
+    let user = match &state.auth {
+        None => None,
+        Some(auth) => {
+            match auth::bearer_token(&headers).and_then(|t| auth.authenticator.authenticate(t)) {
+                Some(user) => Some(user),
+                None => {
+                    tracing::warn!("serve: refused WS connect (authentication required)");
+                    return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
                 }
             }
         }
-    });
-
-    // Inbound pump: parse each text frame as an `InMsg` and route it through the
-    // untrusted wire path (#155). A non-JSON line falls back to a `Prompt` on this
-    // connection's default session (pipe parity). Ping/pong/binary are ignored
-    // (axum answers pings itself).
-    while let Some(Ok(msg)) = stream.next().await {
-        match msg {
-            Message::Text(text) => {
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<InMsg>(trimmed) {
-                    Ok(m) => {
-                        // Claim/verify ownership on every session-bearing frame so a
-                        // session gets an owner as early as possible (typically the
-                        // initiating `Prompt`); only the decision variants are
-                        // actually gated on it (#402, ADR-0107). `RetractQuestion`/
-                        // `ReplaceQuestion` (#515) join the gate alongside
-                        // `AnswerQuestion` — all three resolve the same class of
-                        // parked `ask_user` waiter, so a non-owning connection must
-                        // not be able to retract/replace one either.
-                        if let Some(session) = m.session() {
-                            let owner_ok = state.session_owners.touch(session, conn_id);
-                            if !owner_ok
-                                && matches!(
-                                    m,
-                                    InMsg::Approve { .. }
-                                        | InMsg::Reject { .. }
-                                        | InMsg::AnswerQuestion { .. }
-                                        | InMsg::RetractQuestion { .. }
-                                        | InMsg::ReplaceQuestion { .. }
-                                )
-                            {
-                                tracing::warn!(
-                                    %session,
-                                    conn_id,
-                                    "serve: refused approval decision from a non-owning connection"
-                                );
-                                continue;
-                            }
-                        }
-                        match state.holly.send_from_wire(m).await {
-                            Ok(()) => {}
-                            Err(WireError::Closed) => break, // engine gone
-                            Err(e @ (WireError::Privileged(_) | WireError::OverlayEnable)) => {
-                                tracing::warn!("serve: {e}");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!("serve: non-InMsg frame treated as prompt ({e})");
-                        if state
-                            .holly
-                            .send(InMsg::prompt(default_session.clone(), trimmed.to_string()))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
-            Message::Close(_) => break,
-            _ => {}
-        }
-    }
-    // Release this connection's session ownership so a still-parked approval
-    // doesn't deadlock behind a client that just disconnected (#402, ADR-0107).
-    state.session_owners.release(conn_id);
-    out.abort();
+    };
+    ws.on_upgrade(move |socket| handle_socket(socket, state, user))
 }
 
 #[cfg(test)]

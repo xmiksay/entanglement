@@ -94,7 +94,10 @@ const SESSION_CMD_CAPACITY: usize = 64;
 /// sheds after the last attempt rather than blocking routing to other sessions.
 const ROUTE_ATTEMPTS: usize = 8;
 /// Profile a new session starts under (opencode-style: `build` is the default).
-const DEFAULT_PROFILE: &str = "build";
+/// Public so a head synthesizing its own trusted `Spawn` (the authenticated
+/// wire head, ADR-0174) names the same profile the lazy-`Prompt` path
+/// resolves, instead of a hardcoded string that could drift.
+pub const DEFAULT_PROFILE: &str = "build";
 
 /// Handle to the running engine. Cheap to clone; the actor task lives until all
 /// clones drop (the inbox closes) or every session stops.
@@ -724,9 +727,15 @@ async fn supervisor(
                 .await
             });
             // Queue the initial prompt; the child drains it after its lifecycle
-            // events. Spawn prompts are text-only (#197).
-            let content = vec![entanglement_provider::ContentPart::text(prompt.clone())];
-            let _ = stx.send(SessionCmd::Prompt(content)).await;
+            // events. Spawn prompts are text-only (#197). An *empty* prompt
+            // queues no turn at all (#674, ADR-0174): a head authoring a
+            // trusted `Spawn` just to bind a session's identity (`user`)
+            // relays the client's real `Prompt` separately — running a model
+            // turn on "" would then stash that prompt as mid-turn steering.
+            if !prompt.is_empty() {
+                let content = vec![entanglement_provider::ContentPart::text(prompt.clone())];
+                let _ = stx.send(SessionCmd::Prompt(content)).await;
+            }
             sessions.insert(child.clone(), stx);
             // Mirror the child→parent edge onto the parent's live `children`
             // list. Best-effort: if the parent task already exited, the edge
