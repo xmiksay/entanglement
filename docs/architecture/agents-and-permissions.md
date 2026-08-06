@@ -523,7 +523,9 @@ below realize one model:
   [ADR-0149](../adr/0149-per-session-tool-overlay.md); live bash enablement
   folded in, #611,
   [ADR-0163](../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)):
-  the live **tool overlay** — `InMsg::SetToolOverlay` (trusted-only) replaces
+  the live **tool overlay** — `InMsg::SetToolOverlay` (trusted-only for an
+  enable entry; a deny-only overlay is wire-allowed, #634,
+  [ADR-0177](../adr/0177-wire-allowed-deny-only-tool-overlay.md)) replaces
   a per-session list of `ToolOverlayEntry { pattern, allow, deny, arg_pattern? }`
   overriding the profile's mask in both directions (an enable entry makes
   matching tools exist past allowlist *and* denylist; a deny entry withdraws

@@ -1466,10 +1466,15 @@ impl InMsg {
     ///   `/mcp` command) keep both via [`Holly::send`][crate::Holly::send];
     ///   `McpList` is read-only and stays wire-allowed.
     /// - [`SetToolOverlay`][InMsg::SetToolOverlay] (#539, ADR-0149, same
-    ///   rationale as `McpAdd`/`McpRemove`): injects tools past the agent
-    ///   mask — including, per ADR-0163 (#611), live-enabling a lazily-
-    ///   registrable built-in like `bash` — optionally graded `allow` with no
-    ///   approval prompt.
+    ///   rationale as `McpAdd`/`McpRemove`): an **enable** entry injects tools
+    ///   past the agent mask — including, per ADR-0163 (#611), live-enabling a
+    ///   lazily-registrable built-in like `bash` — optionally graded `allow`
+    ///   with no approval prompt, so it stays trusted-only. A **deny-only**
+    ///   overlay (every entry has `deny: true`) only *withdraws* tools the
+    ///   profile already advertises — it can never widen what the model may
+    ///   call — so it is wire-allowed (#634, ADR-0149 "Consequences" amended
+    ///   by ADR-0177). An empty `entries` list (clearing back to the profile
+    ///   default) is vacuously deny-only and also wire-allowed.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -1513,14 +1518,18 @@ impl InMsg {
             | InMsg::SetGeneration { .. }
             | InMsg::SetSessionMeta { .. }
             | InMsg::Oneshot { .. } => true,
+            // Deny-only (#634, ADR-0177): withdraws tools, never grants one —
+            // safe over an unauthenticated wire. Any enable entry refuses the
+            // whole frame (full replacement, so a mixed list is refused
+            // outright rather than silently dropping the enable entries).
+            InMsg::SetToolOverlay { entries, .. } => entries.iter().all(|e| e.deny),
             InMsg::ToolResult { .. }
             | InMsg::Spawn { .. }
             | InMsg::Resume { .. }
             | InMsg::HibernateSession { .. }
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
-            | InMsg::McpAuth { .. }
-            | InMsg::SetToolOverlay { .. } => false,
+            | InMsg::McpAuth { .. } => false,
         }
     }
 
@@ -2239,12 +2248,39 @@ mod tests {
         }
         .wire_allowed());
         assert!(!InMsg::McpRemove { name: "srv".into() }.wire_allowed());
-        // The live tool overlay is trusted-only (#539, ADR-0149, the McpAdd
-        // rationale): it injects tools past the agent mask, optionally graded
-        // `allow` with no approval prompt — never wire-grantable.
+        // The live tool overlay is trusted-only for an *enable* entry (#539,
+        // ADR-0149, the McpAdd rationale): it injects tools past the agent
+        // mask, optionally graded `allow` with no approval prompt — never
+        // wire-grantable. A mixed list (any enable entry present) refuses the
+        // whole frame.
         assert!(!InMsg::SetToolOverlay {
             session: s.clone(),
             entries: vec![ToolOverlayEntry::ask("mcp__*")],
+        }
+        .wire_allowed());
+        assert!(!InMsg::SetToolOverlay {
+            session: s.clone(),
+            entries: vec![
+                ToolOverlayEntry::deny("bash"),
+                ToolOverlayEntry::ask("mcp__*"),
+            ],
+        }
+        .wire_allowed());
+        // A deny-only overlay only withdraws tools the profile already
+        // advertises — it can never widen the model's tool surface — so it is
+        // wire-allowed (#634, ADR-0177 amending ADR-0149). An empty list
+        // (clearing back to the profile default) is vacuously deny-only.
+        assert!(InMsg::SetToolOverlay {
+            session: s.clone(),
+            entries: vec![
+                ToolOverlayEntry::deny("bash"),
+                ToolOverlayEntry::deny("mcp__*")
+            ],
+        }
+        .wire_allowed());
+        assert!(InMsg::SetToolOverlay {
+            session: s.clone(),
+            entries: vec![],
         }
         .wire_allowed());
         // Every head-authored frame stays acceptable off the wire.

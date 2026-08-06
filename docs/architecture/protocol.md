@@ -25,7 +25,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
          | SetSessionMeta{session,name?,action?,if_unset=false}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151); if_unset=true applies `name` only when the session has none yet — the session-title generator's guard against clobbering a `/name` or a name restored by resume (#553)
-         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow, optionally arg_pattern-narrowed), deny entries withdraw even profile-advertised tools (#539, ADR-0149; arg_pattern + closed-table lazy built-in registration e.g. bash #611, ADR-0163); full replacement, empty clears; trusted-only, wire-refused
+         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow, optionally arg_pattern-narrowed), deny entries withdraw even profile-advertised tools (#539, ADR-0149; arg_pattern + closed-table lazy built-in registration e.g. bash #611, ADR-0163); full replacement, empty clears; trusted-only for an enable entry, but wire-allowed when every entry is deny-only (#634, ADR-0177)
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?,sponsored}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147); sponsored = true only for a propose_plan build handoff (ADR-0138), disambiguating WaitingAgent's two callers (#626, ADR-0172), #[serde(default)] false
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
@@ -149,7 +149,7 @@ the TUI `/mcp` path is unaffected since it sends over the privileged
 `Connect` opens a browser and mints a durable credential, a forged
 `Disconnect` destroys one, and even `Check` mutates state by refreshing — so
 unlike the read-only `McpList`, none of the three actions is wire-allowed),
-and `SetToolOverlay` (#539,
+and, for an **enable** entry, `SetToolOverlay` (#539,
 [ADR-0149](../adr/0149-per-session-tool-overlay.md), the `McpAdd` rationale
 again: it injects tools past the agent mask, optionally graded `allow` with no
 approval prompt — including, per ADR-0163 (#611), lazily registering a
@@ -157,7 +157,15 @@ closed-table built-in like `bash`, folding in the bespoke
 `BashEnable`/`BashDisable` pair (#498,
 [ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md), now
 superseded) this same way — the TUI `/enable`/`/disable` commands (incl.
-`/enable tool bash [--allow [<pattern>]]`) send over `Holly::send`).
+`/enable tool bash [--allow [<pattern>]]`) send over `Holly::send`). A
+**deny-only** `SetToolOverlay` (every entry `deny: true`, including the empty
+list) is wire-allowed (#634,
+[ADR-0177](../adr/0177-wire-allowed-deny-only-tool-overlay.md) amending
+ADR-0149): it can only withdraw tools the profile already advertises, never
+widen the model's surface, so `wire_allowed()` is content-aware for this one
+variant — any enable entry present refuses the whole (full-replacement) frame
+with the dedicated `WireError::OverlayEnable`, distinct from the blanket
+`WireError::Privileged` every other refused variant gets.
 `wire_allowed`
 is an explicit exhaustive allowlist `match`
 (ADR-0124), so a new variant is wire-refused until deliberately opted in — a
@@ -425,8 +433,14 @@ triggers that built-in's registration into the process-wide `SharedRegistry`
 — the mask-level overlay alone can only *reveal* a tool the registry already
 holds, not conjure one that was never registered (e.g. `bash` without
 `ENTANGLEMENT_ENABLE_BASH=1`); this table is what lets `/enable tool bash`
-work without the startup env var. Trusted-only (wire-refused, the `McpAdd`
-rationale); the TUI drives it via `/enable`/`/disable` (incl.
+work without the startup env var. Trusted-only for an **enable** entry
+(wire-refused, the `McpAdd` rationale); a **deny-only** overlay (every entry
+`deny: true`, including the empty list) is wire-allowed instead (#634,
+[ADR-0177](../adr/0177-wire-allowed-deny-only-tool-overlay.md) amending this
+ADR) — it can only withdraw tools the profile already advertises, so a
+`serve`/`pipe` client can now self-restrict a session's tool surface without
+an in-process head, though it still cannot grant one. The TUI drives the full
+surface via `/enable`/`/disable` (incl.
 `/enable tool bash [--allow [<pattern>]]`, superseding the old
 `/bash on|off`), the bare-`/enable` session-tools checklist dialog (the
 overlay as a diff against the profile mask), and the `/mcp` panel's `e`/`d`
