@@ -38,6 +38,9 @@ pub mod aux_llm;
 // Lean-library-safe: only entanglement-core + std + the already-unconditional
 // `host` module.
 pub mod bash_live;
+// Session-scoped advertisement of the lazily-registered built-ins above
+// (#673, ADR-0179): registration is process-global, visibility is not.
+pub mod builtin_visibility;
 pub mod cancel;
 pub mod config;
 mod date;

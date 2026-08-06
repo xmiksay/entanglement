@@ -229,6 +229,19 @@ impl AvailableMcp {
         let Some(sessions) = enabled.get(server) else {
             return true;
         };
+        self.enabled_by_or_ancestor(sessions, session)
+    }
+
+    /// Whether `session` — or an ancestor of it, live-resolved (#630) — is in
+    /// `sessions`. The shared tail of [`spec_visible`](Self::spec_visible),
+    /// also consulted by `crate::builtin_visibility` (ADR-0179) so lazy
+    /// built-ins inherit the identical ancestor semantics without a second
+    /// parent map.
+    pub(crate) fn enabled_by_or_ancestor(
+        &self,
+        sessions: &HashSet<SessionId>,
+        session: &SessionId,
+    ) -> bool {
         sessions.contains(session) || lifecycle::ancestor_enabled(self, sessions, session)
     }
 

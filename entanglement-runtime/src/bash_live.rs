@@ -23,6 +23,7 @@ use std::sync::Arc;
 use entanglement_core::{Holly, OutEvent, ToolOverlayEntry};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::builtin_visibility::BuiltinVisibility;
 use crate::extra_roots::ExtraRootStore;
 use crate::host::{BashTool, JobRegistry};
 use crate::policy::SandboxResolver;
@@ -62,7 +63,7 @@ impl BashRegistered {
 /// the overlay to *instantiate* a tool (rather than only reveal one already
 /// registered) is a genuine widening of a trusted frame's power, so the set
 /// stays short and reviewed.
-const LAZY_BUILTINS: &[&str] = &["bash"];
+pub(crate) const LAZY_BUILTINS: &[&str] = &["bash"];
 
 /// Everything a lazy `bash` registration needs to build a fresh `BashTool`,
 /// mirroring `register_default_tools`'s bash arm in `main.rs` — captured
@@ -150,14 +151,25 @@ pub fn spawn_lazy_builtin_responder(
     registry: SharedRegistry,
     config: BashToolConfig,
     registered: Arc<BashRegistered>,
+    visibility: Arc<BuiltinVisibility>,
 ) -> tokio::task::JoinHandle<()> {
     let mut events = holly.subscribe();
 
     tokio::spawn(async move {
         loop {
             match events.recv().await {
-                Ok(OutEvent::ToolOverlayChanged { entries, .. }) => {
+                Ok(OutEvent::ToolOverlayChanged { session, entries }) => {
                     register_lazy_builtins(&registry, &config, &registered, &entries);
+                    // Advertisement scoping (ADR-0179): the same overlay list
+                    // that may have just registered the tool also decides
+                    // which session gets to *see* it. Resume-safe: core
+                    // replays `ToolOverlayChanged` on resume, so a resumed
+                    // session re-folds its marks here — unlike the lazy MCP
+                    // enablement map, which is never replayed.
+                    visibility.fold_overlay(&session, &entries);
+                }
+                Ok(OutEvent::SessionEnded { session, .. }) => {
+                    visibility.forget_session(&session);
                 }
                 Ok(_) => {}
                 // A dropped broadcast frame under lag can only delay a lazy
@@ -265,11 +277,13 @@ mod tests {
         let holly = empty_engine();
         let registry: SharedRegistry = Arc::new(StdRwLock::new(ToolRegistry::new()));
         let registered = BashRegistered::new(false);
+        let visibility = BuiltinVisibility::new(None);
         let handle = spawn_lazy_builtin_responder(
             &holly,
             registry.clone(),
             test_config(),
             registered.clone(),
+            visibility.clone(),
         );
 
         // A runtime-authored event, as core's session task would emit in
@@ -292,6 +306,55 @@ mod tests {
         }
         assert!(registry.read().unwrap().contains("bash"));
         assert!(registered.get());
+        // Advertisement scoping (ADR-0179): the enabling session sees it, an
+        // unrelated one does not — even though the registration is global.
+        let avail = crate::mcp::AvailableMcp::default();
+        assert!(visibility.visible("bash", &SessionId::new("s1"), &avail));
+        assert!(!visibility.visible("bash", &SessionId::new("s2"), &avail));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn spawn_lazy_builtin_responder_forgets_visibility_on_session_ended() {
+        let holly = empty_engine();
+        let registry: SharedRegistry = Arc::new(StdRwLock::new(ToolRegistry::new()));
+        let visibility = BuiltinVisibility::new(None);
+        let handle = spawn_lazy_builtin_responder(
+            &holly,
+            registry.clone(),
+            test_config(),
+            BashRegistered::new(false),
+            visibility.clone(),
+        );
+
+        let avail = crate::mcp::AvailableMcp::default();
+        let s1 = SessionId::new("s1");
+        holly
+            .send(entanglement_core::InMsg::SetToolOverlay {
+                session: s1.clone(),
+                entries: vec![ToolOverlayEntry::ask("bash")],
+            })
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            if visibility.visible("bash", &s1, &avail) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(visibility.visible("bash", &s1, &avail));
+
+        holly
+            .send(entanglement_core::InMsg::CloseSession { session: s1.clone() })
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            if !visibility.visible("bash", &s1, &avail) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!visibility.visible("bash", &s1, &avail));
         handle.abort();
     }
 

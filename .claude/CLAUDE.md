@@ -222,10 +222,11 @@ never here**; each bullet is the claim + where to read it:
   (`/enable tool bash [--allow [<pattern>]]`, superseding the old bespoke
   `BashEnable`/`BashDisable` pair): an enable entry matching a closed table of
   lazily-registrable built-ins (`bash` only, today) also registers it into
-  the shared tool registry on demand.
+  the shared tool registry on demand — registration is process-global, but
+  its *advertisement* is session-scoped to the enabling overlay chain.
   [agents & permissions](../docs/architecture/agents-and-permissions.md),
   [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)/[ADR-0163](../docs/adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md).
+  [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)/[ADR-0163](../docs/adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)/[ADR-0179](../docs/adr/0179-lazily-registered-built-ins-advertise-session-scoped.md).
 - **Skills**: layered definitions with cross-vendor discovery; a loaded
   skill's `allowed_tools` gates the rest of the turn (agent mask still applies
   first). [agents & permissions](../docs/architecture/agents-and-permissions.md),
