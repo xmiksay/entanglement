@@ -631,10 +631,14 @@ pub(super) async fn handle_sessions_modal_event(
         // Lifecycle quick keys (#6) act on the highlighted session: `s` stops
         // its in-flight turn, `p` pauses it, `r` resumes it. The modal stays
         // open so the user can act on several in a row. No-op on a session in
-        // an incompatible state (idempotent server-side).
+        // an incompatible state (idempotent server-side). `s` routes through
+        // `request_stop` (#626): a highlighted plan session parked on a live
+        // sponsored build child arms the cascade-vs-detach confirm (which
+        // takes over key dispatch on the next event) instead of detaching
+        // right away.
         KeyCode::Char('s') => {
             if let Some(id) = app.modal_selected_session_id() {
-                let _ = holly.send(InMsg::Stop { session: id }).await;
+                crate::tui::stop_command::request_stop(app, holly, id).await;
             }
         }
         KeyCode::Char('p') => {
@@ -728,11 +732,10 @@ pub(super) async fn handle_command_palette_event(
                     // Lifecycle commands (#6): the palette carries no `--all`
                     // flag, so a picked `/stop` acts on the active session only
                     // — the same default a bare typed `/stop` falls back to.
-                    let _ = holly
-                        .send(InMsg::Stop {
-                            session: app.active_session_id().clone(),
-                        })
-                        .await;
+                    // Routed through `request_stop` (#626) like every other
+                    // single-target `Stop` site.
+                    let target = app.active_session_id().clone();
+                    crate::tui::stop_command::request_stop(app, holly, target).await;
                 } else if cmd == crate::tui::commands::Command::Pause {
                     let _ = holly
                         .send(InMsg::PauseSession {

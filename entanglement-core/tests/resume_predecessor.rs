@@ -32,6 +32,7 @@ async fn resumed_successor_reannounces_its_predecessor() {
             root: true,
             ts: 0,
             user: None,
+            sponsored: false,
         },
     )];
 

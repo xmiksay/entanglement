@@ -1,4 +1,4 @@
-use entanglement_core::{InMsg, OutEvent, SessionId};
+use entanglement_core::{AgentState, InMsg, OutEvent, SessionId};
 use ratatui::widgets::ListState;
 use std::collections::HashMap;
 
@@ -60,6 +60,23 @@ impl SessionRegistry {
     /// compaction fork (ADR-0101) to record a notice on the source view.
     pub fn view_for_mut(&mut self, id: &SessionId) -> Option<&mut SessionView> {
         self.views.get_mut(id)
+    }
+
+    /// `id`'s [`AgentState`], if it names a known session — used by the
+    /// cascade-vs-detach `Stop` confirm (#626) to check an arbitrary target
+    /// (e.g. the sessions modal's highlighted row, not just the active view).
+    pub fn state_of(&self, id: &SessionId) -> Option<AgentState> {
+        self.views.get(id).map(|v| v.state())
+    }
+
+    /// The live (not-yet-ended) sponsored `propose_plan` build child of
+    /// `target`, if any (#626) — disambiguates `WaitingAgent`'s two callers: a
+    /// plain blocking `agent`/`agent_send` sub-agent wait has no such child.
+    pub fn live_sponsored_child_of(&self, target: &SessionId) -> Option<SessionId> {
+        self.views.iter().find_map(|(id, view)| {
+            (view.parent() == Some(target) && view.sponsored() && !view.has_ended())
+                .then(|| id.clone())
+        })
     }
 
     fn view_or_insert(&mut self, id: &SessionId) -> &mut SessionView {

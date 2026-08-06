@@ -88,6 +88,7 @@ impl App {
             agent: fork.agent.clone(),
             prompt: fork.summary.clone(),
             user: None,
+            sponsored: false,
         }
     }
 
@@ -199,6 +200,7 @@ mod tests {
                 agent,
                 prompt,
                 user: _,
+                sponsored: _,
             } => {
                 assert_eq!(session, active);
                 assert_eq!(parent, None, "successor is a root, not a child");

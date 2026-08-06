@@ -681,7 +681,13 @@ no usable answer instead of concluding on top of a failed build — ADR-0155,
 (#513), so a `Stop` on the plan session aborts this wait with no reply owed
 and the child (an independent session) keeps running untouched — "detach" by
 default; a head wanting the child stopped too sends it an ordinary second
-`Stop` ("cascade", no new protocol surface). The build's answer folds back —
+`Stop` ("cascade", no new protocol surface). `InMsg::Spawn`/
+`OutEvent::SessionStarted`/`SessionInfo` carry a `sponsored: bool`
+(`#[serde(default)]`, set only here) so a head can disambiguate
+`WaitingAgent`'s two callers — this sponsored build wait vs. a plain blocking
+`agent`/`agent_send` sub-agent wait — before deciding whether to offer that
+choice; the TUI does, via a confirm modal on `Stop` (#626, ADR-0172). The
+build's answer folds back —
 prefixed with the plan file's location — as the `propose_plan` tool result,
 so the plan agent has the implementation outcome in context: it reviews it,
 updates the plan file's checkboxes via `write`/`edit`, and `propose_plan`s

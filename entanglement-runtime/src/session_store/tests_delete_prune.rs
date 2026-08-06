@@ -18,6 +18,7 @@ fn write_session_file(cwd: &Path, id: &SessionId) -> PathBuf {
             root: true,
             ts: 1000,
             user: None,
+            sponsored: false,
         }),
     );
     append(cwd, id, &record).expect("append should succeed");

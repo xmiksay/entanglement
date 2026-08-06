@@ -588,6 +588,7 @@ mod tests {
                 agent: "build".into(),
                 prompt: "subtask".into(),
                 user: None,
+                sponsored: false,
             })
             .await
             .unwrap();

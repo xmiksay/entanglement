@@ -168,6 +168,7 @@ mod tests {
                     root: true,
                     ts: 0,
                     user: None,
+                    sponsored: false,
                 },
             ),
             out(
@@ -237,6 +238,7 @@ mod tests {
                     root: true,
                     ts: 0,
                     user: None,
+                    sponsored: false,
                 },
             ),
             out(

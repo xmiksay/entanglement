@@ -293,6 +293,9 @@ async fn launch_sponsored_build(
             agent: HANDOFF_PROFILE.to_string(),
             prompt: prompt.clone(),
             user: None,
+            // Sponsored, not a plain sub-agent spawn (ADR-0138): lets a head
+            // disambiguate `AgentState::WaitingAgent`'s two callers (#626).
+            sponsored: true,
         })
         .await
         .is_err()

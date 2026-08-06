@@ -36,12 +36,14 @@ mod pickers;
 mod quit;
 mod slash;
 mod state;
+mod stop_confirm;
 mod toast;
 mod tools;
 mod types;
 mod view;
 
 pub use inspect::InspectTab;
+pub use stop_confirm::StopConfirm;
 pub use types::{CompactFork, ModalClickAreas, ProfileInfo, UiEffect};
 
 #[cfg(test)]
@@ -241,6 +243,10 @@ pub struct App {
     // the drag-copy notice) with a short TTL, expired eagerly by the render
     // loop like `quit_pending`.
     toast: Option<(String, Instant)>,
+
+    // Cascade-vs-detach confirm for `Stop` on a plan session with a live
+    // sponsored `propose_plan` build child (#626, ADR-0145 "Consequences").
+    pending_stop_confirm: Option<StopConfirm>,
 }
 
 impl App {

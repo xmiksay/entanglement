@@ -267,6 +267,7 @@ async fn spawned_explore_child_request_carries_no_edit_spec() {
             agent: "explore".into(),
             prompt: "explore the tree".into(),
             user: None,
+            sponsored: false,
         })
         .await
         .unwrap();

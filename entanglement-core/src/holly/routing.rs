@@ -87,6 +87,7 @@ pub(super) fn resume_meta(
             profile,
             root,
             user,
+            sponsored,
             ..
         } = ev
         {
@@ -102,6 +103,7 @@ pub(super) fn resume_meta(
                 // the resolved detail from the replayed session's profile (#189).
                 profile_detail: None,
                 user: user.clone(),
+                sponsored: *sponsored,
             };
         }
     }
@@ -112,6 +114,7 @@ pub(super) fn resume_meta(
         root: true,
         profile_detail: None,
         user: None,
+        sponsored: false,
     }
 }
 

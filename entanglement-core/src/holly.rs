@@ -604,6 +604,7 @@ async fn supervisor(
             agent,
             prompt,
             user,
+            sponsored,
         } = &msg
         {
             // A duplicate spawn for a live child is a no-op (the child already runs).
@@ -673,6 +674,7 @@ async fn supervisor(
                     root: is_root,
                     profile_detail: Some(profile.detail()),
                     user: effective_user.clone(),
+                    sponsored: *sponsored,
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -681,6 +683,7 @@ async fn supervisor(
             let sid = child.clone();
             let predecessor = predecessor.clone();
             let parent_for_loop = parent.clone();
+            let sponsored = *sponsored;
             let seqs2 = seqs.clone();
             let activity2 = activity.clone();
             tokio::spawn(async move {
@@ -694,6 +697,7 @@ async fn supervisor(
                     parent_for_loop,
                     predecessor,
                     effective_user,
+                    sponsored,
                     seqs2,
                     activity2,
                 )
@@ -770,6 +774,7 @@ async fn supervisor(
                     root: true,
                     profile_detail: Some(profile.detail()),
                     user: None,
+                    sponsored: false,
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -780,7 +785,7 @@ async fn supervisor(
             let activity2 = activity.clone();
             tokio::spawn(async move {
                 session_loop(
-                    sid, srx, ev, cfg2, profile, None, None, None, None, seqs2, activity2,
+                    sid, srx, ev, cfg2, profile, None, None, None, None, false, seqs2, activity2,
                 )
                 .await
             });
@@ -866,11 +871,12 @@ fn spawn_resumed(
             profile,
             Some(initial_session),
             parent,
-            // Resume reconstructs `predecessor`/`user` from the log (replay);
-            // pass `None` for both so neither is overwritten (session.rs's
-            // resumed-takes-precedence rule).
+            // Resume reconstructs `predecessor`/`user`/`sponsored` from the log
+            // (replay); pass `None`/`false` for them so none is overwritten
+            // (session.rs's resumed-takes-precedence rule, #626 for the third).
             None,
             None,
+            false,
             seqs2,
             activity2,
         )
