@@ -23,10 +23,9 @@ mod tui;
 use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, bash_live, builtin_visibility, config, env_date, extra_roots, history, host,
-    inspect, logging,
-    mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
-    propose_plan, retained_output, session_store, skills, subagent, system_prompt, throttle,
-    tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
+    inspect, logging, mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch,
+    policy, poll, propose_plan, retained_output, session_store, skills, subagent, system_prompt,
+    throttle, tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -786,6 +785,7 @@ fn openai_factory_for(
         resolve_concurrency(entry),
         catalog.model_concurrency_resolver(&entry.name),
         web_search,
+        entry.prompt_cache_key,
         http_client.clone(),
     ))
 }
@@ -1861,6 +1861,7 @@ mod tests {
             default_model: "test-model".to_string(),
             models: Vec::new(),
             mcp_servers: Default::default(),
+            prompt_cache_key: false,
         }
     }
 

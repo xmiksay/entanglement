@@ -28,12 +28,29 @@ fn msg(role: MessageRole, text: &str) -> Message {
 }
 
 #[test]
+fn body_carries_prompt_cache_key_when_given() {
+    // #673: a stable per-session routing hint for implicit caching, emitted
+    // only when the catalog-gated caller passes it through.
+    let body = build_body(
+        "gpt-4o",
+        "be helpful",
+        &[msg(MessageRole::User, "hi")],
+        &[],
+        None,
+        None,
+        Some("s-abc123"),
+    );
+    assert_eq!(body["prompt_cache_key"], "s-abc123");
+}
+
+#[test]
 fn body_prepends_system_message_and_omits_tools_when_empty() {
     let body = build_body(
         "glm-5.2",
         "be helpful",
         &[msg(MessageRole::User, "hi")],
         &[],
+        None,
         None,
         None,
     );
@@ -43,6 +60,9 @@ fn body_prepends_system_message_and_omits_tools_when_empty() {
     // No generation params ⇒ no temperature/max_tokens on the wire.
     assert!(body.get("temperature").is_none());
     assert!(body.get("max_tokens").is_none());
+    // No cache key ⇒ the field is absent — the body stays byte-identical to
+    // the pre-#673 shape for endpoints that never opted in.
+    assert!(body.get("prompt_cache_key").is_none());
     let msgs = body["messages"].as_array().unwrap();
     assert_eq!(msgs[0]["role"], "system");
     assert_eq!(msgs[0]["content"], "be helpful");
@@ -110,6 +130,7 @@ fn body_includes_tools_with_parameters_schema() {
         &[spec],
         None,
         None,
+        None,
     );
     assert_eq!(body["tools"][0]["type"], "function");
     assert_eq!(body["tools"][0]["function"]["name"], "greet");
@@ -131,6 +152,7 @@ fn generation_params_set_temperature_and_max_tokens() {
             reasoning_effort: None,
         }),
         None,
+        None,
     );
     assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
     assert_eq!(body["max_tokens"], 2048);
@@ -151,6 +173,7 @@ fn reasoning_effort_passes_through_verbatim_lowercase() {
             reasoning_effort: Some(crate::ReasoningEffort::High),
         }),
         None,
+        None,
     );
     assert_eq!(body["reasoning_effort"], "high");
 }
@@ -163,6 +186,7 @@ fn generation_params_omit_unset_knobs() {
         &[msg(MessageRole::User, "hi")],
         &[],
         Some(GenerationParams::default()),
+        None,
         None,
     );
     assert!(body.get("temperature").is_none());
@@ -446,6 +470,7 @@ fn body_omits_web_search_tool_without_config() {
         &[],
         None,
         None,
+        None,
     );
     assert!(body.get("tools").is_none());
 }
@@ -464,6 +489,7 @@ fn body_pushes_web_search_tool_when_configured() {
         &[],
         None,
         Some(&ws),
+        None,
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -491,6 +517,7 @@ fn web_search_tool_rides_alongside_function_tools() {
         &[ToolSpec::new("greet", "say hi")],
         None,
         Some(&ws),
+        None,
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 2);

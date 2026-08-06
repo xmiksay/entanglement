@@ -89,6 +89,11 @@ pub struct OpenAiLlm {
     /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
     /// the z.ai `web_search` tool. Bound at construction, invisible to core.
     web_search: Option<WebSearchConfig>,
+    /// Whether to forward [`LlmRequest::cache_key`] as OpenAI's
+    /// `prompt_cache_key` implicit-cache routing hint (#673). Catalog-gated
+    /// per provider (`ProviderEntry::prompt_cache_key`) — off for endpoints
+    /// not verified to tolerate the extra body field.
+    send_prompt_cache_key: bool,
     http: HttpClient,
 }
 
@@ -106,6 +111,7 @@ impl OpenAiLlm {
         concurrency: Option<usize>,
         model_concurrency: ModelConcurrencyResolver,
         web_search: Option<WebSearchConfig>,
+        send_prompt_cache_key: bool,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -116,6 +122,7 @@ impl OpenAiLlm {
             concurrency,
             model_concurrency,
             web_search,
+            send_prompt_cache_key,
             http,
         }
     }
@@ -136,6 +143,7 @@ pub fn openai_factory(
     concurrency: Option<usize>,
     model_concurrency: ModelConcurrencyResolver,
     web_search: Option<WebSearchConfig>,
+    send_prompt_cache_key: bool,
     http: HttpClient,
 ) -> crate::LlmFactory {
     let llm = OpenAiLlm::new(
@@ -146,6 +154,7 @@ pub fn openai_factory(
         concurrency,
         model_concurrency,
         web_search,
+        send_prompt_cache_key,
         http,
     );
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
@@ -166,6 +175,7 @@ impl Llm for OpenAiLlm {
             req.tools,
             req.generation,
             self.web_search.as_ref(),
+            req.cache_key.filter(|_| self.send_prompt_cache_key),
         );
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 

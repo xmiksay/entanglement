@@ -6,6 +6,7 @@ use crate::web_search::WebSearchConfig;
 use crate::{ContentPart, GenerationParams, ImageSource, Message, MessageRole, ToolSpec};
 use serde_json::{json, Value};
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_body(
     model: &str,
     system: &str,
@@ -13,6 +14,7 @@ pub(super) fn build_body(
     tools: &[ToolSpec],
     generation: Option<GenerationParams>,
     web_search: Option<&WebSearchConfig>,
+    cache_key: Option<&str>,
 ) -> Value {
     let mut msgs = Vec::with_capacity(messages.len() + 1);
     if !system.is_empty() {
@@ -50,6 +52,14 @@ pub(super) fn build_body(
         if let Some(effort) = g.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
         }
+    }
+    // Implicit-cache routing hint (#673): a stable per-session key so a
+    // multi-instance endpoint routes this conversation's requests to the same
+    // cache shard. Only sent when the catalog says the endpoint tolerates it
+    // (`ProviderEntry::prompt_cache_key`) — the caller passes `None` otherwise,
+    // keeping the body byte-identical to the pre-#673 shape.
+    if let Some(key) = cache_key {
+        body["prompt_cache_key"] = json!(key);
     }
     body
 }

@@ -67,6 +67,15 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 | `AnthropicLlm` (`anthropic/`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
 | `GeminiLlm` (`gemini.rs`) | `:streamGenerateContent?alt=sse` | Google Gemini | `x-goog-api-key` |
 
+- **Implicit-cache routing hint** (#673) — `LlmRequest` carries an optional
+  `cache_key` (core sets the session's own id on every main-turn request;
+  aux one-shots pass `None`), and the OpenAI client forwards it as the
+  `prompt_cache_key` body field so a multi-instance endpoint routes one
+  conversation's requests to the same cache shard. Catalog-gated per provider
+  (`ProviderEntry::prompt_cache_key`, default **off**; the embedded defaults
+  enable it only for `openai` — z.ai/Ollama stay off until verified to
+  tolerate the extra field, and a user `providers.yml` can flip any entry).
+  The other wires ignore the field entirely.
 - `OpenAiLlm` is one generic client `{ base_url, api_key: Option, default_model }`
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
