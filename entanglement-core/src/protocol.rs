@@ -1956,6 +1956,22 @@ pub enum OutEvent {
         change_kind: FileChangeKind,
         hash: String,
     },
+    /// A bound plan file changed on disk **out of band** — i.e. not through this
+    /// session's own `edit`/`write`/`apply_patch` (#627, ADR-0145
+    /// "Consequences"). `propose_plan`'s staleness guard already refuses a stale
+    /// `path` resubmit at the *next* `propose_plan` call; this is the same
+    /// detection surfaced live, off a dedicated plans-folder watch, so a head
+    /// doesn't have to wait for the next tool call to learn the bound file moved
+    /// under it. `path` is the plan file's root-relative location; `hash` is its
+    /// new content hash — informational only, mirroring `FileChange`'s "hash not
+    /// bytes" fan-out discipline. No core replay-fold semantics, like
+    /// `SkillActive`: a head just renders a notice and moves on.
+    PlanChanged {
+        session: SessionId,
+        seq: u64,
+        path: String,
+        hash: String,
+    },
     /// The session's active-skill tool mask changed (#400, ADR-0106). Emitted by
     /// the runtime's tool executor: `Some(skill_id)` when a `load_skill` call
     /// activates a skill (`allowed_tools` is that skill's mask, `None` meaning it
@@ -2063,6 +2079,7 @@ impl OutEvent {
             | OutEvent::Done { session, .. }
             | OutEvent::Compacted { session, .. }
             | OutEvent::FileChange { session, .. }
+            | OutEvent::PlanChanged { session, .. }
             | OutEvent::SkillActive { session, .. }
             | OutEvent::AmbiguousRetry { session, .. }
             | OutEvent::SearchResult { session, .. }
@@ -2120,6 +2137,7 @@ impl OutEvent {
             | OutEvent::Done { seq, .. }
             | OutEvent::Compacted { seq, .. }
             | OutEvent::FileChange { seq, .. }
+            | OutEvent::PlanChanged { seq, .. }
             | OutEvent::SkillActive { seq, .. }
             | OutEvent::AmbiguousRetry { seq, .. }
             | OutEvent::SearchResult { seq, .. }

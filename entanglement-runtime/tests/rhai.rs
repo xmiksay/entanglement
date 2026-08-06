@@ -21,6 +21,7 @@ use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::{
     host_tools, host_tools_with_extra_roots, BashTool, CallTool, ReadRawTool,
 };
+use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
 };
@@ -249,6 +250,7 @@ fn spawn_with_rhai_escape(
         Hooks::default(),
         Some(escape_root),
         SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
     );
     (holly, store)
 }
@@ -1142,6 +1144,7 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         Hooks::default(),
         None,
         SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
     );
 
     let sid = SessionId::new("s1");

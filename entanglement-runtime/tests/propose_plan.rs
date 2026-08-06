@@ -31,6 +31,7 @@ use entanglement_core::{
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::host_tools_with_extra_roots;
+use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{DefaultGrantStore, ProfileResolver, SandboxConfig};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
@@ -156,6 +157,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         Hooks::default(),
         Some(escape_root),
         SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
     );
     holly
 }

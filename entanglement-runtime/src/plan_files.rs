@@ -85,6 +85,19 @@ impl PlanFileRegistry {
     pub fn forget_session(&self, session: &SessionId) {
         self.bindings.lock().unwrap().remove(session);
     }
+
+    /// Every current binding, for the plans-folder watcher (#627) to diff
+    /// against what's actually on disk. A snapshot, not a live view — the
+    /// watcher's debounced firing is infrequent enough that a clone is cheap
+    /// and avoids holding the lock across its filesystem reads.
+    pub fn snapshot(&self) -> Vec<(SessionId, PlanBinding)> {
+        self.bindings
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(session, binding)| (session.clone(), binding.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -140,5 +153,26 @@ mod tests {
         reg.record(s.clone(), ".entanglement/plans/s1.md".into(), "h1".into());
         reg.forget_session(&s);
         assert!(reg.get(&s).is_none());
+    }
+
+    #[test]
+    fn snapshot_lists_every_binding() {
+        let reg = PlanFileRegistry::new();
+        let a = SessionId::new("a");
+        let b = SessionId::new("b");
+        reg.record(a.clone(), ".entanglement/plans/a.md".into(), "ha".into());
+        reg.record(b.clone(), ".entanglement/plans/b.md".into(), "hb".into());
+        let mut snap = reg.snapshot();
+        snap.sort_by_key(|x| x.0.to_string());
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].0, a);
+        assert_eq!(snap[0].1.rel_path, ".entanglement/plans/a.md");
+        assert_eq!(snap[1].0, b);
+    }
+
+    #[test]
+    fn snapshot_is_empty_for_a_fresh_registry() {
+        let reg = PlanFileRegistry::new();
+        assert!(reg.snapshot().is_empty());
     }
 }

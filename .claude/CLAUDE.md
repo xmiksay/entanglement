@@ -138,7 +138,7 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
-          | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange
+          | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
           | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
 ```
 
@@ -242,8 +242,15 @@ never here**; each bullet is the claim + where to read it:
   [ADR-0054](../docs/adr/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/0109-escape-root-access-via-approval.md)/[ADR-0119](../docs/adr/0119-rhai-bindings-route-through-the-escape-root-gate.md)/[ADR-0120](../docs/adr/0120-once-scoped-escape-root-grant-bound-to-request-id.md)/[ADR-0132](../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md)/[ADR-0142](../docs/adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)/[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)/[ADR-0134](../docs/adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md).
 - **Plans**: `propose_plan` is the sole plan-authorship tool, file-backed under
   `.entanglement/plans/`, force-parked on `Ask`, sponsoring a blocking `build`
-  child. [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [ADR-0145](../docs/adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)/[ADR-0138](../docs/adr/0138-sponsored-build-child-and-propose-plan-cycle.md).
+  child. A session-scoped content-hash staleness guard refuses a stale
+  `path` resubmit at the *next* call; a dedicated debounced plans-folder
+  watch (`plan_watch.rs`, reusing only `watch.rs`'s `spawn_debounced_watcher`
+  primitive, never its unrelated agent/skill/config reload) surfaces the same
+  out-of-band edit live as `OutEvent::PlanChanged`, self-healing the guard's
+  registry so the next resubmit isn't also refused.
+  [agents & permissions](../docs/architecture/agents-and-permissions.md),
+  [engine](../docs/architecture/engine.md),
+  [ADR-0145](../docs/adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)/[ADR-0138](../docs/adr/0138-sponsored-build-child-and-propose-plan-cycle.md)/[ADR-0173](../docs/adr/0173-watcher-driven-plan-file-changed-notice.md).
 - **`ask_user` questions are listable/retractable/replaceable** after being
   asked (`ListQuestions`/`RetractQuestion`/`ReplaceQuestion`, runtime-owned
   registry). [protocol](../docs/architecture/protocol.md),

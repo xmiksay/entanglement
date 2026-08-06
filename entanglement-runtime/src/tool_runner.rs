@@ -264,6 +264,11 @@ pub fn spawn_tool_executor_with_hooks(
         // No per-profile sandboxing wired here (#479) — every `bash`/`call` in
         // this wrapper's callers runs unsandboxed, byte-identical to pre-#479.
         crate::policy::SandboxConfig::none(),
+        // These convenience wrappers' (~30, test-only) callers never wire up a
+        // plans-folder watch either, so a private, unshared registry is fine —
+        // matches their historical no-external-sharing behavior for `jobs`/
+        // `retained` above.
+        Arc::new(PlanFileRegistry::new()),
     )
 }
 
@@ -313,6 +318,14 @@ pub fn spawn_tool_executor_with_hooks(
 /// recorded into and the host tools read. `None` (the wrappers below, all tests)
 /// keeps strict containment — an out-of-root path is a hard error, never a
 /// prompt.
+///
+/// `plan_files` (#513) is the shared [`PlanFileRegistry`] this executor's
+/// `propose_plan` dispatch arm and its own `FileChange` listener (spawned
+/// inside, below) both read/write. Taken as a param (#627) rather than
+/// constructed internally so a caller wiring up the dedicated plans-folder
+/// watch ([`crate::plan_watch::spawn_plans_watcher`]) can hand it the exact
+/// same instance — the watch's out-of-band notice and this executor's
+/// staleness guard must agree on what the agent last knew.
 #[derive(Clone)]
 pub struct EscapeRoot {
     pub root: std::path::PathBuf,
@@ -348,6 +361,11 @@ pub fn spawn_tool_executor_with_policy(
     // amendment): `own`/`floor` are folded from the same lifecycle events as
     // `active` below, and read by the caller's `SandboxConfig::resolver()`.
     sandbox: crate::policy::SandboxConfig,
+    // Per-session plan-file staleness tracking (#513), taken as a param
+    // (rather than constructed inside, as before #627) so a caller that also
+    // wants the dedicated plans-folder watch (`plan_watch::spawn_plans_watcher`)
+    // can share the exact same registry instance with it.
+    plan_files: Arc<PlanFileRegistry>,
 ) -> tokio::task::JoinHandle<()> {
     let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
@@ -419,10 +437,11 @@ pub fn spawn_tool_executor_with_policy(
             .as_ref()
             .map(|er| er.root.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
-        // Per-session plan-file staleness tracking (#513): kept fresh by
-        // `propose_plan` itself (below) and passively by the `FileChange`
-        // listener spawned right after this loop starts.
-        let plan_files: Arc<PlanFileRegistry> = Arc::new(PlanFileRegistry::new());
+        // Per-session plan-file staleness tracking (#513): the registry passed
+        // in above, kept fresh by `propose_plan` itself (below), passively by
+        // the `FileChange` listener spawned right after this loop starts, and
+        // — out of band — by `plan_watch::spawn_plans_watcher` if the caller
+        // wired one up against this same instance (#627).
         {
             let mut file_changes = holly.subscribe();
             let plan_files = plan_files.clone();

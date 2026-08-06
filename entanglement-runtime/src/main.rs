@@ -23,9 +23,9 @@ mod tui;
 use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, bash_live, config, env_date, extra_roots, history, host, inspect, logging,
-    mcp, permission_path, persistence, plan_tasks, policy, poll, propose_plan, retained_output,
-    session_store, skills, subagent, system_prompt, throttle, tool_names, tool_runner, watch,
-    SharedRegistry, ToolRegistry,
+    mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
+    propose_plan, retained_output, session_store, skills, subagent, system_prompt, throttle,
+    tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -1420,6 +1420,15 @@ async fn main() -> Result<()> {
         Some(escape_root.root.clone()),
     ));
     let grants = Arc::new(DefaultGrantStore::load());
+    // Per-session plan-file staleness tracking (#513): constructed here, not
+    // inside the executor, so the dedicated plans-folder watch (#627, below)
+    // can share this exact instance — its out-of-band notice and the
+    // executor's staleness guard must agree on what the agent last knew.
+    let plan_files = Arc::new(plan_files::PlanFileRegistry::new());
+    // Cloned before `escape_root` moves into the executor below — reused for
+    // the plans watcher's own root (#627, same story as the resolver's clone
+    // just above).
+    let plan_root = escape_root.root.clone();
     let tool_executor = tool_runner::spawn_tool_executor_with_policy(
         &holly,
         tools.clone(),
@@ -1438,6 +1447,7 @@ async fn main() -> Result<()> {
         // `register_default_tools`'s resolver reads, so the dispatch loop's
         // fold below is what `bash`/`call` actually see.
         sandbox_config,
+        plan_files.clone(),
     );
 
     // Live MCP server management (#375): a runtime service answering
@@ -1505,6 +1515,19 @@ async fn main() -> Result<()> {
     };
     let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watcher_handle = watch::spawn_watcher(cwd.clone(), live, Some(reload_tx));
+
+    // Dedicated plans-folder watch (#627, ADR-0145 "Consequences"): notifies a
+    // plan session's transcript the moment its bound file changes out of band
+    // (an editor save, not this session's own tool calls) instead of only at
+    // the next `propose_plan(path=...)` call. Deliberately its own watcher,
+    // not folded into the definitions watcher above — that one reloads
+    // agent/skill/config *definitions*, an unrelated reload action; this
+    // shares only the `spawn_debounced_watcher` primitive. `plan_files` is the
+    // exact instance the tool executor above reads/writes, so the two stay in
+    // sync (a self-heal here is the same fact the staleness guard would
+    // otherwise re-discover on the next `propose_plan` call).
+    let plans_watcher_handle =
+        plan_watch::spawn_plans_watcher(&holly, plan_root, plan_files.clone());
 
     let auto_approve = cli.yes;
     let result = match cli.cmd {
@@ -1707,6 +1730,9 @@ async fn main() -> Result<()> {
     session_title_handle.abort();
     history_handle.abort();
     if let Some(h) = watcher_handle {
+        h.abort();
+    }
+    if let Some(h) = plans_watcher_handle {
         h.abort();
     }
     drop(holly);

@@ -75,6 +75,7 @@ use crate::seam;
 use crate::tool_names::PROPOSE_PLAN_TOOL;
 
 mod resolve;
+pub(crate) use resolve::PLANS_DIR;
 use resolve::{parse_plan_input, resolve_plan};
 
 /// The profile a handoff mints its fresh session under: the plan is accepted into

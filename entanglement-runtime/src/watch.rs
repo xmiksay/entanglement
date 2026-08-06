@@ -208,7 +208,12 @@ fn definitions_changed(old: &Fingerprint, new: &Fingerprint) -> bool {
 /// files were touched within the `debounce` window. Independently
 /// unit-testable without touching any real definition loader. Returns `None`
 /// (spawning nothing) when no candidate path exists.
-fn spawn_debounced_watcher(
+///
+/// `pub(crate)`: the reuse point for any other lightweight, dedicated watch
+/// this crate needs — e.g. `plan_watch`'s plans-folder watch (#627) — without
+/// pulling in this module's agent/skill/config *definitions* reload semantics
+/// (a deliberately separate reload action, see the module doc).
+pub(crate) fn spawn_debounced_watcher(
     paths: Vec<PathBuf>,
     debounce: Duration,
     mut on_change: impl FnMut() + Send + 'static,

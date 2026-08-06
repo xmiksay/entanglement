@@ -14,6 +14,7 @@ use entanglement_core::{
     LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
     SessionId, ToolCall,
 };
+use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
 };
@@ -828,6 +829,7 @@ fn spawn_two_read_calls_rooted(
         Default::default(),
         Some(escape_root),
         SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
     );
     holly
 }
@@ -1069,6 +1071,7 @@ fn spawn_scripted_calls_rooted(
         Default::default(),
         Some(escape_root),
         SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
     );
     holly
 }

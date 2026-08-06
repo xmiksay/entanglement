@@ -17,6 +17,7 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
+use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::skills::{load_registry, LoadSkillTool};
 use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
 
@@ -204,6 +205,7 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
         Default::default(),
         None,
         entanglement_runtime::policy::SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
     );
 
     let sid = SessionId::new("s1");

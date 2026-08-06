@@ -12,7 +12,9 @@ use crate::permission_path;
 use crate::plan_files::PlanFileRegistry;
 
 /// Root-relative folder a `content` submission materializes a plan file into.
-pub(super) const PLANS_DIR: &str = ".entanglement/plans";
+/// `pub(crate)` (not just `pub(super)`): also read by `plan_watch` (#627) to
+/// resolve the same folder to watch, re-exported through the parent module.
+pub(crate) const PLANS_DIR: &str = ".entanglement/plans";
 
 /// One `propose_plan` call's parsed input.
 #[derive(Debug, Clone, PartialEq, Eq)]

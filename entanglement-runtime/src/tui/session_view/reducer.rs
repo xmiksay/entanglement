@@ -449,6 +449,26 @@ impl SessionView {
                     false
                 }
             }
+            // A bound plan file changed out of band (#627, ADR-0145
+            // "Consequences"): the watcher-driven live counterpart to
+            // `propose_plan`'s staleness guard, which otherwise only surfaces
+            // as a refusal at the *next* `propose_plan(path=...)` call.
+            // Reuses the tool-output entry, like `SkillActive`'s notice.
+            OutEvent::PlanChanged { seq, path, .. } => {
+                if seq > self.last_seen_seq {
+                    self.transcript.push(TranscriptEntry::ToolOutput {
+                        tool: Some("plan".to_string()),
+                        output: format!(
+                            "plan file `{path}` changed on disk (not through this \
+                             session) — re-read it before submitting it again"
+                        ),
+                    });
+                    self.last_seen_seq = seq;
+                    true
+                } else {
+                    false
+                }
+            }
             // Ambiguous-stop bounded retry (#ADR-0118): a distinct out-of-band
             // notice (like `Compacted`/`SkillActive`) reporting the in-place
             // retry. Advancing `last_seen_seq` past this event also closes the
