@@ -725,7 +725,7 @@ async fn spawn_byte_stream_releases_the_guard_promptly_when_the_consumer_drops()
 
     let sem = Arc::new(Semaphore::new(1));
     let permit = sem.clone().try_acquire_owned().expect("only permit");
-    let guard = StreamGuard(permit, None, None);
+    let guard = StreamGuard(permit, None, None, None);
 
     let rx = spawn_byte_stream(response, "test", guard);
     // No one ever reads from `rx` — simulates `Stop` dropping the whole
@@ -769,7 +769,7 @@ async fn spawn_byte_stream_still_forwards_chunks_and_ends_cleanly_on_close() {
 
     let sem = Arc::new(Semaphore::new(1));
     let permit = sem.clone().try_acquire_owned().expect("only permit");
-    let guard = StreamGuard(permit, None, None);
+    let guard = StreamGuard(permit, None, None, None);
 
     let mut rx = spawn_byte_stream(response, "test", guard);
     let mut collected = Vec::new();

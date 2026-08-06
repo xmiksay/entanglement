@@ -685,6 +685,27 @@ plumbing) and API keys (an in-memory map, **never** written to `std::env`).
 The shared `HttpClient` connection pool still isolates rate-limit state per
 `(base_url, sha256(api_key))` (ADR-0050), so two users with distinct keys on
 the same provider already get independent `EndpointState`s with no further
-change — two users sharing one literal key currently share that key's budget
-too (an accepted v1 gap). `serve` is unaffected — it stays single-user
-(ADR-0048); this seam is reachable only through the embedder library API.
+change. `serve` is unaffected — it stays single-user (ADR-0048); this seam is
+reachable only through the embedder library API.
+
+**Per-user admission gate on a shared literal key** (#632,
+[ADR-0175](../adr/0175-per-user-admission-gate-on-a-shared-literal-key.md)):
+two users configured with the *same* literal key land in one `EndpointState`
+(ADR-0050's pool key is blind to caller identity), so
+`resolve_for_user` additionally calls `HttpClient::with_user_budget`,
+returning a client clone carrying that user's own catalog `rpm`/`concurrency`
+as a `UserBudget` before building their `Llm` factory — the endpoint pool
+itself (`Arc<EndpointPool>`) stays shared. `EndpointState` gains a third
+lazily-created gate, `user_budgets: Mutex<HashMap<UserId, Arc<UserSlot>>>`,
+mirroring `model_concurrency`/`ModelSlot` (ADR-0140) exactly — including the
+same self-correcting behavior on a changed budget — except a `UserSlot`'s
+pacing gate is a fixed-rate limiter, **not** AIMD-adaptive: a 429 is a
+property of the whole endpoint, not one user's slice of it, so
+`penalize`/`relax` stay endpoint-wide only. `execute_with_retry` acquires
+**user, then model, then endpoint, then the cross-process shared lease**
+(`StreamGuard` widened to hold all four) — the same "narrowest gate first"
+reasoning ADR-0140 established for model-before-endpoint, extended one level
+further. A handle with no attached budget (every existing single-user caller)
+admits exactly as before this ADR. Per-user budgets are **in-process only** —
+not mirrored to the cross-process shared-state file (ADR-0144) — an accepted
+v1 gap for a still-single-process embedder API.

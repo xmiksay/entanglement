@@ -68,6 +68,18 @@
 //! before the request fires also keeps the shared RPM ledger's timestamp
 //! (stamped on admission) meaning what it says — the start of the send, not
 //! the start of a possibly long in-process queue wait.
+//!
+//! # Per-user admission gate (#632, ADR-0175)
+//! Two users sharing one *literal* API key land in the same `EndpointState`
+//! (ADR-0050's pool keys on `(base_url, sha256(api_key))`, blind to who's
+//! calling), so per-user budgets need a gate layered on top rather than
+//! falling out of the pool key. `user_budget.rs` adds exactly that — a
+//! `UserSlot` mirroring `ModelSlot`, keyed by `UserId` instead of model id,
+//! resolved from that user's own catalog rpm/concurrency and attached to a
+//! `HttpClient` handle via `with_user_budget`. Acquired **first**, before the
+//! model/endpoint permits: the narrowest, most caller-specific gate goes
+//! first so it never holds a wider one hostage. A handle with no attached
+//! budget (every existing single-user caller) admits exactly as before.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -79,11 +91,15 @@ use futures::StreamExt;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{sleep, timeout};
 
+use crate::UserId;
+
 mod shared_state;
 mod shared_store;
 mod status;
+mod user_budget;
 pub use shared_state::prune_stale;
 pub use status::ThrottleStatus;
+pub use user_budget::UserBudget;
 
 const MAX_RETRY_ATTEMPTS: u32 = 5;
 const INITIAL_BACKOFF: Duration = Duration::from_millis(200);
@@ -218,6 +234,11 @@ impl RetryConfig {
 pub struct HttpClient {
     client: reqwest::Client,
     pool: Arc<EndpointPool>,
+    /// This handle's per-user admission gate (#632, ADR-0175); `None` for
+    /// every existing single-user caller. Attached via `with_user_budget`,
+    /// not a constructor parameter, so `HttpClient::new`/`with_config` stay
+    /// byte-identical.
+    user_budget: Option<Arc<UserBudget>>,
 }
 
 /// Per-endpoint resilience state, lazily created on first use and keyed by the
@@ -230,7 +251,9 @@ struct EndpointPool {
 
 /// A held permit bounding the number of in-flight requests to one endpoint —
 /// and, when the requested model carries its own tighter cap (#521), also one
-/// bounding in-flight requests to that model on this endpoint — plus, when the
+/// bounding in-flight requests to that model on this endpoint — and, when the
+/// calling handle carries a per-user budget (#632, ADR-0175), one bounding
+/// in-flight requests for that user on this endpoint — plus, when the
 /// cross-process gate is active (#523, ADR-0144), the shared lease bounding
 /// in-flight requests across every `skutter` process sharing this endpoint.
 /// All are kept for the whole request **and its streamed body** (moved into
@@ -239,6 +262,7 @@ struct EndpointPool {
 /// caller (in-process) or peer process (cross-process).
 pub struct StreamGuard(
     #[allow(dead_code)] OwnedSemaphorePermit,
+    #[allow(dead_code)] Option<OwnedSemaphorePermit>,
     #[allow(dead_code)] Option<OwnedSemaphorePermit>,
     #[allow(dead_code)] Option<shared_state::SharedLease>,
 );
@@ -309,6 +333,10 @@ struct EndpointState {
     /// scoped to this one endpoint since a per-model cap is meaningless
     /// detached from the provider that enforces it.
     model_concurrency: Mutex<HashMap<String, Arc<ModelSlot>>>,
+    /// Per-user rpm/concurrency slots on this endpoint (#632, ADR-0175),
+    /// lazily created like `model_concurrency` — keyed by `UserId`, resolved
+    /// only when the calling `HttpClient` handle carries a `UserBudget`.
+    user_budgets: Mutex<HashMap<UserId, Arc<user_budget::UserSlot>>>,
     /// This endpoint's cross-process gate (#523, ADR-0144) — file-backed,
     /// shared RPM/concurrency/cool-down state so sibling `skutter` processes
     /// talking to the same endpoint+key collectively respect one budget
@@ -330,6 +358,7 @@ impl EndpointState {
             waiters: AtomicUsize::new(0),
             retry_after: Mutex::new(None),
             model_concurrency: Mutex::new(HashMap::new()),
+            user_budgets: Mutex::new(HashMap::new()),
             shared: shared_state::SharedGate::new(pool_key),
             rpm,
         }
@@ -522,6 +551,7 @@ impl HttpClient {
                 endpoints: Mutex::new(HashMap::new()),
                 config,
             }),
+            user_budget: None,
         })
     }
 
@@ -559,12 +589,17 @@ impl HttpClient {
     /// optional tighter per-model in-flight cap on this same endpoint — `None`
     /// admits solely through the endpoint-wide cap, byte-identical to pre-#521.
     /// The endpoint cap is the ceiling on the *sum* of in-flight requests across
-    /// every model sharing it; each model's own cap bounds only itself. Permits
-    /// acquire **model, then endpoint, then the cross-process shared lease
-    /// last** (#546) — a caller blocked on its model's slot never holds a
-    /// scarcer resource hostage, which would otherwise starve sibling models
-    /// (in-process) or sibling `skutter` processes (cross-process) — and
-    /// release in the reverse order.
+    /// every model sharing it; each model's own cap bounds only itself. When
+    /// `self` carries a per-user budget (#632, ADR-0175, attached via
+    /// `with_user_budget`), that user's own rpm/concurrency slot on this
+    /// endpoint is admitted through too — narrower still, so two users
+    /// sharing one literal key each stay within their own slice regardless of
+    /// which one's session happened to size the endpoint first. Permits
+    /// acquire **user, then model, then endpoint, then the cross-process
+    /// shared lease last** (#546) — a caller blocked on its own user or model
+    /// slot never holds a scarcer resource hostage, which would otherwise
+    /// starve sibling users/models (in-process) or sibling `skutter`
+    /// processes (cross-process) — and release in the reverse order.
     ///
     /// Returns the response **plus a [`StreamGuard`]** the caller must keep alive
     /// for the whole streamed body — it holds the per-endpoint concurrency permit
@@ -614,6 +649,7 @@ impl HttpClient {
     {
         let endpoint = self.endpoint(&pool_key(endpoint, api_key), rpm, concurrency);
         let model_slot = model_concurrency.map(|cap| endpoint.model_slot(model, cap));
+        let user_slot = self.user_budget.as_ref().map(|b| endpoint.user_slot(b));
         let config = retry.unwrap_or(self.pool.config);
         // `attempt` bounds only *genuine failures* (5xx / transport faults). A
         // 429 is "wait your turn": it retries until it clears (not counted here),
@@ -632,13 +668,21 @@ impl HttpClient {
                 return Err(RetryError::RateLimited);
             }
             endpoint.limiter.acquire().await;
-            // Model permit **first** (#521 refinement): a caller blocked on its
+            // User permit **first** (#632, ADR-0175): the narrowest,
+            // most caller-specific gate goes first so a caller blocked on
+            // its own user slot never holds a resource shared with other
+            // users/models hostage while it waits.
+            let user_permit = match &user_slot {
+                Some(slot) => slot.acquire().await,
+                None => None,
+            };
+            // Model permit next (#521 refinement): a caller blocked on its
             // model's own slot must never hold a scarcer resource hostage
             // while it waits — that would let one saturated model starve every
             // *other* model sharing the endpoint (or every sibling process
             // sharing the endpoint's cross-process lease, #546) of admission,
             // even though the endpoint itself has room. Acquiring in this
-            // fixed order (model, then endpoint, then the shared lease)
+            // fixed order (user, model, then endpoint, then the shared lease)
             // everywhere is also deadlock-free. Released in the reverse order
             // below/in `StreamGuard`'s field order.
             let model_permit = match &model_slot {
@@ -709,6 +753,7 @@ impl HttpClient {
                 Err(_elapsed) => {
                     drop(permit);
                     drop(model_permit);
+                    drop(user_permit);
                     drop(shared_lease);
                     attempt += 1;
                     if attempt >= config.max_attempts {
@@ -733,13 +778,19 @@ impl HttpClient {
                     // the response together with the held concurrency permits.
                     if status.is_success() {
                         endpoint.limiter.relax();
-                        return Ok((response, StreamGuard(permit, model_permit, shared_lease)));
+                        return Ok((
+                            response,
+                            StreamGuard(permit, model_permit, user_permit, shared_lease),
+                        ));
                     }
                     // Permanent 4xx: hand it straight back — the caller inspects
                     // `!is_success()`. (Permits drop as the guard is dropped by
                     // the caller after reading the body.)
                     if !is_retryable_status(status) {
-                        return Ok((response, StreamGuard(permit, model_permit, shared_lease)));
+                        return Ok((
+                            response,
+                            StreamGuard(permit, model_permit, user_permit, shared_lease),
+                        ));
                     }
                     let retry_after = parse_retry_after(response.headers());
 
@@ -775,10 +826,14 @@ impl HttpClient {
                                 status = %status,
                                 "rate limited (429): giving up after exhausting the retry budget"
                             );
-                            return Ok((response, StreamGuard(permit, model_permit, shared_lease)));
+                            return Ok((
+                                response,
+                                StreamGuard(permit, model_permit, user_permit, shared_lease),
+                            ));
                         }
                         drop(permit); // free the slots while we back off
                         drop(model_permit);
+                        drop(user_permit);
                         drop(shared_lease);
                         tracing::warn!(
                             status = %status,
@@ -801,10 +856,14 @@ impl HttpClient {
                         endpoint.set_retry_after(server_delay.min(config.rate_limit_max_backoff));
                     }
                     if attempt >= config.max_attempts {
-                        return Ok((response, StreamGuard(permit, model_permit, shared_lease)));
+                        return Ok((
+                            response,
+                            StreamGuard(permit, model_permit, user_permit, shared_lease),
+                        ));
                     }
                     drop(permit);
                     drop(model_permit);
+                    drop(user_permit);
                     drop(shared_lease);
                     let delay = retry_after.unwrap_or(backoff);
                     tracing::warn!(
@@ -821,6 +880,7 @@ impl HttpClient {
                 Ok(Err(e)) => {
                     drop(permit);
                     drop(model_permit);
+                    drop(user_permit);
                     drop(shared_lease);
                     attempt += 1;
                     if attempt >= config.max_attempts {

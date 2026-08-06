@@ -43,7 +43,7 @@ pub use catalog::{
     Catalog, McpServerState, ModelEntry, ModelPricing, ProviderEntry, ProviderMcpServer,
     ThinkingStyle, Wire,
 };
-pub use client::{prune_stale, HttpClient, RetryConfig, StreamGuard, ThrottleStatus};
+pub use client::{prune_stale, HttpClient, RetryConfig, StreamGuard, ThrottleStatus, UserBudget};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
     fixed_model_concurrency, stream_from_response, AuxLlmResolver, DummyLlm, EchoLlm,

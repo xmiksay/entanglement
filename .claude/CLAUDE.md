@@ -272,6 +272,10 @@ never here**; each bullet is the claim + where to read it:
 - **Multi-user mode is an embedder library API** (`UserId` on the wire,
   per-user catalogs/keys/ceilings/grants on the existing seams); `serve`
   stays local single-user. [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md).
+  Two users sharing one **literal** API key each get their own rpm/concurrency
+  slice via a per-user admission gate (`HttpClient::with_user_budget`) layered
+  above the shared endpoint pool, mirroring ADR-0140's per-model gate.
+  [ADR-0175](../docs/adr/0175-per-user-admission-gate-on-a-shared-literal-key.md).
   An **authenticated multi-user wire head is designed, not yet built**: a
   pluggable `WireAuthenticator` binds a `UserId` to a connection at WS-upgrade
   time, the authenticated connection handler becomes the trusted `Spawn`
