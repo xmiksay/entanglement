@@ -36,7 +36,7 @@ pub async fn pipe(holly: &Holly, default_session: &SessionId) -> Result<()> {
                     match holly2.send_from_wire(msg).await {
                         Ok(()) => {}
                         Err(WireError::Closed) => break,
-                        Err(e @ WireError::Privileged(_)) => {
+                        Err(e @ (WireError::Privileged(_) | WireError::OverlayEnable)) => {
                             eprintln!("note: {e}");
                         }
                     }

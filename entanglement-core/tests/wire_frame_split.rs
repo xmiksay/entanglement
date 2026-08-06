@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    OutEvent, SessionId, ToolCall, WireError,
+    OutEvent, SessionId, ToolCall, ToolOverlayEntry, WireError,
 };
 
 fn call(id: &str, name: &str) -> ToolCall {
@@ -196,5 +196,66 @@ async fn forged_wire_mcp_auth_is_refused_for_every_action() {
             .await
             .expect_err("McpAuth must be refused from the wire");
         assert!(matches!(err, WireError::Privileged("mcp_auth")));
+    }
+}
+
+/// `SetToolOverlay` (#634, ADR-0177 amending ADR-0149): a wire head may submit a
+/// deny-only overlay — it can only withdraw tools the profile already
+/// advertises — but any enable entry refuses the whole frame, since that would
+/// hand the model a tool with no authenticated origin behind the grant.
+#[tokio::test]
+async fn wire_tool_overlay_is_deny_only() {
+    let holly = engine(vec![LlmResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+    }]);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send_from_wire(InMsg::prompt(sid.clone(), "go"))
+        .await
+        .expect("prompt is wire-allowed");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await else {
+            panic!("turn never settled");
+        };
+        if matches!(ev, OutEvent::Done { session, .. } if session == sid) {
+            break;
+        }
+    }
+
+    // An enable entry is refused outright — even mixed with a deny entry.
+    let err = holly
+        .send_from_wire(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![
+                ToolOverlayEntry::deny("bash"),
+                ToolOverlayEntry::ask("mcp__*"),
+            ],
+        })
+        .await
+        .expect_err("an enable entry must be refused from the wire");
+    assert!(matches!(err, WireError::OverlayEnable));
+
+    // A deny-only overlay (including the empty list) is accepted and applied.
+    holly
+        .send_from_wire(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![ToolOverlayEntry::deny("bash")],
+        })
+        .await
+        .expect("a deny-only overlay is wire-allowed");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await else {
+            panic!("ToolOverlayChanged never arrived");
+        };
+        if let OutEvent::ToolOverlayChanged { session, entries } = ev {
+            assert_eq!(session, sid);
+            assert_eq!(entries, vec![ToolOverlayEntry::deny("bash")]);
+            break;
+        }
     }
 }

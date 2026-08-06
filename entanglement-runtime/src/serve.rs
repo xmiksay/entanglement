@@ -256,7 +256,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
                         match state.holly.send_from_wire(m).await {
                             Ok(()) => {}
                             Err(WireError::Closed) => break, // engine gone
-                            Err(e @ WireError::Privileged(_)) => {
+                            Err(e @ (WireError::Privileged(_) | WireError::OverlayEnable)) => {
                                 tracing::warn!("serve: {e}");
                             }
                         }

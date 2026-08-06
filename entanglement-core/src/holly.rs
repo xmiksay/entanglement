@@ -71,6 +71,14 @@ pub enum WireError {
     /// diagnostics.
     #[error("privileged frame `{0}` refused from wire head (runtime-authored only)")]
     Privileged(&'static str),
+    /// A `set_tool_overlay` frame carried at least one **enable** entry
+    /// (#634, ADR-0177 amending ADR-0149): a wire head may submit a
+    /// deny-only overlay (withdrawing tools the profile already advertises)
+    /// but never an enable/`allow` entry, which would hand the model a
+    /// tool — optionally with no approval prompt — with no authenticated
+    /// origin behind the grant.
+    #[error("tool-overlay enable entries refused from wire head (deny-only allowed, #634)")]
+    OverlayEnable,
     /// The engine inbox is closed (the actor stopped).
     #[error("engine inbox closed")]
     Closed,
@@ -168,16 +176,21 @@ impl Holly {
     /// [`Resume`][InMsg::Resume]) is **refused**, not routed — a forged
     /// `ToolResult` would resolve a parked turn on `request_id` alone (bypassing
     /// execution + permission) and a forged `Spawn` would bypass the tool path's
-    /// spawn-refusal gate. Head-authored frames pass through to
-    /// [`send`][Self::send]. The runtime's own executor never calls this; it holds
-    /// the privileged handle and uses [`submit_tool_result`][Self::submit_tool_result].
+    /// spawn-refusal gate. A [`SetToolOverlay`][InMsg::SetToolOverlay] frame is
+    /// refused only if it carries an enable entry — a deny-only overlay passes
+    /// (#634, [`InMsg::wire_allowed`] is content-aware for this one variant).
+    /// Head-authored frames pass through to [`send`][Self::send]. The runtime's
+    /// own executor never calls this; it holds the privileged handle and uses
+    /// [`submit_tool_result`][Self::submit_tool_result].
     pub async fn send_from_wire(&self, msg: InMsg) -> Result<(), WireError> {
         if !msg.wire_allowed() {
-            tracing::warn!(
-                variant = msg.variant_name(),
-                "refused privileged InMsg from wire head (runtime-authored only)"
-            );
-            return Err(WireError::Privileged(msg.variant_name()));
+            let err = if matches!(&msg, InMsg::SetToolOverlay { .. }) {
+                WireError::OverlayEnable
+            } else {
+                WireError::Privileged(msg.variant_name())
+            };
+            tracing::warn!(variant = msg.variant_name(), %err, "refused InMsg from wire head");
+            return Err(err);
         }
         self.inbox.send(msg).await.map_err(|_| WireError::Closed)
     }
