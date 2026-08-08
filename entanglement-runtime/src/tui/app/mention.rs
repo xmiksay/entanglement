@@ -7,14 +7,23 @@ use crate::tui::mention::{FileIndex, MentionPopup};
 use super::App;
 
 impl App {
-    /// Wire the working directory into the head features that need it: builds
-    /// the `@file` completion index and records the shared bash-enablement
-    /// handle `!bash` passthrough gates on (ADR-0030, #498). Called once by
-    /// the event loop at startup.
+    /// Wire the working directory into the head features that need it and
+    /// record the shared bash-enablement handle `!bash` passthrough gates on
+    /// (ADR-0030, #498). Called once by the event loop at startup. The `@file`
+    /// completion index is *not* built here — the walk over a huge working
+    /// directory used to freeze the first draw (#678); it arrives later via
+    /// [`App::set_file_index`].
     pub fn init_head_context(&mut self, root: PathBuf, live_bash: Arc<BashRegistered>) {
-        self.mention = MentionPopup::new(FileIndex::build(&root));
         self.root = root;
         self.live_bash = live_bash;
+    }
+
+    /// Deliver the background-built `@file` index (#678), then re-derive the
+    /// popup from the current input line so an already-typed `@query` opens
+    /// the moment the index lands.
+    pub fn set_file_index(&mut self, index: FileIndex) {
+        self.mention.set_index(index);
+        self.update_popups();
     }
 
     pub fn root(&self) -> &Path {
@@ -91,5 +100,31 @@ impl App {
             .record_bash_passthrough(command, output);
         self.scroll_to_bottom();
         self.mark_dirty();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+    use crate::tui::mention::FileIndex;
+    use entanglement_core::SessionId;
+
+    /// #678: the app is fully usable before the background-built index lands,
+    /// and an already-typed `@query` opens the moment it does.
+    #[test]
+    fn input_works_before_file_index_ready() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.input().insert_str("see @a");
+        app.update_popups();
+        assert!(
+            !app.mention_visible(),
+            "popup must stay hidden while the index is empty"
+        );
+        app.set_file_index(FileIndex::from_paths(vec!["src/a.rs".into()]));
+        assert!(
+            app.mention_visible(),
+            "popup should open once the index lands"
+        );
+        assert_eq!(app.mention().matches(), ["src/a.rs".to_string()]);
     }
 }
