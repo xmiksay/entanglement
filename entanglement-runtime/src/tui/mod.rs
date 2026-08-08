@@ -114,14 +114,14 @@ pub async fn tui(
     let mut terminal = Terminal::new(backend)?;
 
     let (event_tx, mut event_rx) = mpsc::channel(128);
-    let crossterm_handle = spawn_crossterm_task(event_tx.clone());
+    let crossterm_handle = event::spawn_crossterm_task(event_tx.clone());
     // External SIGINT safety net (ADR-0087): in raw mode Ctrl+C is delivered
     // as a key event (ISIG suppressed), so this only fires for an out-of-band
     // `kill -INT` — routing it through the same two-stage quit path so the
     // terminal is always restored instead of left "half killed". The handle is
     // aborted (and SIGINT reset to default) after `restore_terminal` so the
     // post-TUI shutdown in `main` stays interruptible by a second Ctrl+C.
-    let sigint_handle = spawn_sigint_task(event_tx.clone());
+    let sigint_handle = event::spawn_sigint_task(event_tx.clone());
 
     // Registry-driven entry-agent roster (#119): the `/agent` picker lists every
     // entry agent (`mode ∈ {primary, all}`) — a `subagent` leaf like `explore` is
@@ -140,21 +140,7 @@ pub async fn tui(
     app.set_grants(grants);
     app.set_mcp_handles(mcp_handles);
     app.init_head_context(root.clone(), live_bash);
-    // Build the `@file` completion index off the critical path (#678): the
-    // walk over a huge working directory used to run here synchronously,
-    // between EnterAlternateScreen and the first draw — a black, input-dead
-    // screen for its whole duration. The popup starts empty and fills in.
-    {
-        let event_tx = event_tx.clone();
-        tokio::spawn(async move {
-            match tokio::task::spawn_blocking(move || mention::FileIndex::build(&root)).await {
-                Ok(index) => {
-                    let _ = event_tx.send(Event::FileIndexReady(index)).await;
-                }
-                Err(err) => tracing::warn!(?err, "@file index build failed"),
-            }
-        });
-    }
+    mention::spawn_index_build(root, event_tx.clone()); // off the critical path, #678
 
     let mut attention = Attention::from_env();
 
@@ -277,49 +263,6 @@ fn entry_profiles_from(registry: &ProfileRegistry) -> Vec<app::ProfileInfo> {
             disallowed_tools: p.disallowed_tools.clone(),
         })
         .collect()
-}
-
-fn spawn_crossterm_task(tx: mpsc::Sender<Event>) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match event::read().await {
-                Ok(ev) => {
-                    if tx.send(ev).await.is_err() {
-                        break;
-                    }
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-        }
-    })
-}
-
-/// External-SIGINT safety net (ADR-0087). In raw mode crossterm suppresses
-/// ISIG, so an in-terminal Ctrl+C arrives as a `KeyEvent` handled by the
-/// centralized intercept in `handle_event`; this task therefore only wakes for
-/// a true out-of-band signal (`kill -INT`, or a terminal that ignores
-/// keyboard-enhancement flags). It forwards a synthetic [`Event::Interrupt`]
-/// through the same event channel, which routes through
-/// `App::handle_quit_key` → `restore_terminal`, so an external signal can't
-/// leave the terminal in raw mode.
-///
-/// The returned handle must be aborted — and [`reset_sigint_to_default`] called
-/// — after `restore_terminal`: `tokio::signal::ctrl_c()` installs a
-/// process-global handler that outlives the future, so without the reset a
-/// Ctrl+C during `main`'s post-TUI shutdown is swallowed (forcing `kill -9`).
-fn spawn_sigint_task(tx: mpsc::Sender<Event>) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            // `ctrl_c()` resolves anew each call; an error means signal
-            // handling is unavailable (exit quietly rather than spin).
-            if tokio::signal::ctrl_c().await.is_err() {
-                break;
-            }
-            if tx.send(Event::Interrupt).await.is_err() {
-                break;
-            }
-        }
-    })
 }
 
 /// Reset the `SIGINT` disposition to its OS default (terminate the process).

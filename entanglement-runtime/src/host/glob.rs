@@ -135,7 +135,9 @@ impl Tool for GlobTool {
                 ));
             }
             if list.scan_capped {
-                msg.push_str(" The walk stopped after scanning 100000 entries — narrow the pattern.");
+                msg.push_str(
+                    " The walk stopped after scanning 100000 entries — narrow the pattern.",
+                );
             }
             return Ok(msg);
         }

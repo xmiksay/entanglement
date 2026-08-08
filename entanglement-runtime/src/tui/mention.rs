@@ -67,6 +67,27 @@ fn is_ignored(rel: &str) -> bool {
     rel.split('/').any(|seg| IGNORED_DIRS.contains(&seg))
 }
 
+/// Build the index off the TUI startup critical path (#678): the walk over a
+/// huge working directory used to run synchronously between
+/// `EnterAlternateScreen` and the first draw — a black, input-dead screen for
+/// its whole duration. Delivered as [`Event::FileIndexReady`]; a send failure
+/// only means the TUI already quit.
+pub fn spawn_index_build(
+    root: std::path::PathBuf,
+    event_tx: tokio::sync::mpsc::Sender<crate::tui::event::Event>,
+) {
+    tokio::spawn(async move {
+        match tokio::task::spawn_blocking(move || FileIndex::build(&root)).await {
+            Ok(index) => {
+                let _ = event_tx
+                    .send(crate::tui::event::Event::FileIndexReady(index))
+                    .await;
+            }
+            Err(err) => tracing::warn!(?err, "@file index build failed"),
+        }
+    });
+}
+
 /// Fuzzy subsequence score of `query` against `candidate`. Higher is better;
 /// `None` if `query` isn't a subsequence of `candidate`. Matches in the basename
 /// and consecutive runs score higher, so `foo` ranks `src/foo.rs` above a
