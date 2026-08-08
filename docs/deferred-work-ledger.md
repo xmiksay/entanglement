@@ -97,6 +97,17 @@ the decision doesn't have to be re-derived by the next audit.
   and the scope is restricted to the read-only `read`/`grep`/`glob` triad,
   [ADR-0126](adr/0126-session-scoped-directory-grants.md)). Prompt-UX nuance,
   not a containment hole.
+- **Two narrow walk-semantics deltas from the single-pass pruned walk**
+  ([ADR-0178](adr/0178-single-pass-gitignore-pruned-walk-with-scan-budget.md),
+  #678): (1) an in-root symlink that is itself `.gitignore`d is now pruned
+  during traversal, so a durable extra-root grant on its *target* no longer
+  admits matches through it — the old two-pass walk skipped the gitignore
+  check for non-contained entries and let the grant widen them; (2) a
+  metachar pattern with a trailing slash (`src*/`) no longer counts matched
+  directories (a `glob`-iterator quirk the compiled-pattern match doesn't
+  reproduce; the metachar-free `src/` form still dir-expands as before).
+  Neither behavior was tested or had a known user; both are accepted rather
+  than shimmed.
 
 ## Resolved (shipped since the 2026-07-16 audit)
 
