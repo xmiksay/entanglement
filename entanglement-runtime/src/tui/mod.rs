@@ -139,7 +139,22 @@ pub async fn tui(
     app.set_configured_editor(configured_editor);
     app.set_grants(grants);
     app.set_mcp_handles(mcp_handles);
-    app.init_head_context(root, live_bash);
+    app.init_head_context(root.clone(), live_bash);
+    // Build the `@file` completion index off the critical path (#678): the
+    // walk over a huge working directory used to run here synchronously,
+    // between EnterAlternateScreen and the first draw — a black, input-dead
+    // screen for its whole duration. The popup starts empty and fills in.
+    {
+        let event_tx = event_tx.clone();
+        tokio::spawn(async move {
+            match tokio::task::spawn_blocking(move || mention::FileIndex::build(&root)).await {
+                Ok(index) => {
+                    let _ = event_tx.send(Event::FileIndexReady(index)).await;
+                }
+                Err(err) => tracing::warn!(?err, "@file index build failed"),
+            }
+        });
+    }
 
     let mut attention = Attention::from_env();
 

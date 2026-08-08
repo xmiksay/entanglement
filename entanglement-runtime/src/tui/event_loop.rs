@@ -678,6 +678,8 @@ pub(super) async fn handle_event(
                 return Ok(true);
             }
         }
+        // The background-built `@file` index landing (#678).
+        Event::FileIndexReady(index) => app.set_file_index(index),
     }
     Ok(false)
 }

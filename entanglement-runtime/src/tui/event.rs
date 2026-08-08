@@ -16,6 +16,9 @@ pub enum Event {
     /// (`App::handle_quit_key`) so the terminal is always restored
     /// (ADR-0087).
     Interrupt,
+    /// The background-built `@file` completion index (#678) — the walk runs
+    /// off the startup critical path so the first draw never waits on it.
+    FileIndexReady(crate::tui::mention::FileIndex),
 }
 
 pub async fn read() -> Result<Event, std::io::Error> {

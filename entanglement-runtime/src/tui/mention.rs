@@ -2,9 +2,11 @@
 //! finder over the working directory: typing `@` opens a popup that filters the
 //! indexed relative paths as you type; Tab/Enter inserts the pick as `@path`.
 //!
-//! The index is a flat snapshot built once at TUI startup from the same
-//! `glob`-based enumeration the `glob` host tool uses, so completion stays
-//! head-side and never touches the engine.
+//! The index is a flat snapshot from the same walk the `glob` host tool uses,
+//! so completion stays head-side and never touches the engine. It is built off
+//! the startup critical path (#678: the walk over a huge working directory
+//! froze the first draw) and delivered as `Event::FileIndexReady`; until it
+//! lands, completion simply has nothing to offer.
 
 use ratatui::widgets::ListState;
 use std::ops::Range;
@@ -12,18 +14,19 @@ use std::path::Path;
 
 use crate::host::list_files;
 
-/// Directory names never worth indexing for `@file` completion. `.git` and other
-/// dot-dirs are already skipped by the glob walk (a leading `*` won't match a
-/// leading `.`); these are the noisy non-hidden build/vendor trees.
+/// Directory names never worth indexing for `@file` completion — the noisy
+/// build/vendor trees, filtered belt-and-braces on top of the walk's own
+/// `.git` drop and `.gitignore` pruning.
 const IGNORED_DIRS: [&str; 6] = [".git", "target", "node_modules", ".venv", "dist", "build"];
 
 /// Cap on rows shown in the popup — the index itself is bounded by the glob
 /// walk's own file cap.
 const MAX_MATCHES: usize = 50;
 
-/// A flat, relative-path index of the working directory's files, built once at
-/// TUI startup. Paths use `/` separators regardless of platform.
-#[derive(Debug, Default, Clone)]
+/// A flat, relative-path index of the working directory's files, built once in
+/// the background after TUI startup. Paths use `/` separators regardless of
+/// platform.
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct FileIndex {
     files: Vec<String>,
 }
@@ -146,6 +149,13 @@ impl MentionPopup {
             matches: Vec::new(),
             state: ListState::default(),
         }
+    }
+
+    /// Swap in the (background-built, #678) index. The caller re-runs
+    /// [`MentionPopup::update`] afterwards so an already-typed `@query` pops
+    /// open the moment the index lands.
+    pub fn set_index(&mut self, index: FileIndex) {
+        self.index = index;
     }
 
     pub fn visible(&self) -> bool {
