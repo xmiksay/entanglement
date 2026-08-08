@@ -962,6 +962,92 @@ mod tests {
         );
     }
 
+    /// #678: a `.gitignore`d directory is pruned — never opened — not merely
+    /// filtered from results. An unreadable ignored dir is the proof: the old
+    /// two-pass walk descended into it and logged read errors; pruning means
+    /// the walk never touches it.
+    #[cfg(unix)]
+    #[test]
+    fn list_files_prunes_ignored_dirs_without_descending() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        fs::write(dir.join(".gitignore"), "locked/\n").unwrap();
+        fs::write(dir.join("kept.txt"), "x\n").unwrap();
+        fs::write(dir.join("locked/secret.txt"), "x\n").unwrap();
+        let locked = dir.join("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let list = list_files(&dir.path, "**/*", &[]).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with("kept.txt")), "{names:?}");
+        assert_eq!(
+            list.skipped_errors, 0,
+            "ignored dir was opened instead of pruned: {list:?}"
+        );
+    }
+
+    /// #678: the total-scan budget terminates a walk over a huge tree even
+    /// when almost nothing matches — the hard backstop behind the TUI
+    /// black-screen fix.
+    #[test]
+    fn list_files_scan_budget_terminates() {
+        let dir = TempDir::new();
+        for i in 0..50 {
+            fs::write(dir.join(&format!("f{i:02}.txt")), "x").unwrap();
+        }
+        let list = walk::list_files_bounded(&dir.path, "**/*", &[], None, 10).unwrap();
+        assert!(list.scan_capped, "{list:?}");
+        assert!(list.files.len() <= 10, "{:?}", list.files);
+    }
+
+    /// #678: a symlink loop terminates (the `ignore` crate detects it; the
+    /// `glob` crate's `**` walked it forever).
+    #[cfg(unix)]
+    #[test]
+    fn list_files_survives_symlink_loop() {
+        let dir = TempDir::new();
+        fs::write(dir.join("sub/real.txt"), "x\n").unwrap();
+        std::os::unix::fs::symlink(&dir.path, dir.join("sub/loop")).unwrap();
+        let list = list_files(&dir.path, "**/*", &[]).unwrap();
+        let names: Vec<String> = list
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("sub/real.txt")),
+            "{names:?}"
+        );
+    }
+
+    /// Glob parity pins for the single-pass matcher (#678): dotfiles stay
+    /// enumerable (`require_literal_leading_dot` default), and `*` never
+    /// crosses a `/` (the iterator matched per-component;
+    /// `require_literal_separator` keeps that).
+    #[test]
+    fn list_files_matches_dotfiles_and_star_stays_within_a_component() {
+        let dir = TempDir::new();
+        fs::write(dir.join(".env"), "x\n").unwrap();
+        fs::write(dir.join("src/nested.rs"), "x\n").unwrap();
+        let all = list_files(&dir.path, "**/*", &[]).unwrap();
+        let names: Vec<String> = all
+            .files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with(".env")), "{names:?}");
+        let top = list_files(&dir.path, "*.rs", &[]).unwrap();
+        assert!(
+            top.files.is_empty(),
+            "`*` crossed a directory boundary: {:?}",
+            top.files
+        );
+    }
+
     /// An invalid exclude pattern errors rather than being silently ignored.
     #[test]
     fn list_files_rejects_invalid_exclude_pattern() {

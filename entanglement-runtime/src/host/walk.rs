@@ -3,7 +3,8 @@
 //! escape-root search-widening path #482/[ADR-0132](../../../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md);
 //! CLI-shaped ergonomics — brace sets, directory auto-expansion, cap/out-of-root
 //! reporting — [ADR-0150](../../../docs/adr/0150-search-tool-cli-ergonomics.md);
-//! `.gitignore` awareness — [ADR-0170](../../../docs/adr/0170-gitignore-aware-glob-grep-walk.md)).
+//! `.gitignore` awareness — [ADR-0170](../../../docs/adr/0170-gitignore-aware-glob-grep-walk.md),
+//! single-pass + bounded since #678).
 //! Split out of `host/mod.rs` to stay under the 400-line file cap (#451).
 
 use std::collections::HashSet;
@@ -15,8 +16,16 @@ use ignore::WalkBuilder;
 use super::brace::expand_braces;
 
 /// Cap on how many paths `glob` returns and how many matches `grep` reports —
-/// bounds the work + output for pathologically large trees.
+/// bounds the output for pathologically large trees.
 pub(crate) const MAX_RESULTS: usize = 1000;
+
+/// Cap on how many directory entries a single walk will *visit* (matching or
+/// not) before giving up. [`MAX_RESULTS`] bounds the output, but a pattern
+/// matching almost nothing in a huge tree bounds no work at all — the TUI
+/// froze on a black screen for exactly that shape (#678: `**/*` over a
+/// workspace root). Ignored subtrees are pruned before they cost anything, so
+/// only real, walkable entries count against this.
+pub(crate) const MAX_SCANNED: usize = 100_000;
 
 /// Result of [`list_files`]: the matched files plus enough metadata for the
 /// caller to distinguish "no match at all" from "matched only directories",
@@ -25,11 +34,11 @@ pub(crate) const MAX_RESULTS: usize = 1000;
 /// typo, and the model has no way to self-correct — see ADR-0016/ADR-0150.
 #[derive(Debug, Default)]
 pub struct FileList {
-    /// Files (in arbitrary glob-walk order), already capped at [`MAX_RESULTS`].
+    /// Files (in walk order), already capped at [`MAX_RESULTS`].
     pub files: Vec<PathBuf>,
     /// Entries the pattern matched but that were directories (filtered out).
     pub matched_dirs: usize,
-    /// Entries the glob iterator yielded as `Err` (permissions, IO, etc.).
+    /// Entries the walker yielded as `Err` (permissions, IO, etc.).
     pub skipped_errors: usize,
     /// True iff the walk stopped early because `files` hit [`MAX_RESULTS`].
     pub capped: bool,
@@ -37,6 +46,9 @@ pub struct FileList {
     /// durable grant covering them (ADR-0054/ADR-0132) — surfaced so an
     /// absolute-path typo doesn't read as a clean no-match (ADR-0150).
     pub out_of_root: usize,
+    /// True iff the walk stopped early because it visited [`MAX_SCANNED`]
+    /// entries — the hard backstop for huge non-ignored trees (#678).
+    pub scan_capped: bool,
 }
 
 impl FileList {
@@ -62,14 +74,18 @@ pub fn list_files(root: &Path, pattern: &str, excludes: &[String]) -> Result<Fil
 /// search, so the exclusion isn't tied to (and can't be defeated by) the
 /// `excludes` list (ADR-0099). A match ignored by `.gitignore` (root or
 /// nested, plus `.git/info/exclude` and the user's global excludes file) is
-/// dropped the same unconditional way — see [`gitignore_allowed_paths`]
-/// ([ADR-0170](../../../docs/adr/0170-gitignore-aware-glob-grep-walk.md)).
-/// Skips directories (counted in [`FileList::matched_dirs`]) and logs
-/// unreadable entries as `warn!` (counted in [`FileList::skipped_errors`])
-/// instead of silently dropping them. Excluded/ignored entries are dropped
-/// before either count, so an excluded or `.gitignore`d subtree looks to the
-/// caller like it was never in the walk at all. Bounds the walk at
-/// [`MAX_RESULTS`] files, recording the early stop in [`FileList::capped`].
+/// never visited at all: the traversal is the `ignore` crate's own walker
+/// (ripgrep's engine), which prunes ignored directories before descending
+/// (#629/[ADR-0170](../../../docs/adr/0170-gitignore-aware-glob-grep-walk.md);
+/// single-pass since #678 — the earlier two-pass shape eagerly enumerated the
+/// whole tree first, unbounded). Skips directories (counted in
+/// [`FileList::matched_dirs`]) and logs unreadable entries as `warn!`
+/// (counted in [`FileList::skipped_errors`]) instead of silently dropping
+/// them. Excluded/ignored entries are dropped before either count, so an
+/// excluded or `.gitignore`d subtree looks to the caller like it was never in
+/// the walk at all. Bounds the output at [`MAX_RESULTS`] files
+/// ([`FileList::capped`]) and the traversal itself at [`MAX_SCANNED`] visited
+/// entries ([`FileList::scan_capped`]).
 ///
 /// Two CLI-shaped rewrites happen before globbing (ADR-0150): brace sets
 /// expand (`**/*.{rs,md}` walks both alternatives, deduped against overlap;
@@ -77,9 +93,7 @@ pub fn list_files(root: &Path, pattern: &str, excludes: &[String]) -> Result<Fil
 /// an existing directory expands to `dir/**/*` — the `grep -r`-style shape
 /// most real calls intend. Directory expansion is containment-gated: the
 /// directory's canonical path must sit under the canonical root or carry a
-/// durable grant, or the pattern is left alone (expanding an ungranted
-/// absolute directory like `/` would walk the whole filesystem, since
-/// out-of-root entries never count toward the cap).
+/// durable grant, or the pattern is left alone.
 ///
 /// `extra_roots` widens containment for `glob`/`grep` (#482,
 /// [ADR-0132](../../../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md)):
@@ -88,12 +102,28 @@ pub fn list_files(root: &Path, pattern: &str, excludes: &[String]) -> Result<Fil
 /// in the store — a search never forces its own approval prompt, it only rides
 /// a grant a `read`/`edit`/`write` call already earned. `None` (or no matching
 /// grant) reduces to the strict pre-#482 drop, now counted in
-/// [`FileList::out_of_root`].
+/// [`FileList::out_of_root`]. A walk rooted outside `root` via such a grant
+/// disables `.gitignore` filtering entirely: the grant is a deliberate, narrow
+/// escape hatch, and the granted directory's own `.gitignore` must not
+/// silently hide files the grant was specifically approved to expose.
 pub fn list_files_with_extra_roots(
     root: &Path,
     pattern: &str,
     excludes: &[String],
     extra_roots: Option<&crate::extra_roots::ExtraRootStore>,
+) -> Result<FileList> {
+    list_files_bounded(root, pattern, excludes, extra_roots, MAX_SCANNED)
+}
+
+/// [`list_files_with_extra_roots`] with an explicit scan budget — the real
+/// implementation; split out so tests can exercise budget exhaustion without
+/// creating 100k files.
+pub(crate) fn list_files_bounded(
+    root: &Path,
+    pattern: &str,
+    excludes: &[String],
+    extra_roots: Option<&crate::extra_roots::ExtraRootStore>,
+    max_scanned: usize,
 ) -> Result<FileList> {
     let mut exclude_patterns: Vec<::glob::Pattern> = Vec::new();
     for entry in excludes {
@@ -104,28 +134,81 @@ pub fn list_files_with_extra_roots(
             );
         }
     }
-    // Containment (#163): a `..` or absolute `pattern` makes the glob walk
+    // Containment (#163): a `..` or absolute `pattern` makes the walk go
     // outside root, and a symlink under root resolves elsewhere — route glob/
     // grep through the same boundary as read/write by dropping any entry whose
     // canonical path escapes the canonical root (ADR-0054), unless a durable
     // extra-root grant widens it (#482, above).
     let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let allowed = gitignore_allowed_paths(root);
+    // The glob-crate iterator matched component-by-component, so a `*` never
+    // crossed a `/`; matching the whole path at once needs the literal-
+    // separator option to keep that. Leading dots stay matchable (the
+    // iterator's default, pinned by the dotfile test).
+    let match_options = ::glob::MatchOptions {
+        require_literal_separator: true,
+        ..::glob::MatchOptions::new()
+    };
     let mut list = FileList::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut scanned: usize = 0;
     'alternatives: for alt in expand_braces(pattern)? {
         let effective = expand_dir_pattern(root, &canon_root, &alt, extra_roots);
-        let abs = root.join(&effective).to_string_lossy().into_owned();
-        let entries = ::glob::glob(&abs).with_context(|| format!("invalid glob: {pattern}"))?;
-        for entry in entries {
+        let abs = root.join(&effective);
+        let compiled = ::glob::Pattern::new(&abs.to_string_lossy())
+            .with_context(|| format!("invalid glob: {pattern}"))?;
+        // Bare-`**` trap (ADR-0016/ADR-0150): the glob iterator yielded only
+        // directories for a pattern whose final component is `**`; the
+        // compiled pattern matches files under them too, so filter to dirs.
+        let dirs_only = effective
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .is_some_and(|last| last == "**");
+        let Some(walk_root) = walk_root_of(&abs) else {
+            // Nonexistent literal prefix: glob parity — a clean no-match, not
+            // an error entry.
+            continue;
+        };
+        let canon_walk = walk_root
+            .canonicalize()
+            .unwrap_or_else(|_| walk_root.clone());
+        let mut builder = WalkBuilder::new(&walk_root);
+        // `follow_links(true)` mirrors the old glob-crate walk so an
+        // out-of-root escape through a symlink still reaches (and is counted
+        // by) the containment check below instead of silently vanishing; the
+        // `ignore` crate detects symlink loops, which `glob`'s `**` never did.
+        // `hidden(false)`: dotfiles were always enumerable — only `.git` and
+        // `.gitignore` rules filter anything. `.git` is pruned before it can
+        // burn scan budget (dropped unconditionally anyway, ADR-0099).
+        builder
+            .follow_links(true)
+            .hidden(false)
+            .sort_by_file_name(|a, b| a.cmp(b))
+            .filter_entry(|e| e.file_name() != ".git");
+        if canon_walk.starts_with(&canon_root) {
+            // `require_git(false)`: honor `.gitignore` even before `git init`.
+            builder.require_git(false);
+        } else {
+            // Walking a granted external directory: no `.gitignore` there.
+            builder.standard_filters(false);
+        }
+        for entry in builder.build() {
+            if scanned >= max_scanned {
+                list.scan_capped = true;
+                break 'alternatives;
+            }
+            scanned += 1;
             let p = match entry {
-                Ok(p) => p,
+                Ok(e) => e.into_path(),
                 Err(err) => {
-                    tracing::warn!(?err, pattern, "glob entry skipped");
+                    tracing::warn!(?err, pattern, "walk entry skipped");
                     list.skipped_errors += 1;
                     continue;
                 }
             };
+            if !compiled.matches_path_with(&p, match_options) {
+                continue;
+            }
             if !seen.insert(p.clone()) {
                 continue;
             }
@@ -140,14 +223,6 @@ pub fn list_files_with_extra_roots(
             }
             let canon = p.canonicalize().ok();
             let contained = canon.as_ref().is_some_and(|c| c.starts_with(&canon_root));
-            // `.gitignore` filtering only applies to matches actually inside
-            // `root` (what `allowed` was walked from) — an extra-root grant is
-            // a deliberate, narrow escape hatch onto an unrelated directory,
-            // and applying its own `.gitignore` there would silently hide
-            // files the grant was specifically approved to expose.
-            if contained && !allowed.contains(&p) {
-                continue;
-            }
             if !contained {
                 let widened = canon.as_ref().is_some_and(|c| {
                     extra_roots.is_some_and(|store| store.is_durably_allowed_under("read", c))
@@ -158,7 +233,7 @@ pub fn list_files_with_extra_roots(
                 }
             }
             match std::fs::metadata(&p) {
-                Ok(m) if m.is_file() => {
+                Ok(m) if m.is_file() && !dirs_only => {
                     list.files.push(p);
                     if list.files.len() >= MAX_RESULTS {
                         list.capped = true;
@@ -173,45 +248,24 @@ pub fn list_files_with_extra_roots(
     Ok(list)
 }
 
-/// The set of paths under `root` that survive `.gitignore` filtering — every
-/// path the `ignore` crate's own walker (ripgrep's engine) would keep, given
-/// root and nested `.gitignore` files, `.git/info/exclude`, and the user's
-/// global excludes file (`core.excludesFile`). `glob`/`grep` used to have no
-/// `.gitignore` awareness at all: `target/`/`node_modules/` were enumerated
-/// like any other tree, consuming the [`MAX_RESULTS`] walk budget and
-/// polluting results unless a caller passed `exclude` manually (#629,
-/// [ADR-0170](../../../docs/adr/0170-gitignore-aware-glob-grep-walk.md); named
-/// as the seam by [ADR-0008](../../../docs/adr/0008-host-tools-workdir-and-bounded-output.md)).
-///
-/// Walked independently of the `glob`-crate enumeration above (rather than
-/// replacing it) so that walk's own quirks — the bare-`**` trap
-/// (ADR-0016/ADR-0150), brace/dir-pattern expansion, containment, extra-root
-/// widening — stay exactly as tested; this only decides set membership,
-/// checked as an unconditional drop alongside the `.git` filter — but only for
-/// matches actually contained under `root`. A match admitted through
-/// extra-root widening (#482/ADR-0132) lives on a directory the caller was
-/// specifically, narrowly granted access to; that grant is the whole point,
-/// so its own `.gitignore` (if any) is not consulted.
-/// `require_git(false)`: a `.gitignore` is honored even in a directory that
-/// isn't (yet) a git repository — an agent shouldn't see it ignored simply
-/// because `git init` hasn't run yet, and it keeps this walk from having to
-/// search `root`'s ancestors for a repo boundary. `hidden(false)`: dotfiles
-/// were always enumerable before (only `.git` and `.gitignore` rules filter
-/// anything); this crate's own "skip hidden entries" heuristic is unrelated
-/// to `.gitignore` and would otherwise start hiding them. `follow_links(true)`
-/// mirrors the `glob`-crate walk so a symlinked path lands in both sets with
-/// the same shape, and an out-of-root escape through one still reaches (and
-/// is counted by) the containment check below instead of silently vanishing
-/// here.
-fn gitignore_allowed_paths(root: &Path) -> HashSet<PathBuf> {
-    WalkBuilder::new(root)
-        .follow_links(true)
-        .hidden(false)
-        .require_git(false)
-        .build()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.into_path())
-        .collect()
+/// The deepest metachar-free prefix of `abs` — where the walk starts, so
+/// `src/**/*.rs` walks `root/src` (not `root`) and an absolute granted
+/// pattern like `/granted/dir/**/*` walks `/granted/dir`. `None` when that
+/// prefix doesn't exist on disk: the whole alternative matches nothing.
+fn walk_root_of(abs: &Path) -> Option<PathBuf> {
+    let mut prefix = PathBuf::new();
+    for component in abs.components() {
+        let s = component.as_os_str().to_string_lossy();
+        if s.contains(['*', '?', '[']) {
+            break;
+        }
+        prefix.push(component);
+    }
+    if prefix.symlink_metadata().is_ok() {
+        Some(prefix)
+    } else {
+        None
+    }
 }
 
 /// ADR-0150: a metachar-free pattern naming an existing directory expands to

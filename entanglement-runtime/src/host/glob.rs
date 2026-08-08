@@ -134,12 +134,18 @@ impl Tool for GlobTool {
                     list.out_of_root,
                 ));
             }
+            if list.scan_capped {
+                msg.push_str(" The walk stopped after scanning 100000 entries — narrow the pattern.");
+            }
             return Ok(msg);
         }
         // Truncate first so the cap notice survives the head-only byte cut.
         let mut result = truncate_output(out);
         if list.capped {
             result.push_str("\n[capped at 1000 results — narrow the pattern]");
+        }
+        if list.scan_capped {
+            result.push_str("\n[walk stopped after scanning 100000 entries — narrow the pattern]");
         }
         tracing::debug!(output_len = result.len(), "glob tool result");
         Ok(result)

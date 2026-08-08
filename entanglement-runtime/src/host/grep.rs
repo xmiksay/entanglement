@@ -235,6 +235,9 @@ impl Tool for GrepTool {
             // cause — nothing scanned vs scanned-but-no-match — instead of
             // returning an empty string the model can't act on.
             let mut msg = zero_match_message(&parsed.pattern, filter, scanned, &list);
+            if list.scan_capped {
+                msg.push_str("\n[file walk stopped after scanning 100000 entries — narrow `path`]");
+            }
             if !skipped.is_empty() {
                 msg = append_skip_notice(msg, &skipped, &self.root);
             }
@@ -243,6 +246,9 @@ impl Tool for GrepTool {
         let mut result = truncate_output(append_skip_notice(out, &skipped, &self.root));
         if list.capped {
             result.push_str("\n[file walk capped at 1000 files — narrow `path`]");
+        }
+        if list.scan_capped {
+            result.push_str("\n[file walk stopped after scanning 100000 entries — narrow `path`]");
         }
         Ok(result)
     }
