@@ -41,6 +41,7 @@ impl SessionView {
             tool: "!bash".to_string(),
             input: command,
             output: Some(output),
+            is_error: false,
         });
     }
 
@@ -201,6 +202,7 @@ impl SessionView {
                                 tool,
                                 input: delta,
                                 output: None,
+                                is_error: false,
                             });
                             self.streaming_tool_calls.insert(request_id, idx);
                         }
@@ -241,6 +243,7 @@ impl SessionView {
                                 tool: tool.clone(),
                                 input: input.clone(),
                                 output: None,
+                                is_error: false,
                             });
                         }
                     }
@@ -298,23 +301,29 @@ impl SessionView {
                 request_id,
                 tool,
                 output,
+                is_error,
                 ..
             } => {
                 if seq > self.last_seen_seq {
                     self.last_seen_seq = seq;
-                    // Fold the output into its call so one op is one entry (#340).
+                    // Fold the output (and its is_error classification, #672,
+                    // ADR-0176) into its call so one op is one entry (#340).
                     // Batch results resolve out of order (#270), so scan from the
                     // back for the unfilled `ToolCall` with this `request_id`.
                     let folded = self.transcript.iter_mut().rev().find_map(|e| match e {
                         TranscriptEntry::ToolCall {
                             request_id: Some(id),
-                            output: slot @ None,
+                            output: output_slot @ None,
+                            is_error: error_slot,
                             ..
-                        } if *id == request_id => Some(slot),
+                        } if *id == request_id => Some((output_slot, error_slot)),
                         _ => None,
                     });
                     match folded {
-                        Some(slot) => *slot = Some(output),
+                        Some((slot, error_slot)) => {
+                            *slot = Some(output);
+                            *error_slot = is_error;
+                        }
                         // No matching call (e.g. a stray/duplicate output): keep
                         // the standalone notice rather than dropping it.
                         None => self.transcript.push(TranscriptEntry::ToolOutput {

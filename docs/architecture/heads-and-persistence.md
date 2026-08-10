@@ -186,7 +186,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   session, the attention panel jumps to the oldest waiting background session,
   and otherwise the chat area hit-test toggles a transcript block — reasoning
   runs render collapsed as a `▸ Thinking (N lines)` header, and each **tool
-  operation** as a single collapsible `▸ {tool}  {primary_arg}  ✓` line with its
+  operation** as a single collapsible `▸ {tool}  {primary_arg}  ✓`/`✗` line
+  (the badge from `OutEvent::ToolOutput::is_error`, folded through
+  `TranscriptEntry`/`Block::ToolCall`, #672 amending ADR-0176 — a failed call
+  gets the theme's `error_colors()` red `✗` instead of the green `✓`) with its
   paired output folded in (#340; the `ToolOutput` matches its `ToolCall` by
   `request_id`, so batch results still pair correctly), both expanded on click
   (or via the leader `t` key, which toggles the most recent block of either kind).

@@ -304,6 +304,7 @@ pub(super) fn flush_tool_call(
     tool: &str,
     input: &str,
     output: Option<&str>,
+    is_error: bool,
     theme: Theme,
     colors: RoleColors,
     available_width: u16,
@@ -314,7 +315,11 @@ pub(super) fn flush_tool_call(
     out.push(padding.clone());
 
     let arrow = if expanded { '▾' } else { '▸' };
-    let status_suffix = output.is_some().then_some((" ✓", Color::Green));
+    let status_suffix = output.is_some().then_some(if is_error {
+        (" ✗", theme.error_colors().fg)
+    } else {
+        (" ✓", Color::Green)
+    });
     let header = tool_header_spans(
         tool,
         input,

@@ -31,6 +31,7 @@ pub(super) enum Block {
         tool: String,
         input: String,
         output: Option<String>,
+        is_error: bool,
         block_id: usize,
         expanded: bool,
     },
@@ -80,6 +81,7 @@ impl Block {
                 tool,
                 input,
                 output,
+                is_error,
                 expanded,
                 ..
             } => {
@@ -87,6 +89,7 @@ impl Block {
                 tool.hash(&mut h);
                 input.hash(&mut h);
                 output.hash(&mut h);
+                is_error.hash(&mut h);
                 expanded.hash(&mut h);
             }
             Block::ToolOutput { tool, output } => {
@@ -175,11 +178,13 @@ pub(super) fn segment(
                 tool,
                 input,
                 output,
+                is_error,
                 ..
             } => blocks.push(Block::ToolCall {
                 tool: tool.clone(),
                 input: input.clone(),
                 output: output.clone(),
+                is_error: *is_error,
                 block_id: idx,
                 expanded: expanded(idx),
             }),
