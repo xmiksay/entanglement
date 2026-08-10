@@ -230,6 +230,7 @@ mod tests {
             tool: "read".into(),
             input: r#"{"path":"a.rs"}"#.into(),
             output: Some("fn main() {}".into()),
+            is_error: false,
         }];
         let md = transcript_to_markdown(&sid(), None, None, &transcript, 0);
         assert!(md.contains("### Tool call: `read`"));

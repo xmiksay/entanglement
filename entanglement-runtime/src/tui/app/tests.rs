@@ -521,7 +521,7 @@ fn record_bash_passthrough_appends_one_folded_tool_call() {
     let entries = app.transcript();
     assert!(matches!(
         &entries[entries.len() - 1],
-        TranscriptEntry::ToolCall { request_id: None, tool, input, output: Some(o) }
+        TranscriptEntry::ToolCall { request_id: None, tool, input, output: Some(o), .. }
             if tool == "!bash" && input == "echo hi" && o.contains("hi")
     ));
 }

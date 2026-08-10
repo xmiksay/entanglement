@@ -40,6 +40,7 @@ pub(super) fn render_block(
             tool,
             input,
             output,
+            is_error,
             expanded,
             ..
         } => flush_tool_call(
@@ -47,6 +48,7 @@ pub(super) fn render_block(
             tool,
             input,
             output.as_deref(),
+            *is_error,
             theme,
             tool_req,
             available_width,

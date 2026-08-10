@@ -32,6 +32,10 @@ pub enum TranscriptEntry {
         input: String,
         /// `None` until the paired `ToolOutput` arrives (still running).
         output: Option<String>,
+        /// Folded from `OutEvent::ToolOutput::is_error` (#672, ADR-0176) when
+        /// the paired output arrives; stays `false` while running and for a
+        /// head-side passthrough, which never carries the field.
+        is_error: bool,
     },
     /// Standalone out-of-band notices only (`record_status`, or a `ToolOutput`
     /// with no matching call); a tool op's real output folds into its

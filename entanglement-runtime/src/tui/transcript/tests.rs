@@ -241,6 +241,49 @@ fn tool_op_expands_to_show_body_and_check_when_done() {
 }
 
 #[test]
+fn failed_tool_call_shows_red_cross_not_green_check() {
+    // #672: `is_error` must reach the collapsed header badge instead of the
+    // indiscriminate green ✓ every completed call used to get.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(&mut app, &sid, 1, "bash", r#"{"command":"false"}"#);
+    app.handle_out_event(OutEvent::ToolOutput {
+        session: sid.clone(),
+        seq: 2,
+        request_id: "c1".to_string(),
+        tool: "bash".to_string(),
+        output: "denied by permission profile".to_string(),
+        content: vec![],
+        is_error: true,
+        duration_ms: None,
+    });
+
+    let body = render_body_lines(&mut app, 80);
+    let header_idx = line_index_of(&body, "▸ bash");
+    let header = &body.lines[header_idx];
+    assert!(
+        line_text(header).contains('✗'),
+        "failed call header must show ✗, got: {:?}",
+        line_text(header)
+    );
+    assert!(
+        !line_text(header).contains('✓'),
+        "failed call header must not show ✓: {:?}",
+        line_text(header)
+    );
+    let badge_span = header
+        .spans
+        .iter()
+        .find(|s| s.content.contains('✗'))
+        .expect("badge span present");
+    assert_eq!(
+        badge_span.style.fg,
+        Some(ratatui::style::Color::Red),
+        "badge must render in the theme's error color"
+    );
+}
+
+#[test]
 fn edit_op_expands_to_a_diff_not_raw_json() {
     // The epic's payoff (#341 wired through #340): an expanded `edit` shows a
     // real `+`/`-` diff of oldString→newString, never the raw JSON args.
