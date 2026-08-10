@@ -113,10 +113,13 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
     let target = root.join("target.txt");
     std::fs::write(&target, "hello").unwrap();
 
-    let _guard = crate::env_lock();
-    std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
-    let skill_registry = Arc::new(load_registry(&root).unwrap());
-    std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
+    let skill_registry = {
+        let _guard = crate::env_lock();
+        std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
+        let skill_registry = Arc::new(load_registry(&root).unwrap());
+        std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
+        skill_registry
+    };
     let skills = Arc::new(RwLock::new(skill_registry));
 
     let mut tools = host_tools(root.clone());

@@ -251,13 +251,18 @@ async fn custom_resolver_deny_refuses_without_request() {
 }
 
 #[tokio::test]
+// `ENTANGLEMENT_GRANTS_FILE` must stay pinned (and the env lock held) across the
+// whole engine round-trip below — dropping it early would let a concurrent
+// module's locked writer interleave before our `remove_var`. Each #[tokio::test]
+// runs its own runtime, so blocking siblings on the std mutex only serializes.
+#[allow(clippy::await_holding_lock)]
 async fn custom_resolver_ask_then_always_routes_through_custom_grant_store() {
     // A grants file path that MUST NOT be written by the custom store.
     let file = std::env::temp_dir().join("entanglement-policy-seam-nofile.yml");
     let _ = std::fs::remove_file(&file);
     let _guard = crate::env_lock();
-    // SAFETY: the var is
-    // only read by the *default* file store, which this test does not construct.
+    // SAFETY: the var is only read by the *default* file store, which this test
+    // does not construct; the guard above serializes against sibling modules.
     unsafe { std::env::set_var("ENTANGLEMENT_GRANTS_FILE", &file) };
 
     let recorded = Arc::new(Mutex::new(Vec::new()));
