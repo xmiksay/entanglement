@@ -75,6 +75,7 @@ impl AuthFlow {
             cfg.authorization_url.as_deref(),
             cfg.token_url.as_deref(),
             cfg.registration_url.as_deref(),
+            cfg.device_authorization_url.as_deref(),
         )
         .await
         .with_context(|| format!("discovering OAuth metadata for MCP server `{server}`"))?;
@@ -109,9 +110,16 @@ impl AuthFlow {
                          no `client_id` is configured — set `oauth.client_id` in config.yml"
                     )
                     })?;
-                dcr::register(&http, endpoint, &redirect_uri, &scopes, CLIENT_NAME)
-                    .await
-                    .with_context(|| format!("registering a client with `{server}`"))?
+                dcr::register(
+                    &http,
+                    endpoint,
+                    Some(&redirect_uri),
+                    &["authorization_code", "refresh_token"],
+                    &scopes,
+                    CLIENT_NAME,
+                )
+                .await
+                .with_context(|| format!("registering a client with `{server}`"))?
             }
         };
 

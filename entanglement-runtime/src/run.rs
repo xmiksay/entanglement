@@ -172,7 +172,14 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // the only way to complete the flow there.
         OutEvent::McpAuthChanged { status } => {
             if let Some(url) = &status.authorize_url {
-                writeln!(out, "→ {} · open to authorize: {url}", status.name)?
+                match &status.user_code {
+                    Some(code) => writeln!(
+                        out,
+                        "→ {} · open {url} and enter code {code} to authorize",
+                        status.name
+                    )?,
+                    None => writeln!(out, "→ {} · open to authorize: {url}", status.name)?,
+                }
             } else if let Some(err) = &status.error {
                 writeln!(out, "✗ {} · {err}", status.name)?
             } else if let Some(state) = &status.state {

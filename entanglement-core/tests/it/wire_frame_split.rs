@@ -185,6 +185,7 @@ async fn forged_wire_mcp_auth_is_refused_for_every_action() {
     let holly = engine(vec![]);
     for action in [
         McpAuthAction::Connect,
+        McpAuthAction::ConnectDeviceCode,
         McpAuthAction::Check,
         McpAuthAction::Disconnect,
     ] {

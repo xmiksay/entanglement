@@ -11,7 +11,7 @@
 //! so it must never be wire-driven — #472/ADR-0124's rationale).
 
 use anyhow::{bail, Context, Result};
-use entanglement_core::{AuthFlow, AuthOutcome, McpAuthAction, TokenStore};
+use entanglement_core::{AuthFlow, AuthOutcome, DeviceFlow, McpAuthAction, TokenStore};
 
 use crate::config::McpTokenStore;
 use crate::tools::SharedRegistry;
@@ -29,6 +29,8 @@ const AUTHORIZATION_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 pub struct PendingUrl {
     pub url: String,
     pub browser_opened: bool,
+    /// Set only for the device-code flow's interim report (RFC 8628, #631).
+    pub user_code: Option<String>,
 }
 
 /// Run `action` for `server`. `on_url` is invoked once, mid-`Connect`, with the
@@ -51,10 +53,15 @@ pub async fn run(
         McpAuthAction::Connect => {
             connect(server, configs, registry, active, secret_env, http, on_url).await
         }
+        McpAuthAction::ConnectDeviceCode => {
+            connect_device(server, configs, registry, active, secret_env, http, on_url).await
+        }
         // Check and Disconnect are pure credential operations — they need the
         // store but neither the config nor a reconnect, so they delegate
         // straight to the provider's mechanism.
-        McpAuthAction::Check => entanglement_core::mcp_auth_check(&store, server).await,
+        McpAuthAction::Check => {
+            entanglement_core::mcp_auth_check(std::sync::Arc::new(store.clone()), server).await
+        }
         McpAuthAction::Disconnect => {
             let outcome = entanglement_core::mcp_auth_disconnect(&store, server).await?;
             // Drop the live connection too: its token source would now fail on
@@ -68,18 +75,14 @@ pub async fn run(
     }
 }
 
-/// The full authorization-code flow, then a reconnect so the server's tools
-/// become usable without a restart.
-#[allow(clippy::too_many_arguments)]
-async fn connect(
+/// The two checks every OAuth entry point needs before it can even start a
+/// flow: an `oauth:` block configured, and an HTTP (not stdio) transport.
+/// Factored out of `connect`/`connect_device` so the two carefully-worded
+/// `bail!` messages can't drift apart between them.
+fn resolve_oauth_server(
     server: &str,
     configs: &ServerConfigs,
-    registry: &SharedRegistry,
-    active: &ActiveServers,
-    secret_env: &[String],
-    http: &entanglement_core::HttpClient,
-    on_url: impl FnOnce(PendingUrl),
-) -> Result<AuthOutcome> {
+) -> Result<(McpServerConfig, entanglement_core::OauthConfig, String)> {
     let cfg = resolve_config(server, configs)?;
     let Some(oauth) = cfg.oauth.clone() else {
         bail!(
@@ -94,6 +97,22 @@ async fn connect(
     let Some(url) = cfg.url.clone() else {
         bail!("MCP server `{server}` uses the stdio transport, which has no OAuth flow");
     };
+    Ok((cfg, oauth, url))
+}
+
+/// The full authorization-code flow, then a reconnect so the server's tools
+/// become usable without a restart.
+#[allow(clippy::too_many_arguments)]
+async fn connect(
+    server: &str,
+    configs: &ServerConfigs,
+    registry: &SharedRegistry,
+    active: &ActiveServers,
+    secret_env: &[String],
+    http: &entanglement_core::HttpClient,
+    on_url: impl FnOnce(PendingUrl),
+) -> Result<AuthOutcome> {
+    let (cfg, oauth, url) = resolve_oauth_server(server, configs)?;
 
     let pending = AuthFlow::begin(server, &url, &oauth, None)
         .await
@@ -106,6 +125,7 @@ async fn connect(
     on_url(PendingUrl {
         url: authorize_url,
         browser_opened,
+        user_code: None,
     });
 
     let auth = pending.complete(AUTHORIZATION_TIMEOUT).await?;
@@ -117,6 +137,56 @@ async fn connect(
     // Now that a credential exists, connect for real. A failure here leaves the
     // credential stored (it is valid — the server is simply unreachable), so a
     // later retry needs no re-authorization.
+    if let Err(e) =
+        super::live::mcp_reconnect(server, &cfg, registry, active, secret_env, http).await
+    {
+        tracing::warn!(
+            server = %server,
+            "authorized, but connecting afterwards failed: {e:#} — the credential is stored; \
+             retry with `/mcp connect {server}` or restart"
+        );
+    }
+    Ok(AuthOutcome::Authorized)
+}
+
+/// The RFC 8628 device-code flow (#631), then a reconnect exactly like
+/// `connect`'s — the only difference is how the human authorizes.
+#[allow(clippy::too_many_arguments)]
+async fn connect_device(
+    server: &str,
+    configs: &ServerConfigs,
+    registry: &SharedRegistry,
+    active: &ActiveServers,
+    secret_env: &[String],
+    http: &entanglement_core::HttpClient,
+    on_url: impl FnOnce(PendingUrl),
+) -> Result<AuthOutcome> {
+    let (cfg, oauth, url) = resolve_oauth_server(server, configs)?;
+
+    let pending = DeviceFlow::begin(server, &url, &oauth, None)
+        .await
+        .with_context(|| format!("starting device-code authorization for MCP server `{server}`"))?;
+
+    // Try opening the pre-filled URL (skips manual code entry) when the
+    // server offers one; always report the plain verification URI + code
+    // regardless, since a headless/SSH session has no browser to open at all
+    // and the user needs to type the code somewhere else either way.
+    let open_target = pending
+        .verification_uri_complete()
+        .unwrap_or_else(|| pending.verification_uri());
+    let browser_opened = super::browser::open(open_target);
+    on_url(PendingUrl {
+        url: pending.verification_uri().to_string(),
+        browser_opened,
+        user_code: Some(pending.user_code().to_string()),
+    });
+
+    let auth = pending.poll().await?;
+    let store = McpTokenStore::load();
+    store
+        .save(server, &auth)
+        .with_context(|| format!("persisting the credential for MCP server `{server}`"))?;
+
     if let Err(e) =
         super::live::mcp_reconnect(server, &cfg, registry, active, secret_env, http).await
     {
@@ -211,6 +281,37 @@ mod tests {
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
         let http = entanglement_core::HttpClient::new().unwrap();
         let err = connect("srv", &configs, &registry, &active, &[], &http, |_| {})
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("stdio transport"));
+    }
+
+    /// #631: the device-code entry point shares `connect`'s validation
+    /// prelude, so both `bail!` cases must apply to it identically.
+    #[tokio::test]
+    async fn connect_device_refuses_a_server_with_no_oauth_block() {
+        let configs = configs_with(vec![("srv", http_server("https://ex/mcp", None))]);
+        let registry = SharedRegistry::default();
+        let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
+        let http = entanglement_core::HttpClient::new().unwrap();
+        let err = connect_device("srv", &configs, &registry, &active, &[], &http, |_| {})
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no `oauth:` block"));
+        assert!(err.to_string().contains("headers:"));
+        assert!(err.to_string().contains("static bearer token"));
+    }
+
+    #[tokio::test]
+    async fn connect_device_refuses_a_stdio_server() {
+        let mut cfg = http_server("https://ex/mcp", Some(Default::default()));
+        cfg.url = None;
+        cfg.command = Some("some-server".into());
+        let configs = configs_with(vec![("srv", cfg)]);
+        let registry = SharedRegistry::default();
+        let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
+        let http = entanglement_core::HttpClient::new().unwrap();
+        let err = connect_device("srv", &configs, &registry, &active, &[], &http, |_| {})
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stdio transport"));

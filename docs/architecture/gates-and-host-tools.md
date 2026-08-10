@@ -688,7 +688,22 @@ the same permission profiles as `read`/`bash`.
     server that issues static bearer tokens has no such endpoints, so the flow
     can never complete no matter what the `oauth:` block contains; `connect`'s
     error says so and points at static `headers:` + the managed `.env` instead
-    (#561).
+    (#561). **Device-code flow (✅ [ADR-0182](../adr/0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md),
+    #631):** `/mcp connect <name> --device-code` runs RFC 8628 instead — no
+    browser, no loopback listener. `DeviceFlow` shares discovery/DCR with the
+    browser flow (registration now declares an explicit `grant_types`, e.g.
+    `["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"]`, with no
+    `redirect_uri`) and polls the token endpoint
+    (`grant_type=urn:ietf:params:oauth:grant-type:device_code`) honoring
+    `authorization_pending`/`slow_down` until the user finishes elsewhere —
+    `McpAuthChanged`'s interim event carries a `user_code` alongside
+    `authorize_url` (the plain `verification_uri`) for every head to render. The
+    **cross-process refresh race** ADR-0153 accepted for v1 is closed the same
+    ADR: `TokenStore::with_exclusive` lets `McpTokenStore` hold its file lock for
+    the whole load→refresh→save section instead of just the write, so two
+    `skutter` instances can no longer both redeem the same rotating refresh
+    token — a losing racer picks up the winner's already-refreshed token instead
+    of failing.
 - **Proxy (`mcp::tool::McpTool`):** adapts one remote tool. `schema()` returns the
   server's `inputSchema` verbatim; `run()` JSON-decodes the model's input to the
   `arguments` object, checks it against the schema's top-level `required` array

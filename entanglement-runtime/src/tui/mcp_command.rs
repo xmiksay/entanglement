@@ -37,7 +37,7 @@ pub enum McpCommand {
 
 const MCP_USAGE: &str = "usage: /mcp list | /mcp add <name> -- <command> [args...] | \
      /mcp add <name> --url <url> [--header KEY:VALUE]... | /mcp remove <name> | \
-     /mcp connect|check|disconnect <name>";
+     /mcp connect [--device-code]|check|disconnect <name>";
 
 /// Parse `/mcp <subcommand> ...` — Issue 2 delegates to clap
 /// ([`parse_mcp_via_clap`]) and maps the parsed [`McpSub`] onto [`McpCommand`],
@@ -53,9 +53,13 @@ pub fn parse_mcp_args(text: &str) -> Result<McpCommand, String> {
         None | Some(McpSub::List) => Ok(McpCommand::List),
         Some(McpSub::Remove { name }) => Ok(McpCommand::Remove { name }),
         Some(McpSub::Add(add)) => build_mcp_add_spec(add),
-        Some(McpSub::Connect { name }) => Ok(McpCommand::Auth {
+        Some(McpSub::Connect { name, device_code }) => Ok(McpCommand::Auth {
             name,
-            action: McpAuthAction::Connect,
+            action: if device_code {
+                McpAuthAction::ConnectDeviceCode
+            } else {
+                McpAuthAction::Connect
+            },
         }),
         Some(McpSub::Check { name }) => Ok(McpCommand::Auth {
             name,
@@ -172,8 +176,16 @@ pub(super) async fn send_mcp_auth(
     name: String,
     action: McpAuthAction,
 ) {
-    if action == McpAuthAction::Connect {
-        app.record_mcp_status(format!("mcp: authorizing `{name}` — opening your browser…"));
+    match action {
+        McpAuthAction::Connect => {
+            app.record_mcp_status(format!("mcp: authorizing `{name}` — opening your browser…"));
+        }
+        McpAuthAction::ConnectDeviceCode => {
+            app.record_mcp_status(format!(
+                "mcp: authorizing `{name}` — requesting a device code…"
+            ));
+        }
+        McpAuthAction::Check | McpAuthAction::Disconnect => {}
     }
     let _ = holly.send(InMsg::McpAuth { name, action }).await;
 }
@@ -286,6 +298,26 @@ mod tests {
                 "parsing {text}"
             );
         }
+    }
+
+    /// #631: `--device-code` selects `ConnectDeviceCode` instead of `Connect`;
+    /// omitting it keeps the existing browser-flow default.
+    #[test]
+    fn parse_mcp_args_connect_device_code_flag() {
+        assert_eq!(
+            parse_mcp_args("/mcp connect remote --device-code"),
+            Ok(McpCommand::Auth {
+                name: "remote".to_string(),
+                action: McpAuthAction::ConnectDeviceCode,
+            })
+        );
+        assert_eq!(
+            parse_mcp_args("/mcp connect remote"),
+            Ok(McpCommand::Auth {
+                name: "remote".to_string(),
+                action: McpAuthAction::Connect,
+            })
+        );
     }
 
     #[test]

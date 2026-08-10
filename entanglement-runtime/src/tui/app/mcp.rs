@@ -120,9 +120,16 @@ impl App {
     pub(super) fn handle_mcp_auth_changed(&mut self, status: &McpAuthStatus) {
         let name = &status.name;
         if let Some(url) = &status.authorize_url {
-            // Always transcript content, never a toast — this is the URL a
-            // headless/SSH session must be able to select and copy.
-            self.record_mcp_status(format!("mcp: open this URL to authorize `{name}`: {url}"));
+            // Always transcript content, never a toast — this is the URL (and,
+            // for the device-code flow, the code) a headless/SSH session must
+            // be able to select and copy.
+            let message = match &status.user_code {
+                Some(code) => {
+                    format!("mcp: open {url} and enter code {code} to authorize `{name}`")
+                }
+                None => format!("mcp: open this URL to authorize `{name}`: {url}"),
+            };
+            self.record_mcp_status(message);
             return;
         }
         if let Some(err) = &status.error {
@@ -132,6 +139,7 @@ impl App {
         if let Some(state) = &status.state {
             let verb = match status.action {
                 McpAuthAction::Connect => "connect",
+                McpAuthAction::ConnectDeviceCode => "connect (device code)",
                 McpAuthAction::Check => "check",
                 McpAuthAction::Disconnect => "disconnect",
             };
@@ -199,6 +207,7 @@ mod tests {
             state: None,
             error: None,
             authorize_url: Some("https://as.example/authorize?x=1".into()),
+            user_code: None,
         });
         let rendered = app
             .transcript()
@@ -206,6 +215,25 @@ mod tests {
             .any(|e| format!("{e:?}").contains("https://as.example/authorize?x=1"));
         assert!(rendered, "the authorize URL must persist in the transcript");
         assert_eq!(app.toast(), None);
+    }
+
+    /// #631: the device-code interim event carries a `user_code`, and the
+    /// rendered line must show it alongside the verification URL — that's the
+    /// whole point of the flow for a headless/SSH session.
+    #[test]
+    fn mcp_auth_device_code_renders_the_code_alongside_the_url() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.handle_mcp_auth_changed(&McpAuthStatus {
+            name: "remote".into(),
+            action: McpAuthAction::ConnectDeviceCode,
+            state: None,
+            error: None,
+            authorize_url: Some("https://as.example/device".into()),
+            user_code: Some("ABCD-EFGH".into()),
+        });
+        let text: String = app.transcript().iter().map(|e| format!("{e:?}")).collect();
+        assert!(text.contains("https://as.example/device"));
+        assert!(text.contains("ABCD-EFGH"));
     }
 
     #[test]
@@ -217,6 +245,7 @@ mod tests {
             state: Some("already valid".into()),
             error: None,
             authorize_url: None,
+            user_code: None,
         });
         app.handle_mcp_auth_changed(&McpAuthStatus {
             name: "remote".into(),
@@ -224,6 +253,7 @@ mod tests {
             state: None,
             error: Some("registration failed".into()),
             authorize_url: None,
+            user_code: None,
         });
         let text: String = app.transcript().iter().map(|e| format!("{e:?}")).collect();
         assert!(text.contains("check `remote` — already valid"));

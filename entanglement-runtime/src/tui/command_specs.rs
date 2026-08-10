@@ -87,8 +87,14 @@ pub enum McpSub {
     Add(McpAddArgs),
     /// Remove a server by name.
     Remove { name: String },
-    /// Authorize a server over OAuth in the browser (ADR-0153).
-    Connect { name: String },
+    /// Authorize a server over OAuth in the browser (ADR-0153), or with
+    /// `--device-code` via RFC 8628 for a host with no browser and no reachable
+    /// loopback port (#631).
+    Connect {
+        name: String,
+        #[arg(long)]
+        device_code: bool,
+    },
     /// Report (and refresh if needed) a server's stored credential.
     Check { name: String },
     /// Revoke and drop a server's stored credential.
