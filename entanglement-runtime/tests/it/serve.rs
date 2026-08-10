@@ -7,7 +7,6 @@
 //! and per-connection approval ownership (#402, ADR-0107) refuses a decision
 //! frame from a non-owning connection while the owning connection still unblocks
 //! the parked turn.
-#![cfg(feature = "serve")]
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

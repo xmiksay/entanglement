@@ -15,8 +15,7 @@ use entanglement_core::{
     LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 
-mod common;
-use common::spawn_tool_executor;
+use crate::common::spawn_tool_executor;
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
 async fn collect(

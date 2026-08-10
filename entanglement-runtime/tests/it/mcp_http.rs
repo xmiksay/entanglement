@@ -8,7 +8,6 @@
 //!
 //! Needs both `mcp-http` (the transport under test) and `serve` (axum, the test
 //! server) — the default feature set enables both.
-#![cfg(all(feature = "mcp-http", feature = "serve"))]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};

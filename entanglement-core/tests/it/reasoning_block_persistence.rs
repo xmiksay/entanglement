@@ -20,8 +20,7 @@ use entanglement_core::{
 use futures::stream;
 use futures::StreamExt;
 
-mod common;
-use common::collect_until_done;
+use crate::common::collect_until_done;
 
 fn thinking_block() -> serde_json::Value {
     serde_json::json!({ "type": "thinking", "thinking": "let me think", "signature": "sig-1" })

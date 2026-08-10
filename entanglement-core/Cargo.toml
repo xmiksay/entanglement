@@ -27,9 +27,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-async-trait = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
+# Only the integration-test mock `Llm`s derive `#[async_trait]`; src/ has no use.
+async-trait = { workspace = true }

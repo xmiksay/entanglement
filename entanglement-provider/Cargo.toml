@@ -18,9 +18,9 @@ path = "src/lib.rs"
 [dependencies]
 # Per-crate feature trim (#502, ADR-0135): `rt`/`macros` back `tokio::spawn` +
 # `#[tokio::test]`; `sync` backs the retry semaphore; `time` backs
-# sleep/timeout backoff; `net`/`io-util` back `tests/streaming.rs`'s hand-rolled
-# loopback SSE server (no separate `tokio` dev-dependency exists to scope those
-# two to tests only).
+# sleep/timeout backoff; `net`/`io-util` back the OAuth loopback redirect
+# receiver (`mcp/auth/loopback.rs`/`flow.rs`, ADR-0153 — unconditionally
+# compiled) and `tests/streaming.rs`'s hand-rolled loopback SSE server.
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -38,10 +38,14 @@ async-stream = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
 httpdate = "1"
-# CSPRNG for the MCP OAuth PKCE verifier + `state` (ADR-0153). Same crate (and
-# `getrandom` backing) `entanglement-core` already uses for session ids, so this
-# adds no new dependency tree to the workspace.
-uuid = { version = "1", features = ["v4"] }
+# CSPRNG for the MCP OAuth PKCE verifier + `state` (ADR-0153). Direct OS
+# entropy — no `uuid` wrapper needed for 32 raw bytes.
+getrandom = "0.4"
+# Build-speed pin (ADR-0180): holds `url`→`idna`'s backend on the unicode-rs
+# implementation instead of the ICU4X stack (~15 crates, two of the slowest
+# derive macros in a cold build). IDNA/punycode behavior is preserved — this
+# selects a backend, it doesn't disable IDNA.
+idna_adapter = "~1.1"
 
 [dev-dependencies]
 tempfile = "3"

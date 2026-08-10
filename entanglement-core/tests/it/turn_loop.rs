@@ -17,8 +17,7 @@ use entanglement_core::{
     LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 
-mod common;
-use common::{spawn_tool_executor, unknown_tool};
+use crate::common::{spawn_tool_executor, unknown_tool};
 
 /// Collect `TextDelta` texts for `sid` until the deadline, across as many
 /// turns as happen. (Unlike `actor.rs::collect`, this does *not* break on

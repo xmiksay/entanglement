@@ -19,8 +19,7 @@ use entanglement_core::{
 use futures::stream;
 use futures::StreamExt;
 
-mod common;
-use common::{collect_until_done, spawn_tool_executor, unknown_tool};
+use crate::common::{collect_until_done, spawn_tool_executor, unknown_tool};
 
 /// Always streams a text-only reply with an ambiguous `stop_reason: None` —
 /// the shape of a stream that closed with no `finish_reason` ever observed
