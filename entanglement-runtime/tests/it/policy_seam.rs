@@ -255,7 +255,8 @@ async fn custom_resolver_ask_then_always_routes_through_custom_grant_store() {
     // A grants file path that MUST NOT be written by the custom store.
     let file = std::env::temp_dir().join("entanglement-policy-seam-nofile.yml");
     let _ = std::fs::remove_file(&file);
-    // SAFETY: this test process is single-threaded per #[tokio::test]; the var is
+    let _guard = crate::env_lock();
+    // SAFETY: the var is
     // only read by the *default* file store, which this test does not construct.
     unsafe { std::env::set_var("ENTANGLEMENT_GRANTS_FILE", &file) };
 

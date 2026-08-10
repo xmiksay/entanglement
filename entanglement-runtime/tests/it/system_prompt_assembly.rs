@@ -86,6 +86,7 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
     };
 
     // Isolate from any host user-agents dir; project agents come from the temp dir.
+    let _guard = crate::env_lock();
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
     let profiles = load_registry(
         project.path(),

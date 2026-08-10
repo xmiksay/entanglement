@@ -4,7 +4,6 @@
 //! engine + `spawn_session_title_generator` end-to-end — the seam is the
 //! public inbox/outbox, exactly like the other engine integration tests.
 
-#![cfg(feature = "provider")]
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,8 +18,8 @@ use entanglement_runtime::config::aux_models::AuxModelStore;
 use entanglement_runtime::session_title::spawn_session_title_generator;
 use tokio::sync::Notify;
 
-/// `ENTANGLEMENT_AUX_MODELS_FILE` is process-global; this file's tests serialize.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// `ENTANGLEMENT_AUX_MODELS_FILE` is process-global; this file's tests serialize.
+// Serialized via the harness-wide `crate::env_lock()` (ADR-0180).
 
 async fn recv_until(
     sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
@@ -83,7 +82,7 @@ fn registry_with_primary(
     factory: LlmFactory,
     primary_concurrency: Option<usize>,
 ) -> AuxLlmRegistry {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = std::env::temp_dir().join(format!(
         "entanglement-session-title-it-{label}-{}.yml",
         std::process::id()

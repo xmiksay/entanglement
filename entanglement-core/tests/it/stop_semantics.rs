@@ -17,8 +17,7 @@ use entanglement_core::{
 };
 use futures::StreamExt;
 
-mod common;
-use common::collect_until_done;
+use crate::common::collect_until_done;
 
 /// ScriptedLlm variant that records every request's `messages` slice into a
 /// shared snapshot, so a test can assert what the model was shown across

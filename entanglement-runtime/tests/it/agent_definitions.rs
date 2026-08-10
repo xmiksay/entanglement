@@ -13,7 +13,6 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     MessageRole, OutEvent, Permission, SessionId, ToolCall,
 };
-use std::sync::Mutex;
 
 use entanglement_runtime::agents::load_registry;
 use entanglement_runtime::mcp::McpCapabilityIndex;
@@ -21,9 +20,9 @@ use entanglement_runtime::system_prompt::PromptContext;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::ToolRegistry;
 
-/// `ENTANGLEMENT_AGENTS_DIR` is process-global; every test that sets it must
-/// serialize through this lock so parallel runs don't clobber each other's dir.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// `ENTANGLEMENT_AGENTS_DIR` is process-global; every test that sets it must
+// serialize through this lock so parallel runs don't clobber each other's dir.
+// Serialized via the harness-wide `crate::env_lock()` (ADR-0180).
 
 /// Point the loader's user + project dirs at temp dirs, run `load_registry`, and
 /// restore the env. Serialized via a mutex because env vars are process-global.
@@ -31,7 +30,7 @@ fn load_with_dirs(
     user: Option<&std::path::Path>,
     project_root: &std::path::Path,
 ) -> entanglement_core::ProfileRegistry {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::env_lock();
     match user {
         Some(p) => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", p),
         None => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir"),
@@ -172,7 +171,7 @@ fn skills_preload_composes_body_into_the_agent_prompt() {
         "---\nname: coder\ndescription: a coder\nskills: [git]\n---\nBe careful.",
     );
 
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::env_lock();
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
     std::env::set_var("ENTANGLEMENT_SKILLS_DIR", "/nonexistent-user-skills-dir");
     let skills = entanglement_runtime::skills::load_registry(root).expect("load skills");
@@ -207,7 +206,7 @@ fn malformed_project_file_aborts_load() {
         "---\nname: broken\n---\nno description field",
     );
     // The missing `description` must surface as an error, not a silent skip.
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::env_lock();
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
     let result = load_registry(
         project.path(),
@@ -271,7 +270,7 @@ fn prompt_report_tolerates_broken_foreign_file() {
         "not even frontmatter",
     );
 
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::env_lock();
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
     let report = entanglement_runtime::agents::prompt_report(
         root,
@@ -327,7 +326,7 @@ fn provider_without_model_is_a_loud_error() {
         "broken.md",
         "---\nname: broken\ndescription: provider only\nprovider: zai\n---\nbody",
     );
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::env_lock();
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
     let result = load_registry(
         project.path(),
@@ -516,7 +515,7 @@ fn report_for(
     agent: &str,
     ctx: &PromptContext,
 ) -> Option<entanglement_runtime::agents::AgentPromptReport> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::env_lock();
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
     let report = prompt_report(
         project_root,
@@ -540,7 +539,7 @@ fn prompt_report_reports_builtin_source_and_prompt() {
     // must run under `ENV_LOCK` with the user dir isolated — exactly as
     // `report_for` does — or a parallel test's temp user-agents dir can leak in.
     let reg = {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::env_lock();
         std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
         let reg = load_registry(
             empty.path(),
@@ -615,7 +614,7 @@ fn resolve_with_dirs(
     user: Option<&std::path::Path>,
     project_root: &std::path::Path,
 ) -> Vec<entanglement_runtime::agents::AgentResolution> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::env_lock();
     match user {
         Some(p) => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", p),
         None => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir"),

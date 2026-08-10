@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use entanglement_core::GenerationParams;
 use entanglement_runtime::config::agent_generation::AgentGenerationStore;
 
-/// `ENTANGLEMENT_AGENT_GENERATION_FILE` is process-global; tests that set it serialize.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// `ENTANGLEMENT_AGENT_GENERATION_FILE` is process-global; tests that set it serialize.
+// Serialized via the harness-wide `crate::env_lock()` (ADR-0180).
 const ENV: &str = "ENTANGLEMENT_AGENT_GENERATION_FILE";
 
 fn tmp_path(name: &str) -> PathBuf {
@@ -27,7 +27,7 @@ fn params(temp: f32) -> GenerationParams {
 
 #[test]
 fn set_round_trips_across_a_reload() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("roundtrip");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
@@ -46,7 +46,7 @@ fn set_round_trips_across_a_reload() {
 
 #[test]
 fn env_override_selects_the_file() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("env");
     std::fs::write(&path, "agents:\n  plan:\n    temperature: 0.3\n").unwrap();
     std::env::set_var(ENV, &path);
@@ -60,7 +60,7 @@ fn env_override_selects_the_file() {
 
 #[test]
 fn malformed_file_loads_empty() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("malformed");
     std::fs::write(&path, "agents: [not-a-map\n").unwrap();
     std::env::set_var(ENV, &path);
@@ -75,7 +75,7 @@ fn malformed_file_loads_empty() {
 
 #[test]
 fn resolver_reads_through_to_the_store() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("resolver");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
@@ -95,7 +95,7 @@ fn resolver_reads_through_to_the_store() {
 
 #[test]
 fn resolver_observes_a_later_set_without_rebuilding() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("resolver-live");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
@@ -119,7 +119,7 @@ fn concurrent_set_from_two_stores_both_survive() {
     // race to set *different* agents against the same on-disk file (#329).
     // Without the lock's read-current-then-merge, the second writer's stale
     // in-memory `self.agents` would clobber the first writer's override on write.
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("concurrent");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
@@ -153,7 +153,7 @@ fn concurrent_set_from_two_stores_both_survive() {
 
 #[test]
 fn reload_picks_up_another_process_write() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("reload");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
@@ -175,7 +175,7 @@ fn reload_picks_up_another_process_write() {
 
 #[test]
 fn rewrite_is_stable_and_ordered() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("stable");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);

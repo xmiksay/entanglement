@@ -103,6 +103,7 @@ fn cross_vendor_project_skill_resolves_root_dir() {
     )
     .unwrap();
 
+    let _guard = crate::env_lock();
     std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
     let registry = load_registry(root).unwrap();
     std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
@@ -155,6 +156,7 @@ async fn load_skill_then_read_a_substituted_ref() {
     let scripted = Arc::new(vec![load_call, read_call, finish]);
     // Point the user layer at a non-existent dir so a real ~/.config skill can't
     // leak in; the project layer under `root` supplies `demo`.
+    let _guard = crate::env_lock();
     std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
     let registry = Arc::new(load_registry(&root).unwrap());
     std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
@@ -240,6 +242,7 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![load_call, finish]);
+    let _guard = crate::env_lock();
     std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
     let registry = Arc::new(load_registry(&root).unwrap());
     std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");

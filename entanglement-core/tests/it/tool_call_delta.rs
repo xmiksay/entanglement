@@ -14,8 +14,7 @@ use entanglement_core::{
 };
 use futures::stream::{self, StreamExt};
 
-mod common;
-use common::spawn_tool_executor;
+use crate::common::spawn_tool_executor;
 
 /// Scripted backend that replays a queued list of raw event batches, one per
 /// `stream()` call. Lets a test drive the exact `LlmEvent` sequence — including

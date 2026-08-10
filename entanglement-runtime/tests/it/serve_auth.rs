@@ -10,7 +10,6 @@
 //! multi-connection robustness unchanged; the unauthenticated router is
 //! byte-for-byte untouched; and the registry maintainer forgets a closed
 //! session.
-#![cfg(feature = "serve")]
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

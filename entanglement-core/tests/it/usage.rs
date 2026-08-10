@@ -14,8 +14,7 @@ use entanglement_core::{
 use futures::stream;
 use futures::StreamExt;
 
-mod common;
-use common::collect_until_done;
+use crate::common::collect_until_done;
 
 /// An `Llm` that streams one text chunk then a `Finish` carrying a scripted
 /// stop reason + usage — enough to exercise the engine's fold/emit path without

@@ -14,8 +14,7 @@ use entanglement_core::{
 use futures::stream;
 use futures::StreamExt;
 
-mod common;
-use common::collect_until_done;
+use crate::common::collect_until_done;
 
 /// Streams text plus one provider-side search `ContentBlock`, then a clean
 /// `Finish` — the shape a real Anthropic/z.ai backend produces around a

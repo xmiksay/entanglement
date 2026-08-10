@@ -4,12 +4,11 @@
 //! path, and the registry's fallback behavior.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use entanglement_runtime::config::aux_models::{AuxModelStore, Purpose};
 
-/// `ENTANGLEMENT_AUX_MODELS_FILE` is process-global; tests that set it serialize.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// `ENTANGLEMENT_AUX_MODELS_FILE` is process-global; tests that set it serialize.
+// Serialized via the harness-wide `crate::env_lock()` (ADR-0180).
 const ENV: &str = "ENTANGLEMENT_AUX_MODELS_FILE";
 
 fn tmp_path(name: &str) -> PathBuf {
@@ -18,7 +17,7 @@ fn tmp_path(name: &str) -> PathBuf {
 
 #[test]
 fn set_round_trips_across_a_reload() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("roundtrip");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
@@ -42,7 +41,7 @@ fn set_round_trips_across_a_reload() {
 
 #[test]
 fn env_override_selects_the_file() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("env");
     std::fs::write(
         &path,
@@ -65,7 +64,7 @@ fn env_override_selects_the_file() {
 
 #[test]
 fn malformed_file_loads_empty() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("malformed");
     std::fs::write(&path, "aux: [not-a-map\n").unwrap();
     std::env::set_var(ENV, &path);
@@ -82,7 +81,7 @@ fn malformed_file_loads_empty() {
 fn unrecognized_purpose_key_is_skipped_not_fatal() {
     // A file with a known + an unknown purpose: the known one loads, the
     // unknown one is skipped (debug-logged), and the file is not rejected.
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("unknown-key");
     std::fs::write(
         &path,
@@ -106,7 +105,7 @@ fn unrecognized_purpose_key_is_skipped_not_fatal() {
 #[test]
 fn deny_unknown_fields_rejects_a_typo() {
     // A typo'd field name makes the file malformed → fail-open to empty.
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("typo");
     std::fs::write(
         &path,
@@ -126,7 +125,7 @@ fn deny_unknown_fields_rejects_a_typo() {
 fn concurrent_set_from_two_stores_both_survive() {
     // Two "processes" (threads, each with its own `AuxModelStore::load()`)
     // race to pin *different* purposes against the same on-disk file (#329).
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("concurrent");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
@@ -164,7 +163,7 @@ fn concurrent_set_from_two_stores_both_survive() {
 
 #[test]
 fn reload_picks_up_another_process_pin() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("reload");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
@@ -194,7 +193,7 @@ fn reload_picks_up_another_process_pin() {
 
 #[test]
 fn rewrite_is_stable_and_ordered() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("stable");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
@@ -230,7 +229,7 @@ fn rewrite_is_stable_and_ordered() {
 fn persisted_file_carries_the_header_comment() {
     // The managed file starts with the explanatory header so a user discovering
     // it knows it's managed + how to revert.
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = crate::env_lock();
     let path = tmp_path("header");
     let _ = std::fs::remove_file(&path);
     std::env::set_var(ENV, &path);
