@@ -678,6 +678,8 @@ pub(super) async fn handle_event(
                 return Ok(true);
             }
         }
+        // The background-built `@file` index landing (#678).
+        Event::FileIndexReady(index) => app.set_file_index(index),
     }
     Ok(false)
 }
@@ -1241,6 +1243,17 @@ mod tests {
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
         let mut attention = Attention::from_env();
+
+        // The index arrives via the background-build event (#678), not
+        // init_head_context — deliver it through the same arm the TUI uses.
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::FileIndexReady(crate::tui::mention::FileIndex::build(dir.path())),
+        )
+        .await
+        .unwrap();
 
         // Type `@` → `update_mention` opens the popup (the indexed file matches).
         handle_event(
