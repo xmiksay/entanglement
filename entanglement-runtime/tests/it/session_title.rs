@@ -4,7 +4,6 @@
 //! engine + `spawn_session_title_generator` end-to-end — the seam is the
 //! public inbox/outbox, exactly like the other engine integration tests.
 
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

@@ -39,15 +39,15 @@ mod record_sink;
 mod reoffer_dedupe;
 mod replay_from;
 #[cfg(feature = "serve")]
-mod serve_auth;
-#[cfg(feature = "serve")]
 mod serve;
+#[cfg(feature = "serve")]
+mod serve_auth;
 #[cfg(feature = "provider")]
 mod session_title;
 mod skill_mask;
 mod spawn_prompt_persistence;
-mod stop_abort_inflight_cleanup;
 mod stop_abort;
+mod stop_abort_inflight_cleanup;
 mod subagent_spawn;
 mod system_prompt_assembly;
 mod tool_mask;
