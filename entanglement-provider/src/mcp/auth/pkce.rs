@@ -5,10 +5,9 @@
 //! meaningful sense) has no other defence against an intercepted code. We only
 //! ever offer `S256`; the spec's `plain` method is deliberately not implemented.
 //!
-//! Randomness comes from `uuid`'s v4 generator — the same crate `entanglement-core`
-//! already uses for session ids, and a `getrandom`-backed CSPRNG underneath. Two
-//! UUIDs give 32 bytes of entropy, which base64url-encodes to the 43-character
-//! verifier RFC 7636 §4.1 asks for.
+//! Randomness comes straight from `getrandom` (the OS CSPRNG): 32 bytes of
+//! entropy, which base64url-encodes to the 43-character verifier RFC 7636 §4.1
+//! asks for.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -45,8 +44,9 @@ impl Pkce {
 /// redirect back to the request we started.
 pub fn random_token() -> String {
     let mut bytes = [0u8; 32];
-    bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    // An OS-CSPRNG failure is unrecoverable and can't be handled meaningfully;
+    // the previous `uuid::Uuid::new_v4()` source panicked on it the same way.
+    getrandom::fill(&mut bytes).expect("OS CSPRNG unavailable");
     URL_SAFE_NO_PAD.encode(bytes)
 }
 

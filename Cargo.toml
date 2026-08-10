@@ -62,8 +62,10 @@ libc = "0.2"
 # serializes a script's return value.
 rhai = { version = "1", default-features = false, features = ["std", "sync", "serde"] }
 diffy = "0.5"
-# rustls (not native-tls) so builds need no system OpenSSL headers.
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "charset"] }
+# rustls (not native-tls) so builds need no system OpenSSL headers. No
+# `charset`: every endpoint we read is UTF-8 JSON/SSE, and without the feature
+# `.text()` falls back to `from_utf8_lossy` — identical here, minus encoding_rs.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 # WebSocket `serve` head (entanglement-runtime only, behind its `serve` feature —
 # ADR-0025/ADR-0048). Loopback-bound local HTTP+WS server; the `ws` feature adds
 # the WebSocket upgrade path. tokio-tungstenite drives the serve integration
