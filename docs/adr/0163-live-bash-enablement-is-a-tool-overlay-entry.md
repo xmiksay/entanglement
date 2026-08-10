@@ -1,6 +1,8 @@
 # 0163. Live bash enablement is a tool-overlay entry, not its own message pair
 
-- Status: Accepted
+- Status: Accepted — Amended by [0179](0179-lazily-registered-built-ins-advertise-session-scoped.md)
+  (a lazily-registered built-in's *advertisement* is session-scoped; the §2
+  registration itself stays process-global)
 - Date: 2026-08-03
 - Supersedes: [ADR-0133](0133-live-bash-enablement-graded-by-permission.md)
 - Amends: [ADR-0149](0149-per-session-tool-overlay.md) (`ToolOverlayEntry` gains an argument-scope

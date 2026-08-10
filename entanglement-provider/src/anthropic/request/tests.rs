@@ -713,6 +713,99 @@ fn second_to_last_user_turn_carries_the_history_breakpoint() {
 }
 
 #[test]
+fn long_history_carries_two_anchors_and_at_most_four_markers_total() {
+    // #673: near anchor on the 2nd-to-last user turn, deep anchor on the
+    // 4th-to-last — so a round that appends more user-role messages than the
+    // provider's ~20-block lookback can scan still finds a cached prefix.
+    let mut msgs = Vec::new();
+    for i in 0..6 {
+        msgs.push(msg(MessageRole::User, &format!("u{i}")));
+        msgs.push(msg(MessageRole::Assistant, &format!("a{i}")));
+    }
+    let specs = vec![ToolSpec::new("a", "a")];
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &msgs,
+        &specs,
+        1024,
+        None,
+        None,
+        None,
+        ThinkingStyle::Budget,
+        false,
+    );
+    let out = body["messages"].as_array().unwrap();
+    let marked: Vec<usize> = out
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m["content"]
+                .as_array()
+                .and_then(|b| b.last())
+                .and_then(|b| b.get("cache_control"))
+                .is_some()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    // 12 messages, user turns at even indexes: 4th-to-last user = index 4,
+    // 2nd-to-last user = index 8; the last user turn (index 10) stays clean.
+    assert_eq!(marked, vec![4, 8]);
+    // The API caps `cache_control` markers at 4 per request; system (1) +
+    // tools (1) + history (2) sits exactly at it — a future 5th marker would
+    // 400 every request, so lock the total in.
+    let total = count_cache_controls(&body);
+    assert_eq!(total, 4);
+}
+
+#[test]
+fn short_history_dedupes_the_two_anchors() {
+    // With only 1-3 user turns the near and deep anchors collapse to one
+    // marked message — the same block is never marked twice.
+    let msgs = vec![
+        msg(MessageRole::User, "first"),
+        msg(MessageRole::Assistant, "reply"),
+        msg(MessageRole::User, "second"),
+    ];
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &msgs,
+        &[],
+        1024,
+        None,
+        None,
+        None,
+        ThinkingStyle::Budget,
+        false,
+    );
+    let out = body["messages"].as_array().unwrap();
+    let marked = out
+        .iter()
+        .filter(|m| {
+            m["content"]
+                .as_array()
+                .and_then(|b| b.last())
+                .and_then(|b| b.get("cache_control"))
+                .is_some()
+        })
+        .count();
+    assert_eq!(marked, 1);
+}
+
+/// Count every `cache_control` occurrence anywhere in the request body.
+fn count_cache_controls(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::Object(map) => {
+            let own = usize::from(map.contains_key("cache_control"));
+            own + map.values().map(count_cache_controls).sum::<usize>()
+        }
+        serde_json::Value::Array(items) => items.iter().map(count_cache_controls).sum(),
+        _ => 0,
+    }
+}
+
+#[test]
 fn provider_search_block_from_another_provider_is_dropped() {
     // A block minted by z.ai (crossed over via a live provider switch) has
     // no Anthropic-native wire shape — it must not leak `data` verbatim.

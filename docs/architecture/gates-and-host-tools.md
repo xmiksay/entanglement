@@ -333,7 +333,19 @@ guessing again:
   broadcast and, when an enable entry matches `bash` — the one member of a
   closed, runtime-fixed table of lazily-registrable built-ins (ADR-0163
   §2) — registers it into the live `SharedRegistry` mid-session (a no-op if
-  already present). The TUI command is `/enable tool bash [--allow
+  already present). The registration is process-global, but its
+  **advertisement is session-scoped** (#673,
+  [ADR-0179](../adr/0179-lazily-registered-built-ins-advertise-session-scoped.md)):
+  the same responder folds each `ToolOverlayChanged` into a
+  `BuiltinVisibility` store (cleared per session on `SessionEnded`), and the
+  runtime `tool_spec_resolver` filters a lazy built-in's spec to the sessions
+  whose own overlay chain enabled it — ancestor walk shared with
+  `AvailableMcp::spec_visible` (#630's parent map, via
+  `enabled_by_or_ancestor`) — or to everyone when it was registered at
+  startup via the env var. Without that filter, one session's
+  `/enable tool bash` rewrote every other live session's advertised tools
+  array mid-session — a provider prompt-cache bust plus a tool nobody there
+  opted into. The TUI command is `/enable tool bash [--allow
   [<pattern>]]` / `/disable tool bash`, the same surface every other tool
   uses. The overlay entry's grade (`allow: false` ⇒ `Ask`; `allow: true` ⇒
   `Allow`, optionally narrowed by `arg_pattern` to an argument-scoped

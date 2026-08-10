@@ -232,6 +232,9 @@ providers:
   - name: openai
     base_url: https://api.openai.com/v1
     key_env: OPENAI_API_KEY
+    # OpenAI proper documents the `prompt_cache_key` routing hint (#673);
+    # kept off for z.ai/Ollama until verified they tolerate the extra field.
+    prompt_cache_key: true
     default_model: gpt-4o
     models:
       - id: gpt-4o

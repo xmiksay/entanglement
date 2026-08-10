@@ -67,6 +67,15 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 | `AnthropicLlm` (`anthropic/`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
 | `GeminiLlm` (`gemini.rs`) | `:streamGenerateContent?alt=sse` | Google Gemini | `x-goog-api-key` |
 
+- **Implicit-cache routing hint** (#673) — `LlmRequest` carries an optional
+  `cache_key` (core sets the session's own id on every main-turn request;
+  aux one-shots pass `None`), and the OpenAI client forwards it as the
+  `prompt_cache_key` body field so a multi-instance endpoint routes one
+  conversation's requests to the same cache shard. Catalog-gated per provider
+  (`ProviderEntry::prompt_cache_key`, default **off**; the embedded defaults
+  enable it only for `openai` — z.ai/Ollama stay off until verified to
+  tolerate the extra field, and a user `providers.yml` can flip any entry).
+  The other wires ignore the field entirely.
 - `OpenAiLlm` is one generic client `{ base_url, api_key: Option, default_model }`
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
@@ -90,12 +99,18 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 - **Explicit `cache_control` breakpoints** (#566) — Anthropic caching is opt-in
   per content block, unlike z.ai/OpenAI-compat's implicit whole-prefix caching;
   without a marker every round re-bills the full system + tool schemas + growing
-  history at the uncached rate. `anthropic::request::build_body` places the
-  standard three: the last `system` block (also covers the `tools` array before
+  history at the uncached rate. `anthropic::request::build_body` places four:
+  the last `system` block (also covers the `tools` array before
   it in the fixed tools → system → messages render order), the last `tools`
-  entry, and the last content block of the second-to-last `user`-role message
-  (`place_history_breakpoint`) — the final turn is left unmarked since it's the
-  one most likely to still change on a steered/edited retry.
+  entry, and the last content block of the second-to-last **and**
+  fourth-to-last `user`-role messages
+  (`place_history_breakpoint`; deduped on short histories) — the final turn is
+  left unmarked since it's the one most likely to still change on a
+  steered/edited retry, and the deeper anchor (#673) guarantees a cache match
+  even when one round appends more user-role messages (merged tool-result
+  turns from a big parallel batch) than the ~20-block lookback Anthropic
+  scans upstream of a marker. Four is exactly the API's marker cap, locked in
+  by test.
 - `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
   [ADR-0085](../adr/0085-gemini-native-wire-and-opaque-provider-meta.md)): the
   compat endpoint drops `thoughtSignature`, the opaque per-call token a 2.5

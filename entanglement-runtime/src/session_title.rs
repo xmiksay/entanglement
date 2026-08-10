@@ -252,6 +252,8 @@ async fn generate_title(
         messages: &messages,
         tools: &[],
         generation: None,
+        // One-shot aux request: a distinct prefix, so no session cache key.
+        cache_key: None,
     };
     let mut llm = registry.resolve(Purpose::SessionTitle);
     let mut stream = llm.stream(req).await?;
