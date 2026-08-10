@@ -33,6 +33,8 @@ mod mcp_http;
 mod mcp_oauth_device;
 #[cfg(feature = "mcp-http")]
 mod mcp_oauth_refresh;
+#[cfg(feature = "provider")]
+mod narrate;
 mod permission_dispatch;
 mod plan_tasks;
 mod plan_watch;

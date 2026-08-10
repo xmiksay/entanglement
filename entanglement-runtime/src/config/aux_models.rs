@@ -52,13 +52,18 @@ const AUX_MODELS_FILE_ENV: &str = "ENTANGLEMENT_AUX_MODELS_FILE";
 ///   storable today.*
 /// - [`SessionTitle`][Purpose::SessionTitle] — the auto session title/description
 ///   generator (purely runtime-side, on the first prompt).
+/// - [`Narrate`][Purpose::Narrate] — the live action narrator (#635): a short
+///   "what the agent is doing now" phrase, set as `Session.action` on every
+///   tool call (purely runtime-side, `narrate.rs`).
 ///
-/// Serialized as the lowercase snake-case key (`summarize`, `session_title`).
+/// Serialized as the lowercase snake-case key (`summarize`, `session_title`,
+/// `narrate`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
     Summarize,
     SessionTitle,
+    Narrate,
 }
 
 impl std::fmt::Display for Purpose {
@@ -75,6 +80,7 @@ impl Purpose {
         match self {
             Purpose::Summarize => "summarize",
             Purpose::SessionTitle => "session_title",
+            Purpose::Narrate => "narrate",
         }
     }
 
@@ -85,6 +91,7 @@ impl Purpose {
         match s.trim().to_ascii_lowercase().as_str() {
             "summarize" => Some(Purpose::Summarize),
             "session_title" | "title" => Some(Purpose::SessionTitle),
+            "narrate" => Some(Purpose::Narrate),
             _ => None,
         }
     }
@@ -173,6 +180,22 @@ impl AuxModelStore {
         if let Some(path) = &self.path {
             self.aux = read_aux_models(path);
         }
+    }
+
+    /// Build an in-memory store from `pins` directly — no file, no env var, no
+    /// re-write on [`set`](Self::set) (there is no `path` to write to). The
+    /// production counterpart of [`for_test`](Self::for_test): a multi-user
+    /// embedder's [`UserAuxModelStore`][crate::multi_user::aux::UserAuxModelStore]
+    /// lookup returns a user's pins as plain data, and this wraps them into the
+    /// same store shape [`AuxLlmRegistry`][crate::aux_llm::AuxLlmRegistry]
+    /// already knows how to consult — no separate per-user resolution path
+    /// needed.
+    pub fn in_memory(pins: BTreeMap<Purpose, (String, String)>) -> Self {
+        let aux = pins
+            .into_iter()
+            .map(|(p, (provider, model))| (p, AuxModelPin { provider, model }))
+            .collect();
+        Self { aux, path: None }
     }
 
     /// Build an in-memory store from `pins` directly — no file, no env var.
@@ -270,7 +293,7 @@ mod tests {
 
     #[test]
     fn purpose_roundtrips_through_serde_keys() {
-        for p in [Purpose::Summarize, Purpose::SessionTitle] {
+        for p in [Purpose::Summarize, Purpose::SessionTitle, Purpose::Narrate] {
             let s = serde_yaml::to_string(&p).unwrap();
             let back: Purpose = serde_yaml::from_str(s.trim()).unwrap();
             assert_eq!(p, back);
@@ -280,7 +303,8 @@ mod tests {
         assert_eq!(Purpose::parse("session_title"), Some(Purpose::SessionTitle));
         assert_eq!(Purpose::parse("title"), Some(Purpose::SessionTitle));
         assert_eq!(Purpose::parse("summarize"), Some(Purpose::Summarize));
-        assert_eq!(Purpose::parse("narrate"), None);
+        assert_eq!(Purpose::parse("narrate"), Some(Purpose::Narrate));
+        assert_eq!(Purpose::parse("bogus_purpose"), None);
         // Case-insensitive parse.
         assert_eq!(Purpose::parse("Summarize"), Some(Purpose::Summarize));
         // Whitespace is tolerated.

@@ -27,7 +27,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use entanglement_core::{AuxLlmResolver, Catalog, Llm, LlmFactory, ModelResolver, ResolvedModel};
+use entanglement_core::{
+    AuxLlmResolver, Catalog, Llm, LlmFactory, ModelResolver, ResolvedModel, UserId,
+};
 
 use crate::config::aux_models::{AuxModelStore, Purpose};
 
@@ -57,6 +59,16 @@ pub struct AuxLlmRegistry {
     /// reports when a purpose has no pin, mirroring [`resolve`](Self::resolve)'s
     /// own no-pin fallback to `primary`.
     primary_concurrency: Option<usize>,
+    /// The user this registry resolves on behalf of (#635, ADR-0147): `None`
+    /// in single-user mode, the default. Threaded to every `self.resolver`
+    /// call in place of the hardcoded `None` a single-user registry always
+    /// passed, so a multi-user `ModelResolver`
+    /// ([`multi_user::provider::build_user_model_resolver`][crate::multi_user::provider::build_user_model_resolver])
+    /// resolves against the right user's catalog + key instead of erroring
+    /// out on a missing session user. Set via [`for_user`](Self::for_user);
+    /// [`multi_user::aux::build_user_aux_registry`][crate::multi_user::aux::build_user_aux_registry]
+    /// is the intended caller.
+    user: Option<UserId>,
 }
 
 impl AuxLlmRegistry {
@@ -82,7 +94,19 @@ impl AuxLlmRegistry {
             primary,
             catalog,
             primary_concurrency,
+            user: None,
         }
+    }
+
+    /// Bind this registry to `user` (#635): every subsequent [`resolve`](Self::resolve)/
+    /// [`resolve_pin`](Self::resolve_pin) call passes `Some(user)` to the
+    /// catalog resolver instead of the single-user default `None`. A
+    /// multi-user embedder builds one registry per user (via
+    /// [`multi_user::aux::build_user_aux_registry`][crate::multi_user::aux::build_user_aux_registry])
+    /// and calls this once at construction time.
+    pub fn for_user(mut self, user: UserId) -> Self {
+        self.user = Some(user);
+        self
     }
 
     /// Resolve `purpose` to a fresh `Box<dyn Llm>`. Returns the primary model
@@ -104,7 +128,7 @@ impl AuxLlmRegistry {
             return self.primary();
         };
 
-        match (self.resolver)(None, &provider, &model) {
+        match (self.resolver)(self.user.as_ref(), &provider, &model) {
             Ok(resolved) => (resolved.llm_factory)(),
             Err(reason) => {
                 // A pin whose provider/model the catalog no longer knows (a
@@ -140,7 +164,7 @@ impl AuxLlmRegistry {
             .get(purpose)
             .map(|(p, m)| (p.to_string(), m.to_string()))?;
 
-        match (self.resolver)(None, &provider, &model) {
+        match (self.resolver)(self.user.as_ref(), &provider, &model) {
             Ok(resolved) => Some(resolved),
             Err(reason) => {
                 tracing::debug!(

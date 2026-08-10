@@ -701,7 +701,12 @@ The shared `HttpClient` connection pool still isolates rate-limit state per
 `(base_url, sha256(api_key))` (ADR-0050), so two users with distinct keys on
 the same provider already get independent `EndpointState`s with no further
 change. `serve` is unaffected — it stays single-user (ADR-0048); this seam is
-reachable only through the embedder library API.
+reachable only through the embedder library API. Its aux-model sibling,
+`multi_user::aux` (#635, [ADR-0181](../adr/0181-narrate-purpose-and-per-user-aux-pins.md)),
+mirrors this exact pattern (`UserAuxModelStore`/`build_user_aux_registry` vs.
+`UserProviderStore`/`build_user_model_resolver`) for the `aux_llm`/
+`config::aux_models` seam instead — see the [heads & persistence
+doc](heads-and-persistence.md)'s §6d.
 
 **Per-user admission gate on a shared literal key** (#632,
 [ADR-0175](../adr/0175-per-user-admission-gate-on-a-shared-literal-key.md)):
