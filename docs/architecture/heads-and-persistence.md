@@ -447,14 +447,21 @@ fallback), an `InMemoryUserAuxModelStore` reference impl, and
 `build_user_aux_registry(store, user, resolver, primary, catalog,
 primary_concurrency) -> AuxLlmRegistry` that snapshots a user's pins into an
 in-memory `AuxModelStore` (`AuxModelStore::in_memory`, the production sibling
-of the existing test-only `for_test`) and binds the result to `user` via a new
-`AuxLlmRegistry::for_user`. That binding matters beyond routing to the right
+of the existing test-only `for_test`) and hands it an ordinary, unmodified
+`AuxLlmRegistry` — the type carries no `UserId` field (`entanglement-runtime`'s
+`skutter` binary is a strict single-user application, and `AuxLlmRegistry` is
+the type `main.rs` builds one process-global instance of; `UserId` stays
+confined to the provider/core seams and the embedder-facing `multi_user`
+module). Instead the *resolver* is wrapped: `build_user_aux_registry` closes
+`resolver` over `user` in a small adapter closure that substitutes the
+captured `user` for whatever `AuxLlmRegistry` passes (always `None` — it has
+no `UserId` to pass anything else). That matters beyond routing to the right
 pins: `resolve`/`resolve_pin` had always called the injected `ModelResolver`
 with a hardcoded `None` for the user, so a multi-user `ModelResolver`
 ([ADR-0147](../adr/0147-multi-user-mode-embedder-api.md)) — which treats a
 missing user as a hard error — would have rejected every aux call outright
-regardless of the store; `for_user` fixes that for every caller, not just the
-new per-user seam. Like `UserProviderStore::context`, `UserAuxModelStore::pins`
+regardless of the store; the wrapping fixes that for every caller, not just
+the new per-user seam. Like `UserProviderStore::context`, `UserAuxModelStore::pins`
 is a snapshot an embedder calls fresh when it wants an up-to-date view (session
 start, after its own pin-write), not a live per-call lookup — `AuxLlmRegistry`
 already re-reads its wrapped `AuxModelStore` on every `resolve`/`resolve_pin`

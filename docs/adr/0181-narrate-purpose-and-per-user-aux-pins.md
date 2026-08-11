@@ -35,6 +35,16 @@ multi-user embedder plugging its `ModelResolver` into an otherwise-unmodified
 would fail outright. The store being process-global was the visible half of
 the gap; the hardcoded `None` was the other half.
 
+Fixing that second bug still has to respect a constraint `UserProviderStore`
+already established: `entanglement-runtime`'s own `skutter` binary is a
+strict single-user application (`serve` stays local single-user, ADR-0048),
+and `AuxLlmRegistry` is the type its single-user `main.rs` builds one
+process-global instance of. `UserId` belongs to the provider/core seams and
+the embedder-facing `multi_user` module — not to the single-user defaults
+every plain `skutter` run also constructs. So the fix cannot be "give
+`AuxLlmRegistry` a `UserId` field"; it has to bind the user *outside* that
+type entirely.
+
 ## Decision
 
 ### `narrate`: closed-enum extension, one new runtime-side consumer
@@ -84,15 +94,22 @@ like the sibling `multi_user::provider` module) adds:
 - `build_user_aux_registry(store, user, resolver, primary, catalog,
   primary_concurrency) -> AuxLlmRegistry` — snapshots `user`'s pins into an
   in-memory `AuxModelStore` (`AuxModelStore::in_memory`, a new public
-  constructor alongside the existing `#[cfg(test)]` `for_test`) and binds the
-  resulting registry to `user`.
+  constructor alongside the existing `#[cfg(test)]` `for_test`) and returns an
+  ordinary, unmodified `AuxLlmRegistry` — the same type, same fields,
+  single-user-shaped exactly as before this ADR.
 
-That binding is `AuxLlmRegistry::for_user(user) -> Self`, a new builder method
-backed by a new `user: Option<UserId>` field (`None` by default — every
-existing single-user call site is unaffected). `resolve`/`resolve_pin` now
-call `(self.resolver)(self.user.as_ref(), &provider, &model)` instead of the
-hardcoded `(self.resolver)(None, ...)` — fixing the sharper bug from Context
-as a side effect of adding the seam, not a separate change.
+The user is bound by **wrapping the resolver, not the registry**: before
+handing `resolver` to `AuxLlmRegistry::new`, `build_user_aux_registry` closes
+over `user` in a new closure — `move |_none, provider, model| resolver(Some(&user),
+provider, model)` — that substitutes the captured `user` for whatever
+`AuxLlmRegistry` passes (always `None`, since it has no `UserId` field to pass
+anything else). `AuxLlmRegistry` itself is untouched: it still always calls
+`(self.resolver)(None, &provider, &model)`, exactly as it did before this ADR
+— the wrapping closure is what turns that `None` into `Some(user)` before the
+call ever reaches the real multi-user `ModelResolver`. This mirrors how
+`build_user_model_resolver` itself already captures `store`/`http_client` in a
+closure rather than mutating `HttpClient` with a `UserId` field — the same
+closure-capture idiom, applied one seam later.
 
 Like `UserProviderStore::context`, `UserAuxModelStore::pins` is a snapshot
 consulted fresh whenever an embedder wants an up-to-date view (session start,
@@ -133,10 +150,17 @@ embedder wires `multi_user::aux` the same way it already wires
   (the TUI status line, a future `serve` client) now sees live updates during
   a turn, not just a static "what happened" transcript.
 - The `AuxLlmRegistry::resolve`/`resolve_pin` hardcoded-`None` bug (Context)
-  is fixed for every future multi-user aux caller, not just `narrate`'s.
-- `AuxLlmRegistry::new`'s signature is unchanged (the new `user` field
-  defaults via `for_user`, an additive builder method) — no call-site churn
-  for `main.rs`, existing tests, or the `session_title` integration test.
+  is fixed for every future multi-user aux caller, not just `narrate`'s —
+  fixed at the resolver, so it also covers a future `AuxLlmRegistry` consumer
+  this ADR didn't anticipate.
+- `AuxLlmRegistry` gains no new field and no new public method —
+  `entanglement-runtime/src/aux_llm.rs` carries no `UserId` import at all.
+  `main.rs`'s single-user construction, every existing test, and the
+  `session_title` integration test are byte-identical to before this ADR;
+  `UserId` stays confined to `entanglement-provider`/`entanglement-core` (where
+  it's a generic embedder concept) and `entanglement-runtime::multi_user`
+  (the opt-in embedder-facing module) — never the process-global defaults
+  every plain `skutter` run also builds.
 
 ### Negative / neutral
 
@@ -187,6 +211,19 @@ embedder wires `multi_user::aux` the same way it already wires
   contract (`context` is a lookup, caching is the embedder's job if it wants
   I/O-backed storage) — inventing caching here would duplicate a decision
   [ADR-0147] already made once for the sibling seam.
+- **A `user: Option<UserId>` field + `AuxLlmRegistry::for_user(user)` builder
+  method directly on `AuxLlmRegistry`**, threaded to the resolver call in
+  place of the hardcoded `None`. This was the first cut, and it worked, but it
+  put a `UserId` field on the exact type `main.rs`'s single-user path also
+  constructs one process-global instance of — `entanglement-runtime`'s
+  `skutter` binary is a strict single-user application, so every field on its
+  core types should make sense there too, and "the user this single-user
+  registry resolves on behalf of, always `None`" doesn't. Rejected in favor of
+  wrapping the resolver closure instead (this ADR's Decision): the binding
+  moves entirely into `multi_user::aux`, `AuxLlmRegistry` carries no `UserId`
+  import, and the two designs are behaviorally identical — same fallback,
+  same tests, same call sites — so nothing was given up to make the type
+  boundary cleaner.
 
 ## References
 

@@ -12,15 +12,18 @@
 //! [`AuxModelStore`] ([`AuxModelStore::in_memory`]) and hands it to
 //! [`AuxLlmRegistry::new`] exactly like `main.rs` wraps the file-backed store
 //! — so [`AuxLlmRegistry::resolve`]/[`resolve_pin`][AuxLlmRegistry::resolve_pin]
-//! need no separate per-user code path. [`AuxLlmRegistry::for_user`] binds the
-//! resulting registry to `user` so its calls into the supplied
-//! [`ModelResolver`] (typically
-//! [`build_user_model_resolver`][super::provider::build_user_model_resolver]'s
-//! output) pass `Some(user)` instead of the single-user default `None` —
-//! without this a multi-user `ModelResolver` would reject every aux call with
-//! "requires a session user", the same failure mode
+//! need no separate per-user code path, and [`AuxLlmRegistry`] itself stays
+//! entirely single-user-shaped (no `UserId` field — `entanglement-runtime`'s
+//! own `skutter` binary is a strict single-user application; `UserId` belongs
+//! to the embedder-facing multi-user seams, not the process-global defaults
+//! every plain `skutter` run also constructs). Instead, `user` is bound by
+//! *wrapping* the supplied [`ModelResolver`] in a closure that substitutes the
+//! captured `user` for whatever the registry passes (always `None`, since it
+//! has no `UserId` concept) — the same closure-capture shape
 //! [`build_user_model_resolver`][super::provider::build_user_model_resolver]
-//! documents for the turn loop's own model resolution.
+//! itself uses to capture its `store`/`http_client`. Without this, a
+//! multi-user `ModelResolver` (which requires `Some(user)`) would reject every
+//! aux call outright.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -94,8 +97,8 @@ impl UserAuxModelStore for InMemoryUserAuxModelStore {
 /// Build the [`AuxLlmRegistry`] a multi-user embedder wires in place of the
 /// single-user process-global one built from `AuxModelStore::load()`: `user`'s
 /// pins are snapshotted out of `store` into an in-memory `AuxModelStore`, and
-/// the registry is bound to `user` ([`AuxLlmRegistry::for_user`]) so it
-/// resolves against `resolver`/`catalog` the same way
+/// `resolver` is wrapped so every call the registry makes into it resolves
+/// against `user`'s own catalog/key — the same way
 /// [`build_user_model_resolver`][super::provider::build_user_model_resolver]'s
 /// output resolves the turn loop's own model. `resolver`/`primary`/`catalog`/
 /// `primary_concurrency` are the same per-user values an embedder already
@@ -117,14 +120,20 @@ pub fn build_user_aux_registry(
     primary_concurrency: Option<usize>,
 ) -> AuxLlmRegistry {
     let aux_store = AuxModelStore::in_memory(store.pins(user));
+    let user = user.clone();
+    // `AuxLlmRegistry` has no `UserId` concept of its own (it stays the same
+    // single-user-shaped type `main.rs` builds one process-global instance of)
+    // and always calls a resolver with `None` — substitute the captured
+    // `user` here instead of threading a user field through the registry.
+    let bound_resolver: ModelResolver =
+        Arc::new(move |_none, provider, model| resolver(Some(&user), provider, model));
     AuxLlmRegistry::new(
         Arc::new(Mutex::new(aux_store)),
-        resolver,
+        bound_resolver,
         primary,
         catalog,
         primary_concurrency,
     )
-    .for_user(user.clone())
 }
 
 #[cfg(all(test, feature = "provider"))]
@@ -241,10 +250,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_falls_back_to_primary_without_the_user_bound() {
-        // The single-user-shaped `AuxLlmRegistry::new` (no `for_user`) always
-        // calls the resolver with `None` — against a user-scoped resolver
-        // that's an `Err`, so it falls back to the primary model exactly like
+    async fn registry_falls_back_to_primary_without_the_resolver_wrapped() {
+        // `AuxLlmRegistry` itself has no `UserId` concept and always calls
+        // its resolver with `None` — plugging the raw (unwrapped)
+        // `user_scoped_resolver` straight into `AuxLlmRegistry::new` (instead
+        // of going through `build_user_aux_registry`) hits that `None` and
+        // gets an `Err`, so it falls back to the primary model exactly like
         // an unresolvable pin would.
         let store = InMemoryUserAuxModelStore::new();
         let alice = UserId::new("alice");
