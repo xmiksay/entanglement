@@ -64,6 +64,12 @@ const MAX_PAUSE_CONTINUATIONS: usize = 6;
 #[derive(Clone)]
 pub struct AnthropicLlm {
     api_key: String,
+    /// OAuth bearer source (#684 edge d): `Some` replaces the `x-api-key`
+    /// header with `Authorization: Bearer <token>` fetched per POST (cached
+    /// until expiry by the source), with one forced-refresh retry on a `401`.
+    /// The endpoint-pool identity becomes `None` then — a rotating bearer
+    /// must never key the pool (ADR-0156).
+    auth: Option<std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>>,
     /// Base URL, no trailing slash required — `/v1/messages` is appended per
     /// request. Defaults to [`ANTHROPIC_BASE`]; a catalog `base_url` (a
     /// proxy/gateway) overrides it (#551).
@@ -106,76 +112,10 @@ pub struct AnthropicLlm {
     http: HttpClient,
 }
 
-impl AnthropicLlm {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        base_url: impl Into<String>,
-        api_key: impl Into<String>,
-        default_model: impl Into<String>,
-        rpm: Option<u32>,
-        concurrency: Option<usize>,
-        model_concurrency: ModelConcurrencyResolver,
-        web_search: Option<WebSearchConfig>,
-        web_search_tool_version: Option<String>,
-        thinking_style: ThinkingStyle,
-        replay_thinking: bool,
-        http: HttpClient,
-    ) -> Self {
-        Self {
-            api_key: api_key.into(),
-            base_url: base_url.into(),
-            default_model: default_model.into(),
-            default_max_tokens: DEFAULT_MAX_TOKENS,
-            rpm,
-            concurrency,
-            model_concurrency,
-            web_search,
-            web_search_tool_version,
-            thinking_style,
-            replay_thinking,
-            http,
-        }
-    }
-}
-
-/// Build an [`LlmFactory`] wired to Anthropic. Each session gets its own cloned
-/// [`AnthropicLlm`]. `base_url` overrides [`ANTHROPIC_BASE`] — a proxy/gateway
-/// catalog entry (#551); `rpm`/`concurrency = None` use the client's (or
-/// endpoint's) defaults; `model_concurrency` resolves a tighter per-model cap
-/// per request (`|_| None` disables it, #521, resolved per request rather than
-/// once at construction, #550); `web_search = Some(..)` requests provider-side
-/// web search (#305); `web_search_tool_version` selects the server-tool type
-/// when set (#481); `thinking_style` picks the extended-thinking request shape
-/// the bound model accepts.
-#[allow(clippy::too_many_arguments)]
-pub fn anthropic_factory(
-    base_url: impl Into<String>,
-    api_key: impl Into<String>,
-    default_model: impl Into<String>,
-    rpm: Option<u32>,
-    concurrency: Option<usize>,
-    model_concurrency: ModelConcurrencyResolver,
-    web_search: Option<WebSearchConfig>,
-    web_search_tool_version: Option<String>,
-    thinking_style: ThinkingStyle,
-    replay_thinking: bool,
-    http: HttpClient,
-) -> crate::LlmFactory {
-    let llm = AnthropicLlm::new(
-        base_url,
-        api_key,
-        default_model,
-        rpm,
-        concurrency,
-        model_concurrency,
-        web_search,
-        web_search_tool_version,
-        thinking_style,
-        replay_thinking,
-        http,
-    );
-    std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
-}
+// Constructor + factory: split to `construct.rs` for the 400-line file cap;
+// re-exported so `anthropic::anthropic_factory` stays the public path.
+mod construct;
+pub use construct::anthropic_factory;
 
 /// Consume `response`, returning it unchanged on a success status or an `Err`
 /// (after draining the body for the error text) otherwise. Factored out of
@@ -229,6 +169,7 @@ impl Llm for AnthropicLlm {
 
         let http = self.http.clone();
         let api_key = self.api_key.clone();
+        let auth = self.auth.clone();
         // Base defaults to `ANTHROPIC_BASE`; a catalog `base_url` (a
         // proxy/gateway speaking the Anthropic wire) overrides it (#551) — the
         // trim mirrors `openai`/`gemini`'s own request-URL construction.
@@ -253,42 +194,69 @@ impl Llm for AnthropicLlm {
             let mut continuations: usize = 0;
 
             loop {
-                let (response, guard) = http
-                    .execute_with_retry(
-                        &url,
-                        Some(&api_key),
-                        rpm,
-                        concurrency,
-                        &request_model,
-                        model_concurrency,
-                        None,
-                        || {
-                            http.client()
-                                .post(&url)
-                                .header("x-api-key", &api_key)
-                                .header("anthropic-version", ANTHROPIC_VERSION)
-                                .json(&body)
-                                .send()
-                        },
-                    )
-                    .await
-                    .map_err(|e| match e {
-                        crate::client::RetryError::Permanent(e) => {
-                            anyhow::anyhow!("anthropic request failed: {e}")
+                // An OAuth bearer (#684 edge d) is fetched per POST — cached
+                // until expiry by the source — replacing `x-api-key`, with one
+                // forced-refresh retry on a `401`. Pool identity is `None`
+                // then: a rotating bearer must never key the pool (ADR-0156).
+                let mut forced_refresh = false;
+                let (response, guard) = loop {
+                    let bearer = match &auth {
+                        Some(source) => {
+                            Some(source.access_token(forced_refresh).await.map_err(|e| {
+                                anyhow::anyhow!("fetching the OAuth token for `{url}`: {e:#}")
+                            })?)
                         }
-                        crate::client::RetryError::Exhausted(attempts, e) => {
-                            anyhow::anyhow!("anthropic request failed after {attempts} attempts: {e}")
-                        }
-                        crate::client::RetryError::RateLimited => {
-                            anyhow::anyhow!("anthropic rate limited: gave up waiting for the endpoint to clear")
-                        }
-                        crate::client::RetryError::HeaderTimeout(timeout, attempts) => {
-                            anyhow::anyhow!(
-                                "anthropic request failed: no response headers within \
-                                 {timeout:?} after {attempts} attempt(s)"
-                            )
-                        }
-                    })?;
+                        None => None,
+                    };
+                    let pool_identity = if auth.is_some() { None } else { Some(api_key.as_str()) };
+                    let (response, guard) = http
+                        .execute_with_retry(
+                            &url,
+                            pool_identity,
+                            rpm,
+                            concurrency,
+                            &request_model,
+                            model_concurrency,
+                            None,
+                            || {
+                                let request = http
+                                    .client()
+                                    .post(&url)
+                                    .header("anthropic-version", ANTHROPIC_VERSION);
+                                let request = match &bearer {
+                                    Some(token) => request.bearer_auth(token),
+                                    None => request.header("x-api-key", &api_key),
+                                };
+                                request.json(&body).send()
+                            },
+                        )
+                        .await
+                        .map_err(|e| match e {
+                            crate::client::RetryError::Permanent(e) => {
+                                anyhow::anyhow!("anthropic request failed: {e}")
+                            }
+                            crate::client::RetryError::Exhausted(attempts, e) => {
+                                anyhow::anyhow!("anthropic request failed after {attempts} attempts: {e}")
+                            }
+                            crate::client::RetryError::RateLimited => {
+                                anyhow::anyhow!("anthropic rate limited: gave up waiting for the endpoint to clear")
+                            }
+                            crate::client::RetryError::HeaderTimeout(timeout, attempts) => {
+                                anyhow::anyhow!(
+                                    "anthropic request failed: no response headers within \
+                                     {timeout:?} after {attempts} attempt(s)"
+                                )
+                            }
+                        })?;
+                    if response.status().as_u16() == 401 && auth.is_some() && !forced_refresh {
+                        tracing::warn!(
+                            "anthropic 401 with an OAuth bearer; forcing one refresh and retrying"
+                        );
+                        forced_refresh = true;
+                        continue;
+                    }
+                    break (response, guard);
+                };
 
                 let response = ensure_success(response).await?;
 

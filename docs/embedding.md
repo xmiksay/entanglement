@@ -316,6 +316,11 @@ this path on every `make lint` run (it needs `mcp-http`, on by default, so it
 can't ride the lean `--no-default-features` build the other two examples
 target); set `MCP_HTTP_URL` to actually connect it to a server.
 
+Hand-registering like this shares one client across every session. When each
+*user* needs their own servers and credentials routed per session, use the
+managed seam instead — `mcp::scoped::McpScopes` in §7 (#684) does the caching,
+lazy connecting, and per-session advertisement/dispatch replacement for you.
+
 ## 7. Multi-user: per-user providers, permissions, tokens
 
 Multi-user mode is an **embedder API**, and by
@@ -353,9 +358,61 @@ seam implementations over it. Per seam:
   `entanglement_provider::mcp::auth::UserTokenStore` over your storage;
   `user_scoped(store, user)` presents one user's slice as the plain
   per-connection `TokenStore` every auth consumer takes
-  ([ADR-0184](adr/0184-provider-hosted-multi-user-seams.md)). Per-user MCP
-  *connections* (routing a session's tool calls to its user's client) are
-  #684, built on this seam.
+  ([ADR-0184](adr/0184-provider-hosted-multi-user-seams.md)). Minting the
+  tokens from a web app is `WebFlow`
+  ([ADR-0187](adr/0187-mcp-oauth-web-redirect-flow-for-embedders.md)) — two
+  handlers on your own domain:
+
+  ```rust,ignore
+  // Handler 1 — "connect kb" button:
+  let pending = WebFlow::begin("kb", mcp_url, &oauth_cfg, None,
+                               "https://app.example/oauth/mcp/callback",
+                               "my-app").await?;
+  store_pending(pending.state(), serde_json::to_string(&pending)?); // TTL ~10 min
+  Redirect::to(pending.authorize_url())
+  // Handler 2 — the callback, possibly on another replica:
+  let pending: PendingWebAuthorization = load_and_delete_pending(&params.state)?;
+  let auth = pending.complete(&params.code, &params.state).await?;
+  user_token_store.save(&user, "kb", &auth)?;
+  ```
+
+- **Per-user MCP connections** — `mcp::scoped::McpScopes`
+  ([ADR-0188](adr/0188-session-keyed-per-user-mcp-scopes.md)) routes a scoped
+  session's `mcp__*` calls over that user's own servers and credentials
+  (replace semantics — the global MCP set disappears for scoped sessions;
+  same-named servers across users stay distinct via the `(scope key, server)`
+  connection cache). Close an `McpScopeResolver` over your session→user map,
+  hand the `McpScopes` to `spawn_tool_executor_with_policy` (its final
+  parameter — `None` keeps single-user behavior), and wrap your
+  `tool_spec_resolver` with `overlay_specs`:
+
+  ```rust,ignore
+  let scopes = McpScopes::new(Arc::new(move |session| {
+      let user = users.get(session)?;                    // your own map
+      Some(McpScope {
+          key: user.0.clone(),                           // opaque cache key
+          servers: my_db.mcp_servers_of(user),           // the config `mcp:` shape
+          token_store: Some(user_scoped(store.clone(), user.clone())),
+      })
+  }), http_client.clone(), secret_env);
+  // advertisement: engine_config.tool_spec_resolver = Some(Arc::new({
+  //     let (scopes, tools) = (scopes.clone(), tools.clone());
+  //     move |s| scopes.overlay_specs(s, tools.read().unwrap().specs())
+  // }));
+  ```
+
+  The resolver runs on the sync advertisement path — keep it an in-memory
+  lookup, never I/O. Await `scopes.prewarm(&session)` between `Spawn` and the
+  first `Prompt` so the scope's tools are listed and advertised; call
+  `scopes.evict_scope(key)` on logout or whenever a user's server set or
+  credentials change (the cache keys on `key` alone). An `oauth:` server
+  whose slice holds no token fails the call with
+  ``MCP server `name` requires authorization for this user; …`` — catch that
+  string shape to prompt the user through the `WebFlow` handlers above.
+  Capability hints (`capabilities:` on a scope's server entries) don't reach
+  the in-tree profile expansion, which is process-global — fold
+  `mcp::capability_index(&scope.servers)` into your own per-user
+  `PermissionResolver` if you grade by capability.
 
 ## Pinning a dependency
 

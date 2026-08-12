@@ -20,13 +20,10 @@
 //! `candidates[0].finishReason` and the terminal `usageMetadata`.
 
 use crate::client::HttpClient;
-use crate::{
-    Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, StopReason, ToolCall, Usage,
-};
+use crate::{Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, StopReason, Usage};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
-use serde_json::{json, Value};
 
 /// Default Gemini generative-language base (the `models` collection root).
 pub const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -59,6 +56,13 @@ pub(crate) fn tool_name_from_id(id: &str) -> &str {
 pub struct GeminiLlm {
     base_url: String,
     api_key: String,
+    /// OAuth bearer source (#684 edge d): `Some` replaces `x-goog-api-key`
+    /// with `Authorization: Bearer <token>` fetched per request (cached until
+    /// expiry by the source; the context-cache call reuses the same token),
+    /// with one forced-refresh retry on a `401`. The endpoint-pool identity
+    /// becomes `None` then — a rotating bearer must never key the pool
+    /// (ADR-0156).
+    auth: Option<std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>>,
     default_model: String,
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
@@ -91,12 +95,35 @@ impl GeminiLlm {
         Self {
             base_url: base_url.into(),
             api_key: api_key.into(),
+            auth: None,
             default_model: default_model.into(),
             rpm,
             concurrency,
             model_concurrency,
             http,
             cache: cache::CacheHandle::new(),
+        }
+    }
+
+    /// Authenticate with an OAuth bearer from `auth` instead of the static
+    /// `x-goog-api-key` (#684 edge d) — see the field docs for the
+    /// pool-identity rule. The `api_key` passed at construction is ignored on
+    /// the wire then (pass an empty string for a purely OAuth endpoint).
+    pub fn with_auth(
+        mut self,
+        auth: std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>,
+    ) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    /// The per-request bearer, when this client authenticates via OAuth.
+    async fn bearer(&self, force_refresh: bool) -> anyhow::Result<Option<String>> {
+        match &self.auth {
+            Some(source) => Ok(Some(source.access_token(force_refresh).await.map_err(
+                |e| anyhow::anyhow!("fetching the OAuth token for `{}`: {e:#}", self.base_url),
+            )?)),
+            None => Ok(None),
         }
     }
 }
@@ -106,17 +133,20 @@ impl GeminiLlm {
 /// defaults; `model_concurrency` resolves a tighter per-model cap per request
 /// (`|_| None` disables it, #521, resolved per request rather than once at
 /// construction, #550).
+/// `auth = Some(..)` switches the endpoint to an OAuth bearer (#684 edge d),
+/// replacing `x-goog-api-key` on the wire (pass an empty `api_key` then).
 #[allow(clippy::too_many_arguments)]
 pub fn gemini_factory(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
+    auth: Option<std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
     model_concurrency: ModelConcurrencyResolver,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = GeminiLlm::new(
+    let mut llm = GeminiLlm::new(
         base_url,
         api_key,
         default_model,
@@ -125,7 +155,19 @@ pub fn gemini_factory(
         model_concurrency,
         http,
     );
+    if let Some(auth) = auth {
+        llm = llm.with_auth(auth);
+    }
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
+}
+
+/// The request auth header: the OAuth bearer when one is in play (#684),
+/// else the static Gemini API key.
+fn auth_header(bearer: &Option<String>, api_key: &str) -> (&'static str, String) {
+    match bearer {
+        Some(token) => ("authorization", format!("Bearer {token}")),
+        None => ("x-goog-api-key", api_key.to_string()),
+    }
 }
 
 #[async_trait]
@@ -136,6 +178,10 @@ impl Llm for GeminiLlm {
         // construction (#550) — a profile's `model:`-only pin can send a
         // request under a different model than `default_model`.
         let model_concurrency = (self.model_concurrency)(&model);
+        // An OAuth bearer (#684 edge d) is fetched per request — cached until
+        // expiry by the source — replacing `x-goog-api-key` on both the
+        // generate call and the cache call below.
+        let mut bearer = self.bearer(false).await?;
         // Best-effort context caching (#587): reuse or create a
         // `cachedContents` resource for the stable system+tools prefix so it
         // isn't re-billed at the full input rate on every turn, mirroring
@@ -146,7 +192,7 @@ impl Llm for GeminiLlm {
             .resolve(
                 &self.http,
                 &self.base_url,
-                &self.api_key,
+                &auth_header(&bearer, &self.api_key),
                 &model,
                 req.system,
                 req.tools,
@@ -172,32 +218,50 @@ impl Llm for GeminiLlm {
 
         // The rate-limit / retry pool is keyed by (endpoint, api_key); use the
         // base (key-agnostic) so every model on this endpoint shares one bucket.
-        let (response, guard) = self
-            .http
-            .execute_with_retry(
-                base,
-                Some(&self.api_key),
-                self.rpm,
-                self.concurrency,
-                &model,
-                model_concurrency,
-                None,
-                || {
-                    self.http
-                        .client()
-                        .post(&url)
-                        .header("x-goog-api-key", &self.api_key)
-                        .header("content-type", "application/json")
-                        .json(&body)
-                        .send()
-                },
-            )
-            .await
-            // `RetryError`'s own `Display` (thiserror) already carries the
-            // per-variant detail (attempts, elapsed timeout, ...); just
-            // prefix it with the provider so mixed-provider logs stay
-            // attributable.
-            .map_err(|e| anyhow::anyhow!("gemini request failed: {e}"))?;
+        // With OAuth the identity is `None` — a rotating bearer must never key
+        // the pool (ADR-0156). One forced-refresh retry on a `401`.
+        let mut forced_refresh = false;
+        let (response, guard) = loop {
+            let (name, value) = auth_header(&bearer, &self.api_key);
+            let pool_identity = if self.auth.is_some() {
+                None
+            } else {
+                Some(self.api_key.as_str())
+            };
+            let (response, guard) = self
+                .http
+                .execute_with_retry(
+                    base,
+                    pool_identity,
+                    self.rpm,
+                    self.concurrency,
+                    &model,
+                    model_concurrency,
+                    None,
+                    || {
+                        self.http
+                            .client()
+                            .post(&url)
+                            .header(name, &value)
+                            .header("content-type", "application/json")
+                            .json(&body)
+                            .send()
+                    },
+                )
+                .await
+                // `RetryError`'s own `Display` (thiserror) already carries the
+                // per-variant detail (attempts, elapsed timeout, ...); just
+                // prefix it with the provider so mixed-provider logs stay
+                // attributable.
+                .map_err(|e| anyhow::anyhow!("gemini request failed: {e}"))?;
+            if response.status().as_u16() == 401 && self.auth.is_some() && !forced_refresh {
+                tracing::warn!("gemini 401 with an OAuth bearer; forcing one refresh and retrying");
+                forced_refresh = true;
+                bearer = self.bearer(true).await?;
+                continue;
+            }
+            break (response, guard);
+        };
 
         if !response.status().is_success() {
             let status = response.status();
@@ -259,137 +323,13 @@ impl Llm for GeminiLlm {
     }
 }
 
-// ── SSE frame parsing ─────────────────────────────────────────────────────────
-
-/// Extract the JSON payload from one SSE frame (`data: <json>` lines, joined).
-/// Returns `None` for a comment/keep-alive/blank frame or unparsable data.
-fn parse_frame(frame: &str) -> Option<Value> {
-    let mut data_parts: Vec<&str> = Vec::new();
-    for line in frame.lines() {
-        if let Some(rest) = line.strip_prefix("data:") {
-            data_parts.push(rest.trim());
-        }
-    }
-    if data_parts.is_empty() {
-        return None;
-    }
-    serde_json::from_str::<Value>(&data_parts.join("\n")).ok()
-}
-
-/// Map one parsed chunk to zero or more [`LlmEvent`]s, folding usage + the latest
-/// `finishReason`. Pure (no I/O) so it unit-tests directly. A `functionCall` part
-/// is assembled immediately — Gemini sends the whole arg object, not streamed —
-/// and its `thoughtSignature` (if any) is stashed into `provider_meta` (#309).
-fn handle_chunk(
-    data: &Value,
-    usage: &mut Usage,
-    finish_reason: &mut Option<String>,
-    tool_call_ordinal: &mut usize,
-) -> Result<Vec<LlmEvent>, anyhow::Error> {
-    let mut out = Vec::new();
-
-    if let Some(parts) = data
-        .pointer("/candidates/0/content/parts")
-        .and_then(|v| v.as_array())
-    {
-        for part in parts {
-            if let Some(fc) = part.get("functionCall") {
-                out.push(LlmEvent::ToolCall(function_call_to_tool_call(
-                    fc,
-                    part,
-                    *tool_call_ordinal,
-                )));
-                *tool_call_ordinal += 1;
-            } else if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                if text.is_empty() {
-                    continue;
-                }
-                // A `thought: true` part is the model's extended reasoning.
-                if part.get("thought").and_then(|v| v.as_bool()) == Some(true) {
-                    out.push(LlmEvent::Reasoning(text.to_string()));
-                } else {
-                    out.push(LlmEvent::Text(text.to_string()));
-                }
-            }
-        }
-    }
-
-    if let Some(r) = data
-        .pointer("/candidates/0/finishReason")
-        .and_then(|v| v.as_str())
-    {
-        *finish_reason = Some(r.to_string());
-    }
-
-    if let Some(meta) = data.get("usageMetadata") {
-        apply_usage(meta, usage);
-    }
-
-    Ok(out)
-}
-
-/// Build a [`ToolCall`] from a Gemini `functionCall` part. The id is
-/// `name#ordinal` (#444) — unique per stream even when the same tool is
-/// called in parallel — while `name` stays bare; [`tool_name_from_id`]
-/// recovers it when the reply is sent back as a `functionResponse`. The
-/// `thoughtSignature` (a thinking model's opaque per-call token) is preserved
-/// in `provider_meta` for verbatim round-trip on the next turn (#309).
-fn function_call_to_tool_call(fc: &Value, part: &Value, ordinal: usize) -> ToolCall {
-    let name = fc
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let args = fc.get("args").cloned().unwrap_or_else(|| json!({}));
-    let input = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
-    let provider_meta = part
-        .get("thoughtSignature")
-        .and_then(|v| v.as_str())
-        .map(|sig| json!({ THOUGHT_SIGNATURE_KEY: sig }));
-    ToolCall {
-        id: synthesize_tool_call_id(&name, ordinal),
-        name,
-        input,
-        provider_meta,
-    }
-}
-
-/// Fold Gemini's `usageMetadata` into the normalized [`Usage`]. `promptTokenCount`
-/// is the whole prompt including any cached read, so subtract the cached portion to
-/// keep `input_tokens` uncached (no double-count against catalog pricing, #192).
-///
-/// Thinking tokens are billed as output but reported *separately* from
-/// `candidatesTokenCount`, so `thoughtsTokenCount` is summed into `output_tokens`
-/// rather than given a `Usage` field of its own: the four `Usage` dimensions map
-/// 1:1 onto the four [`ModelPricing`](crate::ModelPricing) dimensions, and a fifth
-/// would have no rate to bill against. Anthropic and OpenAI already fold thinking
-/// into their output figure server-side, so this makes Gemini consistent with them
-/// instead of silently under-reporting `output_tokens` (and `cost_usd`) for every
-/// thinking model.
-fn apply_usage(meta: &Value, usage: &mut Usage) {
-    let cached = meta.get("cachedContentTokenCount").and_then(|v| v.as_u64());
-    if let Some(prompt) = meta.get("promptTokenCount").and_then(|v| v.as_u64()) {
-        usage.input_tokens = Some(prompt.saturating_sub(cached.unwrap_or(0)));
-    }
-    if let Some(c) = cached {
-        usage.cached_input_tokens = Some(c);
-    }
-    // A pure-thinking chunk reports thoughts with no `candidatesTokenCount`; still
-    // record it, or those tokens are billed by the provider and counted by nobody.
-    let candidates = meta.get("candidatesTokenCount").and_then(|v| v.as_u64());
-    let thoughts = meta.get("thoughtsTokenCount").and_then(|v| v.as_u64());
-    if candidates.is_some() || thoughts.is_some() {
-        usage.output_tokens = Some(
-            candidates
-                .unwrap_or(0)
-                .saturating_add(thoughts.unwrap_or(0)),
-        );
-    }
-}
-
 mod cache;
 mod request;
+mod sse;
 use request::build_body;
+// Private re-imports keep `super::parse_frame`/`super::handle_chunk` valid for
+// `gemini/tests.rs` across the split.
+use sse::{handle_chunk, parse_frame};
 
 #[cfg(test)]
 mod tests;

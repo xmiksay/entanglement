@@ -68,6 +68,8 @@ use super::atomic::atomic_write;
 
 /// Env var overriding the managed token file path (tests + non-XDG setups).
 const MCP_TOKENS_FILE_ENV: &str = "ENTANGLEMENT_MCP_TOKENS_FILE";
+/// Env var overriding the managed *LLM* token file path (#684 edge d).
+const LLM_TOKENS_FILE_ENV: &str = "ENTANGLEMENT_LLM_TOKENS_FILE";
 
 /// On-disk shape: a single `servers:` map.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -94,6 +96,18 @@ impl McpTokenStore {
     pub fn load() -> Self {
         Self {
             path: tokens_file_path(),
+        }
+    }
+
+    /// The sibling store for OAuth-protected **LLM provider endpoints** (#684
+    /// edge d): same file format and locking, keyed by catalog provider name
+    /// instead of MCP server name, at `ENTANGLEMENT_LLM_TOKENS_FILE` or
+    /// `${config_dir}/entanglement/llm-tokens.yml`. A separate file — not a
+    /// namespace inside `mcp-tokens.yml` — so neither surface's writes ever
+    /// contend with (or quarantine) the other's credentials.
+    pub fn load_llm() -> Self {
+        Self {
+            path: llm_tokens_file_path(),
         }
     }
 
@@ -308,6 +322,13 @@ fn tokens_file_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("entanglement").join("mcp-tokens.yml"))
 }
 
+fn llm_tokens_file_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os(LLM_TOKENS_FILE_ENV) {
+        return Some(PathBuf::from(p));
+    }
+    dirs::config_dir().map(|d| d.join("entanglement").join("llm-tokens.yml"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +337,27 @@ mod tests {
     /// `ENTANGLEMENT_MCP_TOKENS_FILE` is process-global; tests that set it
     /// serialize here so they don't race.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The LLM sibling store (#684 edge d) resolves its own env var and file,
+    /// fully independent of the MCP one.
+    #[test]
+    fn llm_store_resolves_its_own_file() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let path = std::env::temp_dir().join(format!(
+            "entanglement-llm-tokens-{}.yml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var(LLM_TOKENS_FILE_ENV, &path);
+        let llm = McpTokenStore::load_llm();
+        std::env::remove_var(LLM_TOKENS_FILE_ENV);
+        assert_eq!(llm.path.as_deref(), Some(path.as_path()));
+        // Default resolution ends in the sibling file name, never the MCP one.
+        if let Some(default_path) = super::llm_tokens_file_path() {
+            assert!(default_path.ends_with("entanglement/llm-tokens.yml"));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 
     fn store_at(label: &str) -> (McpTokenStore, PathBuf) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

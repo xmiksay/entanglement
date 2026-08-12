@@ -64,6 +64,11 @@ pub struct ProviderEntry {
     /// Env var holding the API key; `None` = keyless (e.g. local Ollama).
     #[serde(default)]
     pub key_env: Option<String>,
+    /// OAuth (#684 edge d): present — even empty — the endpoint sends an
+    /// `Authorization: Bearer` token instead of a static `key_env` key. Tokens:
+    /// `skutter config connect` (managed file) or `with_token_source` per user.
+    #[serde(default)]
+    pub oauth: Option<crate::mcp::auth::OauthConfig>,
     /// Requests-per-minute budget for this provider's endpoint bucket; `None`
     /// falls back to the client's default (`RetryConfig::rpm`). Plumbed into the
     /// per-endpoint rate limiter so each provider gets its real budget (#241).
@@ -402,6 +407,28 @@ mod tests {
     /// `load()` reads a process-global env var (`PROVIDERS_FILE_ENV`); tests that
     /// set it must not race under cargo's parallel test threads.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// An `oauth:` block on a provider entry parses (with the same override
+    /// fields the MCP blocks use) and no embedded default carries one (#684
+    /// edge d — production zai/openai/anthropic/gemini stay static-keyed).
+    #[test]
+    fn provider_oauth_block_parses_and_defaults_carry_none() {
+        let entry: ProviderEntry = serde_yaml::from_str(
+            "name: myproxy\nbase_url: https://llm.example/v1\ndefault_model: m\n\
+             oauth:\n  authorization_url: https://as.example/authorize\n  token_url: https://as.example/token\n",
+        )
+        .expect("oauth block parses");
+        let oauth = entry.oauth.expect("oauth present");
+        assert_eq!(
+            oauth.authorization_url.as_deref(),
+            Some("https://as.example/authorize")
+        );
+        assert!(entry.key_env.is_none());
+        assert!(Catalog::builtin()
+            .providers
+            .iter()
+            .all(|p| p.oauth.is_none()));
+    }
 
     #[test]
     fn builtin_parses() {

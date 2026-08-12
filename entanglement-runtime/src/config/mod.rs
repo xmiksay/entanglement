@@ -80,6 +80,11 @@ pub use mcp_tokens::McpTokenStore;
 /// the provider's key env up in the catalog (`provider` feature).
 #[cfg(all(feature = "cli", feature = "provider"))]
 pub mod keys;
+/// The CLI `skutter config connect|disconnect` handlers (#684 edge d) — the
+/// LLM twin of `/mcp connect`. Behind the same `cli`+`provider` gate as
+/// `keys`: it resolves the provider from the catalog and prints to a terminal.
+#[cfg(all(feature = "cli", feature = "provider"))]
+pub mod llm_connect;
 
 #[cfg(test)]
 mod tests;
