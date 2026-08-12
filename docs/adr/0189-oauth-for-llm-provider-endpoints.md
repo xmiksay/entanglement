@@ -25,13 +25,20 @@ refresh, silently escaping active 429 cool-downs and leaking state.
 
 ## Decision
 
-1. **Catalog**: `ProviderEntry` gains `oauth: Option<OauthConfig>` — present
+1. **The stack is promoted to `provider::oauth`** (from `mcp::auth`, its
+   birthplace): with the LLM wires as a second consumer, "MCP's auth module"
+   is the wrong home for what ADR-0181 already called the crate's universal
+   auth interface. One canonical path — `crate::oauth` — and the `mcp` module
+   consumes it like everything else; no compatibility re-export is kept
+   (in-tree consumers and live docs are updated; older ADRs naming
+   `mcp::auth` are history).
+2. **Catalog**: `ProviderEntry` gains `oauth: Option<OauthConfig>` — present
    (even empty), the endpoint authenticates with `Authorization: Bearer`
    instead of `key_env`; the same override fields as the `mcp:` blocks
    short-circuit discovery for an endpoint without RFC 9728/8414 metadata.
    No embedded default carries one (production zai/openai/anthropic/gemini
    stay static-keyed; a test pins that).
-2. **All three wires** take an optional `Arc<dyn AccessTokenSource>`
+3. **All three wires** take an optional `Arc<dyn AccessTokenSource>`
    (`with_auth` on the client, a parameter on the factory). The token is
    fetched *before* `execute_with_retry` (the MCP transport's shape), cached
    until expiry by `StoredTokenSource`, and replaces the wire's static header
@@ -40,11 +47,11 @@ refresh, silently escaping active 429 cool-downs and leaking state.
    once with `force_refresh` — a second 401 is a terminal error. Anthropic's
    `pause_turn` continuation loop re-fetches per POST, so a long turn's
    continuations ride refreshed tokens.
-3. **Pool identity decouples from the secret**: an OAuth endpoint passes
+4. **Pool identity decouples from the secret**: an OAuth endpoint passes
    `None` (pool keyed by normalized endpoint alone) — the bearer never
    reaches `pool_key`. Per-user fairness on a shared OAuth endpoint stays
    ADR-0175's admission gate, exactly as for a shared literal key.
-4. **skutter (single-user)**: credentials live in the managed
+5. **skutter (single-user)**: credentials live in the managed
    `llm-tokens.yml` (`ENTANGLEMENT_LLM_TOKENS_FILE`), the same file format,
    locking, and quarantine as `mcp-tokens.yml` (one shared implementation,
    `McpTokenStore::load_llm()` — a separate file so neither surface's writes
@@ -54,7 +61,7 @@ refresh, silently escaping active 429 cool-downs and leaking state.
    `/mcp connect` as a pre-engine CLI fast path. A factory resolving an
    `oauth:` entry with no stored token errs with that exact hint; provider
    auto-detect stays key-based (an OAuth provider is selected explicitly).
-5. **Multi-user embedders**: `UserProviderContext::with_token_source(name,
+6. **Multi-user embedders**: `UserProviderContext::with_token_source(name,
    source)` registers a per-user bearer source (typically
    `StoredTokenSource::new(provider, user_scoped(store, user))`);
    `resolve_for_user` hard-errs on an `oauth:` entry without one and needs

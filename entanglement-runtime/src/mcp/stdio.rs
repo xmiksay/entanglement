@@ -39,7 +39,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Ceiling on one newline-framed line off a server's stdout (#556): a
 /// misbehaving server that never emits a newline must not grow the reader's
 /// buffer without bound — mirrors the OAuth loopback reader's
-/// `MAX_REQUEST_BYTES` cap (`entanglement-provider/src/mcp/auth/loopback.rs`).
+/// `MAX_REQUEST_BYTES` cap (`entanglement-provider/src/oauth/loopback.rs`).
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
 
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<std::result::Result<Value, String>>>>>;

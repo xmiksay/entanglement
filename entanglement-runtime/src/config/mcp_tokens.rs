@@ -1,7 +1,7 @@
 //! Persisted OAuth credentials for MCP servers (ADR-0153).
 //!
 //! The runtime's [`TokenStore`] implementation: the *policy* half of MCP OAuth,
-//! backing the mechanism that lives in `entanglement-provider::mcp::auth`. Owns
+//! backing the mechanism that lives in `entanglement-provider::oauth`. Owns
 //! the managed file `${config_dir}/entanglement/mcp-tokens.yml` (override
 //! `ENTANGLEMENT_MCP_TOKENS_FILE`), a sibling of `aux-models.yml` (Issue 5),
 //! `agent-models.yml` (#323), the grants file (#174), and the provider-key env

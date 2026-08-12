@@ -69,7 +69,7 @@ pub struct AnthropicLlm {
     /// until expiry by the source), with one forced-refresh retry on a `401`.
     /// The endpoint-pool identity becomes `None` then — a rotating bearer
     /// must never key the pool (ADR-0156).
-    auth: Option<std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>>,
+    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     /// Base URL, no trailing slash required — `/v1/messages` is appended per
     /// request. Defaults to [`ANTHROPIC_BASE`]; a catalog `base_url` (a
     /// proxy/gateway) overrides it (#551).

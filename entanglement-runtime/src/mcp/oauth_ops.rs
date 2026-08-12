@@ -3,7 +3,7 @@
 //! The *policy* half: which server, which config, which token store, when to
 //! open a browser, and what to reconnect afterwards. Every protocol detail —
 //! discovery, PKCE, dynamic client registration, token exchange/refresh/
-//! revocation — lives in `entanglement-provider::mcp::auth` and is reached
+//! revocation — lives in `entanglement-provider::oauth` and is reached
 //! through core's re-export.
 //!
 //! Called only from the MCP responder, which answers the trusted-only

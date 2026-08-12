@@ -9,7 +9,7 @@
 //!
 //! Two ways to authenticate: static headers (`Authorization: Bearer …`,
 //! `${VAR}`-expanded from the environment, see [`headers`][super::headers]),
-//! or OAuth (ADR-0153) via an [`AccessTokenSource`][super::auth::AccessTokenSource]
+//! or OAuth (ADR-0153) via an [`AccessTokenSource`][crate::oauth::AccessTokenSource]
 //! consulted per request and force-refreshed once on a `401` — a second `401`
 //! surfaces as [`AuthRequired`] so the runtime reports "needs auth".
 //!
@@ -40,10 +40,10 @@ use serde_json::{json, Value};
 
 use crate::client::{HttpClient, RetryConfig, StreamGuard};
 
-use super::auth::{AccessTokenSource, AuthRequired};
 use super::headers::build_headers;
 use super::sse::{is_event_stream, read_sse_response};
 use super::{jsonrpc_payload, parse_tool_def, McpToolDef};
+use crate::oauth::{AccessTokenSource, AuthRequired};
 
 /// Protocol version we advertise on `initialize`. The server negotiates its own
 /// in the response, which we echo back on the `MCP-Protocol-Version` header of

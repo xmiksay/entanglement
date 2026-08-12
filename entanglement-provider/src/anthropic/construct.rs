@@ -44,10 +44,7 @@ impl AnthropicLlm {
     /// `x-api-key` (#684 edge d) — see the field docs for the pool-identity
     /// rule. The `api_key` passed at construction is ignored on the wire then
     /// (pass an empty string for a purely OAuth endpoint).
-    pub fn with_auth(
-        mut self,
-        auth: std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>,
-    ) -> Self {
+    pub fn with_auth(mut self, auth: std::sync::Arc<dyn crate::oauth::AccessTokenSource>) -> Self {
         self.auth = Some(auth);
         self
     }
@@ -68,7 +65,7 @@ impl AnthropicLlm {
 pub fn anthropic_factory(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
-    auth: Option<std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>>,
+    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,

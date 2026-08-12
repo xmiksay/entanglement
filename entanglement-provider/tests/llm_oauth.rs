@@ -15,7 +15,7 @@ use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use entanglement_provider::mcp::auth::AccessTokenSource;
+use entanglement_provider::oauth::AccessTokenSource;
 use entanglement_provider::{
     AnthropicLlm, GeminiLlm, HttpClient, Llm, LlmRequest, OpenAiLlm, RetryConfig,
 };

@@ -726,7 +726,7 @@ the same permission profiles as `read`/`bash`.
     of failing. **Web-redirect flow (✅ [ADR-0187](../adr/0187-mcp-oauth-web-redirect-flow-for-embedders.md),
     #684):** a server-side web embedder can't use either in-tree flow — the
     loopback listener is CLI-shaped and device-code trades UX for it — so
-    `provider::mcp::auth::web::WebFlow` prepares the same authorization-code +
+    `provider::oauth::web::WebFlow` prepares the same authorization-code +
     PKCE request against the *embedder's own* HTTPS callback URI: `begin`
     shares discovery/DCR/PKCE with the browser flow (via the extracted
     `flow::prepare` helper; the DCR `client_name` is caller-supplied so the

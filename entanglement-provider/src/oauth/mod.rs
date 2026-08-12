@@ -1,11 +1,14 @@
-//! OAuth 2.1 authentication for MCP servers (ADR-0153).
+//! OAuth 2.1 authentication (ADR-0153, promoted from `mcp::auth` by
+//! ADR-0189 when the LLM wires became its second consumer).
 //!
-//! The *mechanism* half of MCP OAuth: everything needed to turn a bare server
-//! URL into a bearer token, and to keep that token fresh. The *policy* half —
-//! where the token file lives, which servers are configured, who is allowed to
-//! start a flow, and how the browser gets opened — stays in
-//! `entanglement-runtime`, which supplies a [`TokenStore`] implementation and
-//! drives [`flow`].
+//! The *mechanism* half of OAuth for anything this crate talks to — MCP
+//! servers (ADR-0153/0182/0187) and OAuth-protected LLM provider endpoints
+//! (ADR-0189, a catalog `oauth:` block) alike: everything needed to turn a
+//! bare endpoint URL into a bearer token, and to keep that token fresh. The
+//! *policy* half — where the token file lives, which endpoints are
+//! configured, who is allowed to start a flow, and how the browser gets
+//! opened — stays with the consumer (`entanglement-runtime`, or an embedder),
+//! which supplies a [`TokenStore`] implementation and drives [`flow`].
 //!
 //! The shape of one authorization:
 //!
@@ -22,8 +25,9 @@
 //! 4. [`token::exchange_code`] trades the returned code for a [`TokenSet`],
 //!    persisted as a [`StoredAuth`] together with the context needed to refresh
 //!    it later without re-running discovery.
-//! 5. [`token::StoredTokenSource`] serves that token to the HTTP transport,
-//!    refreshing on expiry or on a forced retry after a `401`.
+//! 5. [`token::StoredTokenSource`] serves that token to the consuming
+//!    transport — the MCP HTTP client or an LLM wire client — refreshing on
+//!    expiry or on a forced retry after a `401`.
 //!
 //! **Secrets never reach the log.** No token, refresh token, client secret, or
 //! authorization code is ever `Debug`-printed or traced; the [`Debug`] impls on

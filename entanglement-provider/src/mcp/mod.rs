@@ -13,10 +13,10 @@
 //! What lives here:
 //!
 //! - [`http`] — the streamable-HTTP transport ([`McpHttpClient`]), previously
-//!   `entanglement-runtime::mcp::http` (#312, ADR-0080).
-//! - [`auth`] — the OAuth 2.1 mechanism for authenticating that transport
-//!   (ADR-0153): metadata discovery, PKCE, dynamic client registration, and
-//!   token exchange/refresh/revocation.
+//!   `entanglement-runtime::mcp::http` (#312, ADR-0080). Authenticated via
+//!   [`crate::oauth`] — the OAuth 2.1 mechanism started life here as
+//!   `mcp::auth` (ADR-0153) and was promoted to a crate-level module when the
+//!   LLM wires became its second consumer (ADR-0189).
 //! - The shared JSON-RPC/tool-definition helpers both the HTTP transport and the
 //!   runtime's stdio transport parse responses with.
 //!
@@ -26,15 +26,10 @@
 
 use serde_json::{json, Value};
 
-pub mod auth;
 pub mod headers;
 pub mod http;
 pub mod sse;
 
-pub use auth::{
-    AccessTokenSource, AuthFlow, AuthOutcome, AuthRequired, ClientRegistration, OauthConfig,
-    StoredAuth, TokenSet, TokenStore,
-};
 pub use http::McpHttpClient;
 
 /// A single tool as advertised by a server's `tools/list`.

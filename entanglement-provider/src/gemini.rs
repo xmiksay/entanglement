@@ -62,7 +62,7 @@ pub struct GeminiLlm {
     /// with one forced-refresh retry on a `401`. The endpoint-pool identity
     /// becomes `None` then — a rotating bearer must never key the pool
     /// (ADR-0156).
-    auth: Option<std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>>,
+    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: String,
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
@@ -109,10 +109,7 @@ impl GeminiLlm {
     /// `x-goog-api-key` (#684 edge d) — see the field docs for the
     /// pool-identity rule. The `api_key` passed at construction is ignored on
     /// the wire then (pass an empty string for a purely OAuth endpoint).
-    pub fn with_auth(
-        mut self,
-        auth: std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>,
-    ) -> Self {
+    pub fn with_auth(mut self, auth: std::sync::Arc<dyn crate::oauth::AccessTokenSource>) -> Self {
         self.auth = Some(auth);
         self
     }
@@ -139,7 +136,7 @@ impl GeminiLlm {
 pub fn gemini_factory(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
-    auth: Option<std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>>,
+    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,

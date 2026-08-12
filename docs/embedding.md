@@ -365,7 +365,7 @@ seam implementations over it. Per seam:
   for an MCP server). An `oauth:` entry with no registered source is a hard
   resolve error; with one, no static key is needed.
 - **MCP OAuth credentials** — implement
-  `entanglement_provider::mcp::auth::UserTokenStore` over your storage;
+  `entanglement_provider::oauth::UserTokenStore` over your storage;
   `user_scoped(store, user)` presents one user's slice as the plain
   per-connection `TokenStore` every auth consumer takes
   ([ADR-0184](adr/0184-provider-hosted-multi-user-seams.md)). Minting the

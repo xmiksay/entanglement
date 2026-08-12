@@ -21,7 +21,7 @@ requests — possibly served by two different replicas.
 
 ## Decision
 
-1. **`provider::mcp::auth::web::WebFlow`** — a sibling module (the `DeviceFlow`
+1. **`provider::oauth::web::WebFlow`** — a sibling module (the `DeviceFlow`
    precedent: one authorization mode = one module).
    `WebFlow::begin(server, mcp_url, cfg, hint, redirect_uri, client_name)`
    prepares the same authorization-code + PKCE request as `AuthFlow` but

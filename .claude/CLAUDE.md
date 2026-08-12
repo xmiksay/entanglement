@@ -302,7 +302,7 @@ never here**; each bullet is the claim + where to read it:
   [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md).
 - **Multi-user mode is an embedder library API** (`UserId` on the wire,
   per-user catalogs/keys/budgets via `entanglement-provider::multi_user`,
-  per-user MCP credentials via `provider::mcp::auth::UserTokenStore` +
+  per-user MCP credentials via `provider::oauth::UserTokenStore` +
   `user_scoped` — minted from a web app via `WebFlow` (ADR-0187), routed per
   session via `mcp::scoped::McpScopes` (ADR-0188) — per-user OAuth *LLM*
   endpoints via `UserProviderContext::with_token_source` (ADR-0189), per-user

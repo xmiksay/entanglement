@@ -68,7 +68,7 @@ pub struct ProviderEntry {
     /// `Authorization: Bearer` token instead of a static `key_env` key. Tokens:
     /// `skutter config connect` (managed file) or `with_token_source` per user.
     #[serde(default)]
-    pub oauth: Option<crate::mcp::auth::OauthConfig>,
+    pub oauth: Option<crate::oauth::OauthConfig>,
     /// Requests-per-minute budget for this provider's endpoint bucket; `None`
     /// falls back to the client's default (`RetryConfig::rpm`). Plumbed into the
     /// per-endpoint rate limiter so each provider gets its real budget (#241).

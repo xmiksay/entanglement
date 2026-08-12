@@ -48,7 +48,7 @@ pub struct UserProviderContext {
     /// entry's `name`. Consulted for a provider whose entry carries an
     /// `oauth:` block — typically `StoredTokenSource::new(provider_name,
     /// user_scoped(store, user))` over the embedder's own `UserTokenStore`.
-    token_sources: HashMap<String, Arc<dyn crate::mcp::auth::AccessTokenSource>>,
+    token_sources: HashMap<String, Arc<dyn crate::oauth::AccessTokenSource>>,
 }
 
 impl UserProviderContext {
@@ -75,7 +75,7 @@ impl UserProviderContext {
     pub fn with_token_source(
         mut self,
         provider: impl Into<String>,
-        source: Arc<dyn crate::mcp::auth::AccessTokenSource>,
+        source: Arc<dyn crate::oauth::AccessTokenSource>,
     ) -> Self {
         self.token_sources.insert(provider.into(), source);
         self
@@ -95,7 +95,7 @@ impl UserProviderContext {
     fn auth_for(
         &self,
         entry: &ProviderEntry,
-    ) -> Result<Option<Arc<dyn crate::mcp::auth::AccessTokenSource>>, String> {
+    ) -> Result<Option<Arc<dyn crate::oauth::AccessTokenSource>>, String> {
         if entry.oauth.is_none() {
             return Ok(None);
         }
@@ -419,7 +419,7 @@ mod tests {
     fn oauth_provider_requires_and_uses_a_token_source() {
         struct StaticToken;
         #[async_trait::async_trait]
-        impl crate::mcp::auth::AccessTokenSource for StaticToken {
+        impl crate::oauth::AccessTokenSource for StaticToken {
             async fn access_token(&self, _force: bool) -> anyhow::Result<String> {
                 Ok("tok".into())
             }

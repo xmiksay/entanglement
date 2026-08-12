@@ -36,18 +36,16 @@ pub use entanglement_provider::{
 // own. Nothing in core calls them. `HttpClient` above (#559) is what the MCP
 // HTTP transport is handed so its traffic shares the same per-endpoint
 // pool/RPM/concurrency/retry as LLM traffic — not `McpHttpClient`'s own name.
-pub use entanglement_provider::mcp::{
-    auth::{
-        auth_required_of, is_auth_required, AccessTokenSource, AuthFlow, AuthOutcome, AuthRequired,
-        DeviceFlow, OauthConfig, PendingAuthorization, PendingDeviceAuthorization, StoredAuth,
-        StoredTokenSource, TokenSet, TokenStore,
-    },
-    jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef,
+pub use entanglement_provider::mcp::{jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef};
+pub use entanglement_provider::oauth::{
+    auth_required_of, is_auth_required, AccessTokenSource, AuthFlow, AuthOutcome, AuthRequired,
+    DeviceFlow, OauthConfig, PendingAuthorization, PendingDeviceAuthorization, StoredAuth,
+    StoredTokenSource, TokenSet, TokenStore,
 };
 // Renamed on the way through: bare `check`/`disconnect` would be far too
 // generic at the core crate root, where they sit beside the engine's own API.
-pub use entanglement_provider::mcp::auth::check as mcp_auth_check;
-pub use entanglement_provider::mcp::auth::disconnect as mcp_auth_disconnect;
+pub use entanglement_provider::oauth::check as mcp_auth_check;
+pub use entanglement_provider::oauth::disconnect as mcp_auth_disconnect;
 pub use protocol::{
     AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, McpAction,
     McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, OperationInfo, OperationKind,

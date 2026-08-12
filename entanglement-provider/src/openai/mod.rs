@@ -80,7 +80,7 @@ pub struct OpenAiLlm {
     /// `401`. The endpoint-pool identity stays `api_key` (usually `None` for
     /// an OAuth endpoint): a rotating bearer must never key the pool, or every
     /// refresh would mint a fresh rate-limit bucket (ADR-0156).
-    auth: Option<std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>>,
+    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: String,
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
@@ -137,10 +137,7 @@ impl OpenAiLlm {
 
     /// Authenticate with an OAuth bearer from `auth` instead of a static key
     /// (#684 edge d) — see the field docs for the pool-identity rule.
-    pub fn with_auth(
-        mut self,
-        auth: std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>,
-    ) -> Self {
+    pub fn with_auth(mut self, auth: std::sync::Arc<dyn crate::oauth::AccessTokenSource>) -> Self {
         self.auth = Some(auth);
         self
     }
@@ -159,7 +156,7 @@ impl OpenAiLlm {
 pub fn openai_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
-    auth: Option<std::sync::Arc<dyn crate::mcp::auth::AccessTokenSource>>,
+    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
