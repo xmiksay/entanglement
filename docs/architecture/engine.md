@@ -407,7 +407,9 @@ id, and runtime-minted request/correlation id — never `Option`, unlike the
 resolver seams above, since there is always a scheme rather than an
 opt-in override. `IdGen::next(kind: IdKind) -> String` defaults to
 `DefaultIdGen`: `<kind>-<epoch-seconds hex><2-hex process salt><3-hex
-counter>`, 15 characters (`s-`/`j-`/`r-` for `Session`/`Job`/`Request`), with a
+counter>`, 15 characters (`s-`/`j-`/`r-`/`o-`/`x-` for `Session`/`Job`/
+`Request`/`Output`/`Script` — the last per #637,
+[ADR-0185](../adr/0185-rhai-joins-background-and-poll.md)), with a
 process-global `(last_second, counter)` pair (module statics, not per-instance
 state) that makes "never twice" structural rather than probabilistic within
 one process, and waits for the next second rather than repeating on the
