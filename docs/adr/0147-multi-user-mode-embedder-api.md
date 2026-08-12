@@ -1,7 +1,17 @@
 # 0147. Multi-user mode: session-scoped identity + embedder-API per-user seams
 
-- Status: Accepted
+- Status: Accepted — runtime-module seams superseded by [ADR-0181](0181-userid-leaves-the-runtime-crate.md)
 - Date: 2026-08-01
+
+> **Superseded in part (2026-08-12, #687).** The runtime-module
+> materialization (`entanglement-runtime::multi_user::provider`,
+> `multi_user::permission`, `SessionUserRegistry`) is superseded by
+> [ADR-0181](0181-userid-leaves-the-runtime-crate.md): `UserId` leaves the
+> runtime crate; per-user seams become `SessionId`-keyed closures/traits the
+> embedder supplies, with the universal auth interface provider-side. The
+> protocol/identity core of this ADR — the `UserId` newtype, `Session.user` /
+> `InMsg::Spawn.user` wire identity, spawn-time inheritance, per-user
+> isolation goals — stands unchanged.
 - Amends: none. Builds on [ADR-0047](0047-local-trust-boundary.md) (local
   trust model), supersedes [ADR-0048](0048-serve-head-local-trust-model.md)'s
   scope *only* for a future authenticated `serve` — `serve` itself is
