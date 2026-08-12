@@ -23,7 +23,7 @@ const EXPIRY_SKEW_SECS: u64 = 60;
 
 /// The token endpoint's success response (RFC 6749 §5.1).
 #[derive(Debug, Deserialize)]
-struct TokenResponse {
+pub(crate) struct TokenResponse {
     access_token: String,
     #[serde(default)]
     token_type: Option<String>,
@@ -39,7 +39,7 @@ impl TokenResponse {
     /// Fold into a [`TokenSet`], carrying `previous`'s refresh token when the
     /// response omits one — a server that does not rotate refresh tokens simply
     /// leaves the field out, and dropping it would strand the grant.
-    fn into_token_set(self, previous: Option<&TokenSet>) -> TokenSet {
+    pub(crate) fn into_token_set(self, previous: Option<&TokenSet>) -> TokenSet {
         TokenSet {
             access_token: self.access_token,
             refresh_token: self
@@ -115,6 +115,67 @@ pub async fn refresh_token(
     post_token(http, token_endpoint, client_secret, &form, Some(previous)).await
 }
 
+/// Refresh `server`'s token inside the store's cross-process exclusive
+/// section (#631): only one process at a time may exchange a given refresh
+/// token, and a process that loses the race to acquire the section finds the
+/// winner's freshly-refreshed token already on disk (re-checked with
+/// `EXPIRY_SKEW_SECS` headroom, same as the fast path) and returns it without
+/// spending its own exchange.
+///
+/// Runs on a blocking-pool thread: acquiring the cross-process file lock can
+/// block for as long as another process's own exchange takes, and the
+/// critical section needs its own tiny nested runtime to make that exchange
+/// call, since the lock's synchronous closure can't hold a guard across an
+/// `.await`.
+pub(crate) async fn refresh_locked(
+    server: String,
+    store: Arc<dyn TokenStore>,
+    http: reqwest::Client,
+    force_refresh: bool,
+) -> Result<String> {
+    tokio::task::spawn_blocking(move || {
+        // `key` (not `server`) backs the `&str` argument: `server` itself is
+        // moved into the boxed closure below (for its error message), and a
+        // reference into a value moved out from under it would not borrow-check.
+        let key = server.clone();
+        let updated = store.with_exclusive(
+            &key,
+            Box::new(move |current| {
+                let Some(current) = current else {
+                    bail!(
+                        "no stored token for MCP server `{server}` — run `/mcp connect {server}`"
+                    );
+                };
+                if !force_refresh && !current.tokens.is_expired(EXPIRY_SKEW_SECS) {
+                    // Already fresh: either it never expired, or another
+                    // process already won the race and refreshed it — either
+                    // way there is nothing to exchange.
+                    return Ok(current);
+                }
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("building the refresh runtime")?;
+                let refreshed = rt.block_on(refresh_token(
+                    &http,
+                    &current.token_endpoint,
+                    &current.client_id,
+                    current.client_secret.as_deref(),
+                    &current.tokens,
+                    current.resource.as_deref(),
+                ))?;
+                Ok(StoredAuth {
+                    tokens: refreshed,
+                    ..current
+                })
+            }),
+        )?;
+        Ok(updated.tokens.access_token)
+    })
+    .await
+    .context("refresh task panicked")?
+}
+
 /// Best-effort RFC 7009 revocation. A server that rejects the request still
 /// leaves the caller free to drop the token locally — the caller decides.
 pub async fn revoke(
@@ -180,16 +241,19 @@ async fn post_token(
     Ok(parsed.into_token_set(previous))
 }
 
+/// The standard OAuth error-body shape (RFC 6749 §5.2), shared by
+/// [`oauth_error`] and [`oauth_error_code`].
+#[derive(Deserialize)]
+struct ErrorBody {
+    error: String,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
 /// Render an OAuth error body (RFC 6749 §5.2) as `error: description`, falling
 /// back to the raw body when it isn't the standard shape. Token values never
 /// appear in an error body, so this is safe to surface.
-fn oauth_error(body: &str) -> String {
-    #[derive(Deserialize)]
-    struct ErrorBody {
-        error: String,
-        #[serde(default)]
-        error_description: Option<String>,
-    }
+pub(crate) fn oauth_error(body: &str) -> String {
     match serde_json::from_str::<ErrorBody>(body) {
         Ok(e) => match e.error_description {
             Some(d) => format!("{}: {d}", e.error),
@@ -199,16 +263,30 @@ fn oauth_error(body: &str) -> String {
     }
 }
 
+/// The bare `error` field of an OAuth error body, or `None` when the body
+/// doesn't parse as that shape at all. This is what lets the RFC 8628
+/// device-poll loop (#631) distinguish the soft `authorization_pending`/
+/// `slow_down` codes (keep polling) from every other error (terminal) without
+/// re-deriving OAuth-error-body parsing.
+pub(crate) fn oauth_error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<ErrorBody>(body)
+        .ok()
+        .map(|e| e.error)
+}
+
 /// The [`AccessTokenSource`] the HTTP transport uses: reads the persisted token
 /// for one server and refreshes it when expired (or when the transport forces a
 /// refresh after a `401`).
 ///
 /// Refreshes are serialized per source by an async mutex so two concurrent MCP
-/// requests can't both spend a single-use rotating refresh token. Across
-/// *processes* the store's own file lock serializes the write but not the
-/// exchange — two `skutter` instances refreshing the same rotating grant at the
-/// same instant can still have one lose. The loser recovers by re-authorizing;
-/// a cross-process refresh lease is deliberately out of scope for v1.
+/// requests in *this* process can't both spend a single-use rotating refresh
+/// token without even reaching the store — that would mean redundant
+/// `spawn_blocking` + nested-runtime hops for what's already guaranteed
+/// in-process. Across *processes*, the exchange itself (not just the write) is
+/// now serialized too, through [`TokenStore::with_exclusive`]: a loser that
+/// acquires the store's cross-process section second sees the winner's
+/// already-refreshed token and returns it instead of spending its own exchange
+/// (#631, closing the race this doc used to accept for v1).
 pub struct StoredTokenSource {
     server: String,
     store: Arc<dyn TokenStore>,
@@ -252,24 +330,14 @@ impl AccessTokenSource for StoredTokenSource {
         if !force_refresh && !current.tokens.is_expired(EXPIRY_SKEW_SECS) {
             return Ok(current.tokens.access_token);
         }
-        let refreshed = refresh_token(
-            &self.http,
-            &current.token_endpoint,
-            &current.client_id,
-            current.client_secret.as_deref(),
-            &current.tokens,
-            current.resource.as_deref(),
+        refresh_locked(
+            self.server.clone(),
+            self.store.clone(),
+            self.http.clone(),
+            force_refresh,
         )
         .await
-        .with_context(|| format!("refreshing the token for `{}`", self.server))?;
-        let updated = StoredAuth {
-            tokens: refreshed,
-            ..current
-        };
-        self.store
-            .save(&self.server, &updated)
-            .with_context(|| format!("persisting the refreshed token for `{}`", self.server))?;
-        Ok(updated.tokens.access_token)
+        .with_context(|| format!("refreshing the token for `{}`", self.server))
     }
 }
 
@@ -337,6 +405,21 @@ mod tests {
         );
         // Non-standard bodies fall back to a bounded excerpt.
         assert_eq!(oauth_error("<html>boom</html>"), "<html>boom</html>");
+    }
+
+    #[test]
+    fn oauth_error_code_extracts_the_bare_error_field() {
+        assert_eq!(
+            oauth_error_code(r#"{"error":"authorization_pending"}"#).as_deref(),
+            Some("authorization_pending")
+        );
+        assert_eq!(
+            oauth_error_code(r#"{"error":"slow_down","error_description":"chill"}"#).as_deref(),
+            Some("slow_down")
+        );
+        // A non-standard body parses as neither `error` nor `None` silently —
+        // it must be `None`, not an empty string or a panic.
+        assert_eq!(oauth_error_code("<html>boom</html>"), None);
     }
 
     #[tokio::test]

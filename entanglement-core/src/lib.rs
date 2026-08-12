@@ -39,7 +39,8 @@ pub use entanglement_provider::{
 pub use entanglement_provider::mcp::{
     auth::{
         auth_required_of, is_auth_required, AccessTokenSource, AuthFlow, AuthOutcome, AuthRequired,
-        OauthConfig, PendingAuthorization, StoredAuth, StoredTokenSource, TokenSet, TokenStore,
+        DeviceFlow, OauthConfig, PendingAuthorization, PendingDeviceAuthorization, StoredAuth,
+        StoredTokenSource, TokenSet, TokenStore,
     },
     jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef,
 };

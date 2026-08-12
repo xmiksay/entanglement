@@ -29,6 +29,10 @@ mod list_operations;
 mod load_skill;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_http;
+#[cfg(feature = "mcp-http")]
+mod mcp_oauth_device;
+#[cfg(feature = "mcp-http")]
+mod mcp_oauth_refresh;
 mod permission_dispatch;
 mod plan_tasks;
 mod plan_watch;

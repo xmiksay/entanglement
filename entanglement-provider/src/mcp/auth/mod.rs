@@ -33,6 +33,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub mod dcr;
+pub mod device;
 pub mod discovery;
 pub mod flow;
 pub mod loopback;
@@ -40,6 +41,7 @@ pub mod pkce;
 pub mod token;
 
 pub use dcr::ClientRegistration;
+pub use device::{DeviceFlow, PendingDeviceAuthorization};
 pub use discovery::Endpoints;
 pub use flow::{AuthFlow, AuthOutcome, PendingAuthorization};
 pub use pkce::Pkce;
@@ -62,6 +64,10 @@ pub struct OauthConfig {
     /// Skip discovery for the RFC 7591 registration endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registration_url: Option<String>,
+    /// Skip discovery for the RFC 8628 device-authorization endpoint (device-code
+    /// flow only — `/mcp connect <name> --device-code`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_authorization_url: Option<String>,
     /// A pre-issued client id. Absent ⇒ dynamic client registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
@@ -167,6 +173,28 @@ pub trait TokenStore: Send + Sync {
     fn load(&self, server: &str) -> Result<Option<StoredAuth>>;
     fn save(&self, server: &str, auth: &StoredAuth) -> Result<()>;
     fn delete(&self, server: &str) -> Result<()>;
+
+    /// Run `f` inside a single cross-process critical section scoped to
+    /// `server`'s credential: `f` is handed whatever is currently stored (or
+    /// `None`), and returns the [`StoredAuth`] to persist. This is what lets a
+    /// token *refresh* — not just the eventual file write — be serialized across
+    /// `skutter` processes: a loser that acquires the section second sees the
+    /// winner's already-refreshed token via its `current` argument and can skip
+    /// its own exchange entirely, closing the race ADR-0153 accepted for v1
+    /// (#631).
+    ///
+    /// The default just chains `load` then `save` with no additional locking —
+    /// correct for an embedder whose `TokenStore` isn't shared across processes.
+    fn with_exclusive(
+        &self,
+        server: &str,
+        f: Box<dyn FnOnce(Option<StoredAuth>) -> Result<StoredAuth> + '_>,
+    ) -> Result<StoredAuth> {
+        let current = self.load(server)?;
+        let updated = f(current)?;
+        self.save(server, &updated)?;
+        Ok(updated)
+    }
 }
 
 /// Supplies a bearer token to the HTTP transport, refreshing it as needed.
@@ -208,8 +236,10 @@ pub(crate) fn http_client() -> reqwest::Client {
 ///
 /// This is `/mcp check`: it answers "would a request work right now?" without
 /// opening a browser. A refresh that succeeds is persisted, so a `check` also
-/// repairs a merely-stale token.
-pub async fn check(store: &dyn TokenStore, server: &str) -> Result<AuthOutcome> {
+/// repairs a merely-stale token. Takes an `Arc` (rather than `&dyn TokenStore`)
+/// because the refresh runs through [`token::refresh_locked`], which hands the
+/// store off to a `spawn_blocking` task (#631).
+pub async fn check(store: std::sync::Arc<dyn TokenStore>, server: &str) -> Result<AuthOutcome> {
     let Some(current) = store.load(server)? else {
         return Ok(AuthOutcome::NotAuthorized);
     };
@@ -217,23 +247,9 @@ pub async fn check(store: &dyn TokenStore, server: &str) -> Result<AuthOutcome> 
         return Ok(AuthOutcome::AlreadyValid);
     }
     let http = http_client();
-    let refreshed = token::refresh_token(
-        &http,
-        &current.token_endpoint,
-        &current.client_id,
-        current.client_secret.as_deref(),
-        &current.tokens,
-        current.resource.as_deref(),
-    )
-    .await
-    .with_context(|| format!("refreshing the stored token for `{server}`"))?;
-    store.save(
-        server,
-        &StoredAuth {
-            tokens: refreshed,
-            ..current
-        },
-    )?;
+    token::refresh_locked(server.to_string(), store, http, false)
+        .await
+        .with_context(|| format!("refreshing the stored token for `{server}`"))?;
     Ok(AuthOutcome::Refreshed)
 }
 
@@ -360,5 +376,66 @@ mod tests {
     fn oauth_config_rejects_unknown_keys() {
         assert!(serde_yaml::from_str::<OauthConfig>("client_id: abc").is_ok());
         assert!(serde_yaml::from_str::<OauthConfig>("clientid: abc").is_err());
+    }
+
+    /// A minimal in-memory [`TokenStore`] with no override of `with_exclusive`,
+    /// so calling it exercises the trait's default chain-`load`-then-`save`
+    /// path.
+    struct FakeStore(std::sync::Mutex<std::collections::HashMap<String, StoredAuth>>);
+
+    impl TokenStore for FakeStore {
+        fn load(&self, server: &str) -> Result<Option<StoredAuth>> {
+            Ok(self.0.lock().unwrap().get(server).cloned())
+        }
+        fn save(&self, server: &str, auth: &StoredAuth) -> Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(server.to_string(), auth.clone());
+            Ok(())
+        }
+        fn delete(&self, server: &str) -> Result<()> {
+            self.0.lock().unwrap().remove(server);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn default_with_exclusive_loads_calls_f_and_persists_the_result() {
+        let store = FakeStore(std::sync::Mutex::new(std::collections::HashMap::new()));
+        // No stored credential yet — `f` must see `None`.
+        let result = store
+            .with_exclusive(
+                "srv",
+                Box::new(|current| {
+                    assert!(current.is_none());
+                    Ok(StoredAuth {
+                        client_id: "cid".into(),
+                        client_secret: None,
+                        token_endpoint: "https://as.example/token".into(),
+                        revocation_endpoint: None,
+                        resource: None,
+                        tokens: token(Some(1)),
+                    })
+                }),
+            )
+            .unwrap();
+        assert_eq!(result.client_id, "cid");
+        // The default impl persisted it via `save`.
+        assert_eq!(store.load("srv").unwrap().unwrap().client_id, "cid");
+
+        // A second call must see what the first one just persisted.
+        let result2 = store
+            .with_exclusive(
+                "srv",
+                Box::new(|current| {
+                    let mut current = current.expect("must see the first call's write");
+                    current.client_id = "cid-2".into();
+                    Ok(current)
+                }),
+            )
+            .unwrap();
+        assert_eq!(result2.client_id, "cid-2");
+        assert_eq!(store.load("srv").unwrap().unwrap().client_id, "cid-2");
     }
 }

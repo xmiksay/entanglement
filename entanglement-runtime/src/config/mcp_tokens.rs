@@ -29,7 +29,10 @@
 //!   before the rename, so the secret is never briefly world-readable).
 //! - Read/modify/write happens under the same advisory file lock (#329) the
 //!   other managed files use, so two `skutter` instances can't clobber each
-//!   other's refresh.
+//!   other's write. [`TokenStore::with_exclusive`] extends that same lock to
+//!   cover the refresh *exchange* too, not just the write that follows it —
+//!   closing the cross-process refresh race ADR-0153 originally accepted for
+//!   v1 (#631).
 //! - **Never logged.** The provider's `StoredAuth`/`TokenSet` `Debug` impls
 //!   redact every secret, and nothing here prints a token value.
 //!
@@ -163,6 +166,28 @@ impl TokenStore for McpTokenStore {
                 return Ok(());
             }
             persist_map(&path, &on_disk)
+        })
+    }
+
+    /// Take the lock **once** for the whole load-check-refresh-save sequence
+    /// (#631), reusing the read/persist helpers directly rather than calling
+    /// through `save` — nesting two `with_locked_file` calls on the same path
+    /// from the same process would deadlock, since `fd_lock`'s guard is scoped
+    /// to one open file description, not reentrant even within a single
+    /// process.
+    fn with_exclusive(
+        &self,
+        server: &str,
+        f: Box<dyn FnOnce(Option<StoredAuth>) -> Result<StoredAuth> + '_>,
+    ) -> Result<StoredAuth> {
+        let path = self.require_path()?;
+        super::lock::with_locked_file(&path, || {
+            let mut on_disk = read_tokens_for_write(&path)?;
+            let current = on_disk.get(server).cloned();
+            let updated = f(current)?;
+            on_disk.insert(server.to_string(), updated.clone());
+            persist_map(&path, &on_disk)?;
+            Ok(updated)
         })
     }
 }
@@ -438,6 +463,56 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "token file must be owner-only");
         }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Mirrors `config::lock::serializes_concurrent_critical_sections`: several
+    /// OS threads race `with_exclusive` on the *same* server in the *same*
+    /// file, each doing a read-then-increment-then-save of a counter folded
+    /// into `tokens.access_token`. A lock-once refactor that reintroduced a
+    /// torn read-modify-write would lose increments under contention; a
+    /// refactor that (incorrectly) nested a second `with_locked_file` call
+    /// inside this one would deadlock the whole test instead of merely
+    /// failing an assertion — this is a plain `std::thread` test (like
+    /// `lock.rs`'s) specifically so that failure mode is visible as a hang
+    /// rather than swallowed by an async runtime.
+    #[test]
+    fn with_exclusive_serializes_across_threads_without_losing_updates_or_deadlocking() {
+        let (store, path) = store_at("with-exclusive-concurrency");
+        store.save("srv", &auth("0")).unwrap();
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let store = store.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..25 {
+                    store
+                        .with_exclusive(
+                            "srv",
+                            Box::new(|current| {
+                                let mut current = current.expect("seeded above");
+                                let count: u32 = current.tokens.access_token.parse().unwrap_or(0);
+                                current.tokens.access_token = (count + 1).to_string();
+                                Ok(current)
+                            }),
+                        )
+                        .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_count: u32 = store
+            .load("srv")
+            .unwrap()
+            .unwrap()
+            .tokens
+            .access_token
+            .parse()
+            .unwrap();
+        assert_eq!(final_count, 8 * 25);
         let _ = std::fs::remove_file(&path);
     }
 

@@ -360,6 +360,13 @@ pub enum McpAuthAction {
     /// registration if needed, browser consent, token exchange — then persist
     /// the credential and (re)connect the server.
     Connect,
+    /// The RFC 8628 device-authorization grant (#631) — the alternative entry
+    /// point for a host with no browser *and* no reachable loopback port:
+    /// discovery, dynamic client registration, and persistence are identical to
+    /// [`Connect`][McpAuthAction::Connect]; only "how does the human authorize"
+    /// differs. Reports a verification URL + short code instead of parking on a
+    /// browser redirect.
+    ConnectDeviceCode,
     /// Report whether the stored credential would work right now, refreshing it
     /// if it is merely expired. Never opens a browser.
     Check,
@@ -389,6 +396,12 @@ pub struct McpAuthStatus {
     /// could not happen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorize_url: Option<String>,
+    /// The short code to enter at `authorize_url`, present only on
+    /// [`ConnectDeviceCode`][McpAuthAction::ConnectDeviceCode]'s interim event
+    /// (RFC 8628) — the browser-redirect flow needs no code, so this is always
+    /// `None` for [`Connect`][McpAuthAction::Connect].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_code: Option<String>,
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

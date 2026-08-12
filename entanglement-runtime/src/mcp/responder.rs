@@ -241,11 +241,19 @@ async fn run_auth_op(
         http,
         move |pending| {
             if !pending.browser_opened {
-                tracing::info!(
-                    server = %interim_name,
-                    "could not open a browser; open this URL to authorize: {}",
-                    pending.url
-                );
+                match &pending.user_code {
+                    Some(code) => tracing::info!(
+                        server = %interim_name,
+                        "could not open a browser; open this URL and enter code {code} to \
+                         authorize: {}",
+                        pending.url
+                    ),
+                    None => tracing::info!(
+                        server = %interim_name,
+                        "could not open a browser; open this URL to authorize: {}",
+                        pending.url
+                    ),
+                }
             }
             interim_emitter.emit_mcp_auth_changed(McpAuthStatus {
                 name: interim_name,
@@ -253,6 +261,7 @@ async fn run_auth_op(
                 state: None,
                 error: None,
                 authorize_url: Some(pending.url),
+                user_code: pending.user_code.clone(),
             });
         },
     )
@@ -267,6 +276,7 @@ async fn run_auth_op(
                 state: Some(outcome.as_str().to_string()),
                 error: None,
                 authorize_url: None,
+                user_code: None,
             });
         }
         Err(e) => {
@@ -279,6 +289,7 @@ async fn run_auth_op(
                 // in it (the provider redacts secrets from every error path).
                 error: Some(format!("{e:#}")),
                 authorize_url: None,
+                user_code: None,
             });
         }
     }

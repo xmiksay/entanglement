@@ -26,6 +26,9 @@ pub struct Endpoints {
     pub token_endpoint: String,
     pub registration_endpoint: Option<String>,
     pub revocation_endpoint: Option<String>,
+    /// RFC 8628 device-authorization endpoint, when the server supports the
+    /// device-code grant (#631).
+    pub device_authorization_endpoint: Option<String>,
     /// The `resource` identifier to pass as RFC 8707 `resource` on the
     /// authorization and token requests, when the resource metadata named one.
     pub resource: Option<String>,
@@ -56,6 +59,8 @@ struct AuthServerMetadata {
     scopes_supported: Vec<String>,
     #[serde(default)]
     code_challenge_methods_supported: Vec<String>,
+    #[serde(default)]
+    device_authorization_endpoint: Option<String>,
 }
 
 /// Resolve every endpoint needed to authorize against `mcp_url`.
@@ -70,6 +75,7 @@ pub async fn discover(
     override_authorization: Option<&str>,
     override_token: Option<&str>,
     override_registration: Option<&str>,
+    override_device_authorization: Option<&str>,
 ) -> Result<Endpoints> {
     // Fully-overridden: no network calls at all.
     if let (Some(auth), Some(token)) = (override_authorization, override_token) {
@@ -80,6 +86,7 @@ pub async fn discover(
             revocation_endpoint: None,
             resource: None,
             scopes_supported: Vec::new(),
+            device_authorization_endpoint: override_device_authorization.map(str::to_string),
         });
     }
 
@@ -128,6 +135,9 @@ pub async fn discover(
                     revocation_endpoint: meta.revocation_endpoint,
                     resource,
                     scopes_supported: scopes,
+                    device_authorization_endpoint: override_device_authorization
+                        .map(str::to_string)
+                        .or(meta.device_authorization_endpoint),
                 });
             }
             Err(e) => last_err = Some(e),
@@ -292,6 +302,7 @@ mod tests {
             Some("https://as.example/authorize"),
             Some("https://as.example/token"),
             Some("https://as.example/register"),
+            Some("https://as.example/device"),
         )
         .await
         .unwrap();
@@ -301,5 +312,63 @@ mod tests {
             got.registration_endpoint.as_deref(),
             Some("https://as.example/register")
         );
+        assert_eq!(
+            got.device_authorization_endpoint.as_deref(),
+            Some("https://as.example/device"),
+            "the device-authorization override (#631, RFC 8628) must round-trip \
+             through the short-circuit path exactly like `registration_url`"
+        );
+    }
+
+    /// The short-circuit path with no device-authorization override set at
+    /// all: the field must stay `None` rather than defaulting to something,
+    /// since `DeviceFlow::begin` uses its absence to report a clear error.
+    #[tokio::test]
+    async fn full_override_with_no_device_authorization_leaves_it_none() {
+        let http = reqwest::Client::new();
+        let got = discover(
+            &http,
+            "https://192.0.2.1/mcp",
+            None,
+            Some("https://as.example/authorize"),
+            Some("https://as.example/token"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(got.device_authorization_endpoint.is_none());
+    }
+
+    #[test]
+    fn auth_server_metadata_parses_the_device_authorization_endpoint() {
+        // Exercises the discovered-path plumbing (the `meta.device_authorization_endpoint`
+        // side of the `.or(...)` in `discover`) without a network mock: proves
+        // the RFC 8414 field actually deserializes off the wire shape a real
+        // authorization server would send.
+        let meta: AuthServerMetadata = serde_json::from_str(
+            r#"{
+                "authorization_endpoint": "https://as.example/authorize",
+                "token_endpoint": "https://as.example/token",
+                "device_authorization_endpoint": "https://as.example/device"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            meta.device_authorization_endpoint.as_deref(),
+            Some("https://as.example/device")
+        );
+    }
+
+    #[test]
+    fn auth_server_metadata_defaults_device_authorization_endpoint_to_none() {
+        let meta: AuthServerMetadata = serde_json::from_str(
+            r#"{
+                "authorization_endpoint": "https://as.example/authorize",
+                "token_endpoint": "https://as.example/token"
+            }"#,
+        )
+        .unwrap();
+        assert!(meta.device_authorization_endpoint.is_none());
     }
 }

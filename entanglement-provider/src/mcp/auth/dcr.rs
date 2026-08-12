@@ -30,29 +30,46 @@ struct RegistrationResponse {
     client_secret: Option<String>,
 }
 
-/// Register a client at `registration_endpoint` for the given loopback
-/// `redirect_uri`.
-///
-/// The redirect URI must be the exact one the authorization request will use —
-/// which is why the loopback listener is bound *before* registration runs, so
-/// its ephemeral port is already known.
-pub async fn register(
-    http: &reqwest::Client,
-    registration_endpoint: &str,
-    redirect_uri: &str,
-    scopes: &[String],
+/// Build the RFC 7591 registration request body. Split out from [`register`]
+/// so the conditional `redirect_uri`/`response_types` shape (authorization-code
+/// grant only — RFC 7591 §2; the device-code grant needs neither, #631) is
+/// unit-testable without a network mock.
+fn registration_body(
     client_name: &str,
-) -> Result<ClientRegistration> {
+    redirect_uri: Option<&str>,
+    grant_types: &[&str],
+    scopes: &[String],
+) -> serde_json::Value {
     let mut body = json!({
         "client_name": client_name,
-        "redirect_uris": [redirect_uri],
-        "grant_types": ["authorization_code", "refresh_token"],
-        "response_types": ["code"],
+        "grant_types": grant_types,
         "token_endpoint_auth_method": "none",
     });
+    if let Some(uri) = redirect_uri {
+        body["redirect_uris"] = json!([uri]);
+        body["response_types"] = json!(["code"]);
+    }
     if !scopes.is_empty() {
         body["scope"] = json!(scopes.join(" "));
     }
+    body
+}
+
+/// Register a client at `registration_endpoint`.
+///
+/// `redirect_uri` is `Some` for the authorization-code grant (the exact URI the
+/// authorization request will use — the loopback listener is bound *before*
+/// registration runs, so its ephemeral port is already known) and `None` for
+/// the device-code grant (RFC 8628), which has no redirect to declare.
+pub async fn register(
+    http: &reqwest::Client,
+    registration_endpoint: &str,
+    redirect_uri: Option<&str>,
+    grant_types: &[&str],
+    scopes: &[String],
+    client_name: &str,
+) -> Result<ClientRegistration> {
+    let body = registration_body(client_name, redirect_uri, grant_types, scopes);
     let resp = http
         .post(registration_endpoint)
         .json(&body)
@@ -111,5 +128,48 @@ mod tests {
         assert_eq!(body["token_endpoint_auth_method"], "none");
         assert_eq!(body["scope"], "read write");
         assert_eq!(body["redirect_uris"][0], "http://127.0.0.1:5000/callback");
+    }
+
+    #[test]
+    fn registration_body_for_the_authorization_code_grant_declares_a_redirect() {
+        // Exercises the real `registration_body` helper (not a hand-copy) for
+        // the redirect-carrying shape `AuthFlow::begin` uses.
+        let scopes = ["read".to_string()];
+        let body = registration_body(
+            "skutter",
+            Some("http://127.0.0.1:5000/callback"),
+            &["authorization_code", "refresh_token"],
+            &scopes,
+        );
+        assert_eq!(body["redirect_uris"][0], "http://127.0.0.1:5000/callback");
+        assert_eq!(body["response_types"][0], "code");
+        assert_eq!(body["grant_types"][0], "authorization_code");
+        assert_eq!(body["token_endpoint_auth_method"], "none");
+        assert_eq!(body["scope"], "read");
+    }
+
+    /// The device-code grant (RFC 8628, #631) declares no redirect and no
+    /// `response_types` — both are authorization-code-grant-specific
+    /// (RFC 7591 §2) — proving `register`'s conditional branch is actually
+    /// skipped rather than always emitting an empty array.
+    #[test]
+    fn registration_body_for_the_device_code_grant_omits_redirect_fields() {
+        let body = registration_body(
+            "skutter",
+            None,
+            &[
+                "urn:ietf:params:oauth:grant-type:device_code",
+                "refresh_token",
+            ],
+            &[],
+        );
+        assert!(body.get("redirect_uris").is_none());
+        assert!(body.get("response_types").is_none());
+        assert!(body.get("scope").is_none());
+        assert_eq!(
+            body["grant_types"][0],
+            "urn:ietf:params:oauth:grant-type:device_code"
+        );
+        assert_eq!(body["token_endpoint_auth_method"], "none");
     }
 }
