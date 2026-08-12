@@ -1001,14 +1001,6 @@ enum Cmd {
         /// origin (raw local clients send none) — never mandatory (ADR-0048).
         #[arg(long)]
         allow_origin: Option<String>,
-        /// Opt-in bearer-token authentication (ADR-0174): a YAML file mapping
-        /// `tokens: {token: user_id}`. Every WS connect must then present
-        /// `Authorization: Bearer <token>` (401 otherwise) and runs under that
-        /// user's identity. Unset keeps the ADR-0048 unauthenticated local
-        /// posture byte-for-byte. Loaded once at startup, fail-closed: an
-        /// unreadable/malformed/empty file refuses to start.
-        #[arg(long, value_name = "FILE")]
-        auth_tokens: Option<std::path::PathBuf>,
     },
     /// List past root sessions for the current directory.
     Sessions,
@@ -1625,29 +1617,11 @@ async fn main() -> Result<()> {
             pipe(&holly, &session_id).await
         }
         #[cfg(feature = "serve")]
-        Some(Cmd::Serve {
-            port,
-            allow_origin,
-            auth_tokens,
-        }) => {
-            // Opt-in authenticated mode (#674, ADR-0174): the CLI builds the
-            // reference static-token authenticator with a fresh registry; an
-            // embedder wanting shared per-user stores calls
-            // `serve::router_with_auth` itself. Fail-closed: a bad token file
-            // is a startup error, never an open head.
-            let auth = match auth_tokens {
-                None => None,
-                Some(path) => Some(entanglement_runtime::serve::ServeAuth {
-                    authenticator: std::sync::Arc::new(
-                        entanglement_runtime::serve::StaticTokenAuthenticator::from_file(&path)?,
-                    ),
-                    registry: entanglement_runtime::multi_user::SessionUserRegistry::new(),
-                }),
-            };
+        Some(Cmd::Serve { port, allow_origin }) => {
             // Runs until Ctrl-C; the executor/persistence teardown below then runs
             // as for any other head. A fresh `Holly` clone keeps the outer handle
             // for that shutdown path.
-            entanglement_runtime::serve::serve(holly.clone(), port, allow_origin, auth).await
+            entanglement_runtime::serve::serve(holly.clone(), port, allow_origin).await
         }
         Some(Cmd::Tui { session, agent }) => {
             let session_id =

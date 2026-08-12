@@ -127,38 +127,15 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   (logged, dropped, connection unaffected) — every other `InMsg` variant is
   unaffected by ownership. Released on disconnect, so a still-parked approval
   is reclaimable rather than deadlocked behind a client that went away.
-  By default `serve` stays local/single-user/unauthenticated exactly as
-  scoped above; an **opt-in authenticated multi-user mode** (✅ #674,
-  [ADR-0174](../adr/0174-authenticated-multi-user-wire-head.md),
-  `serve/auth.rs`) activates via `skutter serve --auth-tokens <file>` — a
-  YAML `tokens: {token: user_id}` map loaded once at startup, **fail-closed**
-  (unreadable/malformed/empty ⇒ startup error; a group/world-readable file
-  warns) — or, for an embedder, `serve::router_with_auth(holly, origin,
-  Some(ServeAuth { authenticator, registry }))` with any custom
-  `WireAuthenticator` impl (the `PermissionResolver`/`GrantStore` trait-seam
-  precedent; the reference impl is `StaticTokenAuthenticator`). Mechanics,
-  each on an existing seam: (1) the WS upgrade requires
-  `Authorization: Bearer <token>` — an unresolvable credential is refused
-  401 *before* the WS loop, a resolved `UserId` binds to the connection's
-  `ConnId` for its lifetime (connection-scoped, never per-frame); (2) on a
-  `Prompt` naming a session the `SessionUserRegistry` doesn't know, the
-  handler registers the user synchronously and authors the **privileged**
-  `Spawn { user: Some(uid), prompt: "" }` (starts idle per the #674 core
-  guard, under core's exported `DEFAULT_PROFILE`) before relaying the
-  client's frame through the unchanged `send_from_wire` — zero change to
-  `wire_allowed()`; the bare-text fallback session takes the same path;
-  (3) a broadcast maintainer folds spawned children's
-  `SessionStarted { user }` into the registry and forgets
-  ended/hibernated sessions; (4) a **hard tenant boundary** ahead of the
-  `SessionOwners` check: any session-bearing frame whose registered user
-  differs from the connection's bound `UserId` is refused (deliberately
-  wider than the ADR's decision-frame list — a cross-tenant `Prompt`/`Stop`
-  is injection too; called out per the ADR's spec), while same-user
-  multi-connection arbitration stays exactly ADR-0107's. Loopback-only even
-  when authenticated (TLS termination in front is the assumed posture,
-  ADR-0174 §5); browsers can't set WS headers, so bearer auth serves
-  raw/native clients and reverse-proxied setups (a
-  `Sec-WebSocket-Protocol` variant is a possible follow-up).
+  `serve` stays exactly local/single-user/unauthenticated as scoped above —
+  no in-tree head ships multi-user. The authenticated multi-user mode
+  designed by [ADR-0174](../adr/0174-authenticated-multi-user-wire-head.md)
+  (#674, `serve/auth.rs`) was built, then removed (#686): `UserId` must not
+  appear anywhere in `entanglement-runtime`
+  ([ADR-0181](../adr/0181-userid-leaves-the-runtime-crate.md)). An
+  authenticated wire head binding credentials to `UserId` is an embedder's
+  own build, out of tree, on the same `Holly`/`send_from_wire` seams a
+  single-user head uses.
 - **TUI** (`skutter tui`): opencode-style terminal UI over `subscribe()`. Uses
   ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
   (ADR-0013), inline tool approval cards (ADR-0014), and rich markdown
