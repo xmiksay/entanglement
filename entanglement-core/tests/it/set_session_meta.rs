@@ -201,6 +201,7 @@ async fn set_session_meta_applies_immediately_while_a_turn_is_parked() {
             content: vec![entanglement_core::ContentPart::text("tool says hi")],
             is_error: false,
             duration_ms: None,
+            exit_code: None,
         })
         .await
         .unwrap();

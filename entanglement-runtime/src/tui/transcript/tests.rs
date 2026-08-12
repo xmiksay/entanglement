@@ -214,6 +214,7 @@ fn tool_op_expands_to_show_body_and_check_when_done() {
         content: vec![],
         is_error: false,
         duration_ms: None,
+        exit_code: None,
     });
 
     // Folded but collapsed: a ✓ header, no body.
@@ -256,6 +257,7 @@ fn failed_tool_call_shows_red_cross_not_green_check() {
         content: vec![],
         is_error: true,
         duration_ms: None,
+        exit_code: None,
     });
 
     let body = render_body_lines(&mut app, 80);
@@ -728,6 +730,7 @@ fn narrow_widths_do_not_panic() {
         content: vec![],
         is_error: false,
         duration_ms: None,
+        exit_code: None,
     });
     app.handle_out_event(OutEvent::Error {
         session: sid.clone(),

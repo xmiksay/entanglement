@@ -91,6 +91,7 @@ fn tool_output(seq: u64, request_id: &str, tool: &str, output: &str) -> OutEvent
         content: vec![],
         is_error: false,
         duration_ms: None,
+        exit_code: None,
     }
 }
 

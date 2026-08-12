@@ -143,6 +143,7 @@ pub(crate) fn emit_tool_output(
     content: Vec<ContentPart>,
     is_error: bool,
     duration_ms: Option<u64>,
+    exit_code: Option<i32>,
     seq: &AtomicU64,
 ) {
     // Heads render text; an image result shows a short placeholder. The full
@@ -160,6 +161,7 @@ pub(crate) fn emit_tool_output(
         content: if has_image { content } else { Vec::new() },
         is_error,
         duration_ms,
+        exit_code,
     });
 }
 

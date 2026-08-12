@@ -1003,6 +1003,13 @@ pub enum InMsg {
     /// the marker — this is additive for anything that wants to branch on the
     /// outcome without parsing text. Both default (`false`/`None`) so a pre-#636
     /// log or a hand-built `InMsg::tool_result` still deserializes/round-trips.
+    ///
+    /// `exit_code` (#681, ADR-0186) extends the same side channel with the
+    /// numeric exit status of a process-running tool (`bash`/`call`, and a
+    /// `poll` that observed a background job exit). `None` everywhere else —
+    /// including a signal-killed process, where the `[exit -1]` text keeps its
+    /// lossy sentinel but the field stays honest. Orthogonal to `is_error`:
+    /// a command exiting nonzero still executed (`is_error: false`).
     ToolResult {
         session: SessionId,
         request_id: String,
@@ -1012,6 +1019,8 @@ pub enum InMsg {
         is_error: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
     },
     /// Answer a pending model-driven `ask_user` call (`request_id` from
     /// [`OutEvent::UserQuestion`]). Like [`Approve`][InMsg::Approve]/
@@ -1391,6 +1400,7 @@ impl InMsg {
             content,
             is_error: false,
             duration_ms: None,
+            exit_code: None,
         }
     }
 
@@ -1914,6 +1924,11 @@ pub enum OutEvent {
     /// channel, so a head can style a failed call (denied/masked/refused, or the
     /// tool itself erroring) without pattern-matching `output`'s text. Both
     /// default off so a pre-#636 log replays unchanged.
+    ///
+    /// `exit_code` (#681, ADR-0186) mirrors [`InMsg::ToolResult`]'s field: the
+    /// numeric exit status when the call ran a process (`bash`/`call`, or a
+    /// `poll` observing a job exit), `None` otherwise — so a wire consumer can
+    /// branch on the code without parsing the `[exit N]` text.
     ToolOutput {
         session: SessionId,
         seq: u64,
@@ -1926,6 +1941,8 @@ pub enum OutEvent {
         is_error: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
     },
     /// Full snapshot of the session's task outline (sent on every change).
     /// Markdown, typically a `- [ ]`/`- [x]` checklist — displayed to the user
@@ -2416,6 +2433,7 @@ mod tests {
             content: vec![ContentPart::image("image/png", "AAAA")],
             is_error: false,
             duration_ms: None,
+            exit_code: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: InMsg = serde_json::from_str(&json).unwrap();
@@ -2432,10 +2450,12 @@ mod tests {
             )],
             is_error: true,
             duration_ms: Some(42),
+            exit_code: Some(3),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"is_error\":true"), "{json}");
         assert!(json.contains("\"duration_ms\":42"), "{json}");
+        assert!(json.contains("\"exit_code\":3"), "{json}");
         let back: InMsg = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, back);
     }
@@ -2446,6 +2466,7 @@ mod tests {
             serde_json::to_string(&InMsg::tool_result(SessionId::new("s1"), "r1", "ok")).unwrap();
         assert!(!json.contains("is_error"), "{json}");
         assert!(!json.contains("duration_ms"), "{json}");
+        assert!(!json.contains("exit_code"), "{json}");
     }
 
     #[test]

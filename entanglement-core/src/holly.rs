@@ -206,7 +206,9 @@ impl Holly {
     /// [`send`][Self::send]; the executor holds a `Holly`, so it is trusted.
     /// `is_error`/`duration_ms` (#636, ADR-0176) are the structured side channel
     /// — whether the call was denied/masked/refused/errored, and how long
-    /// execution took — carried alongside `content`'s text.
+    /// execution took — carried alongside `content`'s text. `exit_code` (#681,
+    /// ADR-0186) extends it with a process-running tool's numeric exit status
+    /// (`None` for every non-process tool and for a signal-killed process).
     pub async fn submit_tool_result(
         &self,
         session: SessionId,
@@ -214,6 +216,7 @@ impl Holly {
         content: Vec<ContentPart>,
         is_error: bool,
         duration_ms: Option<u64>,
+        exit_code: Option<i32>,
     ) -> Result<(), mpsc::error::SendError<InMsg>> {
         self.send(InMsg::ToolResult {
             session,
@@ -221,6 +224,7 @@ impl Holly {
             content,
             is_error,
             duration_ms,
+            exit_code,
         })
         .await
     }

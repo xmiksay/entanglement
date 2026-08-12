@@ -1514,7 +1514,7 @@ async fn run_and_reply(
         });
         let ack = crate::plan_tasks::ack(&tool);
         hooks
-            .run_post_tool_use(&session, &tool, &input, &ack, false)
+            .run_post_tool_use(&session, &tool, &input, &ack, false, None)
             .await;
         seam::reply(holly, session, request_id, ack, false).await;
         return;
@@ -1545,7 +1545,11 @@ async fn run_and_reply(
     )
     .await;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let ToolExecution { content, is_error } = execution;
+    let ToolExecution {
+        content,
+        is_error,
+        exit_code,
+    } = execution;
     let output_text = entanglement_core::content_text(&content);
     // #400, ADR-0106: a successful `load_skill` activates the session's
     // skill-scoped tool mask for the rest of this turn — parsed from the
@@ -1559,7 +1563,7 @@ async fn run_and_reply(
     // it now also observes `is_error` (#636) so a hook can branch on outcome
     // without re-parsing `output`.
     hooks
-        .run_post_tool_use(&session, &tool, &input, &output_text, is_error)
+        .run_post_tool_use(&session, &tool, &input, &output_text, is_error, exit_code)
         .await;
     seam::reply_content(
         holly,
@@ -1568,6 +1572,7 @@ async fn run_and_reply(
         content,
         is_error,
         Some(duration_ms),
+        exit_code,
     )
     .await;
 }

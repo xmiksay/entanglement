@@ -256,7 +256,7 @@ impl Tool for CallTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        self.run_impl(None, "", input).await
+        Ok(self.run_impl(None, "", input).await?.0)
     }
 
     async fn run_for_session(
@@ -265,9 +265,23 @@ impl Tool for CallTool {
         request_id: &str,
         input: &str,
     ) -> Result<Vec<ContentPart>> {
-        Ok(crate::tools::text_parts(
-            self.run_impl(Some(session), request_id, input).await?,
-        ))
+        Ok(self
+            .run_with_meta(session, request_id, input)
+            .await?
+            .content)
+    }
+
+    async fn run_with_meta(
+        &self,
+        session: &SessionId,
+        request_id: &str,
+        input: &str,
+    ) -> Result<crate::tools::ToolRun> {
+        let (text, exit_code) = self.run_impl(Some(session), request_id, input).await?;
+        Ok(crate::tools::ToolRun {
+            content: crate::tools::text_parts(text),
+            exit_code,
+        })
     }
 }
 
@@ -277,12 +291,15 @@ impl CallTool {
     /// approved for. `session` (#479, ADR-0104 amendment) resolves the
     /// per-profile confinement policy; `None` (the plain [`Tool::run`] path)
     /// resolves against the resolver's process-global default.
+    /// Returns the formatted output plus the process exit code (#681,
+    /// ADR-0186) — `Some` only when the foreground command ran to completion
+    /// with a real status (background launch / timeout / signal kill → `None`).
     async fn run_impl(
         &self,
         session: Option<&SessionId>,
         request_id: &str,
         input: &str,
-    ) -> Result<String> {
+    ) -> Result<(String, Option<i32>)> {
         let parsed: CallInput = serde_json::from_str(input)
             .context("invalid input to call: expected {\"command\": string, ...}")?;
         // Fail fast (with a fix) when `command` is a whole shell line rather than
@@ -307,18 +324,21 @@ impl CallTool {
                 request_id,
                 parsed.workdir.as_deref(),
             )?;
-            return background::spawn_background(
-                &self.root,
-                self.sandbox_resolver.as_ref(),
-                &self.secret_env,
-                &self.jobs,
-                session,
-                &cwd,
-                &parsed.command,
-                &parsed.args,
-                dur,
-            )
-            .await;
+            return Ok((
+                background::spawn_background(
+                    &self.root,
+                    self.sandbox_resolver.as_ref(),
+                    &self.secret_env,
+                    &self.jobs,
+                    session,
+                    &cwd,
+                    &parsed.command,
+                    &parsed.args,
+                    dur,
+                )
+                .await?,
+                None,
+            ));
         }
 
         let cwd = super::resolve_workdir_or_grant(
@@ -681,6 +701,23 @@ mod tests {
             out, "[exit 0]\nhi\n",
             "no artifact header on a full, small result"
         );
+    }
+
+    /// #681, ADR-0186: a foreground command's numeric exit status rides
+    /// `ToolRun::exit_code` as a real field, alongside the unchanged
+    /// `[exit N]` text.
+    #[tokio::test]
+    async fn run_with_meta_carries_exit_code() {
+        let dir = TempDir::new();
+        let tool = CallTool::new(dir.path.clone());
+        let input = serde_json::json!({ "command": "false" }).to_string();
+        let run = tool
+            .run_with_meta(&SessionId::new("s"), "r1", &input)
+            .await
+            .unwrap();
+        assert_eq!(run.exit_code, Some(1));
+        let text = entanglement_core::content_text(&run.content);
+        assert!(text.starts_with("[exit 1]"), "{text}");
     }
 
     /// #608: concurrent truncated calls each mint their own handle — no

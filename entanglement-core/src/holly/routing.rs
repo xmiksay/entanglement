@@ -134,8 +134,9 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
             content,
             is_error,
             duration_ms,
+            exit_code,
             ..
-        } => SessionCmd::ToolResult(request_id, content, is_error, duration_ms),
+        } => SessionCmd::ToolResult(request_id, content, is_error, duration_ms, exit_code),
         InMsg::Stop { .. } => SessionCmd::Stop,
         InMsg::PauseSession { .. } => SessionCmd::Pause,
         InMsg::ResumeSession { .. } => SessionCmd::Unpause,

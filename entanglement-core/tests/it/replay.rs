@@ -173,6 +173,7 @@ async fn single_tool_turn_replay_fidelity() {
                 content: vec![],
                 is_error: false,
                 duration_ms: None,
+                exit_code: None,
             },
         ),
         (
@@ -258,6 +259,7 @@ async fn multi_tool_turn_replay_fidelity() {
                 content: vec![],
                 is_error: false,
                 duration_ms: None,
+                exit_code: None,
             },
         ),
         (
@@ -271,6 +273,7 @@ async fn multi_tool_turn_replay_fidelity() {
                 content: vec![],
                 is_error: false,
                 duration_ms: None,
+                exit_code: None,
             },
         ),
         (
@@ -557,6 +560,7 @@ fn tool_output_record(
             content: vec![],
             is_error: false,
             duration_ms: None,
+            exit_code: None,
         },
     )
 }

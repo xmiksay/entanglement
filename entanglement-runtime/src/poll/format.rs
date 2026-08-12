@@ -3,8 +3,41 @@
 //! model, byte-capped head+tail via [`crate::host::bounded_result`]. Split out
 //! of `poll/mod.rs` for the 400-line file cap.
 
+use super::retained::is_retained_handle;
 use crate::host::jobs::{JobStatus, Poll as JobPoll};
 use crate::script_ops::ScriptPoll;
+
+/// ADR-0161 §2: `kill: true` is refused on a sub-agent handle — cancelling a
+/// child is a distinct authorization gate this ADR does not open. Also
+/// refused on a retained-output handle (#608) — there is nothing running left
+/// to kill.
+pub(super) fn kill_refused_message(handle: &str) -> String {
+    if is_retained_handle(handle) {
+        format!(
+            "poll: kill is not supported for retained-output handle `{handle}` \
+             — the operation it pages already finished; there is nothing \
+             running to kill."
+        )
+    } else {
+        format!(
+            "poll: kill is not supported for sub-agent handle `{handle}` — \
+             cancelling a running sub-agent isn't available yet."
+        )
+    }
+}
+
+/// Unknown-handle error text (ADR-0161 §2): adopts `agent_poll`'s convention
+/// of an error over `bash_output`'s "return it as text" — a poll for a handle
+/// that doesn't exist (or isn't the caller's own) is a model mistake, not a
+/// state report.
+pub(super) fn unknown_handle(handle: &str) -> String {
+    format!(
+        "poll: unknown handle `{handle}` — it was never launched from this \
+         session (use the id returned by bash/call/rhai/agent background=true, \
+         or the retained-output id returned alongside a truncated call \
+         result)."
+    )
+}
 
 /// Render a job poll's status + drained output — the same shape `bash_output`
 /// used, byte-capped head+tail via [`crate::host::bounded_result`].
