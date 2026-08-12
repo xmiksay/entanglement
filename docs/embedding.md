@@ -354,6 +354,16 @@ seam implementations over it. Per seam:
   the user's pins via `AuxModelStore::in_memory` and close your multi-user
   `ModelResolver` over the user before constructing a plain
   `AuxLlmRegistry`.
+- **OAuth-protected LLM endpoints** —
+  [ADR-0189](adr/0189-oauth-for-llm-provider-endpoints.md): a catalog entry
+  carrying an `oauth:` block sends an `Authorization: Bearer` from an
+  `AccessTokenSource` instead of a static key. Register each user's source on
+  their context:
+  `ctx.with_token_source("myproxy", Arc::new(StoredTokenSource::new("myproxy",
+  user_scoped(store, user))))` — the same `UserTokenStore` your MCP
+  credentials live in works here (mint the tokens with `WebFlow` exactly as
+  for an MCP server). An `oauth:` entry with no registered source is a hard
+  resolve error; with one, no static key is needed.
 - **MCP OAuth credentials** — implement
   `entanglement_provider::mcp::auth::UserTokenStore` over your storage;
   `user_scoped(store, user)` presents one user's slice as the plain

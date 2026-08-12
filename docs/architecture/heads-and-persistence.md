@@ -330,7 +330,18 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   (`config::keys`, a pre-engine fast path like `inspect`): it resolves the catalog
   `key_env` (keyless Ollama → clean error), sources the value from `--key`, a
   hidden `rpassword` prompt, or piped stdin — never echoed — and warns when the
-  process env already carries a *different* value (env > file).
+  process env already carries a *different* value (env > file). Its OAuth
+  sibling is `skutter config connect|disconnect <provider>` (✅ #684,
+  [ADR-0189](../adr/0189-oauth-for-llm-provider-endpoints.md),
+  `config::llm_connect`): for a catalog entry carrying an `oauth:` block, it
+  runs the browser-loopback (or `--device-code`) authorization against the
+  entry's resolved base URL and persists the credential to the managed
+  `llm-tokens.yml` (override `ENTANGLEMENT_LLM_TOKENS_FILE`) — the same file
+  format, locking, and quarantine as `mcp-tokens.yml` (one shared
+  implementation, `McpTokenStore::load_llm()`), keyed by provider name and a
+  deliberately *separate* file so neither surface's writes contend with the
+  other's credentials. `disconnect` revokes best-effort (RFC 7009) then
+  deletes locally.
 
 ## 6c. Managed provider-key env file — [ADR-0073](../adr/0073-managed-env-file-writer-and-key-surfaces.md) (`config::env_file` + `config::env_key`)
 
