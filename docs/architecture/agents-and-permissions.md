@@ -226,26 +226,25 @@ below realize one model:
   `grant_session_dir` synchronously through a cloned `Arc<DefaultGrantStore>`
   handle threaded into the TUI, introducing no new wire surface (`Approve`
   was already wire-allowed).
-- **Per-user permission ceiling + grants (✅ #522, [ADR-0147](../adr/0147-multi-user-mode-embedder-api.md)):**
-  built entirely on the #311 seams above, no core change. A session now
-  carries an optional `UserId` (`Session.user`, spawn-time-fixed like
-  `parent` — a child/compaction-successor inherits its parent's/predecessor's
-  user rather than being re-told). `entanglement-runtime::multi_user::permission`
-  gives a multi-user embedder `PerUserPermissionResolver<R: PermissionResolver>`
-  (wraps an inner resolver — typically `ProfileResolver`, so the process-global
-  #172 ceiling still applies first — and clamps its result a *second* time by
-  the resolving session's own user's ceiling, via the same `clamp_to_base`
-  least-privilege composition #172 itself uses) and `PerUserGrantStore` (keys
-  `Always`-scope grants by `UserId` instead of one flat process-wide set, so
-  the storage key itself is what makes "one user's grant never leaks to
-  another" true; `Session` scope stays keyed by `SessionId` as normal, since a
-  session belongs to exactly one user already). Both consult a small
-  `SessionUserRegistry` the embedder populates itself — it already knows the
-  session→user mapping, having chosen `user` when it sent the session's
-  `InMsg::Spawn`. In-memory reference implementations only; a production
-  multi-tenant embedder with its own DB is expected to implement
-  `GrantStore`/`PermissionResolver` directly instead, per the traits' own
-  doc guidance. Reachable only through the embedder library API — `serve`
+- **Per-user permission ceiling + grants (#522, [ADR-0147](../adr/0147-multi-user-mode-embedder-api.md);
+  reframed embedder-side by [ADR-0181](../adr/0181-userid-leaves-the-runtime-crate.md)/[ADR-0184](../adr/0184-provider-hosted-multi-user-seams.md)):**
+  built entirely on the #311 seams above, no core change. A session carries an
+  optional `UserId` (`Session.user`, spawn-time-fixed like `parent` — a
+  child/compaction-successor inherits its parent's/predecessor's user rather
+  than being re-told). The runtime ships **no per-user module** (`make
+  userid` enforces that the crate never names `UserId`): a multi-user
+  embedder implements `PermissionResolver`/`GrantStore` directly over its own
+  session→user map — it already knows the mapping, having chosen `user` when
+  it sent the session's `InMsg::Spawn`. The recipe (documented in
+  [`../embedding.md`](../embedding.md) §7, sketched compiling in
+  `examples/embedded.rs`): wrap an inner resolver — typically
+  `ProfileResolver`, so the process-global #172 ceiling still applies first —
+  and clamp its result a *second* time by the resolving session's own user's
+  ceiling via the same `clamp_to_base` least-privilege composition #172
+  itself uses; key `Always`-scope grants by the user (the storage key itself
+  is what makes "one user's grant never leaks to another" true; `Session`
+  scope stays keyed by `SessionId`, since a session belongs to exactly one
+  user already). Reachable only through the embedder library API — `serve`
   stays single-user (ADR-0048).
 - **Escape-root access via approval (✅ #escape-root, [ADR-0109](../adr/0109-escape-root-access-via-approval.md)):**
   root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`/`apply_patch`

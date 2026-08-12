@@ -687,7 +687,9 @@ provider's `default_model` (`glm-5.2` / `gpt-4o` / `llama3.1` /
 everything above is the **single-user** story — one process-global `Catalog`,
 API keys loaded from the managed `.env` file (#220) into `std::env`. A
 multi-user embedder instead builds `ModelResolver`s per user via
-`entanglement-runtime::multi_user::provider` (behind the `provider` feature):
+**`entanglement-provider::multi_user`** ([ADR-0184](../adr/0184-provider-hosted-multi-user-seams.md)
+relocated it out of the runtime — the runtime crate never names `UserId`,
+ADR-0181, enforced by `make userid`):
 `ModelResolver` itself widened to `Fn(Option<&UserId>, &str, &str) -> Result<ResolvedModel, String>`
 so its three call sites in `entanglement-core/src/session.rs` (session-start
 pin, `SetAgent` pin rebind, `SetModel`) can resolve against the *resolving

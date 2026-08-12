@@ -37,7 +37,11 @@ use tokio::sync::broadcast::error::RecvError;
 /// Grades each tool call by the calling session's tenant — the part of the
 /// #311 seam a multi-tenant embedder swaps in place of the CLI's
 /// `ProfileResolver`. A real embedder looks `tenant_of(session)` up in its own
-/// DB instead of this static map.
+/// DB instead of this static map. This is also the whole per-user permission
+/// story after ADR-0181 (the runtime ships no `UserId`-keyed module): resolve
+/// the process-global profile first, then clamp by the tenant's own ceiling
+/// (`PermissionProfile::clamp_to_base`) for least-privilege composition, and
+/// key durable grants by the tenant in your own store.
 struct TenantResolver {
     tenants: HashMap<&'static str, PermissionProfile>,
 }

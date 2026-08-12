@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean file-cap coverage tag
+.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean file-cap userid coverage tag
 
 # Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
 # amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
@@ -108,7 +108,12 @@ test-gates: ## run scripts/dep-gate.test.sh (dep-gate self-test)
 file-cap: ## fail if a src file exceeds 400 code lines and isn't grandfathered
 	@sh scripts/file-cap-gate.sh
 
-verify: check-fmt tree check-lean file-cap lint test ## full CI-equivalent gate locally
+# UserId hygiene gate (ADR-0181/ADR-0184, #687): the runtime crate must never
+# name `UserId` — per-user seams live in the provider crate and the embedder.
+userid: ## fail if UserId appears anywhere in entanglement-runtime/src
+	@sh scripts/userid-gate.sh
+
+verify: check-fmt tree check-lean file-cap userid lint test ## full CI-equivalent gate locally
 
 # Release gate (issue #107): workspace line coverage via cargo-llvm-cov. Fails
 # below COV_MIN, writes lcov.info + a Cobertura XML for artifact upload / badges.
