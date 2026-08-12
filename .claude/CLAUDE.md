@@ -167,8 +167,10 @@ never here**; each bullet is the claim + where to read it:
   [ADR-0052](../docs/adr/0052-approval-scope-and-persisted-grants.md)/[ADR-0114](../docs/adr/0114-capability-level-permission-keys.md)–[ADR-0117](../docs/adr/0117-mcp-tool-capability-fan-out.md)/[ADR-0125](../docs/adr/0125-permission-arguments-for-path-tools-are-normalized-root-relative.md)/[ADR-0126](../docs/adr/0126-session-scoped-directory-grants.md)/[ADR-0088](../docs/adr/0088-session-aware-tool-execution.md).
 - **`rhai` is a sandboxed script tool with file/exec bindings** graded through
   the same permission chain (agent mask, skill mask, escape-root gate, workdir
-  scopes). [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0115](../docs/adr/0115-rhai-exec-bindings-call-bash.md)/[ADR-0129](../docs/adr/0129-thread-the-skill-mask-into-rhai-binding-resolution.md)/[ADR-0130](../docs/adr/0130-rhai-exec-bindings-marshal-workdir.md).
+  scopes); `background: true` detaches it like the other launchers (#637 —
+  `x-` handle to `poll`, 120s/600s budget, cooperative kill only).
+  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
+  [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0115](../docs/adr/0115-rhai-exec-bindings-call-bash.md)/[ADR-0129](../docs/adr/0129-thread-the-skill-mask-into-rhai-binding-resolution.md)/[ADR-0130](../docs/adr/0130-rhai-exec-bindings-marshal-workdir.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md).
 - **Trusted/untrusted frame split**: `Holly::send` is privileged;
   `send_from_wire` enforces a fail-closed allowlist (`ToolResult`, `Spawn`,
   `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`, `McpAuth` refused;

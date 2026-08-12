@@ -88,6 +88,11 @@ pub mod retained_output;
 // `--no-default-features`.
 #[cfg(feature = "rhai")]
 pub mod script;
+// Background-script registry (#637, ADR-0185): shared by `rhai`'s
+// `background: true` launcher and `poll`'s `x-` handle path. Ungated — it is
+// plain state with no rhai dep, so `poll`/`operations` reference it
+// unconditionally (empty forever in a lean build without the `rhai` feature).
+pub mod script_ops;
 pub mod seam;
 // WebSocket `serve` head (#153, ADR-0048). Behind the `serve` feature so axum
 // stays out of the lean library and `--no-default-features` builds (ADR-0025).

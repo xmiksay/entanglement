@@ -24,8 +24,8 @@ use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, bash_live, builtin_visibility, config, env_date, extra_roots, history, host,
     inspect, logging, mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch,
-    policy, poll, propose_plan, retained_output, session_store, skills, subagent, system_prompt,
-    throttle, tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
+    policy, poll, propose_plan, retained_output, script_ops, session_store, skills, subagent,
+    system_prompt, throttle, tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -107,6 +107,7 @@ async fn build_config(
     policy::SandboxConfig,
     host::JobRegistry,
     retained_output::RetainedOutputRegistry,
+    script_ops::ScriptRegistry,
 ) {
     let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
@@ -194,6 +195,10 @@ async fn build_config(
     // there) and `poll`'s retained-output-handle path (which reads it back) —
     // the same shared-instance shape `jobs` above uses.
     let retained = retained_output::RetainedOutputRegistry::new();
+    // The one `ScriptRegistry` for this process's whole lifetime (#637,
+    // ADR-0185): the executor's `rhai` arm writes a `background: true`
+    // script's handle/output there, `poll`'s `x-` path reads it back.
+    let scripts = script_ops::ScriptRegistry::new();
     let mut tools = register_default_tools(
         root.clone(),
         Some(extra_root_store.clone()),
@@ -345,6 +350,7 @@ async fn build_config(
         sandbox_config,
         jobs,
         retained,
+        scripts,
     )
 }
 
@@ -1296,6 +1302,7 @@ async fn main() -> Result<()> {
         sandbox_config,
         jobs,
         retained,
+        scripts,
     ) = build_config(
         &catalog,
         &http_client,
@@ -1452,6 +1459,7 @@ async fn main() -> Result<()> {
         tools.clone(),
         jobs,
         retained,
+        scripts,
         live_profiles.clone(),
         live_skills.clone(),
         user_config.permissions.clone(),

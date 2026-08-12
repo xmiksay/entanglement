@@ -251,6 +251,10 @@ pub fn spawn_tool_executor_with_hooks(
         // this private registry either, so a truncated call from one of these
         // wrappers' callers never mints a handle in the first place.
         crate::retained_output::RetainedOutputRegistry::new(),
+        // And for background scripts (#637): a private registry is still
+        // reachable here — the executor's own `rhai` arm writes it and its
+        // `poll` arm reads it back, both inside this one executor.
+        crate::script_ops::ScriptRegistry::new(),
         wrap_profiles(profiles),
         wrap_skills(SkillRegistry::default()),
         base,
@@ -349,6 +353,10 @@ pub fn spawn_tool_executor_with_policy(
     tools: SharedRegistry,
     jobs: crate::host::jobs::JobRegistry,
     retained: crate::retained_output::RetainedOutputRegistry,
+    // Background `rhai` scripts (#637, ADR-0185) — same shared-instance shape
+    // as `jobs`/`retained`: the `rhai` launcher writes, `poll`'s `x-` path and
+    // the `ListOperations` router read.
+    scripts: crate::script_ops::ScriptRegistry,
     profiles: Arc<RwLock<ProfileRegistry>>,
     skills: Arc<RwLock<Arc<SkillRegistry>>>,
     base: PermissionProfile,
@@ -523,6 +531,7 @@ pub fn spawn_tool_executor_with_policy(
             let open_questions = open_questions.clone();
             let op_jobs = jobs.clone();
             let op_agents = registry.clone();
+            let op_scripts = scripts.clone();
             let emitter = holly.clone();
             let mut inbound = inbound;
             background.spawn(async move {
@@ -556,6 +565,7 @@ pub fn spawn_tool_executor_with_policy(
                             let operations = crate::operations::list_operations(
                                 &op_jobs,
                                 &op_agents,
+                                &op_scripts,
                                 session.as_ref(),
                             );
                             emitter.emit_operation_list(correlation_id, operations);
@@ -969,10 +979,12 @@ pub fn spawn_tool_executor_with_policy(
                             let registry = registry.clone();
                             let jobs = jobs.clone();
                             let retained = retained.clone();
+                            let scripts = scripts.clone();
                             let holly = holly.clone();
                             tokio::spawn(async move {
                                 crate::poll::run_poll(
-                                    holly, jobs, registry, retained, session, request_id, input,
+                                    holly, jobs, registry, retained, scripts, session, request_id,
+                                    input,
                                 )
                                 .await;
                             });
@@ -1139,6 +1151,14 @@ pub fn spawn_tool_executor_with_policy(
                             let stop = Arc::new(AtomicBool::new(false));
                             let reg_session = session.clone();
                             let run_stop = stop.clone();
+                            let scripts = scripts.clone();
+                            // A `background: true` script (#637, ADR-0185)
+                            // deliberately survives a session `Stop`, exactly
+                            // as a background `bash`/`call` job does — so it is
+                            // never registered with the canceller. Its only
+                            // kill is `poll`'s `kill: true`, which trips the
+                            // same `stop` flag via the script registry.
+                            let background = crate::script::is_background(&input);
                             let handle = tokio::spawn(async move {
                                 crate::script::run_rhai(
                                     holly,
@@ -1151,13 +1171,16 @@ pub fn spawn_tool_executor_with_policy(
                                     pending,
                                     input,
                                     run_stop,
+                                    scripts,
                                 )
                                 .await;
                             });
-                            cancels.register(
-                                &reg_session,
-                                TaskCanceller::script(handle.abort_handle(), stop),
-                            );
+                            if !background {
+                                cancels.register(
+                                    &reg_session,
+                                    TaskCanceller::script(handle.abort_handle(), stop),
+                                );
+                            }
                         }
                         Intercept::Permission => {
                             // Snapshot the ancestor chain *before* spawning so it

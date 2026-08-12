@@ -64,11 +64,16 @@ use entanglement_core::{
 
 use crate::tools::ToolRegistry;
 use rhai::packages::{Package, StandardPackage};
-use rhai::serde::{from_dynamic, to_dynamic};
 use rhai::{Dynamic, Engine, EvalAltResult, Position};
 use serde::Deserialize;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
+
+// The detached `background: true` path (#637, ADR-0185).
+mod background;
+// Pure JSON/YAML (de)serialization script functions — no IO, no permission
+// check, split out of this (grandfathered over-cap) file.
+mod data;
 
 use crate::host::truncate_head_tail;
 use crate::pending::{self, PendingDecisions};
@@ -87,6 +92,12 @@ use crate::tool_runner::EscapeRoot;
 const DEFAULT_TIMEOUT_SECS: u64 = 5;
 /// Upper bound on a caller-supplied `timeout` (seconds).
 const MAX_TIMEOUT_SECS: u64 = 30;
+/// Default/max wall-clock budget for a `background: true` script (#637,
+/// ADR-0185) — the same regime as a background `bash`/`call` job (#617).
+/// Backgrounding is what raising the 30 s cap was deferred *for* (ADR-0161
+/// §5); the blocking path keeps its tight bound.
+const BG_DEFAULT_TIMEOUT_SECS: u64 = 120;
+const BG_MAX_TIMEOUT_SECS: u64 = 600;
 
 // Resource limits (see module docs). Generous enough for real multi-step logic,
 // tight enough that a runaway script dies deterministically.
@@ -131,7 +142,17 @@ pub fn rhai_spec() -> ToolSpec {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Wall-clock budget in seconds (default 5, max 30)."
+                    "description": "Wall-clock budget in seconds (default 5, max 30; \
+                        with background: true, default 120, max 600)."
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run detached and return a handle immediately \
+                        instead of the result — join with `poll`, which drains \
+                        print output incrementally and reports the final value. \
+                        kill via poll is cooperative: the script stops at its \
+                        next operation, after any in-flight exec/bash binding \
+                        finishes. Default false."
                 }
             },
             "required": ["script"]
@@ -145,6 +166,21 @@ struct ScriptInput {
     script: String,
     #[serde(default)]
     timeout: Option<u64>,
+    /// Detach and return an `x-` handle instead of the result (#637,
+    /// ADR-0185) — the fourth launcher joins the `background` family.
+    #[serde(default)]
+    background: bool,
+}
+
+/// Whether a `rhai` call's input requests the detached path (#637) — read by
+/// the tool executor to skip the session-Stop canceller registration before
+/// [`run_rhai`] runs: a background script deliberately survives a session
+/// `Stop`, exactly as a background `bash`/`call` job does.
+pub fn is_background(input: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(input)
+        .ok()
+        .and_then(|v| v.get("background").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
 }
 
 /// Permission decision for one binding, precomputed once per script run.
@@ -328,6 +364,7 @@ pub async fn run_rhai(
     pending: PendingDecisions,
     input: String,
     stop: Arc<AtomicBool>,
+    scripts: crate::script_ops::ScriptRegistry,
 ) {
     let parsed: ScriptInput = match serde_json::from_str(&input) {
         Ok(p) => p,
@@ -343,12 +380,19 @@ pub async fn run_rhai(
             return;
         }
     };
-    let timeout = Duration::from_secs(
+    // A background script gets the `bash`/`call` background regime (#637);
+    // the blocking path keeps its tight ADR-0046 bound.
+    let timeout = Duration::from_secs(if parsed.background {
+        parsed
+            .timeout
+            .unwrap_or(BG_DEFAULT_TIMEOUT_SECS)
+            .clamp(1, BG_MAX_TIMEOUT_SECS)
+    } else {
         parsed
             .timeout
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
-            .clamp(1, MAX_TIMEOUT_SECS),
-    );
+            .clamp(1, MAX_TIMEOUT_SECS)
+    });
 
     // `rhai`'s own permission gate (Allow/Ask/Deny), like any host tool.
     match self_perm {
@@ -358,6 +402,9 @@ pub async fn run_rhai(
             return;
         }
         Permission::Ask => {
+            // The launch gate runs inside the live turn even for a background
+            // script (the turn is parked on this very ToolExec), so the state
+            // transitions stay on (`detached: false`).
             match await_approval(
                 &holly,
                 &pending,
@@ -365,6 +412,7 @@ pub async fn run_rhai(
                 &request_id,
                 RHAI_TOOL,
                 &parsed.script,
+                false,
             )
             .await
             {
@@ -380,6 +428,26 @@ pub async fn run_rhai(
             }
         }
         Permission::Allow => {}
+    }
+
+    // The launch is the graded decision (ADR-0161 §3): the gate above already
+    // ran, so a background script detaches only after Allow/approval.
+    if parsed.background {
+        background::run_background(
+            holly,
+            tools,
+            policy,
+            escape_root,
+            session,
+            request_id,
+            pending,
+            parsed.script,
+            timeout,
+            stop,
+            scripts,
+        )
+        .await;
+        return;
     }
 
     // A Stop during a binding approval returns `None` and unwinds silently: core
@@ -422,7 +490,7 @@ async fn execute_script(
     timeout: Duration,
     stop: Arc<AtomicBool>,
 ) -> Option<(String, bool)> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<BindingCall>();
+    let (tx, rx) = mpsc::unbounded_channel::<BindingCall>();
     let prints = Arc::new(Mutex::new(String::new()));
     let engine_prints = prints.clone();
     let start = Instant::now();
@@ -434,24 +502,76 @@ async fn execute_script(
     let engine_stop = stop.clone();
     let handle = tokio::task::spawn_blocking(move || {
         let mut engine = Engine::new_raw();
-        configure_engine(&mut engine, timeout, start, engine_prints, engine_stop);
+        configure_engine(
+            &mut engine,
+            timeout,
+            start,
+            move |text| {
+                if let Ok(mut buf) = engine_prints.lock() {
+                    buf.push_str(text);
+                    buf.push('\n');
+                }
+            },
+            engine_stop,
+            // The blocking path reports a deadline through the eval error text
+            // (`format_output`); only the background path needs the flag.
+            Arc::new(AtomicBool::new(false)),
+        );
         register_bindings(&mut engine, tx, bash_enabled, start, timeout);
-        register_data_functions(&mut engine);
+        data::register_data_functions(&mut engine);
         engine.eval::<Dynamic>(&script)
     });
 
-    // Service binding calls until every sender is dropped — which happens only
-    // when the engine finishes and the blocking closure returns (dropping the
-    // registered functions that hold the senders). `spawn_blocking` cannot be
-    // aborted, so the wall-clock timeout is enforced *inside* the engine by the
-    // progress callback, not by dropping this task.
-    //
-    // Keyed by `approval_cache_key`, not bare tool name: for `call`/`bash` that
-    // key includes the resolved command line, so approving `call(git status)`
-    // does not silently pre-clear `call(rm -rf /)` in the same run (#419 fix A).
-    // Every other binding keeps the coarser per-function cache (approve one
-    // `edit`, cover the rest) — its argument is always a file path already
-    // implied by the tool, not an open-ended command line.
+    let stopped = service_bindings(
+        rx,
+        tools,
+        policy,
+        escape_root,
+        holly,
+        session,
+        request_id,
+        pending,
+        false,
+    )
+    .await;
+
+    let eval_result = handle.await;
+    // A `Stop` for this session (#167): the engine unwound because its progress
+    // callback saw the flag. The turn is being cancelled, so no reply is owed —
+    // guard here too, since the servicing task's abort may not have landed yet.
+    if stopped || stop.load(Ordering::SeqCst) {
+        return None;
+    }
+    let prints = prints.lock().map(|p| p.clone()).unwrap_or_default();
+    Some(format_output(prints, eval_result))
+}
+
+/// Service binding calls until every sender is dropped — which happens only
+/// when the engine finishes and the blocking closure returns (dropping the
+/// registered functions that hold the senders). `spawn_blocking` cannot be
+/// aborted, so the wall-clock timeout is enforced *inside* the engine by the
+/// progress callback, not by dropping this task. Returns whether a `Stop`
+/// unwound the run. Shared by the blocking path above and the detached
+/// background path (#637).
+///
+/// The approval cache is keyed by `approval_cache_key`, not bare tool name:
+/// for `call`/`bash` that key includes the resolved command line, so approving
+/// `call(git status)` does not silently pre-clear `call(rm -rf /)` in the same
+/// run (#419 fix A). Every other binding keeps the coarser per-function cache
+/// (approve one `edit`, cover the rest) — its argument is always a file path
+/// already implied by the tool, not an open-ended command line.
+#[allow(clippy::too_many_arguments)]
+async fn service_bindings(
+    mut rx: mpsc::UnboundedReceiver<BindingCall>,
+    tools: &ToolRegistry,
+    policy: &BindingPolicy,
+    escape_root: Option<&EscapeRoot>,
+    holly: &Holly,
+    session: &SessionId,
+    request_id: &str,
+    pending: &PendingDecisions,
+    detached: bool,
+) -> bool {
     let mut approved: HashSet<String> = HashSet::new();
     let mut stopped = false;
     while let Some(call) = rx.recv().await {
@@ -465,6 +585,7 @@ async fn execute_script(
             pending,
             &mut approved,
             &call,
+            detached,
         )
         .await;
         let _ = call.reply.send(result);
@@ -472,16 +593,7 @@ async fn execute_script(
             stopped = true;
         }
     }
-
-    let eval_result = handle.await;
-    // A `Stop` for this session (#167): the engine unwound because its progress
-    // callback saw the flag. The turn is being cancelled, so no reply is owed —
-    // guard here too, since the servicing task's abort may not have landed yet.
-    if stopped || stop.load(Ordering::SeqCst) {
-        return None;
-    }
-    let prints = prints.lock().map(|p| p.clone()).unwrap_or_default();
-    Some(format_output(prints, eval_result))
+    stopped
 }
 
 /// Resolve one binding call per its policy and either run it or refuse. Returns
@@ -512,6 +624,7 @@ async fn service_binding(
     pending: &PendingDecisions,
     approved: &mut HashSet<String>,
     call: &BindingCall,
+    detached: bool,
 ) -> (Result<String, String>, bool) {
     // This binding's own request id (distinct from the outer `rhai` call's):
     // the head's Approve/Reject for a nested `Ask` matches this, not the outer
@@ -576,7 +689,17 @@ async fn service_binding(
         ),
         None => call.input.clone(),
     };
-    match await_approval(holly, pending, session, &bind_rid, &card_tool, &card_input).await {
+    match await_approval(
+        holly,
+        pending,
+        session,
+        &bind_rid,
+        &card_tool,
+        &card_input,
+        detached,
+    )
+    .await
+    {
         Approval::Approved(scope) => {
             if let Some((er, abs)) = &escape {
                 // Record into the same store a direct call's approval would
@@ -589,11 +712,15 @@ async fn service_binding(
             } else {
                 approved.insert(key);
             }
-            set_state(holly, session, AgentState::Thinking);
+            if !detached {
+                set_state(holly, session, AgentState::Thinking);
+            }
             (Ok(exec(tools, session, &bind_rid, call).await), false)
         }
         Approval::Rejected(reason) => {
-            set_state(holly, session, AgentState::Thinking);
+            if !detached {
+                set_state(holly, session, AgentState::Thinking);
+            }
             (
                 Err(format!("tool `{}` rejected: {reason}", call.tool)),
                 false,
@@ -666,6 +793,12 @@ enum Approval {
 /// [`PendingDecisions`] registry (#156). Shared by `rhai`'s own gate and each
 /// binding's `Ask`; registers per `request_id` before emitting so a fast decision
 /// routes to this waiter rather than racing a subscription that could lag.
+/// `detached` (#637) suppresses the session-state transition: a background
+/// script's Ask arrives outside any live turn, so flipping the session to
+/// `WaitingApproval` (and back to `Thinking` on resolution) would strand a
+/// stale status on an otherwise idle session — the `ToolRequest` event alone
+/// carries the prompt to the head.
+#[allow(clippy::too_many_arguments)]
 async fn await_approval(
     holly: &Holly,
     pending: &PendingDecisions,
@@ -673,6 +806,7 @@ async fn await_approval(
     request_id: &str,
     tool: &str,
     input: &str,
+    detached: bool,
 ) -> Approval {
     // Register before emitting so the inbound router can never resolve the
     // decision ahead of this waiter (#156).
@@ -685,7 +819,9 @@ async fn await_approval(
         tool: tool.to_string(),
         input: input.to_string(),
     });
-    set_state(holly, session, AgentState::WaitingApproval);
+    if !detached {
+        set_state(holly, session, AgentState::WaitingApproval);
+    }
     match pending::await_decision(rx).await {
         seam::Decision::Approve { scope } => Approval::Approved(scope),
         seam::Decision::Reject { reason } => {
@@ -703,12 +839,18 @@ async fn await_approval(
 /// Apply the sandbox: standard (IO-free) package, resource caps, disabled
 /// `eval`, the wall-clock progress interrupt, and print capture. `new_raw()`
 /// starts with no module resolver, so `import` cannot reach the filesystem.
+/// `on_print` receives each `print` line (no trailing newline) — the blocking
+/// path buffers them for the final result, the background path (#637) streams
+/// them into its registry entry. `timed_out` is set when the deadline branch
+/// fires, so the background path can distinguish a timeout from an ordinary
+/// script error without parsing the eval error text.
 fn configure_engine(
     engine: &mut Engine,
     timeout: Duration,
     start: Instant,
-    prints: Arc<Mutex<String>>,
+    on_print: impl Fn(&str) + Send + Sync + 'static,
     stop: Arc<AtomicBool>,
+    timed_out: Arc<AtomicBool>,
 ) {
     engine.register_global_module(StandardPackage::new().as_shared_module());
     engine.set_max_operations(MAX_OPERATIONS);
@@ -725,6 +867,7 @@ fn configure_engine(
         if stop.load(Ordering::Relaxed) {
             Some(Dynamic::from("script stopped".to_string()))
         } else if start.elapsed() >= timeout {
+            timed_out.store(true, Ordering::Relaxed);
             Some(Dynamic::from(format!(
                 "script exceeded the {}s time limit",
                 timeout.as_secs()
@@ -733,12 +876,7 @@ fn configure_engine(
             None
         }
     });
-    engine.on_print(move |text| {
-        if let Ok(mut buf) = prints.lock() {
-            buf.push_str(text);
-            buf.push('\n');
-        }
-    });
+    engine.on_print(move |text| on_print(text));
 }
 
 /// Bind the host quintet plus permission-gated process-exec as script
@@ -928,51 +1066,6 @@ fn remaining_timeout_secs(start: Instant, timeout: Duration) -> u64 {
     timeout.saturating_sub(start.elapsed()).as_secs().max(1)
 }
 
-/// Bind pure JSON/YAML (de)serialization functions. Unlike the host quintet
-/// these are *not* bindings — no IO, no permission check, no bridge round-trip
-/// — since they only transform a value already in the script's own memory
-/// (typically the output of `read()`). Built on Rhai's own `serde` bridge
-/// (`rhai::serde::{to_dynamic, from_dynamic}`, already enabled via the crate's
-/// `serde` feature), so the JSON/YAML-Value <-> Dynamic mapping is Rhai's own
-/// tested behavior, not a hand-rolled converter: `null` -> `()`; an integer
-/// outside `i64` range silently widens to an approximate `FLOAT` (Rhai's serde
-/// serializer falls back i64 -> decimal (off by default) -> float, same as
-/// JS's `JSON.parse` — well-formed JSON already encodes such values as strings
-/// to avoid exactly this, so scripts should too). Rhai's UFCS means each is
-/// also callable as a method, e.g. `read(path).parse_json()`.
-fn register_data_functions(engine: &mut Engine) {
-    engine.register_fn("parse_json", parse_json);
-    engine.register_fn("to_json", to_json);
-    engine.register_fn("parse_yaml", parse_yaml);
-    engine.register_fn("to_yaml", to_yaml);
-}
-
-fn parse_json(text: &str) -> Result<Dynamic, Box<EvalAltResult>> {
-    let value: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| runtime_err(&format!("invalid JSON: {e}")))?;
-    to_dynamic(value)
-        .map_err(|e| runtime_err(&format!("JSON value not representable in Rhai: {e}")))
-}
-
-fn to_json(value: Dynamic) -> Result<String, Box<EvalAltResult>> {
-    let json: serde_json::Value = from_dynamic(&value)
-        .map_err(|e| runtime_err(&format!("value not JSON-serializable: {e}")))?;
-    serde_json::to_string(&json).map_err(|e| runtime_err(&format!("failed to stringify JSON: {e}")))
-}
-
-fn parse_yaml(text: &str) -> Result<Dynamic, Box<EvalAltResult>> {
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(text).map_err(|e| runtime_err(&format!("invalid YAML: {e}")))?;
-    to_dynamic(value)
-        .map_err(|e| runtime_err(&format!("YAML value not representable in Rhai: {e}")))
-}
-
-fn to_yaml(value: Dynamic) -> Result<String, Box<EvalAltResult>> {
-    let yaml: serde_yaml::Value = from_dynamic(&value)
-        .map_err(|e| runtime_err(&format!("value not YAML-serializable: {e}")))?;
-    serde_yaml::to_string(&yaml).map_err(|e| runtime_err(&format!("failed to stringify YAML: {e}")))
-}
-
 /// Send one binding call across the bridge and block for the reply. A denied or
 /// rejected call comes back as `Err`, surfaced to the script as a thrown
 /// exception it may `try`/`catch`.
@@ -1015,22 +1108,22 @@ fn format_output(
             out.push('\n');
         }
     }
-    let is_error = match eval_result {
-        Ok(Ok(value)) => {
-            out.push_str("=> ");
-            out.push_str(&serialize_return(&value));
-            false
-        }
-        Ok(Err(e)) => {
-            out.push_str(&format!("rhai error: {e}"));
-            true
-        }
-        Err(join) => {
-            out.push_str(&format!("rhai error: script task failed: {join}"));
-            true
-        }
-    };
+    let (line, is_error) = result_line(eval_result);
+    out.push_str(&line);
     (truncate_head_tail(out), is_error)
+}
+
+/// The final `=> <value>` / `rhai error: …` line for an eval outcome — shared
+/// by the blocking composition above and the background path (#637), which
+/// streams prints as they happen and appends only this line at finish.
+fn result_line(
+    eval_result: Result<Result<Dynamic, Box<EvalAltResult>>, tokio::task::JoinError>,
+) -> (String, bool) {
+    match eval_result {
+        Ok(Ok(value)) => (format!("=> {}", serialize_return(&value)), false),
+        Ok(Err(e)) => (format!("rhai error: {e}"), true),
+        Err(join) => (format!("rhai error: script task failed: {join}"), true),
+    }
 }
 
 /// Serialize a script's return value. Prefer JSON (arrays/maps/numbers/strings
@@ -1063,7 +1156,8 @@ mod tests {
             &mut engine,
             timeout,
             Instant::now(),
-            Arc::new(Mutex::new(String::new())),
+            |_text| {},
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
         engine
@@ -1073,7 +1167,7 @@ mod tests {
     /// bindings — those need the async bridge, irrelevant to these tests).
     fn data_engine(timeout: Duration) -> Engine {
         let mut engine = sandbox_engine(timeout);
-        register_data_functions(&mut engine);
+        data::register_data_functions(&mut engine);
         engine
     }
 
@@ -1161,8 +1255,9 @@ mod tests {
             &mut engine,
             Duration::from_secs(30),
             Instant::now(),
-            Arc::new(Mutex::new(String::new())),
+            |_text| {},
             stop,
+            Arc::new(AtomicBool::new(false)),
         );
         let err = engine
             .eval::<Dynamic>(r#"try { let i = 0; loop { i += 1; } } catch(e) { 0 }"#)
@@ -1191,12 +1286,19 @@ mod tests {
     #[test]
     fn print_output_is_captured() {
         let prints = Arc::new(Mutex::new(String::new()));
+        let sink = prints.clone();
         let mut engine = Engine::new_raw();
         configure_engine(
             &mut engine,
             Duration::from_secs(5),
             Instant::now(),
-            prints.clone(),
+            move |text| {
+                if let Ok(mut buf) = sink.lock() {
+                    buf.push_str(text);
+                    buf.push('\n');
+                }
+            },
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
         let _ = engine

@@ -27,6 +27,10 @@ pub enum IdKind {
     /// tail/byte cap (#608, ADR-0161 §7) — a blocking `call` that truncated,
     /// paged the rest of the way via `poll`.
     Output,
+    /// Background `rhai` script (#637, ADR-0185) — an in-process
+    /// `spawn_blocking` task, not an OS process, so it gets its own kind
+    /// rather than riding `Job`. `x` (script e*x*ecution): `s`/`r` are taken.
+    Script,
 }
 
 impl IdKind {
@@ -36,6 +40,7 @@ impl IdKind {
             IdKind::Job => 'j',
             IdKind::Request => 'r',
             IdKind::Output => 'o',
+            IdKind::Script => 'x',
         }
     }
 }
@@ -134,6 +139,7 @@ mod tests {
             (IdKind::Job, 'j'),
             (IdKind::Request, 'r'),
             (IdKind::Output, 'o'),
+            (IdKind::Script, 'x'),
         ] {
             let id = gen.next(kind);
             assert_eq!(id.len(), 15, "unexpected length for {id}");

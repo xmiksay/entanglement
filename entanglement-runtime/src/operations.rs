@@ -11,22 +11,26 @@
 //! **Lifetimes differ by kind, deliberately not unified**: an agent handle is
 //! itself a session, so it persists however that session's own bookkeeping
 //! does; a background job is an OS process owned by this engine process and
-//! cannot outlive it. The listing surfaces `kind` precisely so a caller can
-//! render that distinction rather than treat every entry alike.
+//! cannot outlive it; a background script (#637, ADR-0185) is an in-process
+//! task with the same engine-bound lifetime. The listing surfaces `kind`
+//! precisely so a caller can render that distinction rather than treat every
+//! entry alike.
 
 use entanglement_core::{OperationInfo, OperationKind, OperationStatus, SessionId};
 
 use crate::agent_registry::{AgentRegistry, AgentStatus};
 use crate::host::jobs::{JobRegistry, JobStatus};
+use crate::script_ops::ScriptRegistry;
 
-/// Snapshot every pending job/agent operation, optionally scoped to one
-/// session. `None` spans every session (the wire-level `InMsg::ListOperations`
-/// engine-wide scope); `poll`'s own no-handle use always passes `Some`, since
-/// a model call is inherently scoped to its own turn. Sorted by
-/// `(session, handle)` for a deterministic reply.
+/// Snapshot every pending job/agent/script operation, optionally scoped to
+/// one session. `None` spans every session (the wire-level
+/// `InMsg::ListOperations` engine-wide scope); `poll`'s own no-handle use
+/// always passes `Some`, since a model call is inherently scoped to its own
+/// turn. Sorted by `(session, handle)` for a deterministic reply.
 pub fn list_operations(
     jobs: &JobRegistry,
     agents: &AgentRegistry,
+    scripts: &ScriptRegistry,
     session: Option<&SessionId>,
 ) -> Vec<OperationInfo> {
     let job_ops = jobs.snapshot(session).into_iter().map(|j| OperationInfo {
@@ -51,7 +55,22 @@ pub fn list_operations(
             AgentStatus::Complete { .. } => OperationStatus::Complete,
         },
     });
-    let mut list: Vec<OperationInfo> = job_ops.chain(agent_ops).collect();
+    let script_ops = scripts
+        .snapshot_ops(session)
+        .into_iter()
+        .map(|s| OperationInfo {
+            session: s.session,
+            kind: OperationKind::Script,
+            handle: s.handle,
+            launched_by: s.label,
+            elapsed_secs: s.elapsed.as_secs(),
+            status: if s.running {
+                OperationStatus::Running
+            } else {
+                OperationStatus::Complete
+            },
+        });
+    let mut list: Vec<OperationInfo> = job_ops.chain(agent_ops).chain(script_ops).collect();
     list.sort_by(|a, b| {
         (a.session.0.as_str(), a.handle.as_str()).cmp(&(b.session.0.as_str(), b.handle.as_str()))
     });
@@ -69,6 +88,7 @@ pub fn format_operations(ops: &[OperationInfo]) -> String {
         let kind = match op.kind {
             OperationKind::Job => "job",
             OperationKind::Agent => "agent",
+            OperationKind::Script => "script",
         };
         let status = match op.status {
             OperationStatus::Running => "running",
@@ -102,12 +122,39 @@ mod tests {
     async fn empty_registries_yield_no_operations() {
         let jobs = JobRegistry::new();
         let agents = AgentRegistry::default();
+        let scripts = ScriptRegistry::new();
         let session = SessionId::new("s1");
-        assert!(list_operations(&jobs, &agents, Some(&session)).is_empty());
+        assert!(list_operations(&jobs, &agents, &scripts, Some(&session)).is_empty());
         assert_eq!(
-            format_operations(&list_operations(&jobs, &agents, Some(&session))),
+            format_operations(&list_operations(&jobs, &agents, &scripts, Some(&session))),
             "poll: no pending operations for this session."
         );
+    }
+
+    /// #637: a background script is listed alongside jobs/agents, as its own
+    /// kind.
+    #[tokio::test]
+    async fn lists_a_background_script() {
+        let jobs = JobRegistry::new();
+        let agents = AgentRegistry::default();
+        let scripts = ScriptRegistry::new();
+        let session = SessionId::new("s1");
+        let (id, _op) = scripts.register(
+            "rhai: print(1)".to_string(),
+            Some(session.clone()),
+            Duration::from_secs(120),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        let ops = list_operations(&jobs, &agents, &scripts, Some(&session));
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, OperationKind::Script);
+        assert_eq!(ops[0].handle, id);
+        assert_eq!(ops[0].launched_by, "rhai: print(1)");
+        assert_eq!(ops[0].status, OperationStatus::Running);
+
+        let text = format_operations(&ops);
+        assert!(text.contains("[script running]"), "{text}");
     }
 
     #[tokio::test]
@@ -127,7 +174,7 @@ mod tests {
         let child = SessionId::new("s-child");
         agents.register(child.clone(), session.clone(), "reviewer".to_string());
 
-        let ops = list_operations(&jobs, &agents, Some(&session));
+        let ops = list_operations(&jobs, &agents, &ScriptRegistry::new(), Some(&session));
         assert_eq!(ops.len(), 2);
         assert!(ops.iter().any(|o| o.kind == OperationKind::Job
             && o.handle == job_id
@@ -154,8 +201,12 @@ mod tests {
         let child = SessionId::new("s-child2");
         agents.register(child, theirs.clone(), "build".to_string());
 
-        assert!(list_operations(&jobs, &agents, Some(&mine)).is_empty());
-        assert_eq!(list_operations(&jobs, &agents, Some(&theirs)).len(), 1);
-        assert_eq!(list_operations(&jobs, &agents, None).len(), 1);
+        let scripts = ScriptRegistry::new();
+        assert!(list_operations(&jobs, &agents, &scripts, Some(&mine)).is_empty());
+        assert_eq!(
+            list_operations(&jobs, &agents, &scripts, Some(&theirs)).len(),
+            1
+        );
+        assert_eq!(list_operations(&jobs, &agents, &scripts, None).len(), 1);
     }
 }
