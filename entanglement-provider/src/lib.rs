@@ -33,6 +33,10 @@ pub mod gemini;
 pub mod llm;
 pub mod mcp;
 pub mod message;
+// Per-user provider context + model resolver for multi-user embedders
+// (ADR-0181/ADR-0184, #687): `UserId` and everything keyed by it lives in
+// this crate, never in the runtime.
+pub mod multi_user;
 pub mod openai;
 pub mod provider_mcp;
 mod sse_frame;
@@ -56,13 +60,17 @@ pub use llm::{
 // than colliding with it at the crate root.
 pub use mcp::{
     auth::{
-        auth_required_of, is_auth_required, AccessTokenSource, AuthFlow, AuthOutcome, AuthRequired,
-        OauthConfig, StoredAuth, StoredTokenSource, TokenSet, TokenStore,
+        auth_required_of, is_auth_required, user_scoped, AccessTokenSource, AuthFlow, AuthOutcome,
+        AuthRequired, InMemoryUserTokenStore, OauthConfig, StoredAuth, StoredTokenSource, TokenSet,
+        TokenStore, UserTokenStore,
     },
     jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef,
 };
 pub use message::{
     content_has_image, content_text, ContentPart, ImageSource, Message, MessageRole,
+};
+pub use multi_user::{
+    build_user_model_resolver, InMemoryUserProviderStore, UserProviderContext, UserProviderStore,
 };
 pub use openai::{
     openai_factory, OpenAiLlm, OLLAMA_BASE, OPENAI_BASE, ZAI_CODING_PLAN_BASE, ZAI_GENERAL_BASE,
