@@ -64,9 +64,7 @@ fn empty_catalog() -> Catalog {
 /// provider so the fallback path is exercised without standing up a real
 /// provider entry.
 fn failing_resolver() -> ModelResolver {
-    Arc::new(|_u, _p: &str, _m: &str| {
-        Err::<ResolvedModel, String>("unknown provider".to_string())
-    })
+    Arc::new(|_u, _p: &str, _m: &str| Err::<ResolvedModel, String>("unknown provider".to_string()))
 }
 
 /// A resolver that always succeeds with the `aux` stub Llm — mirrors a pin
