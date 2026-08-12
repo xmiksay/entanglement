@@ -38,7 +38,7 @@ pub struct ThrottleStatus {
     pub next_request_in: Option<Duration>,
     /// Count of callers currently queued behind this endpoint's own
     /// concurrency permit — waiting to be admitted, not yet holding a slot
-    /// (deferred-work-ledger row 5, #552). `0` when nobody is queued; never
+    /// (#517, #552). `0` when nobody is queued; never
     /// `None` — the counter always exists, sharing or no.
     pub waiters: usize,
     /// Count of live cross-process leases (#523) against this endpoint+key

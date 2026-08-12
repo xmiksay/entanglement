@@ -1701,7 +1701,7 @@ pub enum OutEvent {
     /// `retry_in_ms` already folds in a peer process's shared cool-down, not
     /// just this process's own (#552). `waiters`/`shared_leases` surface the
     /// two other gaps #552 closed: how many callers are queued behind this
-    /// endpoint's own permit (deferred-work-ledger row 5), and how many
+    /// endpoint's own permit (#517), and how many
     /// cross-process leases (#523) are live against it — `shared_leases` is
     /// `None` when cross-process sharing is disabled or unreadable. Both are
     /// `#[serde(default)]` so a pre-#552 persisted log still replays.

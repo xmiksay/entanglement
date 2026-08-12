@@ -1,4 +1,4 @@
-//! `skutter inspect mcp` (#558, closes deferred-work-ledger row 10c).
+//! `skutter inspect mcp` (#558).
 //!
 //! Surfaces the *resolved* MCP server universe — provider-bundled servers
 //! (#542) folded with the user's `mcp:` config entries — without spawning the

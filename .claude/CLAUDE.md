@@ -9,8 +9,8 @@ Architecture & the four interfaces:
 [`../docs/architecture.md`](../docs/architecture.md). Overview:
 [`../README.md`](../README.md). Decisions: [`../docs/adr/`](../docs/adr/)
 (numbered, immutable — the index [`README.md`](../docs/adr/README.md) flags
-superseded/amended entries). Intentional deferrals + docs-drift findings:
-[`../docs/deferred-work-ledger.md`](../docs/deferred-work-ledger.md).
+superseded/amended entries). Intentional deferrals and docs-drift findings
+live as GitHub issues, one each (#689).
 
 ## Stack
 
@@ -339,8 +339,10 @@ precedence system < user < repo) and
   *why*. When a message variant, profile, crate, or command changes, update the
   owning architecture doc (and the contract block above) in the same change —
   never grow this brief back into a re-statement of the docs.
-- **Track intentional deferrals and docs drift in the ledger**
-  ([`../docs/deferred-work-ledger.md`](../docs/deferred-work-ledger.md), issue #396).
+- **Every intentional deferral and docs-drift finding gets its own GitHub
+  issue** in the same change that defers it (#689 retired the old
+  deferred-work ledger file — issues are the only tracker; an issue must be
+  fully implemented by the change that closes it, never left half-open).
 
 ## Open work
 

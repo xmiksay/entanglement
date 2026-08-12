@@ -201,7 +201,11 @@ below realize one model:
   a fourth `ApprovalScope::SessionDir` — session-only like `Session`, but
   widened to every later call whose grading argument falls under the approved
   call's directory (`grants::dir_covers`, a plain path-component-prefix check
-  on the #485-normalized argument) instead of matching one exact call.
+  on the #485-normalized argument — no symlink resolution, so a granted
+  directory can cover an arg whose path component is an in-root symlink
+  pointing elsewhere, skipping the *prompt* but never the filesystem
+  boundary: host tools re-canonicalize and stay root-contained; an accepted
+  prompt-UX nuance, 2026-07-23 audit) instead of matching one exact call.
   Restricted to the read-only triad (`read`/`grep`/`glob`, the ADR-0114 `read`
   capability's members, reused via `tool_names::is_read_capability_member` so
   the grant store, the TUI's `[d]` key gate, and its footer hint can never

@@ -307,7 +307,7 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
 /// when the cross-process lease count disagrees with this process's own
 /// `in_flight` — otherwise it would just repeat the same number — and a
 /// `· Nq` suffix while callers are queued behind this endpoint's own permit
-/// (deferred-work-ledger row 5).
+/// (#517).
 fn throttle_label(status: &entanglement_provider::ThrottleStatus) -> String {
     let host = short_host(&status.endpoint);
     let label = match &status.model {
@@ -463,8 +463,8 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(throttle_label(&shared_agrees), "⚠ api.z.ai busy · 1/3");
-        // Callers queued behind this endpoint's own permit (deferred-work-ledger
-        // row 5) show as a `· Nq` suffix.
+        // Callers queued behind this endpoint's own permit (#517) show as
+        // a `· Nq` suffix.
         let queued = ThrottleStatus { waiters: 2, ..base };
         assert_eq!(throttle_label(&queued), "⚠ api.z.ai busy · 1/3 · 2q");
     }
