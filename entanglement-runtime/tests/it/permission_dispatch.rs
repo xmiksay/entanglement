@@ -873,6 +873,8 @@ fn spawn_two_read_calls_rooted(
         Some(escape_root),
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
     holly
 }
@@ -1116,6 +1118,8 @@ fn spawn_scripted_calls_rooted(
         Some(escape_root),
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
     holly
 }

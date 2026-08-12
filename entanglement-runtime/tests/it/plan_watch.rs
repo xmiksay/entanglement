@@ -126,6 +126,8 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         Some(escape_root),
         SandboxConfig::none(),
         plan_files.clone(),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
     let _watcher = spawn_plans_watcher(&holly, root.to_path_buf(), plan_files)
         .expect("the pre-created plans folder must be watchable");

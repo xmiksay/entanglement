@@ -1474,6 +1474,8 @@ async fn main() -> Result<()> {
         // fold below is what `bash`/`call` actually see.
         sandbox_config,
         plan_files.clone(),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
 
     // Live MCP server management (#375): a runtime service answering

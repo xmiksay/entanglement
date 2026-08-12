@@ -47,6 +47,7 @@ pub mod enable_tool;
 pub mod live;
 pub mod oauth_ops;
 pub mod responder;
+pub mod scoped;
 pub mod stdio;
 pub mod tool;
 
@@ -61,6 +62,7 @@ pub use client::{McpClient, McpToolDef};
 pub use connect_impl::{connect, needs_auth};
 pub(crate) use connect_impl::{connect_client, register_tools, transport_label};
 pub use enable_tool::McpEnableTool;
+pub use scoped::{McpScope, McpScopeResolver, McpScopes};
 
 /// The handle bundle a head needs to drive per-session enablement of
 /// `allowed` servers (#542) — `/enable mcp <name>` lazily connects through

@@ -181,6 +181,13 @@ impl ToolRegistry {
         self.tools.insert(name, Arc::new(tool));
     }
 
+    /// [`register`][Self::register] for a tool that is already shared — the
+    /// per-scope MCP overlay (#684) registers the same `Arc<McpTool>`s into
+    /// every dispatch snapshot rather than re-wrapping them per call.
+    pub fn register_arc(&mut self, tool: Arc<dyn Tool>) {
+        self.tools.insert(tool.name(), tool);
+    }
+
     /// Drop a registered tool by name, returning it if it was present. The
     /// dynamic counterpart to [`register`][Self::register] — the seam live MCP
     /// server removal (#4) needs to retract a server's tools without rebuilding
