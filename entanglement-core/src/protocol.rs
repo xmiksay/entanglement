@@ -250,17 +250,20 @@ pub struct PendingQuestion {
 }
 
 /// Kind of pending operation in an [`OutEvent::OperationList`] snapshot (#607,
-/// ADR-0161 §6): a background `bash`/`call` job, or a launched sub-agent.
+/// ADR-0161 §6): a background `bash`/`call` job, a launched sub-agent, or a
+/// background `rhai` script (#637, ADR-0185).
 /// Lifetimes differ — a job is an OS process owned by this engine process and
-/// cannot outlive it, while an agent handle is itself a session, so it
-/// persists across hibernation/resume however the session bookkeeping already
-/// does — the listing surfaces which kind an entry is precisely so a head can
-/// render that distinction instead of implying every entry behaves the same.
+/// cannot outlive it, a script is an in-process task with the same lifetime,
+/// while an agent handle is itself a session, so it persists across
+/// hibernation/resume however the session bookkeeping already does — the
+/// listing surfaces which kind an entry is precisely so a head can render
+/// that distinction instead of implying every entry behaves the same.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
     Job,
     Agent,
+    Script,
 }
 
 /// Terminal or in-progress state of a pending operation (#607). Mirrors the
