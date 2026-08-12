@@ -39,6 +39,7 @@ pub mod flow;
 pub mod loopback;
 pub mod pkce;
 pub mod token;
+pub mod user_store;
 
 pub use dcr::ClientRegistration;
 pub use device::{DeviceFlow, PendingDeviceAuthorization};
@@ -46,6 +47,7 @@ pub use discovery::Endpoints;
 pub use flow::{AuthFlow, AuthOutcome, PendingAuthorization};
 pub use pkce::Pkce;
 pub use token::StoredTokenSource;
+pub use user_store::{user_scoped, InMemoryUserTokenStore, UserTokenStore};
 
 /// The optional `oauth:` block on an MCP server's config. Every field is an
 /// *override* — with the block present but empty, discovery and dynamic client
