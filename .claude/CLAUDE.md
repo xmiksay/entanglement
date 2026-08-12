@@ -289,14 +289,12 @@ never here**; each bullet is the claim + where to read it:
   slice via a per-user admission gate (`HttpClient::with_user_budget`) layered
   above the shared endpoint pool, mirroring ADR-0140's per-model gate.
   [ADR-0175](../docs/adr/0175-per-user-admission-gate-on-a-shared-literal-key.md).
-  An **authenticated multi-user wire head** ships opt-in (#674,
-  `skutter serve --auth-tokens <file>`): a pluggable `WireAuthenticator`
-  binds a `UserId` to a connection at WS-upgrade time (401 before the WS
-  loop otherwise), the authenticated connection handler becomes the trusted
-  `Spawn` author (zero change to the wire-refused allowlist) to populate
-  `SessionUserRegistry`, and a hard per-user frame gate layers ahead of
-  ADR-0107's existing per-connection ownership; unset, `serve` stays exactly
-  ADR-0048's local posture. [ADR-0174](../docs/adr/0174-authenticated-multi-user-wire-head.md).
+  No in-tree head ships multi-user: the authenticated multi-user wire head
+  designed by ADR-0174 was built (#674), then removed (#686) — `UserId` must
+  not appear anywhere in `entanglement-runtime`; `serve` stays exactly
+  ADR-0048's local posture. An authenticated wire head is an embedder's own
+  build, out of tree. [ADR-0181](../docs/adr/0181-userid-leaves-the-runtime-crate.md)
+  supersedes [ADR-0174](../docs/adr/0174-authenticated-multi-user-wire-head.md).
 
 | Topic | Module |
 | --- | --- |

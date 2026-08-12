@@ -2,8 +2,8 @@
 //! budgets, permission ceiling, and grants in one running engine — the
 //! **embedder library API** an in-process embedder wires instead of the
 //! process-global defaults `skutter`'s CLI builds. `serve` stays single-user
-//! (ADR-0048); an authenticated multi-user wire head is designed (not yet
-//! built) by ADR-0174.
+//! (ADR-0048); no in-tree head ships multi-user (ADR-0181 supersedes the
+//! ADR-0174 authenticated wire head).
 //!
 //! - [`provider`] — per-user provider catalog + API keys, feeding
 //!   [`EngineConfig::model_resolver`][entanglement_core::EngineConfig] (#522
