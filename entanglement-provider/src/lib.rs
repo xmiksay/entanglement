@@ -66,11 +66,11 @@ pub use mcp::{
     },
     jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef,
 };
-pub use multi_user::{
-    build_user_model_resolver, InMemoryUserProviderStore, UserProviderContext, UserProviderStore,
-};
 pub use message::{
     content_has_image, content_text, ContentPart, ImageSource, Message, MessageRole,
+};
+pub use multi_user::{
+    build_user_model_resolver, InMemoryUserProviderStore, UserProviderContext, UserProviderStore,
 };
 pub use openai::{
     openai_factory, OpenAiLlm, OLLAMA_BASE, OPENAI_BASE, ZAI_CODING_PLAN_BASE, ZAI_GENERAL_BASE,
