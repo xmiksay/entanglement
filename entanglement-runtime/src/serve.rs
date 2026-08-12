@@ -29,7 +29,6 @@
 //! [ADR-0048]: ../../docs/adr/0048-serve-head-local-trust-model.md
 //! [ADR-0107]: ../../docs/adr/0107-ws-per-connection-approval-ownership.md
 
-pub mod auth;
 mod socket;
 
 use std::collections::HashMap;
@@ -47,7 +46,6 @@ use axum::{
 };
 use entanglement_core::{Holly, SessionId};
 
-pub use auth::{ServeAuth, StaticTokenAuthenticator, WireAuthenticator};
 use socket::handle_socket;
 
 /// Identifies one WS connection for the lifetime of the process; minted from
@@ -96,67 +94,34 @@ struct ServeState {
     /// `Some` → only browsers presenting this exact `Origin` may connect; `None`
     /// → accept every origin (raw clients send none). Opt-in per ADR-0048.
     allowed_origin: Option<String>,
-    /// `Some` → the opt-in authenticated mode (#674, ADR-0174): every WS
-    /// upgrade must present a resolvable bearer credential. `None` keeps the
-    /// ADR-0048 unauthenticated local posture byte-for-byte.
-    auth: Option<ServeAuth>,
     next_conn_id: AtomicU64,
     session_owners: SessionOwners,
 }
 
 /// Bind `127.0.0.1:port` (loopback-only, ADR-0048) and serve the WS head until
 /// Ctrl-C. The bind is the required non-public control, so no non-loopback bind
-/// is offered — even authenticated mode stays loopback (a deployment that
-/// wants more terminates TLS in front, per ADR-0174 §5).
-pub async fn serve(
-    holly: Holly,
-    port: u16,
-    allowed_origin: Option<String>,
-    auth: Option<ServeAuth>,
-) -> Result<()> {
+/// is offered.
+pub async fn serve(holly: Holly, port: u16, allowed_origin: Option<String>) -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding serve head to {addr}"))?;
     let local = listener.local_addr().unwrap_or(addr);
-    let authed = if auth.is_some() {
-        " (authenticated)"
-    } else {
-        ""
-    };
-    tracing::info!(%local, "serve head listening (ws: /ws){authed}");
-    eprintln!("skutter serve: http://{local}  (WebSocket: ws://{local}/ws){authed}");
+    tracing::info!(%local, "serve head listening (ws: /ws)");
+    eprintln!("skutter serve: http://{local}  (WebSocket: ws://{local}/ws)");
 
-    axum::serve(listener, router_with_auth(holly, allowed_origin, auth))
+    axum::serve(listener, router(holly, allowed_origin))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("serve head")
 }
 
-/// Build the axum router in the default, unauthenticated posture (ADR-0048).
-/// Split from [`serve`] so tests can drive the handlers over their own
-/// ephemeral listener.
+/// Build the axum router. Split from [`serve`] so tests can drive the handlers
+/// over their own ephemeral listener.
 pub fn router(holly: Holly, allowed_origin: Option<String>) -> Router {
-    router_with_auth(holly, allowed_origin, None)
-}
-
-/// [`router`] plus the opt-in authenticated mode (#674, ADR-0174): with
-/// `auth` set, the WS upgrade requires a resolvable `Authorization: Bearer`
-/// credential, the connection handler becomes the trusted `Spawn` author for
-/// the sessions it authenticates, and a broadcast maintainer keeps
-/// [`ServeAuth::registry`] in sync with spawned children and ended sessions.
-pub fn router_with_auth(
-    holly: Holly,
-    allowed_origin: Option<String>,
-    auth: Option<ServeAuth>,
-) -> Router {
-    if let Some(auth) = &auth {
-        auth::spawn_registry_maintainer(&holly, auth.registry.clone());
-    }
     let state = Arc::new(ServeState {
         holly,
         allowed_origin,
-        auth,
         next_conn_id: AtomicU64::new(0),
         session_owners: SessionOwners::default(),
     });
@@ -193,23 +158,7 @@ async fn ws_upgrade(
         );
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
-    // Authenticated mode (#674, ADR-0174 §1): resolve the bearer credential at
-    // the upgrade, before any WS traffic — an unauthenticated peer never even
-    // opens a socket to probe `wire_allowed()`. The resolved `UserId` binds to
-    // this connection (its `ConnId`) for the connection's whole lifetime.
-    let user = match &state.auth {
-        None => None,
-        Some(auth) => {
-            match auth::bearer_token(&headers).and_then(|t| auth.authenticator.authenticate(t)) {
-                Some(user) => Some(user),
-                None => {
-                    tracing::warn!("serve: refused WS connect (authentication required)");
-                    return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-                }
-            }
-        }
-    };
-    ws.on_upgrade(move |socket| handle_socket(socket, state, user))
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
 #[cfg(test)]

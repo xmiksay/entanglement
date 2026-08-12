@@ -46,8 +46,6 @@ mod reoffer_dedupe;
 mod replay_from;
 #[cfg(feature = "serve")]
 mod serve;
-#[cfg(feature = "serve")]
-mod serve_auth;
 #[cfg(feature = "provider")]
 mod session_title;
 mod skill_mask;
