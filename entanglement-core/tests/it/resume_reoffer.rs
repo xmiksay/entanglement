@@ -162,6 +162,7 @@ async fn resume_of_drained_tail_continues_the_turn_without_reoffer() {
             content: vec![],
             is_error: false,
             duration_ms: None,
+            exit_code: None,
         },
     ));
 

@@ -23,11 +23,11 @@ pub(super) fn resolve_retained(
     parsed: &PollInput,
 ) -> String {
     if parsed.kill {
-        return super::kill_refused_message(&parsed.handle);
+        return super::format::kill_refused_message(&parsed.handle);
     }
     match retained.page(&parsed.handle, session, parsed.offset, parsed.tail) {
         Some(page) => format_retained_page(&parsed.handle, page),
-        None => super::unknown_handle(&parsed.handle),
+        None => super::format::unknown_handle(&parsed.handle),
     }
 }
 
@@ -105,7 +105,8 @@ mod tests {
             &session,
             &serde_json::json!({"handle": id, "tail": 10}).to_string(),
         )
-        .await;
+        .await
+        .0;
         assert!(
             first.contains("line1") && first.contains("line10"),
             "{first}"
@@ -121,7 +122,8 @@ mod tests {
             &session,
             &serde_json::json!({"handle": id, "offset": 10, "tail": 10}).to_string(),
         )
-        .await;
+        .await
+        .0;
         assert!(
             second.contains("line11") && second.contains("line20"),
             "{second}"
@@ -145,7 +147,8 @@ mod tests {
             &session,
             &serde_json::json!({"handle": id}).to_string(),
         )
-        .await;
+        .await
+        .0;
         assert!(out.contains("out/result.txt"), "{out}");
     }
 
@@ -164,7 +167,8 @@ mod tests {
             &session,
             &serde_json::json!({"handle": id, "kill": true}).to_string(),
         )
-        .await;
+        .await
+        .0;
         assert!(
             out.contains("not supported") && out.contains("retained-output"),
             "{out}"
@@ -188,7 +192,8 @@ mod tests {
             &stranger,
             &serde_json::json!({"handle": id}).to_string(),
         )
-        .await;
+        .await
+        .0;
         assert!(out.contains("unknown handle"), "{out}");
     }
 }

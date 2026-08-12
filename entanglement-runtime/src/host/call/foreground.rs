@@ -34,7 +34,7 @@ pub(super) async fn run_foreground(
     tail: u32,
     secs: u64,
     dur: Duration,
-) -> Result<String> {
+) -> Result<(String, Option<i32>)> {
     // Validate + read input_file and resolve the output target *before*
     // spawning — a bad path (escape, missing input_file) must never launch
     // the child (#381, #386).
@@ -98,17 +98,21 @@ pub(super) async fn run_foreground(
             if let Some(target) = &output_target {
                 persist_output(target, &output.stdout, &output.stderr).await?;
             }
-            Ok(with_io_warning(
-                format_call_output(
-                    output.status.code(),
-                    &output.stdout,
-                    &output.stderr,
-                    tail,
-                    output_rel,
-                    retained,
-                    session,
+            let code = output.status.code();
+            Ok((
+                with_io_warning(
+                    format_call_output(
+                        code,
+                        &output.stdout,
+                        &output.stderr,
+                        tail,
+                        output_rel,
+                        retained,
+                        session,
+                    ),
+                    io_error,
                 ),
-                io_error,
+                code,
             ))
         }
         // Return the output buffered before the kill (tailed like a normal
@@ -123,17 +127,20 @@ pub(super) async fn run_foreground(
             if let Some(target) = &output_target {
                 persist_output(target, &stdout, &stderr).await?;
             }
-            Ok(with_io_warning(
-                format_call_streams(
-                    &format!("[killed: timed out after {secs}s]\n"),
-                    &stdout,
-                    &stderr,
-                    tail,
-                    output_rel,
-                    retained,
-                    session,
+            Ok((
+                with_io_warning(
+                    format_call_streams(
+                        &format!("[killed: timed out after {secs}s]\n"),
+                        &stdout,
+                        &stderr,
+                        tail,
+                        output_rel,
+                        retained,
+                        session,
+                    ),
+                    io_error,
                 ),
-                io_error,
+                None,
             ))
         }
         Err(e) => Err(anyhow::anyhow!("call io error: {e}")),

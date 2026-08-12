@@ -70,6 +70,36 @@ pub trait Tool: Send + Sync {
     ) -> anyhow::Result<Vec<ContentPart>> {
         self.run_content(input).await
     }
+
+    /// Metadata-carrying entry point (#681, ADR-0186) — what
+    /// [`ToolRegistry::execute`] actually calls. Default wraps
+    /// [`run_for_session`][Tool::run_for_session] with no metadata, so only a
+    /// tool that genuinely *has* a numeric exit status (`bash`/`call` — the
+    /// process runners) overrides this; every other impl is untouched. The
+    /// `[exit N]` text inside `content` is unchanged either way — the field is
+    /// additive, mirroring how `is_error`/`duration_ms` ride beside the text
+    /// (ADR-0176).
+    async fn run_with_meta(
+        &self,
+        session: &SessionId,
+        request_id: &str,
+        input: &str,
+    ) -> anyhow::Result<ToolRun> {
+        Ok(ToolRun {
+            content: self.run_for_session(session, request_id, input).await?,
+            exit_code: None,
+        })
+    }
+}
+
+/// A tool's successful result plus its structured metadata (#681, ADR-0186):
+/// the numeric exit status when the call ran a process to completion
+/// (`bash`/`call` foreground), `None` for every other tool — and for a
+/// signal-killed or timed-out process, where no code exists (the `[exit -1]`
+/// text keeps its lossy sentinel; the field stays honest).
+pub struct ToolRun {
+    pub content: Vec<ContentPart>,
+    pub exit_code: Option<i32>,
 }
 
 /// One text part for a non-empty string, none for an empty one — the same fold
@@ -93,13 +123,17 @@ pub(crate) fn text_parts(text: String) -> Vec<ContentPart> {
 pub struct ToolExecution {
     pub content: Vec<ContentPart>,
     pub is_error: bool,
+    /// The process exit status for a process-running tool (#681, ADR-0186);
+    /// `None` for every other tool, an errored dispatch, or a killed process.
+    pub exit_code: Option<i32>,
 }
 
 impl ToolExecution {
-    fn ok(content: Vec<ContentPart>) -> Self {
+    fn ok(run: ToolRun) -> Self {
         Self {
-            content,
+            content: run.content,
             is_error: false,
+            exit_code: run.exit_code,
         }
     }
 
@@ -107,6 +141,7 @@ impl ToolExecution {
         Self {
             content,
             is_error: true,
+            exit_code: None,
         }
     }
 }
@@ -218,8 +253,8 @@ impl ToolRegistry {
     /// separate id is minted here.
     pub async fn execute(&self, call: &ToolCall, session: &SessionId) -> ToolExecution {
         match self.tools.get(call.name.as_str()) {
-            Some(tool) => match tool.run_for_session(session, &call.id, &call.input).await {
-                Ok(content) => ToolExecution::ok(content),
+            Some(tool) => match tool.run_with_meta(session, &call.id, &call.input).await {
+                Ok(run) => ToolExecution::ok(run),
                 Err(e) => {
                     ToolExecution::err(text_parts(format!("tool `{}` failed: {e}", call.name)))
                 }
@@ -314,6 +349,52 @@ mod tests {
             )
             .await;
         assert_eq!(out.content, vec![ContentPart::text("hi")]);
+        assert!(!out.is_error);
+        // #681, ADR-0186: a tool that doesn't override `run_with_meta` (i.e.
+        // everything but the process runners) carries no exit code.
+        assert_eq!(out.exit_code, None);
+    }
+
+    /// #681, ADR-0186: a `run_with_meta` override's exit code survives the
+    /// registry boundary onto [`ToolExecution`]; the default path stays `None`.
+    struct ExitCoded;
+    #[async_trait]
+    impl Tool for ExitCoded {
+        fn name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("exit_coded")
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            unreachable!("run_with_meta is overridden; run/run_content are never called")
+        }
+        async fn run_with_meta(
+            &self,
+            _session: &SessionId,
+            _request_id: &str,
+            _input: &str,
+        ) -> anyhow::Result<ToolRun> {
+            Ok(ToolRun {
+                content: text_parts("[exit 7]".to_string()),
+                exit_code: Some(7),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn run_with_meta_exit_code_reaches_tool_execution() {
+        let mut reg = ToolRegistry::new();
+        reg.register(ExitCoded);
+        let out = reg
+            .execute(
+                &ToolCall {
+                    id: "1".into(),
+                    name: "exit_coded".into(),
+                    input: "".into(),
+                    provider_meta: None,
+                },
+                &dummy_session(),
+            )
+            .await;
+        assert_eq!(out.exit_code, Some(7));
         assert!(!out.is_error);
     }
 

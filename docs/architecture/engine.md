@@ -47,6 +47,8 @@ Batch calls thereby execute **concurrently**, not serially in call order
 a stale, duplicate, or unknown `ToolResult` is dropped with a debug trace.
 `ToolResult`'s `is_error`/`duration_ms` fields (#636,
 [ADR-0176](../adr/0176-structured-tool-result-is-error-and-duration-fields.md))
+and `exit_code` (#681,
+[ADR-0186](../adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md))
 ride straight through to the emitted `ToolOutput` — display-only, so they never
 feed `Context`; the model still sees only the text.
 **Every** tool call takes the runtime round-trip; core holds no executable tools

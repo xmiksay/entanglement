@@ -298,6 +298,7 @@ async fn image_tool_result_folds_into_context_and_event() {
             content: vec![image.clone()],
             is_error: false,
             duration_ms: None,
+            exit_code: None,
         })
         .await
         .unwrap();
@@ -318,6 +319,53 @@ async fn image_tool_result_folds_into_context_and_event() {
         .find(|m| m.tool_call_id.as_deref() == Some("a"))
         .expect("tool message for `a`");
     assert_eq!(tool_msg.content, vec![image]);
+}
+
+/// #681, ADR-0186: `exit_code` submitted on the `ToolResult` rides the
+/// structured side channel through to the emitted `ToolOutput` — a wire
+/// consumer can branch on the numeric status without parsing `[exit N]`.
+#[tokio::test]
+async fn exit_code_rides_tool_result_to_tool_output() {
+    let (holly, _seen) = engine(vec![
+        LlmResponse {
+            text: String::new(),
+            tool_calls: vec![call("a", "bash")],
+        },
+        LlmResponse {
+            text: "final".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    let obs = holly.subscribe();
+
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    assert_eq!(await_tool_execs(&mut sub, &sid, 1).await, vec!["a"]);
+
+    holly
+        .send(InMsg::ToolResult {
+            session: sid.clone(),
+            request_id: "a".into(),
+            content: vec![ContentPart::text("[exit 3]\nboom")],
+            is_error: false,
+            duration_ms: Some(12),
+            exit_code: Some(3),
+        })
+        .await
+        .unwrap();
+
+    let events = collect_for(obs, &sid, Duration::from_millis(500)).await;
+    let observed = events.iter().find_map(|e| match e {
+        OutEvent::ToolOutput {
+            exit_code,
+            is_error,
+            duration_ms,
+            ..
+        } => Some((*exit_code, *is_error, *duration_ms)),
+        _ => None,
+    });
+    assert_eq!(observed, Some((Some(3), false, Some(12))));
 }
 
 /// `Stop` while parked mid-batch cancels the turn (no `Done`) but keeps the

@@ -84,8 +84,13 @@ Execution *and* permission dispatch now run in the runtime (✅ #58, #59):
 `ToolExec`'s `Allow|Ask|Deny` against the session's active profile (§3), runs the
 cleared tool against the registry, and replies with `InMsg::ToolResult`.
 `ToolRegistry::execute(&self, call: &ToolCall, session: &SessionId)` threads the
-caller's `SessionId` through to `Tool::run_for_session` (#360,
-[ADR-0088](../adr/0088-session-aware-tool-execution.md)) — a default-delegating
+caller's `SessionId` through to `Tool::run_with_meta` (#681,
+[ADR-0186](../adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md))
+— a defaulted method returning `ToolRun{content, exit_code}` that delegates to
+`Tool::run_for_session` (#360,
+[ADR-0088](../adr/0088-session-aware-tool-execution.md)) with `exit_code: None`,
+so only the process runners (`bash`/`call`) override it to surface their numeric
+exit status as a real field. `run_for_session` itself stays a default-delegating
 method (falls back to `run_content`) so every in-tree tool is unaffected; a
 multi-tenant embedder overrides it to dispatch per-tenant MCP endpoints or scope
 a DB-backed tool's writes to the caller, since a shared `ToolRegistry` otherwise
@@ -508,7 +513,7 @@ and the inbound `InMsg::Prompt` fan-out — so no new protocol surface is added.
 | point | fires | can block? | payload |
 | --- | --- | --- | --- |
 | `pre_tool_use` | top of the generic `dispatch` (`Intercept::Permission`), **before** the `Allow`/`Ask`/`Deny` decision | **yes** — a non-zero exit vetoes: the tool neither prompts nor runs, and the hook's output becomes the `ToolResult` | `{event, session, tool, input}` |
-| `post_tool_use` | in `run_and_reply` after the tool result, before it folds back | no — observational (exit code logged, never fed to the model); it cannot rewrite the result | `{event, session, tool, input, output, is_error}` — `is_error` (#636, ADR-0176) is the same structured classification that rides `OutEvent::ToolOutput`, so a hook can branch on outcome without re-parsing `output`'s text |
+| `post_tool_use` | in `run_and_reply` after the tool result, before it folds back | no — observational (exit code logged, never fed to the model); it cannot rewrite the result | `{event, session, tool, input, output, is_error, exit_code}` — `is_error` (#636, ADR-0176) is the same structured classification that rides `OutEvent::ToolOutput`, so a hook can branch on outcome without re-parsing `output`'s text; `exit_code` (#681, ADR-0186) is the observed process exit status for `bash`/`call` (JSON `null` for every other tool and for a killed process), so a hook can branch on a specific status without string-matching `[exit N]` |
 | `user_prompt_submit` | when an `InMsg::Prompt` reaches the engine (the executor's inbound `Stop` watcher) | no — observational | `{event, session, prompt}` |
 
 - **Config:** the `hooks:` section of the layered user config (§ADR-0047/#172).

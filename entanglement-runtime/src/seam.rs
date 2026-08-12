@@ -42,7 +42,7 @@ pub async fn reply(
     } else {
         vec![ContentPart::text(output)]
     };
-    reply_content(holly, session, request_id, content, is_error, None).await;
+    reply_content(holly, session, request_id, content, is_error, None, None).await;
 }
 
 /// Fold a **multimodal** tool result back to core (#221) — `read` uses this to
@@ -50,7 +50,10 @@ pub async fn reply(
 /// `duration_ms` (#636, ADR-0176) is `Some` only from the generic host-tool
 /// dispatch (`run_and_reply`), which is the one caller that actually measures
 /// execution wall-clock; every other route (denials, refusals, orchestrated
-/// tools) passes `None`.
+/// tools) passes `None`. `exit_code` (#681, ADR-0186) is `Some` only when the
+/// call ran a process to a real exit status — the host-tool dispatch for a
+/// foreground `bash`/`call`, and `poll` when it observes a background job
+/// exit; everything else passes `None`.
 pub async fn reply_content(
     holly: &Holly,
     session: SessionId,
@@ -58,9 +61,17 @@ pub async fn reply_content(
     content: Vec<ContentPart>,
     is_error: bool,
     duration_ms: Option<u64>,
+    exit_code: Option<i32>,
 ) {
     let _ = holly
-        .submit_tool_result(session, request_id, content, is_error, duration_ms)
+        .submit_tool_result(
+            session,
+            request_id,
+            content,
+            is_error,
+            duration_ms,
+            exit_code,
+        )
         .await;
 }
 

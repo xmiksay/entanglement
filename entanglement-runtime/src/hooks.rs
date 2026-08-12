@@ -147,7 +147,10 @@ impl Hooks {
     /// `output` and `is_error` (#636, ADR-0176). Purely side-effecting: a
     /// non-zero exit is logged, never fed back to the model — and `is_error`
     /// itself cannot rewrite `content` either, it only lets a hook branch on the
-    /// outcome instead of re-parsing `output`'s text.
+    /// outcome instead of re-parsing `output`'s text. `exit_code` (#681,
+    /// ADR-0186) is the observed process exit status for `bash`/`call` — JSON
+    /// `null` for every other tool and for a killed process — so a hook can
+    /// branch on a specific status without string-matching `[exit N]`.
     pub async fn run_post_tool_use(
         &self,
         session: &SessionId,
@@ -155,6 +158,7 @@ impl Hooks {
         input: &str,
         output: &str,
         is_error: bool,
+        exit_code: Option<i32>,
     ) {
         for spec in self.post_tool_use.iter().filter(|s| s.matches_tool(tool)) {
             let payload = json!({
@@ -164,6 +168,7 @@ impl Hooks {
                 "input": parse_input(input),
                 "output": output,
                 "is_error": is_error,
+                "exit_code": exit_code,
             });
             let outcome = invoke(spec, HookEvent::PostToolUse, Some(tool), session, payload).await;
             if !outcome.succeeded() {
@@ -459,7 +464,14 @@ mod tests {
             ..Default::default()
         };
         hooks
-            .run_post_tool_use(&SessionId::new("s"), "write", "{}", "wrote file", false)
+            .run_post_tool_use(
+                &SessionId::new("s"),
+                "write",
+                "{}",
+                "wrote file",
+                false,
+                None,
+            )
             .await;
         assert!(marker.exists());
     }
@@ -479,11 +491,37 @@ mod tests {
                 "{}",
                 "tool `bash` denied by permission profile",
                 true,
+                None,
             )
             .await;
         let written = std::fs::read_to_string(&out).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["is_error"], true);
+        assert_eq!(v["exit_code"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn post_hook_payload_carries_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.json");
+        let hooks = Hooks {
+            post_tool_use: vec![spec(&format!("cat > {}", out.display()))],
+            ..Default::default()
+        };
+        hooks
+            .run_post_tool_use(
+                &SessionId::new("s"),
+                "bash",
+                "{}",
+                "[exit 3]\nboom",
+                false,
+                Some(3),
+            )
+            .await;
+        let written = std::fs::read_to_string(&out).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(v["exit_code"], 3);
+        assert_eq!(v["is_error"], false);
     }
 
     #[tokio::test]

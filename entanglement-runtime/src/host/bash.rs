@@ -198,7 +198,7 @@ impl Tool for BashTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        self.run_impl(None, "", input).await
+        Ok(self.run_impl(None, "", input).await?.0)
     }
 
     async fn run_for_session(
@@ -207,9 +207,23 @@ impl Tool for BashTool {
         request_id: &str,
         input: &str,
     ) -> Result<Vec<ContentPart>> {
-        Ok(crate::tools::text_parts(
-            self.run_impl(Some(session), request_id, input).await?,
-        ))
+        Ok(self
+            .run_with_meta(session, request_id, input)
+            .await?
+            .content)
+    }
+
+    async fn run_with_meta(
+        &self,
+        session: &SessionId,
+        request_id: &str,
+        input: &str,
+    ) -> Result<crate::tools::ToolRun> {
+        let (text, exit_code) = self.run_impl(Some(session), request_id, input).await?;
+        Ok(crate::tools::ToolRun {
+            content: crate::tools::text_parts(text),
+            exit_code,
+        })
     }
 }
 
@@ -219,12 +233,17 @@ impl BashTool {
     /// approved for. `session` (#479, ADR-0104 amendment) resolves the
     /// per-profile confinement policy; `None` (the plain [`Tool::run`] path)
     /// resolves against the resolver's process-global default.
+    /// Returns the formatted output plus the process exit code (#681,
+    /// ADR-0186) — `Some` only when the foreground command ran to completion
+    /// with a real status; a background launch, a timeout kill, or a
+    /// signal-killed child yield `None` (the `[exit -1]` text keeps its
+    /// sentinel; the field does not repeat the lie).
     async fn run_impl(
         &self,
         session: Option<&SessionId>,
         request_id: &str,
         input: &str,
-    ) -> Result<String> {
+    ) -> Result<(String, Option<i32>)> {
         let parsed: BashInput = serde_json::from_str(input)
             .context("invalid input to bash: expected {\"command\": string, ...}")?;
         let cwd = super::resolve_workdir_or_grant(
@@ -245,40 +264,47 @@ impl BashTool {
                 .jobs
                 .spawn(parsed.command.clone(), cmd, dur, session.cloned())
                 .with_context(|| "spawning background bash command")?;
-            return Ok(format!(
-                "[background job {id} started]\n\
-                 Poll with `poll` (handle=\"{id}\") for incremental output; \
-                 pass kill=true to stop it. Killed automatically after {secs}s if \
-                 still running."
+            return Ok((
+                format!(
+                    "[background job {id} started]\n\
+                     Poll with `poll` (handle=\"{id}\") for incremental output; \
+                     pass kill=true to stop it. Killed automatically after {secs}s if \
+                     still running."
+                ),
+                None,
             ));
         }
 
         let child = cmd.spawn().with_context(|| "spawning bash command")?;
 
         match wait_or_kill_group(child, dur).await {
-            Ok(ExecOutcome::Completed { output, io_error }) => Ok(with_io_warning(
-                format_bash_output(
-                    output.status.code(),
-                    &output.stdout,
-                    &output.stderr,
-                    parsed.tail,
-                ),
-                io_error,
-            )),
+            Ok(ExecOutcome::Completed { output, io_error }) => {
+                let code = output.status.code();
+                Ok((
+                    with_io_warning(
+                        format_bash_output(code, &output.stdout, &output.stderr, parsed.tail),
+                        io_error,
+                    ),
+                    code,
+                ))
+            }
             // Return the output buffered before the kill alongside the notice —
             // the prefix is often the diagnostic the model needs (#169).
             Ok(ExecOutcome::TimedOut {
                 stdout,
                 stderr,
                 io_error,
-            }) => Ok(with_io_warning(
-                format_bash_streams(
-                    &format!("[killed: timed out after {secs}s]\n"),
-                    &stdout,
-                    &stderr,
-                    parsed.tail,
+            }) => Ok((
+                with_io_warning(
+                    format_bash_streams(
+                        &format!("[killed: timed out after {secs}s]\n"),
+                        &stdout,
+                        &stderr,
+                        parsed.tail,
+                    ),
+                    io_error,
                 ),
-                io_error,
+                None,
             )),
             Err(e) => Err(anyhow::anyhow!("bash io error: {e}")),
         }
@@ -379,6 +405,40 @@ mod tests {
         let out = tool.run(r#"{"command":"echo hi"}"#).await.unwrap();
         assert!(out.starts_with("[exit 0]\n"), "{out}");
         assert!(out.contains("hi"), "{out}");
+    }
+
+    /// #681, ADR-0186: a foreground command's numeric exit status rides
+    /// `ToolRun::exit_code` as a real field, alongside the unchanged
+    /// `[exit N]` text.
+    #[tokio::test]
+    async fn run_with_meta_carries_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(dir.path().to_path_buf());
+        let run = tool
+            .run_with_meta(&SessionId::new("s"), "r1", r#"{"command":"exit 3"}"#)
+            .await
+            .unwrap();
+        assert_eq!(run.exit_code, Some(3));
+        let text = entanglement_core::content_text(&run.content);
+        assert!(text.starts_with("[exit 3]"), "{text}");
+    }
+
+    /// #681: a background launch has no exit status yet — the field stays
+    /// `None` (the code surfaces later through `poll`).
+    #[tokio::test]
+    async fn run_with_meta_background_launch_has_no_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = crate::host::jobs::JobRegistry::new();
+        let tool = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs);
+        let run = tool
+            .run_with_meta(
+                &SessionId::new("s"),
+                "r1",
+                r#"{"command":"echo hi","background":true}"#,
+            )
+            .await
+            .unwrap();
+        assert_eq!(run.exit_code, None);
     }
 
     /// #622: the model can pass `tail` end-to-end, matching `call`'s knob.
