@@ -50,7 +50,11 @@ a stale, duplicate, or unknown `ToolResult` is dropped with a debug trace.
 and `exit_code` (#681,
 [ADR-0186](../adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md))
 ride straight through to the emitted `ToolOutput` — display-only, so they never
-feed `Context`; the model still sees only the text.
+feed `Context`; the model still sees only the text. The #636 hand-audit covers
+the runtime-owned `poll` route too (#695, the remainder ADR-0176 deferred):
+unknown-handle, refused-`kill`, and script-terminal-error polls set
+`is_error`; every state report from a poll that ran — including a job exiting
+nonzero, whose status rides `exit_code` orthogonally — stays `false`.
 **Every** tool call takes the runtime round-trip; core holds no executable tools
 and runs nothing inline — the built-ins were removed in #231
 ([ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)), and the

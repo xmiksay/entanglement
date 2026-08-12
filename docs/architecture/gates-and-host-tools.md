@@ -457,7 +457,14 @@ first), the kill poll reports "stop requested", and the *next* poll reports
 `stopped (killed)`; refused on a
 sub-agent or retained-output handle (nothing to cancel/kill in the latter
 case). An unknown (or not-the-caller's-own) handle is an *error*, adopting
-`agent_poll`'s convention over `bash_output`'s return-it-as-text. Retention
+`agent_poll`'s convention over `bash_output`'s return-it-as-text — and these
+model-mistake branches (unknown handle, refused `kill`) plus a script's own
+terminal error also set the structured `is_error` flag on the `ToolResult`
+(#695, closing the hand-audit remainder ADR-0176 deferred for this
+runtime-owned route); every outcome of a poll that ran —
+running/complete/list/paged, a job exiting nonzero (`exit_code` stays
+orthogonal, ADR-0186), a killed job or cooperatively-stopped script — stays
+`false`. Retention
 is a `RetainedOutputRegistry` shared with `call`, `agent`, and the sponsored
 build reply `propose_plan` folds back (#614) the same way `JobRegistry` is
 shared with `bash`/`call` — capped per-operation (256 KiB, keeping the

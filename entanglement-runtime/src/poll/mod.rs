@@ -33,7 +33,12 @@
 //! retained-output handle — cancelling a child is a distinct authorization
 //! gate ADR-0033 deferred, and a retained-output entry has nothing running to
 //! kill. An unknown (or not-the-caller's-own) handle is an *error*, adopting
-//! `agent_poll`'s convention over `bash_output`'s return-it-as-text.
+//! `agent_poll`'s convention over `bash_output`'s return-it-as-text. These
+//! model-mistake branches — unknown handle, refused `kill` — and a script's
+//! own terminal error also set the structured `is_error` flag on the
+//! `ToolResult` (#695, ADR-0176's deferred remainder); every outcome of a
+//! poll that ran (running/complete/list/paged, a job exiting nonzero, a
+//! killed job or script) stays `false`.
 //!
 //! **`offset`/`tail` page a retained-output handle** (#608, ADR-0161 §7): the
 //! operation registry that already holds a completed operation now holds its
@@ -75,7 +80,9 @@ use crate::script_ops::ScriptRegistry;
 use crate::seam;
 use crate::subagent::format_agent_answer;
 use crate::tool_names::POLL_TOOL;
-use format::{format_job_poll, format_script_poll, kill_refused_message, unknown_handle};
+use format::{
+    format_job_poll, kill_refused_message, script_poll_outcome, unknown_handle, PollOutcome,
+};
 use retained::{is_retained_handle, resolve_retained};
 
 /// Default poll timeout when the model omits `timeout_secs`.
@@ -230,33 +237,30 @@ pub async fn run_poll(
     request_id: String,
     input: String,
 ) {
-    let (output, exit_code) = resolve(&jobs, &agents, &retained, &scripts, &session, &input).await;
-    // `poll`'s result folds several outcomes (running/complete/list/unknown
-    // handle) into one status-line-then-body string; distinguishing them as
-    // `is_error` (#636, ADR-0176) is left to a follow-up — `poll` is a
-    // runtime-owned orchestration route (like `agent`/`ask_user`), not the
-    // generic host-tool dispatch this pass audited. `exit_code` (#681,
-    // ADR-0186) rides the same structured side channel as a foreground
-    // `bash`/`call`: `Some` only when this poll observed a job (`j-`) exit
-    // with a real status.
+    let outcome = resolve(&jobs, &agents, &retained, &scripts, &session, &input).await;
+    // The structured side channel (#636/ADR-0176, #681/ADR-0186, #695):
+    // `is_error` marks the branches where the requested call never ran — an
+    // unknown handle, a refused `kill`, a script's own terminal error —
+    // while a poll that ran and reports state stays `false`. `exit_code`
+    // rides alongside, orthogonal: `Some` only when this poll observed a job
+    // (`j-`) exit with a real status.
     seam::reply_content(
         &holly,
         session,
         request_id,
-        crate::tools::text_parts(output),
-        false,
+        crate::tools::text_parts(outcome.text),
+        outcome.is_error,
         None,
-        exit_code,
+        outcome.exit_code,
     )
     .await;
 }
 
-/// The `poll` join logic: dispatch on handle kind, wait, and render the result
-/// text plus — for a job (`j-`) poll that observed the child exit with a real
-/// status — the numeric exit code (#681, ADR-0186). Every other outcome
-/// (running, list, script/agent/retained handles, a signal-killed job) carries
-/// `None`. No `Holly` involved — [`run_poll`] folds this back as the
-/// `ToolResult`.
+/// The `poll` join logic: dispatch on handle kind, wait, and classify the
+/// result ([`PollOutcome`]) — the rendered text, the numeric exit code for a
+/// job (`j-`) poll that observed the child exit with a real status (#681,
+/// ADR-0186), and the `is_error` flag for the model-mistake branches (#695).
+/// No `Holly` involved — [`run_poll`] folds this back as the `ToolResult`.
 async fn resolve(
     jobs: &JobRegistry,
     agents: &AgentRegistry,
@@ -264,12 +268,13 @@ async fn resolve(
     scripts: &ScriptRegistry,
     session: &SessionId,
     input: &str,
-) -> (String, Option<i32>) {
+) -> PollOutcome {
     let Some(parsed) = parse_input(input) else {
         // No handle (#607, ADR-0161 §6): list this session's own pending
-        // operations instead of joining a single one.
+        // operations instead of joining a single one. Malformed input lands
+        // here too, deliberately — the listing is the recovery path.
         let ops = crate::operations::list_operations(jobs, agents, scripts, Some(session));
-        return (crate::operations::format_operations(&ops), None);
+        return PollOutcome::ok(crate::operations::format_operations(&ops));
     };
 
     if is_job_handle(&parsed.handle) {
@@ -282,26 +287,25 @@ async fn resolve(
                     JobStatus::Exited(code) => code,
                     JobStatus::Running => None,
                 };
-                (format_job_poll(&parsed.handle, p), exit_code)
+                PollOutcome::exited(format_job_poll(&parsed.handle, p), exit_code)
             }
-            None => (unknown_handle(&parsed.handle), None),
+            None => PollOutcome::err(unknown_handle(&parsed.handle)),
         };
     }
 
-    let text = if is_script_handle(&parsed.handle) {
+    if is_script_handle(&parsed.handle) {
         match scripts
             .poll(&parsed.handle, session, parsed.kill, parsed.timeout_secs)
             .await
         {
-            Some(p) => format_script_poll(&parsed.handle, p, parsed.kill),
-            None => unknown_handle(&parsed.handle),
+            Some(p) => script_poll_outcome(&parsed.handle, p, parsed.kill),
+            None => PollOutcome::err(unknown_handle(&parsed.handle)),
         }
     } else if is_retained_handle(&parsed.handle) {
         resolve_retained(retained, session, &parsed)
     } else {
         resolve_agent(agents, retained, session, parsed).await
-    };
-    (text, None)
+    }
 }
 
 async fn resolve_agent(
@@ -309,14 +313,14 @@ async fn resolve_agent(
     retained: &RetainedOutputRegistry,
     session: &SessionId,
     parsed: PollInput,
-) -> String {
+) -> PollOutcome {
     if parsed.kill {
-        return kill_refused_message(&parsed.handle);
+        return PollOutcome::err(kill_refused_message(&parsed.handle));
     }
 
     let child = SessionId::new(parsed.handle.clone());
     let Some((started, mut rx)) = agents.view(session, &child) else {
-        return unknown_handle(&parsed.handle);
+        return PollOutcome::err(unknown_handle(&parsed.handle));
     };
 
     if parsed.timeout_secs == 0 {
@@ -325,9 +329,13 @@ async fn resolve_agent(
         // the blocking `agent` tool; `wait_complete` is hang-safe (returns when
         // the watch sender drops).
         match wait_complete(&mut rx).await {
-            AgentStatus::Complete { answer, elapsed } => {
-                format_agent_answer(&parsed.handle, elapsed, answer, retained, Some(session))
-            }
+            AgentStatus::Complete { answer, elapsed } => PollOutcome::ok(format_agent_answer(
+                &parsed.handle,
+                elapsed,
+                answer,
+                retained,
+                Some(session),
+            )),
             AgentStatus::Running => unreachable!("wait_complete returns only on completion"),
         }
     } else {
@@ -337,17 +345,21 @@ async fn resolve_agent(
         )
         .await
         {
-            Ok(AgentStatus::Complete { answer, elapsed }) => {
-                format_agent_answer(&parsed.handle, elapsed, answer, retained, Some(session))
-            }
+            Ok(AgentStatus::Complete { answer, elapsed }) => PollOutcome::ok(format_agent_answer(
+                &parsed.handle,
+                elapsed,
+                answer,
+                retained,
+                Some(session),
+            )),
             Ok(AgentStatus::Running) => unreachable!("wait_complete returns only on completion"),
-            Err(_) => format!(
+            Err(_) => PollOutcome::ok(format!(
                 "sub-agent `{}` still running ({:.1}s elapsed); polled with a \
                  {}s timeout. Poll again later or do other work meanwhile.",
                 parsed.handle,
                 started.elapsed().as_secs_f64(),
                 parsed.timeout_secs
-            ),
+            )),
         }
     }
 }
@@ -453,13 +465,14 @@ mod tests {
             &session,
             &input,
         )
-        .await
-        .0;
+        .await;
         assert!(
-            running.contains(&format!("[script {id}: running]")),
-            "{running}"
+            running.text.contains(&format!("[script {id}: running]")),
+            "{}",
+            running.text
         );
-        assert!(running.contains("streamed"), "{running}");
+        assert!(running.text.contains("streamed"), "{}", running.text);
+        assert!(!running.is_error);
 
         op.finish("=> 42", false);
         let done = resolve(
@@ -470,10 +483,48 @@ mod tests {
             &session,
             &input,
         )
-        .await
-        .0;
-        assert!(done.contains(&format!("[script {id}: done]")), "{done}");
-        assert!(done.contains("=> 42"), "{done}");
+        .await;
+        assert!(
+            done.text.contains(&format!("[script {id}: done]")),
+            "{}",
+            done.text
+        );
+        assert!(done.text.contains("=> 42"), "{}", done.text);
+        assert!(!done.is_error);
+    }
+
+    /// #695: a script that died in an error (uncaught exception / deadline)
+    /// classifies as `is_error` — the same call the blocking `rhai` path
+    /// would have reported as an error (#636). Contrast with the cooperative
+    /// stop below, which stays a state report.
+    #[tokio::test]
+    async fn script_terminal_error_sets_is_error() {
+        let scripts = ScriptRegistry::new();
+        let session = SessionId::new("s-script3");
+        let (id, op) = scripts.register(
+            "rhai: boom()".to_string(),
+            Some(session.clone()),
+            Duration::from_secs(120),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        op.finish("error: boom", true);
+        let out = resolve(
+            &JobRegistry::new(),
+            &AgentRegistry::default(),
+            &RetainedOutputRegistry::new(),
+            &scripts,
+            &session,
+            &serde_json::json!({"handle": id, "timeout_secs": 1}).to_string(),
+        )
+        .await;
+        assert!(
+            out.text.contains(&format!("[script {id}: error]")),
+            "{}",
+            out.text
+        );
+        assert!(out.is_error);
+        assert_eq!(out.exit_code, None);
     }
 
     /// #637: `kill: true` on a script handle is accepted (cooperative), not
@@ -498,14 +549,20 @@ mod tests {
             &session,
             &serde_json::json!({"handle": id, "kill": true}).to_string(),
         )
-        .await
-        .0;
-        assert!(!out.contains("not supported"), "{out}");
-        assert!(out.contains("cooperative stop requested"), "{out}");
+        .await;
+        assert!(!out.text.contains("not supported"), "{}", out.text);
+        assert!(
+            out.text.contains("cooperative stop requested"),
+            "{}",
+            out.text
+        );
         assert!(stop.load(std::sync::atomic::Ordering::SeqCst));
+        // #695: an accepted cooperative stop is a state report, not an error.
+        assert!(!out.is_error);
     }
 
-    /// #637: an unknown script handle is the standard poll error.
+    /// #637: an unknown script handle is the standard poll error — and sets
+    /// the structured `is_error` flag (#695).
     #[tokio::test]
     async fn unknown_script_handle_is_an_error() {
         let out = resolve(
@@ -516,9 +573,9 @@ mod tests {
             &SessionId::new("s1"),
             &serde_json::json!({"handle": "x-nonexistent"}).to_string(),
         )
-        .await
-        .0;
-        assert!(out.starts_with("poll: unknown handle"), "{out}");
+        .await;
+        assert!(out.text.starts_with("poll: unknown handle"), "{}", out.text);
+        assert!(out.is_error);
     }
 
     /// End-to-end: `bash` starts a background job owned by a session, `poll`
@@ -549,7 +606,7 @@ mod tests {
         let agents = AgentRegistry::default();
         let retained = RetainedOutputRegistry::new();
         let input = serde_json::json!({"handle": id, "timeout_secs": 5}).to_string();
-        let (mut out, mut code) = resolve(
+        let mut out = resolve(
             &jobs,
             &agents,
             &retained,
@@ -558,12 +615,12 @@ mod tests {
             &input,
         )
         .await;
-        assert!(out.contains("hi"), "{out}");
+        assert!(out.text.contains("hi"), "{}", out.text);
         for _ in 0..50 {
-            if out.contains("exited 0") {
+            if out.text.contains("exited 0") {
                 break;
             }
-            (out, code) = resolve(
+            out = resolve(
                 &jobs,
                 &agents,
                 &retained,
@@ -573,10 +630,61 @@ mod tests {
             )
             .await;
         }
-        assert!(out.contains("exited 0"), "{out}");
+        assert!(out.text.contains("exited 0"), "{}", out.text);
         // #681, ADR-0186: the terminal poll carries the job's numeric status
         // as a real field, not only the `exited 0` text.
-        assert_eq!(code, Some(0));
+        assert_eq!(out.exit_code, Some(0));
+        assert!(!out.is_error);
+    }
+
+    /// #695 pins ADR-0186's orthogonality rule: a job exiting nonzero still
+    /// executed — the poll reports it as content (`is_error: false`) with the
+    /// real status in `exit_code`.
+    #[tokio::test]
+    async fn job_nonzero_exit_is_content_not_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = JobRegistry::new();
+        let bash = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
+        let session = SessionId::new("s-exit7");
+        let started = bash
+            .run_for_session(&session, "r1", r#"{"command":"exit 7","background":true}"#)
+            .await
+            .unwrap();
+        let started_text = entanglement_core::content_text(&started);
+        let id = started_text
+            .split_whitespace()
+            .find(|w| w.starts_with("j-"))
+            .unwrap()
+            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .to_string();
+
+        let input = serde_json::json!({"handle": id, "timeout_secs": 5}).to_string();
+        let mut out = resolve(
+            &jobs,
+            &AgentRegistry::default(),
+            &RetainedOutputRegistry::new(),
+            &ScriptRegistry::new(),
+            &session,
+            &input,
+        )
+        .await;
+        for _ in 0..50 {
+            if out.text.contains("exited 7") {
+                break;
+            }
+            out = resolve(
+                &jobs,
+                &AgentRegistry::default(),
+                &RetainedOutputRegistry::new(),
+                &ScriptRegistry::new(),
+                &session,
+                &input,
+            )
+            .await;
+        }
+        assert!(out.text.contains("exited 7"), "{}", out.text);
+        assert_eq!(out.exit_code, Some(7));
+        assert!(!out.is_error);
     }
 
     /// #605: a caller that never launched the job sees the same message as an
@@ -608,12 +716,13 @@ mod tests {
             &stranger,
             &serde_json::json!({"handle": id}).to_string(),
         )
-        .await
-        .0;
-        assert!(out.contains("unknown handle"), "{out}");
+        .await;
+        assert!(out.text.contains("unknown handle"), "{}", out.text);
+        assert!(out.is_error);
     }
 
-    /// ADR-0161 §2: `kill: true` is refused on a sub-agent handle.
+    /// ADR-0161 §2: `kill: true` is refused on a sub-agent handle — an error
+    /// in the structured side channel too (#695).
     #[tokio::test]
     async fn kill_is_refused_on_an_agent_handle() {
         let agents = AgentRegistry::default();
@@ -629,12 +738,13 @@ mod tests {
             &parent,
             &serde_json::json!({"handle": child.to_string(), "kill": true}).to_string(),
         )
-        .await
-        .0;
+        .await;
         assert!(
-            out.contains("not supported") && out.contains("sub-agent"),
-            "{out}"
+            out.text.contains("not supported") && out.text.contains("sub-agent"),
+            "{}",
+            out.text
         );
+        assert!(out.is_error);
     }
 
     #[tokio::test]
@@ -648,13 +758,14 @@ mod tests {
             &session,
             &serde_json::json!({"handle": "s-nonexistent"}).to_string(),
         )
-        .await
-        .0;
-        assert!(out.starts_with("poll: unknown handle"), "{out}");
+        .await;
+        assert!(out.text.starts_with("poll: unknown handle"), "{}", out.text);
+        assert!(out.is_error);
     }
 
     /// #607, ADR-0161 §6: called with no handle at all, `poll` lists this
-    /// session's pending operations instead of erroring.
+    /// session's pending operations instead of erroring — and the listing is
+    /// never an `is_error` result (#695), even for malformed input.
     #[tokio::test]
     async fn no_handle_lists_pending_operations() {
         let session = SessionId::new("s3");
@@ -666,9 +777,9 @@ mod tests {
             &session,
             "{}",
         )
-        .await
-        .0;
-        assert_eq!(empty, "poll: no pending operations for this session.");
+        .await;
+        assert_eq!(empty.text, "poll: no pending operations for this session.");
+        assert!(!empty.is_error);
 
         let agents = AgentRegistry::default();
         let child = SessionId::new("s-child9");
@@ -682,11 +793,11 @@ mod tests {
             &session,
             "{}",
         )
-        .await
-        .0;
+        .await;
         assert!(
-            out.contains(&child.to_string()) && out.contains("reviewer"),
-            "{out}"
+            out.text.contains(&child.to_string()) && out.text.contains("reviewer"),
+            "{}",
+            out.text
         );
 
         // Malformed (non-JSON) input also falls through to the listing rather
@@ -699,9 +810,13 @@ mod tests {
             &session,
             "not json",
         )
-        .await
-        .0;
-        assert!(malformed.contains(&child.to_string()), "{malformed}");
+        .await;
+        assert!(
+            malformed.text.contains(&child.to_string()),
+            "{}",
+            malformed.text
+        );
+        assert!(!malformed.is_error);
     }
 
     /// A completed sub-agent poll is idempotent — a second poll of the same
@@ -728,8 +843,7 @@ mod tests {
             &parent,
             &input,
         )
-        .await
-        .0;
+        .await;
         let second = resolve(
             &JobRegistry::new(),
             &agents,
@@ -738,9 +852,9 @@ mod tests {
             &parent,
             &input,
         )
-        .await
-        .0;
-        assert_eq!(first, second);
-        assert!(first.contains("done"), "{first}");
+        .await;
+        assert_eq!(first.text, second.text);
+        assert!(first.text.contains("done"), "{}", first.text);
+        assert!(!first.is_error);
     }
 }

@@ -7,6 +7,50 @@ use super::retained::is_retained_handle;
 use crate::host::jobs::{JobStatus, Poll as JobPoll};
 use crate::script_ops::ScriptPoll;
 
+/// The classified result of one `poll` call: the rendered text plus the two
+/// structured side-channel fields `run_poll` folds into the `ToolResult`
+/// (#695, closing the deferral ADR-0176/ADR-0186 left open). The #636 rule
+/// applies: `is_error` marks a call that structurally never ran — an unknown
+/// handle, a refused `kill`, a script that died in an error — while a bad
+/// *outcome* of a poll that ran (a job exiting nonzero, a killed job or
+/// script) is content, orthogonal to `exit_code` (ADR-0186).
+pub(super) struct PollOutcome {
+    pub(super) text: String,
+    pub(super) exit_code: Option<i32>,
+    pub(super) is_error: bool,
+}
+
+impl PollOutcome {
+    /// A poll that ran and reports state — running/complete/list/paged.
+    pub(super) fn ok(text: String) -> Self {
+        Self {
+            text,
+            exit_code: None,
+            is_error: false,
+        }
+    }
+
+    /// A model mistake (ADR-0161 §2): unknown handle, refused `kill`, or a
+    /// script's own terminal error.
+    pub(super) fn err(text: String) -> Self {
+        Self {
+            text,
+            exit_code: None,
+            is_error: true,
+        }
+    }
+
+    /// A job (`j-`) poll — the only kind that can observe a real exit status
+    /// (#681, ADR-0186); `None` when still running or signal-killed.
+    pub(super) fn exited(text: String, exit_code: Option<i32>) -> Self {
+        Self {
+            text,
+            exit_code,
+            is_error: false,
+        }
+    }
+}
+
 /// ADR-0161 §2: `kill: true` is refused on a sub-agent handle — cancelling a
 /// child is a distinct authorization gate this ADR does not open. Also
 /// refused on a retained-output handle (#608) — there is nothing running left
@@ -82,12 +126,27 @@ pub(super) fn format_job_poll(id: &str, poll: JobPoll) -> String {
     crate::host::bounded_result(&header, body)
 }
 
+/// Classify + render a script poll (#637, ADR-0185; classification #695):
+/// the `error` terminal state (uncaught exception or deadline — the same
+/// classification the blocking `rhai` path reports, #636) is an error; a
+/// cooperative stop ("stopped (killed)") is a state report, like a killed
+/// job. Mirrors [`format_script_poll`]'s status choice.
+pub(super) fn script_poll_outcome(id: &str, poll: ScriptPoll, killed: bool) -> PollOutcome {
+    let is_error = !poll.running && !poll.stopped && poll.is_error;
+    let text = format_script_poll(id, poll, killed);
+    if is_error {
+        PollOutcome::err(text)
+    } else {
+        PollOutcome::ok(text)
+    }
+}
+
 /// Render a script poll's status + drained output (#637, ADR-0185) — the same
 /// destructive-delta shape as a job poll, with script-specific terminal
 /// causes. A `kill` poll returns before the engine has noticed the stop flag,
 /// so it says what was *requested* rather than reporting a still-`running`
 /// status as if nothing happened.
-pub(super) fn format_script_poll(id: &str, poll: ScriptPoll, killed: bool) -> String {
+fn format_script_poll(id: &str, poll: ScriptPoll, killed: bool) -> String {
     let status = if poll.running {
         "running"
     } else if poll.stopped {
