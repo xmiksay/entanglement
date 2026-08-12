@@ -85,7 +85,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   (#558; `session_retention_days` reports `env (…)` as its source instead of a
   file layer when `ENTANGLEMENT_SESSION_RETENTION_DAYS` actually won). Four more
   engine-free CLI-only views round out the managed-file/live-state blind spots
-  (#558, deferred-work-ledger row 10c): `inspect aux-models` prints the
+  (#558): `inspect aux-models` prints the
   persisted `/aux-model` pins (`aux-models.yml`); `inspect mcp-tokens` prints
   which MCP servers hold a stored OAuth credential (`mcp-tokens.yml`,
   ADR-0153), redacted — never a token value; `inspect mcp` prints the resolved
@@ -110,7 +110,12 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   exclusive client — raw local scripts/CLIs/plugins are supported), so the
   `--allow-origin <ORIGIN>` check is **opt-in, never mandatory** (unset ⇒ every
   origin, including a raw client that sends none, is accepted) and the
-  browser-page surface is out of scope. The wire hygiene it consumes (`seq`
+  browser-page surface is out of scope. Accepted risk (2026-07-23 audit): with
+  it unset, a malicious web page can open `ws://127.0.0.1:<port>/ws`, create
+  its *own* session and self-approve its tool calls — ADR-0107's
+  per-connection approval ownership defends only *existing* sessions. In
+  scope of ADR-0048's local single-user trust model; revisit if `serve` ever
+  grows beyond loopback. The wire hygiene it consumes (`seq`
   uniqueness #157, protocol warts #160) was frozen first, per the pre-`serve`
   hardening epic ([ADR-0048](../adr/0048-serve-head-local-trust-model.md)). Lives
   behind the `serve` feature (implies `cli` + `provider`) so axum stays out of

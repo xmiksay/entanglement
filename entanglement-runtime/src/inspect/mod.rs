@@ -19,7 +19,7 @@
 //!   `/aux-model`.
 //! - [`mcp_tokens`] (#558): which MCP servers hold a stored OAuth credential
 //!   (`mcp-tokens.yml`, ADR-0153), redacted — never a token value.
-//! - [`mcp`] (#558, deferred-work-ledger row 10c): the resolved bundled/
+//! - [`mcp`] (#558): the resolved bundled/
 //!   available MCP server roster (provider-bundled + user `mcp:` entries),
 //!   which servers auto-connect vs. wait for `/enable`.
 //! - [`session`] (#558): a session's resolved live state folded straight from

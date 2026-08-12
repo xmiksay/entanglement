@@ -6,7 +6,6 @@ loop is decoupled from any UI and exposed as an async **actor**: a typed inbox o
 over those two methods.
 
 - Architecture & interfaces: [`docs/architecture.md`](docs/architecture.md)
-- Deferred work & docs drift ledger: [`docs/deferred-work-ledger.md`](docs/deferred-work-ledger.md)
 
 ## Status
 

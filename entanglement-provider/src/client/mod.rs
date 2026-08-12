@@ -268,7 +268,7 @@ pub struct StreamGuard(
 );
 
 /// RAII bump of an [`EndpointState::waiters`] counter — display-only queue
-/// depth (#552, deferred-work-ledger row 5). Decrements on `Drop` rather than
+/// depth (#552, orig. #517). Decrements on `Drop` rather than
 /// after a plain `await` so a caller cancelled mid-wait (e.g. `Stop` dropping
 /// the whole `execute_with_retry` future) still releases its count instead of
 /// leaking it forever.
@@ -322,7 +322,7 @@ struct EndpointState {
     concurrency_cap: usize,
     /// Count of callers currently queued on [`concurrency`][Self::concurrency]'s
     /// `acquire_owned()` — incremented just before the call, decremented right
-    /// after (deferred-work-ledger row 5, #552), purely for display via
+    /// after (#517, #552), purely for display via
     /// `status()`; nothing on the request path reads it.
     waiters: AtomicUsize,
     /// Instant before which no request to this endpoint may proceed, set from a
@@ -700,7 +700,7 @@ impl HttpClient {
             // returned `StreamGuard` drops (i.e. the stream is consumed);
             // dropped here on any retry so a queued caller can take the slot.
             // `_waiter` counts this caller as queued for display only
-            // (deferred-work-ledger row 5, #552) — released the instant the
+            // (#517, #552) — released the instant the
             // permit is granted, via `WaiterGuard`'s `Drop` so a cancelled
             // await (Stop) still decrements it.
             let _waiter = WaiterGuard::new(&endpoint.waiters);

@@ -430,7 +430,7 @@ the live cross-process lease count (`None` when sharing is disabled or the
 file is unreadable) and factors into both `is_throttled()` and the runtime
 throttle responder's `classify()`, so a sibling saturating the shared cap
 reads as busy even while this process's own semaphore has room. `waiters:
-usize` (deferred-work-ledger row 5) is a display-only counter — bumped just
+usize` (#517) is a display-only counter — bumped just
 before, and dropped via a `WaiterGuard` right after, this endpoint's own
 `concurrency.acquire_owned().await` — reporting how many callers are queued
 behind the permit, not yet admitted. The TUI's `throttle_label` gains a
