@@ -723,7 +723,47 @@ the same permission profiles as `read`/`bash`.
     the whole load→refresh→save section instead of just the write, so two
     `skutter` instances can no longer both redeem the same rotating refresh
     token — a losing racer picks up the winner's already-refreshed token instead
-    of failing.
+    of failing. **Web-redirect flow (✅ [ADR-0187](../adr/0187-mcp-oauth-web-redirect-flow-for-embedders.md),
+    #684):** a server-side web embedder can't use either in-tree flow — the
+    loopback listener is CLI-shaped and device-code trades UX for it — so
+    `provider::oauth::web::WebFlow` prepares the same authorization-code +
+    PKCE request against the *embedder's own* HTTPS callback URI: `begin`
+    shares discovery/DCR/PKCE with the browser flow (via the extracted
+    `flow::prepare` helper; the DCR `client_name` is caller-supplied so the
+    consent screen names the embedder's product) but binds nothing and never
+    blocks; the returned `PendingWebAuthorization` is **serde-serializable**
+    plain data (a multi-replica embedder round-trips it through its shared
+    store between the two callback requests — it briefly holds the PKCE
+    verifier and any `client_secret`, accepted because `StoredAuth` persists
+    strictly more; `Debug` still redacts both), and `complete(code, state)`
+    verifies `state` before any network I/O, then exchanges and returns the
+    `StoredAuth` the embedder saves into its per-user `UserTokenStore`
+    (ADR-0184). The runtime/TUI never drive it; core deliberately does not
+    re-export it (embedder-facing, like `user_store`).
+- **Session-keyed per-user scopes (✅ [ADR-0188](../adr/0188-session-keyed-per-user-mcp-scopes.md),
+  #684):** `mcp::scoped::McpScopes` gives a multi-user embedder per-user MCP
+  server *sets* and credentials with no user identity in the runtime
+  (ADR-0181): an embedder-supplied `McpScopeResolver` maps a `SessionId` to an
+  `McpScope { key, servers, token_store }` — the key an opaque string derived
+  from its own user identity, the servers the config `mcp:` shape (capability
+  hints and `oauth:` blocks included), the store typically
+  `user_scoped(store, user)`. **Replace semantics:** a scoped session's
+  `mcp__*` namespace is entirely scope-owned — global MCP tools are stripped
+  from its advertised specs (`overlay_specs`, called from the embedder's
+  `tool_spec_resolver`) and from every dispatch snapshot
+  (`overlay_registry_for_call`, applied in the executor's detached task before
+  `dispatch`; the `rhai` arm sees cached scope tools only, no lazy connect) —
+  which is what keeps same-named servers (user A's `kb`, user B's `kb`, the
+  global `kb`) unambiguous behind unchanged `mcp__<server>__<tool>` names.
+  Connections are lazy, cached per `(scope key, server)` with the #556
+  double-checked guard, and live for the process lifetime; eviction is the
+  embedder's explicit `evict_scope` (logout, config drift under an unchanged
+  key). `prewarm(&session)` between `Spawn` and the first prompt connects and
+  lists the scope's servers so the sync advertisement path has specs to serve.
+  An `oauth:` server with no stored credential in the scope's slice fails as a
+  clean auth-required *tool error* before any connect — the embedder's cue to
+  run its web-OAuth flow. A null resolver (and every in-tree head: skutter
+  passes `None`) is byte-identical to the global single-user behavior.
 - **Proxy (`mcp::tool::McpTool`):** adapts one remote tool. `schema()` returns the
   server's `inputSchema` verbatim; `run()` JSON-decodes the model's input to the
   `arguments` object, checks it against the schema's top-level `required` array

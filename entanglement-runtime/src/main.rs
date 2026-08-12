@@ -709,6 +709,32 @@ fn gemini_wire_config(
     ))
 }
 
+/// The OAuth bearer source for a catalog entry declaring `oauth:` (#684 edge
+/// d): tokens come from the managed LLM token file
+/// (`llm-tokens.yml` / `ENTANGLEMENT_LLM_TOKENS_FILE`), keyed by the provider
+/// name, minted by `skutter config connect <provider>`. `Err` with that hint
+/// when nothing is stored yet — an OAuth endpoint without a token could only
+/// ever 401, so the miss surfaces here exactly like an unset `key_env`.
+fn llm_oauth_source(
+    entry: &ProviderEntry,
+) -> Result<Option<Arc<dyn entanglement_core::AccessTokenSource>>, String> {
+    if entry.oauth.is_none() {
+        return Ok(None);
+    }
+    let store = entanglement_runtime::config::McpTokenStore::load_llm();
+    if !store.has(&entry.name) {
+        return Err(format!(
+            "provider `{}` is OAuth-protected and not yet authorized — run \
+             `skutter config connect {}`",
+            entry.name, entry.name
+        ));
+    }
+    Ok(Some(Arc::new(entanglement_core::StoredTokenSource::new(
+        entry.name.clone(),
+        Arc::new(store) as Arc<dyn entanglement_core::TokenStore>,
+    ))))
+}
+
 /// Build a Gemini-wire [`LlmFactory`] for an explicit `(entry, model)`. Shared by
 /// startup and the live-switch resolver (#218). Always keyed; `Err(message)` when
 /// the key env is absent/unset. Base from `{NAME}_API_BASE`/`{NAME}_BASE` env else
@@ -726,9 +752,12 @@ fn gemini_factory_for(
     catalog: &Catalog,
     explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let key = match explicit_key {
-        Some(k) => k.to_string(),
-        None => {
+    let auth = llm_oauth_source(entry)?;
+    let key = match (&auth, explicit_key) {
+        // The bearer replaces the static key on the wire (#684 edge d).
+        (Some(_), _) => String::new(),
+        (None, Some(k)) => k.to_string(),
+        (None, None) => {
             let key_env = entry
                 .key_env
                 .as_deref()
@@ -744,6 +773,7 @@ fn gemini_factory_for(
     Ok(entanglement_provider::gemini_factory(
         base,
         key,
+        auth,
         model.to_string(),
         resolve_rpm(entry),
         resolve_concurrency(entry),
@@ -768,9 +798,12 @@ fn openai_factory_for(
     web_search: Option<WebSearchConfig>,
     explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let key = match explicit_key {
-        Some(k) => Some(k.to_string()),
-        None => match &entry.key_env {
+    let auth = llm_oauth_source(entry)?;
+    let key = match (&auth, explicit_key) {
+        // The bearer replaces the static key on the wire (#684 edge d).
+        (Some(_), _) => None,
+        (None, Some(k)) => Some(k.to_string()),
+        (None, None) => match &entry.key_env {
             Some(k) => Some(
                 env_nonempty(k)
                     .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
@@ -786,6 +819,7 @@ fn openai_factory_for(
     Ok(entanglement_provider::openai_factory(
         base,
         key,
+        auth,
         model.to_string(),
         resolve_rpm(entry),
         resolve_concurrency(entry),
@@ -818,9 +852,12 @@ fn anthropic_factory_for(
     web_search_tool_version: Option<String>,
     explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let key = match explicit_key {
-        Some(k) => k.to_string(),
-        None => {
+    let auth = llm_oauth_source(entry)?;
+    let key = match (&auth, explicit_key) {
+        // The bearer replaces the static key on the wire (#684 edge d).
+        (Some(_), _) => String::new(),
+        (None, Some(k)) => k.to_string(),
+        (None, None) => {
             let key_env = entry
                 .key_env
                 .as_deref()
@@ -836,6 +873,7 @@ fn anthropic_factory_for(
     Ok(entanglement_provider::anthropic_factory(
         base,
         key,
+        auth,
         model.to_string(),
         resolve_rpm(entry),
         resolve_concurrency(entry),
@@ -1032,6 +1070,23 @@ enum ConfigCmd {
         #[arg(long)]
         key: Option<String>,
     },
+    /// Authorize an OAuth-protected LLM provider (#684): run the browser (or
+    /// device-code) flow against a catalog entry carrying an `oauth:` block
+    /// and persist the credential to the managed `llm-tokens.yml`.
+    Connect {
+        /// Provider name (a catalog entry with an `oauth:` block).
+        provider: String,
+        /// RFC 8628 device-code flow: no browser, no loopback listener —
+        /// for SSH/headless hosts.
+        #[arg(long)]
+        device_code: bool,
+    },
+    /// Drop an OAuth LLM provider's stored credential (revoking it upstream
+    /// when the server supports RFC 7009).
+    Disconnect {
+        /// Provider name.
+        provider: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1197,6 +1252,13 @@ async fn main() -> Result<()> {
         return match cmd {
             ConfigCmd::SetKey { provider, key } => {
                 config::keys::set_key(&catalog, provider, key.clone())
+            }
+            ConfigCmd::Connect {
+                provider,
+                device_code,
+            } => config::llm_connect::connect(&catalog, provider, *device_code).await,
+            ConfigCmd::Disconnect { provider } => {
+                config::llm_connect::disconnect(&catalog, provider).await
             }
         };
     }
@@ -1474,6 +1536,8 @@ async fn main() -> Result<()> {
         // fold below is what `bash`/`call` actually see.
         sandbox_config,
         plan_files.clone(),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
 
     // Live MCP server management (#375): a runtime service answering
@@ -1871,6 +1935,7 @@ mod tests {
             wire: Default::default(),
             base_url: None,
             key_env: None,
+            oauth: None,
             rpm: None,
             concurrency: None,
             default_model: "test-model".to_string(),

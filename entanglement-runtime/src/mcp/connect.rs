@@ -174,12 +174,31 @@ pub(crate) async fn connect_client(
     api_key: Option<&str>,
     handshake_retry: Option<entanglement_core::RetryConfig>,
 ) -> Result<(Arc<McpClient>, Vec<McpToolDef>)> {
+    connect_client_with_store(name, cfg, secret_env, http, api_key, handshake_retry, None).await
+}
+
+/// [`connect_client`] with the OAuth credential source made explicit (#684):
+/// `token_store` is the per-scope store a session-keyed MCP scope supplies
+/// ([`super::scoped::McpScopes`]), and `None` falls back to the process-global
+/// managed file — byte-identical to every pre-#684 caller.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn connect_client_with_store(
+    name: &str,
+    cfg: &McpServerConfig,
+    secret_env: &[String],
+    http: &entanglement_core::HttpClient,
+    api_key: Option<&str>,
+    handshake_retry: Option<entanglement_core::RetryConfig>,
+    #[cfg_attr(not(feature = "mcp-http"), allow(unused_variables))] token_store: Option<
+        Arc<dyn entanglement_core::TokenStore>,
+    >,
+) -> Result<(Arc<McpClient>, Vec<McpToolDef>)> {
     #[cfg(feature = "mcp-http")]
     let client = McpClient::connect_with_auth(
         name,
         cfg,
         secret_env,
-        oauth_token_source(name, cfg),
+        oauth_token_source(name, cfg, token_store),
         http,
         api_key,
         handshake_retry,
@@ -194,18 +213,22 @@ pub(crate) async fn connect_client(
 /// The OAuth bearer source for a server that declares an `oauth:` block
 /// (ADR-0153), or `None` for one authenticated by static headers (or not at
 /// all) — in which case the transport behaves exactly as it did pre-ADR-0153.
+/// `store` is a per-scope credential slice when the connect belongs to a
+/// session-keyed MCP scope (#684); absent, the process-global managed file.
 ///
-/// The store is built per call rather than held in a process-wide handle: it is
-/// only a resolved path (no I/O until a load), connects are rare, and building
-/// it here keeps `ENTANGLEMENT_MCP_TOKENS_FILE` honoured at the moment of use.
+/// The global store is built per call rather than held in a process-wide
+/// handle: it is only a resolved path (no I/O until a load), connects are rare,
+/// and building it here keeps `ENTANGLEMENT_MCP_TOKENS_FILE` honoured at the
+/// moment of use.
 #[cfg(feature = "mcp-http")]
 fn oauth_token_source(
     name: &str,
     cfg: &McpServerConfig,
+    store: Option<Arc<dyn entanglement_core::TokenStore>>,
 ) -> Option<Arc<dyn entanglement_core::AccessTokenSource>> {
     cfg.oauth.as_ref()?;
     let store: Arc<dyn entanglement_core::TokenStore> =
-        Arc::new(crate::config::McpTokenStore::load());
+        store.unwrap_or_else(|| Arc::new(crate::config::McpTokenStore::load()));
     Some(Arc::new(entanglement_core::StoredTokenSource::new(
         name, store,
     )))

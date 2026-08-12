@@ -60,7 +60,9 @@ impl CacheHandle {
         &self,
         http: &HttpClient,
         base_url: &str,
-        api_key: &str,
+        // The resolved request auth header — `x-goog-api-key` or an OAuth
+        // `authorization: Bearer` (#684), built by `super::auth_header`.
+        auth: &(&'static str, String),
         model: &str,
         system: &str,
         tools: &[ToolSpec],
@@ -87,7 +89,7 @@ impl CacheHandle {
             });
             return None;
         }
-        let entry = match create(http, base_url, api_key, model, system, tools).await {
+        let entry = match create(http, base_url, auth, model, system, tools).await {
             Some(name) => CacheEntry::Ready(name),
             None => CacheEntry::Skip,
         };
@@ -123,7 +125,7 @@ fn cache_key(model: &str, system: &str, tools: &[ToolSpec]) -> u64 {
 async fn create(
     http: &HttpClient,
     base_url: &str,
-    api_key: &str,
+    auth: &(&'static str, String),
     model: &str,
     system: &str,
     tools: &[ToolSpec],
@@ -138,7 +140,7 @@ async fn create(
     let response = match http
         .client()
         .post(&url)
-        .header("x-goog-api-key", api_key)
+        .header(auth.0, &auth.1)
         .header("content-type", "application/json")
         .json(&body)
         .send()
@@ -192,7 +194,14 @@ mod tests {
         let http = HttpClient::new().expect("client");
         let handle = CacheHandle::new();
         let name = handle
-            .resolve(&http, super::super::GEMINI_BASE, "key", "model", "", &[])
+            .resolve(
+                &http,
+                super::super::GEMINI_BASE,
+                &("x-goog-api-key", "key".to_string()),
+                "model",
+                "",
+                &[],
+            )
             .await;
         assert!(name.is_none());
     }
@@ -206,7 +215,7 @@ mod tests {
             .resolve(
                 &http,
                 super::super::GEMINI_BASE,
-                "key",
+                &("x-goog-api-key", "key".to_string()),
                 "model",
                 "short system prompt",
                 &[],
@@ -219,7 +228,7 @@ mod tests {
             .resolve(
                 &http,
                 super::super::GEMINI_BASE,
-                "key",
+                &("x-goog-api-key", "key".to_string()),
                 "model",
                 "short system prompt",
                 &[],

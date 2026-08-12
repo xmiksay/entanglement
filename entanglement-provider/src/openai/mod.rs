@@ -74,6 +74,13 @@ pub const OLLAMA_BASE: &str = "http://localhost:11434/v1";
 pub struct OpenAiLlm {
     base_url: String,
     api_key: Option<String>,
+    /// OAuth bearer source (#684 edge d): `Some` wins over `api_key` — the
+    /// token is fetched per request (cached until expiry by the source) and
+    /// sent as `Authorization: Bearer`, with one forced-refresh retry on a
+    /// `401`. The endpoint-pool identity stays `api_key` (usually `None` for
+    /// an OAuth endpoint): a rotating bearer must never key the pool, or every
+    /// refresh would mint a fresh rate-limit bucket (ADR-0156).
+    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: String,
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
@@ -117,6 +124,7 @@ impl OpenAiLlm {
         Self {
             base_url: base_url.into(),
             api_key,
+            auth: None,
             default_model: default_model.into(),
             rpm,
             concurrency,
@@ -126,6 +134,13 @@ impl OpenAiLlm {
             http,
         }
     }
+
+    /// Authenticate with an OAuth bearer from `auth` instead of a static key
+    /// (#684 edge d) — see the field docs for the pool-identity rule.
+    pub fn with_auth(mut self, auth: std::sync::Arc<dyn crate::oauth::AccessTokenSource>) -> Self {
+        self.auth = Some(auth);
+        self
+    }
 }
 
 /// Factory for one per-session [`OpenAiLlm`]. Pass the provider's base URL, an
@@ -134,10 +149,14 @@ impl OpenAiLlm {
 /// cap on that endpoint (`|_| None` disables the extra gate, #521; resolved
 /// per request rather than once at construction, #550), and the opt-in
 /// [`WebSearchConfig`] (`None` disables provider-side web search, #305).
+/// `auth = Some(..)` switches the endpoint to an OAuth bearer (#684 edge d),
+/// overriding `api_key` on the wire while `api_key` (usually `None` then)
+/// keeps its pool-identity role.
 #[allow(clippy::too_many_arguments)]
 pub fn openai_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
+    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
@@ -146,7 +165,7 @@ pub fn openai_factory(
     send_prompt_cache_key: bool,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = OpenAiLlm::new(
+    let mut llm = OpenAiLlm::new(
         base_url,
         api_key,
         default_model,
@@ -157,6 +176,9 @@ pub fn openai_factory(
         send_prompt_cache_key,
         http,
     );
+    if let Some(auth) = auth {
+        llm = llm.with_auth(auth);
+    }
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -189,41 +211,64 @@ impl Llm for OpenAiLlm {
         );
         crate::client::log_request_body("openai", &body);
 
-        let (response, guard) = self
-            .http
-            .execute_with_retry(
-                &self.base_url,
-                self.api_key.as_deref(),
-                self.rpm,
-                self.concurrency,
-                &model,
-                model_concurrency,
-                None,
-                || {
-                    let mut request = self.http.client().post(&url);
-                    if let Some(key) = &self.api_key {
-                        request = request.bearer_auth(key);
+        // An OAuth bearer (#684 edge d) is fetched per request — cached until
+        // expiry by the source — and retried exactly once with a forced
+        // refresh on a `401` (a revoked-but-unexpired token, mirroring the MCP
+        // transport). The pool identity below stays `api_key`, never the
+        // bearer (ADR-0156: a rotating credential must not churn buckets).
+        let mut forced_refresh = false;
+        let (response, guard) = loop {
+            let bearer = match &self.auth {
+                Some(source) => Some(source.access_token(forced_refresh).await.map_err(|e| {
+                    anyhow::anyhow!("fetching the OAuth token for `{}`: {e:#}", self.base_url)
+                })?),
+                None => self.api_key.clone(),
+            };
+            let (response, guard) = self
+                .http
+                .execute_with_retry(
+                    &self.base_url,
+                    self.api_key.as_deref(),
+                    self.rpm,
+                    self.concurrency,
+                    &model,
+                    model_concurrency,
+                    None,
+                    || {
+                        let mut request = self.http.client().post(&url);
+                        if let Some(key) = &bearer {
+                            request = request.bearer_auth(key);
+                        }
+                        request.json(&body).send()
+                    },
+                )
+                .await
+                .map_err(|e| match e {
+                    crate::client::RetryError::Permanent(e) => {
+                        anyhow::anyhow!("openai-compat request failed: {e}")
                     }
-                    request.json(&body).send()
-                },
-            )
-            .await
-            .map_err(|e| match e {
-                crate::client::RetryError::Permanent(e) => {
-                    anyhow::anyhow!("openai-compat request failed: {e}")
-                }
-                crate::client::RetryError::Exhausted(attempts, e) => anyhow::anyhow!(
-                    "openai-compat request failed after {} attempts: {e}",
-                    attempts
-                ),
-                crate::client::RetryError::RateLimited => anyhow::anyhow!(
-                    "openai-compat rate limited: gave up waiting for the endpoint to clear"
-                ),
-                crate::client::RetryError::HeaderTimeout(timeout, attempts) => anyhow::anyhow!(
-                    "openai-compat request failed: no response headers within {timeout:?} \
-                     after {attempts} attempt(s)"
-                ),
-            })?;
+                    crate::client::RetryError::Exhausted(attempts, e) => anyhow::anyhow!(
+                        "openai-compat request failed after {} attempts: {e}",
+                        attempts
+                    ),
+                    crate::client::RetryError::RateLimited => anyhow::anyhow!(
+                        "openai-compat rate limited: gave up waiting for the endpoint to clear"
+                    ),
+                    crate::client::RetryError::HeaderTimeout(timeout, attempts) => anyhow::anyhow!(
+                        "openai-compat request failed: no response headers within {timeout:?} \
+                         after {attempts} attempt(s)"
+                    ),
+                })?;
+            if response.status().as_u16() == 401 && self.auth.is_some() && !forced_refresh {
+                tracing::warn!(
+                    base = %self.base_url,
+                    "openai-compat 401 with an OAuth bearer; forcing one refresh and retrying"
+                );
+                forced_refresh = true;
+                continue;
+            }
+            break (response, guard);
+        };
 
         if !response.status().is_success() {
             let status = response.status();

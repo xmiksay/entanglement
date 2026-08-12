@@ -79,7 +79,11 @@ first). No key → `EchoLlm`. Full detail (clients, catalog, resilience):
 That table is **catalog data, not hardcode** (#118): an embedded default
 (`entanglement-provider/src/defaults.yml`) deep-merged with a user override at
 `${config_dir}/entanglement/providers.yml`; a `wire:` tag lets a user add any
-OpenAI-compatible endpoint with zero code change. `ModelEntry` carries
+OpenAI-compatible endpoint with zero code change — and an `oauth:` block
+instead of `key_env` authenticates it with a refreshed bearer token
+(`skutter config connect <provider>`, managed `llm-tokens.yml`; pool identity
+stays decoupled from the rotating token,
+[ADR-0189](../docs/adr/0189-oauth-for-llm-provider-endpoints.md)). `ModelEntry` carries
 capability flags, pricing, an optional per-model `concurrency` cap
 ([ADR-0140](../docs/adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md)),
 generation params gated onto every `LlmRequest` (incl. `reasoning_effort`,
@@ -117,7 +121,7 @@ feature that reads it):
 | `ENTANGLEMENT_CONFIG_FILE` | override the layered user config file path (`config.yml`) |
 | `ENTANGLEMENT_ENV_FILE` | override the managed provider-key env file path (`.env`) |
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` | replace the whole user agents/skills layer (also the cross-vendor opt-out) |
-| `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_AUX_MODELS_FILE` / `ENTANGLEMENT_MCP_TOKENS_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the six managed runtime files |
+| `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_AUX_MODELS_FILE` / `ENTANGLEMENT_MCP_TOKENS_FILE` / `ENTANGLEMENT_LLM_TOKENS_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the seven managed runtime files |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
 | `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register `bash` at startup (the TUI `/enable tool bash` command, #498/#611, live-registers instead); its background jobs join with the always-available `poll` tool (#605), not a paired registry tool |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide; opt-in to keep network (#399, #479) |
@@ -220,13 +224,21 @@ never here**; each bullet is the claim + where to read it:
   (`enabled`/`allowed`/`disabled`, session-scoped lazy enablement); OAuth for
   protected servers (discovery + DCR + PKCE, tokens in a managed file,
   `/mcp connect`, or `/mcp connect --device-code` for RFC 8628 on a browser-less
-  host — the cross-process refresh race is also closed, ADR-0182). The HTTP
+  host — the cross-process refresh race is also closed, ADR-0182; a web
+  embedder mints per-user credentials with `WebFlow` against its own callback
+  URI instead of either in-tree flow, ADR-0187). **Session-keyed per-user MCP
+  scopes** (#684, ADR-0188): an embedder-supplied resolver maps a session to
+  an opaque scope key + that user's server set + `user_scoped` token store;
+  a scoped session's `mcp__*` namespace is entirely scope-owned (replace
+  semantics; `(scope, server)` connection cache; `prewarm`/`evict_scope`;
+  auth-required surfaces as a clean tool error), and a null resolver — every
+  in-tree head — stays byte-identical single-user. The HTTP
   transport shares the LLM endpoint pool — same
   `HttpClient`, RPM/concurrency caps, 429 handling — keyed by the server's own
   URL plus its bundling provider's key when known, so a provider-bundled
   server's traffic counts against the same key budget its LLM endpoint
   enforces. [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)/[ADR-0096](../docs/adr/0096-dynamic-toolregistry-sharedregistry.md)/[ADR-0097](../docs/adr/0097-live-mcp-server-management.md)/[ADR-0100](../docs/adr/0100-tui-mcp-command.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0157](../docs/adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)/[ADR-0182](../docs/adr/0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md).
+  [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)/[ADR-0096](../docs/adr/0096-dynamic-toolregistry-sharedregistry.md)/[ADR-0097](../docs/adr/0097-live-mcp-server-management.md)/[ADR-0100](../docs/adr/0100-tui-mcp-command.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0157](../docs/adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)/[ADR-0182](../docs/adr/0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md)/[ADR-0187](../docs/adr/0187-mcp-oauth-web-redirect-flow-for-embedders.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md).
 - **Agent tool masks**: entries are glob patterns; a per-session tool overlay
   (`SetToolOverlay`, trusted-only) injects/withdraws tools past the profile
   mask, an enable entry optionally `arg_pattern`-narrowed to an
@@ -290,8 +302,11 @@ never here**; each bullet is the claim + where to read it:
   [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md).
 - **Multi-user mode is an embedder library API** (`UserId` on the wire,
   per-user catalogs/keys/budgets via `entanglement-provider::multi_user`,
-  per-user MCP credentials via `provider::mcp::auth::UserTokenStore` +
-  `user_scoped`, per-user ceilings/grants/aux pins as embedder
+  per-user MCP credentials via `provider::oauth::UserTokenStore` +
+  `user_scoped` — minted from a web app via `WebFlow` (ADR-0187), routed per
+  session via `mcp::scoped::McpScopes` (ADR-0188) — per-user OAuth *LLM*
+  endpoints via `UserProviderContext::with_token_source` (ADR-0189), per-user
+  ceilings/grants/aux pins as embedder
   implementations of the existing seams — the runtime crate never names
   `UserId`, enforced by `make userid`); `serve` stays local single-user.
   [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md)/[ADR-0181](../docs/adr/0181-userid-leaves-the-runtime-crate.md)/[ADR-0184](../docs/adr/0184-provider-hosted-multi-user-seams.md)/[ADR-0183](../docs/adr/0183-narrate-purpose-and-per-user-aux-pins.md),

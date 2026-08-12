@@ -561,7 +561,25 @@ replaced; the final `Catalog` deserialize is `deny_unknown_fields` (typos are
 loud). A `wire: openai | anthropic` tag on each provider is what makes
 user-defined providers work with **zero code change** — any OpenAI-compatible
 endpoint (proxy, local vLLM, new vendor) is `wire: openai` + `base_url` +
-`key_env`. A provider entry may also **bundle MCP servers** (#542,
+`key_env`. **Or `oauth:` instead of `key_env`** (✅ #684 edge d,
+[ADR-0189](../adr/0189-oauth-for-llm-provider-endpoints.md)): an entry carrying
+an `oauth:` block (the same `OauthConfig` override fields the `mcp:` blocks
+use) authenticates with an `Authorization: Bearer` token from an
+`AccessTokenSource` instead of a static key — all three wires support it, the
+token is fetched *before* `execute_with_retry` (its request closure is
+sync-to-build; the MCP transport's pre-fetch shape) and retried exactly once
+with a forced refresh on a `401` (Gemini's context-cache call carries the same
+credential; Anthropic's `pause_turn` continuations re-fetch per POST). The
+endpoint-pool identity stays decoupled from the rotating bearer — an OAuth
+endpoint pools **unkeyed**, since the `endpoint#sha256(key)` pool key with
+never-evicted entries (ADR-0156) would otherwise mint a fresh rate-limit
+bucket + cross-process state file per refresh. Single-user credentials come
+from the managed `llm-tokens.yml` via `skutter config connect <provider>
+[--device-code]` (a factory resolving an `oauth:` entry with no stored token
+errs with that hint; auto-detect stays key-based, so an OAuth provider is
+selected explicitly); a multi-user embedder registers a per-user source via
+`UserProviderContext::with_token_source`. No embedded default carries an
+`oauth:` block. A provider entry may also **bundle MCP servers** (#542,
 [ADR-0152](../adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)):
 `mcp_servers: {name → ProviderMcpServer}` — transport (`command` XOR `url`,
 validated runtime-side), `${VAR}` headers, the #426 capability hint, and a

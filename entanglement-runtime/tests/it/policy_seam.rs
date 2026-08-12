@@ -163,6 +163,8 @@ fn spawn_with_policy(
         None,
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
     holly
 }

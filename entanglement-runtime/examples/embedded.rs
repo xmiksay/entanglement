@@ -13,7 +13,10 @@
 //!   tenant A's events;
 //! - a custom `PermissionResolver`/`GrantStore` pair (the #311 pluggable
 //!   policy seam) deciding tool grades per tenant instead of the CLI's
-//!   file-backed defaults.
+//!   file-backed defaults;
+//! - a session-keyed MCP scope resolver (#684) giving each tenant its own MCP
+//!   server set and OAuth credential slice, with no `UserId` in this crate
+//!   (ADR-0181).
 //!
 //! Uses `EchoLlm` (the `EngineConfig` default) so the example needs no
 //! provider key and produces deterministic output.
@@ -105,6 +108,29 @@ async fn main() -> anyhow::Result<()> {
     let resolver: Arc<dyn PermissionResolver> = Arc::new(TenantResolver { tenants });
     let grants: Arc<dyn GrantStore> = Arc::new(NoGrants);
 
+    // Session-keyed per-user MCP scopes (#684): each tenant gets its own MCP
+    // server set and credentials, resolved from the same `{tenant}:{uuid}`
+    // convention. A real embedder fills `servers` with that user's server map
+    // (the config `mcp:` shape, per-user rows in its own DB) and sets
+    // `token_store: Some(entanglement_provider::user_scoped(store, user))` —
+    // its `UserTokenStore` implementation over its own storage (ADR-0184).
+    // With a scope resolved, the session's `mcp__*` namespace is entirely
+    // scope-owned; `scopes.prewarm(&session)` between `Spawn` and the first
+    // prompt connects and lists the scope's servers so `overlay_specs` can
+    // advertise them, and `scopes.evict_scope(key)` drops a user's
+    // connections on logout.
+    let scopes = entanglement_runtime::mcp::McpScopes::new(
+        Arc::new(|session: &SessionId| {
+            Some(entanglement_runtime::mcp::McpScope {
+                key: tenant_of(session).to_string(),
+                servers: HashMap::new(),
+                token_store: None,
+            })
+        }),
+        entanglement_core::HttpClient::new()?,
+        Vec::new(),
+    );
+
     let _executor = tool_runner::spawn_tool_executor_with_policy(
         &holly,
         tools.shared(),
@@ -121,6 +147,8 @@ async fn main() -> anyhow::Result<()> {
         None,
         entanglement_runtime::policy::SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
+        // The per-user MCP scope seam (#684) wired above.
+        Some(scopes),
     );
 
     let acme = SessionId::new(format!("acme:{}", SessionId::new_uuid()));

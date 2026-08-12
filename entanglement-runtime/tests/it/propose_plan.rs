@@ -159,6 +159,8 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         Some(escape_root),
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
     holly
 }

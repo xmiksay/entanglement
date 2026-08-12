@@ -273,6 +273,8 @@ pub fn spawn_tool_executor_with_hooks(
         // matches their historical no-external-sharing behavior for `jobs`/
         // `retained` above.
         Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user, like skutter itself.
+        None,
     )
 }
 
@@ -374,6 +376,12 @@ pub fn spawn_tool_executor_with_policy(
     // wants the dedicated plans-folder watch (`plan_watch::spawn_plans_watcher`)
     // can share the exact same registry instance with it.
     plan_files: Arc<PlanFileRegistry>,
+    // Session-keyed per-user MCP scopes (#684): a scoped session's dispatch
+    // snapshot has its `mcp__*` namespace replaced by the scope's own tools
+    // (lazily connected with the scope's credentials) before `dispatch` runs.
+    // `None` — skutter and every in-tree caller — is byte-identical to
+    // pre-#684 behavior; only a multi-user embedder constructs an `McpScopes`.
+    mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
 ) -> tokio::task::JoinHandle<()> {
     let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
@@ -1144,6 +1152,13 @@ pub fn spawn_tool_executor_with_policy(
                             // concurrent tool registration/removal is invisible to a
                             // script already in flight but picked up by the next one.
                             let tools = tools.read().expect("tool registry lock poisoned").clone();
+                            // A scoped session's script sees its scope's cached MCP
+                            // tools, never the global set (#684) — cached-only: a
+                            // script call must not block this loop on a lazy connect.
+                            let tools = match &mcp_scopes {
+                                Some(scopes) => scopes.overlay_registry_cached(&session, tools),
+                                None => tools,
+                            };
                             let holly = holly.clone();
                             // The blocking engine can't be aborted, so pair the
                             // task abort with a cooperative stop flag its progress
@@ -1219,11 +1234,34 @@ pub fn spawn_tool_executor_with_policy(
                             let hooks = hooks.clone();
                             let pending = pending.clone();
                             let escape_root = escape_root.clone();
+                            let mcp_scopes = mcp_scopes.clone();
                             // Register so a `Stop` aborts this task mid-execution:
                             // aborting the future drops the exec tool's child,
                             // firing its process-group SIGKILL guard (#167/#168).
                             let reg_session = session.clone();
                             let handle = tokio::spawn(async move {
+                                // A scoped session's snapshot swaps its `mcp__*`
+                                // namespace for the scope's own tools (#684),
+                                // lazily connecting the called server with the
+                                // scope's credentials — in the detached task,
+                                // never this loop. A refusal (auth-required,
+                                // connect failure) is the call's tool error.
+                                let tools = match &mcp_scopes {
+                                    Some(scopes) => {
+                                        match scopes
+                                            .overlay_registry_for_call(&session, tools, &tool)
+                                            .await
+                                        {
+                                            Ok(tools) => tools,
+                                            Err(msg) => {
+                                                seam::reply(&holly, session, request_id, msg, true)
+                                                    .await;
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    None => tools,
+                                };
                                 dispatch(
                                     &holly,
                                     &tools,

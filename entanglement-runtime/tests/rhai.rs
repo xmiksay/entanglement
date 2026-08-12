@@ -252,6 +252,8 @@ fn spawn_with_rhai_escape(
         Some(escape_root),
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
     (holly, store)
 }
@@ -1147,6 +1149,8 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         None,
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
 
     let sid = SessionId::new("s1");
@@ -1243,6 +1247,8 @@ fn spawn_with_rhai_background(
         None,
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
     );
     (holly, scripts)
 }

@@ -3,6 +3,7 @@
 //! thought-signature stash, and usage folding.
 
 use super::*;
+use serde_json::json;
 
 #[test]
 fn parse_frame_extracts_data_json() {

@@ -159,6 +159,22 @@ fn sanitize(name: &str) -> String {
         .collect()
 }
 
+// A client is needed to build an `McpTool`; a dead duplex is enough for
+// assertions that never call `run`. Shared with `scoped_tests.rs` (#684).
+#[cfg(test)]
+pub(crate) fn dead_client() -> Arc<McpClient> {
+    use crate::mcp::stdio::StdioClient;
+    let (client_end, server_end) = tokio::io::duplex(64);
+    drop(server_end);
+    let (r, w) = tokio::io::split(client_end);
+    Arc::new(McpClient::Stdio(StdioClient::new(
+        "srv".to_string(),
+        w,
+        r,
+        None,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,21 +185,6 @@ mod tests {
             description: "a tool".to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
-    }
-
-    // A client is needed to build an McpTool; a dead duplex is enough for the
-    // pure-name/schema assertions that never call `run`.
-    fn dead_client() -> Arc<McpClient> {
-        use crate::mcp::stdio::StdioClient;
-        let (client_end, server_end) = tokio::io::duplex(64);
-        drop(server_end);
-        let (r, w) = tokio::io::split(client_end);
-        Arc::new(McpClient::Stdio(StdioClient::new(
-            "srv".to_string(),
-            w,
-            r,
-            None,
-        )))
     }
 
     #[tokio::test]

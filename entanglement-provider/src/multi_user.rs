@@ -44,6 +44,11 @@ use crate::{anthropic_factory, ANTHROPIC_BASE};
 pub struct UserProviderContext {
     pub catalog: Catalog,
     keys: HashMap<String, String>,
+    /// Per-provider OAuth bearer sources (#684 edge d), keyed by the catalog
+    /// entry's `name`. Consulted for a provider whose entry carries an
+    /// `oauth:` block — typically `StoredTokenSource::new(provider_name,
+    /// user_scoped(store, user))` over the embedder's own `UserTokenStore`.
+    token_sources: HashMap<String, Arc<dyn crate::oauth::AccessTokenSource>>,
 }
 
 impl UserProviderContext {
@@ -51,6 +56,7 @@ impl UserProviderContext {
         Self {
             catalog,
             keys: HashMap::new(),
+            token_sources: HashMap::new(),
         }
     }
 
@@ -63,12 +69,44 @@ impl UserProviderContext {
         self
     }
 
+    /// Register this user's OAuth bearer source for the catalog provider
+    /// named `provider` (#684 edge d) — required for an entry carrying an
+    /// `oauth:` block, ignored otherwise.
+    pub fn with_token_source(
+        mut self,
+        provider: impl Into<String>,
+        source: Arc<dyn crate::oauth::AccessTokenSource>,
+    ) -> Self {
+        self.token_sources.insert(provider.into(), source);
+        self
+    }
+
     fn key_for(&self, entry: &ProviderEntry) -> Option<&str> {
         entry
             .key_env
             .as_deref()
             .and_then(|k| self.keys.get(k))
             .map(String::as_str)
+    }
+
+    /// The OAuth bearer source for `entry`, when it declares an `oauth:`
+    /// block: missing one is a hard error — an OAuth endpoint without a token
+    /// source could only ever 401.
+    fn auth_for(
+        &self,
+        entry: &ProviderEntry,
+    ) -> Result<Option<Arc<dyn crate::oauth::AccessTokenSource>>, String> {
+        if entry.oauth.is_none() {
+            return Ok(None);
+        }
+        match self.token_sources.get(&entry.name) {
+            Some(source) => Ok(Some(source.clone())),
+            None => Err(format!(
+                "provider `{}` is OAuth-protected — register this user's token source \
+                 via UserProviderContext::with_token_source",
+                entry.name
+            )),
+        }
     }
 }
 
@@ -154,6 +192,9 @@ fn resolve_for_user(
         .provider(provider)
         .ok_or_else(|| format!("unknown provider `{provider}` for this user"))?;
     let key = ctx.key_for(entry);
+    // OAuth bearer source (#684 edge d): required when the entry declares
+    // `oauth:`, in which case it replaces the static key on the wire.
+    let auth = ctx.auth_for(entry)?;
     let rpm = entry.rpm;
     let concurrency = entry.concurrency;
     // Resolved per request against the user's own catalog (#550), not once
@@ -181,6 +222,7 @@ fn resolve_for_user(
             openai_factory(
                 base,
                 key.map(str::to_string),
+                auth,
                 model.to_string(),
                 rpm,
                 concurrency,
@@ -191,8 +233,13 @@ fn resolve_for_user(
             )
         }
         Wire::Anthropic => {
-            let key =
-                key.ok_or_else(|| format!("no API key configured for provider `{provider}`"))?;
+            // An OAuth entry needs no static key — the bearer replaces it.
+            let key = match &auth {
+                Some(_) => String::new(),
+                None => key
+                    .ok_or_else(|| format!("no API key configured for provider `{provider}`"))?
+                    .to_string(),
+            };
             let base = entry
                 .base_url
                 .clone()
@@ -218,7 +265,8 @@ fn resolve_for_user(
                 .unwrap_or(true);
             anthropic_factory(
                 base,
-                key.to_string(),
+                key,
+                auth,
                 model.to_string(),
                 rpm,
                 concurrency,
@@ -231,15 +279,21 @@ fn resolve_for_user(
             )
         }
         Wire::Gemini => {
-            let key =
-                key.ok_or_else(|| format!("no API key configured for provider `{provider}`"))?;
+            // An OAuth entry needs no static key — the bearer replaces it.
+            let key = match &auth {
+                Some(_) => String::new(),
+                None => key
+                    .ok_or_else(|| format!("no API key configured for provider `{provider}`"))?
+                    .to_string(),
+            };
             let base = entry
                 .base_url
                 .clone()
                 .unwrap_or_else(|| GEMINI_BASE.to_string());
             gemini_factory(
                 base,
-                key.to_string(),
+                key,
+                auth,
                 model.to_string(),
                 rpm,
                 concurrency,
@@ -277,6 +331,7 @@ mod tests {
                 wire: Wire::Openai,
                 base_url: None,
                 key_env: Some("ZAI_API_KEY".into()),
+                oauth: None,
                 rpm,
                 concurrency: None,
                 mcp_servers: Default::default(),
@@ -355,6 +410,41 @@ mod tests {
         assert!(resolver(Some(&alice), "zai", "glm-5.2").is_ok());
         let err = resolver(Some(&bob), "zai", "glm-5.2").err().unwrap();
         assert!(err.contains("unknown provider"));
+    }
+
+    /// An `oauth:` catalog entry (#684 edge d) requires a per-user token
+    /// source: missing one is a hard error naming the seam, present one
+    /// resolves with no static key at all.
+    #[test]
+    fn oauth_provider_requires_and_uses_a_token_source() {
+        struct StaticToken;
+        #[async_trait::async_trait]
+        impl crate::oauth::AccessTokenSource for StaticToken {
+            async fn access_token(&self, _force: bool) -> anyhow::Result<String> {
+                Ok("tok".into())
+            }
+        }
+
+        let mut catalog = zai_catalog(None);
+        catalog.providers[0].oauth = Some(Default::default());
+        catalog.providers[0].key_env = None; // purely OAuth — no static key
+
+        let store = InMemoryUserProviderStore::new();
+        let alice = UserId::new("alice");
+        store.set(alice.clone(), UserProviderContext::new(catalog.clone()));
+        let shared: Arc<dyn UserProviderStore> = Arc::new(store.clone());
+        let resolver = build_user_model_resolver(shared, HttpClient::new().unwrap(), None);
+        let err = resolver(Some(&alice), "zai", "glm-5.2").err().unwrap();
+        assert!(err.contains("OAuth-protected"), "{err}");
+        assert!(err.contains("with_token_source"), "{err}");
+
+        store.set(
+            alice.clone(),
+            UserProviderContext::new(catalog).with_token_source("zai", Arc::new(StaticToken)),
+        );
+        let shared: Arc<dyn UserProviderStore> = Arc::new(store);
+        let resolver = build_user_model_resolver(shared, HttpClient::new().unwrap(), None);
+        assert!(resolver(Some(&alice), "zai", "glm-5.2").is_ok());
     }
 
     #[test]

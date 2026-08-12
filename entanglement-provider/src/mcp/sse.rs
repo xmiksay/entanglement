@@ -26,7 +26,7 @@ pub const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// must not grow these buffers without bound — the idle timeout above doesn't
 /// help here since it resets on every chunk received, even one that never
 /// completes a line. Mirrors the OAuth loopback reader's `MAX_REQUEST_BYTES`
-/// cap (`mcp/auth/loopback.rs`).
+/// cap (`oauth/loopback.rs`).
 const MAX_SSE_BUFFER_BYTES: usize = 10 * 1024 * 1024;
 
 /// Drain an SSE body until the JSON-RPC message answering `id` arrives.

@@ -10,6 +10,11 @@
 //! Keeping the browser launch on the caller's side is what lets this crate stay
 //! free of process spawning, and lets a headless head fall back to printing the
 //! URL with no separate code path.
+//!
+//! The pre-human half (discovery → client resolution → PKCE → authorize URL) is
+//! shared with the web-redirect variant ([`super::web::WebFlow`], #684) via
+//! [`prepare`]; only where the redirect lands differs — a loopback listener
+//! here, the embedder's own callback endpoint there.
 
 use std::time::Duration;
 
@@ -67,20 +72,7 @@ impl AuthFlow {
         cfg: &OauthConfig,
         resource_metadata_hint: Option<&str>,
     ) -> Result<PendingAuthorization> {
-        let http = super::http_client();
-        let endpoints = discovery::discover(
-            &http,
-            mcp_url,
-            resource_metadata_hint,
-            cfg.authorization_url.as_deref(),
-            cfg.token_url.as_deref(),
-            cfg.registration_url.as_deref(),
-            cfg.device_authorization_url.as_deref(),
-        )
-        .await
-        .with_context(|| format!("discovering OAuth metadata for MCP server `{server}`"))?;
-
-        // Bind before registering: the redirect URI is part of the registration
+        // Bind before preparing: the redirect URI is part of the registration
         // request, so the ephemeral port has to be known first.
         let listener = loopback::bind(cfg.redirect_port).await?;
         let port = listener
@@ -89,65 +81,120 @@ impl AuthFlow {
             .port();
         let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
-        let scopes = if cfg.scopes.is_empty() {
-            endpoints.scopes_supported.clone()
-        } else {
-            cfg.scopes.clone()
-        };
+        let prepared = prepare(
+            server,
+            mcp_url,
+            cfg,
+            resource_metadata_hint,
+            &redirect_uri,
+            CLIENT_NAME,
+        )
+        .await?;
 
-        let client = match &cfg.client_id {
-            Some(id) => ClientRegistration {
-                client_id: id.clone(),
-                client_secret: cfg.client_secret.clone(),
-            },
-            None => {
-                let endpoint = endpoints
-                    .registration_endpoint
-                    .as_deref()
-                    .with_context(|| {
-                        format!(
+        Ok(PendingAuthorization {
+            http: prepared.http,
+            server: server.to_string(),
+            authorize_url: prepared.authorize_url,
+            redirect_uri,
+            listener,
+            state: prepared.state,
+            pkce: prepared.pkce,
+            client: prepared.client,
+            endpoints: prepared.endpoints,
+        })
+    }
+}
+
+/// Everything both redirect-based flows share, resolved and ready: discovery,
+/// client resolution (pre-issued or DCR), PKCE + `state`, and the authorization
+/// URL. Only where the redirect lands differs between the loopback flow and the
+/// web-redirect flow, so the caller supplies `redirect_uri` (already final) and
+/// the DCR `client_name` shown on the consent screen.
+pub(super) struct PreparedAuthorization {
+    pub http: reqwest::Client,
+    pub endpoints: discovery::Endpoints,
+    pub client: ClientRegistration,
+    pub pkce: Pkce,
+    pub state: String,
+    pub authorize_url: String,
+}
+
+pub(super) async fn prepare(
+    server: &str,
+    mcp_url: &str,
+    cfg: &OauthConfig,
+    resource_metadata_hint: Option<&str>,
+    redirect_uri: &str,
+    client_name: &str,
+) -> Result<PreparedAuthorization> {
+    let http = super::http_client();
+    let endpoints = discovery::discover(
+        &http,
+        mcp_url,
+        resource_metadata_hint,
+        cfg.authorization_url.as_deref(),
+        cfg.token_url.as_deref(),
+        cfg.registration_url.as_deref(),
+        cfg.device_authorization_url.as_deref(),
+    )
+    .await
+    .with_context(|| format!("discovering OAuth metadata for MCP server `{server}`"))?;
+
+    let scopes = if cfg.scopes.is_empty() {
+        endpoints.scopes_supported.clone()
+    } else {
+        cfg.scopes.clone()
+    };
+
+    let client = match &cfg.client_id {
+        Some(id) => ClientRegistration {
+            client_id: id.clone(),
+            client_secret: cfg.client_secret.clone(),
+        },
+        None => {
+            let endpoint = endpoints
+                .registration_endpoint
+                .as_deref()
+                .with_context(|| {
+                    format!(
                         "MCP server `{server}` advertises no dynamic-registration endpoint and \
                          no `client_id` is configured — set `oauth.client_id` in config.yml"
                     )
-                    })?;
-                dcr::register(
-                    &http,
-                    endpoint,
-                    Some(&redirect_uri),
-                    &["authorization_code", "refresh_token"],
-                    &scopes,
-                    CLIENT_NAME,
-                )
-                .await
-                .with_context(|| format!("registering a client with `{server}`"))?
-            }
-        };
+                })?;
+            dcr::register(
+                &http,
+                endpoint,
+                Some(redirect_uri),
+                &["authorization_code", "refresh_token"],
+                &scopes,
+                client_name,
+            )
+            .await
+            .with_context(|| format!("registering a client with `{server}`"))?
+        }
+    };
 
-        let pkce = Pkce::generate();
-        // `state` and the PKCE verifier come from the same CSPRNG.
-        let state = super::pkce::random_token();
-        let authorize_url = build_authorize_url(
-            &endpoints.authorization_endpoint,
-            &client.client_id,
-            &redirect_uri,
-            &scopes,
-            &state,
-            &pkce.challenge,
-            endpoints.resource.as_deref(),
-        );
+    let pkce = Pkce::generate();
+    // `state` and the PKCE verifier come from the same CSPRNG.
+    let state = super::pkce::random_token();
+    let authorize_url = build_authorize_url(
+        &endpoints.authorization_endpoint,
+        &client.client_id,
+        redirect_uri,
+        &scopes,
+        &state,
+        &pkce.challenge,
+        endpoints.resource.as_deref(),
+    );
 
-        Ok(PendingAuthorization {
-            http,
-            server: server.to_string(),
-            authorize_url,
-            redirect_uri,
-            listener,
-            state,
-            pkce,
-            client,
-            endpoints,
-        })
-    }
+    Ok(PreparedAuthorization {
+        http,
+        endpoints,
+        client,
+        pkce,
+        state,
+        authorize_url,
+    })
 }
 
 /// An authorization waiting on the user's browser.
