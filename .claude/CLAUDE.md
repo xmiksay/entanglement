@@ -161,7 +161,9 @@ never here**; each bullet is the claim + where to read it:
   (#681, ADR-0186): a `bash`/`call` foreground exit (or a `poll` observing a
   job exit) as a real field via the defaulted `Tool::run_with_meta`, `None`
   for everything else incl. killed processes, orthogonal to `is_error`.
-  [engine](../docs/architecture/engine.md),
+  `poll`'s own branches are classified too (#695, the ADR-0176 remainder):
+  unknown-handle/refused-`kill`/script-error set `is_error`, state reports
+  stay `false`. [engine](../docs/architecture/engine.md),
   [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md)/[ADR-0176](../docs/adr/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md).
 - **Permission lives entirely in the runtime**; core only carries schemas and
   `PermissionProfile::resolve`. Rule keys: name-or-`*`, argument-scoped

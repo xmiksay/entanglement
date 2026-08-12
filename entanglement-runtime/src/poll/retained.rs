@@ -16,18 +16,21 @@ pub(super) fn is_retained_handle(handle: &str) -> bool {
 }
 
 /// A retained-output poll never waits — the operation it pages already
-/// finished — and refuses `kill` like an agent handle (#608).
+/// finished — and refuses `kill` like an agent handle (#608). The refusal and
+/// an unknown handle classify as errors (#695); a paged read — including an
+/// `offset` past the end — is a state report.
 pub(super) fn resolve_retained(
     retained: &RetainedOutputRegistry,
     session: &SessionId,
     parsed: &PollInput,
-) -> String {
+) -> super::format::PollOutcome {
+    use super::format::PollOutcome;
     if parsed.kill {
-        return super::format::kill_refused_message(&parsed.handle);
+        return PollOutcome::err(super::format::kill_refused_message(&parsed.handle));
     }
     match retained.page(&parsed.handle, session, parsed.offset, parsed.tail) {
-        Some(page) => format_retained_page(&parsed.handle, page),
-        None => super::format::unknown_handle(&parsed.handle),
+        Some(page) => PollOutcome::ok(format_retained_page(&parsed.handle, page)),
+        None => PollOutcome::err(super::format::unknown_handle(&parsed.handle)),
     }
 }
 
@@ -105,14 +108,15 @@ mod tests {
             &session,
             &serde_json::json!({"handle": id, "tail": 10}).to_string(),
         )
-        .await
-        .0;
+        .await;
         assert!(
-            first.contains("line1") && first.contains("line10"),
-            "{first}"
+            first.text.contains("line1") && first.text.contains("line10"),
+            "{}",
+            first.text
         );
-        assert!(!first.contains("line11"), "{first}");
-        assert!(first.contains("more available"), "{first}");
+        assert!(!first.text.contains("line11"), "{}", first.text);
+        assert!(first.text.contains("more available"), "{}", first.text);
+        assert!(!first.is_error);
 
         let second = super::super::resolve(
             &JobRegistry::new(),
@@ -122,13 +126,27 @@ mod tests {
             &session,
             &serde_json::json!({"handle": id, "offset": 10, "tail": 10}).to_string(),
         )
-        .await
-        .0;
+        .await;
         assert!(
-            second.contains("line11") && second.contains("line20"),
-            "{second}"
+            second.text.contains("line11") && second.text.contains("line20"),
+            "{}",
+            second.text
         );
-        assert!(!second.contains("line21"), "{second}");
+        assert!(!second.text.contains("line21"), "{}", second.text);
+
+        // #695: an offset past the end is a factual state report, not an
+        // error — the read ran.
+        let past_end = super::super::resolve(
+            &JobRegistry::new(),
+            &AgentRegistry::default(),
+            &retained,
+            &ScriptRegistry::new(),
+            &session,
+            &serde_json::json!({"handle": id, "offset": 999}).to_string(),
+        )
+        .await;
+        assert!(past_end.text.contains("past the end"), "{}", past_end.text);
+        assert!(!past_end.is_error);
     }
 
     /// #608: an operation registered with an explicit `output_file` is named,
@@ -147,12 +165,13 @@ mod tests {
             &session,
             &serde_json::json!({"handle": id}).to_string(),
         )
-        .await
-        .0;
-        assert!(out.contains("out/result.txt"), "{out}");
+        .await;
+        assert!(out.text.contains("out/result.txt"), "{}", out.text);
+        assert!(!out.is_error);
     }
 
     /// #608: `kill` is refused on a retained-output handle — nothing running.
+    /// The refusal is a model mistake, so it classifies as an error (#695).
     #[tokio::test]
     async fn kill_is_refused_on_a_retained_output_handle() {
         let session = SessionId::new("s6");
@@ -167,12 +186,13 @@ mod tests {
             &session,
             &serde_json::json!({"handle": id, "kill": true}).to_string(),
         )
-        .await
-        .0;
+        .await;
         assert!(
-            out.contains("not supported") && out.contains("retained-output"),
-            "{out}"
+            out.text.contains("not supported") && out.text.contains("retained-output"),
+            "{}",
+            out.text
         );
+        assert!(out.is_error);
     }
 
     /// #608: a retained-output handle from a different session is unknown —
@@ -192,8 +212,8 @@ mod tests {
             &stranger,
             &serde_json::json!({"handle": id}).to_string(),
         )
-        .await
-        .0;
-        assert!(out.contains("unknown handle"), "{out}");
+        .await;
+        assert!(out.text.contains("unknown handle"), "{}", out.text);
+        assert!(out.is_error);
     }
 }
