@@ -1,7 +1,13 @@
 # 0174. Authenticated multi-user wire head — design (not yet built)
 
-- Status: Accepted
+- Status: Superseded by [ADR-0181](0181-userid-leaves-the-runtime-crate.md)
 - Date: 2026-08-06
+
+> **Superseded (2026-08-12, #686).** `UserId` leaves the runtime crate
+> entirely — no in-tree head ships multi-user. The implementation this ADR
+> specified (#674, `serve --auth-tokens`) is removed; `serve` returns to
+> [ADR-0048](0048-serve-head-local-trust-model.md)'s local single-user
+> posture. An authenticated wire head is an embedder's build, out of tree.
 - Amends: none. Fulfills the deferral [ADR-0147](0147-multi-user-mode-embedder-api.md)
   named explicitly ("wiring a bearer-token-to-`UserId` authenticated wire head
   is a distinct, orthogonal design problem... that deserves its own ADR once a
