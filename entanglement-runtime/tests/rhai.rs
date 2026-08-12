@@ -241,6 +241,7 @@ fn spawn_with_rhai_escape(
         tools.shared(),
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
@@ -1135,6 +1136,7 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         tools.shared(),
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         skills,
         PermissionProfile::new(Permission::Allow),
@@ -1183,4 +1185,129 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         "after",
         "the unmasked edit binding must run in turn 2"
     );
+}
+
+/// [`spawn_with_rhai`], but the scripted call sets `background: true` (#637,
+/// ADR-0185) and the caller keeps a clone of the executor's `ScriptRegistry`,
+/// standing in for `poll`'s `x-` path so the test can join the detached run.
+fn spawn_with_rhai_background(
+    script: &str,
+    root: &std::path::Path,
+    profiles: ProfileRegistry,
+) -> (Holly, entanglement_runtime::script_ops::ScriptRegistry) {
+    let input = serde_json::json!({ "script": script, "background": true }).to_string();
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: RHAI_TOOL.into(),
+                input,
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut tools = host_tools(root.to_path_buf());
+    tools.register(ReadRawTool::new(root.to_path_buf()));
+    let base = PermissionProfile::new(Permission::Allow);
+    let active = Arc::new(Mutex::new(HashMap::new()));
+    let resolver: Arc<dyn PermissionResolver> =
+        Arc::new(ProfileResolver::new(active.clone(), base.clone(), None));
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let scripts = entanglement_runtime::script_ops::ScriptRegistry::new();
+    let _executor = spawn_tool_executor_with_policy(
+        &holly,
+        tools.shared(),
+        entanglement_runtime::host::jobs::JobRegistry::new(),
+        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        scripts.clone(),
+        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+        base,
+        active,
+        resolver,
+        grants,
+        Hooks::default(),
+        None,
+        SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
+    );
+    (holly, scripts)
+}
+
+/// #637, ADR-0185: `background: true` returns an `x-` handle immediately (with
+/// the 120 s default deadline in the notice), the turn completes without the
+/// script's result, and the registry-joined poll drains the streamed prints
+/// plus the final `=> value` line once the script finishes.
+#[tokio::test]
+async fn background_script_returns_a_handle_and_polls_to_completion() {
+    let dir = TempDir::new("background");
+    let (holly, scripts) = spawn_with_rhai_background(
+        r#"print("bg-hello"); 6 * 7"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected the started notice as rhai output");
+    assert!(
+        out.starts_with("[background script x-"),
+        "expected the x- handle notice, got: {out}"
+    );
+    assert!(
+        !out.contains("=> 42"),
+        "the launch reply must not carry the script result: {out}"
+    );
+    assert!(
+        out.contains("120s"),
+        "an omitted timeout defaults to the 120s background bound: {out}"
+    );
+    let handle = out
+        .split_whitespace()
+        .find(|w| w.starts_with("x-"))
+        .unwrap()
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+        .to_string();
+
+    // Join through the registry (what `poll`'s `x-` arm calls): drain deltas
+    // until the terminal state lands, accumulating the streamed output.
+    let mut all = String::new();
+    let mut finished = false;
+    for _ in 0..50 {
+        let p = scripts
+            .poll(&handle, &sid, false, 5)
+            .await
+            .expect("the launching session owns the handle");
+        all.push_str(&String::from_utf8_lossy(&p.output));
+        if !p.running {
+            assert!(!p.is_error, "script must finish cleanly");
+            finished = true;
+            break;
+        }
+    }
+    assert!(
+        finished,
+        "script never reached a terminal state; got: {all}"
+    );
+    assert!(all.contains("bg-hello"), "streamed print missing: {all}");
+    assert!(all.contains("=> 42"), "final result line missing: {all}");
+
+    // Ownership scoping (#605 convention): a stranger session sees nothing.
+    let stranger = SessionId::new("stranger");
+    assert!(scripts.poll(&handle, &stranger, false, 1).await.is_none());
 }

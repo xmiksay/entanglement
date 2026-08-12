@@ -200,6 +200,7 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
         tools.shared(),
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         skills,
         PermissionProfile::new(Permission::Allow),

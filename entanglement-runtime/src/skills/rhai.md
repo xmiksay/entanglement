@@ -65,6 +65,19 @@ captured alongside it. Bounded by `max_operations`, string/array/map size
 caps, and a wall-clock timeout (`timeout` argument, default 5s, max 30s) — a
 runaway script terminates deterministically, never an OOM.
 
+## Background scripts
+
+`background: true` returns an `x-` handle immediately instead of the result;
+join with `poll`, which drains `print` output incrementally and, once the
+script finishes, its final `=> value` (or error) line. A background script
+gets a longer budget (`timeout` default 120s, max 600s). `poll kill=true`
+requests a **cooperative** stop: the script ends at its next operation, so an
+in-flight `exec`/`bash` call finishes its own (budget-clamped) timeout first.
+Bindings grade exactly as in a blocking run — an `Ask`-graded binding still
+prompts for approval mid-run, and the deadline keeps counting while it waits.
+Use `background` for long multi-step scripts; prefer the default blocking form
+for anything that fits the 30s cap — it returns the result in one round-trip.
+
 ## Worked example
 
 ```rhai

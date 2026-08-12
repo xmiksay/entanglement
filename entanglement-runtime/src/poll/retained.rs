@@ -76,6 +76,7 @@ mod tests {
     use super::*;
     use crate::agent_registry::AgentRegistry;
     use crate::host::jobs::JobRegistry;
+    use crate::script_ops::ScriptRegistry;
 
     #[test]
     fn is_retained_handle_matches_the_o_prefix_only() {
@@ -100,6 +101,7 @@ mod tests {
             &JobRegistry::new(),
             &AgentRegistry::default(),
             &retained,
+            &ScriptRegistry::new(),
             &session,
             &serde_json::json!({"handle": id, "tail": 10}).to_string(),
         )
@@ -115,6 +117,7 @@ mod tests {
             &JobRegistry::new(),
             &AgentRegistry::default(),
             &retained,
+            &ScriptRegistry::new(),
             &session,
             &serde_json::json!({"handle": id, "offset": 10, "tail": 10}).to_string(),
         )
@@ -138,6 +141,7 @@ mod tests {
             &JobRegistry::new(),
             &AgentRegistry::default(),
             &retained,
+            &ScriptRegistry::new(),
             &session,
             &serde_json::json!({"handle": id}).to_string(),
         )
@@ -156,6 +160,7 @@ mod tests {
             &JobRegistry::new(),
             &AgentRegistry::default(),
             &retained,
+            &ScriptRegistry::new(),
             &session,
             &serde_json::json!({"handle": id, "kill": true}).to_string(),
         )
@@ -179,6 +184,7 @@ mod tests {
             &JobRegistry::new(),
             &AgentRegistry::default(),
             &retained,
+            &ScriptRegistry::new(),
             &stranger,
             &serde_json::json!({"handle": id}).to_string(),
         )

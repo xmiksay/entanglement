@@ -152,6 +152,7 @@ fn spawn_with_policy(
         reg.shared(),
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
         Arc::new(std::sync::RwLock::new(profiles)),
         Arc::new(std::sync::RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),

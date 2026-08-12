@@ -183,6 +183,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         tools.shared(),
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
         Arc::new(RwLock::new(profiles)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,

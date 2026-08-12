@@ -1,10 +1,12 @@
 //! `poll` — the single join tool for background work (#605, ADR-0161 §1-4).
 //!
 //! Replaces `bash_output` and `agent_poll` outright — no aliases (and, with
-//! #606, is the only way to join a `background: true` `bash`/`call`/`agent`
-//! launch — `agent_spawn` is gone). Dispatches on
+//! #606, is the only way to join a `background: true` `bash`/`call`/`agent`/
+//! `rhai` launch — `agent_spawn` is gone). Dispatches on
 //! the handle's kind prefix (ADR-0164) to [`crate::host::jobs::JobRegistry`]
 //! (`j-`, a background `bash` job),
+//! [`crate::script_ops::ScriptRegistry`] (`x-`, a background `rhai` script —
+//! #637, ADR-0185),
 //! [`crate::retained_output::RetainedOutputRegistry`] (`o-`, a completed
 //! operation's output that overflowed its cap — #608, ADR-0161 §7), or
 //! [`crate::agent_registry::AgentRegistry`] (anything else — a sub-agent
@@ -14,13 +16,20 @@
 //! - a **job** poll ends on new output *or* exit, whichever comes first, and
 //!   returns the incremental delta since the last poll — still destructive,
 //!   still `mem::take` (mirrors `bash_output`'s drain);
+//! - a **script** poll has exactly the job contract — new `print` output or
+//!   finish ends the wait, each read drains the delta, and the terminal poll
+//!   carries the script's final `=> value` / error line;
 //! - a **retained-output** poll never waits (the operation already finished)
 //!   and instead pages the text with `offset`/`tail` — see below;
 //! - an **agent** poll ends only on the child's completion and returns its
 //!   final answer — idempotent, a later poll of the same handle repeats it
 //!   (mirrors `agent_poll`'s `watch`-channel wait).
 //!
-//! `kill: true` SIGKILLs a job's process group; refused on an agent or
+//! `kill: true` SIGKILLs a job's process group; on a script handle it is
+//! **cooperative** — it trips the stop flag the engine's progress callback
+//! polls, so the script ends at its next operation (an in-flight `exec`/`bash`
+//! binding finishes its own budget-clamped timeout first, the documented
+//! ADR-0161 §5 limit). Refused on an agent or
 //! retained-output handle — cancelling a child is a distinct authorization
 //! gate ADR-0033 deferred, and a retained-output entry has nothing running to
 //! kill. An unknown (or not-the-caller's-own) handle is an *error*, adopting
@@ -51,6 +60,7 @@
 //! `AgentRegistry`/`RetainedOutputRegistry` already enforce: a handle is only
 //! ever visible to the session that launched it.
 
+mod format;
 mod retained;
 
 use std::time::Duration;
@@ -59,11 +69,13 @@ use entanglement_core::{Holly, SessionId, ToolSpec};
 use tokio::sync::watch;
 
 use crate::agent_registry::{AgentRegistry, AgentStatus};
-use crate::host::jobs::{JobRegistry, JobStatus, Poll as JobPoll};
+use crate::host::jobs::JobRegistry;
 use crate::retained_output::RetainedOutputRegistry;
+use crate::script_ops::ScriptRegistry;
 use crate::seam::reply;
 use crate::subagent::format_agent_answer;
 use crate::tool_names::POLL_TOOL;
+use format::{format_job_poll, format_script_poll};
 use retained::{is_retained_handle, resolve_retained};
 
 /// Default poll timeout when the model omits `timeout_secs`.
@@ -82,13 +94,17 @@ pub fn poll_spec() -> ToolSpec {
     ToolSpec::with_schema(
         POLL_TOOL,
         "Wait on a handle from a background bash/call job (background=true), a \
+         background rhai script (background=true), a \
          sub-agent launched with agent (background=true), or a completed \
          operation's retained output (returned alongside a truncated call \
          result). Blocks up to timeout_secs for something to report — new \
-         output or exit for a job, the final answer for a sub-agent — then \
-         returns a running/complete status plus text. A job poll returns only \
+         output or exit for a job or script, the final answer for a sub-agent \
+         — then \
+         returns a running/complete status plus text. A job or script poll \
+         returns only \
          the output produced since the last poll (drained, so each call sees \
-         only what's new); a sub-agent poll returns its final answer once \
+         only what's new; a script's terminal poll carries its final => \
+         result line); a sub-agent poll returns its final answer once \
          complete and can be called again safely; a retained-output poll \
          never waits (the operation already finished) and instead pages the \
          text with offset/tail — offset (default 0) is a 0-based line index, \
@@ -96,11 +112,13 @@ pub fn poll_spec() -> ToolSpec {
          return from there, 0 meaning the rest (still byte-capped). When the \
          operation had an explicit output_file, the poll result names that \
          path instead of paging text. Pass kill: true to SIGKILL a job's \
-         process group (refused for a sub-agent or retained-output handle — \
+         process group, or to cooperatively stop a script — it ends at its \
+         next operation, after any in-flight exec/bash binding finishes \
+         (refused for a sub-agent or retained-output handle — \
          not supported). Pass timeout_secs: 0 to block until the handle \
          reaches a terminal state. Call with no handle at all to instead list \
          this session's own pending operations — every background \
-         job/sub-agent still outstanding, with kind, handle, launcher, \
+         job/script/sub-agent still outstanding, with kind, handle, launcher, \
          elapsed time, and status.",
         serde_json::json!({
             "type": "object",
@@ -108,7 +126,8 @@ pub fn poll_spec() -> ToolSpec {
                 "handle": {
                     "type": "string",
                     "description": "The handle to await: a job id from bash/call \
-                        background=true, an agent_id from agent background=true, or a \
+                        background=true, a script id from rhai background=true, an \
+                        agent_id from agent background=true, or a \
                         retained-output id returned alongside a truncated call result. \
                         Omit to list this session's pending operations instead."
                 },
@@ -122,7 +141,8 @@ pub fn poll_spec() -> ToolSpec {
                 "kill": {
                     "type": "boolean",
                     "description": "Terminate a background job's process group \
-                        before reading. Refused for a sub-agent or retained-output \
+                        before reading, or request a background script's \
+                        cooperative stop. Refused for a sub-agent or retained-output \
                         handle. Default false."
                 },
                 "offset": {
@@ -191,19 +211,26 @@ fn is_job_handle(handle: &str) -> bool {
     handle.starts_with("j-")
 }
 
+/// A background-script id (ADR-0164's `x-` prefix, #637).
+fn is_script_handle(handle: &str) -> bool {
+    handle.starts_with("x-")
+}
+
 /// Orchestrate one `poll` call: dispatch on the handle's kind prefix and reply
 /// with the joined status + text. Thin wrapper over [`resolve`] so the actual
 /// join logic is testable without a live `Holly`.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_poll(
     holly: Holly,
     jobs: JobRegistry,
     agents: AgentRegistry,
     retained: RetainedOutputRegistry,
+    scripts: ScriptRegistry,
     session: SessionId,
     request_id: String,
     input: String,
 ) {
-    let output = resolve(&jobs, &agents, &retained, &session, &input).await;
+    let output = resolve(&jobs, &agents, &retained, &scripts, &session, &input).await;
     // `poll`'s result folds several outcomes (running/complete/list/unknown
     // handle) into one status-line-then-body string; distinguishing them as
     // `is_error` (#636, ADR-0176) is left to a follow-up — `poll` is a
@@ -218,13 +245,14 @@ async fn resolve(
     jobs: &JobRegistry,
     agents: &AgentRegistry,
     retained: &RetainedOutputRegistry,
+    scripts: &ScriptRegistry,
     session: &SessionId,
     input: &str,
 ) -> String {
     let Some(parsed) = parse_input(input) else {
         // No handle (#607, ADR-0161 §6): list this session's own pending
         // operations instead of joining a single one.
-        let ops = crate::operations::list_operations(jobs, agents, Some(session));
+        let ops = crate::operations::list_operations(jobs, agents, scripts, Some(session));
         return crate::operations::format_operations(&ops);
     };
 
@@ -234,6 +262,14 @@ async fn resolve(
             .await
         {
             Some(p) => format_job_poll(&parsed.handle, p),
+            None => unknown_handle(&parsed.handle),
+        }
+    } else if is_script_handle(&parsed.handle) {
+        match scripts
+            .poll(&parsed.handle, session, parsed.kill, parsed.timeout_secs)
+            .await
+        {
+            Some(p) => format_script_poll(&parsed.handle, p, parsed.kill),
             None => unknown_handle(&parsed.handle),
         }
     } else if is_retained_handle(&parsed.handle) {
@@ -317,8 +353,9 @@ fn kill_refused_message(handle: &str) -> String {
 fn unknown_handle(handle: &str) -> String {
     format!(
         "poll: unknown handle `{handle}` — it was never launched from this \
-         session (use the id returned by bash/call/agent background=true, or \
-         the retained-output id returned alongside a truncated call result)."
+         session (use the id returned by bash/call/rhai/agent background=true, \
+         or the retained-output id returned alongside a truncated call \
+         result)."
     )
 }
 
@@ -341,49 +378,6 @@ async fn wait_complete(rx: &mut watch::Receiver<AgentStatus>) -> AgentStatus {
             };
         }
     }
-}
-
-/// Render a job poll's status + drained output — the same shape `bash_output`
-/// used, byte-capped head+tail via [`crate::host::bounded_result`].
-fn format_job_poll(id: &str, poll: JobPoll) -> String {
-    let status = match poll.status {
-        JobStatus::Running => "running".to_string(),
-        JobStatus::Exited(Some(code)) => format!("exited {code}"),
-        JobStatus::Exited(None) => "exited (killed)".to_string(),
-    };
-    let mut header = format!("[job {id}: {status}]\n");
-    if poll.timed_out {
-        header.push_str(&format!(
-            "[killed: timed out after {}s]\n",
-            poll.timeout_secs
-        ));
-    }
-    let mut body = String::new();
-    if poll.stdout_dropped > 0 {
-        body.push_str(&format!(
-            "[{} bytes of older stdout dropped]\n",
-            poll.stdout_dropped
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&poll.stdout);
-    if !stdout.is_empty() {
-        body.push_str(&stdout);
-    }
-    if poll.stderr_dropped > 0 {
-        body.push_str(&format!(
-            "[{} bytes of older stderr dropped]\n",
-            poll.stderr_dropped
-        ));
-    }
-    let stderr = String::from_utf8_lossy(&poll.stderr);
-    if !stderr.is_empty() {
-        body.push_str("[stderr]\n");
-        body.push_str(&stderr);
-    }
-    if stdout.is_empty() && stderr.is_empty() {
-        body.push_str("(no new output)\n");
-    }
-    crate::host::bounded_result(&header, body)
 }
 
 #[cfg(test)]
@@ -436,6 +430,100 @@ mod tests {
         assert!(!is_job_handle("anything-else"));
     }
 
+    #[test]
+    fn is_script_handle_matches_the_x_prefix_only() {
+        assert!(is_script_handle("x-6a708af0a1002"));
+        assert!(!is_script_handle("j-6a708af0a1002"));
+        assert!(!is_script_handle("s-6a708af0a1002"));
+    }
+
+    /// #637: a script handle resolves through the `x-` arm — a running poll
+    /// drains the streamed delta, the terminal poll reports the final state.
+    #[tokio::test]
+    async fn script_handle_polls_delta_then_terminal_state() {
+        let scripts = ScriptRegistry::new();
+        let session = SessionId::new("s-script");
+        let (id, op) = scripts.register(
+            "rhai: print(1)".to_string(),
+            Some(session.clone()),
+            Duration::from_secs(120),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        op.append_output("streamed\n");
+        let input = serde_json::json!({"handle": id, "timeout_secs": 1}).to_string();
+        let running = resolve(
+            &JobRegistry::new(),
+            &AgentRegistry::default(),
+            &RetainedOutputRegistry::new(),
+            &scripts,
+            &session,
+            &input,
+        )
+        .await;
+        assert!(
+            running.contains(&format!("[script {id}: running]")),
+            "{running}"
+        );
+        assert!(running.contains("streamed"), "{running}");
+
+        op.finish("=> 42", false);
+        let done = resolve(
+            &JobRegistry::new(),
+            &AgentRegistry::default(),
+            &RetainedOutputRegistry::new(),
+            &scripts,
+            &session,
+            &input,
+        )
+        .await;
+        assert!(done.contains(&format!("[script {id}: done]")), "{done}");
+        assert!(done.contains("=> 42"), "{done}");
+    }
+
+    /// #637: `kill: true` on a script handle is accepted (cooperative), not
+    /// refused like an agent handle — and says the stop was *requested*.
+    #[tokio::test]
+    async fn script_kill_is_cooperative_not_refused() {
+        let scripts = ScriptRegistry::new();
+        let session = SessionId::new("s-script2");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (id, _op) = scripts.register(
+            "rhai: loop {}".to_string(),
+            Some(session.clone()),
+            Duration::from_secs(120),
+            stop.clone(),
+        );
+
+        let out = resolve(
+            &JobRegistry::new(),
+            &AgentRegistry::default(),
+            &RetainedOutputRegistry::new(),
+            &scripts,
+            &session,
+            &serde_json::json!({"handle": id, "kill": true}).to_string(),
+        )
+        .await;
+        assert!(!out.contains("not supported"), "{out}");
+        assert!(out.contains("cooperative stop requested"), "{out}");
+        assert!(stop.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// #637: an unknown script handle is the standard poll error.
+    #[tokio::test]
+    async fn unknown_script_handle_is_an_error() {
+        let out = resolve(
+            &JobRegistry::new(),
+            &AgentRegistry::default(),
+            &RetainedOutputRegistry::new(),
+            &ScriptRegistry::new(),
+            &SessionId::new("s1"),
+            &serde_json::json!({"handle": "x-nonexistent"}).to_string(),
+        )
+        .await;
+        assert!(out.starts_with("poll: unknown handle"), "{out}");
+    }
+
     /// End-to-end: `bash` starts a background job owned by a session, `poll`
     /// waits it to completion and sees the exit status + output (#605).
     #[tokio::test]
@@ -464,13 +552,29 @@ mod tests {
         let agents = AgentRegistry::default();
         let retained = RetainedOutputRegistry::new();
         let input = serde_json::json!({"handle": id, "timeout_secs": 5}).to_string();
-        let mut out = resolve(&jobs, &agents, &retained, &session, &input).await;
+        let mut out = resolve(
+            &jobs,
+            &agents,
+            &retained,
+            &ScriptRegistry::new(),
+            &session,
+            &input,
+        )
+        .await;
         assert!(out.contains("hi"), "{out}");
         for _ in 0..50 {
             if out.contains("exited 0") {
                 break;
             }
-            out = resolve(&jobs, &agents, &retained, &session, &input).await;
+            out = resolve(
+                &jobs,
+                &agents,
+                &retained,
+                &ScriptRegistry::new(),
+                &session,
+                &input,
+            )
+            .await;
         }
         assert!(out.contains("exited 0"), "{out}");
     }
@@ -500,6 +604,7 @@ mod tests {
             &jobs,
             &AgentRegistry::default(),
             &RetainedOutputRegistry::new(),
+            &ScriptRegistry::new(),
             &stranger,
             &serde_json::json!({"handle": id}).to_string(),
         )
@@ -519,6 +624,7 @@ mod tests {
             &JobRegistry::new(),
             &agents,
             &RetainedOutputRegistry::new(),
+            &ScriptRegistry::new(),
             &parent,
             &serde_json::json!({"handle": child.to_string(), "kill": true}).to_string(),
         )
@@ -536,6 +642,7 @@ mod tests {
             &JobRegistry::new(),
             &AgentRegistry::default(),
             &RetainedOutputRegistry::new(),
+            &ScriptRegistry::new(),
             &session,
             &serde_json::json!({"handle": "s-nonexistent"}).to_string(),
         )
@@ -552,6 +659,7 @@ mod tests {
             &JobRegistry::new(),
             &AgentRegistry::default(),
             &RetainedOutputRegistry::new(),
+            &ScriptRegistry::new(),
             &session,
             "{}",
         )
@@ -562,7 +670,15 @@ mod tests {
         let child = SessionId::new("s-child9");
         agents.register(child.clone(), session.clone(), "reviewer".to_string());
         let retained = RetainedOutputRegistry::new();
-        let out = resolve(&JobRegistry::new(), &agents, &retained, &session, "{}").await;
+        let out = resolve(
+            &JobRegistry::new(),
+            &agents,
+            &retained,
+            &ScriptRegistry::new(),
+            &session,
+            "{}",
+        )
+        .await;
         assert!(
             out.contains(&child.to_string()) && out.contains("reviewer"),
             "{out}"
@@ -574,6 +690,7 @@ mod tests {
             &JobRegistry::new(),
             &agents,
             &retained,
+            &ScriptRegistry::new(),
             &session,
             "not json",
         )
@@ -597,8 +714,24 @@ mod tests {
 
         let retained = RetainedOutputRegistry::new();
         let input = serde_json::json!({"handle": child.to_string()}).to_string();
-        let first = resolve(&JobRegistry::new(), &agents, &retained, &parent, &input).await;
-        let second = resolve(&JobRegistry::new(), &agents, &retained, &parent, &input).await;
+        let first = resolve(
+            &JobRegistry::new(),
+            &agents,
+            &retained,
+            &ScriptRegistry::new(),
+            &parent,
+            &input,
+        )
+        .await;
+        let second = resolve(
+            &JobRegistry::new(),
+            &agents,
+            &retained,
+            &ScriptRegistry::new(),
+            &parent,
+            &input,
+        )
+        .await;
         assert_eq!(first, second);
         assert!(first.contains("done"), "{first}");
     }
