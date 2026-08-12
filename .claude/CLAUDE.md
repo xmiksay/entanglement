@@ -186,11 +186,12 @@ never here**; each bullet is the claim + where to read it:
   per profile in managed files. **Aux models** (`summarize`, `session_title`,
   `narrate`) resolve per purpose via `aux_llm_resolver` / `AuxLlmRegistry`,
   falling back to the session's own backend; `narrate` drives `Session.action`
-  live off every tool call (`narrate.rs`). A multi-user embedder gets its own
-  per-user pins via `multi_user::aux::UserAuxModelStore`, mirroring
-  `UserProviderStore`. [engine](../docs/architecture/engine.md),
+  live off every tool call (`narrate.rs`). A multi-user embedder builds
+  per-user registries itself — `AuxModelStore::in_memory` + a resolver
+  closure bound to its user (ADR-0181: no `UserId` in the runtime).
+  [engine](../docs/architecture/engine.md),
   [heads & persistence](../docs/architecture/heads-and-persistence.md),
-  [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)/[ADR-0081](../docs/adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)/[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)/[ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)/[ADR-0181](../docs/adr/0181-narrate-purpose-and-per-user-aux-pins.md).
+  [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)/[ADR-0081](../docs/adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)/[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)/[ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../docs/adr/0183-narrate-purpose-and-per-user-aux-pins.md).
 - **Compaction**: manual `/compact` is a `Oneshot` op that forks a successor
   session (copy-on-write, keep-tail) and retires the source; auto-compaction on
   overflow (`auto_compact`, default on) mutates the live context in place; the
@@ -282,8 +283,8 @@ never here**; each bullet is the claim + where to read it:
   [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md).
 - **Multi-user mode is an embedder library API** (`UserId` on the wire,
   per-user catalogs/keys/ceilings/grants on the existing seams, plus per-user
-  aux-model pins via `multi_user::aux::UserAuxModelStore`); `serve`
-  stays local single-user. [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md)/[ADR-0181](../docs/adr/0181-narrate-purpose-and-per-user-aux-pins.md).
+  aux-model pins via an embedder-built registry, ADR-0183); `serve`
+  stays local single-user. [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md)/[ADR-0183](../docs/adr/0183-narrate-purpose-and-per-user-aux-pins.md).
   Two users sharing one **literal** API key each get their own rpm/concurrency
   slice via a per-user admission gate (`HttpClient::with_user_budget`) layered
   above the shared endpoint pool, mirroring ADR-0140's per-model gate.

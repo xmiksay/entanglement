@@ -11,9 +11,6 @@
 //! - [`permission`] — per-user permission ceiling + "always allow" grants,
 //!   built on the existing #311 [`PermissionResolver`][crate::policy::PermissionResolver]/
 //!   [`GrantStore`][crate::policy::GrantStore] seams (#522 point 3).
-//! - [`aux`] — per-user auxiliary-model (`summarize`/`session_title`/`narrate`)
-//!   pins, feeding a per-user [`AuxLlmRegistry`][crate::aux_llm::AuxLlmRegistry]
-//!   (#635, closing the gap ADR-0154's "Consequences" left open).
 //!
 //! Both sub-modules need to map a running session back to the user it
 //! belongs to. Core carries `Session.user` internally but the policy/grant
@@ -27,11 +24,6 @@ pub mod permission;
 // factories directly, exactly like the crate's `throttle` module.
 #[cfg(feature = "provider")]
 pub mod provider;
-// Per-user auxiliary-model pins (#635, ADR-0154's deferred per-user aux pins,
-// ledger row 15). Gated the same as `provider` above: it hands out
-// `AuxLlmRegistry`s built from `entanglement_core::LlmFactory`/`ModelResolver`.
-#[cfg(feature = "provider")]
-pub mod aux;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

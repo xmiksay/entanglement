@@ -365,7 +365,7 @@ missing; atomic temp-file-in-dir + rename; `0o600` on unix; reject empty/`\n`
 values). `env_key` is pure std + `anyhow` (lean/gate-clean); only the `keys`
 handler (rpassword + catalog) is feature-gated behind `cli`+`provider`.
 
-## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../adr/0154-per-purpose-auxiliary-models.md)/[ADR-0181](../adr/0181-narrate-purpose-and-per-user-aux-pins.md) (`aux_llm` + `config::aux_models` + `session_title` + `narrate` + `multi_user::aux`)
+## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../adr/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../adr/0183-narrate-purpose-and-per-user-aux-pins.md) (`aux_llm` + `config::aux_models` + `session_title` + `narrate`)
 
 Side transformations (a compaction summary, an auto session title) can run on
 a cheaper/faster model than the session's own. The pin store is a managed
@@ -437,37 +437,25 @@ as an alias for `session_title`; bare `/aux-model` or `/aux-model list`
 renders the current pins), writing the pin through the shared store handle so
 the live registry sees it with no restart.
 
-**Per-user aux pins** (#635/ADR-0181): `multi_user::aux` (`provider`-gated,
-sibling of `multi_user::provider`) mirrors `UserProviderStore`
-(see the [provider doc](provider.md)'s multi-user section) exactly — a
-`UserAuxModelStore` trait (`fn pins(&self, user: &UserId) ->
-BTreeMap<Purpose, (String, String)>`, an unregistered user yielding an empty
-map rather than an error, since an aux purpose already has a defined
-fallback), an `InMemoryUserAuxModelStore` reference impl, and
-`build_user_aux_registry(store, user, resolver, primary, catalog,
-primary_concurrency) -> AuxLlmRegistry` that snapshots a user's pins into an
-in-memory `AuxModelStore` (`AuxModelStore::in_memory`, the production sibling
-of the existing test-only `for_test`) and hands it an ordinary, unmodified
-`AuxLlmRegistry` — the type carries no `UserId` field (`entanglement-runtime`'s
-`skutter` binary is a strict single-user application, and `AuxLlmRegistry` is
-the type `main.rs` builds one process-global instance of; `UserId` stays
-confined to the provider/core seams and the embedder-facing `multi_user`
-module). Instead the *resolver* is wrapped: `build_user_aux_registry` closes
-`resolver` over `user` in a small adapter closure that substitutes the
-captured `user` for whatever `AuxLlmRegistry` passes (always `None` — it has
-no `UserId` to pass anything else). That matters beyond routing to the right
-pins: `resolve`/`resolve_pin` had always called the injected `ModelResolver`
-with a hardcoded `None` for the user, so a multi-user `ModelResolver`
-([ADR-0147](../adr/0147-multi-user-mode-embedder-api.md)) — which treats a
-missing user as a hard error — would have rejected every aux call outright
-regardless of the store; the wrapping fixes that for every caller, not just
-the new per-user seam. Like `UserProviderStore::context`, `UserAuxModelStore::pins`
-is a snapshot an embedder calls fresh when it wants an up-to-date view (session
-start, after its own pin-write), not a live per-call lookup — `AuxLlmRegistry`
-already re-reads its wrapped `AuxModelStore` on every `resolve`/`resolve_pin`
-call. Like `multi_user::provider`, this ships unwired into any `skutter` head
-— a library seam for a multi-user embedder to adopt, not a `serve`/`tui`
-behavior change.
+**Per-user aux pins** (#635/[ADR-0183](../adr/0183-narrate-purpose-and-per-user-aux-pins.md),
+conforming to [ADR-0181](../adr/0181-userid-leaves-the-runtime-crate.md)):
+the runtime holds **no per-user module** — a multi-user embedder builds a
+per-user registry itself from two public pieces. It looks the user's pins up
+in its own storage (it owns the session→user mapping) and wraps them via
+`AuxModelStore::in_memory` (the production sibling of the test-only
+`for_test`); and it closes its multi-user `ModelResolver` over the right user
+in a small adapter closure *before* constructing an ordinary, unmodified
+`AuxLlmRegistry` — the registry carries no user notion and always passes
+`None` to its injected resolver, so the closure substitutes the captured
+user. That wrap also fixes a real failure mode: `resolve`/`resolve_pin`
+always call the resolver with a hardcoded `None` user, and a multi-user
+`ModelResolver` ([ADR-0147](../adr/0147-multi-user-mode-embedder-api.md))
+treats a missing user as a hard error — unwrapped, every aux call would be
+rejected regardless of the pins. A per-user registry is typically built once
+at session start and cached by the embedder; `AuxLlmRegistry` re-reads its
+wrapped `AuxModelStore` on every `resolve`/`resolve_pin` call. `skutter`'s
+own heads keep the one process-global `AuxModelStore`/`AuxLlmRegistry`,
+byte-identical.
 
 ## 6b. Session persistence & resume — [ADR-0020](../adr/0020-event-sourced-session-persistence.md) (`persistence` + `session_store`)
 

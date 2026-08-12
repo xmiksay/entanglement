@@ -1,6 +1,6 @@
 # 0154. Per-purpose auxiliary models for side transformations
 
-- Status: Accepted — Amended by [0158], [0181]
+- Status: Accepted — Amended by [0158], [0183]
 - Date: 2026-08-01
 - Issue: tui-ux-batch plan, Issue 5
 

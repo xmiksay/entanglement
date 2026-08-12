@@ -185,11 +185,11 @@ impl AuxModelStore {
     /// Build an in-memory store from `pins` directly — no file, no env var, no
     /// re-write on [`set`](Self::set) (there is no `path` to write to). The
     /// production counterpart of [`for_test`](Self::for_test): a multi-user
-    /// embedder's [`UserAuxModelStore`][crate::multi_user::aux::UserAuxModelStore]
-    /// lookup returns a user's pins as plain data, and this wraps them into the
-    /// same store shape [`AuxLlmRegistry`][crate::aux_llm::AuxLlmRegistry]
-    /// already knows how to consult — no separate per-user resolution path
-    /// needed.
+    /// embedder looks a user's pins up in its own storage (ADR-0181 — the
+    /// session→user mapping and per-user data live with the embedder) and
+    /// wraps them into the same store shape
+    /// [`AuxLlmRegistry`][crate::aux_llm::AuxLlmRegistry] already knows how to
+    /// consult — no separate per-user resolution path needed.
     pub fn in_memory(pins: BTreeMap<Purpose, (String, String)>) -> Self {
         let aux = pins
             .into_iter()
