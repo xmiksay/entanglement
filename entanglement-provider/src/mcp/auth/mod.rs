@@ -15,7 +15,10 @@
 //!    registration when the config supplies none — the common case for remote
 //!    MCP servers, which hand out no pre-issued client ids.
 //! 3. [`flow::AuthFlow`] generates PKCE, binds a loopback redirect listener,
-//!    and hands back the authorization URL for the caller to open.
+//!    and hands back the authorization URL for the caller to open — or, for a
+//!    web embedder with its own callback endpoint, [`web::WebFlow`] prepares
+//!    the same request against the embedder's redirect URI, binding nothing
+//!    (#684).
 //! 4. [`token::exchange_code`] trades the returned code for a [`TokenSet`],
 //!    persisted as a [`StoredAuth`] together with the context needed to refresh
 //!    it later without re-running discovery.
@@ -40,6 +43,7 @@ pub mod loopback;
 pub mod pkce;
 pub mod token;
 pub mod user_store;
+pub mod web;
 
 pub use dcr::ClientRegistration;
 pub use device::{DeviceFlow, PendingDeviceAuthorization};
@@ -48,6 +52,7 @@ pub use flow::{AuthFlow, AuthOutcome, PendingAuthorization};
 pub use pkce::Pkce;
 pub use token::StoredTokenSource;
 pub use user_store::{user_scoped, InMemoryUserTokenStore, UserTokenStore};
+pub use web::{PendingWebAuthorization, WebFlow};
 
 /// The optional `oauth:` block on an MCP server's config. Every field is an
 /// *override* — with the block present but empty, discovery and dynamic client

@@ -61,8 +61,8 @@ pub use llm::{
 pub use mcp::{
     auth::{
         auth_required_of, is_auth_required, user_scoped, AccessTokenSource, AuthFlow, AuthOutcome,
-        AuthRequired, InMemoryUserTokenStore, OauthConfig, StoredAuth, StoredTokenSource, TokenSet,
-        TokenStore, UserTokenStore,
+        AuthRequired, InMemoryUserTokenStore, OauthConfig, PendingWebAuthorization, StoredAuth,
+        StoredTokenSource, TokenSet, TokenStore, UserTokenStore, WebFlow,
     },
     jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef,
 };
