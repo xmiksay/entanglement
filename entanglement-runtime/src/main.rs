@@ -1515,8 +1515,15 @@ async fn main() -> Result<()> {
     // `session_title` LLM for a short title and sets it via `SetSessionMeta`.
     // Purely runtime-side; best-effort (a failure is logged + dropped). Aborted
     // at shutdown alongside the other responders.
-    let session_title_handle =
-        entanglement_runtime::session_title::spawn_session_title_generator(&holly, aux_registry);
+    let session_title_handle = entanglement_runtime::session_title::spawn_session_title_generator(
+        &holly,
+        aux_registry.clone(),
+    );
+    // Live action narrator (#635): on every tool call, spawns a background
+    // task that asks the aux `narrate` LLM for a short "what the agent is
+    // doing" phrase and sets it via `SetSessionMeta`. Same purely-runtime-side,
+    // best-effort shape as the title generator above.
+    let narrate_handle = entanglement_runtime::narrate::spawn_action_narrator(&holly, aux_registry);
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.clone());
@@ -1774,6 +1781,7 @@ async fn main() -> Result<()> {
     bash_responder_handle.abort();
     throttle_handle.abort();
     session_title_handle.abort();
+    narrate_handle.abort();
     history_handle.abort();
     if let Some(h) = watcher_handle {
         h.abort();

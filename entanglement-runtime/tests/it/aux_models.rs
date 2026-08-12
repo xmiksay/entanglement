@@ -85,7 +85,7 @@ fn unrecognized_purpose_key_is_skipped_not_fatal() {
     let path = tmp_path("unknown-key");
     std::fs::write(
         &path,
-        "aux:\n  summarize:\n    provider: zai\n    model: glm-4.5-flash\n  narrate:\n    provider: x\n    model: y\n",
+        "aux:\n  summarize:\n    provider: zai\n    model: glm-4.5-flash\n  bogus_purpose:\n    provider: x\n    model: y\n",
     )
     .unwrap();
     std::env::set_var(ENV, &path);
@@ -95,8 +95,10 @@ fn unrecognized_purpose_key_is_skipped_not_fatal() {
         store.get(Purpose::Summarize),
         Some(("zai", "glm-4.5-flash"))
     );
-    // `narrate` isn't a known purpose, so it never reaches the enum-keyed map.
+    // `bogus_purpose` isn't a known purpose, so it never reaches the
+    // enum-keyed map.
     assert!(store.get(Purpose::SessionTitle).is_none());
+    assert!(store.get(Purpose::Narrate).is_none());
 
     std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);

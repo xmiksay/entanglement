@@ -49,7 +49,10 @@ impl App {
                 let s = store.lock().unwrap();
                 let summarize = crate::tui::aux_command::pin_label(&s, Purpose::Summarize);
                 let title = crate::tui::aux_command::pin_label(&s, Purpose::SessionTitle);
-                format!("aux-models: summarize={summarize}  session_title={title}")
+                let narrate = crate::tui::aux_command::pin_label(&s, Purpose::Narrate);
+                format!(
+                    "aux-models: summarize={summarize}  session_title={title}  narrate={narrate}"
+                )
             }
             None => "aux-models: no store installed".to_string(),
         };

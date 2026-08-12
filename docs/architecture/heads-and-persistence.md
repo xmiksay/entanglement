@@ -365,14 +365,14 @@ missing; atomic temp-file-in-dir + rename; `0o600` on unix; reject empty/`\n`
 values). `env_key` is pure std + `anyhow` (lean/gate-clean); only the `keys`
 handler (rpassword + catalog) is feature-gated behind `cli`+`provider`.
 
-## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../adr/0154-per-purpose-auxiliary-models.md) (`aux_llm` + `config::aux_models` + `session_title`)
+## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../adr/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../adr/0183-narrate-purpose-and-per-user-aux-pins.md) (`aux_llm` + `config::aux_models` + `session_title` + `narrate`)
 
 Side transformations (a compaction summary, an auto session title) can run on
 a cheaper/faster model than the session's own. The pin store is a managed
 `${config_dir}/entanglement/aux-models.yml` (override
 `ENTANGLEMENT_AUX_MODELS_FILE`, sibling of `agent-models.yml`, same
 `with_locked_file`+`atomic_write` discipline) mapping a closed `Purpose` enum
-(`summarize` | `session_title`) to a `{provider, model}` pin.
+(`summarize` | `session_title` | `narrate`) to a `{provider, model}` pin.
 `aux_llm::AuxLlmRegistry` resolves a `Purpose` → fresh `Box<dyn Llm>` by
 reusing the catalog `ModelResolver` the runtime already builds at startup (the
 same closure `SetModel` calls, capturing the catalog + the warm per-endpoint
@@ -380,7 +380,7 @@ client, so an aux client rides the shared pool — and a second provider is just
 a second endpoint pool/key, already supported), **falling back to the primary
 model's `LlmFactory`** when a purpose is unset or its pin no longer resolves
 (unknown to the catalog, missing key — logged at debug, never wedging the
-transformation). Two consumers reach it by deliberately different routes:
+transformation). Three consumers reach it by deliberately different routes:
 
 - **The session-title generator** (`session_title.rs`, behind the `provider`
   feature): a background task off `holly.subscribe_inbound()` that, on the
@@ -413,12 +413,49 @@ transformation). Two consumers reach it by deliberately different routes:
   (see the engine doc's *Auxiliary models* section): there `None` means "use
   the session's own backend" — strictly better than a fixed primary, since a
   live `/model` switch keeps applying to compaction.
+- **The action narrator** (`narrate.rs`, #635/ADR-0181, behind the `provider`
+  feature): a background task off `holly.subscribe()` that, on **every
+  `OutEvent::ToolCall`** (display-only, emitted before execution for every
+  tool call), spawns a tracked call to the `narrate` aux LLM (input capped
+  ~500 chars, output capped 60) turning `tool(input)` into a short
+  present-tense phrase, and sends it back via `InMsg::SetSessionMeta { action:
+  Some(_), if_unset: false, .. }` — `action` is unconditionally overwritten on
+  `Some` (unlike `name`'s `if_unset` guard), so it's the first in-tree
+  producer of [ADR-0151](../adr/0151-settable-session-metadata.md)'s
+  mid-turn-mutable `Session.action`. Like the title generator, it has no
+  session backend to fall back to, so it calls `AuxLlmRegistry::resolve`
+  directly. Unlike the title generator (fires once per session, permanently
+  idempotent), it bounds a burst of tool calls with an **at-most-one-in-flight-
+  per-session** guard — a `ToolCall` landing while a narration call is already
+  running for that session is skipped, not queued, and the guard clears when
+  that call's task finishes, so the next tool call after that gets a fresh
+  narration.
 
 The TUI surface is `/aux-model <purpose> <provider>/<model>`
 (`parse_aux_model_args` — the raw-text re-parse pattern; `title` is accepted
 as an alias for `session_title`; bare `/aux-model` or `/aux-model list`
 renders the current pins), writing the pin through the shared store handle so
 the live registry sees it with no restart.
+
+**Per-user aux pins** (#635/[ADR-0183](../adr/0183-narrate-purpose-and-per-user-aux-pins.md),
+conforming to [ADR-0181](../adr/0181-userid-leaves-the-runtime-crate.md)):
+the runtime holds **no per-user module** — a multi-user embedder builds a
+per-user registry itself from two public pieces. It looks the user's pins up
+in its own storage (it owns the session→user mapping) and wraps them via
+`AuxModelStore::in_memory` (the production sibling of the test-only
+`for_test`); and it closes its multi-user `ModelResolver` over the right user
+in a small adapter closure *before* constructing an ordinary, unmodified
+`AuxLlmRegistry` — the registry carries no user notion and always passes
+`None` to its injected resolver, so the closure substitutes the captured
+user. That wrap also fixes a real failure mode: `resolve`/`resolve_pin`
+always call the resolver with a hardcoded `None` user, and a multi-user
+`ModelResolver` ([ADR-0147](../adr/0147-multi-user-mode-embedder-api.md))
+treats a missing user as a hard error — unwrapped, every aux call would be
+rejected regardless of the pins. A per-user registry is typically built once
+at session start and cached by the embedder; `AuxLlmRegistry` re-reads its
+wrapped `AuxModelStore` on every `resolve`/`resolve_pin` call. `skutter`'s
+own heads keep the one process-global `AuxModelStore`/`AuxLlmRegistry`,
+byte-identical.
 
 ## 6b. Session persistence & resume — [ADR-0020](../adr/0020-event-sourced-session-persistence.md) (`persistence` + `session_store`)
 

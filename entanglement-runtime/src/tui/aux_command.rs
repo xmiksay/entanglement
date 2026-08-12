@@ -76,5 +76,6 @@ mod tests {
         let store = AuxModelStore::default();
         assert_eq!(pin_label(&store, Purpose::Summarize), "(primary model)");
         assert_eq!(pin_label(&store, Purpose::SessionTitle), "(primary model)");
+        assert_eq!(pin_label(&store, Purpose::Narrate), "(primary model)");
     }
 }

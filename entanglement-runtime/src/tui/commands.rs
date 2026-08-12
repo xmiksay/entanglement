@@ -105,7 +105,7 @@ impl Command {
             }
             Command::Name => "Set a display name for the current session",
             Command::AuxModel => {
-                "Pin a provider/model for an auxiliary purpose (summarize | session_title) <provider>/<model>"
+                "Pin a provider/model for an auxiliary purpose (summarize | session_title | narrate) <provider>/<model>"
             }
         }
     }
@@ -217,7 +217,7 @@ pub fn parse_aux_model_args(
         .next()
         .ok_or("usage: /aux-model <purpose> <provider>/<model>")?;
     let purpose = crate::config::aux_models::Purpose::parse(purpose_str).ok_or_else(|| {
-        format!("unknown purpose `{purpose_str}` (expected summarize | session_title)")
+        format!("unknown purpose `{purpose_str}` (expected summarize | session_title | narrate)")
     })?;
     let pair = parts
         .next()
@@ -495,6 +495,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(p, crate::config::aux_models::Purpose::SessionTitle);
+        // `narrate` (#635) is recognized too.
+        let (p, _, _) = parse_aux_model_args("/aux-model narrate zai/glm-4.5-flash")
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, crate::config::aux_models::Purpose::Narrate);
         // Bare /aux-model and /aux-model list → Ok(None) (render current pins).
         assert_eq!(parse_aux_model_args("/aux-model").unwrap(), None);
         assert_eq!(parse_aux_model_args("/aux-model list").unwrap(), None);
@@ -503,7 +508,7 @@ mod tests {
     #[test]
     fn parse_aux_model_rejects_malformed() {
         // Unknown purpose.
-        assert!(parse_aux_model_args("/aux-model narrate zai/x")
+        assert!(parse_aux_model_args("/aux-model bogus zai/x")
             .unwrap_err()
             .contains("unknown purpose"));
         // Missing slash.

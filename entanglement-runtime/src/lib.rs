@@ -67,6 +67,12 @@ pub mod mcp;
 // `multi_user::permission` is lean-library-safe (only entanglement-core + this
 // crate's own `policy`/`permission` modules).
 pub mod multi_user;
+// Live action narrator (#635): asks the aux `narrate` LLM what the agent is
+// doing on every tool call and sets it as `Session.action`. Mirrors
+// `session_title` below, including the `provider` gate (drains a provider
+// `LlmStream`).
+#[cfg(feature = "provider")]
+pub mod narrate;
 // Pending-operations listing (#607, ADR-0161 §6): shared by `poll`'s
 // no-handle model surface and `InMsg::ListOperations`'s head surface.
 pub mod operations;

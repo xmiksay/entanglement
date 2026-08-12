@@ -1,6 +1,6 @@
 # 0151. Settable session display metadata (name + action)
 
-- Status: Amended by [0154](0154-per-purpose-auxiliary-models.md) (the in-tree auto session-title generator 0151 deferred shipped, driving `SetSessionMeta` off the aux `session_title` model)
+- Status: Amended by [0154](0154-per-purpose-auxiliary-models.md) (the in-tree auto session-title generator 0151 deferred shipped, driving `SetSessionMeta` off the aux `session_title` model), [0183](0183-narrate-purpose-and-per-user-aux-pins.md) (`action`'s first in-tree producer: the live action narrator drives `SetSessionMeta` off the aux `narrate` model on every tool call)
 - Date: 2026-08-01
 
 ## Context
@@ -53,8 +53,9 @@ Head surfaces in this change: the TUI `/name <text>` command (raw-text
 re-parse pattern) sets `name` on the active session — the sidebar title
 updating is the confirmation; the sidebar/sessions modal prefer `name` over
 the short id and `action` over the first-prompt description line. `action`
-has **no in-tree producer yet** — the field is not dead code; the external
-namer is the intended writer.
+had **no in-tree producer at the time of this ADR** — the field was not dead
+code; the external namer was the intended writer, until [0183](0183-narrate-purpose-and-per-user-aux-pins.md)
+shipped the in-tree live action narrator.
 
 ## Consequences
 

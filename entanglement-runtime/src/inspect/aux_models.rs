@@ -23,7 +23,7 @@ pub fn inspect_aux_models() -> Result<()> {
 fn render_aux_models(store: &AuxModelStore) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "auxiliary LLM pins (aux-models.yml):");
-    for purpose in [Purpose::Summarize, Purpose::SessionTitle] {
+    for purpose in [Purpose::Summarize, Purpose::SessionTitle, Purpose::Narrate] {
         match store.get(purpose) {
             Some((provider, model)) => {
                 let _ = writeln!(out, "  {}: {provider}/{model}", purpose.as_str());
@@ -50,6 +50,7 @@ mod tests {
         let rendered = render_aux_models(&store);
         assert!(rendered.contains("summarize: (unset"));
         assert!(rendered.contains("session_title: (unset"));
+        assert!(rendered.contains("narrate: (unset"));
     }
 
     #[test]
@@ -58,5 +59,6 @@ mod tests {
         let rendered = render_aux_models(&store);
         assert!(rendered.contains("summarize: zai/glm-4.5-flash"));
         assert!(rendered.contains("session_title: (unset"));
+        assert!(rendered.contains("narrate: (unset"));
     }
 }
