@@ -53,7 +53,8 @@ make verify        # check-fmt + tree + check-lean + file-cap + lint + test  (CI
 make tree          # entanglement-core dep hygiene gate (fails on UI/transport crates)
 make check-lean    # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
 make file-cap      # 400-line file cap gate (grandfathered debt in scripts/file-cap-allowlist.txt)
-make test-gates    # dep-gate self-test (scripts/dep-gate.test.sh)
+make userid        # UserId-free entanglement-runtime gate (ADR-0181)
+make test-gates    # dep-gate + userid-gate self-test (scripts/dep-gate.test.sh)
 make tag           # cut a release tag (VERSION=vX.Y.Z): refuses dirty tree / red verify
 make build | check | clean
 ```
@@ -282,9 +283,13 @@ never here**; each bullet is the claim + where to read it:
   degraded to text. [provider](../docs/architecture/provider.md),
   [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md).
 - **Multi-user mode is an embedder library API** (`UserId` on the wire,
-  per-user catalogs/keys/ceilings/grants on the existing seams, plus per-user
-  aux-model pins via an embedder-built registry, ADR-0183); `serve`
-  stays local single-user. [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md)/[ADR-0183](../docs/adr/0183-narrate-purpose-and-per-user-aux-pins.md).
+  per-user catalogs/keys/budgets via `entanglement-provider::multi_user`,
+  per-user MCP credentials via `provider::mcp::auth::UserTokenStore` +
+  `user_scoped`, per-user ceilings/grants/aux pins as embedder
+  implementations of the existing seams — the runtime crate never names
+  `UserId`, enforced by `make userid`); `serve` stays local single-user.
+  [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md)/[ADR-0181](../docs/adr/0181-userid-leaves-the-runtime-crate.md)/[ADR-0184](../docs/adr/0184-provider-hosted-multi-user-seams.md)/[ADR-0183](../docs/adr/0183-narrate-purpose-and-per-user-aux-pins.md),
+  recipes: [embedding](../docs/embedding.md) §7.
   Two users sharing one **literal** API key each get their own rpm/concurrency
   slice via a per-user admission gate (`HttpClient::with_user_budget`) layered
   above the shared endpoint pool, mirroring ADR-0140's per-model gate.

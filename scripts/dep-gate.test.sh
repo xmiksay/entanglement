@@ -50,6 +50,35 @@ FAKE_OUT="dummy v0.1.0
 FAKE_OUT="dummy v0.1.0
 ├── clap-verbosity v1.0" FAKE_RC=0 check "substring near-miss passes"    0
 
+# --- userid-gate.sh self-tests (ADR-0181/ADR-0184, #687) ---------------------
+ugate="$(dirname "$0")/userid-gate.sh"
+
+ucheck() {
+	name=$1
+	want=$2
+	dir=$3
+	set +e
+	sh "$ugate" "$dir" >/dev/null 2>&1
+	got=$?
+	set -e
+	if [ "$got" -eq "$want" ]; then
+		echo "ok   - $name (rc=$got)"
+	else
+		echo "FAIL - $name (want rc=$want, got rc=$got)"
+		fails=$((fails + 1))
+	fi
+}
+
+udir="$tmp/usrc"
+mkdir -p "$udir"
+printf 'fn ok() {}\n' >"$udir/clean.rs"
+ucheck "userid: clean tree passes" 0 "$udir"
+printf 'struct MyUserIdLike;\n' >"$udir/nearmiss.rs"
+ucheck "userid: substring near-miss passes" 0 "$udir"
+printf 'use entanglement_core::UserId;\n' >"$udir/hit.rs"
+ucheck "userid: real UserId fails" 1 "$udir"
+ucheck "userid: missing dir fails (not vacuous)" 1 "$tmp/no-such-dir"
+
 if [ "$fails" -ne 0 ]; then
 	echo "$fails dep-gate self-test(s) failed" >&2
 	exit 1

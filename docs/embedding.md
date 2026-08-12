@@ -316,6 +316,47 @@ this path on every `make lint` run (it needs `mcp-http`, on by default, so it
 can't ride the lean `--no-default-features` build the other two examples
 target); set `MCP_HTTP_URL` to actually connect it to a server.
 
+## 7. Multi-user: per-user providers, permissions, tokens
+
+Multi-user mode is an **embedder API**, and by
+[ADR-0181](adr/0181-userid-leaves-the-runtime-crate.md) the runtime crate
+never names `UserId` (`make userid` enforces it): the type lives in
+`entanglement-provider` (re-exported by core, riding `InMsg::Spawn { user }`),
+and every per-user seam is something *you* implement and hand in. You already
+know which user each session belongs to — you chose `user` when you sent the
+session's `Spawn` — so keep your own `HashMap<SessionId, UserId>` (or derive
+it from a session-id convention like §1's `{tenant}:{uuid}`) and close your
+seam implementations over it. Per seam:
+
+- **Providers, API keys, RPM/concurrency budgets** —
+  [`entanglement_provider::multi_user`](adr/0184-provider-hosted-multi-user-seams.md):
+  implement `UserProviderStore` over your tenant storage and wire
+  `build_user_model_resolver(store, http_client, web_search)` onto
+  `EngineConfig::model_resolver`. Each user gets their own `Catalog` + keys
+  (never `std::env`); two users sharing one literal key each get their own
+  admission slice ([ADR-0175](adr/0175-per-user-admission-gate-on-a-shared-literal-key.md)).
+- **Permission ceiling + grants** — implement the #311
+  `PermissionResolver`/`GrantStore` traits directly over your session→user
+  map ([`examples/embedded.rs`](../entanglement-runtime/examples/embedded.rs)
+  compiles the per-tenant shape). Compose least-privilege the way the
+  in-tree resolver does: resolve the process-global profile first, then
+  clamp by the user's own ceiling (`PermissionProfile::clamp_to_base`); key
+  `Always`-scope grants by the user so one user's grant structurally cannot
+  reach another's session (`Session` scope stays per-session — a session
+  belongs to exactly one user).
+- **Aux-model pins** — no module either
+  ([ADR-0183](adr/0183-narrate-purpose-and-per-user-aux-pins.md)): snapshot
+  the user's pins via `AuxModelStore::in_memory` and close your multi-user
+  `ModelResolver` over the user before constructing a plain
+  `AuxLlmRegistry`.
+- **MCP OAuth credentials** — implement
+  `entanglement_provider::mcp::auth::UserTokenStore` over your storage;
+  `user_scoped(store, user)` presents one user's slice as the plain
+  per-connection `TokenStore` every auth consumer takes
+  ([ADR-0184](adr/0184-provider-hosted-multi-user-seams.md)). Per-user MCP
+  *connections* (routing a session's tool calls to its user's client) are
+  #684, built on this seam.
+
 ## Pinning a dependency
 
 Until now there were no tags, so a `Cargo.toml` git dependency had nothing

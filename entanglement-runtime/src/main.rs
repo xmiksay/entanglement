@@ -31,7 +31,7 @@ use tool_runner::EscapeRoot;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId, UserId};
+use entanglement_core::{EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
     ProviderEntry, ResolvedModel, ThinkingStyle, WebSearchConfig, Wire,
@@ -856,11 +856,10 @@ fn build_model_resolver(
     web_search: Option<WebSearchConfig>,
 ) -> ModelResolver {
     // Single-user mode: every session shares this one process-global catalog +
-    // client, so the resolving session's `UserId` (#522) is simply ignored — a
-    // multi-user runtime builds a distinct resolver via
-    // `multi_user::build_user_model_resolver` instead, reusing
-    // `resolve_catalog_entry` below with an explicit per-user key.
-    Arc::new(move |_user: Option<&UserId>, provider: &str, model: &str| {
+    // client, so the resolving session's user (#522) is simply ignored — a
+    // multi-user embedder wires `entanglement_provider::multi_user::
+    // build_user_model_resolver` onto this seam instead (ADR-0184).
+    Arc::new(move |_user, provider: &str, model: &str| {
         resolve_catalog_entry(
             &catalog,
             &http_client,
