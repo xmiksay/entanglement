@@ -1326,11 +1326,12 @@ mod tests {
             "propose_plan"
         ));
 
-        // `research` (ADR-0167): the global read-only Q&A agent — entry-capable
-        // *and* a spawn target (`mode: all`), unlike subagent-leaf `explore`,
-        // and with no plan authorship or plans-folder carve-out, unlike `plan`.
+        // `research` (ADR-0167, mode since flipped to `primary` so the TUI
+        // Tab ring cycles build → plan → research): the global read-only Q&A
+        // agent, with no plan authorship or plans-folder carve-out, unlike
+        // `plan`. Delegation goes to read-only `explore` leaves.
         let research = reg.get("research").expect("research built-in");
-        assert_eq!(research.mode, AgentMode::All);
+        assert_eq!(research.mode, AgentMode::Primary);
         assert_eq!(research.permission.for_tool("read"), Permission::Allow);
         assert_eq!(research.permission.for_tool("grep"), Permission::Allow);
         assert_eq!(research.permission.for_tool("glob"), Permission::Allow);
@@ -1371,13 +1372,15 @@ mod tests {
                 "research must advertise `{tool}`"
             );
         }
-        // Self-only spawn closure: research may spawn, but only research —
-        // the subtree can never widen into a write-capable profile.
+        // Explore-only spawn closure: research may spawn, but only the
+        // read-only `explore` leaf (which cannot spawn at all) — the subtree
+        // can never widen into a write-capable profile. As a primary, research
+        // itself is no longer a legal spawn target.
         assert!(research.may_spawn());
-        assert!(research.spawnable_as_subagent());
-        assert!(research.spawn_target_allowed("research"));
+        assert!(!research.spawnable_as_subagent());
+        assert!(research.spawn_target_allowed("explore"));
         assert!(!research.spawn_target_allowed("build"));
-        assert!(!research.spawn_target_allowed("explore"));
+        assert!(!research.spawn_target_allowed("research"));
     }
 
     #[test]

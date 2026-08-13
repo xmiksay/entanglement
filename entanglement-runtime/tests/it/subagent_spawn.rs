@@ -1086,12 +1086,12 @@ async fn set_agent(holly: &Holly, session: &SessionId, agent: &str) {
 }
 
 #[tokio::test]
-async fn research_spawns_research() {
-    // ADR-0167: `research` (`mode: all`) is both an entry agent and its own
-    // spawn target — a research root delegating to a research child works end
-    // to end, and the child runs under the `research` profile.
+async fn research_spawns_explore() {
+    // ADR-0167 (mode since flipped to `primary` for the Tab cycle): a research
+    // root delegates to a read-only `explore` child — the spawn works end to
+    // end, and the child runs under the `explore` profile.
     let cfg = config(|| SpawnPollLlm {
-        target: "research",
+        target: "explore",
         child_answer: "child-answer",
     });
     let profiles = cfg.profiles.clone();
@@ -1136,19 +1136,19 @@ async fn research_spawns_research() {
 
     assert_eq!(
         child_profile.as_deref(),
-        Some("research"),
-        "the child should run under the `research` profile"
+        Some("explore"),
+        "the child should run under the `explore` profile"
     );
     assert!(saw_polled_answer, "poll should surface the child's answer");
 }
 
 #[tokio::test]
-async fn research_spawn_of_non_research_is_refused() {
-    // ADR-0167: `explore` is a perfectly valid Subagent-mode target, but it is
-    // off research's self-only allowlist — refused before a child is minted,
-    // so the research subtree can never widen into another profile.
+async fn research_spawn_of_non_explore_is_refused() {
+    // `debug` is a perfectly valid Subagent-mode target, but it is off
+    // research's explore-only allowlist — refused before a child is minted,
+    // so the research subtree can never widen into a write-capable profile.
     let cfg = config(|| SpawnPollLlm {
-        target: "explore",
+        target: "debug",
         child_answer: "unused",
     });
     let profiles = cfg.profiles.clone();
@@ -1166,13 +1166,13 @@ async fn research_spawn_of_non_research_is_refused() {
 }
 
 #[tokio::test]
-async fn research_spawn_without_agent_falls_to_default_and_is_refused() {
+async fn research_spawn_without_agent_falls_to_default_explore() {
     // A spawn omitting `agent` falls to `DEFAULT_SUBAGENT` (`explore`), which
-    // research's self-only allowlist refuses — the prompt body tells the model
-    // to always name `agent: research` explicitly.
+    // research's explore-only allowlist permits — the default-target fill-in
+    // lands on the read-only leaf, no explicit `agent:` needed.
     let cfg = config(|| SpawnPollLlm {
         target: "",
-        child_answer: "unused",
+        child_answer: "default-child-answer",
     });
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
@@ -1185,7 +1185,41 @@ async fn research_spawn_without_agent_falls_to_default_and_is_refused() {
 
     let root = SessionId::new("root");
     set_agent(&holly, &root, "research").await;
-    assert_root_spawn_refused(&holly, "not allowed to spawn").await;
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(root.clone(), "parent-task"))
+        .await
+        .unwrap();
+
+    let mut child_profile: Option<String> = None;
+    let mut saw_polled_answer = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        match &ev {
+            OutEvent::SessionStarted {
+                parent: Some(p),
+                profile,
+                root: false,
+                ..
+            } if p == &root => child_profile = Some(profile.clone()),
+            OutEvent::ToolOutput {
+                session,
+                tool,
+                output,
+                ..
+            } if session == &root && tool == "poll" && output.contains("default-child-answer") => {
+                saw_polled_answer = true;
+            }
+            OutEvent::Done { session, .. } if session == &root && saw_polled_answer => break,
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        child_profile.as_deref(),
+        Some("explore"),
+        "the default target should be the `explore` profile"
+    );
+    assert!(saw_polled_answer, "poll should surface the child's answer");
 }
 
 #[test]
