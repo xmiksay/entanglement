@@ -18,7 +18,7 @@ use super::emit::{emit_turn_error, emit_usage, next_seq};
 use super::round::{run_attempt, RoundAttempt, RoundSetup};
 use super::summarize::{summarize, SummarizeOutcome};
 use super::{Session, SessionCmd};
-use crate::protocol::{AgentState, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::ToolSpec;
 
@@ -117,9 +117,21 @@ async fn run_round(
     // override is the overlay's whole point (a trusted head explicitly set
     // it), and the runtime's dispatch gate applies the identical predicate.
     // No opinion ⇒ the profile mask stands.
-    let advertised = |name: &str| match ToolOverlayEntry::disposition(&s.tool_overlay, name) {
-        Some(v) => v,
-        None => s.profile.advertises_tool(name),
+    //
+    // The one exemption is the always-on internal tools
+    // (`ALWAYS_ADVERTISED_TOOLS`, ADR-0190): `poll` joins background
+    // `bash`/`call`/`rhai` jobs and sub-agents — it only collects work the
+    // profile already authorized creating, so a mask that withdraws it
+    // strands async work instead of reducing capability. It is advertised
+    // unconditionally and cannot be masked, even by an explicit overlay deny.
+    let advertised = |name: &str| {
+        if AgentProfile::is_always_advertised(name) {
+            return true;
+        }
+        match ToolOverlayEntry::disposition(&s.tool_overlay, name) {
+            Some(v) => v,
+            None => s.profile.advertises_tool(name),
+        }
     };
     let mut specs: Vec<ToolSpec> = base_specs
         .into_iter()

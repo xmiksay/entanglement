@@ -231,3 +231,79 @@ async fn resolver_output_still_subject_to_profile_mask() {
         "explore's masked `edit` must not survive the resolver: {names:?}"
     );
 }
+
+/// ADR-0190 pin: `poll` is an always-on, non-maskable internal tool — the
+/// single collection mechanism for all async work (`bash`/`call`/`rhai`
+/// background jobs + sub-agents). The production runtime advertises it via
+/// `tool_spec_resolver` (not the static `tool_specs`, which the resolver
+/// replaces), and core's advertisement filter exempts it from the profile mask.
+/// This test pins both halves together against the real advertisement path:
+/// under a profile masking everything *but* `poll`, `poll` still reaches the
+/// model, while ordinary masked tools (`edit`) do not.
+#[tokio::test]
+async fn poll_is_always_advertised_through_resolver_and_mask() {
+    let seen: Arc<Mutex<HashMap<String, Vec<Vec<String>>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let seen_factory = seen.clone();
+
+    let mut cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(RecordingLlm {
+                session: "s".into(),
+                seen: seen_factory.clone(),
+            }) as Box<dyn Llm>
+        }),
+        ..EngineConfig::default()
+    };
+    cfg.tool_spec_resolver = Some(Arc::new(|_sid: &SessionId| {
+        // Mirrors the runtime's resolver roster: a registry tool + the
+        // runtime-owned pseudo-tools, including `poll`.
+        vec![
+            ToolSpec::new("read", "read a file"),
+            ToolSpec::new("edit", "edit a file"),
+            ToolSpec::new("poll", "join background jobs and sub-agents"),
+        ]
+    }));
+    // A profile that masks everything but `read`: neither `poll` nor `edit`
+    // is in its allowlist. Without the ADR-0190 exemption `poll` would be
+    // dropped alongside `edit`.
+    cfg.profiles.insert(AgentProfile {
+        name: "locked".into(),
+        description: "read-only".into(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        provider: None,
+        permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
+        tools: Some(vec!["read".into()]),
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+        sandbox: None,
+    });
+
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "locked".into(),
+        })
+        .await
+        .unwrap();
+    holly.send(InMsg::prompt(sid, "look")).await.unwrap();
+
+    let reqs = recorded_at_least(&seen, "s", 1).await;
+    let names = &reqs[0];
+    assert!(
+        names.iter().any(|n| n == "poll"),
+        "`poll` must be advertised even under a profile masking it: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "read"),
+        "the profile's allowlisted `read` must survive: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "edit"),
+        "`edit` is masked and must not survive: {names:?}"
+    );
+}

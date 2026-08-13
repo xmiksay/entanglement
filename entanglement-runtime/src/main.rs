@@ -1420,16 +1420,23 @@ async fn main() -> Result<()> {
     // `engine_config.tool_specs` stays the static snapshot baked above (still
     // useful as the tools-checklist roster below); `tool_spec_resolver` is the
     // seam core actually consults every turn (ADR-0076) — reproducing that same
-    // snapshot (registry tools + the runtime-owned pseudo-tools that aren't
-    // registry entries) keeps this change behavior-neutral today, while making
-    // every *future* registry mutation land on the next turn for free.
+    // snapshot (registry tools + the full runtime-owned roster:
+    // `update_tasks`/`ask_user`/`poll` + `rhai` behind its feature) keeps this
+    // change behavior-neutral today, while making every *future* registry
+    // mutation land on the next turn for free. `poll` (ADR-0161/0190) must be
+    // here in particular: core's advertisement filter exempts it from the
+    // profile mask, so omitting its spec from the resolver is the one place it
+    // would vanish from the production surface.
     {
         let tools = tools.clone();
         let avail = mcp_available.clone();
         let builtins = builtin_visibility.clone();
         #[allow(unused_mut)] // only mutated when the `rhai` feature is on
-        let mut runtime_owned_specs =
-            vec![plan_tasks::update_tasks_spec(), ask_user::ask_user_spec()];
+        let mut runtime_owned_specs = vec![
+            plan_tasks::update_tasks_spec(),
+            ask_user::ask_user_spec(),
+            poll::poll_spec(),
+        ];
         #[cfg(feature = "rhai")]
         runtime_owned_specs.push(script::rhai_spec());
         engine_config.tool_spec_resolver = Some(Arc::new(move |session: &SessionId| {

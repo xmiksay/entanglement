@@ -372,7 +372,7 @@ below realize one model:
   | `plan` | primary | `read, glob, grep, agent, agent_send, poll, ask_user, load_skill, propose_plan, write, edit, call, bash` — `call`/`bash` are on the mask only so a spawned `explore` child keeps its own access ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597); `agent_send` (#609, [ADR-0162](../adr/0162-agent-send-supervising-a-sub-agent.md)) is what lets the plan agent re-engage the same sponsored `build` child for another review round instead of spawning a fresh one each phase | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
   | `explore` | subagent | `read, glob, grep, call, bash, poll, rhai` | `default: deny`; read triad Allow, exec set at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — `poll` rides along with `bash` so a background job it starts is actually readable (#615/#605); `poll` is intercepted before permission resolution, so it carries no grade of its own | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
-  | `research` | all | `read, glob, grep, agent, poll, ask_user, load_skill, call, bash, rhai` — no write tools, no `propose_plan` | `default: ask`; `read: allow`; `write: deny` with **no** carve-out; exec at `Ask` via `call(*): ask` + a literal `rhai: ask` (the [ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md) grading pattern; posture per [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — the global read-only Q&A entry agent ([ADR-0167](../adr/0167-embedded-research-agent-profile.md)) | may spawn **only** `research` — the self-only allowlist transitively closes the subtree |
+  | `research` | primary | `read, glob, grep, agent, poll, ask_user, load_skill, call, bash, rhai` — no write tools, no `propose_plan` | `default: ask`; `read: allow`; `write: deny` with **no** carve-out; exec at `Ask` via `call(*): ask` + a literal `rhai: ask` (the [ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md) grading pattern; posture per [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — the global read-only Q&A entry agent ([ADR-0167](../adr/0167-embedded-research-agent-profile.md); shipped `mode: all`, since flipped to `primary` so the Tab cycle reaches it) | may spawn **only** `explore` — a read-only leaf that cannot spawn, so the subtree stays closed |
 
   Three cross-cutting facts complete the picture: **(1)** `bash` is
   opt-in — until registered (startup `ENTANGLEMENT_ENABLE_BASH=1`, or live
@@ -387,7 +387,12 @@ below realize one model:
   profile mask and also reaches `rhai` bindings (ADR-0129). **(3)** the
   user-config permission
   ceiling defaults to `default: allow` — a no-op clamp until the user
-  tightens it (#172).
+  tightens it (#172). **(4)** `poll` is an **always-on, non-maskable** internal
+  tool (✅ #606, [ADR-0190](../adr/0190-poll-is-always-on-non-maskable-internal-tool.md)):
+  it appears in the masks above for documentation consistency but is
+  unconditionally advertised and exempt from the profile mask *and* the session
+  overlay — withdrawing it would strand the background jobs and sub-agents a
+  profile's own launchers authorized, not reduce capability.
 - **Per-profile model pinning (✅ #323, [ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)):**
   a profile's frontmatter may set `provider:` beside `model:`. Both set = a
   **model pin** (`AgentProfile::model_pin()`): switching to the profile re-binds
@@ -572,7 +577,12 @@ below realize one model:
   `tool_specs` for that session (the embedder composes if it wants both),
   `profile_tool_specs` still append, and the mask below still filters the result —
   the resolver **widens discovery, it never bypasses masking** (it runs *before*
-  the mask). Sync `Fn` by design (turn hot path); the documented pattern is an
+  the mask) — with one exemption: the **always-on internal tools**
+  (`ALWAYS_ADVERTISED_TOOLS = &["poll"]`, [ADR-0190](../adr/0190-poll-is-always-on-non-maskable-internal-tool.md))
+  short-circuit the filter in `run_round` before the profile mask *or* the
+  session overlay, so `poll` (the single collection mechanism for all async
+  work — background `bash`/`call`/`rhai` jobs + sub-agents) is advertised to
+  every profile and cannot be withdrawn even by an explicit overlay deny. Sync `Fn` by design (turn hot path); the documented pattern is an
   embedder-owned `Arc<RwLock<..>>` snapshot cache. `None` (the default) keeps the
   engine-global specs — a no-op for single-user heads. **(b) Enforcement:**
   `runtime::permission::tool_masked` refuses a masked `ToolExec` **first** — before
@@ -670,7 +680,8 @@ below realize one model:
   silently escalating to `build`. The TUI roster is registry-driven: the
   `/agent` picker (Ctrl+A) lists every entry agent (`mode ∈ {primary, all}`),
   while the implicit **Tab cycle** ring is `mode: primary` only (#322) — so
-  cross-vendor `all`-mode agents (ADR-0074) don't flood it — with `Shift+Tab`
+  cross-vendor `all`-mode agents (ADR-0074) don't flood it; for the built-ins
+  that ring is `build → plan → research` — with `Shift+Tab`
   (crossterm `BackTab`) reverse-cycling the same ring; if no primaries exist the
   ring falls back to the whole entry list so Tab is never empty. Explicit
   selection stays unrestricted: `--agent`, `user_config.agent`, and `SetAgent`
