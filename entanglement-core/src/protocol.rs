@@ -741,6 +741,17 @@ pub enum AgentMode {
     All,
 }
 
+/// Internal orchestration tools that are always advertised and cannot be
+/// withdrawn by a profile's `tools`/`disallowed_tools` mask (#606, ADR-0190).
+/// They collect or surface state for work the profile already authorized
+/// creating — withdrawing them strands async work, not reduces capability.
+/// Consulted by [`AgentProfile::is_always_advertised`], which the advertisement
+/// filter in `run_round` short-circuits on before the profile mask. Keep this
+/// list narrow: each entry is an exemption from the #116 physical restriction,
+/// so adding one removes a profile-author control and should be a deliberate
+/// decision (widening is a one-line change to this constant).
+pub const ALWAYS_ADVERTISED_TOOLS: &[&str] = &["poll"];
+
 /// A bundle of system prompt + model + permissions that defines how a session
 /// reasons and what it may do. A session runs under exactly one profile at a
 /// time; switching (e.g. Build ↔ Plan) changes the profile. Mirrors opencode's
@@ -843,8 +854,25 @@ impl AgentProfile {
     /// [`glob_match`], evaluated dynamically here at advertisement/dispatch time
     /// — which is what lets a mask cover MCP tools (`mcp__<server>__<tool>`)
     /// whose names don't exist yet when profiles are parsed.
+    ///
+    /// The one exemption is the always-on internal tools in
+    /// [`ALWAYS_ADVERTISED_TOOLS`] (ADR-0190): those short-circuit the mask in
+    /// `run_round` before this predicate is consulted, so this method still
+    /// reports their mask disposition truthfully while the advertisement filter
+    /// ignores it.
     pub fn advertises_tool(&self, tool: &str) -> bool {
         Self::mask_allows(self.tools.as_deref(), &self.disallowed_tools, tool)
+    }
+
+    /// Whether `name` is an always-on internal tool — unconditionally
+    /// advertised and immune to a profile's `tools`/`disallowed_tools` mask
+    /// (ADR-0190). These collect or surface state for work the profile already
+    /// authorized creating, so withdrawing them strands async work rather than
+    /// reducing capability. The advertisement filter in `run_round` consults
+    /// this before [`advertises_tool`][Self::advertises_tool] / the session
+    /// overlay, so even an explicit overlay deny cannot withdraw one.
+    pub fn is_always_advertised(name: &str) -> bool {
+        ALWAYS_ADVERTISED_TOOLS.contains(&name)
     }
 
     /// The mask predicate behind [`advertises_tool`][Self::advertises_tool],
@@ -3461,5 +3489,42 @@ mod tests {
         let p = masked_profile(Some(vec!["mcp__docs"]), vec![]);
         assert!(!p.advertises_tool("mcp__docs__search"));
         assert!(p.advertises_tool("mcp__docs"));
+    }
+
+    #[test]
+    fn is_always_advertised_true_for_poll() {
+        // ADR-0190: `poll` is the single always-on internal tool.
+        assert!(AgentProfile::is_always_advertised("poll"));
+        assert!(!AgentProfile::is_always_advertised("edit"));
+        assert!(!AgentProfile::is_always_advertised("ask_user"));
+    }
+
+    #[test]
+    fn always_advertised_survives_allowlist_omitting_it() {
+        // A profile allowlisting only `read` still advertises `poll`: the
+        // advertisement filter short-circuits on `is_always_advertised` before
+        // consulting the mask, so omitting `poll` from the allowlist does not
+        // withdraw it. `advertises_tool` itself still reports the truth
+        // (omitted ⇒ false), which is why the exemption lives in the filter,
+        // not here.
+        let p = masked_profile(Some(vec!["read"]), vec![]);
+        assert!(
+            !p.advertises_tool("poll"),
+            "poll is masked, but is exempted upstream"
+        );
+        assert!(AgentProfile::is_always_advertised("poll"));
+    }
+
+    #[test]
+    fn always_advertised_survives_denylist_subtracting_it() {
+        // A `disallowed_tools: ["poll"]` profile still advertises `poll`: the
+        // exemption is non-maskable (ADR-0190), so even an explicit deny cannot
+        // strand background jobs the profile's own launchers authorized.
+        let p = masked_profile(None, vec!["poll"]);
+        assert!(
+            !p.advertises_tool("poll"),
+            "poll is denied, but is exempted upstream"
+        );
+        assert!(AgentProfile::is_always_advertised("poll"));
     }
 }
