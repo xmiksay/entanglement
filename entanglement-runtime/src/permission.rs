@@ -24,10 +24,12 @@
 //!   profile's allowlist (or listed in its denylist) does not *exist* for that
 //!   session — a call is refused before permission is even resolved. Like the
 //!   ceiling it clamps down the ancestor chain (a child never gains a tool an
-//!   ancestor lacked). This is the enforcement half of the physical restriction
-//!   whose advertisement half lives in core's `run_turn`. [`tool_mask_source`]
-//!   (#597) is the same walk, naming which link in the chain did the masking,
-//!   so a refusal can say *whose* profile erased the tool.
+//!   ancestor lacked). This is now the **only** half of the physical
+//!   restriction: core advertises every spec it is given, so a masked tool's
+//!   schema does reach the model and the refusal here is what the model sees.
+//!   [`tool_mask_source`] (#597) is the same walk, naming which link did the
+//!   masking and whether it was that link's profile or its session tool
+//!   overlay, so [`crate::decline::mask_decline`] can attribute the refusal.
 //! - **Skill mask** — [`skill_masked`] (#400, ADR-0106): layered *after* the
 //!   #116 agent mask above — a tool must survive both. Set when a `load_skill`
 //!   call activates a skill carrying an `allowed_tools` list, cleared when the
@@ -45,6 +47,7 @@ use entanglement_core::{
     AgentProfile, Permission, PermissionProfile, ProfileRegistry, SessionId, ToolOverlayEntry,
 };
 
+use crate::decline::MaskSource;
 use crate::subagent::SpawnGuard;
 
 /// Per-profile spawn gate for `spawner` launching `target` (#119, ADR-0040),
@@ -187,9 +190,9 @@ fn resolve_with_source(
     (perm, source)
 }
 
-/// Whether `tool` is masked out for `session` — refused because it is not in the
-/// effective advertised set (#116, ADR-0038). A tool is available only if the
-/// session's own profile *and* every ancestor's profile advertise it: the mask
+/// Whether `tool` is masked out for `session` — refused because it is not in
+/// the effective tool set (#116, ADR-0038). A tool is usable only if the
+/// session's own profile *and* every ancestor's profile admit it: the mask
 /// intersects down the chain, so a child never gains a tool an ancestor lacked
 /// (mirrors [`effective_permission`]'s privilege ceiling). An unseen session in
 /// the chain masks **everything** — **fail-closed** (#156): under broadcast
@@ -199,10 +202,10 @@ fn resolve_with_source(
 /// `Deny` fallback).
 ///
 /// A **sponsored child** (ADR-0138) is exempt from the ancestor mask walk — its
-/// advertised set is its own profile's (plus any sponsored ancestor's, since a
+/// usable set is its own profile's (plus any sponsored ancestor's, since a
 /// sponsored sub-tree is itself a permission root). This is what lets a `build`
-/// child of a read-only `plan` session advertise `edit`/`write`/`bash` — without
-/// the exemption, the plan ancestor's read-only mask would erase them.
+/// child of a read-only `plan` session run `edit`/`write`/`bash` — without the
+/// exemption, the plan ancestor's read-only mask would erase them.
 ///
 /// Orthogonal to permission: this decides a tool's *existence*, the `resolve`
 /// grade decides `Allow`/`Ask`/`Deny` among the tools that survive here.
@@ -217,49 +220,54 @@ pub fn tool_masked(
 }
 
 /// Like [`tool_masked`], but names *which* link in the chain masked the tool
-/// (#597): `None` ⇒ not masked; `Some(id)` ⇒ `id`'s profile (or its overlay,
-/// or its being unseen) is what erased the tool — `id == session` means the
-/// session's own profile, any other id an ancestor that clamped it. Lets a
-/// caller build a refusal message that says *whose* mask did it, instead of
-/// leaving "restricted by profile" ambiguous between the two.
+/// **and on whose authority** (#597): `None` ⇒ not masked; `Some(source)` ⇒
+/// `source.session`'s profile, its overlay, or its being unseen is what erased
+/// the tool — `source.session == session` means the session's own, any other id
+/// an ancestor that clamped it. Lets a caller build the attributed refusal
+/// ([`crate::decline::mask_decline`]) instead of a blanket "restricted by
+/// profile" that blames an agent definition an overlay deny actually withdrew.
 pub fn tool_mask_source(
     active: &HashMap<SessionId, AgentProfile>,
     guard: &SpawnGuard,
     overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     session: &SessionId,
     tool: &str,
-) -> Option<SessionId> {
+) -> Option<MaskSource> {
     // A link's own live tool overlay (#539, ADR-0149) overrides its profile
     // mask in both directions — a deny entry withdraws a profile-advertised
     // tool, an enable entry injects a masked one; no opinion falls back to
     // the profile. Because the check is per link, a parent's overlay also
     // covers its spawn sub-tree (each descendant's own link permitting).
-    let admits = |s: &SessionId, profile: &AgentProfile| match overlays
+    // `None` ⇒ admitted; `Some(source)` ⇒ withheld, with the authority.
+    let refusal = |s: &SessionId, profile: &AgentProfile| match overlays
         .get(s)
         .and_then(|entries| ToolOverlayEntry::disposition(entries, tool))
     {
-        Some(v) => v,
-        None => profile.advertises_tool(tool),
+        Some(true) => None,
+        Some(false) => Some(MaskSource::overlay(s.clone())),
+        None => (!profile.advertises_tool(tool)).then(|| MaskSource::profile(s.clone())),
     };
     let mut current = session.clone();
     // A sponsored session is a permission root (ADR-0138): only its own (and
-    // any sponsored ancestor's) advertised set masks it, not the chain above.
+    // any sponsored ancestor's) mask applies, not the chain above.
     if guard.is_sponsored(&current) {
         return match active.get(&current) {
-            Some(profile) if !admits(&current, profile) => Some(current),
-            Some(_) => None,
+            Some(profile) => refusal(&current, profile),
             // Unseen sponsored session ⇒ fail-closed (#156).
-            None => Some(current),
+            None => Some(MaskSource::unseen(current)),
         };
     }
     // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
     let mut visited = HashSet::new();
     while visited.insert(current.clone()) {
         match active.get(&current) {
-            Some(profile) if !admits(&current, profile) => return Some(current),
-            Some(_) => {}
+            Some(profile) => {
+                if let Some(source) = refusal(&current, profile) {
+                    return Some(source);
+                }
+            }
             // Unseen session in the chain ⇒ fail-closed (#156).
-            None => return Some(current),
+            None => return Some(MaskSource::unseen(current)),
         }
         match guard.parent_of(&current) {
             Some(parent) => {
@@ -267,10 +275,9 @@ pub fn tool_mask_source(
                 // clamps this sub-tree) but stop the walk above it.
                 if guard.is_sponsored(&parent) {
                     return match active.get(&parent) {
-                        Some(profile) if !admits(&parent, profile) => Some(parent),
-                        Some(_) => None,
+                        Some(profile) => refusal(&parent, profile),
                         // Unseen sponsored ancestor ⇒ fail-closed.
-                        None => Some(parent),
+                        None => Some(MaskSource::unseen(parent)),
                     };
                 }
                 current = parent;
@@ -923,18 +930,58 @@ mod tests {
         // `edit` is masked by the parent's narrower allowlist, not the child's own.
         assert_eq!(
             tool_mask_source(&active, &guard, &HashMap::new(), &c, "edit"),
-            Some(p.clone())
+            Some(MaskSource::profile(p.clone()))
         );
         // `agent` is absent from the child's own allowlist too — the walk
         // stops at the child itself.
         assert_eq!(
             tool_mask_source(&active, &guard, &HashMap::new(), &c, "agent"),
-            Some(c.clone())
+            Some(MaskSource::profile(c.clone()))
         );
         // `read` survives the whole chain → not masked.
         assert_eq!(
             tool_mask_source(&active, &guard, &HashMap::new(), &c, "read"),
             None
+        );
+    }
+
+    #[test]
+    fn tool_mask_source_attributes_an_overlay_deny_to_the_overlay() {
+        // The refusal must name the session tool overlay, not the agent
+        // definition — the profile happily admits `edit` here, a live
+        // per-session deny is what withdrew it.
+        let build = masked_profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Allow),
+            None,
+            Vec::new(),
+        );
+        let s = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(s.clone(), build);
+        let guard = SpawnGuard::new();
+        let mut overlays = HashMap::new();
+        overlays.insert(s.clone(), vec![ToolOverlayEntry::deny("edit")]);
+        assert_eq!(
+            tool_mask_source(&active, &guard, &overlays, &s, "edit"),
+            Some(MaskSource::overlay(s.clone()))
+        );
+        assert_eq!(
+            tool_mask_source(&active, &guard, &overlays, &s, "read"),
+            None
+        );
+    }
+
+    #[test]
+    fn tool_mask_source_reports_an_unseen_session_as_unseen() {
+        // Fail-closed (#156) is attributed as such, so the refusal says the
+        // profile is unknown rather than naming an innocent agent.
+        let guard = SpawnGuard::new();
+        let s = SessionId::new("ghost");
+        assert_eq!(
+            tool_mask_source(&HashMap::new(), &guard, &HashMap::new(), &s, "read"),
+            Some(MaskSource::unseen(s))
         );
     }
 

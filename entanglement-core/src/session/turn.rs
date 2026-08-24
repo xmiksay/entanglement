@@ -1,4 +1,5 @@
-//! The live reasoning turn: assemble the advertised tool set, stream the LLM
+//! The live reasoning turn: assemble the advertised tool set (every spec the
+//! config provides — masks are dispatch-only, see `run_round`), stream the LLM
 //! response, and either finish the turn or *park* it on a batch of tool calls
 //! (#270, ADR-0061). Parking is explicit state ([`TurnState`]) — the whole
 //! batch is emitted as `ToolExec` up front and control returns to the session
@@ -18,7 +19,7 @@ use super::emit::{emit_turn_error, emit_usage, next_seq};
 use super::round::{run_attempt, RoundAttempt, RoundSetup};
 use super::summarize::{summarize, SummarizeOutcome};
 use super::{Session, SessionCmd};
-use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
 use entanglement_provider::ToolSpec;
 
@@ -89,68 +90,43 @@ async fn run_round(
     stash: &mut VecDeque<SessionCmd>,
     cfg: &EngineConfig,
 ) -> RoundOutcome {
-    // Tool set advertised to the model = host tools (from config, #61) filtered
-    // by the active profile's allowlist/denylist mask (#116, ADR-0038). Core
-    // caches no fixed tool set on the session; the schemas come from
-    // `EngineConfig.tool_specs` at turn time. The mask is a *physical*
-    // restriction — a masked tool's schema never reaches the model — layered
-    // under the runtime's `Allow`/`Ask`/`Deny` dispatch, which grades only the
-    // tools that survive here. `update_plan`/`update_tasks` are runtime state
-    // tools now (#231, ADR-0049): they ride `tool_specs`/`profile_tool_specs`
-    // and this mask like any other host tool, with zero plan-authority special
-    // casing in core.
+    // Tool set advertised to the model = **every** spec the config provides for
+    // this session. Advertisement is decoupled from enforcement: the profile
+    // mask (#116, ADR-0038), the session tool overlay (#539, ADR-0149) and an
+    // active skill's `allowed_tools` (#400, ADR-0106) no longer filter here —
+    // they are enforced exclusively by the runtime's dispatch gate, exactly as
+    // the `Allow`/`Ask`/`Deny` permission ladder always has been. WHY: every
+    // mid-session change to this array (an overlay toggle, `/enable tool bash`,
+    // a skill mask, a `SetAgent` to a differently-masked profile) invalidated
+    // the provider's prompt cache from the tools block onward — i.e. the whole
+    // prompt. A surface that is stable within a session keeps that cache warm;
+    // the only thing traded away is "the model cannot even attempt the call",
+    // and every attempt is now visibly declined at dispatch instead.
+    //
     // The base tool schemas are engine-global (`tool_specs`) unless a
     // per-session `tool_spec_resolver` is wired (#308, ADR-0076): a multi-tenant
     // embedder consults it here to vary the advertised surface per session (each
     // user's discovered MCP-server tools, a site's restriction) on one `Holly`.
-    // Its output *replaces* the static list for this session — but the profile
-    // mask below still filters it, so the resolver widens discovery, never
-    // bypasses masking. Consulted fresh every turn, so a backing-store edit lands
-    // on the next turn with no engine respawn.
-    let base_specs = match &cfg.tool_spec_resolver {
+    // Its output *replaces* the static list for this session. Consulted fresh
+    // every turn, so a backing-store edit lands on the next turn with no engine
+    // respawn — and, because nothing downstream filters it, the resolver is now
+    // the single seam that shapes a session's base surface.
+    let mut specs: Vec<ToolSpec> = match &cfg.tool_spec_resolver {
         Some(resolve) => resolve(session),
         None => cfg.tool_specs.clone(),
     };
-    // The session's live tool overlay (#539, ADR-0149) overrides the profile
-    // mask in both directions: a deny entry withdraws a tool the profile
-    // advertises, an enable entry injects one the profile masks — that
-    // override is the overlay's whole point (a trusted head explicitly set
-    // it), and the runtime's dispatch gate applies the identical predicate.
-    // No opinion ⇒ the profile mask stands.
-    //
-    // The one exemption is the always-on internal tools
-    // (`ALWAYS_ADVERTISED_TOOLS`, ADR-0190): `poll` joins background
-    // `bash`/`call`/`rhai` jobs and sub-agents — it only collects work the
-    // profile already authorized creating, so a mask that withdraws it
-    // strands async work instead of reducing capability. It is advertised
-    // unconditionally and cannot be masked, even by an explicit overlay deny.
-    let advertised = |name: &str| {
-        if AgentProfile::is_always_advertised(name) {
-            return true;
-        }
-        match ToolOverlayEntry::disposition(&s.tool_overlay, name) {
-            Some(v) => v,
-            None => s.profile.advertises_tool(name),
-        }
-    };
-    let mut specs: Vec<ToolSpec> = base_specs
-        .into_iter()
-        .filter(|spec| advertised(&spec.name))
-        .collect();
     // Per-profile specs (#119, ADR-0040): the active profile's spawnable roster
     // (the `agent_*` family with a target enum scoped to who *this* profile may
     // spawn) plus the plan-authorship tools (#231) live outside the shared
-    // `tool_specs` so a masked schema never reaches the model. The runtime leaves
-    // the entry empty for a profile that may not spawn / does not author plans.
-    // Still filtered through the #116 mask, so a `disallowed_tools` list can
-    // subtract even a per-profile tool.
+    // `tool_specs` because their *schema* differs per profile — a spawn enum
+    // naming this profile's targets, plan authorship only for a profile that
+    // explicitly allowlists it. That per-profile split is orthogonal to the
+    // mask: it varies across profiles, never within a session's turn sequence,
+    // so it survives the advertisement/enforcement decoupling untouched. The
+    // runtime leaves the entry empty for a profile that may not spawn / does
+    // not author plans.
     if let Some(profile_specs) = cfg.profile_tool_specs.get(&s.profile.name) {
-        specs.extend(
-            profile_specs
-                .iter()
-                .filter(|spec| advertised(&spec.name))
-                .cloned(),
-        );
+        specs.extend(profile_specs.iter().cloned());
     }
 
     let max_turns = cfg.max_turns.max(1);

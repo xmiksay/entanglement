@@ -1,10 +1,17 @@
-//! Physical per-agent tool restriction — advertisement half (#116, ADR-0038).
+//! Advertisement is decoupled from enforcement (#116, ADR-0038 revisited).
 //!
-//! A profile's `tools` allowlist / `disallowed_tools` denylist filters the
-//! `ToolSpec`s advertised to the model at turn time. Here we assert that a
-//! session running under the read-only `explore` profile (allowlist
-//! `read`/`glob`/`grep`) never sees the `edit` schema in its `LlmRequest`,
-//! whether reached via `SetAgent` or a sub-agent `Spawn`.
+//! Core's turn loop advertises **every** spec the config provides — the profile
+//! mask and the session tool overlay no longer filter it. WHY: a surface that
+//! changes mid-session (an overlay toggle, `SetAgent` to a differently-masked
+//! profile, a live tool enable) invalidates the provider's prompt cache from
+//! the tools block onward, i.e. the whole prompt. The mask still binds, but at
+//! the runtime's dispatch gate: the enforcement half is
+//! `entanglement-runtime/tests/it/tool_mask.rs`, which pins the attributed
+//! decline every masked call now gets.
+//!
+//! These tests pin the advertisement half of that contract: a restrictive
+//! profile, an overlay deny, and a spawned read-only child all still see the
+//! full schema set.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,8 +23,8 @@ use entanglement_core::{
 };
 
 /// The read-only `explore` profile the runtime ships as `explore.md` — core no
-/// longer carries it (#201), so these mask tests register it directly. A
-/// `Subagent` leaf whose `read`/`glob`/`grep` allowlist masks out `edit`.
+/// longer carries it (#201), so these tests register it directly. A `Subagent`
+/// leaf whose `read`/`glob`/`grep` allowlist masks out `edit` **at dispatch**.
 fn explore_profile() -> AgentProfile {
     AgentProfile {
         name: "explore".into(),
@@ -100,7 +107,11 @@ async fn build_profile_advertises_edit() {
 }
 
 #[tokio::test]
-async fn explore_profile_hides_edit_via_set_agent() {
+async fn restrictive_profile_still_advertises_the_full_set() {
+    // The rewrite of the old `explore_profile_hides_edit_via_set_agent`: under
+    // a `read`/`glob`/`grep` allowlist, `edit`'s schema still reaches the model
+    // — the mask binds at dispatch, not here, so switching agents mid-session
+    // leaves the advertised array (and the provider's prompt cache) untouched.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let holly = Holly::spawn(recording_config(seen.clone()));
     let sid = SessionId::new("s1");
@@ -121,26 +132,28 @@ async fn explore_profile_hides_edit_via_set_agent() {
         "explore must still see read; got {names:?}"
     );
     assert!(
-        !names.iter().any(|n| n == "edit"),
-        "explore's masked `edit` must not be advertised; got {names:?}"
+        names.iter().any(|n| n == "edit"),
+        "a masked tool is advertised and declined at dispatch, not withheld; got {names:?}"
     );
-    // `update_plan`/`update_tasks` are runtime state tools now (#231, ADR-0049):
-    // core advertises no plan/task built-ins at all, and the runtime withholds
-    // them from `explore` via the mask + permission. Neither ever reaches the
-    // model here (this config carries no such specs).
+    // `update_tasks`/`propose_plan` are runtime state tools (#231, ADR-0049):
+    // core advertises no plan/task built-ins of its own, and this config
+    // carries no such specs, so neither can appear.
     assert!(
         !names
             .iter()
-            .any(|n| n == "update_tasks" || n == "update_plan"),
+            .any(|n| n == "update_tasks" || n == "propose_plan"),
         "core must not advertise plan/task built-ins; got {names:?}"
     );
 }
 
 #[tokio::test]
-async fn tool_overlay_injects_past_the_profile_mask() {
-    // #539, ADR-0149: a trusted head's `SetToolOverlay` makes matching tools
-    // exist for the session regardless of the profile's allowlist — the
-    // per-session MCP enablement path. Clearing the overlay reverts it.
+async fn setting_a_tool_overlay_does_not_perturb_the_advertised_set() {
+    // The rewrite of `tool_overlay_injects_past_the_profile_mask` +
+    // `tool_overlay_deny_withdraws_a_profile_advertised_tool` (#539, ADR-0149).
+    // The overlay is still the per-session escape hatch, but it moves the
+    // *grade*/existence decision at dispatch only: setting, then clearing, an
+    // overlay leaves the advertised array byte-identical across all three
+    // turns — precisely the prompt-cache stability this change buys.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mut cfg = recording_config(seen.clone());
     cfg.tool_specs
@@ -156,19 +169,35 @@ async fn tool_overlay_injects_past_the_profile_mask() {
         .await
         .unwrap();
     holly
+        .send(InMsg::prompt(sid.clone(), "before the overlay"))
+        .await
+        .unwrap();
+    let baseline = first_recorded(&seen).await;
+    assert!(
+        ["read", "edit", "mcp__docs__search"]
+            .iter()
+            .all(|t| baseline.iter().any(|n| n == t)),
+        "everything the config provides is advertised; got {baseline:?}"
+    );
+
+    // A deny entry for a tool the profile advertises, plus an enable entry for
+    // one it masks: neither moves the needle on advertisement.
+    holly
         .send(InMsg::SetToolOverlay {
             session: sid.clone(),
-            entries: vec![ToolOverlayEntry::ask("mcp__docs__*")],
+            entries: vec![
+                ToolOverlayEntry::deny("read"),
+                ToolOverlayEntry::ask("mcp__docs__*"),
+            ],
         })
         .await
         .unwrap();
-    // The replacement is confirmed with the full effective list.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
         tokio::select! {
             ev = events.recv() => {
                 if let Ok(entanglement_core::OutEvent::ToolOverlayChanged { entries, .. }) = ev {
-                    assert_eq!(entries, vec![ToolOverlayEntry::ask("mcp__docs__*")]);
+                    assert_eq!(entries.len(), 2);
                     break;
                 }
             }
@@ -176,20 +205,16 @@ async fn tool_overlay_injects_past_the_profile_mask() {
         }
     }
     holly
-        .send(InMsg::prompt(sid.clone(), "search the docs"))
+        .send(InMsg::prompt(sid.clone(), "with the overlay"))
         .await
         .unwrap();
-    let names = first_recorded(&seen).await;
-    assert!(
-        names.iter().any(|n| n == "mcp__docs__search"),
-        "overlay must inject the MCP tool past explore's mask; got {names:?}"
-    );
-    assert!(
-        !names.iter().any(|n| n == "edit"),
-        "the overlay widens only matching tools; got {names:?}"
+    let with_overlay = recorded_at_least(&seen, 2).await;
+    assert_eq!(
+        with_overlay[1], baseline,
+        "an overlay must not rewrite the advertised tools array"
     );
 
-    // An empty replacement clears the overlay: the next turn is masked again.
+    // Clearing it is likewise inert on the wire.
     holly
         .send(InMsg::SetToolOverlay {
             session: sid.clone(),
@@ -198,67 +223,46 @@ async fn tool_overlay_injects_past_the_profile_mask() {
         .await
         .unwrap();
     holly
-        .send(InMsg::prompt(sid.clone(), "search again"))
+        .send(InMsg::prompt(sid.clone(), "after clearing"))
         .await
         .unwrap();
+    let cleared = recorded_at_least(&seen, 3).await;
+    assert_eq!(
+        cleared[2], baseline,
+        "clearing an overlay must not rewrite it either"
+    );
+}
+
+/// Poll until at least `n` requests have been recorded, then return them all.
+async fn recorded_at_least(seen: &Arc<Mutex<Vec<Vec<String>>>>, n: usize) -> Vec<Vec<String>> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    let cleared = loop {
+    loop {
         let all = seen.lock().unwrap().clone();
-        if all.len() >= 2 {
-            break all.last().cloned().unwrap();
+        if all.len() >= n {
+            return all;
         }
         if tokio::time::Instant::now() >= deadline {
-            panic!("second request never recorded");
+            panic!("fewer than {n} requests recorded");
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
-    };
-    assert!(
-        !cleared.iter().any(|n| n == "mcp__docs__search"),
-        "a cleared overlay reverts to the profile mask; got {cleared:?}"
-    );
+    }
 }
 
 #[tokio::test]
-async fn tool_overlay_deny_withdraws_a_profile_advertised_tool() {
-    // #539 (deny half): a deny entry removes a tool the profile advertises —
-    // per-session disable without touching the agent definition.
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let holly = Holly::spawn(recording_config(seen.clone()));
-    let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetToolOverlay {
-            session: sid.clone(),
-            entries: vec![ToolOverlayEntry::deny("edit")],
-        })
-        .await
-        .unwrap();
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-    let names = first_recorded(&seen).await;
-    assert!(
-        names.iter().any(|n| n == "read"),
-        "unmatched tools keep the profile default; got {names:?}"
-    );
-    assert!(
-        !names.iter().any(|n| n == "edit"),
-        "a deny entry withdraws a profile-advertised tool; got {names:?}"
-    );
-}
-
-#[tokio::test]
-async fn spawned_explore_child_request_carries_no_edit_spec() {
+async fn spawned_explore_child_advertises_the_same_set_as_its_parent() {
+    // The rewrite of `spawned_explore_child_request_carries_no_edit_spec`: a
+    // read-only child's *capability* clamp is the runtime's ancestor-chain mask
+    // walk, which declines `edit` at dispatch. Its advertised surface is the
+    // same as everyone else's.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let holly = Holly::spawn(recording_config(seen.clone()));
     let parent = SessionId::new("parent");
     let child = SessionId::new("child");
 
-    // Start the parent so it exists as the spawn target.
     holly
         .send(InMsg::prompt(parent.clone(), "start"))
         .await
         .unwrap();
-
-    // Spawn a read-only `explore` child; its first turn should advertise the
-    // masked set only.
     holly
         .send(InMsg::Spawn {
             session: child.clone(),
@@ -272,26 +276,11 @@ async fn spawned_explore_child_request_carries_no_edit_spec() {
         .await
         .unwrap();
 
-    // Find the child's request among the recorded ones (the parent advertised
-    // `edit`; the child must not).
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    let mut child_request: Option<Vec<String>> = None;
-    while tokio::time::Instant::now() < deadline {
-        // The child's request is the one lacking `edit` (parent has it).
-        let all = seen.lock().unwrap().clone();
-        if let Some(names) = all.iter().find(|names| !names.iter().any(|n| n == "edit")) {
-            child_request = Some(names.clone());
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+    let requests = recorded_at_least(&seen, 2).await;
+    for names in &requests {
+        assert!(
+            names.iter().any(|n| n == "read") && names.iter().any(|n| n == "edit"),
+            "parent and child advertise the same full set; got {names:?}"
+        );
     }
-    let names = child_request.expect("child request should have been recorded");
-    assert!(
-        names.iter().any(|n| n == "read"),
-        "child still reads; got {names:?}"
-    );
-    assert!(
-        !names.iter().any(|n| n == "edit"),
-        "spawned explore child must not advertise edit; got {names:?}"
-    );
 }

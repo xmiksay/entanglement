@@ -31,7 +31,15 @@ sessions (#217, [ADR-0050](../adr/0050-per-endpoint-connection-pool-retry-rate-l
 so there is no honest session-scoped state to wrap. The factory hands core the
 streaming backend directly.
 
-Turn loop (`run_round`, driven by `drive_turn`): send `LlmRequest { system,
+Turn loop (`run_round`, driven by `drive_turn`): assemble `tools` — **every**
+spec `EngineConfig.tool_specs` (or the per-session `tool_spec_resolver`) yields,
+plus the active profile's `profile_tool_specs` entry, with **no filtering**: the
+profile mask, session tool overlay and skill `allowed_tools` are enforced
+exclusively at the runtime's dispatch gate, so the advertised surface stays
+stable within a session and the provider's prompt cache survives an overlay
+toggle, a `/enable tool bash`, or a `SetAgent` (see [agents &
+permissions](agents-and-permissions.md) §physical tool restriction for the
+attributed decline a masked call gets instead) — then send `LlmRequest { system,
 model, messages, tools }` → consume the streamed `LlmEvent`s (emit `TextDelta`
 per `Text` chunk, gather `ToolCall`s, fold `Finish`) → if the reply carries
 tool calls, **emit the whole batch up front** — the per-call (`ToolCall`,
@@ -755,8 +763,8 @@ parks the script on the standard `ToolRequest` → `Approve`/`Reject` round-trip
 rest). Because the bindings *are* the always-registered quintet, `rhai` is
 precisely as privileged as those tools — so it is registered by default in the
 shared `tool_specs`, and a profile gates it like any tool (a profile whose
-`tools` allowlist omits `rhai` never sees it; the read-only `explore`/`research`
-profiles advertise it at `Ask` grade instead). The executor intercepts `rhai`
+`tools` allowlist omits `rhai` has the call declined at dispatch; the read-only
+`explore`/`research` profiles grade it `Ask` instead). The executor intercepts `rhai`
 before the generic dispatch (it needs the per-session profile state to snapshot
 each binding's mask + clamped permission); its *own* Allow/Ask/Deny is resolved
 the same way as any host tool. Rhai's engine is sync, so the script runs under

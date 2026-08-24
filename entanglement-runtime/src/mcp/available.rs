@@ -233,10 +233,7 @@ impl AvailableMcp {
     }
 
     /// Whether `session` — or an ancestor of it, live-resolved (#630) — is in
-    /// `sessions`. The shared tail of [`spec_visible`](Self::spec_visible),
-    /// also consulted by `crate::builtin_visibility` (ADR-0179) so lazy
-    /// built-ins inherit the identical ancestor semantics without a second
-    /// parent map.
+    /// `sessions`. The shared tail of [`spec_visible`](Self::spec_visible).
     pub(crate) fn enabled_by_or_ancestor(
         &self,
         sessions: &HashSet<SessionId>,

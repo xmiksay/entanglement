@@ -813,23 +813,27 @@ pub fn spawn_tool_executor_with_policy(
                             .insert(session.clone(), p);
                     }
                     // Physical tool restriction (#116, ADR-0038): a tool outside
-                    // the session's effective advertised set — its profile's
-                    // allowlist/denylist, intersected down the ancestor chain —
-                    // does not exist for this agent. Refuse before any other
-                    // handling (spawn interception, permission), so even a
-                    // hallucinated call to a masked `edit`/`agent` is a
-                    // hard boundary, not a persona nudge. Core already withholds
-                    // the schema; this closes the gap if the model calls it anyway.
-                    // #597: name *which* link's mask did it, not just "profile"
-                    // — a child's own definition can list the tool while an
-                    // ancestor's narrower mask erases it down the chain, and
-                    // an undifferentiated message reads as an inexplicable
-                    // dead end rather than a mask-ancestry issue.
+                    // the session's effective tool set — its profile's
+                    // allowlist/denylist and its session tool overlay,
+                    // intersected down the ancestor chain — does not exist for
+                    // this agent. Refuse before any other handling (spawn
+                    // interception, permission), so a call to a masked
+                    // `edit`/`agent` is a hard boundary, not a persona nudge.
+                    //
+                    // This is now the *whole* restriction, not a backstop:
+                    // advertisement is decoupled from enforcement (the model
+                    // sees every schema, so the surface stays cache-stable
+                    // within a session), which makes an attributed decline
+                    // load-bearing — the model has to learn *who* refused it or
+                    // it will retry the same call. #597: name which link, and
+                    // on whose authority (its profile vs its overlay), since a
+                    // child's own definition can list the tool while an
+                    // ancestor's narrower mask erases it down the chain.
                     let masked_by = {
                         let active = active.lock().expect("active-profile mutex poisoned");
                         tool_mask_source(&active, &spawn_guard, &overlays, &session, &tool).map(
                             |source| {
-                                let name = active.get(&source).map(|p| p.name.clone());
+                                let name = active.get(&source.session).map(|p| p.name.clone());
                                 (source, name)
                             },
                         )
@@ -838,16 +842,12 @@ pub fn spawn_tool_executor_with_policy(
                         let holly = holly.clone();
                         let own_session = session.clone();
                         tokio::spawn(async move {
-                            let output = if source == own_session {
-                                format!(
-                                    "tool `{tool}` is not available to this agent (restricted by its own profile)"
-                                )
-                            } else {
-                                format!(
-                                    "tool `{tool}` is not available to this agent (restricted by ancestor agent `{}`'s profile)",
-                                    agent_name.as_deref().unwrap_or("unknown")
-                                )
-                            };
+                            let output = crate::decline::mask_decline(
+                                &source,
+                                &own_session,
+                                agent_name.as_deref(),
+                                &tool,
+                            );
                             seam::reply(&holly, session, request_id, output, true).await;
                         });
                         continue;
@@ -864,10 +864,29 @@ pub fn spawn_tool_executor_with_policy(
                     if let Some(skill_id) = skill_masked_by {
                         let holly = holly.clone();
                         tokio::spawn(async move {
-                            let output = format!(
-                                "tool `{tool}` is not available while skill `{skill_id}` is \
-                                 active (restricted by its allowed_tools)"
-                            );
+                            let output = crate::decline::skill_decline(&skill_id, &tool);
+                            seam::reply(&holly, session, request_id, output, true).await;
+                        });
+                        continue;
+                    }
+                    // A lazily-registrable built-in (`bash`, ADR-0163 §2) is
+                    // advertised whether or not it is registered, so a call can
+                    // arrive before `/enable tool bash` ever ran. Answer with
+                    // the enabling command rather than letting it fall through
+                    // to the registry's generic "unknown tool" — which would
+                    // read as a hallucinated name and teach the model nothing.
+                    // Checked *after* the mask gates so a profile/overlay that
+                    // withholds `bash` outright keeps its own attribution.
+                    let unregistered_builtin = crate::bash_live::LAZY_BUILTINS
+                        .contains(&tool.as_str())
+                        && !tools
+                            .read()
+                            .expect("tool registry lock poisoned")
+                            .contains(&tool);
+                    if unregistered_builtin {
+                        let holly = holly.clone();
+                        tokio::spawn(async move {
+                            let output = crate::decline::disabled_builtin_decline(&tool);
                             seam::reply(&holly, session, request_id, output, true).await;
                         });
                         continue;

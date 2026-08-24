@@ -242,7 +242,7 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
     assert!(
         turn1_outputs
             .iter()
-            .any(|o| o.contains("not available while skill `restricted` is active")),
+            .any(|o| o.contains("Declined by skill `restricted`'s allowed_tools")),
         "edit must be refused by the skill mask; got {turn1_outputs:?}"
     );
     assert!(
@@ -277,7 +277,7 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
     assert!(
         !turn2_outputs
             .iter()
-            .any(|o| o.contains("not available while skill")),
+            .any(|o| o.contains("Declined by skill")),
         "edit must be unmasked in a later turn; got {turn2_outputs:?}"
     );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "bye");

@@ -176,7 +176,7 @@ async fn read_only_explore_cannot_mutate_tasks_via_mask() {
         events.iter().any(|e| matches!(
             e,
             OutEvent::ToolOutput { tool, output, .. }
-                if tool == "update_tasks" && output.contains("not available")
+                if tool == "update_tasks" && output.contains("Declined by agent profile")
         )),
         "masked update_tasks must be refused; got {events:?}"
     );

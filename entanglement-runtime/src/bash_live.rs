@@ -15,19 +15,27 @@
 //! `tool_runner`'s dispatch ladder; this module only ever mutates the
 //! process-global [`SharedRegistry`], mirroring the MCP live-management seam
 //! (#372/#375, `crate::mcp::live`/`crate::mcp::responder`).
+//!
+//! **Advertisement is not scoped here any more.** ADR-0179 kept a
+//! session-scoped visibility map so one session's `/enable tool bash` would not
+//! rewrite every other session's advertised tools array. The advertised surface
+//! is universal and stable within a session now, and [`bash_spec`] is
+//! advertised whether or not `bash` is registered — so there is nothing left to
+//! scope, and enabling reduces to exactly two effects: registration (here) and
+//! the overlay's permission grade. Calling an unregistered `bash` is declined
+//! at dispatch with [`crate::decline::disabled_builtin_decline`].
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use entanglement_core::{Holly, OutEvent, ToolOverlayEntry};
+use entanglement_core::{Holly, OutEvent, ToolOverlayEntry, ToolSpec};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::builtin_visibility::BuiltinVisibility;
 use crate::extra_roots::ExtraRootStore;
 use crate::host::{BashTool, JobRegistry};
 use crate::policy::SandboxResolver;
-use crate::tools::SharedRegistry;
+use crate::tools::{SharedRegistry, Tool};
 
 /// Whether `bash` is currently registered in the shared tool registry — via
 /// the startup `ENTANGLEMENT_ENABLE_BASH` env var or a later tool-overlay
@@ -64,6 +72,19 @@ impl BashRegistered {
 /// registered) is a genuine widening of a trusted frame's power, so the set
 /// stays short and reviewed.
 pub(crate) const LAZY_BUILTINS: &[&str] = &["bash"];
+
+/// The `bash` schema, built off a throwaway [`BashTool`] so the advertised
+/// description/schema can never drift from the tool that actually runs.
+/// Advertised unconditionally — including while `bash` is absent from the
+/// registry — which is what keeps the tools array byte-identical across an
+/// `/enable tool bash` (the whole point: a mid-session change to that array
+/// invalidates the provider's prompt cache from the tools block onward).
+/// Takes no root: `BashTool` uses it only for run-time containment, never for
+/// the name/description/schema this projects.
+pub fn bash_spec() -> ToolSpec {
+    let bash = BashTool::new(PathBuf::from("."));
+    ToolSpec::with_schema(bash.name(), bash.description(), bash.schema())
+}
 
 /// Everything a lazy `bash` registration needs to build a fresh `BashTool`,
 /// mirroring `register_default_tools`'s bash arm in `main.rs` — captured
@@ -151,25 +172,14 @@ pub fn spawn_lazy_builtin_responder(
     registry: SharedRegistry,
     config: BashToolConfig,
     registered: Arc<BashRegistered>,
-    visibility: Arc<BuiltinVisibility>,
 ) -> tokio::task::JoinHandle<()> {
     let mut events = holly.subscribe();
 
     tokio::spawn(async move {
         loop {
             match events.recv().await {
-                Ok(OutEvent::ToolOverlayChanged { session, entries }) => {
+                Ok(OutEvent::ToolOverlayChanged { entries, .. }) => {
                     register_lazy_builtins(&registry, &config, &registered, &entries);
-                    // Advertisement scoping (ADR-0179): the same overlay list
-                    // that may have just registered the tool also decides
-                    // which session gets to *see* it. Resume-safe: core
-                    // replays `ToolOverlayChanged` on resume, so a resumed
-                    // session re-folds its marks here — unlike the lazy MCP
-                    // enablement map, which is never replayed.
-                    visibility.fold_overlay(&session, &entries);
-                }
-                Ok(OutEvent::SessionEnded { session, .. }) => {
-                    visibility.forget_session(&session);
                 }
                 Ok(_) => {}
                 // A dropped broadcast frame under lag can only delay a lazy
@@ -277,13 +287,11 @@ mod tests {
         let holly = empty_engine();
         let registry: SharedRegistry = Arc::new(StdRwLock::new(ToolRegistry::new()));
         let registered = BashRegistered::new(false);
-        let visibility = BuiltinVisibility::new(None);
         let handle = spawn_lazy_builtin_responder(
             &holly,
             registry.clone(),
             test_config(),
             registered.clone(),
-            visibility.clone(),
         );
 
         // A runtime-authored event, as core's session task would emit in
@@ -306,58 +314,19 @@ mod tests {
         }
         assert!(registry.read().unwrap().contains("bash"));
         assert!(registered.get());
-        // Advertisement scoping (ADR-0179): the enabling session sees it, an
-        // unrelated one does not — even though the registration is global.
-        let avail = crate::mcp::AvailableMcp::default();
-        assert!(visibility.visible("bash", &SessionId::new("s1"), &avail));
-        assert!(!visibility.visible("bash", &SessionId::new("s2"), &avail));
         handle.abort();
     }
 
-    #[tokio::test]
-    async fn spawn_lazy_builtin_responder_forgets_visibility_on_session_ended() {
-        let holly = empty_engine();
-        let registry: SharedRegistry = Arc::new(StdRwLock::new(ToolRegistry::new()));
-        let visibility = BuiltinVisibility::new(None);
-        let handle = spawn_lazy_builtin_responder(
-            &holly,
-            registry.clone(),
-            test_config(),
-            BashRegistered::new(false),
-            visibility.clone(),
-        );
-
-        let avail = crate::mcp::AvailableMcp::default();
-        let s1 = SessionId::new("s1");
-        holly
-            .send(entanglement_core::InMsg::SetToolOverlay {
-                session: s1.clone(),
-                entries: vec![ToolOverlayEntry::ask("bash")],
-            })
-            .await
-            .unwrap();
-        for _ in 0..50 {
-            if visibility.visible("bash", &s1, &avail) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(visibility.visible("bash", &s1, &avail));
-
-        holly
-            .send(entanglement_core::InMsg::CloseSession {
-                session: s1.clone(),
-            })
-            .await
-            .unwrap();
-        for _ in 0..50 {
-            if !visibility.visible("bash", &s1, &avail) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(!visibility.visible("bash", &s1, &avail));
-        handle.abort();
+    #[test]
+    fn bash_spec_is_available_without_registering_the_tool() {
+        // Advertisement no longer depends on registration: the spec exists
+        // (and matches the real tool's schema) while `bash` is absent from
+        // every registry, which is what keeps the tools array stable across a
+        // later `/enable tool bash`.
+        let spec = bash_spec();
+        assert_eq!(spec.name, "bash");
+        assert!(!spec.description.is_empty());
+        assert_eq!(spec.schema, BashTool::new(PathBuf::from(".")).schema());
     }
 
     /// #605 (fixes #616 as a side effect): a lazily-registered `bash` reuses

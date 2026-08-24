@@ -472,12 +472,13 @@ impl ToolOverlayEntry {
     }
 
     /// The overlay's opinion on `tool`: `Some(false)` — a deny entry matches
-    /// (the tool does not exist for this session, even if the profile
-    /// advertises it); `Some(true)` — an enable entry matches (it exists even
+    /// (the tool does not exist for this session, even if the profile mask
+    /// admits it); `Some(true)` — an enable entry matches (it exists even
     /// if the profile masks it); `None` — no opinion, the profile mask stands.
-    /// Deny entries win over enable entries regardless of list order — the
-    /// session-overlay lookup the advertisement filter and the runtime's
-    /// mask override share.
+    /// Deny entries win over enable entries regardless of list order.
+    /// Consulted at **dispatch** only (the runtime's `tool_mask_source`) —
+    /// the overlay does not narrow what core advertises, so toggling it leaves
+    /// the model's tools array untouched.
     pub fn disposition(entries: &[Self], tool: &str) -> Option<bool> {
         if entries.iter().any(|e| e.deny && e.matches(tool)) {
             return Some(false);
@@ -596,6 +597,39 @@ impl PermissionProfile {
     /// concrete call in hand (inspect views, the TUI panel).
     pub fn for_tool(&self, name: &str) -> Permission {
         self.resolve(name, None)
+    }
+
+    /// The grades a *concrete* call to `name` can reach that its bare grade
+    /// ([`for_tool`][Self::for_tool]) does not show, because they sit behind an
+    /// argument- or workdir-scoped rule (`tool(pattern)`/`tool{pattern}`,
+    /// #173/#425) — e.g. the `plan` profile's `write: deny` +
+    /// `write(.entanglement/plans/*.md): allow`, whose bare grade `Deny` is a
+    /// half-truth. A UI rendering a profile's per-tool posture needs this to
+    /// stay honest; nothing on the dispatch path consults it.
+    ///
+    /// Each scoped rule is probed by resolving with **its own pattern as the
+    /// value** — a `*`/`?` glob always matches itself — so the probe runs the
+    /// whole ordered rule list and a later bare rule overriding a scoped one is
+    /// reflected. Deduped, in rule order, with the bare grade removed: an empty
+    /// result means the bare grade is the whole truth for this tool.
+    pub fn scoped_grades(&self, name: &str) -> Vec<Permission> {
+        let bare = self.for_tool(name);
+        let mut out = Vec::new();
+        for (key, _) in &self.rules {
+            let (tool_pat, scope) = split_rule_key(key);
+            if tool_pat != "*" && tool_pat != name {
+                continue;
+            }
+            let grade = match scope {
+                RuleScope::None => continue,
+                RuleScope::Arg(pat) => self.resolve(name, Some(pat)),
+                RuleScope::Workdir(pat) => self.resolve_scoped(name, None, Some(pat)),
+            };
+            if grade != bare && !out.contains(&grade) {
+                out.push(grade);
+            }
+        }
+        out
     }
 }
 
@@ -741,17 +775,6 @@ pub enum AgentMode {
     All,
 }
 
-/// Internal orchestration tools that are always advertised and cannot be
-/// withdrawn by a profile's `tools`/`disallowed_tools` mask (#606, ADR-0190).
-/// They collect or surface state for work the profile already authorized
-/// creating — withdrawing them strands async work, not reduces capability.
-/// Consulted by [`AgentProfile::is_always_advertised`], which the advertisement
-/// filter in `run_round` short-circuits on before the profile mask. Keep this
-/// list narrow: each entry is an exemption from the #116 physical restriction,
-/// so adding one removes a profile-author control and should be a deliberate
-/// decision (widening is a one-line change to this constant).
-pub const ALWAYS_ADVERTISED_TOOLS: &[&str] = &["poll"];
-
 /// A bundle of system prompt + model + permissions that defines how a session
 /// reasons and what it may do. A session runs under exactly one profile at a
 /// time; switching (e.g. Build ↔ Plan) changes the profile. Mirrors opencode's
@@ -784,8 +807,12 @@ pub struct AgentProfile {
     pub provider: Option<String>,
     pub permission: PermissionProfile,
     /// Tool allowlist (#116, ADR-0038). `Some` ⇒ only tools matching an entry
-    /// are advertised to the model and accepted at dispatch (the registry is
-    /// intersected with this set); `None` ⇒ inherit every advertised tool.
+    /// are accepted **at dispatch** (the registry is intersected with this
+    /// set); `None` ⇒ inherit every tool. The mask does not narrow what is
+    /// *advertised* — the schema of a masked tool still reaches the model, and
+    /// calling it is declined by the runtime's dispatch gate with an
+    /// attributed refusal, keeping the advertised surface stable within a
+    /// session (and with it the provider's prompt cache).
     /// Each entry is a `*`/`?` wildcard pattern (#537, ADR-0148) matched with
     /// the same [`glob_match`] the #173 argument scopes use — a literal entry
     /// degenerates to exact equality, so `read` behaves as before while
@@ -797,9 +824,9 @@ pub struct AgentProfile {
     pub tools: Option<Vec<String>>,
     /// Tool denylist (#116, ADR-0038), applied *after* the allowlist. A tool
     /// matching an entry — same wildcard-pattern semantics as
-    /// [`tools`][Self::tools] (#537, ADR-0148) — is never advertised nor
-    /// accepted, even if the allowlist (or an inherit-all `None`) would
-    /// otherwise include it.
+    /// [`tools`][Self::tools] (#537, ADR-0148) — is refused at dispatch, even
+    /// if the allowlist (or an inherit-all `None`) would otherwise include it.
+    /// Like the allowlist it is dispatch-only: the tool stays advertised.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
@@ -841,44 +868,37 @@ impl AgentProfile {
         }
     }
 
-    /// Whether `tool` is in this profile's advertised set: present unless the
-    /// denylist removes it, or an allowlist is set and omits it. This is the
-    /// *physical* restriction of #116 — orthogonal to
-    /// [`PermissionProfile::for_tool`], which grades `Allow`/`Ask`/`Deny` among
-    /// the tools that survive this mask. Plan authorship rides this mask now
-    /// (#231, ADR-0049): the runtime advertises `update_plan`/`propose_plan` only
-    /// to a profile that *explicitly* allowlists them (literal name, never a
-    /// pattern — `plan_tasks::explicitly_allowlists`), so plan authority is
+    /// Whether this profile's mask admits `tool`: present unless the denylist
+    /// removes it, or an allowlist is set and omits it. This is the *physical*
+    /// restriction of #116 — orthogonal to [`PermissionProfile::for_tool`],
+    /// which grades `Allow`/`Ask`/`Deny` among the tools the mask admits.
+    ///
+    /// **Advertisement no longer consults this predicate.** Core's turn loop
+    /// advertises every spec the config provides; the mask is enforced solely
+    /// at dispatch, by the runtime's `permission::tool_masked` /
+    /// `tool_mask_source` gate (which also intersects it down the ancestor
+    /// chain) — a masked call is declined there with an attributed refusal.
+    /// The name is kept for compatibility with heads and the runtime that
+    /// already spell it; read it as "the mask admits this tool".
+    ///
+    /// Plan authorship still keys off the mask *data* (#231, ADR-0049): the
+    /// runtime advertises `propose_plan` only to a profile that *explicitly*
+    /// allowlists it (literal name, never a pattern —
+    /// `plan_tasks::explicitly_allowlists`), so plan authority is
     /// default-closed without a dedicated flag.
     /// Entries are `*`/`?` wildcard patterns (#537, ADR-0148) matched by
-    /// [`glob_match`], evaluated dynamically here at advertisement/dispatch time
-    /// — which is what lets a mask cover MCP tools (`mcp__<server>__<tool>`)
-    /// whose names don't exist yet when profiles are parsed.
-    ///
-    /// The one exemption is the always-on internal tools in
-    /// [`ALWAYS_ADVERTISED_TOOLS`] (ADR-0190): those short-circuit the mask in
-    /// `run_round` before this predicate is consulted, so this method still
-    /// reports their mask disposition truthfully while the advertisement filter
-    /// ignores it.
+    /// [`glob_match`], evaluated dynamically here at dispatch time — which is
+    /// what lets a mask cover MCP tools (`mcp__<server>__<tool>`) whose names
+    /// don't exist yet when profiles are parsed.
     pub fn advertises_tool(&self, tool: &str) -> bool {
         Self::mask_allows(self.tools.as_deref(), &self.disallowed_tools, tool)
-    }
-
-    /// Whether `name` is an always-on internal tool — unconditionally
-    /// advertised and immune to a profile's `tools`/`disallowed_tools` mask
-    /// (ADR-0190). These collect or surface state for work the profile already
-    /// authorized creating, so withdrawing them strands async work rather than
-    /// reducing capability. The advertisement filter in `run_round` consults
-    /// this before [`advertises_tool`][Self::advertises_tool] / the session
-    /// overlay, so even an explicit overlay deny cannot withdraw one.
-    pub fn is_always_advertised(name: &str) -> bool {
-        ALWAYS_ADVERTISED_TOOLS.contains(&name)
     }
 
     /// The mask predicate behind [`advertises_tool`][Self::advertises_tool],
     /// callable on a projection of the mask (a head holding only
     /// `tools`/`disallowed_tools`, e.g. the TUI's profile info) so no caller
-    /// re-implements the pattern semantics.
+    /// re-implements the pattern semantics. Consulted at **dispatch**, not at
+    /// advertisement.
     pub fn mask_allows(tools: Option<&[String]>, disallowed: &[String], tool: &str) -> bool {
         if disallowed.iter().any(|t| glob_match(t, tool)) {
             return false;
@@ -3312,6 +3332,51 @@ mod tests {
         assert_eq!(p.resolve("bash", Some("ls")), Permission::Ask);
     }
 
+    #[test]
+    fn scoped_grades_expose_what_the_bare_grade_hides() {
+        // The `plan` profile's shape: bare `write` is Deny, but a plans-folder
+        // path resolves Allow — a per-tool UI that showed only the bare grade
+        // would be lying.
+        let p = PermissionProfile::new(Permission::Ask)
+            .with("read", Permission::Allow)
+            .with("write", Permission::Deny)
+            .with("write(.entanglement/plans/*.md)", Permission::Allow);
+        assert_eq!(p.for_tool("write"), Permission::Deny);
+        assert_eq!(p.scoped_grades("write"), vec![Permission::Allow]);
+        // A tool with no scoped rule at all — the bare grade is the whole truth.
+        assert!(p.scoped_grades("read").is_empty());
+    }
+
+    #[test]
+    fn scoped_grades_drop_variants_a_later_bare_rule_overrides() {
+        // `research`'s shape: `call(*)` agrees with the `ask` default, so there
+        // is nothing extra to report. And a scoped rule a *later* bare rule
+        // overrides can never be reached, so it must not be reported either.
+        let agrees = PermissionProfile::new(Permission::Ask).with("call(*)", Permission::Ask);
+        assert!(agrees.scoped_grades("call").is_empty());
+
+        let overridden = PermissionProfile::new(Permission::Ask)
+            .with("write(plans/*)", Permission::Allow)
+            .with("write", Permission::Deny);
+        assert_eq!(overridden.for_tool("write"), Permission::Deny);
+        assert!(overridden.scoped_grades("write").is_empty());
+    }
+
+    #[test]
+    fn scoped_grades_cover_workdir_rules_and_wildcard_tool_keys() {
+        let p = PermissionProfile::new(Permission::Ask).with("bash{/tmp/*}", Permission::Allow);
+        assert_eq!(p.scoped_grades("bash"), vec![Permission::Allow]);
+        // A `*(pattern)` key scopes every tool, so it reports for each of them.
+        let all = PermissionProfile::new(Permission::Deny).with("*(git *)", Permission::Ask);
+        assert_eq!(all.scoped_grades("bash"), vec![Permission::Ask]);
+        assert_eq!(all.scoped_grades("call"), vec![Permission::Ask]);
+        // Deduped: two scoped rules resolving to the same grade report once.
+        let dup = PermissionProfile::new(Permission::Deny)
+            .with("edit(src/*)", Permission::Allow)
+            .with("edit(docs/*)", Permission::Allow);
+        assert_eq!(dup.scoped_grades("edit"), vec![Permission::Allow]);
+    }
+
     fn masked_profile(tools: Option<Vec<&str>>, disallowed: Vec<&str>) -> AgentProfile {
         AgentProfile {
             name: "m".into(),
@@ -3492,39 +3557,17 @@ mod tests {
     }
 
     #[test]
-    fn is_always_advertised_true_for_poll() {
-        // ADR-0190: `poll` is the single always-on internal tool.
-        assert!(AgentProfile::is_always_advertised("poll"));
-        assert!(!AgentProfile::is_always_advertised("edit"));
-        assert!(!AgentProfile::is_always_advertised("ask_user"));
-    }
-
-    #[test]
-    fn always_advertised_survives_allowlist_omitting_it() {
-        // A profile allowlisting only `read` still advertises `poll`: the
-        // advertisement filter short-circuits on `is_always_advertised` before
-        // consulting the mask, so omitting `poll` from the allowlist does not
-        // withdraw it. `advertises_tool` itself still reports the truth
-        // (omitted ⇒ false), which is why the exemption lives in the filter,
-        // not here.
-        let p = masked_profile(Some(vec!["read"]), vec![]);
-        assert!(
-            !p.advertises_tool("poll"),
-            "poll is masked, but is exempted upstream"
-        );
-        assert!(AgentProfile::is_always_advertised("poll"));
-    }
-
-    #[test]
-    fn always_advertised_survives_denylist_subtracting_it() {
-        // A `disallowed_tools: ["poll"]` profile still advertises `poll`: the
-        // exemption is non-maskable (ADR-0190), so even an explicit deny cannot
-        // strand background jobs the profile's own launchers authorized.
-        let p = masked_profile(None, vec!["poll"]);
-        assert!(
-            !p.advertises_tool("poll"),
-            "poll is denied, but is exempted upstream"
-        );
-        assert!(AgentProfile::is_always_advertised("poll"));
+    fn mask_is_a_dispatch_predicate_for_every_tool_including_poll() {
+        // Advertisement no longer consults the mask, so no tool needs an
+        // advertisement-side exemption (superseding ADR-0190's
+        // `ALWAYS_ADVERTISED_TOOLS` short-circuit): this predicate answers one
+        // question only — does the mask admit the tool at dispatch — and it
+        // answers it uniformly, `poll` included.
+        let allowlist = masked_profile(Some(vec!["read"]), vec![]);
+        assert!(allowlist.advertises_tool("read"));
+        assert!(!allowlist.advertises_tool("poll"));
+        let denylist = masked_profile(None, vec!["poll"]);
+        assert!(denylist.advertises_tool("read"));
+        assert!(!denylist.advertises_tool("poll"));
     }
 }

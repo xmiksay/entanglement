@@ -9,8 +9,9 @@
 //! denies it).
 //!
 //! `update_tasks` is general bookkeeping and rides the shared `tool_specs`, so
-//! every unmasked profile advertises it (unlike plan authorship, which is
-//! default-closed — see `propose_plan::specs_for`, #513, ADR-0145).
+//! it is advertised to every profile (unlike plan authorship, which is
+//! default-closed and per-profile — see `propose_plan::specs_for`, #513,
+//! ADR-0145); a read-only profile's mask declines the call at dispatch.
 //!
 //! Seq note (#157): the runtime emits the `TaskList` snapshot with a **fresh**
 //! per-session seq minted from the session's shared counter via
@@ -31,7 +32,8 @@ pub fn is_state_tool(tool: &str) -> bool {
 }
 
 /// `update_tasks` schema, registered into `EngineConfig::tool_specs` so every
-/// unmasked profile advertises it; a read-only profile's allowlist omits it.
+/// profile is advertised it; a read-only profile's allowlist omits it, which
+/// declines the call at dispatch.
 pub fn update_tasks_spec() -> ToolSpec {
     ToolSpec::with_schema(
         UPDATE_TASKS_TOOL,
