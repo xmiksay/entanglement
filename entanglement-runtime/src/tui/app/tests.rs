@@ -1,7 +1,9 @@
 use super::{App, ProfileInfo};
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::session_view::TranscriptEntry;
-use entanglement_core::{AgentMode, AgentState, OutEvent, SessionId};
+use entanglement_core::{
+    AgentMode, AgentState, OutEvent, Permission, PermissionProfile, SessionId,
+};
 use entanglement_provider::{Catalog, GenerationParams, ModelInfo, ReasoningEffort};
 use ratatui::layout::Rect;
 
@@ -19,6 +21,8 @@ fn app_with_mixed_modes(sid: SessionId) -> App {
                 mode: AgentMode::Primary,
                 tools: None,
                 disallowed_tools: Vec::new(),
+                permission: PermissionProfile::new(Permission::Allow),
+                may_spawn: true,
             },
             ProfileInfo {
                 name: "plan".to_string(),
@@ -26,6 +30,8 @@ fn app_with_mixed_modes(sid: SessionId) -> App {
                 mode: AgentMode::Primary,
                 tools: None,
                 disallowed_tools: Vec::new(),
+                permission: PermissionProfile::new(Permission::Allow),
+                may_spawn: true,
             },
             ProfileInfo {
                 name: "helper".to_string(),
@@ -33,6 +39,8 @@ fn app_with_mixed_modes(sid: SessionId) -> App {
                 mode: AgentMode::All,
                 tools: None,
                 disallowed_tools: Vec::new(),
+                permission: PermissionProfile::new(Permission::Allow),
+                may_spawn: true,
             },
         ],
         vec!["read".to_string(), "edit".to_string(), "bash".to_string()],

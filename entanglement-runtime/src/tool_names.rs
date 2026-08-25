@@ -111,8 +111,10 @@ pub fn is_read_capability_member(tool: &str) -> bool {
 /// Deliberately independent of what's *actually registered* this run —
 /// `bash`/`rhai` are env/feature-gated and MCP tools connect after profiles
 /// load — so a config naming a real but currently-inactive tool never
-/// false-positives here. Exists solely for [`is_recognized_mask_entry`]; not
-/// the advertised roster (see `ToolRegistry::specs`/`names` for that).
+/// false-positives here. Two consumers: [`is_recognized_mask_entry`], and —
+/// via [`known_tool_names`] — the engine-free roster `skutter inspect agents`
+/// grades a profile against (it has no `ToolRegistry` to ask). Not the
+/// advertised roster (see `ToolRegistry::specs`/`names` for that).
 const KNOWN_TOOL_NAMES: &[&str] = &[
     "read",
     "glob",
@@ -133,6 +135,15 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     "read_raw",
     "mcp_enable",
 ];
+
+/// The compile-time literal tool vocabulary ([`KNOWN_TOOL_NAMES`]), for a
+/// surface that must grade a profile with no live registry in hand
+/// (`skutter inspect agents`, `crate::tool_state`). Names only — whether any
+/// given one is registered this run is a runtime fact this list deliberately
+/// does not claim.
+pub fn known_tool_names() -> &'static [&'static str] {
+    KNOWN_TOOL_NAMES
+}
 
 /// Whether `entry` — one item from an agent's `tools:`/`disallowed_tools:`
 /// mask, or the tool part of a `permission:` rule key — names something a

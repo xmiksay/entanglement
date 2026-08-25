@@ -45,11 +45,15 @@ impl App {
         let agent = profile.name.clone();
         let tools = profile.tools.clone();
         let disallowed = profile.disallowed_tools.clone();
+        let permission = profile.permission.clone();
+        let may_spawn = profile.may_spawn;
         self.tools_dialog.show(
             agent,
             self.tool_roster.clone(),
             tools.as_deref(),
             &disallowed,
+            &permission,
+            may_spawn,
         );
         self.mark_dirty();
     }

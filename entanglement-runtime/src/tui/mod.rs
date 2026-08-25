@@ -261,6 +261,8 @@ fn entry_profiles_from(registry: &ProfileRegistry) -> Vec<app::ProfileInfo> {
             mode: p.mode,
             tools: p.tools.clone(),
             disallowed_tools: p.disallowed_tools.clone(),
+            permission: p.permission.clone(),
+            may_spawn: p.may_spawn(),
         })
         .collect()
 }
