@@ -59,7 +59,7 @@ use std::time::{Duration, Instant};
 
 use entanglement_core::{
     AgentProfile, AgentState, ApprovalScope, Holly, OutEvent, Permission, PermissionProfile,
-    SessionId, ToolCall, ToolOverlayEntry, ToolSpec,
+    SessionId, ToolCall, ToolOverlayEntry,
 };
 
 use crate::tools::ToolRegistry;
@@ -74,6 +74,11 @@ mod background;
 // Pure JSON/YAML (de)serialization script functions — no IO, no permission
 // check, split out of this (grandfathered over-cap) file.
 mod data;
+// The model-facing tool spec and its binding reference — what the model is
+// told, as opposed to what runs.
+mod spec;
+
+pub use spec::rhai_spec;
 
 use crate::host::truncate_head_tail;
 use crate::pending::{self, PendingDecisions};
@@ -107,59 +112,6 @@ const MAX_STRING_SIZE: usize = 256 * 1024;
 const MAX_ARRAY_SIZE: usize = 100_000;
 const MAX_MAP_SIZE: usize = 100_000;
 
-/// The `rhai` tool schema advertised to the model. Appended to the engine's
-/// shared `tool_specs` (every profile may script; a profile masks it like any
-/// tool via its `tools`/`disallowed_tools` allowlist — #116).
-///
-/// The description is a short stub, not a binding reference (#619): this spec
-/// is re-sent on every request of every session (it lives in the engine's
-/// *shared* specs, not a per-turn addition), including the vast majority that
-/// never write a script. The binding catalogue, permission-grading notes, and
-/// worked example live in the embedded `rhai` skill (`skills/rhai.md`)
-/// instead — loaded on demand via `load_skill`, per the progressive-disclosure
-/// pattern ([ADR-0037](https://github.com/xmiksay/entanglement/blob/master/docs/adr/0037-load-skill-tool-deterministic-resolution.md)).
-/// The `rhai` skill declares no `allowed_tools`, so loading it never narrows
-/// the session's tool mask (ADR-0106) — it is a pure docs lookup.
-pub fn rhai_spec() -> ToolSpec {
-    ToolSpec::with_schema(
-        RHAI_TOOL,
-        "Run a Rhai script (https://rhai.rs) in a capability-sandboxed engine \
-         — multi-step logic (loops, branching, JSON/YAML parsing) in one call \
-         instead of several read/grep/edit calls or shelling out to \
-         python/node. Prefer it whenever a task needs more than one \
-         conditional or a transform over structured data; prefer a direct \
-         tool call for a single simple operation. Binding names are NOT \
-         guessable and a wrong one throws — load the `rhai` skill for the \
-         full binding reference (host I/O functions, permission grading, a \
-         worked example) before writing a script, every time, even if you \
-         recall the bindings from an earlier turn.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "script": {
-                    "type": "string",
-                    "description": "Rhai source. The value of its last expression is returned."
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Wall-clock budget in seconds (default 5, max 30; \
-                        with background: true, default 120, max 600)."
-                },
-                "background": {
-                    "type": "boolean",
-                    "description": "Run detached and return a handle immediately \
-                        instead of the result — join with `poll`, which drains \
-                        print output incrementally and reports the final value. \
-                        kill via poll is cooperative: the script stops at its \
-                        next operation, after any in-flight exec/bash binding \
-                        finishes. Default false."
-                }
-            },
-            "required": ["script"]
-        }),
-    )
-}
-
 /// Parsed `rhai` tool input.
 #[derive(Deserialize)]
 struct ScriptInput {
@@ -186,7 +138,7 @@ pub fn is_background(input: &str) -> bool {
 /// Permission decision for one binding, precomputed once per script run.
 #[derive(Clone)]
 enum Decision {
-    /// Tool masked out of the session's advertised set (#116) — does not exist.
+    /// Tool masked out of the session's effective set (#116) — does not exist.
     Masked,
     /// Tool excluded by the active skill's `allowed_tools` (#400, #477) — the
     /// `String` is the skill id, for the refusal message.
@@ -1116,12 +1068,21 @@ fn format_output(
 /// The final `=> <value>` / `rhai error: …` line for an eval outcome — shared
 /// by the blocking composition above and the background path (#637), which
 /// streams prints as they happen and appends only this line at finish.
+///
+/// A script that named a function/variable the engine does not bind gets the
+/// binding reference appended ([`spec::binding_hint`]): that is the "guessed
+/// the wrong binding" failure, and the catalogue in the result lets the model
+/// self-correct on its next call instead of guessing again. It rides the tail
+/// of the output, which survives `truncate_head_tail`.
 fn result_line(
     eval_result: Result<Result<Dynamic, Box<EvalAltResult>>, tokio::task::JoinError>,
 ) -> (String, bool) {
     match eval_result {
         Ok(Ok(value)) => (format!("=> {}", serialize_return(&value)), false),
-        Ok(Err(e)) => (format!("rhai error: {e}"), true),
+        Ok(Err(e)) => {
+            let hint = spec::binding_hint(&e).unwrap_or_default();
+            (format!("rhai error: {e}{hint}"), true)
+        }
         Err(join) => (format!("rhai error: script task failed: {join}"), true),
     }
 }

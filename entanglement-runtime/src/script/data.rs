@@ -8,6 +8,12 @@ use rhai::{Dynamic, Engine, EvalAltResult};
 
 use super::runtime_err;
 
+/// The four script-facing names registered below, for the spec's binding
+/// reference to be pinned against (`super::spec`) — the registration itself
+/// can't be table-driven, the four have four different signatures.
+#[cfg(test)]
+pub(super) const DATA_FUNCTIONS: [&str; 4] = ["parse_json", "to_json", "parse_yaml", "to_yaml"];
+
 /// Register the four functions. Built on Rhai's own `serde` bridge
 /// (`rhai::serde::{to_dynamic, from_dynamic}`, already enabled via the crate's
 /// `serde` feature), so the JSON/YAML-Value <-> Dynamic mapping is Rhai's own
