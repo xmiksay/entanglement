@@ -9,7 +9,10 @@
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use entanglement_provider::{fixed_model_concurrency, HttpClient, OpenAiLlm, RetryConfig};
+use entanglement_provider::{
+    fixed_model_concurrency, fixed_thinking_spec, ContentPart, HttpClient, OpenAiLlm, RetryConfig,
+    ThinkingFormat, ThinkingSpec,
+};
 use entanglement_provider::{Llm, LlmEvent, LlmRequest, Message};
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -162,6 +165,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         fixed_model_concurrency(None),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         test_http_client(),
     );
     let messages = vec![Message::user("hello")];
@@ -333,6 +337,7 @@ async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEven
         fixed_model_concurrency(None),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         test_http_client_with(config),
     );
     let messages = vec![Message::user("hi")];
@@ -445,6 +450,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         fixed_model_concurrency(None),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http.clone(),
     );
     let _ = tokio::time::timeout(Duration::from_secs(2), llm_a.stream(req()))
@@ -463,6 +469,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         fixed_model_concurrency(None),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http,
     );
     let start = Instant::now();
@@ -655,6 +662,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
         fixed_model_concurrency(Some(1)),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http.clone(),
     );
     let mut llm_b = OpenAiLlm::new(
@@ -666,6 +674,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
         fixed_model_concurrency(Some(1)),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http,
     );
     let messages = vec![Message::user("hi")];
@@ -739,6 +748,7 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
         resolver.clone(),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http.clone(),
     );
     let mut llm_b = OpenAiLlm::new(
@@ -750,6 +760,7 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
         resolver,
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http,
     );
     let messages = vec![Message::user("hi")];
@@ -814,6 +825,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
         fixed_model_concurrency(Some(1)),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http.clone(),
     );
     let mut glm52 = OpenAiLlm::new(
@@ -825,6 +837,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
         fixed_model_concurrency(Some(5)),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http,
     );
     let messages = vec![Message::user("hi")];
@@ -871,6 +884,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         fixed_model_concurrency(None), // no per-model cap
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http.clone(),
     );
     let mut llm_b = OpenAiLlm::new(
@@ -882,6 +896,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         fixed_model_concurrency(None),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http,
     );
     let messages = vec![Message::user("hi")];
@@ -970,6 +985,7 @@ async fn endpoint_permit_frees_promptly_when_a_keep_alive_proxy_holds_the_body_o
         fixed_model_concurrency(None),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         http.clone(),
     );
     let messages = vec![Message::user("hello")];
@@ -993,4 +1009,206 @@ async fn endpoint_permit_frees_promptly_when_a_keep_alive_proxy_holds_the_body_o
         "the endpoint's concurrency permit must be released promptly, not held \
          while the connection sits open past [DONE]"
     );
+}
+
+// ── inline think-tags end to end (ADR-0191) ─────────────────────────────────
+
+/// Serve `responses` in order, capturing each request's raw bytes (headers +
+/// body), so a test can assert on what the client actually sent back.
+async fn serve_capture_seq(
+    responses: Vec<Vec<u8>>,
+    captured: Arc<StdMutex<Vec<Vec<u8>>>>,
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        for response in responses {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let raw = read_http_request(&mut stream).await;
+            captured.lock().unwrap().push(raw);
+            let _ = stream.write_all(&response).await;
+            let _ = stream.flush().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+fn inline_thinking_spec() -> ThinkingSpec {
+    ThinkingSpec {
+        format: ThinkingFormat::InlineTags,
+        replay: false,
+    }
+}
+
+#[tokio::test]
+async fn inline_think_stream_routes_reasoning_and_captures_a_block() {
+    // A parser-less qwen3.5-style stream: thinking arrives inline in
+    // `content`. With `thinking_format: inline_tags`, the span streams as
+    // Reasoning (never Text), the spoken answer as Text, and the round ends
+    // with one persisted `ContentPart::Reasoning` block.
+    let body = sse_body(&[
+        r#"{"choices":[{"delta":{"content":"<think>"}}]}"#,
+        r#"{"choices":[{"delta":{"content":"planning the edit"}}]}"#,
+        r#"{"choices":[{"delta":{"content":"</think>"}}]}"#,
+        r#"{"choices":[{"delta":{"content":"Done."}}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+    ]);
+    let captured: Arc<StdMutex<Vec<Vec<u8>>>> = Arc::new(StdMutex::new(Vec::new()));
+    let base_url = serve_capture_seq(vec![sse_response(&body)], captured.clone()).await;
+
+    let mut llm = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "qwen3.5",
+        None,
+        None,
+        fixed_model_concurrency(None),
+        None,
+        false,
+        fixed_thinking_spec(inline_thinking_spec()),
+        test_http_client(),
+    );
+    let messages = vec![Message::user("fix it")];
+    let req = LlmRequest {
+        system: "s",
+        model: None,
+        messages: &messages,
+        tools: &[],
+        generation: None,
+        cache_key: None,
+    };
+    let events: Vec<_> = llm
+        .stream(req)
+        .await
+        .expect("stream")
+        .map(|r| r.expect("ok"))
+        .collect()
+        .await;
+
+    let reasoning: String = events
+        .iter()
+        .filter_map(|e| match e {
+            LlmEvent::Reasoning(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasoning, "planning the edit");
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            LlmEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "Done.");
+    // The captured block — what a later request replays (or, with replay off,
+    // drops) — arrives on the stream before `Finish`.
+    assert!(events.iter().any(|e| matches!(
+        e,
+        LlmEvent::ContentBlock(ContentPart::Reasoning { provider, .. }) if provider == "openai"
+    )));
+    assert!(matches!(events.last(), Some(LlmEvent::Finish { .. })));
+}
+
+#[tokio::test]
+async fn second_request_never_carries_thinking_back_to_an_inline_model() {
+    // The full qwen3.5 breakage loop: round 1 answers with inline thinking,
+    // the history commits text + a captured Reasoning block, round 2 sends
+    // that history back. With the flag on and replay off, the second request
+    // body contains neither the think-span text nor any reasoning field.
+    let round1 = sse_body(&[
+        r#"{"choices":[{"delta":{"content":"<think>inner deliberation</think>"}}]}"#,
+        r#"{"choices":[{"delta":{"content":"Fixed."}}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+    ]);
+    let round2 = sse_body(&[r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#]);
+    let captured: Arc<StdMutex<Vec<Vec<u8>>>> = Arc::new(StdMutex::new(Vec::new()));
+    let base_url = serve_capture_seq(
+        vec![sse_response(&round1), sse_response(&round2)],
+        captured.clone(),
+    )
+    .await;
+
+    let mut llm = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "qwen3.5",
+        None,
+        None,
+        fixed_model_concurrency(None),
+        None,
+        false,
+        fixed_thinking_spec(inline_thinking_spec()),
+        test_http_client(),
+    );
+    // Round 1: just the prompt.
+    let msgs1 = vec![Message::user("fix it")];
+    let req1 = LlmRequest {
+        system: "s",
+        model: None,
+        messages: &msgs1,
+        tools: &[],
+        generation: None,
+        cache_key: None,
+    };
+    let events: Vec<_> = llm
+        .stream(req1)
+        .await
+        .expect("stream 1")
+        .map(|r| r.expect("ok"))
+        .collect()
+        .await;
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, LlmEvent::ContentBlock(ContentPart::Reasoning { .. }))));
+
+    // Round 2: the history the turn loop would have committed — spoken text
+    // plus the captured block, plus the next user prompt.
+    let history = vec![
+        Message::user("fix it"),
+        Message::assistant_content(
+            vec![
+                ContentPart::Reasoning {
+                    provider: "openai".into(),
+                    text: "inner deliberation".into(),
+                    data: serde_json::json!({"format": "inline_tags", "model": "qwen3.5"}),
+                },
+                ContentPart::text("Fixed."),
+            ],
+            vec![],
+        ),
+        Message::user("thanks"),
+    ];
+    let req2 = LlmRequest {
+        system: "s",
+        model: None,
+        messages: &history,
+        tools: &[],
+        generation: None,
+        cache_key: None,
+    };
+    let _ = llm
+        .stream(req2)
+        .await
+        .expect("stream 2")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = captured.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let second = String::from_utf8_lossy(&requests[1]).to_string();
+    assert!(
+        !second.contains("inner deliberation"),
+        "thinking must not be sent back: {second}"
+    );
+    assert!(
+        !second.contains("<think>"),
+        "think tags must not be sent back: {second}"
+    );
+    assert!(
+        !second.contains("reasoning_content"),
+        "replay is off — no reasoning field: {second}"
+    );
+    // The spoken answer itself does ride, as ordinary assistant text.
+    assert!(second.contains("Fixed."));
 }

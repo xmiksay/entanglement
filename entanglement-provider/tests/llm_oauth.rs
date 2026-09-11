@@ -17,7 +17,8 @@ use tokio::net::{TcpListener, TcpStream};
 
 use entanglement_provider::oauth::AccessTokenSource;
 use entanglement_provider::{
-    AnthropicLlm, GeminiLlm, HttpClient, Llm, LlmRequest, OpenAiLlm, RetryConfig,
+    fixed_thinking_spec, AnthropicLlm, GeminiLlm, HttpClient, Llm, LlmRequest, OpenAiLlm,
+    RetryConfig, ThinkingSpec,
 };
 
 fn test_http_client() -> HttpClient {
@@ -182,6 +183,7 @@ async fn openai_wire_sends_the_oauth_bearer_instead_of_the_static_key() {
         Arc::new(|_| None),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         test_http_client(),
     )
     .with_auth(source.clone());
@@ -210,6 +212,7 @@ async fn openai_wire_retries_a_401_once_with_a_forced_refresh() {
         Arc::new(|_| None),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         test_http_client(),
     )
     .with_auth(source.clone());
@@ -243,6 +246,7 @@ async fn openai_wire_second_401_is_a_terminal_error_not_a_loop() {
         Arc::new(|_| None),
         None,
         false,
+        fixed_thinking_spec(ThinkingSpec::default()),
         test_http_client(),
     )
     .with_auth(source.clone());

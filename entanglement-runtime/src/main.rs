@@ -826,6 +826,7 @@ fn openai_factory_for(
         catalog.model_concurrency_resolver(&entry.name),
         web_search,
         entry.prompt_cache_key,
+        catalog.thinking_spec_resolver(&entry.name),
         http_client.clone(),
     ))
 }

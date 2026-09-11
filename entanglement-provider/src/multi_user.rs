@@ -229,6 +229,7 @@ fn resolve_for_user(
                 model_concurrency,
                 web_search,
                 entry.prompt_cache_key,
+                ctx.catalog.thinking_spec_resolver(provider),
                 http_client.clone(),
             )
         }
@@ -347,6 +348,7 @@ mod tests {
                     max_output_tokens: None,
                     thinking_budget_tokens: None,
                     thinking_style: None,
+                    thinking_format: None,
                     replay_thinking: None,
                     default_reasoning_effort: None,
                     pricing: None,

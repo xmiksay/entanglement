@@ -34,7 +34,10 @@ use serde_yaml::Value;
 // 400-line file cap. The merge semantics themselves stay documented above,
 // where a reader of `Catalog` needs them.
 mod merge;
+mod thinking;
+
 use merge::{merge_value, providers_file_path};
+pub use thinking::{ThinkingFormat, ThinkingSpec, ThinkingStyle};
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
 
@@ -121,26 +124,6 @@ pub enum Wire {
     Gemini,
 }
 
-/// Which extended-thinking request shape a model accepts on the Anthropic wire.
-///
-/// Anthropic replaced the fixed-budget form with an adaptive one, and the two are
-/// mutually exclusive: the newer models reject `budget_tokens` outright. Which
-/// shape is legal is a per-model fact, so it lives in the catalog next to the
-/// other capability flags rather than being hardcoded in the client — a user can
-/// add a model to their `providers.yml` and pick the right shape with no code
-/// change, the same "catalog data, not hardcode" property `wire:` has (#118).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ThinkingStyle {
-    /// `thinking: {type: "enabled", budget_tokens: N}`. The default, so an
-    /// existing user `providers.yml` keeps working untouched.
-    #[default]
-    Budget,
-    /// `thinking: {type: "adaptive"}` plus `output_config.effort`. The model
-    /// decides how much to think; `budget_tokens` is rejected.
-    Adaptive,
-}
-
 /// One model plus its capability + pricing metadata.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,6 +150,14 @@ pub struct ModelEntry {
     /// [`ThinkingStyle::Budget`], preserving pre-existing behaviour.
     #[serde(default)]
     pub thinking_style: Option<ThinkingStyle>,
+    /// How this model emits thinking on the **OpenAI-compat** wire:
+    /// structured `reasoning`/`reasoning_content` delta fields (the default)
+    /// or inline `<think>…</think>` spans in `content` (ADR-0191 —
+    /// `thinking_format: inline_tags`, the qwen3.5-class parser-less-server
+    /// case; see [`ThinkingFormat`]). Only meaningful with `supports_thinking`;
+    /// ignored by the Anthropic/Gemini wires.
+    #[serde(default)]
+    pub thinking_format: Option<ThinkingFormat>,
     /// Whether captured thinking blocks are **sent back** to the provider on the
     /// next request. Only meaningful with `supports_thinking`.
     ///
@@ -277,23 +268,6 @@ impl ModelEntry {
             },
             reasoning_effort: self.default_reasoning_effort,
         }
-    }
-
-    /// Resolved [`ThinkingStyle`], defaulting to [`ThinkingStyle::Budget`]. Not
-    /// clamped by `supports_thinking`: with thinking off no `thinking` field is
-    /// emitted at all, so the style is simply never consulted.
-    pub fn resolved_thinking_style(&self) -> ThinkingStyle {
-        self.thinking_style.unwrap_or_default()
-    }
-
-    /// Whether thinking blocks replay to this model. `wire_default` is the
-    /// answer for a catalog that leaves `replay_thinking` unset — the calling
-    /// client knows its own wire, a [`ModelEntry`] does not. Clamped by
-    /// `supports_thinking` the way `thinking_budget_tokens` is in
-    /// [`generation_params`][Self::generation_params]: a model that cannot think
-    /// has nothing to replay.
-    pub fn replays_thinking(&self, wire_default: bool) -> bool {
-        self.supports_thinking && self.replay_thinking.unwrap_or(wire_default)
     }
 }
 

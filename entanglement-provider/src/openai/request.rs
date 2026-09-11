@@ -6,6 +6,10 @@ use crate::web_search::WebSearchConfig;
 use crate::{ContentPart, GenerationParams, ImageSource, Message, MessageRole, ToolSpec};
 use serde_json::{json, Value};
 
+/// The provider tag this wire stamps into captured blocks
+/// ([`ContentPart::Reasoning::provider`], ADR-0160) and matches on replay.
+const WIRE_NAME: &str = "openai";
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_body(
     model: &str,
@@ -15,12 +19,13 @@ pub(super) fn build_body(
     generation: Option<GenerationParams>,
     web_search: Option<&WebSearchConfig>,
     cache_key: Option<&str>,
+    thinking: crate::ThinkingSpec,
 ) -> Value {
     let mut msgs = Vec::with_capacity(messages.len() + 1);
     if !system.is_empty() {
         msgs.push(json!({ "role": "system", "content": system }));
     }
-    msgs.extend(convert_messages(messages));
+    msgs.extend(convert_messages(messages, thinking));
     let mut body = json!({
         "model": model,
         "messages": msgs,
@@ -67,7 +72,27 @@ pub(super) fn build_body(
 /// Map entanglement's `Message` history to OpenAI chat format. Tool results become one
 /// `role: "tool"` message each (with its `tool_call_id`); assistant tool calls
 /// become a `tool_calls` array carrying the raw JSON argument string.
-pub(super) fn convert_messages(messages: &[Message]) -> Vec<Value> {
+///
+/// `thinking` (ADR-0191) governs the two thinking rails on this wire:
+///
+/// - **Capture-side strip (unconditional for inline-tags models).** An
+///   assistant message may carry a legacy `<think>…</think>` span inside its
+///   *text* — history committed before the flag existed, or a block this same
+///   turn minted before capture routing was enabled. When the model declared
+///   `thinking_format: inline_tags`, [`ThinkSplitter`] routes new spans to the
+///   reasoning rail at capture, but anything already sitting in text is
+///   stripped here too (the safety net): replaying it is exactly the qwen3.5
+///   breakage, whether it came from this client or was injected by a resumed
+///   older session. A span's own [`ContentPart::Reasoning`] block (below)
+///   carries the reasoning when replay is on.
+/// - **Replay (gated by `thinking.replay`).** A captured
+///   [`ContentPart::Reasoning`] block minted by this wire renders as the
+///   assistant message's `reasoning_content` field (the field z.ai-style
+///   endpoints read back); a block minted by another provider drops — the
+///   ADR-0160 "opaque to anyone but its author" rule. `replay: false` drops
+///   the block without degrading it to text.
+pub(super) fn convert_messages(messages: &[Message], thinking: crate::ThinkingSpec) -> Vec<Value> {
+    let strip_inline = thinking.format == crate::ThinkingFormat::InlineTags;
     let mut out = Vec::with_capacity(messages.len());
     for m in messages {
         match m.role {
@@ -75,8 +100,39 @@ pub(super) fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 out.push(json!({ "role": "user", "content": openai_content(&m.content) }));
             }
             MessageRole::Assistant => {
-                let mut entry =
-                    json!({ "role": "assistant", "content": assistant_text(&m.content) });
+                let mut entry = json!({
+                    "role": "assistant",
+                    "content": assistant_text(&m.content, strip_inline),
+                });
+                if strip_inline {
+                    // An assistant turn whose entire text was a think-span
+                    // (tool-calls-only round with reasoning) must not carry an
+                    // empty string into `content` alongside `tool_calls` —
+                    // some endpoints treat that as malformed. `null` is the
+                    // canonical OpenAI shape for "no text".
+                    if entry["content"].as_str() == Some("") && !m.tool_calls.is_empty() {
+                        entry["content"] = Value::Null;
+                    }
+                }
+                if thinking.replay {
+                    // One block per message is the wire shape (`reasoning_content`
+                    // is a single string); concatenate if several were captured.
+                    let reasoning: Vec<&str> = m
+                        .content
+                        .iter()
+                        .filter_map(|p| match p {
+                            ContentPart::Reasoning { provider, text, .. }
+                                if provider == WIRE_NAME =>
+                            {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if !reasoning.is_empty() {
+                        entry["reasoning_content"] = json!(reasoning.join("\n"));
+                    }
+                }
                 if !m.tool_calls.is_empty() {
                     let calls: Vec<Value> = m
                         .tool_calls
@@ -157,10 +213,11 @@ fn openai_content(content: &[ContentPart]) -> Value {
             ContentPart::ProviderSearch { summary, .. } => {
                 json!({ "type": "text", "text": summary })
             }
-            // Chat Completions has no assistant-side reasoning field, and the
-            // endpoints that emit `reasoning_content` do not accept it back —
-            // rendering it as text would put the model's thinking into history
-            // as if it had been said aloud.
+            // A captured Reasoning block never rides the user/tool message
+            // content arrays: replay is the assistant message's
+            // `reasoning_content` field (ADR-0191), not a block here, and
+            // rendering it as text would put the model's thinking into
+            // history as if it had been said aloud.
             ContentPart::Reasoning { .. } => json!(null),
         })
         .filter(|b| !b.is_null())
@@ -174,7 +231,13 @@ fn openai_content(content: &[ContentPart]) -> Value {
 /// (by this provider or, after a live `/model` switch, another one) would
 /// silently vanish from the request OpenAI-compat sends, since an assistant
 /// message here is a plain string with no block-array form.
-fn assistant_text(content: &[ContentPart]) -> String {
+///
+/// `strip_inline` (set when the model declared
+/// `thinking_format: inline_tags`, ADR-0191) removes `<think>…</think>` spans
+/// from the text before rendering — the replay-side safety net for history
+/// committed before the flag existed (capture-side routing already keeps new
+/// spans out of text). An unterminated span strips to the end of the text.
+fn assistant_text(content: &[ContentPart], strip_inline: bool) -> String {
     let mut text = crate::content_text(content);
     for p in content {
         if let ContentPart::ProviderSearch { summary, .. } = p {
@@ -184,8 +247,33 @@ fn assistant_text(content: &[ContentPart]) -> String {
             text.push_str(summary);
         }
     }
+    if strip_inline {
+        text = strip_think_spans(&text);
+    }
     text
 }
+
+/// Remove complete `<think>…</think>` spans and everything from an
+/// unterminated opener to the end (a cut stream's thinking must not replay as
+/// speech). A stray closer with no opener is kept: dropping it would silently
+/// eat model output.
+fn strip_think_spans(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(OPEN_TAG) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + OPEN_TAG.len()..];
+        match rest.find(CLOSE_TAG) {
+            Some(end) => rest = &rest[end + CLOSE_TAG.len()..],
+            None => return out, // unterminated: thinking to end-of-text
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+const OPEN_TAG: &str = "<think>";
+const CLOSE_TAG: &str = "</think>";
 
 fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
     tools

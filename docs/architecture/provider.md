@@ -81,10 +81,12 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
   exist, but the *default* base per provider now comes from the catalog (below);
   `openai_factory(base, key, model, rpm, concurrency, model_concurrency,
-  web_search)` builds an `LlmFactory`. Split into `openai/{mod,request,sse}.rs`
+  web_search, prompt_cache_key, thinking_spec)` builds an `LlmFactory`, the
+  `thinking_spec` resolver carrying the model's inline-think handling
+  (ADR-0191). Split into `openai/{mod,request,sse,think}.rs`
   (#481) to stay under the 400-line file cap — `mod.rs` owns the client +
   streaming loop, `request.rs` request-body construction, `sse.rs` chunk
-  parsing.
+  parsing, `think.rs` the `<think>` splitter.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
   fragments). `anthropic_factory(base_url, key, model, rpm, concurrency,
@@ -589,7 +591,8 @@ z.ai's `web_search_prime`/`web_reader`/`zread` this way, key-gated on
 interpretation — the provider crate only carries the data. `ModelEntry`
 carries capability flags (`supports_thinking`,
 `supports_temperature`, `default_temperature`, `max_output_tokens`,
-`thinking_budget_tokens`, `thinking_style`, `replay_thinking`) and **pricing**
+`thinking_budget_tokens`, `thinking_style`, `thinking_format`,
+`replay_thinking`) and **pricing**
 (USD/M tokens:
 `input`/`output`/`cached_input`/`cache_write`, all optional). Lookups:
 `Catalog::{builtin,load,load_from}`, `provider(name)`, `model(provider,id)`,
@@ -658,7 +661,23 @@ session log.
 | --- | --- | --- |
 | Anthropic | `thinking` assembled across `thinking_delta` + `signature_delta`; `redacted_thinking` whole | verbatim, **first** in the block list, **last** assistant message only |
 | Gemini | thought-text parts | none — the load-bearing `thoughtSignature` round-trips via `ToolCall::provider_meta` (ADR-0085) |
-| OpenAI-compat | none on the wire | none |
+| OpenAI-compat | structured `reasoning`/`reasoning_content` deltas are display-only; a `thinking_format: inline_tags` model's `<think>…</think>` spans split out of `content` into a captured block (ADR-0191) | as the assistant message's `reasoning_content` field, gated by `replay_thinking` (default **off** on this wire); legacy spans already in history text are stripped regardless |
+
+**Inline think-tags (`ModelEntry::thinking_format`, ADR-0191).** The one wire
+where thinking can arrive *as assistant speech*: a parser-less OpenAI-compat
+server inlines a reasoning model's thinking in `delta.content` between
+`<think>`/`</think>` tags. Declaring `thinking_format: inline_tags` on the
+model's catalog entry routes those spans to the reasoning rail at capture (a
+streaming state machine in `openai/think.rs` that survives tags straddling
+network chunks), captures one `ContentPart::Reasoning { provider: "openai" }`
+block for the round, and strips any `<think>` spans already sitting in history
+text before they are sent back — so a session written before the flag exists
+is fixed retroactively, without rewriting its log. Replay of the captured
+block is the same `replay_thinking` knob (off by default on this wire —
+nothing is sent back, the reported qwen3.5 failure mode); a block minted by
+another provider drops rather than degrading to text. The format+replay pair
+resolves per request (`Catalog::thinking_spec_resolver`, the #550 property)
+so a `model:`-only pin under a different model id behaves correctly.
 
 Three rules hold regardless of the flag: a block whose `provider` differs from
 the target renders **nothing** (stricter than `ProviderSearch`'s summary

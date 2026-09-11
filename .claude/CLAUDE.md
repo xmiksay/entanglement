@@ -91,7 +91,10 @@ generation params gated onto every `LlmRequest` (incl. `reasoning_effort`,
 and the two extended-thinking knobs `thinking_style` (which Anthropic request
 shape — the adaptive form is mandatory on current models, the fixed-budget form
 400s there) and `replay_thinking` (whether captured thinking blocks are sent
-back; [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)).
+back; [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)), plus
+`thinking_format` (how a model emits thinking on the OpenAI-compat wire —
+`inline_tags` for the parser-less `<think>…</think>` servers,
+[ADR-0191](../docs/adr/0191-inline-think-tags-catalog-format.md)).
 Precedence: **env > user YAML > embedded defaults**.
 
 Resilience is **per-endpoint** (keyed by a normalized base URL + a stable
