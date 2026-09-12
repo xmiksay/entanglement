@@ -35,6 +35,14 @@
 # Budgets are left unset here so thinking stays off until you opt in — add
 # `thinking_budget_tokens: <n>` to a thinking-capable model in your user file.
 #
+# `thinking_format` (ADR-0191, OpenAI-compat only) says how a model emits its
+# thinking: `fields` (the default — structured `reasoning`/`reasoning_content`
+# delta fields, display-only) or `inline_tags` (`<think>…</think>` spans inline
+# in `content`, the parser-less-server case; those spans route to the reasoning
+# rail and never replay as assistant text). Unset everywhere in the embedded
+# defaults — set it per model in your user `providers.yml` when serving such a
+# model (e.g. a local qwen3.5).
+#
 # Provider order is also the key auto-detect priority (z.ai first).
 
 providers:

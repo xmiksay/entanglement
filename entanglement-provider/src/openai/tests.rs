@@ -10,8 +10,8 @@ use super::sse::{
 use super::PendingTool;
 use crate::web_search::WebSearchConfig;
 use crate::{
-    ContentPart, GenerationParams, LlmEvent, Message, MessageRole, StopReason, ToolCall, ToolSpec,
-    Usage,
+    ContentPart, GenerationParams, LlmEvent, Message, MessageRole, StopReason, ThinkingSpec,
+    ToolCall, ToolSpec, Usage,
 };
 
 fn msg(role: MessageRole, text: &str) -> Message {
@@ -39,6 +39,7 @@ fn body_carries_prompt_cache_key_when_given() {
         None,
         None,
         Some("s-abc123"),
+        ThinkingSpec::default(),
     );
     assert_eq!(body["prompt_cache_key"], "s-abc123");
 }
@@ -53,6 +54,7 @@ fn body_prepends_system_message_and_omits_tools_when_empty() {
         None,
         None,
         None,
+        ThinkingSpec::default(),
     );
     assert_eq!(body["stream"], true);
     assert_eq!(body["stream_options"]["include_usage"], true);
@@ -71,7 +73,7 @@ fn body_prepends_system_message_and_omits_tools_when_empty() {
 
 #[test]
 fn text_only_user_content_stays_a_plain_string() {
-    let out = convert_messages(&[msg(MessageRole::User, "hi")]);
+    let out = convert_messages(&[msg(MessageRole::User, "hi")], ThinkingSpec::default());
     assert_eq!(out[0]["content"], "hi");
 }
 
@@ -81,7 +83,7 @@ fn user_image_renders_data_url_block() {
         ContentPart::text("look"),
         ContentPart::image("image/png", "AAAA"),
     ]);
-    let out = convert_messages(&[user]);
+    let out = convert_messages(&[user], ThinkingSpec::default());
     let content = &out[0]["content"];
     assert_eq!(content[0], json!({ "type": "text", "text": "look" }));
     assert_eq!(
@@ -96,7 +98,7 @@ fn tool_result_with_image_appends_a_user_image_message() {
     // is handed to the model as a trailing `role: "user"` message with an
     // `image_url` block; the tool message keeps a text placeholder.
     let tool = Message::tool_content("call-1", vec![ContentPart::image("image/png", "AAAA")]);
-    let out = convert_messages(&[tool]);
+    let out = convert_messages(&[tool], ThinkingSpec::default());
     assert_eq!(out.len(), 2);
     assert_eq!(out[0]["role"], "tool");
     assert_eq!(out[0]["tool_call_id"], "call-1");
@@ -114,7 +116,7 @@ fn tool_result_with_image_appends_a_user_image_message() {
 #[test]
 fn text_only_tool_result_stays_a_single_string_message() {
     let tool = Message::tool("call-1", "done");
-    let out = convert_messages(&[tool]);
+    let out = convert_messages(&[tool], ThinkingSpec::default());
     assert_eq!(out.len(), 1);
     assert_eq!(out[0]["role"], "tool");
     assert_eq!(out[0]["content"], "done");
@@ -131,6 +133,7 @@ fn body_includes_tools_with_parameters_schema() {
         None,
         None,
         None,
+        ThinkingSpec::default(),
     );
     assert_eq!(body["tools"][0]["type"], "function");
     assert_eq!(body["tools"][0]["function"]["name"], "greet");
@@ -153,6 +156,7 @@ fn generation_params_set_temperature_and_max_tokens() {
         }),
         None,
         None,
+        ThinkingSpec::default(),
     );
     assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
     assert_eq!(body["max_tokens"], 2048);
@@ -174,6 +178,7 @@ fn reasoning_effort_passes_through_verbatim_lowercase() {
         }),
         None,
         None,
+        ThinkingSpec::default(),
     );
     assert_eq!(body["reasoning_effort"], "high");
 }
@@ -188,6 +193,7 @@ fn generation_params_omit_unset_knobs() {
         Some(GenerationParams::default()),
         None,
         None,
+        ThinkingSpec::default(),
     );
     assert!(body.get("temperature").is_none());
     assert!(body.get("max_tokens").is_none());
@@ -196,7 +202,7 @@ fn generation_params_omit_unset_knobs() {
 #[test]
 fn tool_results_become_one_message_each() {
     let msgs = vec![Message::tool("a", "r1"), Message::tool("b", "r2")];
-    let out = convert_messages(&msgs);
+    let out = convert_messages(&msgs, ThinkingSpec::default());
     // Unlike Anthropic, two tool results are two messages, not one.
     assert_eq!(out.len(), 2);
     assert_eq!(out[0]["role"], "tool");
@@ -216,7 +222,7 @@ fn assistant_with_tool_calls_serializes_arguments() {
             provider_meta: None,
         }],
     )];
-    let out = convert_messages(&msgs);
+    let out = convert_messages(&msgs, ThinkingSpec::default());
     assert_eq!(out[0]["role"], "assistant");
     assert_eq!(out[0]["content"], "thinking");
     let call = &out[0]["tool_calls"][0];
@@ -228,14 +234,14 @@ fn assistant_with_tool_calls_serializes_arguments() {
 #[test]
 fn text_delta_yields_text() {
     let data = json!({ "choices": [{ "delta": { "content": "hel" } }] });
-    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
+    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default(), None).unwrap();
     assert_eq!(evs, vec![LlmEvent::Text("hel".into())]);
 }
 
 #[test]
 fn empty_content_delta_emits_nothing() {
     let data = json!({ "choices": [{ "delta": { "content": "" } }] });
-    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
+    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default(), None).unwrap();
     assert!(evs.is_empty());
 }
 
@@ -255,10 +261,10 @@ fn tool_calls_assemble_across_deltas_and_flush_via_flush_pending_tools() {
     ] } }] });
     let d3 = json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] });
 
-    let _ = handle_chunk(&d1, &mut tools, &mut Usage::default()).unwrap();
+    let _ = handle_chunk(&d1, &mut tools, &mut Usage::default(), None).unwrap();
     assert!(tools.contains_key(&0)); // assembled but not yet flushed
-    let _ = handle_chunk(&d2, &mut tools, &mut Usage::default()).unwrap();
-    let evs = handle_chunk(&d3, &mut tools, &mut Usage::default()).unwrap();
+    let _ = handle_chunk(&d2, &mut tools, &mut Usage::default(), None).unwrap();
+    let evs = handle_chunk(&d3, &mut tools, &mut Usage::default(), None).unwrap();
     assert!(evs.is_empty(), "finish_reason chunk itself flushes nothing");
     assert!(
         tools.contains_key(&0),
@@ -329,7 +335,7 @@ fn tool_arg_fragments_stream_as_deltas_before_the_assembled_call() {
         { "index": 0, "function": { "arguments": "\"sam\"}" } }
     ] } }] });
 
-    let e1 = handle_chunk(&d1, &mut tools, &mut Usage::default()).unwrap();
+    let e1 = handle_chunk(&d1, &mut tools, &mut Usage::default(), None).unwrap();
     assert_eq!(
         e1,
         vec![LlmEvent::ToolCallDelta {
@@ -338,7 +344,7 @@ fn tool_arg_fragments_stream_as_deltas_before_the_assembled_call() {
             delta: "{\"nm\":".into(),
         }]
     );
-    let e2 = handle_chunk(&d2, &mut tools, &mut Usage::default()).unwrap();
+    let e2 = handle_chunk(&d2, &mut tools, &mut Usage::default(), None).unwrap();
     assert_eq!(
         e2,
         vec![LlmEvent::ToolCallDelta {
@@ -368,7 +374,7 @@ fn empty_arg_fragment_emits_no_delta() {
         { "index": 0, "id": "c1", "type": "function",
           "function": { "name": "greet", "arguments": "" } }
     ] } }] });
-    let evs = handle_chunk(&d, &mut tools, &mut Usage::default()).unwrap();
+    let evs = handle_chunk(&d, &mut tools, &mut Usage::default(), None).unwrap();
     assert!(evs.is_empty(), "no args ⇒ no delta: {evs:?}");
 }
 
@@ -382,8 +388,8 @@ fn multiple_tools_flush_in_index_order() {
           "function": { "name": "a", "arguments": "{}" } }
     ] } }] });
     let d2 = json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] });
-    let _ = handle_chunk(&d1, &mut tools, &mut Usage::default()).unwrap();
-    let _ = handle_chunk(&d2, &mut tools, &mut Usage::default()).unwrap();
+    let _ = handle_chunk(&d1, &mut tools, &mut Usage::default(), None).unwrap();
+    let _ = handle_chunk(&d2, &mut tools, &mut Usage::default(), None).unwrap();
     let mut evs = Vec::new();
     flush_pending_tools(&mut tools, &mut evs);
     assert_eq!(evs.len(), 2);
@@ -413,7 +419,7 @@ fn usage_is_captured_from_chunk() {
     let data = json!({ "choices": [], "usage": {
         "prompt_tokens": 42, "completion_tokens": 7, "total_tokens": 49
     } });
-    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut usage).unwrap();
+    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut usage, None).unwrap();
     assert!(evs.is_empty()); // no content/tool event from a usage-only chunk
     assert_eq!(usage.input_tokens, Some(42));
     assert_eq!(usage.output_tokens, Some(7));
@@ -429,7 +435,7 @@ fn cached_prompt_tokens_split_out_of_input() {
         "prompt_tokens": 100, "completion_tokens": 8, "total_tokens": 108,
         "prompt_tokens_details": { "cached_tokens": 30 }
     } });
-    let _ = handle_chunk(&data, &mut BTreeMap::new(), &mut usage).unwrap();
+    let _ = handle_chunk(&data, &mut BTreeMap::new(), &mut usage, None).unwrap();
     assert_eq!(usage.input_tokens, Some(70));
     assert_eq!(usage.cached_input_tokens, Some(30));
     assert_eq!(usage.output_tokens, Some(8));
@@ -439,7 +445,7 @@ fn cached_prompt_tokens_split_out_of_input() {
 fn stop_finish_reason_does_not_flush_or_error() {
     let mut tools = BTreeMap::new();
     let data = json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] });
-    let evs = handle_chunk(&data, &mut tools, &mut Usage::default()).unwrap();
+    let evs = handle_chunk(&data, &mut tools, &mut Usage::default(), None).unwrap();
     assert!(evs.is_empty());
     assert!(tools.is_empty());
 }
@@ -451,7 +457,7 @@ fn stream_without_finish_reason_flushes_pending_tools() {
         { "index": 0, "id": "c1", "type": "function",
           "function": { "name": "greet", "arguments": "{\"nm\":\"sam\"}" } }
     ] } }] });
-    let _ = handle_chunk(&d1, &mut tools, &mut Usage::default()).unwrap();
+    let _ = handle_chunk(&d1, &mut tools, &mut Usage::default(), None).unwrap();
     assert!(tools.contains_key(&0), "tool should be assembled");
 
     // Simulate stream ending without explicit finish_reason - this would be
@@ -471,6 +477,7 @@ fn body_omits_web_search_tool_without_config() {
         None,
         None,
         None,
+        ThinkingSpec::default(),
     );
     assert!(body.get("tools").is_none());
 }
@@ -490,6 +497,7 @@ fn body_pushes_web_search_tool_when_configured() {
         None,
         Some(&ws),
         None,
+        ThinkingSpec::default(),
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -518,6 +526,7 @@ fn web_search_tool_rides_alongside_function_tools() {
         None,
         Some(&ws),
         None,
+        ThinkingSpec::default(),
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 2);
@@ -539,7 +548,7 @@ fn web_search_array_surfaces_as_reasoning_and_content_block() {
         { "title": "Rust async", "link": "https://docs.rs/async" },
         { "title": "Tokio", "url": "https://tokio.rs" },
     ] });
-    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
+    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default(), None).unwrap();
     assert_eq!(
         evs,
         vec![
@@ -557,7 +566,7 @@ fn web_search_array_surfaces_as_reasoning_and_content_block() {
 #[test]
 fn chunk_without_web_search_array_emits_no_reasoning() {
     let data = json!({ "choices": [{ "delta": { "content": "hi" } }] });
-    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
+    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default(), None).unwrap();
     assert_eq!(evs, vec![LlmEvent::Text("hi".into())]);
 }
 
@@ -570,7 +579,7 @@ fn web_search_array_nested_under_delta_is_not_scanned() {
     let data = json!({ "choices": [{ "delta": { "content": "hi", "web_search": [
         { "title": "Rust async", "link": "https://docs.rs/async" },
     ] } }] });
-    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default()).unwrap();
+    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default(), None).unwrap();
     assert_eq!(evs, vec![LlmEvent::Text("hi".into())]);
 }
 
@@ -586,7 +595,7 @@ fn assistant_provider_search_block_renders_as_appended_text() {
         ],
         vec![],
     );
-    let out = convert_messages(&[assistant]);
+    let out = convert_messages(&[assistant], ThinkingSpec::default());
     assert_eq!(out[0]["content"], "found it\n\n[web_search] rust");
 }
 
@@ -602,9 +611,14 @@ fn done_terminates_before_trailing_junk_is_ever_parsed() {
     let mut tools = BTreeMap::new();
     let mut usage = Usage::default();
     let mut seen_finish_reason = None;
-    let (events, done) =
-        drain_available_frames(&mut frames, &mut tools, &mut usage, &mut seen_finish_reason)
-            .unwrap();
+    let (events, done) = drain_available_frames(
+        &mut frames,
+        &mut tools,
+        &mut usage,
+        &mut seen_finish_reason,
+        None,
+    )
+    .unwrap();
 
     assert_eq!(events, vec![LlmEvent::Text("hi".into())]);
     assert!(done, "must report the stream as terminated at [DONE]");
@@ -623,9 +637,14 @@ fn trailing_unterminated_frame_with_finish_reason_yields_confident_stop() {
     let mut tools = BTreeMap::new();
     let mut usage = Usage::default();
     let mut seen_finish_reason = None;
-    let (events, done) =
-        drain_available_frames(&mut frames, &mut tools, &mut usage, &mut seen_finish_reason)
-            .unwrap();
+    let (events, done) = drain_available_frames(
+        &mut frames,
+        &mut tools,
+        &mut usage,
+        &mut seen_finish_reason,
+        None,
+    )
+    .unwrap();
     assert!(events.is_empty(), "frame isn't newline-terminated yet");
     assert!(!done);
 
@@ -637,7 +656,7 @@ fn trailing_unterminated_frame_with_finish_reason_yields_confident_stop() {
     match parse_sse_line(&trailing) {
         SseEvent::Data(data) => {
             note_finish_reason(&data, &mut seen_finish_reason);
-            handle_chunk(&data, &mut tools, &mut usage).unwrap();
+            handle_chunk(&data, &mut tools, &mut usage, None).unwrap();
         }
         _ => panic!("trailing frame should parse as a data event"),
     }
@@ -655,4 +674,147 @@ fn trailing_unterminated_frame_with_finish_reason_yields_confident_stop() {
         None => None,
     };
     assert_eq!(stop_reason, Some(StopReason::EndTurn));
+}
+
+// ── inline think-tags: capture routing + replay shaping (ADR-0191) ─────────
+
+fn inline_spec() -> ThinkingSpec {
+    ThinkingSpec {
+        format: crate::ThinkingFormat::InlineTags,
+        replay: false,
+    }
+}
+
+#[test]
+fn inline_tags_split_content_into_reasoning_and_text_events() {
+    // The capture side: a qwen3.5-style chunk stream inlines thinking in
+    // `delta.content`; with the flag on, the span streams as Reasoning and
+    // only the spoken remainder as Text.
+    let mut splitter = super::think::ThinkSplitter::new();
+    let mut tools = BTreeMap::new();
+    let d = json!({ "choices": [{ "delta": { "content": "<think>consider</think>Hello!" } }] });
+    let evs = handle_chunk(&d, &mut tools, &mut Usage::default(), Some(&mut splitter)).unwrap();
+    assert_eq!(
+        evs,
+        vec![
+            LlmEvent::Reasoning("consider".into()),
+            LlmEvent::Text("Hello!".into()),
+        ]
+    );
+}
+
+#[test]
+fn fields_format_keeps_content_verbatim_as_text() {
+    // The default (spec None ⇒ no splitter): byte-identical pre-ADR-0191
+    // behavior — tags included, reasoning fields still parsed separately.
+    let d =
+        json!({ "choices": [{ "delta": { "content": "<think>x</think>ok", "reasoning": "r" } }] });
+    let evs = handle_chunk(&d, &mut BTreeMap::new(), &mut Usage::default(), None).unwrap();
+    assert_eq!(
+        evs,
+        vec![
+            LlmEvent::Text("<think>x</think>ok".into()),
+            LlmEvent::Reasoning("r".into()),
+        ]
+    );
+}
+
+#[test]
+fn legacy_think_span_in_history_is_stripped_on_replay() {
+    // The replay-side safety net: history committed before the flag existed
+    // carries the span inside assistant text. With the flag on, the request
+    // never carries it back.
+    let assistant = Message::assistant("<think>secret plan</think>Here you go", vec![]);
+    let a = assistant.clone();
+    let out = convert_messages(&[a], inline_spec());
+    assert_eq!(out[0]["content"], "Here you go");
+    // Off (the default): untouched, preserving today's behavior.
+    let out = convert_messages(&[assistant], ThinkingSpec::default());
+    assert_eq!(out[0]["content"], "<think>secret plan</think>Here you go");
+}
+
+#[test]
+fn think_only_assistant_turn_with_tool_calls_uses_null_content() {
+    // A tool-calls-only round whose whole text was one think-span: the strip
+    // leaves an empty string, which becomes `null` alongside `tool_calls`.
+    let call = ToolCall::new("call-1", "read", r#"{"path":"x"}"#);
+    let assistant = Message::assistant("<think>hmm</think>", vec![call]);
+    let out = convert_messages(&[assistant], inline_spec());
+    assert_eq!(out[0]["content"], serde_json::Value::Null);
+    assert!(out[0]["tool_calls"].is_array());
+}
+
+#[test]
+fn unterminated_think_span_in_history_strips_to_end() {
+    // A stream cut mid-thought committed "…<think>half" — nothing after the
+    // opener may replay as speech.
+    let assistant = Message::assistant("Sure.<think>half-way", vec![]);
+    let out = convert_messages(&[assistant], inline_spec());
+    assert_eq!(out[0]["content"], "Sure.");
+}
+
+#[test]
+fn captured_reasoning_block_replays_as_reasoning_content_when_on() {
+    // The opt-in replay path: a captured block (minted by this wire) rides as
+    // the assistant message's `reasoning_content`, and its text stays out of
+    // `content`.
+    let assistant = Message::assistant_content(
+        vec![
+            ContentPart::reasoning("openai", "deliberation", json!({"format":"inline_tags"})),
+            ContentPart::text("Answer."),
+        ],
+        vec![],
+    );
+    let on = ThinkingSpec {
+        format: crate::ThinkingFormat::InlineTags,
+        replay: true,
+    };
+    let a = assistant.clone();
+    let out = convert_messages(&[a], on);
+    assert_eq!(out[0]["reasoning_content"], "deliberation");
+    assert_eq!(out[0]["content"], "Answer.");
+    // Off: no `reasoning_content`, and the block never degrades to text
+    // (ADR-0160's rule).
+    let out = convert_messages(&[assistant], inline_spec());
+    assert!(out[0].get("reasoning_content").is_none());
+    assert_eq!(out[0]["content"], "Answer.");
+}
+
+#[test]
+fn foreign_reasoning_block_never_replays_on_the_openai_wire() {
+    // A block minted by another provider (a live /model switch) is opaque
+    // here — dropped, not degraded (ADR-0160's provider-match gate).
+    let assistant = Message::assistant_content(
+        vec![
+            ContentPart::reasoning("anthropic", "sig-only", json!({"signature":"s"})),
+            ContentPart::text("Hi."),
+        ],
+        vec![],
+    );
+    let on = ThinkingSpec {
+        format: crate::ThinkingFormat::InlineTags,
+        replay: true,
+    };
+    let out = convert_messages(&[assistant], on);
+    assert!(out[0].get("reasoning_content").is_none());
+    assert_eq!(out[0]["content"], "Hi.");
+}
+
+#[test]
+fn multiple_captured_blocks_join_into_one_reasoning_field() {
+    let assistant = Message::assistant_content(
+        vec![
+            ContentPart::reasoning("openai", "a", json!({})),
+            ContentPart::text("mid"),
+            ContentPart::reasoning("openai", "b", json!({})),
+        ],
+        vec![],
+    );
+    let on = ThinkingSpec {
+        format: crate::ThinkingFormat::InlineTags,
+        replay: true,
+    };
+    let out = convert_messages(&[assistant], on);
+    assert_eq!(out[0]["reasoning_content"], "a\nb");
+    assert_eq!(out[0]["content"], "mid");
 }

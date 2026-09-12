@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use crate::{ContentPart, LlmEvent, Usage};
 use serde_json::Value;
 
+use super::think::ThinkSplitter;
 use super::PendingTool;
 
 /// The outcome of parsing one already-delimited SSE line.
@@ -54,21 +55,25 @@ pub(super) fn note_finish_reason(data: &Value, seen: &mut Option<String>) {
 /// without draining any further frames still sitting in the buffer, so the
 /// caller can tell "the stream is over" from "there's more to flush at EOF".
 /// Pulled out of `stream()`'s `try_stream!` block so it is plain, synchronous,
-/// and unit-testable (#483).
+/// and unit-testable (#483). `think` routes `delta.content` through the
+/// inline-tags splitter when the request's model declared
+/// `thinking_format: inline_tags` (ADR-0191).
 pub(super) fn drain_available_frames(
     frames: &mut crate::sse_frame::SseFrameBuffer,
     tools: &mut BTreeMap<u32, PendingTool>,
     usage: &mut Usage,
     seen_finish_reason: &mut Option<String>,
+    think: Option<&mut ThinkSplitter>,
 ) -> anyhow::Result<(Vec<LlmEvent>, bool)> {
     let mut out = Vec::new();
+    let mut think = think;
     while let Some(line) = frames.next_frame() {
         match parse_sse_line(&line) {
             SseEvent::Done => return Ok((out, true)),
             SseEvent::Skip => {}
             SseEvent::Data(data) => {
                 note_finish_reason(&data, seen_finish_reason);
-                out.extend(handle_chunk(&data, tools, usage)?);
+                out.extend(handle_chunk(&data, tools, usage, think.as_deref_mut())?);
             }
         }
     }
@@ -81,10 +86,18 @@ pub(super) fn drain_available_frames(
 /// the caller keeps assembling in `tools` and flushes once, with JSON
 /// validation, after the stream ends (`flush_pending_tools`) so there is a
 /// single validating flush path instead of two that can disagree (#445).
+///
+/// `think`, when `Some`, routes `delta.content` through the inline-think-tags
+/// splitter (ADR-0191): reasoning spans stream as [`LlmEvent::Reasoning`],
+/// only the model's spoken text as [`LlmEvent::Text`]. `None` is the
+/// pre-splitter behavior — `content` is text, `reasoning`/`reasoning_content`
+/// deltas are reasoning — byte-identical for every model that did not declare
+/// `thinking_format: inline_tags`.
 pub(super) fn handle_chunk(
     data: &Value,
     tools: &mut BTreeMap<u32, PendingTool>,
     usage: &mut Usage,
+    think: Option<&mut ThinkSplitter>,
 ) -> Result<Vec<LlmEvent>, anyhow::Error> {
     let mut out = Vec::new();
 
@@ -125,7 +138,20 @@ pub(super) fn handle_chunk(
     if let Some(delta) = choice.get("delta") {
         if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
             if !text.is_empty() {
-                out.push(LlmEvent::Text(text.to_string()));
+                match think {
+                    Some(splitter) => {
+                        // Inline-tags model (ADR-0191): route think-spans to
+                        // the reasoning rail, keep only spoken text.
+                        let (reasoning, spoken) = splitter.push(text);
+                        if !reasoning.is_empty() {
+                            out.push(LlmEvent::Reasoning(reasoning));
+                        }
+                        if !spoken.is_empty() {
+                            out.push(LlmEvent::Text(spoken));
+                        }
+                    }
+                    None => out.push(LlmEvent::Text(text.to_string())),
+                }
             }
         }
         if let Some(text) = delta.get("reasoning_content").and_then(|v| v.as_str()) {

@@ -377,6 +377,19 @@ pub fn fixed_model_concurrency(cap: Option<usize>) -> ModelConcurrencyResolver {
     std::sync::Arc::new(move |_: &str| cap)
 }
 
+/// Resolves a model id to the OpenAI-wire thinking handling ([`crate::
+/// ThinkingSpec`], ADR-0191), re-run **on every request** — the same #550
+/// property as [`ModelConcurrencyResolver`]: a `model:`-only profile pin can
+/// send a request under a different model than the client's construction-time
+/// `default_model`, and that actual model's `thinking_format` must win.
+pub type ThinkingSpecResolver = std::sync::Arc<dyn Fn(&str) -> crate::ThinkingSpec + Send + Sync>;
+
+/// A [`ThinkingSpecResolver`] that ignores the model and always returns `spec`
+/// — for callers with no catalog to resolve against (tests, embedders).
+pub fn fixed_thinking_spec(spec: crate::ThinkingSpec) -> ThinkingSpecResolver {
+    std::sync::Arc::new(move |_: &str| spec)
+}
+
 /// Anything that can stream a conversation turn for the engine.
 #[async_trait]
 pub trait Llm: Send {

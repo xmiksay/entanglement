@@ -40,6 +40,7 @@ mod request;
 mod sse;
 #[cfg(test)]
 mod tests;
+mod think;
 
 use std::collections::BTreeMap;
 
@@ -56,6 +57,7 @@ use sse::{
     drain_available_frames, flush_pending_tools, handle_chunk, note_finish_reason, parse_sse_line,
     SseEvent,
 };
+use think::ThinkSplitter;
 
 /// z.ai GLM Coding Plan (dedicated tier) — entanglement's default base URL.
 pub const ZAI_CODING_PLAN_BASE: &str = "https://api.z.ai/api/coding/paas/v4";
@@ -101,6 +103,12 @@ pub struct OpenAiLlm {
     /// per provider (`ProviderEntry::prompt_cache_key`) — off for endpoints
     /// not verified to tolerate the extra body field.
     send_prompt_cache_key: bool,
+    /// Resolves the thinking handling ([`crate::ThinkingSpec`], ADR-0191) for
+    /// whichever model a given request actually names, re-run per request
+    /// rather than baked in at construction (#550) — an inline-tags model's
+    /// `<think>` spans must be split from its spoken text even when the client
+    /// was constructed for a different model.
+    thinking_spec: crate::ThinkingSpecResolver,
     http: HttpClient,
 }
 
@@ -109,6 +117,9 @@ impl OpenAiLlm {
     /// sent as `Bearer`. `rpm`/`concurrency = None` use the client's (or the
     /// endpoint's) defaults; `model_concurrency` is consulted per request (#550).
     /// `web_search = Some(..)` requests provider-side web search (#305).
+    /// `thinking_spec` resolves the model's thinking handling per request
+    /// (ADR-0191); `fixed_thinking_spec(ThinkingSpec::default())` keeps the
+    /// pre-ADR-0191 behavior.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: impl Into<String>,
@@ -119,6 +130,7 @@ impl OpenAiLlm {
         model_concurrency: ModelConcurrencyResolver,
         web_search: Option<WebSearchConfig>,
         send_prompt_cache_key: bool,
+        thinking_spec: crate::ThinkingSpecResolver,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -131,6 +143,7 @@ impl OpenAiLlm {
             model_concurrency,
             web_search,
             send_prompt_cache_key,
+            thinking_spec,
             http,
         }
     }
@@ -151,7 +164,9 @@ impl OpenAiLlm {
 /// [`WebSearchConfig`] (`None` disables provider-side web search, #305).
 /// `auth = Some(..)` switches the endpoint to an OAuth bearer (#684 edge d),
 /// overriding `api_key` on the wire while `api_key` (usually `None` then)
-/// keeps its pool-identity role.
+/// keeps its pool-identity role. `thinking_spec` resolves the model's
+/// thinking handling per request (ADR-0191) —
+/// `Catalog::thinking_spec_resolver(provider)` is the catalog-driven form.
 #[allow(clippy::too_many_arguments)]
 pub fn openai_factory(
     base_url: impl Into<String>,
@@ -163,6 +178,7 @@ pub fn openai_factory(
     model_concurrency: ModelConcurrencyResolver,
     web_search: Option<WebSearchConfig>,
     send_prompt_cache_key: bool,
+    thinking_spec: crate::ThinkingSpecResolver,
     http: HttpClient,
 ) -> crate::LlmFactory {
     let mut llm = OpenAiLlm::new(
@@ -174,6 +190,7 @@ pub fn openai_factory(
         model_concurrency,
         web_search,
         send_prompt_cache_key,
+        thinking_spec,
         http,
     );
     if let Some(auth) = auth {
@@ -190,6 +207,11 @@ impl Llm for OpenAiLlm {
         // construction (#550) — a profile's `model:`-only pin can send a
         // request under a different model than `default_model`.
         let model_concurrency = (self.model_concurrency)(&model);
+        let thinking = (self.thinking_spec)(&model);
+        let think = match thinking.format {
+            crate::ThinkingFormat::InlineTags => Some(ThinkSplitter::new()),
+            crate::ThinkingFormat::Fields => None,
+        };
         let body = request::build_body(
             &model,
             req.system,
@@ -198,6 +220,7 @@ impl Llm for OpenAiLlm {
             req.generation,
             self.web_search.as_ref(),
             req.cache_key.filter(|_| self.send_prompt_cache_key),
+            thinking,
         );
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
@@ -292,6 +315,9 @@ impl Llm for OpenAiLlm {
         // Forward the SSE body with a per-chunk idle-gap watchdog (#241): a long
         // healthy stream runs to completion, a hung one dies within the gap.
         let rx = crate::client::spawn_byte_stream(response, "openai-compat", guard);
+        // The captured inline-think block is stamped with the request's model
+        // (ADR-0191); the stream is 'static, so it takes its own clone.
+        let stream_model = model.clone();
 
         let stream = try_stream! {
             // Byte-buffered framing (#443): a multi-byte UTF-8 character can
@@ -303,12 +329,18 @@ impl Llm for OpenAiLlm {
             let mut seen_finish_reason: Option<String> = None;
             let mut rx = rx;
             let mut saw_done = false;
+            let mut think = think;
 
             'outer: while let Some(item) = rx.recv().await {
                 let chunk = item?;
                 frames.push(&chunk);
-                let (events, done) =
-                    drain_available_frames(&mut frames, &mut tools, &mut usage, &mut seen_finish_reason)?;
+                let (events, done) = drain_available_frames(
+                    &mut frames,
+                    &mut tools,
+                    &mut usage,
+                    &mut seen_finish_reason,
+                    think.as_mut(),
+                )?;
                 for ev in events {
                     yield ev;
                 }
@@ -331,10 +363,27 @@ impl Llm for OpenAiLlm {
                 if let Some(trailing) = frames.take_remaining() {
                     if let SseEvent::Data(data) = parse_sse_line(&trailing) {
                         note_finish_reason(&data, &mut seen_finish_reason);
-                        for ev in handle_chunk(&data, &mut tools, &mut usage)? {
+                        for ev in handle_chunk(&data, &mut tools, &mut usage, think.as_mut())? {
                             yield ev;
                         }
                     }
+                }
+            }
+            // Inline-think-tags flush (ADR-0191): everything the splitter still
+            // holds back for tag detection is model output and must not be
+            // swallowed, and a non-empty think span mints the round's persisted
+            // `Reasoning` content block — the capture side of the same flag that
+            // gates replay on the request body (below in `build_body`).
+            if let Some(mut splitter) = think.take() {
+                let (reasoning, spoken) = splitter.finish();
+                if !reasoning.is_empty() {
+                    yield LlmEvent::Reasoning(reasoning);
+                }
+                if !spoken.is_empty() {
+                    yield LlmEvent::Text(spoken);
+                }
+                if let Some(block) = splitter.into_reasoning_block(&stream_model) {
+                    yield LlmEvent::ContentBlock(block);
                 }
             }
             // Post-#445 `handle_chunk` no longer flushes eagerly, so a non-empty

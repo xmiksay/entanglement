@@ -168,6 +168,11 @@ impl Holly {
     /// [`ToolResult`][InMsg::ToolResult]/[`Spawn`][InMsg::Spawn]. A head relaying
     /// **untrusted wire bytes** must use [`send_from_wire`][Self::send_from_wire]
     /// instead, which enforces the [`InMsg::wire_allowed`] allowlist (#155).
+    // The raw tokio `SendError<InMsg>` is the deliberate return type: it carries
+    // the rejected frame back to an embedder that may want to re-route it.
+    // Boxing it (clippy 1.98's `result_large_err` suggestion) would churn the
+    // public API of every head for a size no caller ever moves in bulk.
+    #[allow(clippy::result_large_err)]
     pub async fn send(&self, msg: InMsg) -> Result<(), mpsc::error::SendError<InMsg>> {
         self.inbox.send(msg).await
     }
@@ -209,6 +214,7 @@ impl Holly {
     /// execution took — carried alongside `content`'s text. `exit_code` (#681,
     /// ADR-0186) extends it with a process-running tool's numeric exit status
     /// (`None` for every non-process tool and for a signal-killed process).
+    #[allow(clippy::result_large_err)] // see `send` — the raw SendError is deliberate
     pub async fn submit_tool_result(
         &self,
         session: SessionId,
@@ -390,6 +396,7 @@ impl Holly {
     /// # Returns
     ///
     /// The session ID of the resumed session.
+    #[allow(clippy::result_large_err)] // see `send` — the raw SendError is deliberate
     pub async fn resume(
         &self,
         root_id: SessionId,
@@ -413,6 +420,7 @@ impl Holly {
     /// wire head cannot evict another session. A thin wrapper over the privileged
     /// [`send`][Self::send]. Emits [`OutEvent::SessionHibernated`]; an unknown id
     /// is a no-op.
+    #[allow(clippy::result_large_err)] // see `send` — the raw SendError is deliberate
     pub async fn hibernate(&self, session: SessionId) -> Result<(), mpsc::error::SendError<InMsg>> {
         self.send(InMsg::HibernateSession { session }).await
     }
