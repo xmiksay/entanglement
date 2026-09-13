@@ -8,8 +8,10 @@
 //! * two concurrent sessions on one engine see **disjoint** tool sets;
 //! * changing the resolver's backing data changes the advertised specs on the
 //!   **next turn**, with no engine respawn;
-//! * the resolver's output is still subject to the **profile mask** — it widens
-//!   discovery, it never bypasses masking.
+//! * the resolver's output is advertised **verbatim** — the profile mask does
+//!   not filter it, so the resolver is the single seam that shapes a session's
+//!   base surface (a tool it must keep off a tenant's wire has to be omitted,
+//!   not masked; masking only declines the call at dispatch).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -184,11 +186,14 @@ async fn changing_backing_data_changes_specs_next_turn() {
     );
 }
 
-/// Acceptance #3: the resolver widens discovery but never bypasses the profile
-/// mask. Under the read-only `explore` profile, a resolver that emits `edit`
-/// still has it filtered out — only `read` survives.
+/// Acceptance #3: the resolver's output reaches the model **verbatim** — the
+/// profile mask does not filter it. Under the read-only `explore` profile, a
+/// resolver that emits `edit` still advertises `edit`; the mask binds at the
+/// runtime's dispatch gate instead (see `entanglement-runtime`'s `tool_mask`
+/// integration test for the attributed decline). This is the property a
+/// multi-tenant embedder must design against: omit, don't mask.
 #[tokio::test]
-async fn resolver_output_still_subject_to_profile_mask() {
+async fn resolver_output_is_advertised_verbatim_past_the_profile_mask() {
     let seen: Arc<Mutex<HashMap<String, Vec<Vec<String>>>>> = Arc::new(Mutex::new(HashMap::new()));
     let seen_factory = seen.clone();
 
@@ -227,21 +232,21 @@ async fn resolver_output_still_subject_to_profile_mask() {
         "explore must still see resolver's read: {names:?}"
     );
     assert!(
-        !names.iter().any(|n| n == "edit"),
-        "explore's masked `edit` must not survive the resolver: {names:?}"
+        names.iter().any(|n| n == "edit"),
+        "the mask no longer filters advertisement — `edit` is advertised and \
+         declined at dispatch: {names:?}"
     );
 }
 
-/// ADR-0190 pin: `poll` is an always-on, non-maskable internal tool — the
-/// single collection mechanism for all async work (`bash`/`call`/`rhai`
-/// background jobs + sub-agents). The production runtime advertises it via
-/// `tool_spec_resolver` (not the static `tool_specs`, which the resolver
-/// replaces), and core's advertisement filter exempts it from the profile mask.
-/// This test pins both halves together against the real advertisement path:
-/// under a profile masking everything *but* `poll`, `poll` still reaches the
-/// model, while ordinary masked tools (`edit`) do not.
+/// The universal rule, pinned against the real advertisement path — this
+/// subsumes ADR-0190's `poll`-only mask exemption, which no longer needs to
+/// exist: under a profile whose allowlist admits *only* `read`, every spec the
+/// resolver hands over still reaches the model, `poll` and `edit` alike. The
+/// ADR-0190 Bug-1 half survives untouched: the production runtime carries
+/// `poll_spec()` in its resolver roster (a spec absent there is a spec no model
+/// ever sees), which `entanglement-runtime`'s own tests pin.
 #[tokio::test]
-async fn poll_is_always_advertised_through_resolver_and_mask() {
+async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
     let seen: Arc<Mutex<HashMap<String, Vec<Vec<String>>>>> = Arc::new(Mutex::new(HashMap::new()));
     let seen_factory = seen.clone();
 
@@ -263,9 +268,9 @@ async fn poll_is_always_advertised_through_resolver_and_mask() {
             ToolSpec::new("poll", "join background jobs and sub-agents"),
         ]
     }));
-    // A profile that masks everything but `read`: neither `poll` nor `edit`
-    // is in its allowlist. Without the ADR-0190 exemption `poll` would be
-    // dropped alongside `edit`.
+    // A profile that masks everything but `read`: neither `poll` nor `edit` is
+    // in its allowlist. Both are still advertised — the allowlist decides what
+    // may *run*, not what the model can see.
     cfg.profiles.insert(AgentProfile {
         name: "locked".into(),
         description: "read-only".into(),
@@ -294,16 +299,10 @@ async fn poll_is_always_advertised_through_resolver_and_mask() {
 
     let reqs = recorded_at_least(&seen, "s", 1).await;
     let names = &reqs[0];
-    assert!(
-        names.iter().any(|n| n == "poll"),
-        "`poll` must be advertised even under a profile masking it: {names:?}"
-    );
-    assert!(
-        names.iter().any(|n| n == "read"),
-        "the profile's allowlisted `read` must survive: {names:?}"
-    );
-    assert!(
-        !names.iter().any(|n| n == "edit"),
-        "`edit` is masked and must not survive: {names:?}"
-    );
+    for tool in ["read", "edit", "poll"] {
+        assert!(
+            names.iter().any(|n| n == tool),
+            "`{tool}` must be advertised even under a profile masking it: {names:?}"
+        );
+    }
 }

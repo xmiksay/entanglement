@@ -52,13 +52,34 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   brief=<path|none> skills=…`) surfaces the same facts during any run.
   `skutter inspect agents [name]` (#185) surfaces the **layer-collision winner**
   the silent later-wins `insert` used to swallow: with no `name`, a table (name,
-  mode, model, winning layer, source path, tool-mask summary) of every resolved
+  mode, model, winning layer, source path, tool-mask summary, dispatch tally) of
+  every resolved
   agent; with a `name`, the full resolved profile (permission rules, tool mask,
+  per-tool dispatch state,
   spawn control, plan authority, assembled-prompt length) **plus** which
   lower-layer definitions it overrode — the exact fields #116/#119/#140
   enforcement hinges on. Same engine-free discovery as `inspect prompt`, via a
   `(layer, source)` provenance sidecar (`agents::resolve_registry`); `load_registry`
   also emits a `replaces=<prior layer>` `debug!` at each overriding insert.
+  **Three-state, not present/absent:** since advertisement stopped tracking the
+  mask ([agents & permissions](agents-and-permissions.md) §physical tool
+  restriction), a masked-out tool is advertised and *declined at dispatch*, so
+  both views render each tool's dispatch state — `allowed` / `asks` /
+  `declines` (`runtime::tool_state`) — instead of implying the tool is gone.
+  The mask stays printed beside it as the **source** data (it is what the user
+  edits); the state is its consequence: the detail view lists every roster tool
+  with its state, the table carries the `allowed:N asks:N declines:N` tally.
+  `declines` folds three causes — a `Deny` grade, the mask, and the
+  profile-defining advertisement gates (`may_spawn` for `agent`/`agent_send`,
+  explicit allowlist membership for `propose_plan`), all of which refuse the
+  call. Where an argument-/workdir-scoped rule (`write(.entanglement/plans/*.md):
+  allow`) makes a concrete call land elsewhere than the bare grade, the state
+  says so rather than picking one: `declines (allowed by argument)`, off
+  `PermissionProfile::scoped_grades` (each scoped rule probed with its own
+  pattern as the value, so a later bare rule overriding it is reflected).
+  Engine-free means no registry: the roster is the compile-time built-in
+  vocabulary (`tool_names::known_tool_names`, `read_raw` withheld) and MCP tools
+  are necessarily absent — the view says so inline.
   `skutter inspect skills [name] [--disclosures]` (#186) does the same for the
   **skill** registry — the authoring loop was "start a session and ask the model":
   no `name` prints a table (name, user_only, winning layer, `root_dir`,

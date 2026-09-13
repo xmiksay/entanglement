@@ -22,10 +22,10 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, bash_live, builtin_visibility, config, env_date, extra_roots, history, host,
-    inspect, logging, mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch,
-    policy, poll, propose_plan, retained_output, script_ops, session_store, skills, subagent,
-    system_prompt, throttle, tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
+    agents, ask_user, bash_live, config, env_date, extra_roots, history, host, inspect, logging,
+    mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
+    propose_plan, retained_output, script_ops, session_store, skills, subagent, system_prompt,
+    throttle, tool_names, tool_runner, tool_state, watch, SharedRegistry, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -103,7 +103,6 @@ async fn build_config(
     EscapeRoot,
     Arc<bash_live::BashRegistered>,
     bash_live::BashToolConfig,
-    Arc<builtin_visibility::BuiltinVisibility>,
     policy::SandboxConfig,
     host::JobRegistry,
     retained_output::RetainedOutputRegistry,
@@ -179,11 +178,6 @@ async fn build_config(
     // that's a per-session overlay concern now, resolved by
     // `permission::overlay_entry_grade`, not this process-global flag.
     let live_bash = bash_live::BashRegistered::new(bash_enabled);
-    // Advertisement scoping for lazily-registered built-ins (#673, ADR-0179):
-    // a startup-registered `bash` stays visible to every session; a later
-    // per-session overlay enable is visible only to that session's sub-tree.
-    let builtin_visibility =
-        builtin_visibility::BuiltinVisibility::new(bash_enabled.then(|| "bash".to_string()));
     // The one `JobRegistry` for this process's whole lifetime (#605): shared by
     // `bash` (however/whenever it gets registered — at startup or via a later
     // live `/bash on`) and `poll`'s job-handle path, so a background job is
@@ -275,6 +269,16 @@ async fn build_config(
         http_client.clone(),
     ));
     cfg.tool_specs = tools.read().unwrap().specs();
+    // `bash` is advertised even while unregistered (the startup env var is off
+    // and no session has run `/enable tool bash` yet): its schema is what keeps
+    // the tools array stable across a later enable, and a call before then is
+    // declined at dispatch with the enabling command. Mirrored in the live
+    // `tool_spec_resolver` below, which is what a real head actually consults;
+    // this static snapshot serves the lean/embedder path and the `/agent`
+    // tools checklist.
+    if !bash_enabled {
+        cfg.tool_specs.push(bash_live::bash_spec());
+    }
     // `read_raw` (rhai-only, see `script.rs`'s `parse_json`/`parse_yaml`)
     // registers *after* the specs snapshot above: present in `tools` for
     // execution (the rhai bridge routes through the same `ToolRegistry`), but
@@ -346,7 +350,6 @@ async fn build_config(
         escape_root,
         live_bash,
         bash_tool_config,
-        builtin_visibility,
         sandbox_config,
         jobs,
         retained,
@@ -1361,7 +1364,6 @@ async fn main() -> Result<()> {
         escape_root,
         live_bash,
         bash_tool_config,
-        builtin_visibility,
         sandbox_config,
         jobs,
         retained,
@@ -1422,21 +1424,27 @@ async fn main() -> Result<()> {
     // useful as the tools-checklist roster below); `tool_spec_resolver` is the
     // seam core actually consults every turn (ADR-0076) — reproducing that same
     // snapshot (registry tools + the full runtime-owned roster:
-    // `update_tasks`/`ask_user`/`poll` + `rhai` behind its feature) keeps this
-    // change behavior-neutral today, while making every *future* registry
-    // mutation land on the next turn for free. `poll` (ADR-0161/0190) must be
-    // here in particular: core's advertisement filter exempts it from the
-    // profile mask, so omitting its spec from the resolver is the one place it
-    // would vanish from the production surface.
+    // `update_tasks`/`ask_user`/`poll` + `bash` + `rhai` behind its feature)
+    // keeps this change behavior-neutral today, while making every *future*
+    // registry mutation land on the next turn for free. This resolver is the
+    // **only** thing that shapes the surface now — core advertises its output
+    // verbatim, with masks enforced at dispatch — so a spec missing here is a
+    // spec no model ever sees (the ADR-0190 Bug-1 shape: `poll` was omitted
+    // and vanished from every real head while tests, which run off the static
+    // `tool_specs` fallback, stayed green).
     {
         let tools = tools.clone();
         let avail = mcp_available.clone();
-        let builtins = builtin_visibility.clone();
         #[allow(unused_mut)] // only mutated when the `rhai` feature is on
         let mut runtime_owned_specs = vec![
             plan_tasks::update_tasks_spec(),
             ask_user::ask_user_spec(),
             poll::poll_spec(),
+            // Advertised whether or not `bash` is registered: a dispatch before
+            // `/enable tool bash` is declined with the enabling command, and
+            // the tools array stays byte-identical across the enable (deduped
+            // against the registry's own copy below once it lands there).
+            bash_live::bash_spec(),
         ];
         #[cfg(feature = "rhai")]
         runtime_owned_specs.push(script::rhai_spec());
@@ -1446,23 +1454,16 @@ async fn main() -> Result<()> {
             // model directly — it's read-only for `parse_json`/`parse_yaml`
             // (ADR-0098) and is graded/masked as an alias of `read`, which only
             // holds if a profile author never sees it to configure separately.
-            // A lazily-connected `allowed` MCP server's tools (#542) are
-            // additionally scoped to the sessions that enabled them, and a
-            // lazily-registered built-in (`bash`, ADR-0179) to the sessions
-            // whose own overlay chain enabled it — otherwise one session's
-            // `/enable tool bash` would rewrite every other session's
-            // advertised tools array mid-session (prompt-cache bust + a tool
-            // nobody there opted into).
+            // A lazily-connected `allowed` MCP server's tools (#542) stay
+            // scoped to the sessions that enabled them — MCP is the one
+            // acknowledged dynamic seam in an otherwise session-stable surface,
+            // since a server's tools are unknowable until it connects.
             let mut specs: Vec<_> = tools
                 .read()
                 .unwrap()
                 .specs()
                 .into_iter()
-                .filter(|s| {
-                    s.name != "read_raw"
-                        && avail.spec_visible(&s.name, session)
-                        && builtins.visible(&s.name, session, &avail)
-                })
+                .filter(|s| s.name != "read_raw" && avail.spec_visible(&s.name, session))
                 .collect();
             specs.extend(runtime_owned_specs.iter().cloned());
             // Sorted by name (#566): `specs()` is already sorted, but appending
@@ -1471,6 +1472,9 @@ async fn main() -> Result<()> {
             // the provider's cached `tools` prefix) has one stable order,
             // independent of registration order and stable across restarts.
             specs.sort_by(|a, b| a.name.cmp(&b.name));
+            // A registered `bash` appears twice (registry + the roster above);
+            // keep one. Sorting first makes the duplicates adjacent.
+            specs.dedup_by(|a, b| a.name == b.name);
             specs
         }));
     }
@@ -1572,7 +1576,6 @@ async fn main() -> Result<()> {
         tools.clone(),
         bash_tool_config,
         live_bash.clone(),
-        builtin_visibility.clone(),
     );
 
     // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141): polls

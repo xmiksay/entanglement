@@ -454,7 +454,7 @@ async fn assert_leaf_spawn_refused(background: bool) {
     // Isolate the ADR-0024 capability gate from the #116 tool mask: give this
     // test's `explore` an allowlist that *advertises* `agent`, so the
     // mask does not preempt — the refusal must then come from the Subagent-mode
-    // capability gate ("cannot spawn"), not the mask ("not available"). (The
+    // capability gate ("cannot spawn"), not the mask ("Declined by"). (The
     // stock `explore` masks `agent` too; that path is covered by the
     // `tool_mask` tests.)
     let mut profiles =
@@ -1140,6 +1140,107 @@ async fn research_spawns_explore() {
         "the child should run under the `explore` profile"
     );
     assert!(saw_polled_answer, "poll should surface the child's answer");
+}
+
+/// A parent that launches an `explore` child in the background and then
+/// re-engages *that same child* with `agent_send` instead of respawning. The
+/// child answers each round from its own prompt, so the second answer proves
+/// the follow-up actually reached the live child.
+struct SpawnThenSendLlm;
+
+#[async_trait]
+impl Llm for SpawnThenSendLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        // A child session (no tool results of its own) answers each round.
+        if last_tool(&req).is_none() {
+            match last_user(&req) {
+                "child-task" => return Ok(finish("child-first")),
+                "follow-up-task" => return Ok(finish("child-second")),
+                _ => {}
+            }
+        }
+        match last_tool(&req) {
+            // First parent turn: launch the child, non-blocking.
+            None => Ok(call(
+                "spawn1",
+                "agent",
+                r#"{"agent":"explore","prompt":"child-task","background":true}"#.to_string(),
+            )),
+            // The blocking `agent_send` folded the child's second answer back.
+            Some(t) if t.contains("child-second") => Ok(finish("parent done")),
+            Some(t) => match extract_agent_id(t) {
+                // The launch handle → follow up on the same child.
+                Some(id) => Ok(call(
+                    "send1",
+                    "agent_send",
+                    format!(r#"{{"agent_id":"{id}","prompt":"follow-up-task"}}"#),
+                )),
+                // A refusal (no handle) → finish, so the assertions can speak.
+                None => Ok(finish("parent done")),
+            },
+        }
+    }
+}
+
+#[tokio::test]
+async fn research_re_engages_its_explore_child_with_agent_send() {
+    // #609, ADR-0162: `agent_send` is on research's mask next to `agent`, so a
+    // research parent sends an existing explore child another round instead of
+    // respawning it and losing the context it built. Advertisement is no longer
+    // mask-driven, but dispatch still is — without the mask entry this call
+    // would come back as `Declined by agent profile `research``.
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(|| Box::new(SpawnThenSendLlm) as Box<dyn Llm>),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let profiles = cfg.profiles.clone();
+    let holly = Holly::spawn(cfg);
+    spawn_tool_executor(
+        &holly,
+        ToolRegistry::new(),
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+
+    let root = SessionId::new("root");
+    set_agent(&holly, &root, "research").await;
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(root.clone(), "parent-task"))
+        .await
+        .unwrap();
+
+    let mut send_output: Option<String> = None;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        match &ev {
+            OutEvent::ToolOutput {
+                session,
+                tool,
+                output,
+                ..
+            } if session == &root && tool == "agent_send" => {
+                send_output = Some(output.clone());
+            }
+            OutEvent::Done { session, .. } if session == &root && send_output.is_some() => break,
+            _ => {}
+        }
+    }
+
+    let output = send_output.expect("research must reach `agent_send` — its mask admits it");
+    assert!(
+        !output.contains("Declined"),
+        "agent_send must survive research's own dispatch mask: {output}"
+    );
+    assert!(
+        output.contains("child-second"),
+        "the follow-up must reach the *existing* child and fold its new answer back: {output}"
+    );
+    assert!(
+        !output.contains("child-first"),
+        "must not replay the child's stale first answer: {output}"
+    );
 }
 
 #[tokio::test]

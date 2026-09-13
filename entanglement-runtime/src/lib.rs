@@ -38,12 +38,12 @@ pub mod aux_llm;
 // Lean-library-safe: only entanglement-core + std + the already-unconditional
 // `host` module.
 pub mod bash_live;
-// Session-scoped advertisement of the lazily-registered built-ins above
-// (#673, ADR-0179): registration is process-global, visibility is not.
-pub mod builtin_visibility;
 pub mod cancel;
 pub mod config;
 mod date;
+// Attributed autodecline wording for a call the dispatch gate refuses — the
+// one table both the executor ladder and the mask walk render from.
+pub mod decline;
 pub mod env_date;
 pub mod extra_roots;
 pub mod file_change;
@@ -110,6 +110,9 @@ pub mod system_prompt;
 pub mod throttle;
 pub mod tool_names;
 pub mod tool_runner;
+// The three-state (`allowed`/`asks`/`declines`) per-tool posture the profile
+// UIs render, now that advertisement no longer varies with the mask.
+pub mod tool_state;
 // The host-tool vocabulary (`Tool` trait + `ToolRegistry`) lives here, not in
 // core: core holds no executable tools, only advertises schemas and round-trips
 // each call back to the runtime (#206, ADR-0006/0010/0053).

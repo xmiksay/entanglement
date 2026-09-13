@@ -1,4 +1,4 @@
-use entanglement_core::{AgentMode, SessionId};
+use entanglement_core::{AgentMode, PermissionProfile, SessionId};
 use ratatui::layout::Rect;
 
 /// A deferred, terminal-owning side effect a command/action requests but cannot
@@ -47,6 +47,14 @@ pub struct ProfileInfo {
     pub tools: Option<Vec<String>>,
     /// Current effective tool denylist, applied after `tools` (#330).
     pub disallowed_tools: Vec<String>,
+    /// The profile's permission rules — carried alongside the mask so the tools
+    /// checklist can show each row's *dispatch state* (`allowed`/`asks`/
+    /// `declines`, `crate::tool_state`) rather than a bare present/absent
+    /// checkbox, which no longer matches what the model sees.
+    pub permission: PermissionProfile,
+    /// Whether the profile may spawn (`AgentProfile::may_spawn`) — the one
+    /// gate on the `agent`/`agent_send` rows the mask itself cannot express.
+    pub may_spawn: bool,
 }
 
 /// The list `Rect` each open modal captured at draw time, so a left-click can

@@ -19,7 +19,9 @@ use super::DEFAULT_PROFILE;
 /// session (#308). Its output **replaces** the engine-global
 /// [`EngineConfig::tool_specs`][EngineConfig::tool_specs] for that session (the
 /// per-profile [`profile_tool_specs`][EngineConfig::profile_tool_specs] are
-/// still appended, and the active profile's mask still filters both). Consulted
+/// still appended). Nothing downstream filters the result — the profile mask
+/// and session overlay are dispatch-only — so this resolver is the single seam
+/// that shapes a session's base advertised surface. Consulted
 /// fresh at every turn build, so an embedder that mutates its backing store —
 /// e.g. a per-user MCP-server set — sees the change on the *next* turn without
 /// respawning the engine. The `Fn` is intentionally sync: an embedder keeps a
@@ -57,19 +59,23 @@ pub struct EngineConfig {
     pub tool_specs: Vec<ToolSpec>,
     pub profiles: ProfileRegistry,
     /// Per-profile tool specs appended to [`tool_specs`][Self::tool_specs] for
-    /// the active profile only (#119, ADR-0040). At turn time `run_turn` looks
-    /// the running session's profile name up here and appends its entry (also
-    /// filtered through [`AgentProfile::advertises_tool`]) after the #116 mask.
-    /// A generic table keyed by profile name; the embedder fills it (an entry is
-    /// absent/empty when a profile advertises no profile-scoped tools).
+    /// the active profile only (#119, ADR-0040). At turn time `run_round` looks
+    /// the running session's profile name up here and appends its entry
+    /// verbatim. These are the *profile-defining* specs — a spawn-target enum
+    /// scoped to who this profile may spawn, plan authorship — whose schema
+    /// genuinely differs per profile, which is why they stay per-profile even
+    /// though the mask no longer narrows advertisement. A generic table keyed
+    /// by profile name; the embedder fills it (an entry is absent/empty when a
+    /// profile advertises no profile-scoped tools).
     pub profile_tool_specs: HashMap<String, Vec<ToolSpec>>,
     /// Per-session override for the advertised base tool schemas (#308,
     /// ADR-0076). When set, it is consulted at every turn build and its output
     /// **replaces** the engine-global [`tool_specs`][Self::tool_specs] for that
     /// session; [`profile_tool_specs`][Self::profile_tool_specs] are still
-    /// appended and the active profile's mask still filters the result — the
-    /// resolver widens/varies *discovery* per session, it never bypasses
-    /// masking. This is the seam a multi-tenant embedder needs: one `Holly`
+    /// appended. Its output is advertised as-is (the profile mask and session
+    /// overlay enforce at dispatch, never here), so a resolver that must keep
+    /// a tool off one tenant's wire has to omit it — masking it will not.
+    /// This is the seam a multi-tenant embedder needs: one `Holly`
     /// advertising a different tool surface per user (their per-user MCP-server
     /// tools, a site's `enabled_mcp_server_ids` restriction) without one engine
     /// per user. `None` (the default) keeps the engine-global `tool_specs` for

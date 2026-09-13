@@ -376,6 +376,33 @@ async fn allow_runs_script_captures_print_and_serializes_return() {
     );
 }
 
+/// A script that guessed a binding name gets the binding reference appended to
+/// its error, so the model's next call is informed instead of another guess.
+/// The plain success path above pins the complement: an ordinary result never
+/// carries the catalogue.
+#[tokio::test]
+async fn an_unknown_binding_name_returns_the_binding_reference() {
+    let dir = TempDir::new("unknown-binding");
+    let holly = spawn_with_rhai(
+        r#"read_file("f.txt")"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(out.contains("Function not found"), "{out}");
+    assert!(
+        out.contains("Available script functions"),
+        "the failed script must carry the binding reference: {out}"
+    );
+    assert!(out.contains("read_raw(path)"), "{out}");
+    assert!(out.contains("exec(command)"), "{out}");
+}
+
 #[tokio::test]
 async fn binding_edit_delegates_and_root_contains() {
     let dir = TempDir::new("edit");

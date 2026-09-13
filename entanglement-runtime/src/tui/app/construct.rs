@@ -10,7 +10,7 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::sessions::SessionRegistry;
 use crate::tui::theme::Theme;
-use entanglement_core::{AgentMode, SessionId};
+use entanglement_core::{AgentMode, Permission, PermissionProfile, SessionId};
 use ratatui::layout::Rect;
 
 use super::{App, ModalClickAreas, ProfileInfo, HISTORY_CAPACITY};
@@ -30,6 +30,8 @@ impl App {
                     mode: AgentMode::Primary,
                     tools: None,
                     disallowed_tools: Vec::new(),
+                    permission: PermissionProfile::new(Permission::Allow),
+                    may_spawn: true,
                 },
                 ProfileInfo {
                     name: "plan".to_string(),
@@ -37,6 +39,9 @@ impl App {
                     mode: AgentMode::Primary,
                     tools: None,
                     disallowed_tools: Vec::new(),
+                    permission: PermissionProfile::new(Permission::Ask)
+                        .with("write", Permission::Deny),
+                    may_spawn: true,
                 },
             ],
             vec![
@@ -71,6 +76,8 @@ impl App {
                 mode: AgentMode::Primary,
                 tools: None,
                 disallowed_tools: Vec::new(),
+                permission: PermissionProfile::new(Permission::Allow),
+                may_spawn: true,
             }]
         } else {
             entry_profiles

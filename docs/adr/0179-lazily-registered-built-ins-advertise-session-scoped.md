@@ -1,6 +1,6 @@
 # 0179. Lazily-registered built-ins advertise session-scoped, like lazy MCP servers
 
-- Status: Accepted
+- Status: Accepted — **Superseded by [ADR-0192](0192-universal-advertisement-enforcement-at-dispatch.md)** (advertisement is universal; the session-scoped store is retired)
 - Date: 2026-08-06
 - Amends: [0163](0163-live-bash-enablement-is-a-tool-overlay-entry.md) (whose
   §2 registration stays exactly as shipped — this ADR scopes only the

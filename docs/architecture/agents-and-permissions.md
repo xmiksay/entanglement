@@ -60,8 +60,11 @@ below realize one model:
   assembly, authorization, and tool-list enforcement are deterministic runtime
   code. Injected content is always a `tool_result` / prompt section, never a
   spoofed `user` message.
-- **Physical over prompted** — a read-only agent has no write tool *advertised or
-  executable* (the #116 mask), not a persona told not to write.
+- **Physical over prompted** — a read-only agent's write call is *refused by
+  code* (the #116 mask, enforced at dispatch), not a persona told not to write.
+  The tool's schema is still advertised — see §physical tool restriction for
+  why advertisement and enforcement are separate — so the guarantee is "the
+  call cannot succeed", not "the model cannot see the tool".
 - **Enforcement-locus split** — a gate lives where it can see the call: the tool
   mask, spawn control, permission clamp, and (since #231) plan authorship are all
   **runtime** — every tool, including `propose_plan`/`update_tasks`, round-trips
@@ -372,7 +375,7 @@ below realize one model:
   | `plan` | primary | `read, glob, grep, agent, agent_send, poll, ask_user, load_skill, propose_plan, write, edit, call, bash` — `call`/`bash` are on the mask only so a spawned `explore` child keeps its own access ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597); `agent_send` (#609, [ADR-0162](../adr/0162-agent-send-supervising-a-sub-agent.md)) is what lets the plan agent re-engage the same sponsored `build` child for another review round instead of spawning a fresh one each phase | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
   | `explore` | subagent | `read, glob, grep, call, bash, poll, rhai` | `default: deny`; read triad Allow, exec set at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — `poll` rides along with `bash` so a background job it starts is actually readable (#615/#605); `poll` is intercepted before permission resolution, so it carries no grade of its own | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
-  | `research` | primary | `read, glob, grep, agent, poll, ask_user, load_skill, call, bash, rhai` — no write tools, no `propose_plan` | `default: ask`; `read: allow`; `write: deny` with **no** carve-out; exec at `Ask` via `call(*): ask` + a literal `rhai: ask` (the [ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md) grading pattern; posture per [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — the global read-only Q&A entry agent ([ADR-0167](../adr/0167-embedded-research-agent-profile.md); shipped `mode: all`, since flipped to `primary` so the Tab cycle reaches it) | may spawn **only** `explore` — a read-only leaf that cannot spawn, so the subtree stays closed |
+  | `research` | primary | `read, glob, grep, agent, agent_send, poll, ask_user, load_skill, call, bash, rhai` — no write tools, no `propose_plan`; `agent_send` (#609, [ADR-0162](../adr/0162-agent-send-supervising-a-sub-agent.md)) rides next to `agent` as on `plan`, so a follow-up round goes to the `explore` child already holding the context instead of a fresh respawn | `default: ask`; `read: allow`; `write: deny` with **no** carve-out; exec at `Ask` via `call(*): ask` + a literal `rhai: ask` (the [ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md) grading pattern; posture per [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — the global read-only Q&A entry agent ([ADR-0167](../adr/0167-embedded-research-agent-profile.md); shipped `mode: all`, since flipped to `primary` so the Tab cycle reaches it) | may spawn **only** `explore` — a read-only leaf that cannot spawn, so the subtree stays closed |
 
   Three cross-cutting facts complete the picture: **(1)** `bash` is
   opt-in — until registered (startup `ENTANGLEMENT_ENABLE_BASH=1`, or live
@@ -387,12 +390,14 @@ below realize one model:
   profile mask and also reaches `rhai` bindings (ADR-0129). **(3)** the
   user-config permission
   ceiling defaults to `default: allow` — a no-op clamp until the user
-  tightens it (#172). **(4)** `poll` is an **always-on, non-maskable** internal
-  tool (✅ #606, [ADR-0190](../adr/0190-poll-is-always-on-non-maskable-internal-tool.md)):
-  it appears in the masks above for documentation consistency but is
-  unconditionally advertised and exempt from the profile mask *and* the session
-  overlay — withdrawing it would strand the background jobs and sub-agents a
-  profile's own launchers authorized, not reduce capability.
+  tightens it (#172). **(4)** every mask above is **dispatch-only**: the tools
+  it withholds are still advertised, and a call to one is declined with an
+  attributed refusal (§physical tool restriction). ADR-0190's `poll`-specific
+  advertisement exemption is subsumed by that universal rule and its
+  `ALWAYS_ADVERTISED_TOOLS` constant is gone; a profile that masks `poll` no
+  longer withdraws its schema, it only refuses the call — which still strands
+  the background jobs and sub-agents its own launchers authorized, so keep
+  `poll` in the mask.
 - **Per-profile model pinning (✅ #323, [ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)):**
   a profile's frontmatter may set `provider:` beside `model:`. Both set = a
   **model pin** (`AgentProfile::model_pin()`): switching to the profile re-binds
@@ -500,9 +505,17 @@ below realize one model:
   [engine](engine.md) for that watcher's own detail.
 - **Physical tool restriction (✅ #116, [ADR-0038](../adr/0038-physical-per-agent-tool-restriction.md)):**
   an agent's `tools` allowlist / `disallowed_tools` denylist masks its tool set —
-  `registry ∩ allowlist − denylist` — on *both* sides of the core↔runtime seam,
-  orthogonal to `permission` (which grades `Allow`/`Ask`/`Deny` among the tools
-  that survive the mask). The mask rides the core `AgentProfile`
+  `registry ∩ allowlist − denylist` — orthogonal to `permission` (which grades
+  `Allow`/`Ask`/`Deny` among the tools the mask admits).
+  **Advertisement is decoupled from enforcement**: the mask is enforced
+  *only* at the runtime's dispatch gate, never at advertisement. WHY: every
+  mid-session change to the advertised tools array — an overlay toggle, a
+  `/enable tool bash`, a skill mask, a `SetAgent` to a differently-masked
+  profile — invalidates the provider's prompt cache from the tools block
+  onward, i.e. essentially the whole prompt. A surface that is **stable within
+  a session** keeps that cache warm. What is traded away is only the "the model
+  cannot even attempt the call" filter; every attempt is now visibly declined
+  instead, and no capability changes hands. The mask rides the core `AgentProfile`
   (`tools`/`disallowed_tools` + `advertises_tool`), so it travels per session with
   no new protocol surface. **Mask entries are `*`/`?` wildcard patterns**
   (✅ #537, [ADR-0148](../adr/0148-glob-patterns-in-the-agent-tool-mask.md),
@@ -513,12 +526,13 @@ below realize one model:
   exist at parse time (`tools: [read, "mcp__*"]` for all servers,
   `"mcp__docs__*"` for one, `disallowed_tools: ["mcp__*"]` to strip MCP from an
   inherit-all profile; quote `*` entries in YAML). Matching is dynamic at
-  advertisement/dispatch time (never parse-time expansion), confined to
-  `advertises_tool` — which now delegates to the public associated
+  dispatch time (never parse-time expansion), confined to
+  `advertises_tool` — read it as "the mask admits this tool"; it delegates to
+  the public associated
   `AgentProfile::mask_allows(tools, disallowed, tool)` so heads holding only a
-  mask projection reuse the predicate — and therefore covers the spec filter,
+  mask projection reuse the predicate — and therefore covers
   `tool_masked`'s ancestor clamp (a parent's `"mcp__*"` admits a child's MCP
-  call, per profile per link), and the rhai binding mirror from one place.
+  call, per profile per link) and the rhai binding mirror from one place.
   `tools: ["*"]` ≡ inherit-all, with one carve-out: plan authorship
   (`plan_tasks::explicitly_allowlists`) stays literal-exact, so a wildcard
   widens the mask without granting `propose_plan`, mirroring `tools: None`.
@@ -537,9 +551,11 @@ below realize one model:
   a per-session list of `ToolOverlayEntry { pattern, allow, deny, arg_pattern? }`
   overriding the profile's mask in both directions (an enable entry makes
   matching tools exist past allowlist *and* denylist; a deny entry withdraws
-  even profile-advertised ones — deny > enable > profile), surviving
-  `SetAgent` and replay. Core's advertisement filter and `tool_masked` apply
-  the same disposition — per chain link, so a parent's overlay covers its
+  even profile-admitted ones — deny > enable > profile), surviving
+  `SetAgent` and replay. Like the profile mask, the overlay is
+  **dispatch-only**: setting or clearing it leaves the advertised tools array
+  untouched, and `tool_masked`/`tool_mask_source` apply its disposition — per
+  chain link, so a parent's overlay covers its
   spawn sub-tree; the grade override reaches the same way (✅ #628,
   `permission::overlay_grade_entry`): the nearest ancestor-chain link
   (session's own first) carrying an enable entry replaces the chain's grade
@@ -561,12 +577,21 @@ below realize one model:
   session-tools checklist dialog (checkboxes over the full roster seeded
   from effective availability; `Enter` submits the overlay as a diff
   against the profile), and the `/mcp` panel's `e`/`d` keys on the
-  highlighted server; see the protocol doc for the wire shape. **(a) Advertisement:** core's turn loop (`run_round`) filters both
-  `EngineConfig.tool_specs` and the active profile's `profile_tool_specs` entry by
-  the mask — a masked tool's schema never reaches the model. `propose_plan`/
-  `update_tasks` are ordinary runtime state/orchestration tools now (✅ #231/#513,
-  below): they ride those specs and this mask like any host tool, no
-  plan-authority special casing in core. **Per-session base specs (✅ #308, [ADR-0076](../adr/0076-per-session-dynamic-tool-specs.md)):**
+  highlighted server; see the protocol doc for the wire shape. **(a) Advertisement:** core's turn loop (`run_round`) advertises
+  `EngineConfig.tool_specs` (or the resolver's replacement, below) plus the
+  active profile's `profile_tool_specs` entry **verbatim** — no mask, no
+  overlay, no skill filter. The universal, session-stable surface is the
+  registry tools (`read`/`write`/`edit`/`glob`/`grep`/`call`, `rhai` when the
+  feature is on), `bash` (advertised even while unregistered — see [gates &
+  host tools](gates-and-host-tools.md) §live enablement), `update_tasks`,
+  `ask_user`, `load_skill` and `poll`. Two categories legitimately vary and
+  stay outside it: **profile-defining specs** — `propose_plan` (advertised
+  only to a profile explicitly allowlisting it) and the `agent`/`agent_send`
+  spawn family (gated to `may_spawn()` profiles, with a per-profile
+  spawn-target `enum`) — whose *schema* genuinely differs per profile, and
+  which vary across profiles but never within a session; and **MCP tools**
+  (`mcp__*`), the one acknowledged dynamic seam, since a server's tools are
+  unknowable until it connects. **Per-session base specs (✅ #308, [ADR-0076](../adr/0076-per-session-dynamic-tool-specs.md)):**
   an optional `EngineConfig.tool_spec_resolver: Option<Arc<dyn Fn(&SessionId) ->
   Vec<ToolSpec> + Send + Sync>>` (alias `ToolSpecResolver`) lets one `Holly`
   advertise a **different base tool surface per session** — the seam multi-tenant
@@ -574,29 +599,46 @@ below realize one model:
   sessions and a site's per-session restriction is expressible without one engine
   per user. `run_round` consults it *fresh every turn* (so a backing-store edit
   lands on the next turn, no respawn); its output **replaces** the engine-global
-  `tool_specs` for that session (the embedder composes if it wants both),
-  `profile_tool_specs` still append, and the mask below still filters the result —
-  the resolver **widens discovery, it never bypasses masking** (it runs *before*
-  the mask) — with one exemption: the **always-on internal tools**
-  (`ALWAYS_ADVERTISED_TOOLS = &["poll"]`, [ADR-0190](../adr/0190-poll-is-always-on-non-maskable-internal-tool.md))
-  short-circuit the filter in `run_round` before the profile mask *or* the
-  session overlay, so `poll` (the single collection mechanism for all async
-  work — background `bash`/`call`/`rhai` jobs + sub-agents) is advertised to
-  every profile and cannot be withdrawn even by an explicit overlay deny. Sync `Fn` by design (turn hot path); the documented pattern is an
+  `tool_specs` for that session (the embedder composes if it wants both) and
+  `profile_tool_specs` still append. Nothing filters the result, so **the
+  resolver is the only seam that shapes a session's base surface**: a
+  multi-tenant embedder that must keep a tool off one tenant's wire has to
+  *omit* it there — masking it only declines the call. By the same token a
+  spec absent from the resolver's roster is a spec no model ever sees, which
+  is exactly ADR-0190's Bug 1 (`poll_spec()` missing from the runtime's
+  roster). ADR-0190's other half — `ALWAYS_ADVERTISED_TOOLS`, the `poll`-only
+  mask exemption in `run_round` — is **subsumed and removed**: with no
+  advertisement filter left there is nothing to exempt `poll` from. Sync `Fn` by design (turn hot path); the documented pattern is an
   embedder-owned `Arc<RwLock<..>>` snapshot cache. `None` (the default) keeps the
-  engine-global specs — a no-op for single-user heads. **(b) Enforcement:**
-  `runtime::permission::tool_masked` refuses a masked `ToolExec` **first** — before
+  engine-global specs — a no-op for single-user heads. **(b) Enforcement — the
+  whole of it:** `runtime::permission::tool_masked` refuses a masked `ToolExec`
+  **first** — before
   the `agent`/`agent_send`/`poll`/`ask_user` interceptions and permission —
-  so a hallucinated masked call is a hard boundary, and the mask **intersects down
+  so a masked call is a hard boundary, and the mask **intersects down
   the ancestor chain** (a child never gains a tool an ancestor lacked, mirroring
-  ADR-0024's privilege ceiling). A sibling `tool_mask_source`
+  ADR-0024's privilege ceiling; a read-only parent's sub-tree can never reach
+  write capability). A sibling `tool_mask_source`
   ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597)
-  runs the identical walk but returns *which* link (`Option<SessionId>`, the
-  session itself or the clamping ancestor) did the masking — `tool_masked` is
-  now a thin `.is_some()` wrapper over it — so the runtime's refusal message
-  can say "restricted by its own profile" vs "restricted by ancestor agent
-  `<name>`'s profile" instead of a blanket, unattributed "restricted by
-  profile". `explore` is the reference read-only agent: `tools: [read, glob,
+  runs the identical walk but returns *which* link **and on whose authority**
+  (`Option<MaskSource>`: the session itself or a clamping ancestor ×
+  profile / session-overlay deny / unseen-fail-closed) — `tool_masked` is
+  a thin `.is_some()` wrapper over it. `runtime::decline` renders that into the
+  one **autodecline** wording family, always with the ADR-0176 `is_error: true`
+  side channel set:
+
+  | Authority | Message |
+  | --- | --- |
+  | own profile mask | `` Declined by agent profile `X` — tool `T` is not in its tool mask `` |
+  | ancestor's mask | `` Declined by ancestor agent `X`'s profile — tool `T` is not in its tool mask `` |
+  | session overlay deny | `` Declined by session tool overlay — tool `T` is withdrawn for this session `` |
+  | ancestor's overlay | `` Declined by ancestor agent `X`'s session tool overlay — … `` |
+  | skill `allowed_tools` | `` Declined by skill `X`'s allowed_tools — tool `T` is not listed `` |
+  | unregistered `bash` | `` tool `bash` is disabled — enable with /enable tool bash `` |
+
+  Attribution is load-bearing, not cosmetic: with the schema advertised the
+  model *will* call these, and a blanket "restricted by profile" teaches it
+  nothing about whether to stop, ask, or ask the user to change something.
+  `explore` is the reference read-only agent: `tools: [read, glob,
   grep, call, bash, poll, rhai]` — no `edit`/`write`/`agent`, but
   `call`/`bash`/`rhai` are graded `Ask` (ADR-0137) rather than
   masked out, so a research child isn't hard-blocked from shell access, only
@@ -647,14 +689,25 @@ below realize one model:
   `${config_dir}/entanglement/agents/<name>.md` (or `ENTANGLEMENT_AGENTS_DIR`).
   In the TUI, `e` on the `/agent` picker's highlighted profile opens a
   single-stage checklist dialog (`tui::tools_dialog::ToolsDialog`) over the full
-  advertised tool roster — captured from `EngineConfig.tool_specs` in the
+  tool roster — captured from `EngineConfig.tool_specs` in the
   runtime head (so it also covers runtime-owned specs like
   `update_tasks`/`ask_user`/`rhai`, not just `ToolRegistry` names), seeded from
   the profile's current effective mask via `AgentProfile::mask_allows` itself
   (#537 — a wildcard entry shows its matches checked; saving still emits the
   concrete checked set, so a glob does not survive the checklist round-trip —
   hand-edit the frontmatter to keep a live pattern); `Space` toggles, `Enter`
-  saves + records a transcript status line, `Esc` discards. The write applies
+  saves + records a transcript status line, `Esc` discards. **Each row also
+  shows its three-state dispatch outcome** beside the checkbox — `allowed`
+  (green) / `asks` (yellow) / `declines` (red), the same vocabulary and the same
+  `declines (allowed by argument)` suffix `skutter inspect agents` prints
+  (`runtime::tool_state`, shared by both surfaces). WHY: the checkbox is the
+  *mask*, and a mask no longer decides whether the model sees a tool, only what
+  happens when it calls one — an unadorned unchecked box would read as "absent",
+  which stopped being true. The state recombines live with the checkbox
+  (`ToolsDialog::tool_state`: unchecked ⇒ `declines`), so the consequence of an
+  edit is visible before it is saved. `may_spawn` is threaded in beside the
+  permission profile (`app::ProfileInfo`) because it is the one gate on the
+  `agent`/`agent_send` rows that ticking the box cannot lift. The write applies
   on the next restart — there is no live registry reload yet (a separate watcher
   issue); `skutter inspect agents` still reports the winning layer and what it
   shadowed, so provenance stays visible.
@@ -698,8 +751,8 @@ below realize one model:
   **#175**: a read-only `explore` has `update_tasks` outside its allowlist
   (mask refusal) *and* permission-denied, so it can't mutate task state.
   `update_tasks` rides the shared `tool_specs` (general bookkeeping, no
-  cross-agent authority) — unlike plan authorship below, every unmasked
-  profile advertises it.
+  cross-agent authority) — unlike plan authorship below, it is advertised to
+  every profile, with the mask deciding only whether the call runs.
 - **One plan tool — `propose_plan` (✅ #141/#513, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md),
   amended by [ADR-0138](../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)
   and [ADR-0145](../adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)):**
@@ -901,8 +954,10 @@ below realize one model:
   amending ADR-0106):** `Intercept::Rhai`'s `BindingPolicy` snapshot (§8) now
   folds in `skill_masked` alongside the agent mask, so a binding
   (`read`/`glob`/`grep`/`edit`/`write`/`call`/`bash`) the active skill's
-  `allowed_tools` excludes refuses with the identical message a direct call
-  gets ("not available while skill `X` is active…"), checked strictly after
+  `allowed_tools` excludes refuses with the same skill attribution a direct
+  call gets (`` Declined by skill `X`'s allowed_tools … ``; the binding path
+  keeps its own message spelling, since a binding is a host function inside a
+  script, not a dispatched tool call), checked strictly after
   the agent mask, same ordering as generic dispatch. `BindingPolicy::capture`
   takes the session's `active_skill` map as a one-time **snapshot** rather
   than a live read — sound because `load_skill` is not itself a binding, so
@@ -920,9 +975,9 @@ below realize one model:
   model-facing `load_skill`: a `user_only` skill *is* preloadable (author config,
   not model self-trigger), and an unknown name is a loud load-time error.
   **Access** is the orthogonal #116 tool mask: an agent that must not load skills
-  at runtime simply doesn't advertise `load_skill` (`disallowed_tools: [load_skill]`
-  or an allowlist omitting it), refused both from the advertised specs (core's
-  `run_round` filter) and at dispatch (`tool_masked`). The two compose to preserve
+  at runtime masks `load_skill` out (`disallowed_tools: [load_skill]`
+  or an allowlist omitting it) — the schema is still advertised, the call is
+  declined at dispatch (`tool_masked`). The two compose to preserve
   both corners: "preload X but block everything else" (`skills: [x]` + `load_skill`
   masked out) and "preload nothing, request on demand" (no `skills:`, `load_skill`
   available). Default stays permissive — a subagent may discover + load any skill

@@ -436,15 +436,18 @@ async fn write_tool_denied_under_explore_profile() {
         .unwrap();
 
     let events = collect(sub, &sid).await;
-    // `write` is now *masked* out of `explore`'s tool set (#116, ADR-0038): the
-    // executor refuses it as "not available" before permission even resolves —
-    // a strictly stronger block than the earlier permission `Deny`.
+    // `write` is *masked* out of `explore`'s tool set (#116, ADR-0038): the
+    // executor declines it before permission even resolves — a strictly
+    // stronger block than the earlier permission `Deny`. Advertisement is
+    // decoupled now, so the model does see the schema and the attributed
+    // decline is what stops it.
     assert!(
         events.iter().any(|e| matches!(
             e,
-            OutEvent::ToolOutput { output, .. } if output.contains("not available")
+            OutEvent::ToolOutput { output, .. }
+                if output.contains("Declined by agent profile `explore`")
         )),
-        "explore should refuse write as unavailable; got {events:?}"
+        "explore should decline write with an attributed refusal; got {events:?}"
     );
     assert!(!root.join("blocked.txt").exists(), "write must not land");
 }
@@ -454,7 +457,7 @@ async fn write_tool_denied_outside_plans_folder_under_plan_profile() {
     // #524, ADR-0142: `plan` now advertises `write` (unmasked), but only to
     // carve out `.entanglement/plans/*.md` for the plan tool (#513) — its bare
     // grade is `deny`, so a write anywhere else resolves through the permission
-    // ladder and is refused there, not masked out as "not available".
+    // ladder and is refused there, not declined by the mask.
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-write-plan-mask-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -594,7 +597,7 @@ async fn write_tool_allowed_in_plans_folder_under_plan_profile() {
         !events.iter().any(|e| matches!(
             e,
             OutEvent::ToolOutput { output, .. }
-                if output.contains("denied") || output.contains("not available")
+                if output.contains("denied") || output.contains("Declined by")
         )),
         "plan should be able to write the plans folder; got {events:?}"
     );

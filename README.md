@@ -75,9 +75,9 @@ the deny profile (read-only), the default spawn target; `debug` carries
 sub-agent that actually needs to reproduce, fix, and verify a bug; `research`
 is the read-only Q&A entry agent (ADR-0167) — write denied with no carve-out,
 shell ask-graded per command, and it may spawn **only** read-only `explore`
-leaves, so its delegation subtree can never widen into a write-capable
-profile. Permission resolution and approval live entirely in the runtime
-(#59).
+leaves (re-engaging one with `agent_send` rather than respawning it), so its
+delegation subtree can never widen into a write-capable profile. Permission
+resolution and approval live entirely in the runtime (#59).
 
 A plan is a **file** (`.entanglement/plans/<id>.md`), not an in-memory
 snapshot: the plan agent's one tool, `propose_plan(content | path)`,

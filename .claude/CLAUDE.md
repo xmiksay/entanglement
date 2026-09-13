@@ -168,6 +168,20 @@ never here**; each bullet is the claim + where to read it:
   unknown-handle/refused-`kill`/script-error set `is_error`, state reports
   stay `false`. [engine](../docs/architecture/engine.md),
   [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md)/[ADR-0176](../docs/adr/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md).
+- **The advertised tool surface is stable within a session**: core advertises
+  every spec the config/resolver provides — the profile mask, session tool
+  overlay and skill `allowed_tools` no longer filter advertisement, they are
+  enforced *only* at the runtime's dispatch gate, which declines with an
+  attributed `Declined by …` message on the ADR-0176 `is_error` channel. WHY:
+  any mid-session change to the tools array busts the provider prompt cache
+  from the tools block onward. `bash` is advertised even while unregistered
+  (dispatch declines with `/enable tool bash`); only the profile-defining
+  specs (`propose_plan`, the `agent`/`agent_send` spawn enum) and `mcp__*`
+  legitimately vary. Subsumes ADR-0190's `poll` advertisement exemption
+  (constant removed; its resolver-roster fix stands).
+  [engine](../docs/architecture/engine.md),
+  [agents & permissions](../docs/architecture/agents-and-permissions.md),
+  [gates & host tools](../docs/architecture/gates-and-host-tools.md).
 - **Permission lives entirely in the runtime**; core only carries schemas and
   `PermissionProfile::resolve`. Rule keys: name-or-`*`, argument-scoped
   `tool(pattern)`, workdir-scoped `tool{pattern}`, and capability keys
@@ -252,8 +266,9 @@ never here**; each bullet is the claim + where to read it:
   (`/enable tool bash [--allow [<pattern>]]`, superseding the old bespoke
   `BashEnable`/`BashDisable` pair): an enable entry matching a closed table of
   lazily-registrable built-ins (`bash` only, today) also registers it into
-  the shared tool registry on demand — registration is process-global, but
-  its *advertisement* is session-scoped to the enabling overlay chain.
+  the shared tool registry on demand — process-global, and now the *whole*
+  effect of enabling (plus the entry's grade), since advertisement is
+  universal: ADR-0179's session-scoped advertisement store is retired.
   [agents & permissions](../docs/architecture/agents-and-permissions.md),
   [gates & host tools](../docs/architecture/gates-and-host-tools.md),
   [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)/[ADR-0163](../docs/adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)/[ADR-0179](../docs/adr/0179-lazily-registered-built-ins-advertise-session-scoped.md).

@@ -1,14 +1,16 @@
 ---
 name: rhai
 description: >-
-  Binding reference for the `rhai` tool: every host function it exposes
-  (read/glob/grep/edit/write, exec/bash, parse_json/to_json/parse_yaml/to_yaml),
-  their signatures, permission grading, and a worked example. Load this before
-  writing a Rhai script — binding names are not guessable and a wrong one
-  throws.
+  Long-form guide to the `rhai` tool: worked examples plus the detail behind the
+  signature list the tool spec already carries — permission grading, escape-root
+  gating, background runs, output and limits. Load it when a script needs more
+  than the signatures.
 ---
 
-# `rhai` binding reference
+# `rhai` guide
+
+The tool spec itself carries the full signature list — this is the detail behind
+it, plus worked examples.
 
 Rhai (https://rhai.rs) syntax resembles Rust (`fn`, `let`) but is **not**
 Rust: no `use`/crates/`std`. Rhai's own stdlib (strings, arrays, maps, math,

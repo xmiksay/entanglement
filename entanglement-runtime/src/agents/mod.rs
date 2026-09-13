@@ -1364,14 +1364,28 @@ mod tests {
                 .resolve("bash", Some("git blame src/lib.rs")),
             Permission::Ask
         );
+        // `agent_send` (#609, ADR-0162) rides the mask next to `agent`, as it
+        // does on `plan`: a research parent re-engages an explore child it
+        // already launched instead of respawning one and losing its context.
+        // The spawn family bypasses the permission ladder, so the mask *is* the
+        // gate — its nominal grade is just research's `default: ask`.
         for tool in [
-            "read", "glob", "grep", "agent", "poll", "call", "bash", "rhai",
+            "read",
+            "glob",
+            "grep",
+            "agent",
+            "agent_send",
+            "poll",
+            "call",
+            "bash",
+            "rhai",
         ] {
             assert!(
                 research.advertises_tool(tool),
                 "research must advertise `{tool}`"
             );
         }
+        assert_eq!(research.permission.for_tool("agent_send"), Permission::Ask);
         // Explore-only spawn closure: research may spawn, but only the
         // read-only `explore` leaf (which cannot spawn at all) — the subtree
         // can never widen into a write-capable profile. As a primary, research

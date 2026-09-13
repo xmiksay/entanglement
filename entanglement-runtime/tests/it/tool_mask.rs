@@ -1,10 +1,13 @@
-//! Physical per-agent tool restriction — enforcement half (#116, ADR-0038).
+//! Physical per-agent tool restriction — the **whole** enforcement (#116,
+//! ADR-0038).
 //!
-//! Core withholds a masked tool's schema, but the runtime executor is the hard
-//! boundary: even if the model hallucinates a masked `edit` call, the executor
-//! refuses it *before* permission is resolved and the tool never runs. Here the
-//! scripted LLM is forced to call `edit` under the read-only `explore` profile
-//! (allowlist `read`/`glob`/`grep`), and we assert the refusal.
+//! Core advertises every schema it is given, so a masked tool's spec does reach
+//! the model and the executor's dispatch gate is the only boundary: it refuses
+//! the call *before* permission is resolved, the tool never runs, and the
+//! refusal is **attributed** so the model learns who declined it instead of
+//! retrying forever. Here the scripted LLM is forced to call `edit` under the
+//! read-only `explore` profile (allowlist `read`/`glob`/`grep`), under an
+//! overlay deny, and under a skill mask — asserting each authority's wording.
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
@@ -12,8 +15,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    OutEvent, SessionId, ToolCall,
+    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId,
+    ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -92,7 +96,45 @@ fn spawn_with_edit_call() -> Holly {
         &holly,
         reg,
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+        PermissionProfile::new(Permission::Allow),
+    );
+    holly
+}
+
+/// [`spawn_with_edit_call`] generalized: a scripted LLM that calls `tool` once,
+/// over a caller-supplied profile registry, with only `EchoEdit` registered —
+/// so `bash` is deliberately *unregistered* while still advertised.
+fn spawn_calling(tool: &str, profiles: ProfileRegistry) -> Holly {
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: tool.to_string(),
+                input: "{\"command\":\"true\"}".into(),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoEdit);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        PermissionProfile::new(Permission::Allow),
     );
     holly
 }
@@ -114,11 +156,29 @@ async fn collect(
     out
 }
 
+/// Every `ToolOutput` text for `sid`.
+fn outputs(events: &[OutEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether any `ToolOutput` carried the ADR-0176 `is_error` flag.
+fn any_is_error(events: &[OutEvent]) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e, OutEvent::ToolOutput { is_error, .. } if *is_error))
+}
+
 #[tokio::test]
-async fn masked_edit_is_refused_and_never_runs() {
+async fn masked_edit_is_declined_by_the_profile_and_never_runs() {
     let holly = spawn_with_edit_call();
     let sid = SessionId::new("s1");
-    // Switch to the read-only `explore` profile: `edit` is masked out entirely.
+    // Switch to the read-only `explore` profile: `edit` is outside its mask.
     holly
         .send(InMsg::SetAgent {
             session: sid.clone(),
@@ -137,21 +197,56 @@ async fn masked_edit_is_refused_and_never_runs() {
         !events
             .iter()
             .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
-        "a masked tool is refused outright, never surfaced for approval"
+        "a masked tool is declined outright, never surfaced for approval"
+    );
+    let outs = outputs(&events);
+    assert!(
+        outs.iter()
+            .any(|o| o
+                == "Declined by agent profile `explore` — tool `edit` is not in its tool mask"),
+        "the decline must name the declining profile; got {outs:?}"
     );
     assert!(
-        events.iter().any(|e| matches!(
-            e,
-            OutEvent::ToolOutput { output, .. }
-                if output.contains("not available") && output.contains("edit")
-        )),
-        "masked edit should report it is not available to this agent; got {events:?}"
+        any_is_error(&events),
+        "an autodecline rides the ADR-0176 side channel as an error; got {events:?}"
     );
     assert!(
-        !events.iter().any(
-            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
-        ),
+        !outs.iter().any(|o| o.starts_with("ran:")),
         "the masked edit tool must never run"
+    );
+}
+
+#[tokio::test]
+async fn overlay_deny_is_attributed_to_the_overlay_not_the_profile() {
+    // #539/ADR-0149's deny half is dispatch-only now. `build` advertises and
+    // permits `edit`; a per-session deny withdraws it — and must say so, since
+    // blaming the agent definition would send the user editing a file that is
+    // not the cause.
+    let holly = spawn_with_edit_call();
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![entanglement_core::ToolOverlayEntry::deny("edit")],
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "please edit"))
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+    let outs = outputs(&events);
+    assert!(
+        outs.iter()
+            .any(|o| o
+                == "Declined by session tool overlay — tool `edit` is withdrawn for this session"),
+        "an overlay deny must be attributed to the overlay; got {outs:?}"
+    );
+    assert!(
+        !outs.iter().any(|o| o.starts_with("ran:")),
+        "the denied edit tool must never run"
     );
 }
 
@@ -171,5 +266,117 @@ async fn build_profile_runs_edit_unmasked() {
             |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
         ),
         "unmasked build should run edit; got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_ancestors_mask_declines_a_child_and_names_the_ancestor() {
+    // ADR-0038's ancestor-chain intersection is fully capability-enforcing at
+    // dispatch: a read-only parent's sub-tree can never reach write capability,
+    // however permissive the child's own definition is. #597: the refusal names
+    // the *ancestor*, since a child whose own mask lists `edit` would otherwise
+    // read as an inexplicable dead end.
+    let mut profiles = ProfileRegistry::default();
+    profiles.insert(AgentProfile {
+        name: "restricted".into(),
+        description: "read-only parent".into(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        provider: None,
+        permission: PermissionProfile::new(Permission::Allow),
+        tools: Some(vec!["read".into(), "agent".into()]),
+        disallowed_tools: Vec::new(),
+        can_spawn: Some(true),
+        spawnable_agents: Some(vec!["worker".into()]),
+        sandbox: None,
+    });
+    profiles.insert(AgentProfile {
+        name: "worker".into(),
+        description: "permissive child".into(),
+        mode: AgentMode::Subagent,
+        system_prompt: String::new(),
+        model: None,
+        provider: None,
+        permission: PermissionProfile::new(Permission::Allow),
+        // The child's own mask happily lists `edit` — only the parent's doesn't.
+        tools: Some(vec!["read".into(), "edit".into()]),
+        disallowed_tools: Vec::new(),
+        can_spawn: Some(false),
+        spawnable_agents: None,
+        sandbox: None,
+    });
+    let holly = spawn_calling("edit", profiles);
+    let parent = SessionId::new("parent");
+    let child = SessionId::new("child");
+    holly
+        .send(InMsg::SetAgent {
+            session: parent.clone(),
+            agent: "restricted".into(),
+        })
+        .await
+        .unwrap();
+    holly
+        .send(InMsg::prompt(parent.clone(), "start"))
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::Spawn {
+            session: child.clone(),
+            parent: Some(parent.clone()),
+            predecessor: None,
+            agent: "worker".into(),
+            prompt: "edit something".into(),
+            user: None,
+            sponsored: false,
+        })
+        .await
+        .unwrap();
+    let events = collect(sub, &child).await;
+    let outs = outputs(&events);
+    assert!(
+        outs.iter().any(|o| o
+            == "Declined by ancestor agent `restricted`'s profile — tool `edit` is not in its \
+                tool mask"),
+        "the child's decline must name the clamping ancestor; got {outs:?}"
+    );
+    assert!(
+        !outs.iter().any(|o| o.starts_with("ran:")),
+        "the ancestor-masked edit must never run"
+    );
+}
+
+#[tokio::test]
+async fn unregistered_bash_is_declined_with_the_enabling_command() {
+    // `bash` is advertised whether or not it is registered (that is what keeps
+    // the tools array stable across `/enable tool bash`), so a call can arrive
+    // before it exists. The decline must name the command that turns it on —
+    // falling through to the registry's generic "unknown tool" would read as a
+    // hallucinated name and teach the model nothing.
+    let holly = spawn_calling(
+        "bash",
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "run it"))
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+    let outs = outputs(&events);
+    assert!(
+        outs.iter()
+            .any(|o| o == "tool `bash` is disabled — enable with /enable tool bash"),
+        "an unregistered lazy built-in declines with its enabling command; got {outs:?}"
+    );
+    assert!(
+        !outs.iter().any(|o| o.contains("unknown tool")),
+        "never the generic unknown-tool message; got {outs:?}"
+    );
+    assert!(
+        any_is_error(&events),
+        "the decline rides the ADR-0176 side channel as an error; got {events:?}"
     );
 }
