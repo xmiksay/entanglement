@@ -26,7 +26,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
          | SetSessionMeta{session,name?,action?,if_unset=false}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151); if_unset=true applies `name` only when the session has none yet — the session-title generator's guard against clobbering a `/name` or a name restored by resume (#553)
-         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow, optionally arg_pattern-narrowed), deny entries withdraw even profile-advertised tools (#539, ADR-0149; arg_pattern + closed-table lazy built-in registration e.g. bash #611, ADR-0163); full replacement, empty clears; trusted-only for an enable entry, but wire-allowed when every entry is deny-only (#634, ADR-0177)
+         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow, optionally arg_pattern-narrowed), deny entries withdraw even profile-advertised tools (#539, ADR-0149; arg_pattern per #611, ADR-0163 — the closed-table lazy built-in registration it added is retired by ADR-0195, bash registering at startup); full replacement, empty clears; trusted-only for an enable entry, but wire-allowed when every entry is deny-only (#634, ADR-0177)
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?,sponsored}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147); sponsored = true only for a propose_plan build handoff (ADR-0138), disambiguating WaitingAgent's two callers (#626, ADR-0172), #[serde(default)] false
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
@@ -74,7 +74,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,us
          | Compacted{session,seq,summary,kept,auto}   // compaction summary ready; auto:false (default) → source untouched, head forks into a new session (#324, ADR-0082 → ADR-0101); auto:true → in-place mutation the live engine already applied (#398, ADR-0103)
          | FileChange{session,seq,path,change_kind,hash}   // file-change audit: runtime executor emits on edit/write/apply_patch; hash = sha256(after) (#202, ADR-0060, #455)
          | PlanChanged{session,seq,path,hash}   // a propose_plan-bound file changed on disk out of band (not through this session's own edit/write/apply_patch); live counterpart to propose_plan's staleness guard, off a dedicated debounced plans-folder watch (#627, ADR-0173). No core replay-fold semantics, like SkillActive
-         | SkillActive{session,seq,skill_id?,allowed_tools?}   // wire-facing posture only: the active skill's scope (tool mask); core neither interprets nor enforces it. Mirrors FileChange: a fresh per-session seq (#157), no core replay-fold semantics (a head just tracks the latest value). (#400, ADR-0106)
+         | SkillActive{session,seq,skill_id?,allowed_tools?}   // wire-facing posture only: the active skill. Core neither interprets nor enforces it. Mirrors FileChange: a fresh per-session seq (#157), no core replay-fold semantics (a head just tracks the latest value). (#400, ADR-0106; the mask is gone — ADR-0194 removed skill-scoped allowed_tools enforcement, so allowed_tools is vestigial: still serialized when present for replay compat, never read or enforced)
          | AmbiguousRetry{session,seq,nudge}   // ambiguous LLM stop → bounded in-place retry: persisted boundary so replay reconstructs the partial round + nudge, not one merged assistant message (ADR-0118)
          | SearchResult{session,seq,part}   // persisted provider-side web-search block (ContentPart::ProviderSearch); replay folds it into the assistant Message's content like TextDelta (#481, ADR-0131)
          | ReasoningBlock{session,seq,part}   // persisted extended-thinking block (ContentPart::Reasoning); same replay fold as SearchResult. The *persistence* rail for reasoning — ReasoningDelta above is the *display* rail and is never folded into Context; both fire for the same thinking. Capture is unconditional; whether the block is sent back is ModelEntry::replay_thinking (ADR-0160)
@@ -154,12 +154,13 @@ unlike the read-only `McpList`, none of the three actions is wire-allowed),
 and, for an **enable** entry, `SetToolOverlay` (#539,
 [ADR-0149](../adr/0149-per-session-tool-overlay.md), the `McpAdd` rationale
 again: it injects tools past the agent mask, optionally graded `allow` with no
-approval prompt — including, per ADR-0163 (#611), lazily registering a
-closed-table built-in like `bash`, folding in the bespoke
-`BashEnable`/`BashDisable` pair (#498,
+approval prompt (ADR-0163's lazily-registering-a-closed-table-built-in clause
+— #611, folding in the bespoke `BashEnable`/`BashDisable` pair of #498/
 [ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md), now
-superseded) this same way — the TUI `/enable`/`/disable` commands (incl.
-`/enable tool bash [--allow [<pattern>]]`) send over `Holly::send`). A
+superseded — is itself retired by
+[ADR-0195](../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md),
+`bash` registering at startup; the grade-only form stands) — the TUI
+`/enable`/`/disable` commands send over `Holly::send`). A
 **deny-only** `SetToolOverlay` (every entry `deny: true`, including the empty
 list) is wire-allowed (#634,
 [ADR-0177](../adr/0177-wire-allowed-deny-only-tool-overlay.md) amending
@@ -404,7 +405,9 @@ so an already-named resumed session skips the aux call on its next prompt too
 
 **Live tool overlay — `InMsg::SetToolOverlay`** (#539,
 [ADR-0149](../adr/0149-per-session-tool-overlay.md); live bash enablement
-folded in, #611, [ADR-0163](../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)).
+grades folded in, #611, [ADR-0163](../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)
+— its registration half retired by
+[ADR-0195](../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)).
 `SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}`
 **replaces** the session's live tool overlay: `*`/`?` patterns (the ADR-0148
 mask semantics) that override the active profile's
@@ -428,24 +431,23 @@ permission ceiling (a deny entry has no grade; it removes the tool ahead of
 any permission decision). Don't confuse `pattern` (a tool-name glob) with
 `arg_pattern` (a command-argument glob) — the two mean different things
 despite the near-identical name. Mask disposition is per ancestor-chain link,
-so a parent's overlay also covers its spawn sub-tree. When an enable entry's
-name-glob matches an entry in a closed, runtime-fixed table of
-lazily-registrable built-ins (`bash` is the only member today), it also
-triggers that built-in's registration into the process-wide `SharedRegistry`
-— the mask-level overlay alone can only *reveal* a tool the registry already
-holds, not conjure one that was never registered (e.g. `bash` without
-`ENTANGLEMENT_ENABLE_BASH=1`); this table is what lets `/enable tool bash`
-work without the startup env var. Trusted-only for an **enable** entry
+so a parent's overlay also covers its spawn sub-tree. (The closed
+lazily-registrable-built-in table this section used to describe —
+`/enable tool bash` registering an unregistered built-in — is retired by
+[ADR-0195](../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md):
+`bash` registers at startup like every other built-in, so an enable entry is
+now a pure grade override and a deny entry still withdraws at dispatch. The
+overlay remains mask-level — it reveals tools the registry already holds.)
+Trusted-only for an **enable** entry
 (wire-refused, the `McpAdd` rationale); a **deny-only** overlay (every entry
 `deny: true`, including the empty list) is wire-allowed instead (#634,
 [ADR-0177](../adr/0177-wire-allowed-deny-only-tool-overlay.md) amending this
 ADR) — it can only withdraw tools the profile already advertises, so a
 `serve`/`pipe` client can now self-restrict a session's tool surface without
 an in-process head, though it still cannot grant one. The TUI drives the full
-surface via `/enable`/`/disable` (incl.
-`/enable tool bash [--allow [<pattern>]]`, superseding the old
-`/bash on|off`), the bare-`/enable` session-tools checklist dialog (the
-overlay as a diff against the profile mask), and the `/mcp` panel's `e`/`d`
+surface via `/enable`/`/disable` (a bare
+`/enable` being the session-tools checklist dialog (the
+overlay as a diff against the profile mask)), and the `/mcp` panel's `e`/`d`
 server keys.
 Stash-deferred while a turn is live, like `SetAgent`/`SetModel`.
 

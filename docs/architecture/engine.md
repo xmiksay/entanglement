@@ -34,12 +34,47 @@ streaming backend directly.
 Turn loop (`run_round`, driven by `drive_turn`): assemble `tools` — **every**
 spec `EngineConfig.tool_specs` (or the per-session `tool_spec_resolver`) yields,
 plus the active profile's `profile_tool_specs` entry, with **no filtering**: the
-profile mask, session tool overlay and skill `allowed_tools` are enforced
-exclusively at the runtime's dispatch gate, so the advertised surface stays
+profile mask, session tool overlay and (formerly) skill `allowed_tools` are enforced
+exclusively at the runtime's dispatch gate — the skill mask is now removed
+entirely ([ADR-0194](../adr/0194-skills-are-additive-only.md): skills are
+additive-only) — so the advertised surface stays
 stable within a session and the provider's prompt cache survives an overlay
-toggle, a `/enable tool bash`, or a `SetAgent` (see [agents &
+toggle, a `SetAgent`, or a skill load (see [agents &
 permissions](agents-and-permissions.md) §physical tool restriction for the
-attributed decline a masked call gets instead) — then send `LlmRequest { system,
+attributed decline a masked call gets instead).
+
+**Two tool-call modes** (ADR-0193): the surface above is what **native mode**
+(the default) advertises — the full registered surface with dynamic MCP specs
+inline, mutating on add/remove (an accepted cache cost). **Invoke mode**
+(per-model opt-in) advertises instead an **immutable lean kernel**: the
+high-frequency tools (`read`/`edit`/`apply_patch`/`write`/`bash`/`poll`/
+`ask_user`/`update_tasks`/`load_skill`) plus `invoke` and the discovery trio
+(`tools`/`skills`/`describe`) plus the profile-defining specs (the
+ADR-0192 carve-out — they vary across profiles, never within a session).
+Everything else (`call`/`glob`/`grep`/`rhai`, MCP management, all `mcp__*`,
+endpoints, skill tools) stays **registered but unadvertised** — invoke-reachable
+and discoverable only, so the advertised array and the system prompt are
+**byte-stable for the session's lifetime**, including across `mcp_enable` and
+`McpAdd` (the dynamic seams native mode still carries). The mode is
+**per-session, resolved at session start** from the session's initial model
+(`ModelEntry.tool_call`, precedence env `ENTANGLEMENT_TOOL_CALL_MODE` >
+`config.yml` `tool_call_mode` > catalog > default `native`) and held in a
+runtime-side session→mode map — the resolver and executor are engine-global and
+session-multiplexed, and per-profile model pins mean concurrent sessions can
+run different modes. A live `SetModel` **keeps** the session's mode (logged
+when the new model's catalog preference differs — switching mid-session would
+bust the cache the mode exists to protect); subagents resolve their own mode
+at spawn. Mechanically the mode is the resolver's input shape, not a core
+concept: core still advertises whatever the `tool_spec_resolver` yields, and
+`invoke`'s envelope is unwrapped runtime-side at the top of the dispatch
+ladder ([gates & host tools](gates-and-host-tools.md) §invoke router) — so
+from core's perspective a `invoke(read)` round-trip is an ordinary
+`ToolCall`/`ToolResult` pair, and the emitted `invoke(...)` call is kept in
+history under the same call id. In invoke mode the system prompt drops the
+skills/dynamic-tool rosters for a one-line pointer at
+`tools`/`skills`/`describe` (native mode keeps today's sections).
+
+The assembled tools go into `LlmRequest { system,
 model, messages, tools }` → consume the streamed `LlmEvent`s (emit `TextDelta`
 per `Text` chunk, gather `ToolCall`s, fold `Finish`) → if the reply carries
 tool calls, **emit the whole batch up front** — the per-call (`ToolCall`,
