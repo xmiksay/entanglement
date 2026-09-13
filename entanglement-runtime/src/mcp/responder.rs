@@ -43,8 +43,8 @@ use super::transport_label;
 /// `SessionEnded` drops the ended session from both that parent map and every
 /// server's enablement set, so neither grows for the process lifetime. This
 /// is the only place that owns `avail` across the whole engine lifetime, so
-/// it is the natural fold point — mirrors `bash_live::spawn_lazy_builtin_responder`'s
-/// own outbound-broadcast fold, just for a different `OutEvent` pair.
+/// it is the natural fold point — an outbound-broadcast fold answering
+/// inbound requests, one per `OutEvent` family it cares about.
 pub fn spawn_mcp_responder(
     holly: &Holly,
     registry: SharedRegistry,

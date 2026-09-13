@@ -433,10 +433,7 @@ fn approval_tail_write_diffs_against_disk_content() {
     let mut app = App::new_for_test(sid.clone());
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(dir.path().join("a.txt"), "old content\n").expect("seed file");
-    app.init_head_context(
-        dir.path().to_path_buf(),
-        crate::bash_live::BashRegistered::new(false),
-    );
+    app.init_head_context(dir.path().to_path_buf());
     feed_tool_request(
         &mut app,
         &sid,
@@ -474,10 +471,7 @@ fn approval_tail_write_new_file_shows_full_content_no_diff() {
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());
     let dir = tempfile::tempdir().expect("temp dir");
-    app.init_head_context(
-        dir.path().to_path_buf(),
-        crate::bash_live::BashRegistered::new(false),
-    );
+    app.init_head_context(dir.path().to_path_buf());
     feed_tool_request(
         &mut app,
         &sid,

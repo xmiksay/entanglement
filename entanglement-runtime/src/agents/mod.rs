@@ -1397,6 +1397,104 @@ mod tests {
         assert!(!research.spawn_target_allowed("research"));
     }
 
+    /// ADR-0195 §3: the curated read-only Allow rules shipped in the embedded
+    /// (lowest, shadowable) agent layer — exact-prefix command globs for
+    /// commands that cannot mutate anything. Least-privilege tiers (`explore`,
+    /// `research`) pre-approve them; every other command still escalates; and
+    /// the config ceiling still clamps them down like any profile grade.
+    #[test]
+    fn curated_read_only_rules_allow_inspection_but_not_mutation() {
+        let mut reg = ProfileRegistry::default();
+        for (file, contents) in BUILT_INS {
+            let p = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
+            reg.insert(p);
+        }
+
+        // Both least-privileged tiers pre-approve the curated set …
+        for name in ["explore", "research"] {
+            let profile = reg.get(name).expect("built-in");
+            assert_eq!(
+                profile.permission.resolve("bash", Some("find .")),
+                Permission::Allow,
+                "{name}: `bash find .` is curated read-only"
+            );
+            assert_eq!(
+                profile.permission.resolve("call", Some("rg pattern src")),
+                Permission::Allow,
+                "{name}: `call rg …` is curated read-only"
+            );
+            assert_eq!(
+                profile.permission.resolve("call", Some("cat README.md")),
+                Permission::Allow,
+                "{name}: `call cat …` is curated read-only"
+            );
+            // … while everything outside it still escalates.
+            assert_eq!(
+                profile.permission.resolve("bash", Some("git status")),
+                Permission::Ask,
+                "{name}: a non-curated command still asks"
+            );
+            assert_eq!(
+                profile.permission.resolve("call", Some("git status")),
+                Permission::Ask,
+                "{name}: a non-curated `call` still asks"
+            );
+            // And nothing outside the curated set runs silently on `explore` —
+            // the prefix never widens past its own commands (`bash: ask` is an
+            // explicit rule there, so an unlisted command escalates rather
+            // than hitting the `default: deny` floor).
+            if name == "explore" {
+                assert_eq!(
+                    profile.permission.resolve("bash", Some("rm -rf /")),
+                    Permission::Ask,
+                    "explore: an unlisted command escalates, never auto-runs"
+                );
+            }
+        }
+
+        // The ceiling clamps the curated Allow down exactly as it clamps any
+        // profile grade (#172): a `bash: deny` ceiling wins over every rule.
+        let explore = reg.get("explore").expect("built-in");
+        let deny_bash = PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny);
+        assert_eq!(
+            crate::permission::clamp_to_base(
+                explore.permission.resolve("bash", Some("find .")),
+                &deny_bash,
+                "bash",
+                Some("find ."),
+                None,
+            ),
+            Permission::Deny,
+            "a ceiling denying `bash` must clamp the curated Allow"
+        );
+        // A narrower arg-scoped ceiling (`bash(find *): ask`) re-tightens just
+        // the curated slice it names, leaving an unrelated rule untouched.
+        let ask_find =
+            PermissionProfile::new(Permission::Allow).with("bash(find *)", Permission::Ask);
+        assert_eq!(
+            crate::permission::clamp_to_base(
+                explore.permission.resolve("bash", Some("find .")),
+                &ask_find,
+                "bash",
+                Some("find ."),
+                None,
+            ),
+            Permission::Ask,
+            "an arg-scoped ceiling re-tightens the curated slice"
+        );
+        assert_eq!(
+            crate::permission::clamp_to_base(
+                explore.permission.resolve("call", Some("rg pattern")),
+                &ask_find,
+                "call",
+                Some("rg pattern"),
+                None,
+            ),
+            Permission::Allow,
+            "a `bash`-scoped ceiling leaves the curated `call` rules alone"
+        );
+    }
+
     #[test]
     fn missing_frontmatter_is_an_error() {
         let err = parse("no frontmatter here").unwrap_err();

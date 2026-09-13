@@ -869,28 +869,6 @@ pub fn spawn_tool_executor_with_policy(
                         });
                         continue;
                     }
-                    // A lazily-registrable built-in (`bash`, ADR-0163 §2) is
-                    // advertised whether or not it is registered, so a call can
-                    // arrive before `/enable tool bash` ever ran. Answer with
-                    // the enabling command rather than letting it fall through
-                    // to the registry's generic "unknown tool" — which would
-                    // read as a hallucinated name and teach the model nothing.
-                    // Checked *after* the mask gates so a profile/overlay that
-                    // withholds `bash` outright keeps its own attribution.
-                    let unregistered_builtin = crate::bash_live::LAZY_BUILTINS
-                        .contains(&tool.as_str())
-                        && !tools
-                            .read()
-                            .expect("tool registry lock poisoned")
-                            .contains(&tool);
-                    if unregistered_builtin {
-                        let holly = holly.clone();
-                        tokio::spawn(async move {
-                            let output = crate::decline::disabled_builtin_decline(&tool);
-                            seam::reply(&holly, session, request_id, output, true).await;
-                        });
-                        continue;
-                    }
                     // Route the unmasked tool through its interception. The mask
                     // above runs *structurally before* this classifier, and the
                     // routes are a `match` (mutually exclusive) rather than an

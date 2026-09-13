@@ -25,9 +25,10 @@ pub const RHAI_TOOL: &str = "rhai";
 /// (`call`/`bash`, ADR-0115 amending ADR-0046) — so `rhai` is precisely as
 /// privileged as the always-registered tools it does bind. `bash` is only
 /// ever *reachable*, not just masked, when the host `bash` tool itself is
-/// registered (`ENTANGLEMENT_ENABLE_BASH`); it stays in this mask/grade list
-/// unconditionally since `BindingPolicy` grading is argument-independent of
-/// whether the engine bound the function.
+/// registered (a head always registers it, ADR-0195; a bespoke registry
+/// may not); it stays in this mask/grade list unconditionally since
+/// `BindingPolicy` grading is argument-independent of whether the engine
+/// bound the function.
 pub const BINDING_TOOLS: [&str; 7] = ["read", "glob", "grep", "edit", "write", "call", "bash"];
 
 /// Tool name the plan agent calls to submit its plan (`content` XOR `path`)

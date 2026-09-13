@@ -634,8 +634,8 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![bash_call, finish]);
-    // bash is opt-in (ADR-0010); mirror what `skutter` does when
-    // ENTANGLEMENT_ENABLE_BASH=1 by registering BashTool explicitly.
+    // `bash` is registered at startup (ADR-0195); mirror the head's own
+    // registry assembly by registering it alongside the sextet.
     let mut tools = host_tools(root.clone());
     tools.register(BashTool::new(root.clone()));
     let cfg = EngineConfig {
@@ -713,8 +713,8 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![call_call, finish]);
-    // `call` is opt-in (ADR-0010/ADR-0045); mirror the head registering the exec
-    // pair under ENTANGLEMENT_ENABLE_BASH=1.
+    // Mirror the head's registry: the sextet plus the exec pair
+    // (`call`/`bash`, both unconditionally registered — ADR-0093/ADR-0195).
     let mut tools = host_tools(root.clone());
     tools.register(BashTool::new(root.clone()));
     tools.register(CallTool::new(root.clone()));

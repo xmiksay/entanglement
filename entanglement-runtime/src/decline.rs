@@ -15,7 +15,6 @@
 //! - `Declined by ancestor agent ...`
 //! - `Declined by session tool overlay ...`
 //! - `Declined by skill ...`
-//! - `` tool `bash` is disabled — enable with /enable tool bash ``
 
 use entanglement_core::SessionId;
 
@@ -108,14 +107,6 @@ pub fn skill_decline(skill_id: &str, tool: &str) -> String {
     format!("Declined by skill `{skill_id}`'s allowed_tools — tool `{tool}` is not listed")
 }
 
-/// The refusal for a lazily-registrable built-in that is advertised but not yet
-/// registered (`bash`, ADR-0163 §2). Advertisement is unconditional now, so
-/// this is the *only* signal the model gets that the tool exists but is off —
-/// it names the exact command that turns it on.
-pub fn disabled_builtin_decline(tool: &str) -> String {
-    format!("tool `{tool}` is disabled — enable with /enable tool {tool}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,14 +175,10 @@ mod tests {
     }
 
     #[test]
-    fn skill_and_disabled_builtin_wording() {
+    fn skill_wording() {
         assert_eq!(
             skill_decline("restricted", "edit"),
             "Declined by skill `restricted`'s allowed_tools — tool `edit` is not listed"
-        );
-        assert_eq!(
-            disabled_builtin_decline("bash"),
-            "tool `bash` is disabled — enable with /enable tool bash"
         );
     }
 }

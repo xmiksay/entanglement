@@ -32,12 +32,6 @@ pub mod agent_send;
 pub mod agents;
 pub mod ask_user;
 pub mod aux_llm;
-// Lazily-registrable built-ins (#498, ADR-0133; folded into the session tool
-// overlay, #611/ADR-0163): register `bash` in a running process on demand —
-// mirrors the MCP `SharedRegistry` live-management seam (#372/#375).
-// Lean-library-safe: only entanglement-core + std + the already-unconditional
-// `host` module.
-pub mod bash_live;
 pub mod cancel;
 pub mod config;
 mod date;

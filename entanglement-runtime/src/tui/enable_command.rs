@@ -4,13 +4,14 @@
 //! either the same way (`/disable ...` upserts a **deny** entry, withdrawing
 //! even a profile-advertised tool for this session; bare `/disable` clears
 //! the whole overlay), or open the session-tools checklist dialog (bare
-//! `/enable`). Also the fold-in point for live bash enablement (ADR-0163,
-//! #611 — `/enable tool bash [--allow [<pattern>]]` supersedes the old
-//! `/bash on|off`). Kept in its own module mirroring `mcp_command.rs` (the
-//! raw-text re-parse pattern), since `commands.rs`/`event_loop.rs` are past
-//! the 400-line cap. Issue 2: the `mcp`/`tool` subcommand grammar is now
-//! clap-derived ([`crate::tui::command_args::parse_enable_via_clap`]); this
-//! module maps the parsed pieces onto [`EnableCommand`].
+//! `/enable`). An enable entry naming an always-registered tool like `bash`
+//! (ADR-0195) is now a pure **grade override** — it exists either way; a deny
+//! entry still withdraws it at dispatch for that session, same as any tool.
+//! Kept in its own module mirroring `mcp_command.rs` (the raw-text re-parse
+//! pattern), since `commands.rs`/`event_loop.rs` are past the 400-line cap.
+//! Issue 2: the `mcp`/`tool` subcommand grammar is now clap-derived
+//! ([`crate::tui::command_args::parse_enable_via_clap`]); this module maps the
+//! parsed pieces onto [`EnableCommand`].
 
 use entanglement_core::{Holly, InMsg, SessionId, ToolOverlayEntry};
 
@@ -26,7 +27,7 @@ pub enum EnableCommand {
     Show,
     /// Upsert one enable entry on the active session (drops a same-pattern
     /// deny entry — the two are mutually exclusive per pattern). `arg_pattern`
-    /// (ADR-0163, #611) narrows `allow` to matching command arguments only —
+    /// (#611/ADR-0163) narrows `allow` to matching command arguments only —
     /// `--allow git *` on `/enable tool bash` — and is `None` for a flat
     /// grade or when `allow` is `false`.
     Enable {
@@ -123,9 +124,8 @@ pub(super) async fn send_enable(app: &mut App, holly: &Holly, text: &str, enabli
 /// *available* (`allowed`-state, #542) server, this first lazily connects it —
 /// the same path the `mcp_enable` tool takes — and scopes its visibility to
 /// this session; a connect failure renders as a status line and skips the
-/// overlay entirely. `arg_pattern` (ADR-0163, #611) narrows `allow` to
-/// matching command arguments only — the fold-in of the pre-ADR-0163
-/// `/bash on --allow <pattern>` grade.
+/// overlay entirely. `arg_pattern` (#611/ADR-0163) narrows `allow` to
+/// matching command arguments only.
 pub(super) async fn upsert_enable(
     app: &mut App,
     holly: &Holly,
@@ -277,11 +277,11 @@ mod tests {
         );
     }
 
-    /// ADR-0163, #611: `/enable tool bash --allow git *` narrows the grant to
-    /// commands matching `git *` — the fold-in of the pre-ADR-0163
-    /// `/bash on --allow git *` grade. The multi-word pattern rejoins
-    /// verbatim with single spaces (clap's `--allow` alone would only ever
-    /// capture the first token).
+    /// A `--allow`'s free-form trailing pattern (`/enable tool bash
+    /// --allow git *`) narrows the grant to commands matching `git *` —
+    /// the arg-scoped grade of a live enable. The multi-word pattern
+    /// rejoins verbatim with single spaces (clap's `--allow` alone would
+    /// only ever capture the first token).
     #[test]
     fn parse_enable_tool_allow_with_arg_pattern() {
         assert_eq!(

@@ -980,20 +980,12 @@ fn record_rejected(app: &mut App, tool: &str, reason: &Option<String>) {
 }
 
 /// Runs a `!bash` passthrough command head-side and injects the output into the
-/// transcript (ADR-0030). Gated on `ENTANGLEMENT_ENABLE_BASH` — the same opt-in
-/// as the model-facing `bash` tool (ADR-0010), since it runs unsandboxed by
-/// default. When disabled, a hint is recorded instead of running anything.
-/// Honors the same `ENTANGLEMENT_SANDBOX` opt-in as the model-facing tool
-/// (#399, ADR-0104) so a passthrough command gets the same confinement.
+/// transcript (ADR-0030). `bash` is registered at startup like every other
+/// built-in (ADR-0195), so the passthrough is always available — what it runs
+/// is still the user's own hand-typed command, which is the consent the gate
+/// was for. Honors `ENTANGLEMENT_SANDBOX` (the same opt-in as the model-facing
+/// tool, #399/ADR-0104) so a passthrough command gets the same confinement.
 async fn run_bash_passthrough(app: &mut App, command: &str) {
-    if !app.bash_enabled() {
-        app.record_bash_passthrough(
-            command.to_string(),
-            "[bash passthrough disabled] set ENTANGLEMENT_ENABLE_BASH=1 to run `!` commands"
-                .to_string(),
-        );
-        return;
-    }
     use entanglement_runtime::Tool;
     let tool = crate::host::bash::BashTool::new(app.root().to_path_buf())
         .with_sandbox(crate::host::sandbox::SandboxPolicy::from_env());
@@ -1236,10 +1228,7 @@ mod tests {
         std::fs::write(dir.path().join("alpha.txt"), "x").expect("write file");
         let sid = SessionId::new("s1");
         let mut app = App::new_for_test(sid);
-        app.init_head_context(
-            dir.path().to_path_buf(),
-            crate::bash_live::BashRegistered::new(false),
-        );
+        app.init_head_context(dir.path().to_path_buf());
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
         let mut attention = Attention::from_env();

@@ -319,8 +319,9 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `read` tool — no content pre-expansion). An input starting with `!` is a
   head-side shell escape: the command runs through the existing `BashTool` and its
   output is injected into the transcript as a `!bash` tool call/output pair, local
-  only (never sent to the engine). Gated on `ENTANGLEMENT_ENABLE_BASH=1`, the same
-  opt-in as the model-facing `bash` tool (ADR-0010). **In-session inspection
+  only (never sent to the engine). Always available now that `bash` is a
+  default-registered built-in (ADR-0195 superseded ADR-0010's opt-in; the
+  typed command itself is the consent this gate was for). **In-session inspection
   overlay** (✅ #214, `tui::modals::inspect` + `tui::app::inspect`): `<leader>i` /
   `/inspect` opens a read-only three-tab overlay (Prompt / Agents / Skills) over
   the **active session's** resolved state — the same views the CLI's `skutter

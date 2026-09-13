@@ -102,8 +102,7 @@ fn spawn_with_edit_call() -> Holly {
 }
 
 /// [`spawn_with_edit_call`] generalized: a scripted LLM that calls `tool` once,
-/// over a caller-supplied profile registry, with only `EchoEdit` registered —
-/// so `bash` is deliberately *unregistered* while still advertised.
+/// over a caller-supplied profile registry, with only `EchoEdit` registered.
 fn spawn_calling(tool: &str, profiles: ProfileRegistry) -> Holly {
     let scripted = Arc::new(vec![
         LlmResponse {
@@ -348,12 +347,12 @@ async fn an_ancestors_mask_declines_a_child_and_names_the_ancestor() {
 }
 
 #[tokio::test]
-async fn unregistered_bash_is_declined_with_the_enabling_command() {
-    // `bash` is advertised whether or not it is registered (that is what keeps
-    // the tools array stable across `/enable tool bash`), so a call can arrive
-    // before it exists. The decline must name the command that turns it on —
-    // falling through to the registry's generic "unknown tool" would read as a
-    // hallucinated name and teach the model nothing.
+async fn unregistered_bash_falls_through_to_the_generic_unknown_tool_message() {
+    // ADR-0195 retired the lazily-registrable built-in machinery: `bash` is
+    // registered at startup like every other tool, so an *unregistered*
+    // `bash` is now possible only in a bespoke test registry like this one —
+    // and it must behave like any other unknown name (the Levenshtein-hint
+    // message), not carry a bespoke "enable with /enable tool bash" decline.
     let holly = spawn_calling(
         "bash",
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
@@ -367,13 +366,12 @@ async fn unregistered_bash_is_declined_with_the_enabling_command() {
     let events = collect(sub, &sid).await;
     let outs = outputs(&events);
     assert!(
-        outs.iter()
-            .any(|o| o == "tool `bash` is disabled — enable with /enable tool bash"),
-        "an unregistered lazy built-in declines with its enabling command; got {outs:?}"
+        outs.iter().any(|o| o.starts_with("unknown tool: `bash`")),
+        "a name absent from the registry is an ordinary unknown tool; got {outs:?}"
     );
     assert!(
-        !outs.iter().any(|o| o.contains("unknown tool")),
-        "never the generic unknown-tool message; got {outs:?}"
+        !outs.iter().any(|o| o.contains("enable with /enable tool")),
+        "the retired lazy-builtin decline must not fire; got {outs:?}"
     );
     assert!(
         any_is_error(&events),

@@ -848,8 +848,8 @@ fn configure_engine(
 /// `on_progress` interrupt can't reach into a binding call blocked on
 /// `blocking_recv`, so the exec tool's own (much longer, up to 600s) timeout
 /// would otherwise stand alone as the only bound on an in-flight child.
-/// `bash` is registered only when the host `bash` tool itself is
-/// (`bash_enabled`, i.e. `ENTANGLEMENT_ENABLE_BASH`) — off, `bash(...)` is an
+/// `bash` is registered only when the host `bash` tool itself is in the
+/// registry the script delegates through — off, `bash(...)` is an
 /// unknown (catchable) script function rather than a graded-then-failing
 /// binding. Each also gains a `workdir` overload (#480, ADR-0129:
 /// `exec(command, args, workdir)`/`bash(command, workdir)`) that marshals the

@@ -80,7 +80,6 @@ pub async fn tui(
     aux_models: std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>,
     mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     root: std::path::PathBuf,
-    live_bash: std::sync::Arc<crate::bash_live::BashRegistered>,
     tool_roster: Vec<String>,
     http_client: HttpClient,
     configured_editor: Option<String>,
@@ -139,7 +138,7 @@ pub async fn tui(
     app.set_configured_editor(configured_editor);
     app.set_grants(grants);
     app.set_mcp_handles(mcp_handles);
-    app.init_head_context(root.clone(), live_bash);
+    app.init_head_context(root.clone());
     mention::spawn_index_build(root, event_tx.clone()); // off the critical path, #678
 
     let mut attention = Attention::from_env();

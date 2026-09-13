@@ -1,14 +1,14 @@
 //! Host tools that execute against the local filesystem and shell — `read`,
-//! `glob`, `grep`, `edit`, `write`, `apply_patch`, `call`, and the opt-in
-//! `bash`. The read-only trio (`read`/`glob`/`grep`) is covered by ADR-0008;
+//! `glob`, `grep`, `edit`, `write`, `apply_patch`, `call`, and `bash`. The
+//! read-only trio (`read`/`glob`/`grep`) is covered by ADR-0008;
 //! `edit`/`bash` by ADR-0009/ADR-0012; whole-file `write` by ADR-0031;
 //! multi-hunk `apply_patch` (unified-diff apply, beside `edit`/`write`) by
 //! #455; the argv-exec `call` (no shell, auto-tailed output) by ADR-0045;
 //! [`host_tools`] assembles the **root-contained sextet**
 //! (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`) — a head registers
-//! [`CallTool`] unconditionally alongside it and opts into [`BashTool`]
-//! separately (gated by `ENTANGLEMENT_ENABLE_BASH`) — see ADR-0010, amended
-//! by ADR-0093 for `call`'s registration.
+//! [`CallTool`] and [`BashTool`] unconditionally alongside it (ADR-0093 and
+//! ADR-0195 respectively: registration is not where either tool's security
+//! story lives, permission is).
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
 //! paths resolve against it and are **rejected on `..` escape** *and* on
@@ -22,9 +22,9 @@
 //! listing or huge file can't silently consume the context window. `bash`/
 //! `call` run the command rooted at `root` (or at a validated `workdir`) but
 //! otherwise inherit the engine process's full privileges by default —
-//! unsandboxed unless opted in (ADR-0009/ADR-0045); registration (opt-in for
-//! `bash`, unconditional for `call`) plus permission profiles are the default
-//! controls (ADR-0010/ADR-0093). [`sandbox`] adds an optional bubblewrap
+//! unsandboxed unless opted in (ADR-0009/ADR-0045); the permission profiles
+//! and the config ceiling are the default controls (ADR-0010/ADR-0093/
+//! ADR-0195). [`sandbox`] adds an optional bubblewrap
 //! confinement layer for both (ADR-0104, `ENTANGLEMENT_SANDBOX=bwrap`).
 
 use std::path::{Component, Path, PathBuf};
@@ -325,9 +325,9 @@ pub fn bounded_result(status: &str, body: String) -> String {
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Build the **root-contained sextet**
-/// (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`). Bash is opt-in at the
-/// head level (ADR-0010): call [`BashTool::new`] directly and register it
-/// when `ENTANGLEMENT_ENABLE_BASH=1`.
+/// (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`). The exec pair
+/// (`call`/`bash`) is registered by the head alongside this sextet,
+/// unconditionally (ADR-0093/ADR-0195).
 pub fn host_tools(root: PathBuf) -> ToolRegistry {
     host_tools_with_extra_roots(root, None)
 }

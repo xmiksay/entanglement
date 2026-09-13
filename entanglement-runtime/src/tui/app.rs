@@ -222,12 +222,7 @@ pub struct App {
 
     // `@file` mention completion + `!bash` passthrough (ADR-0030). `root` is the
     // working directory both the file index and `!bash` execution are rooted at.
-    // `live_bash` (#498; folded into the tool overlay, #611/ADR-0163) is the
-    // shared handle a live `/enable tool bash`/`/disable tool bash` flips —
-    // reading it live keeps the `!bash` gate in sync with both the startup
-    // env var and a live enable, with no separate plumbing.
     root: PathBuf,
-    live_bash: std::sync::Arc<crate::bash_live::BashRegistered>,
     mention: MentionPopup,
     /// Prefix-filter slash-command completion popup (Issue 2). Mirrors
     /// `mention`: persistent across frames, recompute via `update_slash`.

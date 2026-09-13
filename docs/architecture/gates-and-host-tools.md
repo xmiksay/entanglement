@@ -373,10 +373,10 @@ mask the write tools out entirely — so a write call from them is *declined*
 before any `Allow`/`Ask`/`Deny` default is reached — while grading
 `call`/`bash`/`rhai` at `Ask` (ADR-0137/ADR-0167). Registration, mask and
 permission are three orthogonal axes: registration decides whether the tool
-can *execute* at all (unconditional for `call`, opt-in for `bash` — though
-both are advertised either way), the mask decides *existence* per profile at
+can *execute* at all (unconditional for both `call` and `bash`, ADR-0195), the
+mask decides *existence* per profile at
 dispatch, and the profile's `permission` decides `Allow`/`Ask`/`Deny` among
-the calls the mask admits — so `call` being always-registered does not change
+the calls the mask admits — so `bash` being always-registered does not change
 what a non-`build` profile can do with it.
 
 Six **runtime-owned orchestration tools** are *not* in the registry — the

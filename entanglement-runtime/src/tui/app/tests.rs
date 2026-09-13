@@ -679,10 +679,7 @@ fn agent_picker_still_lists_all_entry_agents() {
 fn app_in_temp_dir(sid: SessionId) -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut app = App::new_for_test(sid);
-    app.init_head_context(
-        dir.path().to_path_buf(),
-        crate::bash_live::BashRegistered::new(false),
-    );
+    app.init_head_context(dir.path().to_path_buf());
     (app, dir)
 }
 

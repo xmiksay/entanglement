@@ -123,20 +123,22 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
 }
 
 /// [`spawn_with_rhai`] plus the exec pair registered into the same registry —
-/// `call` always, `bash` only when `bash_enabled` (mirrors `main.rs`'s
-/// `ENTANGLEMENT_ENABLE_BASH` gate) — so the script-facing `exec(...)`/
-/// `bash(...)` bindings have a real host tool to delegate to (#419).
+/// both unconditionally, mirroring the head's ADR-0093/ADR-0195 posture — so
+/// the script-facing `exec(...)`/`bash(...)` bindings have a real host tool
+/// to delegate to (#419). A test that wants the *absent*-tool shape passes
+/// `bash_registered: false` (a bespoke registry omitting it, as an embedder
+/// might assemble).
 fn spawn_with_rhai_exec(
     script: &str,
     root: &std::path::Path,
     profiles: ProfileRegistry,
-    bash_enabled: bool,
+    bash_registered: bool,
 ) -> Holly {
     spawn_with_rhai_exec_and_base(
         script,
         root,
         profiles,
-        bash_enabled,
+        bash_registered,
         PermissionProfile::new(Permission::Allow),
     )
 }
@@ -149,7 +151,7 @@ fn spawn_with_rhai_exec_and_base(
     script: &str,
     root: &std::path::Path,
     profiles: ProfileRegistry,
-    bash_enabled: bool,
+    bash_registered: bool,
     base: PermissionProfile,
 ) -> Holly {
     let input = serde_json::json!({ "script": script }).to_string();
@@ -179,7 +181,7 @@ fn spawn_with_rhai_exec_and_base(
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
     tools.register(CallTool::new(root.to_path_buf()));
-    if bash_enabled {
+    if bash_registered {
         tools.register(BashTool::new(root.to_path_buf()));
     }
     let _executor = spawn_tool_executor(&holly, tools, profiles, base);
@@ -863,8 +865,11 @@ async fn call_binding_masked_when_omitted_from_profile_tools() {
     );
 }
 
+/// A registry that simply never registered `bash` (an embedder's bespoke
+/// assembly — the shipped heads always register it, ADR-0195): the binding
+/// must be an unknown-function error, not a graded-then-failing call.
 #[tokio::test]
-async fn bash_binding_absent_without_bash_enabled() {
+async fn bash_binding_absent_when_the_registry_omits_bash() {
     let dir = TempDir::new("bash-absent");
     let holly = spawn_with_rhai_exec(
         r#"bash("echo hi")"#,
@@ -880,13 +885,13 @@ async fn bash_binding_absent_without_bash_enabled() {
     let out = rhai_output(&events).expect("expected rhai output");
     assert!(
         out.to_lowercase().contains("function"),
-        "bash() must be an unknown-function (unregistered) error when bash is \
-         disabled, not a graded-then-failing binding: {out}"
+        "bash() must be an unknown-function (unregistered) error when the host \
+         tool is not registered, not a graded-then-failing binding: {out}"
     );
 }
 
 #[tokio::test]
-async fn bash_binding_runs_when_enabled_and_allowed() {
+async fn bash_binding_runs_when_registered_and_allowed() {
     let dir = TempDir::new("bash-allow");
     let holly = spawn_with_rhai_exec(
         r#"bash("echo hi")"#,

@@ -22,10 +22,10 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, bash_live, config, env_date, extra_roots, history, host, inspect, logging,
-    mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
-    propose_plan, retained_output, script_ops, session_store, skills, subagent, system_prompt,
-    throttle, tool_names, tool_runner, tool_state, watch, SharedRegistry, ToolRegistry,
+    agents, ask_user, config, env_date, extra_roots, history, host, inspect, logging, mcp,
+    permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll, propose_plan,
+    retained_output, script_ops, session_store, skills, subagent, system_prompt, throttle,
+    tool_names, tool_runner, tool_state, watch, SharedRegistry, ToolRegistry,
 };
 use tool_runner::EscapeRoot;
 
@@ -65,15 +65,14 @@ use tui::tui;
 /// has its own client.
 ///
 /// The root-contained host quintet (`read`/`glob`/`grep`/`edit`/`write`), `call`
-/// (argv exec, no shell), and `load_skill` are always registered, rooted at the
-/// current working directory, so the `build`/`plan`/`explore` permission
-/// profiles gate something real out of the box. `bash` (shell) stays opt-in:
-/// set `ENTANGLEMENT_ENABLE_BASH=1` to register `BashTool` — its background
-/// jobs are joined with the always-available runtime-owned `poll` tool (#605),
-/// not a paired registry tool. Both run unsandboxed with the engine's full
-/// privileges by default (ADR-0009 / ADR-0010 / ADR-0045). `call` runs with the
-/// same full-privilege, unsandboxed-by-default execution but no shell means no
-/// injection surface, so its *registration* no longer rides `bash`'s opt-in gate
+/// (argv exec, no shell), `load_skill`, and `bash` are always registered, rooted
+/// at the current working directory, so the `build`/`plan`/`explore` permission
+/// profiles gate something real out of the box (ADR-0195 retired the old
+/// `ENTANGLEMENT_ENABLE_BASH` opt-in — registration is not where `bash`'s
+/// security story lives; the permission profiles and the config ceiling are).
+/// Both run unsandboxed with the engine's full privileges by default
+/// (ADR-0009 / ADR-0045). `call` runs with the same full-privilege,
+/// unsandboxed-by-default execution but no shell means no injection surface
 /// (ADR-0094); per-profile permission (`Allow`/`Ask`/`Deny`) remains the actual
 /// dispatch gate, same as any other tool. Both may instead run confined under
 /// bubblewrap — set `ENTANGLEMENT_SANDBOX=bwrap` (`ENTANGLEMENT_SANDBOX_NETWORK=1`
@@ -101,8 +100,6 @@ async fn build_config(
     mcp::ActiveServers,
     Arc<mcp::AvailableMcp>,
     EscapeRoot,
-    Arc<bash_live::BashRegistered>,
-    bash_live::BashToolConfig,
     policy::SandboxConfig,
     host::JobRegistry,
     retained_output::RetainedOutputRegistry,
@@ -143,10 +140,9 @@ async fn build_config(
         .and_then(|p| p.canonicalize())
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let secret_env = catalog.key_envs();
-    let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
     // Optional bubblewrap confinement for bash/call (#399, ADR-0104; #479 adds
     // the per-profile `sandbox:` frontmatter override on top of this
-    // process-global default). Off by default — `bash_enabled` alone still
+    // process-global default). Off by default — an unset `ENTANGLEMENT_SANDBOX`
     // means unsandboxed, full-privilege execution, matching every release
     // before this.
     let sandbox_config = policy::SandboxConfig::from_env();
@@ -167,22 +163,11 @@ async fn build_config(
         extra_root_store = extra_root_store.with_scratch(scratch.clone());
     }
     let extra_root_store = Arc::new(extra_root_store);
-    // Live bash registration (#498, ADR-0133; folded into the session tool
-    // overlay, #611/ADR-0163): `live_bash` starts seeded from the startup
-    // `bash_enabled` (so the TUI `!bash` gate reflects it) and flips to `true`
-    // the moment a later `/enable tool bash` lazily registers it (ADR-0163
-    // §2). Created *before* `register_default_tools` (rather than after, as
-    // pre-#554) so `call`'s shape-check error (#554) can read the same live
-    // handle and stay accurate across a later enable, not just the startup
-    // state. Unlike the pre-ADR-0163 `LiveBashState`, it carries no grade —
-    // that's a per-session overlay concern now, resolved by
-    // `permission::overlay_entry_grade`, not this process-global flag.
-    let live_bash = bash_live::BashRegistered::new(bash_enabled);
     // The one `JobRegistry` for this process's whole lifetime (#605): shared by
-    // `bash` (however/whenever it gets registered — at startup or via a later
-    // live `/bash on`) and `poll`'s job-handle path, so a background job is
-    // always pollable through whichever `BashTool` actually spawned it. This
-    // also closes #616's job-orphaning — there is only ever one registry.
+    // `bash` (registered at startup alongside every other built-in, ADR-0195)
+    // and `poll`'s job-handle path, so a background job is always pollable
+    // through whichever `BashTool` actually spawned it. This also closes #616's
+    // job-orphaning — there is only ever one registry.
     let jobs = host::JobRegistry::new();
     // The one `RetainedOutputRegistry` for this process's whole lifetime
     // (#608): shared by `call` (which writes a truncated result's full text
@@ -197,34 +182,16 @@ async fn build_config(
         root.clone(),
         Some(extra_root_store.clone()),
         secret_env.clone(),
-        bash_enabled,
         sandbox_config.resolver(),
-        live_bash.clone(),
         jobs.clone(),
         retained.clone(),
     );
-    // `bash_tool_config` is what a later live `/bash on` needs to build a fresh
-    // `BashTool` on demand, mirroring this function's own bash arm in
-    // `register_default_tools`.
-    let bash_tool_config = bash_live::BashToolConfig {
-        root: root.clone(),
-        extra_roots: Some(extra_root_store.clone()),
-        secret_env: secret_env.clone(),
-        sandbox_resolver: sandbox_config.resolver(),
-        jobs: jobs.clone(),
-    };
     let escape_root = EscapeRoot {
         root: root.clone(),
         store: extra_root_store,
     };
-    if bash_enabled && !sandbox_config.base.is_sandboxed() {
-        eprintln!(
-            "skutter: bash enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
-             run unsandboxed with full privileges"
-        );
-    }
-    // `call` is always registered (ADR-0093), so the sandbox notice fires
-    // independent of `bash_enabled`.
+    // `call` and `bash` are both always registered (ADR-0093/ADR-0195), so the
+    // sandbox notice fires whenever confinement is on.
     if sandbox_config.base.is_sandboxed() {
         eprintln!(
             "skutter: bash/call sandboxed via bubblewrap (ENTANGLEMENT_SANDBOX=bwrap, \
@@ -269,16 +236,6 @@ async fn build_config(
         http_client.clone(),
     ));
     cfg.tool_specs = tools.read().unwrap().specs();
-    // `bash` is advertised even while unregistered (the startup env var is off
-    // and no session has run `/enable tool bash` yet): its schema is what keeps
-    // the tools array stable across a later enable, and a call before then is
-    // declined at dispatch with the enabling command. Mirrored in the live
-    // `tool_spec_resolver` below, which is what a real head actually consults;
-    // this static snapshot serves the lean/embedder path and the `/agent`
-    // tools checklist.
-    if !bash_enabled {
-        cfg.tool_specs.push(bash_live::bash_spec());
-    }
     // `read_raw` (rhai-only, see `script.rs`'s `parse_json`/`parse_yaml`)
     // registers *after* the specs snapshot above: present in `tools` for
     // execution (the rhai bridge routes through the same `ToolRegistry`), but
@@ -348,8 +305,6 @@ async fn build_config(
         mcp_active,
         mcp_available,
         escape_root,
-        live_bash,
-        bash_tool_config,
         sandbox_config,
         jobs,
         retained,
@@ -357,27 +312,26 @@ async fn build_config(
     )
 }
 
-/// Assemble the tool registry: the root-contained quintet plus `call`
-/// (registered unconditionally — argv exec, no shell, ADR-0094) and, only when
-/// `bash_enabled`, the opt-in `bash` tool. `jobs` (#605; #606) is the one
+/// Assemble the tool registry: the root-contained sextet plus the exec pair —
+/// `call` (registered unconditionally since ADR-0094) and `bash` (registered
+/// unconditionally since ADR-0195, which retired the `ENTANGLEMENT_ENABLE_BASH`
+/// opt-in: registration is not where either tool's security story lives, the
+/// permission profiles + config ceiling are). `jobs` (#605; #606) is the one
 /// process-lifetime `JobRegistry` `poll` was wired up with — shared with both
-/// exec tools (not minted fresh) so a `call background=true`/startup-registered
-/// `bash`'s background jobs are the same ones `poll` can see. `retained`
-/// (#608) is likewise the one process-lifetime `RetainedOutputRegistry` `poll`
-/// was wired up with, shared with `call` so a truncated blocking result's
-/// handle is pollable. `secret_env` (the catalog's provider API-key env vars,
-/// #164) is scrubbed from both exec tools' children. `sandbox_resolver`
+/// exec tools (not minted fresh) so a `call background=true`/`bash`
+/// background job is the same one `poll` can see. `retained` (#608) is
+/// likewise the one process-lifetime `RetainedOutputRegistry` `poll` was
+/// wired up with, shared with `call` so a truncated blocking result's handle
+/// is pollable. `secret_env` (the catalog's provider API-key env vars, #164)
+/// is scrubbed from both exec tools' children. `sandbox_resolver`
 /// (#399/ADR-0104, #479) resolves both `bash` and `call`'s bubblewrap
 /// confinement per session/profile — a resolver that always returns
 /// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
-#[allow(clippy::too_many_arguments)]
 fn register_default_tools(
     root: std::path::PathBuf,
     extra_roots: Option<Arc<extra_roots::ExtraRootStore>>,
     secret_env: Vec<String>,
-    bash_enabled: bool,
     sandbox_resolver: Arc<dyn policy::SandboxResolver>,
-    live_bash: Arc<bash_live::BashRegistered>,
     jobs: host::JobRegistry,
     retained: retained_output::RetainedOutputRegistry,
 ) -> ToolRegistry {
@@ -385,23 +339,20 @@ fn register_default_tools(
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
         .with_sandbox_resolver(sandbox_resolver.clone())
-        .with_bash_status(live_bash)
         .with_jobs(jobs.clone())
         .with_retained_output(retained);
     if let Some(e) = &extra_roots {
         call = call.with_extra_roots(e.clone());
     }
     tools.register(call);
-    if bash_enabled {
-        let mut bash = BashTool::new(root.clone())
-            .with_secret_env(secret_env.clone())
-            .with_jobs(jobs)
-            .with_sandbox_resolver(sandbox_resolver);
-        if let Some(e) = &extra_roots {
-            bash = bash.with_extra_roots(e.clone());
-        }
-        tools.register(bash);
+    let mut bash = BashTool::new(root.clone())
+        .with_secret_env(secret_env.clone())
+        .with_jobs(jobs)
+        .with_sandbox_resolver(sandbox_resolver);
+    if let Some(e) = &extra_roots {
+        bash = bash.with_extra_roots(e.clone());
     }
+    tools.register(bash);
     tools
 }
 
@@ -1362,8 +1313,6 @@ async fn main() -> Result<()> {
         mcp_active,
         mcp_available,
         escape_root,
-        live_bash,
-        bash_tool_config,
         sandbox_config,
         jobs,
         retained,
@@ -1440,11 +1389,6 @@ async fn main() -> Result<()> {
             plan_tasks::update_tasks_spec(),
             ask_user::ask_user_spec(),
             poll::poll_spec(),
-            // Advertised whether or not `bash` is registered: a dispatch before
-            // `/enable tool bash` is declined with the enabling command, and
-            // the tools array stays byte-identical across the enable (deduped
-            // against the registry's own copy below once it lands there).
-            bash_live::bash_spec(),
         ];
         #[cfg(feature = "rhai")]
         runtime_owned_specs.push(script::rhai_spec());
@@ -1472,8 +1416,8 @@ async fn main() -> Result<()> {
             // the provider's cached `tools` prefix) has one stable order,
             // independent of registration order and stable across restarts.
             specs.sort_by(|a, b| a.name.cmp(&b.name));
-            // A registered `bash` appears twice (registry + the roster above);
-            // keep one. Sorting first makes the duplicates adjacent.
+            // A runtime-owned pseudo-tool also present in the registry would
+            // appear twice; keep one. Sorting first makes duplicates adjacent.
             specs.dedup_by(|a, b| a.name == b.name);
             specs
         }));
@@ -1564,18 +1508,6 @@ async fn main() -> Result<()> {
         mcp_available.clone(),
         catalog.key_envs(),
         http_client.clone(),
-    );
-
-    // Lazily-registrable built-ins (#611, ADR-0163 §2): a runtime service
-    // watching the outbound broadcast for `OutEvent::ToolOverlayChanged` and
-    // registering `bash` into `tools` the moment a session's overlay enables
-    // it — the fold-in of the pre-ADR-0163 `BashEnable`/`BashDisable`
-    // responder, mirroring the MCP responder above.
-    let bash_responder_handle = bash_live::spawn_lazy_builtin_responder(
-        &holly,
-        tools.clone(),
-        bash_tool_config,
-        live_bash.clone(),
     );
 
     // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141): polls
@@ -1737,7 +1669,6 @@ async fn main() -> Result<()> {
                 live_aux_models.clone(),
                 reload_rx,
                 cwd.clone(),
-                live_bash,
                 tool_names,
                 http_client.clone(),
                 user_config.editor.clone(),
@@ -1784,7 +1715,6 @@ async fn main() -> Result<()> {
                     live_aux_models.clone(),
                     reload_rx,
                     cwd.clone(),
-                    live_bash,
                     tool_names,
                     http_client.clone(),
                     user_config.editor.clone(),
@@ -1834,7 +1764,6 @@ async fn main() -> Result<()> {
     // this whole shutdown would never observe the channels close.
     tool_executor.abort();
     mcp_responder_handle.abort();
-    bash_responder_handle.abort();
     throttle_handle.abort();
     session_title_handle.abort();
     narrate_handle.abort();
@@ -1919,7 +1848,7 @@ fn format_relative(ts_ms: u64) -> String {
 mod tests {
     use super::{launches_tui_head, register_default_tools, Cmd};
     use crate::host::SandboxPolicy;
-    use entanglement_runtime::{bash_live, retained_output};
+    use entanglement_runtime::retained_output;
 
     #[test]
     fn tui_head_covers_bare_skutter_and_explicit_subcommand() {
@@ -1974,15 +1903,16 @@ mod tests {
         std::env::remove_var(format!("{}_CONCURRENCY", entry_name.to_uppercase()));
     }
 
-    fn tool_names(bash_enabled: bool) -> Vec<String> {
+    /// The advertised roster `register_default_tools` produces with no env var
+    /// or opt-in of any kind — the ADR-0195 posture: both exec tools are
+    /// registered unconditionally at startup, exactly like the sextet.
+    fn tool_names() -> Vec<String> {
         let root = std::env::temp_dir();
         register_default_tools(
             root,
             None,
             Vec::new(),
-            bash_enabled,
             std::sync::Arc::new(SandboxPolicy::none()),
-            bash_live::BashRegistered::new(bash_enabled),
             crate::host::JobRegistry::new(),
             retained_output::RetainedOutputRegistry::new(),
         )
@@ -1993,21 +1923,17 @@ mod tests {
     }
 
     #[test]
-    fn call_is_registered_unconditionally() {
-        let names = tool_names(false);
-        assert!(names.contains(&"call".to_string()), "{names:?}");
-    }
-
-    #[test]
-    fn bash_stays_opt_in() {
-        let names = tool_names(false);
-        assert!(!names.contains(&"bash".to_string()), "{names:?}");
-    }
-
-    #[test]
-    fn bash_enabled_registers_bash_and_call() {
-        let names = tool_names(true);
+    fn call_and_bash_are_registered_unconditionally_at_startup() {
+        // ADR-0195: `bash` joins `call` (ADR-0093) as an always-registered
+        // built-in — no env var, no `/enable` needed. What a run may do with
+        // it is the permission profiles' + the config ceiling's job, not the
+        // registry's.
+        let names = tool_names();
         assert!(names.contains(&"call".to_string()), "{names:?}");
         assert!(names.contains(&"bash".to_string()), "{names:?}");
+        // The sextet is still there alongside them.
+        for expected in ["read", "glob", "grep", "edit", "write", "apply_patch"] {
+            assert!(names.contains(&expected.to_string()), "{names:?}");
+        }
     }
 }
