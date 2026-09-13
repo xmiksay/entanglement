@@ -1,6 +1,6 @@
 # 0190. `poll` is an always-on, non-maskable internal tool
 
-- Status: Accepted
+- Status: Accepted — advertisement-mask half subsumed by [ADR-0192](0192-universal-advertisement-enforcement-at-dispatch.md) (the resolver-roster fix stands)
 - Date: 2026-08-13
 - Amends: [ADR-0161](0161-unified-async-work-background-flag-and-one-poll.md)
   (§3's "poll bypasses permission" — extended: `poll` is also exempt from the
