@@ -1468,6 +1468,11 @@ async fn main() -> Result<()> {
     // the tool executor at the bottom of this function — Phase P1's
     // loop-local-only map is gone.
     let advertising_state = std::sync::Arc::new(tool_advertising::AdvertisingState::new());
+    // The `Cmd::Tui`/bare-invocation arms below need their own handle too
+    // (`/tools`' status column, ADR-0199 part 3) — cloned here since the
+    // executor construction below moves `advertising_state` itself into its
+    // `DiscoverySurface`.
+    let advertising_state_for_tui = advertising_state.clone();
     // Per-session system prompt (#566, #560): folds the `<env>` date-freshness
     // patch with the ADR-0196 §5 `ToolSearch`-mode prompt slimming into the
     // one `SystemPromptResolver` slot — consulted once per turn, a no-op for
@@ -1900,6 +1905,7 @@ async fn main() -> Result<()> {
                     registry: tools.clone(),
                     active: mcp_active.clone(),
                 },
+                advertising_state_for_tui,
             )
             .await
         }
@@ -1946,6 +1952,7 @@ async fn main() -> Result<()> {
                         registry: tools.clone(),
                         active: mcp_active.clone(),
                     },
+                    advertising_state_for_tui,
                 )
                 .await
             } else {

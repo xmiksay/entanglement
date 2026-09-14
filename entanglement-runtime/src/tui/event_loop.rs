@@ -11,7 +11,7 @@ use super::modal_events::{
     handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
     handle_model_picker_event, handle_mouse, handle_profile_picker_event, handle_question_event,
     handle_resume_modal_event, handle_session_tools_dialog_event, handle_sessions_modal_event,
-    handle_tools_dialog_event, DIALOG_PAGE_SIZE,
+    handle_tools_dialog_event, handle_tools_view_event, DIALOG_PAGE_SIZE,
 };
 use super::session_view::ApprovalMode;
 
@@ -106,6 +106,10 @@ pub(super) async fn handle_event(
                 // Bare `/enable`'s session-tools checklist (#539).
                 if app.showing_session_tools_dialog() {
                     return handle_session_tools_dialog_event(app, holly, key).await;
+                }
+                // `/tools`' read-heavy browser (#560 P9, ADR-0199 part 3).
+                if app.showing_tools_view() {
+                    return handle_tools_view_event(app, holly, key).await;
                 }
                 if app.showing_profile_picker() {
                     return handle_profile_picker_event(app, holly, key).await;

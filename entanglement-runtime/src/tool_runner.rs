@@ -809,6 +809,25 @@ pub fn spawn_tool_executor_with_policy(
                 // mirror core's full-replacement semantics — an empty list
                 // clears the entry entirely.
                 Ok(OutEvent::ToolOverlayChanged { session, entries }) => {
+                    // ADR-0199 part 2: a newly-added enable entry, under a
+                    // ToolSearch/client_side session, also joins the
+                    // discovered set — mirrors what a successful `describe`
+                    // call already does, so the resolver advertises the
+                    // matching tool(s) next round with no extra discovery
+                    // round-trip. Must run against `previous` (the
+                    // about-to-be-replaced list) before it's overwritten
+                    // below, so a re-send of an already-enabled pattern is
+                    // correctly seen as "nothing new".
+                    let previous = overlays.get(&session).cloned().unwrap_or_default();
+                    let registered_names =
+                        tools.read().expect("tool registry lock poisoned").names();
+                    tool_advertising::advertise_new_overlay_enables(
+                        &advertising,
+                        &registered_names,
+                        &session,
+                        &previous,
+                        &entries,
+                    );
                     if entries.is_empty() {
                         overlays.remove(&session);
                     } else {

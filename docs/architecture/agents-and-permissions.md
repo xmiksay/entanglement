@@ -653,7 +653,28 @@ below realize one model:
   session-tools checklist dialog (checkboxes over the full roster seeded
   from effective availability; `Enter` submits the overlay as a diff
   against the profile), and the `/mcp` panel's `e`/`d` keys on the
-  highlighted server; see the protocol doc for the wire shape. **(a) Advertisement:** core's turn loop (`run_round`) advertises
+  highlighted server; see the protocol doc for the wire shape. A typed
+  `/enable <name-or-glob> [--allow […]]` also reports how many
+  currently-registered tools the pattern matched, as a transcript status
+  line (#560 P9,
+  [ADR-0199](../adr/0199-session-tool-listing-and-enablement-drive-advertisement.md)).
+  **`/tools`** (same ADR) is a separate, read-heavy *browser* — not an
+  overlay editor — over the session's whole reachable surface (host tools,
+  MCP servers + their tools, skills, endpoints via
+  `discover::index_rows`, the exact live index `explore` itself serves):
+  each row shows its kind, advertising status
+  (`kernel`/`advertised`/`discoverable`/`n/a`, from the same
+  `AdvertisingState` the resolver reads, now also shared with the TUI),
+  effective mask, and a profile-only permission grade; a typeahead filter
+  plus a `Tab`-cycled category narrow the list, and `Enter` on a row enables
+  it through the same `/enable` path (closing the view). And under
+  `client_side` encoding, a **new** overlay enable entry from *any* writer
+  (this dialog, a typed `/enable`, or an ADR-0198 `Session`-scope approval)
+  also joins the session's `client_side` discovered-tool set (§ below;
+  ADR-0196 §3), so the resolver advertises the matching tool(s) the very
+  next round instead of waiting on a redundant `describe()` — a one-shot
+  snapshot against the registry at the moment of the change, not a
+  retroactive subscription. **(a) Advertisement:** core's turn loop (`run_round`) advertises
   `EngineConfig.tool_specs` (or the resolver's replacement, below) plus the
   active profile's `profile_tool_specs` entry **verbatim** — no mask, no
   overlay, no skill filter. The universal, session-stable surface is the

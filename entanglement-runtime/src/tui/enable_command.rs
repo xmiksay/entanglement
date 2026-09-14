@@ -137,6 +137,11 @@ pub(super) async fn upsert_enable(
         app.record_enable_error(message);
         return;
     }
+    // ADR-0199 part 4: report what the pattern matched, so a hand-typed glob
+    // ("mcp__docs__*", "skill__research__*") gets immediate feedback on how
+    // many currently-registered tools it actually reaches, before the
+    // overlay confirmation round-trips back.
+    app.record_enable_match_count(&pattern);
     let session = app.active_session_id().clone();
     let mut entries = app.overlay_entries(&session);
     entries.retain(|e| e.pattern != pattern);

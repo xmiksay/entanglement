@@ -28,6 +28,7 @@ pub enum Command {
     Allow,
     Enable,
     Disable,
+    Tools,
     Pause,
     Continue,
     Stop,
@@ -57,6 +58,7 @@ impl Command {
             Command::Allow => "allow",
             Command::Enable => "enable",
             Command::Disable => "disable",
+            Command::Tools => "tools",
             Command::Pause => "pause",
             Command::Continue => "continue",
             Command::Stop => "stop",
@@ -93,6 +95,9 @@ impl Command {
             }
             Command::Disable => {
                 "Disable tools for this session (mcp <server> | tool <name>; bare = reset to profile defaults)"
+            }
+            Command::Tools => {
+                "Browse this session's tool surface — host tools, MCP servers, skills, endpoints (filter as you type, Tab cycles category, Enter enables the highlighted row)"
             }
             Command::Pause => {
                 "Pause the current session (--all for every live session)"
@@ -136,6 +141,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Allow,
         Command::Enable,
         Command::Disable,
+        Command::Tools,
         Command::Pause,
         Command::Continue,
         Command::Stop,

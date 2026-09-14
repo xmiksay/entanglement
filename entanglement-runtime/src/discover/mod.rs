@@ -19,11 +19,13 @@
 
 mod describe;
 mod explore;
+mod sections;
 mod tool_search;
 
 pub use describe::run_describe;
 pub(crate) use describe::spec_to_json;
 pub use explore::run_explore;
+pub use sections::{index_rows, IndexRow};
 pub use tool_search::run_tool_search;
 
 use entanglement_core::ToolSpec;
@@ -38,10 +40,11 @@ pub fn explore_spec() -> ToolSpec {
          built-ins not in your kernel (e.g. call, glob, grep, rhai, MCP \
          management), MCP servers (enabled ones list their tools; allowed-but-\
          unconnected ones show a hint to enable with mcp_enable — enabling \
-         is never automatic), and skills (loaded with load_skill, not \
-         describable). Always live — never stale, no need to re-check after \
-         an mcp_enable. Call describe on a name from the results to get its \
-         full schema and make it directly callable.",
+         is never automatic), endpoints, and skills (loaded with load_skill, \
+         not describable). Always live — never stale, no need to re-check \
+         after an mcp_enable. Results are grouped under a section header per \
+         kind. Call describe on a name from the results to get its full \
+         schema and make it directly callable.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -50,6 +53,12 @@ pub fn explore_spec() -> ToolSpec {
                     "description": "Case-insensitive substring matched against \
                         each entry's name and description. Omit to list \
                         everything."
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["tool", "mcp", "skill", "endpoint"],
+                    "description": "Restrict the results to one section. \
+                        Omit to list every kind."
                 }
             },
         }),

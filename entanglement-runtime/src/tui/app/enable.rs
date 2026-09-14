@@ -29,6 +29,28 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Records how many currently-registered tools `pattern` matches
+    /// (ADR-0199 part 4) — immediate feedback for a hand-typed glob, ahead
+    /// of the `ToolOverlayChanged` confirmation toast. Counted against
+    /// `tool_roster`, the same startup-built roster the `/agent` tools
+    /// checklist and bare `/enable`'s session-tools dialog already read —
+    /// a live-connected MCP server's tools discovered *after* startup won't
+    /// show here (the same caveat those dialogs carry), never a panic or a
+    /// hard error either way.
+    pub fn record_enable_match_count(&mut self, pattern: &str) {
+        let entry = entanglement_core::ToolOverlayEntry::ask(pattern.to_string());
+        let count = self
+            .tool_roster
+            .iter()
+            .filter(|name| entry.matches(name))
+            .count();
+        self.sessions.active_view_mut().record_status(
+            "enable",
+            format!("`{pattern}` matches {count} currently-registered tool(s)"),
+        );
+        self.mark_dirty();
+    }
+
     pub fn showing_session_tools_dialog(&self) -> bool {
         self.session_tools_dialog.visible()
     }
@@ -169,6 +191,25 @@ mod tests {
         // An empty replacement clears the tracked entry.
         app.handle_tool_overlay_changed(&session, Vec::new());
         assert!(app.overlay_entries(&session).is_empty());
+    }
+
+    #[test]
+    fn record_enable_match_count_reports_the_pattern_hit_count() {
+        // `App::new_for_test`'s roster: read, grep, glob, edit, write, bash.
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.record_enable_match_count("bash");
+        let text: String = app.transcript().iter().map(|e| format!("{e:?}")).collect();
+        assert!(
+            text.contains("`bash` matches 1 currently-registered tool"),
+            "{text}"
+        );
+
+        app.record_enable_match_count("mcp__docs__*");
+        let text: String = app.transcript().iter().map(|e| format!("{e:?}")).collect();
+        assert!(
+            text.contains("`mcp__docs__*` matches 0 currently-registered tool"),
+            "{text}"
+        );
     }
 
     #[test]

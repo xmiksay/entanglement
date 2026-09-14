@@ -75,6 +75,14 @@ impl App {
             // the trailing text — both call sites intercept them before
             // reaching this dispatch.
             Command::Enable | Command::Disable => false,
+            // `/tools` (#560 P9, ADR-0199 part 3) needs nothing `holly`/text
+            // could add — the view builds its own row set from state already
+            // on `App` — so it's fully handled here, unlike `Enable`/`Disable`
+            // above.
+            Command::Tools => {
+                self.open_tools_view();
+                false
+            }
             // Lifecycle commands (#6): `/stop`, `/pause`, `/continue` need `holly`
             // (plus the optional `--all` text) — both call sites (the Enter
             // handler and the command palette) intercept them before reaching

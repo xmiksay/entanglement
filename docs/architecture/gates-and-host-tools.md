@@ -530,7 +530,7 @@ by name (ADR-0192 already dispatches any registered tool regardless of
 advertisement), discoverable via `explore`, and schema-delivered via
 `describe`.
 
-**`explore(filter?)`** — a terse index (name + one-liner + source) over
+**`explore(filter?, kind?)`** — a terse index (name + one-liner + source) over
 every dynamic source: MCP servers (three-state status; an `allowed`-tier
 server shows *"enable with `mcp_enable`"* — listing *its* tools requires
 enabling it first, no auto-connect side effect), endpoints, **skills** (no
@@ -538,7 +538,14 @@ separate tool for these — ADR-0193's `skills` tool folds into this index),
 and the unadvertised built-ins (`call`, `glob`, `grep`, `rhai`, MCP
 management). **Always live** — computed from the registry at call time,
 never cached — which is what makes announcements unnecessary: there is no
-staleness window to announce across.
+staleness window to announce across. `kind: "tool" | "mcp" | "skill" |
+"endpoint"` (#560 P9, [ADR-0199](../adr/0199-session-tool-listing-and-enablement-drive-advertisement.md))
+narrows the result to one section, derived from each row's own `source`
+label rather than a second field to keep in sync. The reply itself is
+sectioned plain text, one header per non-empty kind in fixed order — the MCP
+section always carries a clarifying line ("enable the server, then call its
+tools by their `mcp__<server>__<tool>` names") pointing at the exact
+two-step shape a bundled server needs.
 
 **`describe(names: [string])`** — full schema per name, **byte-identical in
 shape to a native `<tools>` entry** (same JSON, same field names — not a
@@ -565,7 +572,7 @@ user-visible knob:
 
 | encoding | wires | mechanism |
 | --- | --- | --- |
-| `client_side` | OpenAI-compat Chat Completions incl. **z.ai** (the priority target), Ollama, Gemini | `describe()` appends the tool's full spec into the session's advertised array, **append-only, never removed** — one cache invalidation per discovery, not a continuous one. Rides the `tool_spec_resolver` seam (re-consulted every round) plus a session-keyed discovered-set. |
+| `client_side` | OpenAI-compat Chat Completions incl. **z.ai** (the priority target), Ollama, Gemini | `describe()` appends the tool's full spec into the session's advertised array, **append-only, never removed** — one cache invalidation per discovery, not a continuous one. Rides the `tool_spec_resolver` seam (re-consulted every round) plus a session-keyed discovered-set. A **new enable entry on the session's live tool overlay** (ADR-0149 — the TUI dialog, a typed `/enable`, or an ADR-0198 approval) joins this same discovered set too (#560 P9, [ADR-0199](../adr/0199-session-tool-listing-and-enablement-drive-advertisement.md)): the pattern is expanded against the registry's current names and every match is marked, so a session-scoped grant is advertised the very next round instead of waiting on a redundant `describe()`. `Full`-mode sessions and deny entries are no-ops; expansion is a one-shot snapshot — a tool registered *after* the enabling pattern is not retroactively advertised. |
 | `anthropic_native` | Anthropic Messages API | non-kernel tools carry `defer_loading: true` (full defs still sent every request — the API needs them server-side — but stripped from the rendered prompt and the cache key until discovered); `describe()`'s `tool_result` carries `tool_reference` content blocks the API auto-expands. **Client-executed search only** — the catalog is session/project-state dependent, so Anthropic's server-side `tool_search_tool_regex`/`_bm25` tools aren't used. At least one tool (the kernel) stays non-deferred, satisfying the API's requirement trivially. |
 | `responses_native` | OpenAI Responses API (`entanglement-provider::openai_responses`) | `{"type": "tool_search", "execution": "client"}` plus `defer_loading` on function tools; the model emits `tool_search_call` under the reserved name `TOOL_SEARCH_CALL_TOOL`, which `entanglement-runtime::discover::tool_search` intercepts exactly like `explore`/`describe` (non-maskable, always-`Allow`) — it reuses the *same* live index `explore` serves and the *same* per-name resolution `describe` uses, deliberately not a third independent search implementation, and answers with a `ContentPart::ToolSearchOutput` block (capped at 8 results) instead of `describe`'s plain schema text, so the client can echo a native `tool_search_output` input item on the next request. |
 

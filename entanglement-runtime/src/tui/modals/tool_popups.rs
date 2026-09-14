@@ -229,6 +229,62 @@ pub fn draw_tools_dialog(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, area, app.tools_dialog_state());
 }
 
+/// Draw `/tools` (#560 P9, ADR-0199 part 3): every row from
+/// `App::tools_view_rows`, grouped visually by kind label, filtered live by
+/// the typed free text and the `Tab`-cycled category. The title bar doubles
+/// as the filter/category status line — there's no separate input widget to
+/// render, `tools_view`'s own state already carries both.
+pub fn draw_tools_view(f: &mut Frame, app: &mut App) {
+    let category = app.tools_view().category().unwrap_or("all");
+    let filter = app.tools_view().filter_text().to_string();
+    let rows = app.tools_view().filtered();
+
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| {
+            let masked_style = if row.masked {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            let masked_tag = if row.masked { "masked" } else { "usable" };
+            let grade_tag = row.grade.unwrap_or("-");
+            let spans = vec![
+                Span::styled(format!("[{:<8}] ", row.kind), Style::default().dim()),
+                Span::styled(row.name.clone(), Style::default().bold()),
+                Span::raw("  "),
+                Span::styled(row.status, Style::default().fg(Color::Cyan)),
+                Span::raw("  "),
+                Span::styled(masked_tag, masked_style),
+                Span::raw("  "),
+                Span::styled(grade_tag, Style::default().dim()),
+                Span::raw("  "),
+                Span::styled(row.description.clone(), Style::default().dim()),
+            ];
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let title = if filter.is_empty() {
+        format!("Tools [{category}] (Tab: category, type to filter, Enter: enable, Esc: close)")
+    } else {
+        format!(
+            "Tools [{category}] filter: '{filter}' (Tab: category, Backspace: edit, Enter: enable, Esc: close)"
+        )
+    };
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    // No mouse hit-test rect (unlike the other tool dialogs): `/tools` is a
+    // keyboard-driven typeahead browser, not a click target — out of scope
+    // for this pass, left for a follow-up if mouse selection is wanted here
+    // too.
+    let area = centered_rect(80, 70, f.area());
+    f.render_widget(Clear, area);
+    f.render_stateful_widget(list, area, app.tools_view_state());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

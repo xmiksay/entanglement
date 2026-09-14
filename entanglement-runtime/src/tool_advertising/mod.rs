@@ -46,6 +46,9 @@ mod encoding;
 pub use encoding::Encoding;
 use encoding::{resolve_encoding, resolve_encoding_by_id};
 
+mod overlay;
+pub use overlay::advertise_new_overlay_enables;
+
 /// Which precedence tier won an advertising resolution — reported by
 /// `skutter inspect config` so "why is this session tool_search?" has an
 /// answer.

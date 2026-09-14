@@ -158,6 +158,8 @@ impl App {
             session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog::new(),
             tool_roster,
             tools_dialog: crate::tui::tools_dialog::ToolsDialog::new(),
+            advertising: None,
+            tools_view: crate::tui::tools_view::ToolsView::new(),
             model_info: ModelInfo {
                 id: "dummy".to_string(),
                 display_name: "dummy".to_string(),

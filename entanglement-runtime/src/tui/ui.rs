@@ -128,6 +128,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         modals::draw_session_tools_dialog(f, app);
     }
 
+    if app.showing_tools_view() {
+        modals::draw_tools_view(f, app);
+    }
+
     if app.showing_sessions_modal() {
         modals::draw_sessions_modal(f, app);
     }

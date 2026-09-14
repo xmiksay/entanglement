@@ -600,6 +600,39 @@ pub(super) async fn handle_session_tools_dialog_event(
     Ok(false)
 }
 
+/// `/tools`' read-heavy browser (#560 P9, ADR-0199 part 3): a free-text
+/// typeahead filter (like `mention`/`slash_popup`'s own typed-filter
+/// popups), so plain letter keys — *including* `j`/`k` — extend the filter
+/// rather than doubling as vim-style navigation (`session_tools_dialog`'s
+/// own `Space`-toggle checklist has no filter box to conflict with, which is
+/// why it can reserve them; this view does, so it can't). `Up`/`Down` move
+/// the highlight, `Tab` cycles the category filter, `Backspace` shortens the
+/// filter, `Enter` enables the highlighted row exactly like a typed
+/// `/enable` (ADR-0199 part 4) and closes the view, `Esc` closes without
+/// acting.
+pub(super) async fn handle_tools_view_event(
+    app: &mut App,
+    holly: &Holly,
+    key: KeyEvent,
+) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => app.close_tools_view(),
+        KeyCode::Enter => app.enable_selected_tools_view_row(holly).await,
+        KeyCode::Tab => app.tools_view_cycle_category(),
+        KeyCode::Down => app.tools_view_select_next(),
+        KeyCode::Up => app.tools_view_select_prev(),
+        KeyCode::Backspace => app.tools_view_backspace_filter(),
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+            app.tools_view_push_filter_char(c);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 pub(super) async fn handle_sessions_modal_event(
     app: &mut App,
     holly: &Holly,

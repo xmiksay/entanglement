@@ -15,17 +15,24 @@ use crate::skills::SkillRegistry;
 use crate::tools::ToolRegistry;
 
 use super::runtime_owned_specs;
+use super::sections::{kind_of, render_sections, Kind};
 
 #[derive(Deserialize, Default)]
 struct Input {
     #[serde(default)]
     filter: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
 }
 
-struct Row {
-    name: String,
-    description: String,
-    source: String,
+/// One index row — `pub(super)`, not module-private: [`super::sections`]
+/// builds [`super::sections::IndexRow`]/renders `explore`'s sectioned text
+/// straight off this shape, and needs to see it (and [`build_rows`] below)
+/// from a sibling module.
+pub(super) struct Row {
+    pub(super) name: String,
+    pub(super) description: String,
+    pub(super) source: String,
 }
 
 /// First line of a spec description, capped — `explore`'s index is a terse
@@ -43,17 +50,20 @@ fn one_line(description: &str) -> String {
     }
 }
 
-/// Parse the optional `{"filter": "..."}` input, tolerating an empty body
-/// (no filter) — `explore` is read-only and low-stakes, so a malformed
-/// filter degrades to "show everything" rather than a hard error.
-fn parse_filter(input: &str) -> Option<String> {
+/// Parse the optional `{"filter": "...", "kind": "..."}` input, tolerating an
+/// empty body (no filter, no kind) — `explore` is read-only and low-stakes,
+/// so a malformed filter or an unrecognized `kind` value both degrade to
+/// "show everything" rather than a hard error.
+fn parse_input(input: &str) -> (Option<String>, Option<Kind>) {
     if input.trim().is_empty() {
-        return None;
+        return (None, None);
     }
-    serde_json::from_str::<Input>(input)
-        .ok()
-        .and_then(|i| i.filter)
-        .map(|f| f.to_ascii_lowercase())
+    let Ok(parsed) = serde_json::from_str::<Input>(input) else {
+        return (None, None);
+    };
+    let filter = parsed.filter.map(|f| f.to_ascii_lowercase());
+    let kind = parsed.kind.as_deref().and_then(Kind::parse);
+    (filter, kind)
 }
 
 /// Build every row, apply the filter, sort by name — the pure core of
@@ -70,6 +80,30 @@ pub(crate) fn build_index(
     session: &SessionId,
     filter: Option<&str>,
 ) -> Vec<Value> {
+    build_rows(registry, avail, active, skills, session, filter, None)
+        .into_iter()
+        .map(row_to_json)
+        .collect()
+}
+
+fn row_to_json(r: Row) -> Value {
+    json!({ "name": r.name, "description": r.description, "source": r.source })
+}
+
+/// The pure core shared by [`build_index`] (no `kind` filter — every caller
+/// but `explore` itself, incl. [`super::tool_search`]) and `explore`'s own
+/// dispatch, which additionally narrows to one section (#560 P9, ADR-0199).
+/// `pub(super)`: also the row source [`super::sections::index_rows`] builds
+/// on for the TUI `/tools` view.
+pub(super) fn build_rows(
+    registry: &ToolRegistry,
+    avail: &AvailableMcp,
+    active: &ActiveServers,
+    skills: &SkillRegistry,
+    session: &SessionId,
+    filter: Option<&str>,
+    kind: Option<Kind>,
+) -> Vec<Row> {
     let mut rows = builtin_rows(registry);
     rows.extend(mcp_rows(registry, avail, active, session));
     rows.extend(endpoint_rows(registry));
@@ -82,11 +116,11 @@ pub(crate) fn build_index(
                 || r.description.to_ascii_lowercase().contains(f)
         });
     }
+    if let Some(k) = kind {
+        rows.retain(|r| kind_of(&r.source) == k);
+    }
     rows.sort_by(|a, b| a.name.cmp(&b.name));
-
-    rows.into_iter()
-        .map(|r| json!({ "name": r.name, "description": r.description, "source": r.source }))
-        .collect()
+    rows
 }
 
 /// Dispatch `explore`: parse, build, reply. Always-`Allow`/non-maskable per
@@ -102,9 +136,17 @@ pub async fn run_explore(
     request_id: String,
     input: String,
 ) {
-    let filter = parse_filter(&input);
-    let rows = build_index(registry, avail, active, skills, &session, filter.as_deref());
-    let output = serde_json::to_string_pretty(&rows).unwrap_or_default();
+    let (filter, kind) = parse_input(&input);
+    let rows = build_rows(
+        registry,
+        avail,
+        active,
+        skills,
+        &session,
+        filter.as_deref(),
+        kind,
+    );
+    let output = render_sections(rows);
     seam::reply(holly, session, request_id, output, false).await;
 }
 
@@ -237,9 +279,11 @@ fn mcp_rows_from_snapshot(
             continue;
         }
         rows.push(Row {
+            description: format!(
+                "available MCP server — enable with the mcp_enable tool: call \
+                 mcp_enable with {{\"server\": \"{name}\"}}"
+            ),
             name,
-            description: "available MCP server — enable with mcp_enable to see its tools"
-                .to_string(),
             source: "mcp (allowed)".to_string(),
         });
     }
@@ -340,11 +384,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_filter_is_lenient_and_case_folds() {
-        assert_eq!(parse_filter(""), None);
-        assert_eq!(parse_filter("{}"), None);
-        assert_eq!(parse_filter(r#"{"filter":"Git"}"#), Some("git".to_string()));
-        assert_eq!(parse_filter("not json"), None);
+    fn parse_input_is_lenient_and_case_folds() {
+        assert_eq!(parse_input(""), (None, None));
+        assert_eq!(parse_input("{}"), (None, None));
+        assert_eq!(
+            parse_input(r#"{"filter":"Git"}"#),
+            (Some("git".to_string()), None)
+        );
+        assert_eq!(parse_input("not json"), (None, None));
+    }
+
+    #[test]
+    fn parse_input_reads_kind_case_insensitively_and_ignores_garbage() {
+        assert_eq!(parse_input(r#"{"kind":"MCP"}"#), (None, Some(Kind::Mcp)));
+        assert_eq!(
+            parse_input(r#"{"filter":"search","kind":"tool"}"#),
+            (Some("search".to_string()), Some(Kind::Tool))
+        );
+        // An unrecognized kind degrades to "show everything", same lenient
+        // posture as a malformed filter.
+        assert_eq!(parse_input(r#"{"kind":"bogus"}"#), (None, None));
     }
 
     #[test]
@@ -436,6 +495,74 @@ mod tests {
         let rows = build_index(&registry, &avail, &active, &skills, &session, Some("git"));
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["name"], "git");
+    }
+
+    #[test]
+    fn kind_narrows_to_matching_section_only() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Fake {
+            name: "sample_tool",
+            desc: "does a sample thing",
+        });
+        let avail = allowed_avail("docs");
+        let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
+        let skills = skill_registry();
+        let session = SessionId::new("s");
+
+        let mcp_only = build_rows(
+            &registry,
+            &avail,
+            &active,
+            &skills,
+            &session,
+            None,
+            Some(Kind::Mcp),
+        );
+        assert!(mcp_only.iter().all(|r| r.source.starts_with("mcp")));
+        assert!(mcp_only.iter().any(|r| r.name == "docs"));
+
+        let tool_only = build_rows(
+            &registry,
+            &avail,
+            &active,
+            &skills,
+            &session,
+            None,
+            Some(Kind::Tool),
+        );
+        assert!(tool_only.iter().all(|r| r.source == "built-in"));
+        assert!(tool_only.iter().any(|r| r.name == "sample_tool"));
+        assert!(!tool_only.iter().any(|r| r.name == "docs"));
+    }
+
+    #[test]
+    fn render_sections_groups_under_headers_with_the_mcp_clarifying_line() {
+        let rows = vec![
+            Row {
+                name: "sample_tool".to_string(),
+                description: "does a thing".to_string(),
+                source: "built-in".to_string(),
+            },
+            Row {
+                name: "docs".to_string(),
+                description: "available MCP server".to_string(),
+                source: "mcp (allowed)".to_string(),
+            },
+        ];
+        let out = render_sections(rows);
+        assert!(out.contains("TOOLS\n"));
+        assert!(out.contains("  sample_tool — does a thing\n"));
+        assert!(out.contains("mcp_enable"));
+        assert!(out.contains("mcp__<server>__<tool>"));
+        assert!(out.contains("  docs — available MCP server\n"));
+        // No skills/endpoints in this input — those headers are omitted.
+        assert!(!out.contains("SKILLS"));
+        assert!(!out.contains("ENDPOINTS"));
+    }
+
+    #[test]
+    fn render_sections_reports_no_matches_on_an_empty_index() {
+        assert_eq!(render_sections(Vec::new()), "(no matches)");
     }
 
     #[test]

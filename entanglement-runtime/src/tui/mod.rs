@@ -36,6 +36,7 @@ mod stop_command;
 mod theme;
 mod tool_render;
 mod tools_dialog;
+mod tools_view;
 mod transcript;
 mod ui;
 mod wrap;
@@ -85,6 +86,11 @@ pub async fn tui(
     configured_editor: Option<String>,
     grants: std::sync::Arc<crate::policy::DefaultGrantStore>,
     mcp_handles: crate::mcp::McpHandles,
+    // The shared ADR-0196 §2-3 pinned-mode/discovered-tool-set handle (#560
+    // P9, ADR-0199 part 3) — the same `Arc` the tool executor and the
+    // resolver closures in `main.rs` read/write. `/tools`' status column
+    // reads it; nothing else in the TUI does.
+    advertising_state: std::sync::Arc<crate::tool_advertising::AdvertisingState>,
 ) -> Result<()> {
     setup_panic_handler();
 
@@ -138,6 +144,7 @@ pub async fn tui(
     app.set_configured_editor(configured_editor);
     app.set_grants(grants);
     app.set_mcp_handles(mcp_handles);
+    app.set_advertising_state(advertising_state);
     app.init_head_context(root.clone());
     mention::spawn_index_build(root, event_tx.clone()); // off the critical path, #678
 

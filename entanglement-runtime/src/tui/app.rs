@@ -39,6 +39,7 @@ mod state;
 mod stop_confirm;
 mod toast;
 mod tools;
+mod tools_view;
 mod types;
 mod view;
 
@@ -144,6 +145,16 @@ pub struct App {
     // `EngineConfig::tool_specs` at startup) plus the checklist's own state.
     tool_roster: Vec<String>,
     tools_dialog: crate::tui::tools_dialog::ToolsDialog,
+
+    // The shared ADR-0196 §2-3 pinned-mode/discovered-tool-set handle (#560
+    // P9, ADR-0199 part 3): read-only here — `/tools`' status column
+    // (kernel/advertised/discoverable) is the only consumer. `None` in
+    // tests degrades every row's status to "n/a" rather than guessing.
+    advertising: Option<std::sync::Arc<crate::tool_advertising::AdvertisingState>>,
+    // `/tools`' own read-heavy browser (#560 P9, ADR-0199 part 3): grouped by
+    // kind, filterable by free text plus a category cycle, `Enter` enables
+    // the highlighted row exactly like a typed `/enable`.
+    tools_view: crate::tui::tools_view::ToolsView,
 
     // Leader key state
     leader_handler: LeaderKeyHandler,
