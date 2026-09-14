@@ -47,8 +47,8 @@ use std::collections::BTreeMap;
 use crate::client::HttpClient;
 use crate::web_search::WebSearchConfig;
 use crate::{
-    Llm, LlmEvent, LlmRequest, LlmStream, MessageRole, ModelConcurrencyResolver, StopReason,
-    ToolCall, Usage,
+    ContentPart, Llm, LlmEvent, LlmRequest, LlmStream, MessageRole, ModelConcurrencyResolver,
+    StopReason, ToolCall, Usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -330,6 +330,14 @@ impl Llm for OpenAiLlm {
             let mut rx = rx;
             let mut saw_done = false;
             let mut think = think;
+            // Fields-format reasoning capture (ADR-0200): `think.is_none()` is
+            // exactly the `ThinkingFormat::Fields` case (see `think`'s
+            // construction above) — accumulate every `LlmEvent::Reasoning`
+            // this round so it can be minted into a `ContentPart::Reasoning`
+            // block at stream end, mirroring what `ThinkSplitter` already does
+            // for the inline-tags format. Left empty (and so never emitted)
+            // for `InlineTags`, whose own capture path is the block below.
+            let mut fields_reasoning = String::new();
 
             'outer: while let Some(item) = rx.recv().await {
                 let chunk = item?;
@@ -342,6 +350,11 @@ impl Llm for OpenAiLlm {
                     think.as_mut(),
                 )?;
                 for ev in events {
+                    if think.is_none() {
+                        if let LlmEvent::Reasoning(text) = &ev {
+                            fields_reasoning.push_str(text);
+                        }
+                    }
                     yield ev;
                 }
                 if done {
@@ -364,6 +377,11 @@ impl Llm for OpenAiLlm {
                     if let SseEvent::Data(data) = parse_sse_line(&trailing) {
                         note_finish_reason(&data, &mut seen_finish_reason);
                         for ev in handle_chunk(&data, &mut tools, &mut usage, think.as_mut())? {
+                            if think.is_none() {
+                                if let LlmEvent::Reasoning(text) = &ev {
+                                    fields_reasoning.push_str(text);
+                                }
+                            }
                             yield ev;
                         }
                     }
@@ -385,6 +403,20 @@ impl Llm for OpenAiLlm {
                 if let Some(block) = splitter.into_reasoning_block(&stream_model) {
                     yield LlmEvent::ContentBlock(block);
                 }
+            }
+            // Fields-format capture (ADR-0200): mint the round's persisted
+            // `Reasoning` block from whatever `reasoning_content`/`reasoning`
+            // deltas were accumulated above — unconditional capture, replay
+            // gated separately by `thinking.replay` in `request.rs`. Mirrors
+            // `ThinkSplitter::into_reasoning_block`'s shape; `data` carries no
+            // signature (plain text the model emitted) but stays non-empty so
+            // replay code can tell it apart from a malformed block.
+            if !fields_reasoning.is_empty() {
+                yield LlmEvent::ContentBlock(ContentPart::reasoning(
+                    "openai",
+                    fields_reasoning,
+                    serde_json::json!({ "format": "fields", "model": stream_model }),
+                ));
             }
             // Post-#445 `handle_chunk` no longer flushes eagerly, so a non-empty
             // `tools` map at stream end is the **normal** tool-use path, not an

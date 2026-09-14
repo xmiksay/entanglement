@@ -40,7 +40,7 @@ use entanglement_core::{Catalog, ModelEntry, SessionId, ToolAdvertising};
 use crate::config::{Config, TOOL_ADVERTISING_ENV};
 
 mod discovered;
-pub use discovered::DiscoveredSet;
+pub use discovered::{append_discovered_tail, DiscoveredSet};
 
 mod encoding;
 pub use encoding::Encoding;
@@ -185,6 +185,8 @@ pub struct SessionToolAdvertising {
 struct Pinned {
     mode: ToolAdvertising,
     encoding: Encoding,
+    /// ADR-0200; defaulted `true` by `pin`, set via `set_advertise_discovered`.
+    advertise_discovered: bool,
 }
 
 impl SessionToolAdvertising {
@@ -201,7 +203,12 @@ impl SessionToolAdvertising {
             encoding = encoding.label(),
             "tool advertising resolved for session (fixed for its lifetime)"
         );
-        self.modes.insert(session, Pinned { mode, encoding });
+        let pinned = Pinned {
+            mode,
+            encoding,
+            advertise_discovered: true,
+        };
+        self.modes.insert(session, pinned);
     }
 
     /// The session's pinned mode, or `None` when start hasn't been observed.
@@ -272,6 +279,11 @@ impl AdvertisingInputs {
             _ => Encoding::default(),
         };
         modes.pin(session.clone(), mode, encoding);
+        // ADR-0200: same two-tier lookup as `encoding` above, a plain field.
+        modes.set_advertise_discovered(
+            session,
+            encoding::resolve_advertise_discovered_pair(self.catalog.as_deref(), provider, model),
+        );
     }
 
     /// Fold a `ModelChanged` into `modes`: **keep** the pinned mode, but log

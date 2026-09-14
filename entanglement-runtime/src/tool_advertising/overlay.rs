@@ -11,7 +11,10 @@
 //! there, so there is nothing to add. `anthropic_native`/`responses_native`
 //! encodings have their own `defer_loading`/`tool_reference` mechanism for
 //! getting a schema in front of the model without a roster mutation — this
-//! module only ever touches the `client_side` discovered-tail.
+//! module only ever touches the `client_side` discovered-tail. A provider
+//! that opted out of growing that array (`advertise_discovered: false`,
+//! ADR-0200) is a no-op too — enable still unmasks the tool for dispatch,
+//! only this append effect is suppressed.
 //!
 //! Wildcard expansion is a one-time snapshot against the registry at the
 //! moment the overlay changes: a tool registered *later* that happens to
@@ -51,6 +54,12 @@ pub fn advertise_new_overlay_enables(
         return;
     }
     if state.encoding(session) != Encoding::ClientSide {
+        return;
+    }
+    // ADR-0200: `advertise_discovered: false` freezes the advertised array —
+    // enable still unmasks the tool (dispatch's own concern), only this
+    // append-to-the-tail effect becomes a no-op.
+    if !state.advertise_discovered(session) {
         return;
     }
     let new_enables = entries.iter().filter(|e| !e.deny && !previous.contains(e));
@@ -180,6 +189,37 @@ mod tests {
             &session,
             &[],
             &[ToolOverlayEntry::deny("bash")],
+        );
+
+        assert!(state.discovered.lock().unwrap().names(&session).is_empty());
+    }
+
+    #[test]
+    fn advertise_discovered_false_makes_the_overlay_enable_a_no_op() {
+        // ADR-0200: a `client_side` `ToolSearch` session that opted out of
+        // growing its advertised array must not have an overlay-enable grow
+        // it either.
+        let state = AdvertisingState::new();
+        let session = SessionId::new("s");
+        pin(
+            &state,
+            &session,
+            ToolAdvertising::ToolSearch,
+            Encoding::ClientSide,
+        );
+        state
+            .modes
+            .lock()
+            .unwrap()
+            .set_advertise_discovered(&session, false);
+        let registered = names(&["mcp__docs__search"]);
+
+        advertise_new_overlay_enables(
+            &state,
+            &registered,
+            &session,
+            &[],
+            &[ToolOverlayEntry::allow("mcp__docs__*")],
         );
 
         assert!(state.discovered.lock().unwrap().names(&session).is_empty());

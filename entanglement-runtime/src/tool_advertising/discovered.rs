@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use entanglement_core::SessionId;
+use entanglement_core::{SessionId, ToolSpec};
 
 /// One session's discovered names, in first-discovery order, plus the whole
 /// engine's session→names map. Lives behind [`super::AdvertisingState`]'s
@@ -68,6 +68,35 @@ impl DiscoveredSet {
     }
 }
 
+/// Append the `client_side` discovered-tool tail onto `specs` (the sorted
+/// kernel prefix already in hand) — resolving each `discovered` name via
+/// `resolve` and skipping one already present in the kernel. Gated by
+/// ADR-0200's `advertise_discovered` knob: `false` makes this a hard no-op,
+/// so `specs` stays byte-frozen at the kernel + profile specs for the whole
+/// session — `describe()` still resolves and marks names discovered (that
+/// bookkeeping drives the arg-validate dedup guard, ADR-0196 §6, regardless
+/// of this knob), only the *advertised array* stops growing. Pulled out of
+/// the `tool_spec_resolver` closure in `main.rs` so it unit-tests without the
+/// registry/session machinery that closure needs.
+pub fn append_discovered_tail(
+    specs: &mut Vec<ToolSpec>,
+    discovered: &[String],
+    advertise_discovered: bool,
+    resolve: impl Fn(&str) -> Option<ToolSpec>,
+) {
+    if !advertise_discovered {
+        return;
+    }
+    for name in discovered {
+        if specs.iter().any(|s| s.name == *name) {
+            continue;
+        }
+        if let Some(spec) = resolve(name) {
+            specs.push(spec);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +129,111 @@ mod tests {
         set.mark(&s, "glob");
         set.forget(&s);
         assert_eq!(set.names(&s), Vec::<String>::new());
+    }
+
+    fn spec(name: &str) -> ToolSpec {
+        ToolSpec::new(name, "d")
+    }
+
+    #[test]
+    fn advertise_discovered_true_appends_resolved_names_in_order() {
+        let mut specs = vec![spec("bash")];
+        let discovered = vec!["glob".to_string(), "grep".to_string()];
+        append_discovered_tail(&mut specs, &discovered, true, |n| Some(spec(n)));
+        assert_eq!(
+            specs.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["bash", "glob", "grep"]
+        );
+    }
+
+    #[test]
+    fn advertise_discovered_false_is_a_hard_no_op() {
+        // ADR-0200: the discovered set can be non-empty (describe() still
+        // marks it) but the advertised array must not grow — frozen at the
+        // kernel prefix for the whole session.
+        let mut specs = vec![spec("bash")];
+        let discovered = vec!["glob".to_string()];
+        append_discovered_tail(&mut specs, &discovered, false, |n| Some(spec(n)));
+        assert_eq!(
+            specs.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["bash"]
+        );
+    }
+
+    #[test]
+    fn resolver_output_is_frozen_across_two_describe_rounds_when_opted_out() {
+        // ADR-0200: two `describe()` calls each discover a new name — with
+        // `advertise_discovered: false` the second round's specs are
+        // byte-identical (same names, same order) to the first, even though
+        // the discovered set underneath kept growing.
+        let mut discovered = DiscoveredSet::new();
+        let session = SessionId::new("s");
+        let kernel = vec![spec("bash")];
+
+        discovered.mark(&session, "glob");
+        let mut round1 = kernel.clone();
+        append_discovered_tail(&mut round1, &discovered.names(&session), false, |n| {
+            Some(spec(n))
+        });
+
+        discovered.mark(&session, "grep");
+        let mut round2 = kernel.clone();
+        append_discovered_tail(&mut round2, &discovered.names(&session), false, |n| {
+            Some(spec(n))
+        });
+
+        let names = |v: &[ToolSpec]| v.iter().map(|s| s.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&round1), vec!["bash".to_string()]);
+        assert_eq!(
+            names(&round1),
+            names(&round2),
+            "frozen at the kernel across rounds"
+        );
+    }
+
+    #[test]
+    fn resolver_output_still_appends_on_a_default_provider() {
+        // Regression: `advertise_discovered: true` (unset, the default) keeps
+        // growing the tail across rounds exactly as before ADR-0200.
+        let mut discovered = DiscoveredSet::new();
+        let session = SessionId::new("s");
+        let kernel = vec![spec("bash")];
+
+        discovered.mark(&session, "glob");
+        let mut round1 = kernel.clone();
+        append_discovered_tail(&mut round1, &discovered.names(&session), true, |n| {
+            Some(spec(n))
+        });
+        assert_eq!(
+            round1.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["bash", "glob"]
+        );
+
+        discovered.mark(&session, "grep");
+        let mut round2 = kernel.clone();
+        append_discovered_tail(&mut round2, &discovered.names(&session), true, |n| {
+            Some(spec(n))
+        });
+        assert_eq!(
+            round2.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["bash", "glob", "grep"]
+        );
+    }
+
+    #[test]
+    fn already_in_the_kernel_prefix_is_skipped_and_an_unresolvable_name_is_dropped() {
+        let mut specs = vec![spec("bash")];
+        let discovered = vec!["bash".to_string(), "gone".to_string()];
+        append_discovered_tail(&mut specs, &discovered, true, |n| {
+            if n == "gone" {
+                None
+            } else {
+                Some(spec(n))
+            }
+        });
+        assert_eq!(
+            specs.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["bash"]
+        );
     }
 }

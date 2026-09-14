@@ -354,6 +354,7 @@ mod tests {
                 concurrency: None,
                 mcp_servers: Default::default(),
                 prompt_cache_key: false,
+                advertise_discovered: None,
                 default_model: "glm-5.2".into(),
                 models: vec![ModelEntry {
                     id: "glm-5.2".into(),

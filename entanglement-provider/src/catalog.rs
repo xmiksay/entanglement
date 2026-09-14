@@ -105,6 +105,12 @@ pub struct ProviderEntry {
     /// other wires have no equivalent field and ignore it.
     #[serde(default)]
     pub prompt_cache_key: bool,
+    /// Whether a `tool_search`/`client_side` session may grow its advertised
+    /// array via `describe()`/overlay discovery (ADR-0200). `None` behaves as
+    /// `true` (today's behavior); a snapshot-cached local server that runs
+    /// unadvertised registered calls fine (ADR-0192) can set `false`.
+    #[serde(default)]
+    pub advertise_discovered: Option<bool>,
 }
 
 // Split to `crate::provider_mcp` for the 400-line file cap; re-exported here
@@ -708,6 +714,27 @@ mod tests {
              \x20   prompt_cache_key: true\n",
         );
         assert!(c.provider("zai").unwrap().prompt_cache_key);
+        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
+    }
+
+    #[test]
+    fn advertise_discovered_defaults_unset_and_is_user_overridable() {
+        // Unset in the embedded defaults (ADR-0200) — every provider behaves
+        // as `true` (today's append behavior) until a user opts a
+        // snapshot-cached local server out.
+        assert_eq!(
+            Catalog::builtin()
+                .provider("zai")
+                .unwrap()
+                .advertise_discovered,
+            None
+        );
+        let c = merge_str(
+            "providers:\n\
+             \x20 - name: zai\n\
+             \x20   advertise_discovered: false\n",
+        );
+        assert_eq!(c.provider("zai").unwrap().advertise_discovered, Some(false));
         assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
     }
 

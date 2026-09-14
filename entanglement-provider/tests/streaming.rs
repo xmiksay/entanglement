@@ -1212,3 +1212,174 @@ async fn second_request_never_carries_thinking_back_to_an_inline_model() {
     // The spoken answer itself does ride, as ordinary assistant text.
     assert!(second.contains("Fixed."));
 }
+
+fn fields_thinking_spec(replay: bool) -> ThinkingSpec {
+    ThinkingSpec {
+        format: ThinkingFormat::Fields,
+        replay,
+    }
+}
+
+#[tokio::test]
+async fn fields_reasoning_stream_captures_a_block() {
+    // ADR-0200: a qwen-derivative server (`thinking_format: fields`, the
+    // default) streams structured `delta.reasoning_content` — those already
+    // routed to `LlmEvent::Reasoning` for display, but nothing minted a
+    // persisted block, so the next request re-sent the assistant turn
+    // without the reasoning the server generated and KV-cached. Capture must
+    // be unconditional (`replay: false` here), mirroring the inline-tags path.
+    let body = sse_body(&[
+        r#"{"choices":[{"delta":{"reasoning_content":"let's "}}]}"#,
+        r#"{"choices":[{"delta":{"reasoning_content":"think"}}]}"#,
+        r#"{"choices":[{"delta":{"content":"Done."}}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+    ]);
+    let captured: Arc<StdMutex<Vec<Vec<u8>>>> = Arc::new(StdMutex::new(Vec::new()));
+    let base_url = serve_capture_seq(vec![sse_response(&body)], captured.clone()).await;
+
+    let mut llm = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "qwen-fields",
+        None,
+        None,
+        fixed_model_concurrency(None),
+        None,
+        false,
+        fixed_thinking_spec(fields_thinking_spec(false)),
+        test_http_client(),
+    );
+    let messages = vec![Message::user("fix it")];
+    let req = LlmRequest {
+        system: "s",
+        model: None,
+        messages: &messages,
+        tools: &[],
+        generation: None,
+        cache_key: None,
+    };
+    let events: Vec<_> = llm
+        .stream(req)
+        .await
+        .expect("stream")
+        .map(|r| r.expect("ok"))
+        .collect()
+        .await;
+
+    let reasoning: String = events
+        .iter()
+        .filter_map(|e| match e {
+            LlmEvent::Reasoning(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasoning, "let's think");
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            LlmEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "Done.");
+    let block = events.iter().find_map(|e| match e {
+        LlmEvent::ContentBlock(ContentPart::Reasoning { provider, text, .. }) => {
+            Some((provider.as_str(), text.as_str()))
+        }
+        _ => None,
+    });
+    assert_eq!(block, Some(("openai", "let's think")));
+    assert!(matches!(events.last(), Some(LlmEvent::Finish { .. })));
+}
+
+#[tokio::test]
+async fn second_request_replays_fields_reasoning_byte_identical_when_on() {
+    // Fix A's golden: the captured Fields-format block replays as the
+    // assistant message's `reasoning_content` field byte-identical to what
+    // streamed (concatenated deltas, no reformatting) — only when
+    // `replay_thinking` is on (ADR-0160's per-model gate).
+    let round1 = sse_body(&[
+        r#"{"choices":[{"delta":{"reasoning_content":"step one "}}]}"#,
+        r#"{"choices":[{"delta":{"reasoning_content":"step two"}}]}"#,
+        r#"{"choices":[{"delta":{"content":"Fixed."},"finish_reason":"stop"}]}"#,
+    ]);
+    let round2 = sse_body(&[r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#]);
+    let captured: Arc<StdMutex<Vec<Vec<u8>>>> = Arc::new(StdMutex::new(Vec::new()));
+    let base_url = serve_capture_seq(
+        vec![sse_response(&round1), sse_response(&round2)],
+        captured.clone(),
+    )
+    .await;
+
+    let mut llm = OpenAiLlm::new(
+        base_url.as_str(),
+        Some("k".into()),
+        "qwen-fields",
+        None,
+        None,
+        fixed_model_concurrency(None),
+        None,
+        false,
+        fixed_thinking_spec(fields_thinking_spec(true)),
+        test_http_client(),
+    );
+    let msgs1 = vec![Message::user("fix it")];
+    let req1 = LlmRequest {
+        system: "s",
+        model: None,
+        messages: &msgs1,
+        tools: &[],
+        generation: None,
+        cache_key: None,
+    };
+    let events: Vec<_> = llm
+        .stream(req1)
+        .await
+        .expect("stream 1")
+        .map(|r| r.expect("ok"))
+        .collect()
+        .await;
+    let block_text = events.iter().find_map(|e| match e {
+        LlmEvent::ContentBlock(ContentPart::Reasoning { text, .. }) => Some(text.clone()),
+        _ => None,
+    });
+    assert_eq!(block_text.as_deref(), Some("step one step two"));
+
+    let history = vec![
+        Message::user("fix it"),
+        Message::assistant_content(
+            vec![
+                ContentPart::Reasoning {
+                    provider: "openai".into(),
+                    text: "step one step two".into(),
+                    data: serde_json::json!({"format": "fields", "model": "qwen-fields"}),
+                },
+                ContentPart::text("Fixed."),
+            ],
+            vec![],
+        ),
+        Message::user("thanks"),
+    ];
+    let req2 = LlmRequest {
+        system: "s",
+        model: None,
+        messages: &history,
+        tools: &[],
+        generation: None,
+        cache_key: None,
+    };
+    let _ = llm
+        .stream(req2)
+        .await
+        .expect("stream 2")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = captured.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let second = String::from_utf8_lossy(&requests[1]).to_string();
+    assert!(
+        second.contains("\"reasoning_content\":\"step one step two\""),
+        "byte-identical replay expected: {second}"
+    );
+}

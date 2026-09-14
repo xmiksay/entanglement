@@ -1587,17 +1587,24 @@ async fn main() -> Result<()> {
                             specs.sort_by(|a, b| a.name.cmp(&b.name));
                             specs.dedup_by(|a, b| a.name == b.name);
 
-                            for name in discovered {
-                                if specs.iter().any(|s| s.name == name) {
-                                    continue; // already in the kernel prefix
-                                }
-                                let spec = registry.spec_for(&name).or_else(|| {
-                                    runtime_specs.iter().find(|s| s.name == name).cloned()
-                                });
-                                if let Some(spec) = spec {
-                                    specs.push(spec);
-                                }
-                            }
+                            // ADR-0200: `advertise_discovered: false` freezes
+                            // `specs` at the kernel prefix for the whole
+                            // session — a snapshot-cached local server
+                            // executes an unadvertised registered call fine
+                            // (ADR-0192 dispatch-side enforcement), so the
+                            // schema reaching the model via `describe()`'s
+                            // transcript reply is enough; the array need
+                            // never grow.
+                            tool_advertising::append_discovered_tail(
+                                &mut specs,
+                                &discovered,
+                                advertising.advertise_discovered(session),
+                                |name| {
+                                    registry.spec_for(name).or_else(|| {
+                                        runtime_specs.iter().find(|s| s.name == name).cloned()
+                                    })
+                                },
+                            );
                             specs
                         }
                         // ADR-0196 §3: the full surface (same shape `Full`
@@ -2111,6 +2118,7 @@ mod tests {
             models: Vec::new(),
             mcp_servers: Default::default(),
             prompt_cache_key: false,
+            advertise_discovered: None,
         }
     }
 

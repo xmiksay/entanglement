@@ -722,7 +722,7 @@ session log.
 | --- | --- | --- |
 | Anthropic | `thinking` assembled across `thinking_delta` + `signature_delta`; `redacted_thinking` whole | verbatim, **first** in the block list, **last** assistant message only |
 | Gemini | thought-text parts | none — the load-bearing `thoughtSignature` round-trips via `ToolCall::provider_meta` (ADR-0085) |
-| OpenAI-compat | structured `reasoning`/`reasoning_content` deltas are display-only; a `thinking_format: inline_tags` model's `<think>…</think>` spans split out of `content` into a captured block (ADR-0191) | as the assistant message's `reasoning_content` field, gated by `replay_thinking` (default **off** on this wire); legacy spans already in history text are stripped regardless |
+| OpenAI-compat | structured `reasoning`/`reasoning_content` deltas (`thinking_format: fields`, the default) are accumulated per round and captured into one block at stream finish (ADR-0200), same as a `thinking_format: inline_tags` model's `<think>…</think>` spans split out of `content` (ADR-0191) | as the assistant message's `reasoning_content` field, gated by `replay_thinking` (default **off** on this wire); legacy spans already in history text are stripped regardless |
 
 **Inline think-tags (`ModelEntry::thinking_format`, ADR-0191).** The one wire
 where thinking can arrive *as assistant speech*: a parser-less OpenAI-compat
@@ -739,6 +739,27 @@ nothing is sent back, the reported qwen3.5 failure mode); a block minted by
 another provider drops rather than degrading to text. The format+replay pair
 resolves per request (`Catalog::thinking_spec_resolver`, the #550 property)
 so a `model:`-only pin under a different model id behaves correctly.
+
+**Fields-format capture (ADR-0200).** The other, more common OpenAI-compat
+shape — structured `reasoning`/`reasoning_content` deltas, `thinking_format:
+fields` (the catalog default) — used to be display-only: streamed as
+`LlmEvent::Reasoning` for rendering but never captured, so a session's next
+request replayed the assistant turn without the reasoning that server had
+already generated and cached for that exact prefix. The client now
+accumulates those deltas per round and mints one
+`ContentPart::Reasoning { provider: "openai", data: {"format":"fields",...} }`
+at stream finish — unconditional capture, same shape and same replay path as
+the `inline_tags` block above. This is **not** a signal to enable
+`replay_thinking` broadly: a qwen3.5/ornith-class model is typically trained
+with prior-turn thinking stripped from its own history, so `replay_thinking:
+false` (the default) is the *correct*, not merely conservative, posture for
+that class of model — capture exists so the block is available at all, not so
+replay becomes viable. A stripped-history model's client still sees its own
+last assistant turn land one byte later than wherever the server's cache
+entry actually ended (through generation, not just the replayed text) —
+that residual tail divergence is a server-side snapshot-placement question
+(snapshotting at end-of-prefill, before generation), out of this codebase's
+scope; see [ADR-0200](../adr/0200-fields-reasoning-capture-and-advertise-discovered.md).
 
 Three rules hold regardless of the flag: a block whose `provider` differs from
 the target renders **nothing** (stricter than `ProviderSearch`'s summary
