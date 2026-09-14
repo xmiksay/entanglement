@@ -35,9 +35,11 @@ use serde_yaml::Value;
 // where a reader of `Catalog` needs them.
 mod merge;
 mod thinking;
+mod tool_advertising;
 
 use merge::{merge_value, providers_file_path};
 pub use thinking::{ThinkingFormat, ThinkingSpec, ThinkingStyle};
+pub use tool_advertising::ToolAdvertising;
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
 
@@ -174,6 +176,15 @@ pub struct ModelEntry {
     /// changes what the next request carries.
     #[serde(default)]
     pub replay_thinking: Option<bool>,
+    /// Per-model tool-advertising preference (ADR-0196): `full` |
+    /// `tool_search`. Same Option-shaped catalog-preference pattern as
+    /// `thinking_style`/`thinking_format` — absent means "no catalog
+    /// preference", not `tool_search`; the runtime's
+    /// `tool_advertising::resolve_advertising` layers the install-wide
+    /// `config.yml`/env override on top of this, falling back to
+    /// `tool_search` only if nothing decides. See [`ToolAdvertising`].
+    #[serde(default)]
+    pub tool_advertising: Option<ToolAdvertising>,
     #[serde(default = "default_true")]
     pub supports_temperature: bool,
     #[serde(default)]

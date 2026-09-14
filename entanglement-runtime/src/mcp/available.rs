@@ -232,6 +232,23 @@ impl AvailableMcp {
         self.enabled_by_or_ancestor(sessions, session)
     }
 
+    /// The server-level form of [`spec_visible`](Self::spec_visible) — for a
+    /// caller (`explore`, ADR-0196 §4) that has a bare server name rather than
+    /// one of its tool names. Same rule: a server absent from the lazy
+    /// `enabled` map is globally visible (never lazily connected, or
+    /// startup-connected); a lazily-connected one is visible only to the
+    /// session(s) that enabled it or an ancestor of one.
+    pub fn server_visible(&self, server: &str, session: &SessionId) -> bool {
+        let enabled = self
+            .enabled
+            .lock()
+            .expect("available-server enablement mutex poisoned");
+        let Some(sessions) = enabled.get(server) else {
+            return true;
+        };
+        self.enabled_by_or_ancestor(sessions, session)
+    }
+
     /// Whether `session` — or an ancestor of it, live-resolved (#630) — is in
     /// `sessions`. The shared tail of [`spec_visible`](Self::spec_visible).
     pub(crate) fn enabled_by_or_ancestor(

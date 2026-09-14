@@ -196,6 +196,9 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
+        None,
     );
     holly
 }

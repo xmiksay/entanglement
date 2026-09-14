@@ -38,6 +38,11 @@ mod date;
 // Attributed autodecline wording for a call the dispatch gate refuses — the
 // one table both the executor ladder and the mask walk render from.
 pub mod decline;
+// `explore`/`describe` — the ADR-0196 §4 discovery pair (#560): always-on,
+// non-maskable internal tools that let a `ToolSearch`-mode session reach the
+// rest of the registry. Ungated — pure state/logic over core + the lean
+// `mcp` module, needed by the lean build's executor too.
+pub mod discover;
 pub mod env_date;
 pub mod extra_roots;
 pub mod file_change;
@@ -98,11 +103,21 @@ pub mod session_title;
 pub mod skills;
 pub mod subagent;
 pub mod system_prompt;
+// Composes the ADR-0196 §5 `ToolSearch`-mode prompt slimming with the
+// existing env-date freshness patch into the one `SystemPromptResolver`
+// slot `EngineConfig` exposes. Ungated — pure string transforms over core
+// types, needed by the lean build's `Config`-driven mode too.
+pub mod system_prompt_mode;
 // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141). Behind
 // `provider` since it polls `entanglement_provider::HttpClient` directly.
 #[cfg(feature = "provider")]
 pub mod throttle;
 pub mod tool_names;
+// Tool-advertising resolution + the per-session mode map (ADR-0196): the
+// `full`/`tool_search` knob, its env > config > catalog > default precedence
+// chain, and the session→mode pinning the executor folds. Ungated — pure
+// state over core types, needed by the lean build's `Config` too.
+pub mod tool_advertising;
 pub mod tool_runner;
 // The three-state (`allowed`/`asks`/`declines`) per-tool posture the profile
 // UIs render, now that advertisement no longer varies with the mask.

@@ -3,18 +3,21 @@
 //! shape (a real registry tool, profile-graded like any other, no
 //! runtime-executor interception).
 //!
-//! The currently *available* servers ride the tool's JSON schema as a live
-//! `enum` (recomputed on every spec snapshot via the dynamic
-//! `tool_spec_resolver`, ADR-0096), so a keyless bundle stays invisible to
-//! the model — "silently absent" — and a `/key` save mid-session surfaces
-//! the newly unlocked names on the next turn with no restart.
+//! The schema is **static** (`server: string`) in every advertising mode
+//! (#560, ADR-0196 §4/§6): no live per-session `enum` of the currently
+//! available servers — that would be a second cache seam ADR-0192 didn't
+//! close (the schema itself would still busts a session's advertised-array
+//! cache whenever a new server unlocks). The live roster lives in
+//! `explore`/`describe` instead; an unknown/not-yet-unlocked `server` name is
+//! just a normal tool error, closest-match-hinted like any other.
 //!
 //! Enabling connects the server lazily and scopes its tools' visibility to
 //! the calling session (`AvailableMcp::mark_enabled` + the runtime's spec
 //! filter). Nothing persists — the enablement dies with the session, and
 //! `config.yml` is never written (unlike `/mcp add`). Note the newly
 //! registered tools reach the model on its *next* round (the spec snapshot
-//! is per round); the tool's reply says so.
+//! is per round); the tool's reply says so, and points at `explore` to list
+//! them by name.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -70,26 +73,23 @@ impl Tool for McpEnableTool {
 
     fn description(&self) -> &str {
         "Enable an available MCP tool server for this session. Its tools are \
-         connected on demand and become callable from your next round. The \
-         `server` schema lists the currently available servers; enablement is \
-         session-scoped and not persisted."
+         connected on demand and become callable from your next round. Use \
+         explore to see which servers are available and their state; \
+         enablement is session-scoped and not persisted."
     }
 
     fn schema(&self) -> serde_json::Value {
-        let names = self.avail.available_names();
-        let mut server = serde_json::json!({
-            "type": "string",
-            "description": "Name of the available MCP server to enable",
-        });
-        // An empty `enum` is invalid JSON Schema; only constrain when there is
-        // something to offer (an empty roster keeps the tool callable but
-        // every call will report "no available server").
-        if !names.is_empty() {
-            server["enum"] = serde_json::json!(names);
-        }
+        // Static in every mode (#560, ADR-0196 §3/§6): no live server `enum` —
+        // that would be its own cache-busting seam. `explore` carries the
+        // live roster instead.
         serde_json::json!({
             "type": "object",
-            "properties": { "server": server },
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "Name of the available MCP server to enable — see explore for the current roster",
+                }
+            },
             "required": ["server"],
         })
     }
@@ -123,10 +123,8 @@ impl Tool for McpEnableTool {
         )
         .await?;
         Ok(text_parts(format!(
-            "MCP server `{server}` enabled for this session — {} tool(s) available from your \
-             next round: {}",
-            tools.len(),
-            tools.join(", ")
+            "enabled {server}, {} tool(s) — list with explore",
+            tools.len()
         )))
     }
 }
@@ -155,10 +153,15 @@ mod tests {
     }
 
     #[test]
-    fn schema_omits_enum_on_an_empty_roster() {
+    fn schema_is_static_with_no_live_server_enum() {
+        // #560, ADR-0196 §3/§6: the schema never varies by roster — a live
+        // `enum` would be its own cache-busting seam. Byte-identical whether
+        // the roster is empty or not (a second registry with servers would
+        // assert the same schema, so one snapshot suffices as a golden).
         let (tool, _registry) = tool_with_empty_roster();
         let schema = tool.schema();
         assert!(schema["properties"]["server"].get("enum").is_none());
+        assert_eq!(schema["properties"]["server"]["type"], "string");
         assert_eq!(schema["required"][0], "server");
     }
 

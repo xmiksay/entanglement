@@ -57,6 +57,7 @@ pub(super) fn merge_user(user: &str) -> Config {
         auto_compact: raw.auto_compact,
         editor: raw.editor.filter(|s| !s.trim().is_empty()),
         session_retention_days: super::resolve_session_retention(raw.session_retention_days),
+        tool_advertising: raw.tool_advertising,
     }
 }
 

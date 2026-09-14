@@ -256,6 +256,9 @@ fn spawn_with_rhai_escape(
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — test callers resolve tool_search.
+        None,
+        None,
     );
     (holly, store)
 }
@@ -1183,6 +1186,9 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — test callers resolve tool_search.
+        None,
+        None,
     );
 
     let sid = SessionId::new("s1");
@@ -1280,6 +1286,9 @@ fn spawn_with_rhai_background(
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
+        None,
+        // No tool-advertising inputs (ADR-0196) — test callers resolve tool_search.
+        None,
         None,
     );
     (holly, scripts)

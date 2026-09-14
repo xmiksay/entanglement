@@ -86,3 +86,15 @@ editor: null
 # fatal. Precedence: ENTANGLEMENT_SESSION_RETENTION_DAYS env > this file >
 # this default (30).
 session_retention_days: 30
+
+# Tool advertising (ADR-0196): how a session's tools are surfaced to the
+# model — "tool_search" (the default: a lean kernel plus explore/describe
+# discovery, the rest reachable after discovery) or "full" (today's
+# behavior, entire surface advertised). This is the install-wide override; a
+# model can also set its own preference via `tool_advertising:` in
+# providers.yml, and precedence is ENTANGLEMENT_TOOL_ADVERTISING env > this
+# key > the catalog entry > tool_search. The mode is resolved once per
+# session from its initial model and fixed for the session's lifetime (a
+# live /model switch keeps it). `null` (the default) leaves the choice to
+# the catalog.
+tool_advertising: null

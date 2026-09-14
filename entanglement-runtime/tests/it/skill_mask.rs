@@ -213,6 +213,9 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
+        None,
     );
 
     let sid = SessionId::new("s1");

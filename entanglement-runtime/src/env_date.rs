@@ -18,8 +18,12 @@
 /// Patch a baked system prompt's `<env>` date line to `today`. Returns `None`
 /// — falling back to the unmodified baked prompt — when there's no `<env>`
 /// block (a subagent's prompt omits it) or the date already matches, so the
-/// prompt stays byte-identical for as long as it's accurate.
-fn refresh_env_date(system_prompt: &str, today: &str) -> Option<String> {
+/// prompt stays byte-identical for as long as it's accurate. `pub(crate)`:
+/// also called from [`crate::system_prompt_mode`], which composes this same
+/// patch with the ADR-0196 §5 `ToolSearch`-mode prompt slimming — only one
+/// `SystemPromptResolver` slot exists on `EngineConfig`, so the two concerns
+/// share one resolver function.
+pub(crate) fn refresh_env_date(system_prompt: &str, today: &str) -> Option<String> {
     let marker = "\nDate: ";
     let start = system_prompt.find(marker)? + marker.len();
     let end = system_prompt[start..]

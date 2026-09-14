@@ -56,6 +56,50 @@ pub const UPDATE_TASKS_TOOL: &str = "update_tasks";
 /// Tool name the model calls to load a skill's full instructions (#124).
 pub const LOAD_SKILL_TOOL: &str = "load_skill";
 
+/// Tool name the model calls to search the tool catalog beyond what's
+/// advertised — MCP servers, skills, and unadvertised built-ins (#560,
+/// ADR-0196 §4). Always-on and non-maskable, like [`DESCRIBE_TOOL`].
+pub const EXPLORE_TOOL: &str = "explore";
+
+/// Tool name the model calls to fetch a discovered tool's full schema, byte-
+/// identical to a native `<tools>` entry (#560, ADR-0196 §4). Under
+/// `client_side` encoding also registers the tool into the session's
+/// advertised array. Always-on and non-maskable, like [`EXPLORE_TOOL`].
+pub const DESCRIBE_TOOL: &str = "describe";
+
+/// Tools exempt from the #116 agent-mask / session-overlay / deny-entry check
+/// entirely (ADR-0196 §4): read-only catalog introspection, never a
+/// capability decision. Narrow and deliberate, like ADR-0190's original
+/// (now-retired, subsumed by ADR-0192's universal dispatch mask) `poll`
+/// exemption — adding an entry removes a profile-author control.
+pub const NON_MASKABLE_TOOLS: &[&str] = &[EXPLORE_TOOL, DESCRIBE_TOOL];
+
+/// Whether `tool` is exempt from the dispatch-side mask entirely
+/// ([`NON_MASKABLE_TOOLS`]).
+pub fn is_non_maskable(tool: &str) -> bool {
+    NON_MASKABLE_TOOLS.contains(&tool)
+}
+
+/// The `ToolSearch`-mode advertised set (ADR-0196 §2): the fixed
+/// high-frequency host tools plus the runtime-owned roster plus the
+/// discovery pair. Excludes the profile-defining specs (`propose_plan`,
+/// `agent`/`agent_send`) — those are threaded separately by
+/// `cfg.profile_tool_specs` (core-side, per-profile, ADR-0192's carve-out)
+/// and reach every mode's advertised array regardless of this list.
+pub const TOOL_SEARCH_KERNEL: &[&str] = &[
+    "read",
+    "edit",
+    "write",
+    "apply_patch",
+    "bash",
+    POLL_TOOL,
+    ASK_USER_TOOL,
+    UPDATE_TASKS_TOOL,
+    LOAD_SKILL_TOOL,
+    EXPLORE_TOOL,
+    DESCRIBE_TOOL,
+];
+
 /// Capability-level permission keys (#418, ADR-0114) and the tools each fans
 /// out to when a profile's `permission:` map uses the capability name instead
 /// of spelling out every member tool — `("read", &["read", "grep", "glob"])`
@@ -135,6 +179,8 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     LOAD_SKILL_TOOL,
     "read_raw",
     "mcp_enable",
+    EXPLORE_TOOL,
+    DESCRIBE_TOOL,
 ];
 
 /// The compile-time literal tool vocabulary ([`KNOWN_TOOL_NAMES`]), for a

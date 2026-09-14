@@ -875,6 +875,9 @@ fn spawn_two_read_calls_rooted(
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
+        None,
     );
     holly
 }
@@ -1119,6 +1122,9 @@ fn spawn_scripted_calls_rooted(
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
+        None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
         None,
     );
     holly
@@ -1502,6 +1508,9 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
+        None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
         None,
     );
 

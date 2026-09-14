@@ -115,6 +115,7 @@ mod tests {
             auto_compact: None,
             editor: None,
             session_retention_days: 30,
+            tool_advertising: None,
         }
     }
 

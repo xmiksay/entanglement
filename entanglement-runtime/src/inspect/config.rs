@@ -110,6 +110,27 @@ fn render_config(resolved: &Resolved) -> String {
         "  session_retention_days: {:<12} ← {}",
         c.session_retention_days, retention_source
     );
+    // Tool advertising (ADR-0196): the global view resolves the config/env
+    // tiers only — the catalog tier is per model (`tool_advertising:` in
+    // providers.yml), so name that fact rather than pretending this line is
+    // the whole answer. Provenance mirrors `session_retention_days`'s env
+    // check (an active, parseable env override is its own source tier).
+    let mode = crate::tool_advertising::configured_advertising(c).unwrap_or_default();
+    let mode_source = crate::tool_advertising::configured_advertising_source(c);
+    let mode_source_label = match mode_source {
+        crate::tool_advertising::AdvertisingSource::Env => {
+            format!("env ({})", crate::config::TOOL_ADVERTISING_ENV)
+        }
+        other => other.label().to_string(),
+    };
+    let _ = writeln!(
+        out,
+        "  tool_advertising: {:<12} ← {} (per-model catalog \
+         `tool_advertising:` preference applies when unset; resolved per \
+         session at start)",
+        mode.label(),
+        mode_source_label
+    );
 
     let _ = writeln!(
         out,

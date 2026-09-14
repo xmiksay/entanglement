@@ -350,6 +350,7 @@ mod tests {
                     thinking_style: None,
                     thinking_format: None,
                     replay_thinking: None,
+                    tool_advertising: None,
                     default_reasoning_effort: None,
                     pricing: None,
                     concurrency: None,

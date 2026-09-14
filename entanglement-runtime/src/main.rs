@@ -22,16 +22,19 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, config, env_date, extra_roots, history, host, inspect, logging, mcp,
+    agents, ask_user, config, discover, extra_roots, history, host, inspect, logging, mcp,
     permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll, propose_plan,
-    retained_output, script_ops, session_store, skills, subagent, system_prompt, throttle,
-    tool_names, tool_runner, tool_state, watch, SharedRegistry, ToolRegistry,
+    retained_output, script_ops, session_store, skills, subagent, system_prompt,
+    system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, tool_state, watch,
+    SharedRegistry, ToolRegistry,
 };
-use tool_runner::EscapeRoot;
+use tool_runner::{DiscoverySurface, EscapeRoot};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId};
+use entanglement_core::{
+    EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId, ToolAdvertising,
+};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
     ProviderEntry, ResolvedModel, ThinkingStyle, WebSearchConfig, Wire,
@@ -1331,11 +1334,21 @@ async fn main() -> Result<()> {
     engine_config.generation_resolver = Some(
         config::agent_generation::AgentGenerationStore::resolver(live_agent_generation.clone()),
     );
-    // Keep the baked `<env>` date accurate across a long-lived process (#566):
-    // consulted once per turn, a no-op (falls back to the byte-stable baked
-    // prompt) except on the one turn where the calendar date has actually
-    // rolled over.
-    engine_config.system_prompt_resolver = Some(env_date::date_resolver());
+    // `explore`/`describe`'s shared state (#560, ADR-0196 §2-4): the pinned
+    // session→mode map plus the `client_side`-encoding discovered-tool set.
+    // Constructed once, here, so the *same* `Arc` is visible to the system-
+    // prompt resolver just below, the tool-spec resolver further down, and
+    // the tool executor at the bottom of this function — Phase P1's
+    // loop-local-only map is gone.
+    let advertising_state = std::sync::Arc::new(tool_advertising::AdvertisingState::new());
+    // Per-session system prompt (#566, #560): folds the `<env>` date-freshness
+    // patch with the ADR-0196 §5 `ToolSearch`-mode prompt slimming into the
+    // one `SystemPromptResolver` slot — consulted once per turn, a no-op for
+    // a `Full`-mode session except on the date's actual rollover, always-Some
+    // for a `ToolSearch`-mode one (the slimmed prompt, byte-stable per
+    // session since the mode never changes mid-session).
+    engine_config.system_prompt_resolver =
+        Some(system_prompt_mode::resolver(advertising_state.clone()));
     // Per-purpose aux-model pins (Issue 5): a managed `aux-models.yml` sibling
     // of `agent-models.yml`, consulted by the `AuxLlmRegistry` to route a side
     // transformation (session-title generation today; compaction summary once
@@ -1381,17 +1394,20 @@ async fn main() -> Result<()> {
     // spec no model ever sees (the ADR-0190 Bug-1 shape: `poll` was omitted
     // and vanished from every real head while tests, which run off the static
     // `tool_specs` fallback, stayed green).
+    // Mode branch (#560, ADR-0196 §2-3): `Full` reproduces the pre-P3 full
+    // snapshot unchanged; `ToolSearch` projects the lean kernel (sorted,
+    // cache-stable prefix) and appends this session's discovered-tool tail
+    // in discovery order — **never re-sorted globally**, since sorting the
+    // whole array would let a later-discovered, alphabetically-earlier name
+    // insert into the middle of an already-cached prefix instead of at the
+    // end. That's a deliberate deviation from the kernel-internal sort
+    // below: the kernel is sorted because it never changes shape within a
+    // session (cache-stable by construction either way), the tail is
+    // append-only because it does.
     {
         let tools = tools.clone();
         let avail = mcp_available.clone();
-        #[allow(unused_mut)] // only mutated when the `rhai` feature is on
-        let mut runtime_owned_specs = vec![
-            plan_tasks::update_tasks_spec(),
-            ask_user::ask_user_spec(),
-            poll::poll_spec(),
-        ];
-        #[cfg(feature = "rhai")]
-        runtime_owned_specs.push(script::rhai_spec());
+        let advertising = advertising_state.clone();
         engine_config.tool_spec_resolver = Some(Arc::new(move |session: &SessionId| {
             // `read_raw` lives in the same shared registry as every other tool
             // (rhai's bridge needs to `execute()` it) but must never reach the
@@ -1401,25 +1417,70 @@ async fn main() -> Result<()> {
             // A lazily-connected `allowed` MCP server's tools (#542) stay
             // scoped to the sessions that enabled them — MCP is the one
             // acknowledged dynamic seam in an otherwise session-stable surface,
-            // since a server's tools are unknowable until it connects.
-            let mut specs: Vec<_> = tools
-                .read()
-                .unwrap()
+            // since a server's tools are unknowable until it connects. This
+            // filter still applies to `Full` mode's surface and to the
+            // `ToolSearch` kernel's own matching pool (moot there — no kernel
+            // name is ever an `mcp__*` tool) — a `describe`d MCP tool's tail
+            // entry below resolves through the unfiltered registry instead
+            // (§3's append-only guarantee outranks the per-session MCP
+            // visibility gate once the model has already discovered it).
+            let registry = tools.read().unwrap();
+            let visible_specs: Vec<_> = registry
                 .specs()
                 .into_iter()
                 .filter(|s| s.name != "read_raw" && avail.spec_visible(&s.name, session))
                 .collect();
-            specs.extend(runtime_owned_specs.iter().cloned());
-            // Sorted by name (#566): `specs()` is already sorted, but appending
-            // the runtime-owned pseudo-tools after it reintroduces an unsorted
-            // tail — re-sort so the whole array handed to the model (and thus
-            // the provider's cached `tools` prefix) has one stable order,
-            // independent of registration order and stable across restarts.
-            specs.sort_by(|a, b| a.name.cmp(&b.name));
-            // A runtime-owned pseudo-tool also present in the registry would
-            // appear twice; keep one. Sorting first makes duplicates adjacent.
-            specs.dedup_by(|a, b| a.name == b.name);
-            specs
+            let mut runtime_specs = discover::runtime_owned_specs();
+            runtime_specs.push(discover::explore_spec());
+            runtime_specs.push(discover::describe_spec());
+
+            match advertising.mode(session) {
+                ToolAdvertising::Full => {
+                    let mut specs = visible_specs;
+                    specs.extend(runtime_specs);
+                    // Sorted by name (#566): `specs()` is already sorted, but
+                    // appending the runtime-owned pseudo-tools after it
+                    // reintroduces an unsorted tail — re-sort so the whole
+                    // array handed to the model (and thus the provider's
+                    // cached `tools` prefix) has one stable order,
+                    // independent of registration order and stable across
+                    // restarts.
+                    specs.sort_by(|a, b| a.name.cmp(&b.name));
+                    // A runtime-owned pseudo-tool also present in the
+                    // registry would appear twice; keep one. Sorting first
+                    // makes duplicates adjacent.
+                    specs.dedup_by(|a, b| a.name == b.name);
+                    specs
+                }
+                ToolAdvertising::ToolSearch => {
+                    let mut kernel_pool = visible_specs;
+                    kernel_pool.extend(runtime_specs.iter().cloned());
+                    let mut specs: Vec<_> = kernel_pool
+                        .into_iter()
+                        .filter(|s| tool_names::TOOL_SEARCH_KERNEL.contains(&s.name.as_str()))
+                        .collect();
+                    specs.sort_by(|a, b| a.name.cmp(&b.name));
+                    specs.dedup_by(|a, b| a.name == b.name);
+
+                    let discovered = advertising
+                        .discovered
+                        .lock()
+                        .expect("discovered-tool mutex poisoned")
+                        .names(session);
+                    for name in discovered {
+                        if specs.iter().any(|s| s.name == name) {
+                            continue; // already in the kernel prefix
+                        }
+                        let spec = registry
+                            .spec_for(&name)
+                            .or_else(|| runtime_specs.iter().find(|s| s.name == name).cloned());
+                        if let Some(spec) = spec {
+                            specs.push(spec);
+                        }
+                    }
+                    specs
+                }
+            }
         }));
     }
     // Live MCP server management (#375): `ActiveServers` was seeded by
@@ -1494,6 +1555,25 @@ async fn main() -> Result<()> {
         plan_files.clone(),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // Tool-advertising inputs (ADR-0196): the user config
+        // (`tool_advertising` tier) + the catalog (per-model
+        // `tool_advertising:` tier), for the executor's session→mode map.
+        // With neither set anywhere — the shipped state — every session
+        // resolves the default, `tool_search`.
+        Some(std::sync::Arc::new(
+            entanglement_runtime::tool_advertising::AdvertisingInputs::new(
+                std::sync::Arc::new(user_config.clone()),
+                Some(std::sync::Arc::new(catalog.clone())),
+            ),
+        )),
+        // `explore`/`describe`'s shared state (#560, ADR-0196 §4): the same
+        // `advertising_state` the tool-spec/system-prompt resolvers above
+        // read, plus the MCP three-state roster `explore` lists.
+        Some(DiscoverySurface {
+            advertising: advertising_state,
+            mcp_avail: mcp_available.clone(),
+            mcp_active: mcp_active.clone(),
+        }),
     );
 
     // Live MCP server management (#375): a runtime service answering

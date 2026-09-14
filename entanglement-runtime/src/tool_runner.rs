@@ -47,7 +47,9 @@ use crate::tools::{SharedRegistry, ToolExecution, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::cancel::{CancelAllOnDrop, CancelRegistry, TaskCanceller};
+use crate::discover;
 use crate::hooks::Hooks;
+use crate::mcp::{ActiveServers, AvailableMcp};
 #[cfg(feature = "rhai")]
 use crate::permission::effective_permission;
 use crate::permission::{
@@ -60,10 +62,12 @@ use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileRe
 use crate::seam;
 use crate::skills::load_skill::parse_skill_id;
 use crate::skills::SkillRegistry;
+use crate::tool_advertising::{self, SharedAdvertisingState};
 #[cfg(feature = "rhai")]
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
-    AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL,
+    is_non_maskable, AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DESCRIBE_TOOL, EXPLORE_TOOL,
+    LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL,
 };
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
@@ -145,6 +149,13 @@ enum Intercept {
     /// `propose_plan`: the plan agent's finalize step (#141, ADR-0042),
     /// force-parked on the `Ask` path since user approval *is* its semantics.
     ProposePlan,
+    /// `explore`/`describe` (#560, ADR-0196 §4): the always-on, non-maskable
+    /// discovery pair — read-only catalog introspection, starting nothing and
+    /// touching no host resource. Exempt from the #116 mask entirely (see the
+    /// `is_non_maskable` short-circuit ahead of classification, not this
+    /// route), and from the `Allow`/`Ask`/`Deny` ladder like every other
+    /// runtime-owned orchestration tool.
+    Discover,
     /// `rhai`: a sandboxed script tool (#122, ADR-0046) that resolves its own
     /// permission live against the loop's profile snapshot inside the script task.
     /// Behind the `rhai` feature (#502, ADR-0135) — a lean build without it
@@ -165,6 +176,7 @@ impl Intercept {
             POLL_TOOL => Self::Poll,
             ASK_USER_TOOL => Self::AskUser,
             PROPOSE_PLAN_TOOL => Self::ProposePlan,
+            EXPLORE_TOOL | DESCRIBE_TOOL => Self::Discover,
             #[cfg(feature = "rhai")]
             RHAI_TOOL => Self::Rhai,
             _ => Self::Permission,
@@ -172,13 +184,19 @@ impl Intercept {
     }
 
     /// Whether this route skips the per-tool `Allow | Ask | Deny` decision. The
-    /// spawn/poll/prompt/plan routes touch no host resource, so permission does
-    /// not apply; `Rhai` resolves permission itself inside the script task; the
-    /// generic `Permission` route *is* the permission decision.
+    /// spawn/poll/prompt/plan/discover routes touch no host resource, so
+    /// permission does not apply; `Rhai` resolves permission itself inside the
+    /// script task; the generic `Permission` route *is* the permission
+    /// decision.
     fn bypasses_permission(self) -> bool {
         matches!(
             self,
-            Self::Spawn | Self::AgentSend | Self::Poll | Self::AskUser | Self::ProposePlan
+            Self::Spawn
+                | Self::AgentSend
+                | Self::Poll
+                | Self::AskUser
+                | Self::ProposePlan
+                | Self::Discover
         )
     }
 }
@@ -275,6 +293,16 @@ pub fn spawn_tool_executor_with_hooks(
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user, like skutter itself.
         None,
+        // No advertising-resolution inputs (ADR-0196 Phase P1): these
+        // wrappers' (~30, test-only) callers hand no catalog/config pair, so
+        // every session resolves `tool_search` — the map still folds,
+        // nothing dispatches on it yet.
+        None,
+        // No discovery surface (ADR-0196 §4): these wrappers' (~30, test-only)
+        // callers build no `tool_spec_resolver` of their own either, so a
+        // private, unshared `AdvertisingState` and an empty MCP roster (
+        // `explore` simply has nothing MCP to report) are exactly right.
+        None,
     )
 }
 
@@ -349,6 +377,17 @@ impl EscapeRoot {
     }
 }
 
+/// `explore`/`describe`'s shared inputs (#560, ADR-0196 §4), bundled into one
+/// struct — see [`spawn_tool_executor_with_policy`]'s `discovery` param.
+/// `Default` gives every field's own empty/private state: an advertising
+/// state no external resolver shares, and an empty MCP roster.
+#[derive(Default)]
+pub struct DiscoverySurface {
+    pub advertising: SharedAdvertisingState,
+    pub mcp_avail: Arc<AvailableMcp>,
+    pub mcp_active: ActiveServers,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_tool_executor_with_policy(
     holly: &Holly,
@@ -382,7 +421,29 @@ pub fn spawn_tool_executor_with_policy(
     // `None` — skutter and every in-tree caller — is byte-identical to
     // pre-#684 behavior; only a multi-user embedder constructs an `McpScopes`.
     mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
+    // Tool-advertising resolution inputs (ADR-0196, Phase P1): the user
+    // config (its `tool_advertising` tier) and the catalog (the per-model
+    // `tool_advertising:` tier). `None` — the convenience wrappers and test
+    // callers — keeps the session→mode map recording but always resolving
+    // `tool_search` (no catalog entry sets `tool_advertising:` yet and the
+    // config key defaults to `null`).
+    advertising_inputs: Option<Arc<tool_advertising::AdvertisingInputs>>,
+    // `explore`/`describe`'s shared state (#560, ADR-0196 §4), bundled into
+    // one struct so this already-large signature doesn't grow by three:
+    // the session-mode map + discovered-tool set (also read by the
+    // `tool_spec_resolver`/`system_prompt_resolver` closures in `main.rs` —
+    // this executor is one of three readers/writers, no longer the map's
+    // sole owner as it was in Phase P1) plus the MCP three-state roster
+    // `explore` lists. `None` (the convenience wrappers, every test-only
+    // caller) falls back to empty/private defaults — `explore` then has
+    // nothing MCP to report, and the discovered set is unshared.
+    discovery: Option<DiscoverySurface>,
 ) -> tokio::task::JoinHandle<()> {
+    let DiscoverySurface {
+        advertising,
+        mcp_avail,
+        mcp_active,
+    } = discovery.unwrap_or_default();
     let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
     // Subscribe to the inbound fan-out *synchronously*, before this function
@@ -491,6 +552,16 @@ pub fn spawn_tool_executor_with_policy(
         // and per-root spawn budgets. Lives in this single-threaded loop, so the
         // spawn decision below is race-free.
         let mut spawn_guard = crate::subagent::SpawnGuard::new();
+        // Per-session tool advertising (ADR-0196 §2-3): pinned at session
+        // start from the session's initial model, kept across `SetModel`
+        // (logged when the new model's catalog preference differs), released
+        // on end/hibernate. `advertising` (the mode map plus the discovered-
+        // tool set `describe` writes into) is caller-constructed and shared
+        // — Phase P1's loop-local-only map is gone; the `tool_spec_resolver`/
+        // `system_prompt_resolver` closures in `main.rs` read the same `Arc`.
+        // `advertising_inputs == None` (the convenience wrappers, tests)
+        // keeps the fold running so the shape is identical, resolving
+        // `tool_search` throughout.
         // Answer + timing per launched sub-agent, keyed by its handle (#89).
         // Shared with the detached launch watchers and `poll` tasks (#605).
         let registry = crate::agent_registry::AgentRegistry::default();
@@ -603,9 +674,38 @@ pub fn spawn_tool_executor_with_policy(
                     session,
                     parent,
                     profile,
+                    model,
                     ..
                 }) => {
                     spawn_guard.record_start(session.clone(), parent.clone());
+                    // Tool advertising pinned at start (ADR-0196 §2): resolved
+                    // from *this session's* initial model, so concurrent
+                    // sessions can differ (a pinned cheap-model `explore`
+                    // child vs its parent). The start pairing: `model` here
+                    // is the profile's bare model field; a pin-driven
+                    // rebind's `ModelChanged` (provider+model) follows
+                    // immediately for a pinned profile and pins the precise
+                    // pair via the `ModelChanged` arm's first-observation
+                    // rule below. `pin` is idempotent-safe by design — the
+                    // start pair is the authority, a later re-observed start
+                    // (resume) re-resolves the same value.
+                    if let Some(inputs) = advertising_inputs.as_ref() {
+                        let mut modes = advertising
+                            .modes
+                            .lock()
+                            .expect("tool-advertising mode mutex poisoned");
+                        inputs.pin_session_start(
+                            &mut modes,
+                            &session,
+                            // The startup default's provider name is not
+                            // announced (`Session::provider` starts `None`,
+                            // core never learns it) — a bare model id is the
+                            // best start-time fact, and enough for the
+                            // catalog tier.
+                            None,
+                            model.as_deref(),
+                        );
+                    }
                     // A head-driven resume (ADR-0112) re-emits `SessionStarted`
                     // for a previously-hibernated child (#609, ADR-0162 §4) — a
                     // no-op for any other session, since a fresh registration is
@@ -651,6 +751,42 @@ pub fn spawn_tool_executor_with_policy(
                             .lock()
                             .expect("active-profile mutex poisoned")
                             .insert(session, p);
+                    }
+                }
+                // The session's model changed (`SetModel` / a profile pin
+                // re-bind, #218/#323). Tool advertising is *not* re-resolved
+                // (ADR-0196 §2): the session keeps the mode pinned at start —
+                // switching mid-session would bust the prompt cache the mode
+                // protects and strand half-emitted history. What this arm
+                // does: (a) a start-pair upgrade — a session whose start
+                // carried only a bare model id (the startup default's
+                // provider is never announced) gets its *first* precise
+                // `(provider, model)` pair re-pinned once, which matters only
+                // when config is unset and the two lookups could disagree
+                // (same id under two providers, one preferring `full`);
+                // (b) otherwise the retention notice — same-held-mode plus a
+                // log when the new model's catalog preference differs.
+                Ok(OutEvent::ModelChanged {
+                    session,
+                    provider,
+                    model,
+                    ..
+                }) => {
+                    if let Some(inputs) = advertising_inputs.as_ref() {
+                        let mut modes = advertising
+                            .modes
+                            .lock()
+                            .expect("tool-advertising mode mutex poisoned");
+                        if modes.get(&session).is_none() {
+                            inputs.pin_session_start(
+                                &mut modes,
+                                &session,
+                                Some(&provider),
+                                Some(&model),
+                            );
+                        } else {
+                            inputs.note_model_changed(&modes, &session, &provider, &model);
+                        }
                     }
                 }
                 // A hibernated session (#318) tore down just like an ended one, so
@@ -713,6 +849,20 @@ pub fn spawn_tool_executor_with_policy(
                         .remove(&session);
                     // The plan-file staleness binding (#513) is moot too.
                     plan_files.forget_session(&session);
+                    // And the session's pinned tool advertising plus its
+                    // discovered-tool set (ADR-0196 §2-3) — a resume re-pins
+                    // from its own replayed start pair, and rediscovery is
+                    // cheap (the model re-`describe`s what it needs).
+                    advertising
+                        .modes
+                        .lock()
+                        .expect("tool-advertising mode mutex poisoned")
+                        .forget(&session);
+                    advertising
+                        .discovered
+                        .lock()
+                        .expect("discovered-tool mutex poisoned")
+                        .forget(&session);
                 }
                 // A skill's tool mask scopes one model turn (#400, ADR-0106):
                 // clear it here so a later turn can `load_skill` a different one
@@ -829,7 +979,18 @@ pub fn spawn_tool_executor_with_policy(
                     // on whose authority (its profile vs its overlay), since a
                     // child's own definition can list the tool while an
                     // ancestor's narrower mask erases it down the chain.
-                    let masked_by = {
+                    //
+                    // `explore`/`describe` are the one deliberate exemption
+                    // from this whole walk (#560, ADR-0196 §4): read-only
+                    // catalog introspection, never a capability decision — no
+                    // profile mask, overlay entry, or ancestor clamp can
+                    // withdraw them, mirroring the always-on internal-tool
+                    // posture ADR-0190 established for `poll` (subsumed for
+                    // `poll` itself by ADR-0192's universal dispatch mask,
+                    // but reinstated here narrowly for these two).
+                    let masked_by = if is_non_maskable(&tool) {
+                        None
+                    } else {
                         let active = active.lock().expect("active-profile mutex poisoned");
                         tool_mask_source(&active, &spawn_guard, &overlays, &session, &tool).map(
                             |source| {
@@ -1080,6 +1241,50 @@ pub fn spawn_tool_executor_with_policy(
                                     &reg_session,
                                     TaskCanceller::task(handle.abort_handle()),
                                 );
+                            }
+                        }
+                        Intercept::Discover => {
+                            // Read-only, non-maskable, always-`Allow` (#560,
+                            // ADR-0196 §4) — no permission check, no approval
+                            // round-trip, just a snapshot read and a reply.
+                            let registry_snapshot =
+                                tools.read().expect("tool registry lock poisoned").clone();
+                            let skills_snapshot =
+                                skills.read().expect("skill registry lock poisoned").clone();
+                            let mcp_avail = mcp_avail.clone();
+                            let mcp_active = mcp_active.clone();
+                            let mcp_scopes = mcp_scopes.clone();
+                            let advertising = advertising.clone();
+                            let holly = holly.clone();
+                            if tool == EXPLORE_TOOL {
+                                tokio::spawn(async move {
+                                    discover::run_explore(
+                                        &holly,
+                                        &registry_snapshot,
+                                        &mcp_avail,
+                                        &mcp_active,
+                                        skills_snapshot.as_ref(),
+                                        session,
+                                        request_id,
+                                        input,
+                                    )
+                                    .await;
+                                });
+                            } else {
+                                debug_assert_eq!(tool, DESCRIBE_TOOL);
+                                tokio::spawn(async move {
+                                    discover::run_describe(
+                                        &holly,
+                                        registry_snapshot,
+                                        skills_snapshot.as_ref(),
+                                        mcp_scopes.as_deref(),
+                                        &advertising,
+                                        session,
+                                        request_id,
+                                        input,
+                                    )
+                                    .await;
+                                });
                             }
                         }
                         #[cfg(feature = "rhai")]
@@ -1692,6 +1897,8 @@ mod tests {
             Intercept::classify(PROPOSE_PLAN_TOOL),
             Intercept::ProposePlan
         );
+        assert_eq!(Intercept::classify(EXPLORE_TOOL), Intercept::Discover);
+        assert_eq!(Intercept::classify(DESCRIBE_TOOL), Intercept::Discover);
         #[cfg(feature = "rhai")]
         assert_eq!(Intercept::classify(RHAI_TOOL), Intercept::Rhai);
     }
@@ -1725,9 +1932,21 @@ mod tests {
         assert!(Intercept::Poll.bypasses_permission());
         assert!(Intercept::AskUser.bypasses_permission());
         assert!(Intercept::ProposePlan.bypasses_permission());
+        assert!(Intercept::Discover.bypasses_permission());
         #[cfg(feature = "rhai")]
         assert!(!Intercept::Rhai.bypasses_permission());
         assert!(!Intercept::Permission.bypasses_permission());
+    }
+
+    #[test]
+    fn explore_and_describe_are_non_maskable() {
+        assert!(is_non_maskable(EXPLORE_TOOL));
+        assert!(is_non_maskable(DESCRIBE_TOOL));
+        assert!(
+            !is_non_maskable(POLL_TOOL),
+            "poll's mask exemption was retired by ADR-0192"
+        );
+        assert!(!is_non_maskable("bash"));
     }
 
     /// A resolver that answers a fixed grade per session id (default `Allow`),
