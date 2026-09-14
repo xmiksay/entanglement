@@ -75,6 +75,7 @@ first). No key → `EchoLlm`. Full detail (clients, catalog, resilience):
 | `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_API_BASE` (or legacy `OLLAMA_BASE`) |
 | `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-4-5`) | — |
 | `gemini` | Gemini `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) | `GEMINI_API_BASE` |
+| `openai_responses` (opt-in) | OpenAI Responses API — client-executed `tool_search`, ADR-0196 §3 | `OPENAI_API_KEY` | `gpt-5.4` | — |
 
 That table is **catalog data, not hardcode** (#118): an embedded default
 (`entanglement-provider/src/defaults.yml`) deep-merged with a user override at
@@ -126,7 +127,7 @@ feature that reads it):
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` | replace the whole user agents/skills layer (also the cross-vendor opt-out) |
 | `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_AUX_MODELS_FILE` / `ENTANGLEMENT_MCP_TOKENS_FILE` / `ENTANGLEMENT_LLM_TOKENS_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the seven managed runtime files |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
-| `ENTANGLEMENT_ENABLE_BASH=1` | opt-in: register `bash` at startup (the TUI `/enable tool bash` command, #498/#611, live-registers instead); its background jobs join with the always-available `poll` tool (#605), not a paired registry tool |
+| `ENTANGLEMENT_TOOL_ADVERTISING` | `full` \| `tool_search` — per-session advertised-surface mode (env > `config.yml` `tool_advertising` > catalog `ModelEntry.tool_advertising` > default `tool_search`), ADR-0196 |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide; opt-in to keep network (#399, #479) |
 | `ENTANGLEMENT_ECHO_FULL=1` | `EchoLlm` appends the full system text (debugging) |
 | `ENTANGLEMENT_TUI_NOTIFY=1` / `ENTANGLEMENT_TUI_NO_MOUSE` | TUI desktop-notification opt-in / mouse opt-out |
@@ -169,19 +170,29 @@ never here**; each bullet is the claim + where to read it:
   stay `false`. [engine](../docs/architecture/engine.md),
   [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md)/[ADR-0176](../docs/adr/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md).
 - **The advertised tool surface is stable within a session**: core advertises
-  every spec the config/resolver provides — the profile mask, session tool
-  overlay and skill `allowed_tools` no longer filter advertisement, they are
-  enforced *only* at the runtime's dispatch gate, which declines with an
-  attributed `Declined by …` message on the ADR-0176 `is_error` channel. WHY:
-  any mid-session change to the tools array busts the provider prompt cache
-  from the tools block onward. `bash` is advertised even while unregistered
-  (dispatch declines with `/enable tool bash`); only the profile-defining
-  specs (`propose_plan`, the `agent`/`agent_send` spawn enum) and `mcp__*`
-  legitimately vary. Subsumes ADR-0190's `poll` advertisement exemption
-  (constant removed; its resolver-roster fix stands).
+  exactly what the resolver yields for the session's `ToolAdvertising` mode
+  (`full`/`tool_search`, default `tool_search`, per-session, pinned at
+  session start, kept across `SetModel` — `ENTANGLEMENT_TOOL_ADVERTISING` >
+  `config.yml` `tool_advertising` > catalog > default). Under `full`, every
+  spec the config/resolver provides; under `tool_search`, a lean kernel plus
+  the always-on, non-maskable `explore`/`describe` discovery pair, growing
+  only **append-only** as `describe()` calls land (`client_side` encoding)
+  or via each wire's own `defer_loading`/`tool_search` primitive
+  (`anthropic_native`/`responses_native`) — never removed, never reordered.
+  Either way the profile mask, session tool overlay and skill `allowed_tools`
+  no longer filter advertisement, they are enforced *only* at the runtime's
+  dispatch gate, which declines with an attributed `Declined by …` message on
+  the ADR-0176 `is_error` channel. WHY: any mid-session change to the tools
+  array busts the provider prompt cache from the tools block onward. Only the
+  profile-defining specs (`propose_plan`, the `agent`/`agent_send` spawn
+  enum) and `mcp__*` legitimately vary. Subsumes ADR-0190's `poll`
+  advertisement exemption (constant removed; its resolver-roster fix
+  stands); no envelope tool — a discovered tool is called exactly like a
+  kernel one, by its real name.
   [engine](../docs/architecture/engine.md),
   [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [gates & host tools](../docs/architecture/gates-and-host-tools.md).
+  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
+  [ADR-0196](../docs/adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md).
 - **Permission lives entirely in the runtime**; core only carries schemas and
   `PermissionProfile::resolve`. Rule keys: name-or-`*`, argument-scoped
   `tool(pattern)`, workdir-scoped `tool{pattern}`, and capability keys
@@ -262,20 +273,34 @@ never here**; each bullet is the claim + where to read it:
   (`SetToolOverlay`, trusted-only) injects/withdraws tools past the profile
   mask, an enable entry optionally `arg_pattern`-narrowed to an
   argument-scoped grade; in-app allowlist editing materializes a user-layer
-  override file. **Live bash enablement** is folded into this same overlay
-  (`/enable tool bash [--allow [<pattern>]]`, superseding the old bespoke
-  `BashEnable`/`BashDisable` pair): an enable entry matching a closed table of
-  lazily-registrable built-ins (`bash` only, today) also registers it into
-  the shared tool registry on demand — process-global, and now the *whole*
-  effect of enabling (plus the entry's grade), since advertisement is
-  universal: ADR-0179's session-scoped advertisement store is retired.
+  override file. The overlay's lazily-registrable-built-in table (ADR-0163)
+  is now **empty** — `bash` registers at startup unconditionally like every
+  other built-in (ADR-0195, which retired `/enable tool bash` and
+  `ENTANGLEMENT_ENABLE_BASH`); an enable entry naming `bash` today is a pure
+  grade override, since advertisement of the full surface is `full`-mode-only
+  and enforcement is universal at the dispatch gate regardless (ADR-0179's
+  session-scoped advertisement store is retired).
   [agents & permissions](../docs/architecture/agents-and-permissions.md),
   [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)/[ADR-0163](../docs/adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)/[ADR-0179](../docs/adr/0179-lazily-registered-built-ins-advertise-session-scoped.md).
-- **Skills**: layered definitions with cross-vendor discovery; a loaded
-  skill's `allowed_tools` gates the rest of the turn (agent mask still applies
-  first). [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [ADR-0074](../docs/adr/0074-cross-vendor-skill-and-agent-discovery.md)/[ADR-0106](../docs/adr/0106-skill-scoped-allowed-tools-enforcement.md).
+  [ADR-0148](../docs/adr/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)/[ADR-0163](../docs/adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)/[ADR-0179](../docs/adr/0179-lazily-registered-built-ins-advertise-session-scoped.md)/[ADR-0195](../docs/adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md).
+- **Skills are additive-only**: layered definitions with cross-vendor
+  discovery; a loaded skill only *adds* capability (its body text, endpoint
+  refs, rhai-backed tools, aliases) and never narrows the tool surface —
+  frontmatter `allowed_tools` is parsed-but-ignored (one-time load warning),
+  permission profiles are the sole control. A skill's own definition-driven
+  tools (`endpoint__`/`skill__` — below) surface via `explore`/`describe`
+  like everything else. [agents & permissions](../docs/architecture/agents-and-permissions.md),
+  [ADR-0074](../docs/adr/0074-cross-vendor-skill-and-agent-discovery.md)/[ADR-0194](../docs/adr/0194-skills-are-additive-only.md).
+- **Discovery pair + definition-driven tool sources**: `explore(filter?)`/
+  `describe(names)` are always-on, non-maskable, always-`Allow` internal
+  tools (the `poll` pattern) indexing every dynamic source — MCP servers,
+  `config.yml` `endpoints:` (→ `endpoint__<name>`, riding the shared provider
+  HTTP pool), skill-declared `tools:` (→ `skill__<skill>__<name>`: endpoint
+  refs, rhai-backed scripts, or aliases) — with alias rewrite happening
+  *before* grading so an alias can't launder a denied tool.
+  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
+  [agents & permissions](../docs/architecture/agents-and-permissions.md),
+  [ADR-0196](../docs/adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)/[ADR-0190](../docs/adr/0190-poll-is-always-on-non-maskable-internal-tool.md).
 - **Definitions are data, layered** embedded < user < project, later wins; the
   project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
   Provider keys live in a managed `.env` with two writer surfaces

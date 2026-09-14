@@ -16,3 +16,7 @@ Cargo.lock.bak
 .idea/
 .vscode/
 *.swp
+
+# session debug dumps (keep the tool-search wire reference, linked from docs)
+scratch/*
+!scratch/tool-search-wire-reference.md

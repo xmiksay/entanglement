@@ -170,26 +170,62 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   image blocks ride as trailing `inlineData` parts alongside the
   `functionResponse` part in the same turn (#447).
 
-**Tool search / deferred loading (planned,
-[ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md))**
+**Tool search / deferred loading**
+([ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md))
 — a `ToolSearch`-mode session reaches most of its registry through discovery
 rather than up-front advertisement, and two of the three per-wire encodings
 that carry a discovered schema to the model are provider-crate seams, not
-runtime-side workarounds: `ToolSpec.defer_loading: bool` (planned addition,
-serde-default `false`) marks a non-kernel tool so the Anthropic client omits
-it from the rendered/cached prompt until discovered, per Anthropic's own
-`defer_loading` contract; a new `ContentPart::ToolReference` (planned)
-carries the `tool_reference` blocks a `describe()` tool result returns on
-that wire, which the API auto-expands into the full definition. A new
-Responses-API client (planned, `openai/responses`) speaks OpenAI's distinct
-flat `input`/`output` item shape (not `/chat/completions`' `messages` array)
-for the `responses_native` encoding, answering a model's `tool_search_call`
-with a `tool_search_output` item. The third encoding, `client_side` (the
-z.ai-priority path, plus Ollama/Gemini), needs no provider-crate change at
-all — it rides the existing `tool_spec_resolver` seam entirely runtime-side.
-This section stays brief by design: the seam is what belongs here, the full
-wire contracts (request/response JSON, streaming event shapes, per-provider
-quirks) live in `scratch/tool-search-wire-reference.md`.
+runtime-side workarounds: `ToolSpec.defer_loading: bool` (serde-default
+`false`, absent-when-false on every wire) marks a non-kernel tool so the
+Anthropic client omits it from the rendered/cached prompt until discovered,
+per Anthropic's own `defer_loading` contract — cache breakpoints skip
+deferred tools (Anthropic 400s `cache_control` on a deferred entry).
+`ContentPart::ToolReference` carries the `tool_reference` blocks a
+`describe()` tool result returns on that wire, which the API auto-expands
+into the full definition (request-side only, since the client-executed flow
+means the API expands references before the model sees them — a foreign
+wire degrades a `ToolReference` to text). The `openai_responses` client
+(`entanglement-provider::openai_responses`, opt-in catalog `wire:`, never a
+default) speaks OpenAI's distinct flat `input`/`output` item shape (not
+`/chat/completions`' `messages` array) for the `responses_native` encoding: a
+`function_call`/`function_call_output` pair correlates by `call_id`; when any
+advertised `defer_loading` tool is present the request declares
+`{"type":"tool_search","execution":"client"}`; a streamed `tool_search_call`
+output item rides the existing `ToolCall`/`LlmEvent::ToolCall` machinery
+under the reserved name `TOOL_SEARCH_CALL_TOOL` (never a real registered
+tool — the runtime's dispatch ladder intercepts it exactly like the
+`explore`/`describe` pseudo-tools and replies with a
+`ContentPart::ToolSearchOutput` block, which replays as a native
+`tool_search_call`/`tool_search_output` input-item pair). Split across
+`mod.rs` (client + streaming loop), `request` (request-body construction),
+`sse` (SSE event parsing) — the `openai/` file-cap pattern. The third
+encoding, `client_side` (the z.ai-priority path, plus Ollama/Gemini), needs
+no provider-crate change at all — it rides the existing `tool_spec_resolver`
+seam entirely runtime-side. This section stays brief by design: the seam is
+what belongs here, the full wire contracts (request/response JSON, streaming
+event shapes, per-provider quirks) live in
+`scratch/tool-search-wire-reference.md`.
+
+**Definition-driven HTTP endpoint execution** (`entanglement-provider::endpoint`,
+#560 P8) — the provider-owned mechanism a runtime-registered `endpoint__<name>`
+(or skill-declared `skill__<skill>__<name>`) tool calls through, riding the
+*same* per-endpoint pool/retry/rate-limit machinery (`HttpClient::execute_with_retry`)
+as LLM and MCP traffic instead of a bespoke `reqwest` client of its own —
+mirrors `mcp::http::McpHttpClient`'s json-only surface, so `entanglement-runtime`
+never needs `reqwest` as a direct dependency to build a request through this
+module. `EndpointMethod` (`Get`/`Post`/`Put`/`Patch`/`Delete`/`Head`) parses
+case-insensitively and deserializes the same way, so a malformed `method:` in
+a runtime config file is a loud config-load-time error, never a
+lazily-discovered one. `call(http, method, url, headers, body)` keys the pool
+by `url` alone (no API key — a config-declared endpoint has no catalog
+identity to pool-key against); `headers` values may reference `${VAR}` from
+the environment like an MCP server's static headers. A non-2xx status is a
+normal `EndpointResponse` the caller renders, mirroring how a non-zero `bash`
+exit is not `is_error` (ADR-0176) — only a transport/config failure is an
+`Err`. The response body is capped at 32 KiB (`ENDPOINT_RESPONSE_CAP`),
+truncated at a UTF-8 char boundary with a `[truncated: response exceeded 32
+KiB]` marker so the model can tell a real short response apart from a capped
+one.
 
 **Provider-side web search** (#305,
 [ADR-0075](../adr/0075-provider-side-web-search-mvp.md); post-MVP follow-ups
@@ -581,10 +617,14 @@ provider + model list is **YAML, not code** — an embedded default
 *before* deserializing, so field-level override falls out for free: `providers`
 merge by `name`, `models` by `id`, mappings recurse, other scalars/sequences are
 replaced; the final `Catalog` deserialize is `deny_unknown_fields` (typos are
-loud). A `wire: openai | anthropic` tag on each provider is what makes
-user-defined providers work with **zero code change** — any OpenAI-compatible
-endpoint (proxy, local vLLM, new vendor) is `wire: openai` + `base_url` +
-`key_env`. **Or `oauth:` instead of `key_env`** (✅ #684 edge d,
+loud). A `wire: openai | anthropic | gemini | openai_responses` tag on each
+provider is what makes user-defined providers work with **zero code
+change** — any OpenAI-compatible endpoint (proxy, local vLLM, new vendor) is
+`wire: openai` + `base_url` + `key_env`. `openai_responses` (ADR-0196 §3, P7)
+is OpenAI's distinct Responses API — flat input/output items instead of
+Chat Completions' role+content messages, and the one wire with a native
+client-executed `tool_search` primitive; opt-in per catalog entry, never a
+default (`openai` itself stays on Chat Completions). **Or `oauth:` instead of `key_env`** (✅ #684 edge d,
 [ADR-0189](../adr/0189-oauth-for-llm-provider-endpoints.md)): an entry carrying
 an `oauth:` block (the same `OauthConfig` override fields the `mcp:` blocks
 use) authenticates with an `Authorization: Bearer` token from an

@@ -35,6 +35,10 @@ declared in the user config attach their tools as `mcp__<server>__<tool>`.
 Permission profiles (`Allow | Ask | Deny`, argument-scoped rules, persisted
 "always allow" grants, a user-config ceiling) govern every tool; lifecycle
 hooks (`pre_tool_use` / `post_tool_use` / `user_prompt_submit`) wrap dispatch.
+A session advertises this surface in one of two modes (`full` or the default
+`tool_search`, a lean kernel plus `explore`/`describe` discovery — ADR-0196);
+every tool is still called by its real name either way, never through an
+envelope.
 
 ## Providers
 

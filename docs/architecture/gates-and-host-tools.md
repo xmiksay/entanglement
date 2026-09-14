@@ -561,7 +561,7 @@ user-visible knob:
 | --- | --- | --- |
 | `client_side` | OpenAI-compat Chat Completions incl. **z.ai** (the priority target), Ollama, Gemini | `describe()` appends the tool's full spec into the session's advertised array, **append-only, never removed** — one cache invalidation per discovery, not a continuous one. Rides the `tool_spec_resolver` seam (re-consulted every round) plus a session-keyed discovered-set. |
 | `anthropic_native` | Anthropic Messages API | non-kernel tools carry `defer_loading: true` (full defs still sent every request — the API needs them server-side — but stripped from the rendered prompt and the cache key until discovered); `describe()`'s `tool_result` carries `tool_reference` content blocks the API auto-expands. **Client-executed search only** — the catalog is session/project-state dependent, so Anthropic's server-side `tool_search_tool_regex`/`_bm25` tools aren't used. At least one tool (the kernel) stays non-deferred, satisfying the API's requirement trivially. |
-| `responses_native` | OpenAI Responses API (new client) | `{"type": "tool_search", "execution": "client"}` plus `defer_loading` on function tools; the model emits `tool_search_call`, the runtime answers with `tool_search_output`, mapped onto the same `explore`/`describe` semantics. |
+| `responses_native` | OpenAI Responses API (`entanglement-provider::openai_responses`) | `{"type": "tool_search", "execution": "client"}` plus `defer_loading` on function tools; the model emits `tool_search_call` under the reserved name `TOOL_SEARCH_CALL_TOOL`, which `entanglement-runtime::discover::tool_search` intercepts exactly like `explore`/`describe` (non-maskable, always-`Allow`) — it reuses the *same* live index `explore` serves and the *same* per-name resolution `describe` uses, deliberately not a third independent search implementation, and answers with a `ContentPart::ToolSearchOutput` block (capped at 8 results) instead of `describe`'s plain schema text, so the client can echo a native `tool_search_output` input item on the next request. |
 
 **MCP management is runtime infrastructure, mode-uniform but still graded.**
 `mcp_enable`/`mcp_add`/`mcp_remove` sit conceptually beside the runtime-owned
@@ -590,20 +590,91 @@ advertising modes:
 | unknown tool name | fuzzy catalog matches (closest-Levenshtein-distance hint), not a schema — the intended tool is unknown, so there is nothing to show a schema for |
 
 The mechanism is **pre-dispatch validation of the input against the tool's
-advertised `ToolSpec` schema** (subsuming the MCP required-param pre-check,
-§10's proxy): today an arg-parse failure is indistinguishable from a runtime
-failure at the executor boundary — all host tools deserialize inside `run()`
-and return bare `anyhow` errors — so the validation runs before dispatch and
-renders the schema decline from the same spec the model was advertised. Two
-guards ride alongside: per-session delivered-schema tracking (never re-send a
-schema already in context; reply with the diff instead) and a
-two-identical-failures loop breaker (a repeated identical failure means the
-schema isn't the problem — stop retrying the same shape).
+advertised `ToolSpec` schema** (`entanglement-runtime::arg_validate`,
+subsuming the MCP required-param pre-check, §10's proxy): today an arg-parse
+failure is indistinguishable from a runtime failure at the executor boundary
+— all host tools deserialize inside `run()` and return bare `anyhow` errors —
+so the validation runs before dispatch and renders the schema decline from
+the same spec the model was advertised. A schema declaring no shape (the
+permissive `Tool::schema()` default — no `properties`/`required` at all)
+validates nothing: a tool with nothing structured to say makes no promise
+about the input's format, so even non-JSON/non-object input isn't a
+violation for it — schema-less tools keep their anything-goes input
+contract, and every real structured tool declares at least one of
+`properties`/`required`. Two guards ride alongside: per-session
+delivered-schema tracking (`tool_advertising::DiscoveredSet`, shared with the
+`describe` tracking above — never re-send a schema already in context; reply
+with the diff instead) and a two-identical-failures loop breaker (a repeated
+identical failure means the schema isn't the problem — stop retrying the
+same shape).
 
 Parallel tool calls are unaffected by any of this: ADR-0061's batch
 `ToolExec` parking already resolves a batch of calls in any order with every
 call guaranteed a paired result, so there is no envelope-shaped concurrency
 question to answer here.
+
+### Definition-driven tool sources — endpoints, skill tools, alias rewrite (#560 P8)
+
+Two more sources join host tools and MCP as things `explore`/`describe`
+index and the dispatch ladder grades, both registered once at startup
+(`entanglement-runtime::endpoint`, `entanglement-runtime::skills::tools`):
+
+- **`config.yml` `endpoints:`** — each entry becomes an HTTP call tool
+  registered as `endpoint__<name>`: method, a URL template with `{{param}}`
+  substitution from the call's arguments, optional static headers
+  (`${VAR}`-expanded), an optional static body template. Execution rides
+  `entanglement_core::call_endpoint` — the shared per-endpoint pool/retry/
+  rate-limit machinery (`entanglement_provider::client::HttpClient`, see
+  provider.md), never a bespoke `reqwest::Client` (ADR-0053). Schema
+  derivation (`endpoint::config::build_schema`) means the pre-dispatch
+  arg-validation and `describe()` above work for an endpoint tool with zero
+  extra wiring — both already operate generically over the `ToolRegistry`;
+  `explore`'s index needs only a distinct `source` label. Registration is
+  **startup-only**, not live-reloaded like skills/agents/MCP servers (#710)
+  — disproportionate to a feature with no evidence anyone edits an endpoint
+  definition mid-session.
+- **`SKILL.md` `tools:` frontmatter** — per-skill tools registered as
+  `skill__<skill>__<tool>`, **strict/native layers only** (the lenient
+  foreign-vendor parse drops the key silently — a Claude-Code-style skill
+  directory has no concept of it). Three kinds, one frontmatter list: an
+  **endpoint** entry (the same `EndpointConfig`/`EndpointTool` machinery as
+  `config.yml`'s `endpoints:`, just skill-namespaced); a **rhai** entry (a
+  script path relative to the skill dir, run through the existing sandboxed
+  `rhai` machinery — sugar over the alias mechanism below, whose one preset
+  arg is `script`, the file's content read once at registration); and an
+  **alias** entry (a renamed/preset-args wrapper over any existing tool — a
+  host tool, another skill tool, a connected MCP tool, or a runtime-owned
+  pseudo-tool name). Registered at **skill-discovery time**, not gated behind
+  `load_skill` — ADR-0194 already made `load_skill` a pure disclosure
+  mechanism with no activation-switch semantics to hang tool registration
+  off of, and these tools are never in the lean kernel anyway, so under
+  `ToolSearch` mode they're reachable only via `explore`/`describe`
+  regardless of when they were registered, exactly like an MCP tool.
+- **Alias rewrite happens in dispatch, before grading.** `AliasTool::alias_rewrite`
+  — consulted by `tool_runner::dispatch` *before* permission resolution —
+  rewrites an in-flight `(tool, input)` call to the wrapped tool's own name
+  and its preset-args-merged input when the target is a real registry entry
+  (`Some((target, merged_input))`); every downstream decision (grading, grant
+  lookup/record, the escape-root gate, the `ToolExec`/`ToolRequest` the user
+  approves, execution) then proceeds exactly as it would for a direct call to
+  that tool. This is the load-bearing property: **an alias cannot launder a
+  denied tool** — it grades and executes as if the model had called the
+  wrapped tool directly, never under the alias's own namespaced name.
+- **The `call` capability index folds in endpoint tools, data-driven.** A
+  config-declared `endpoint__<name>` tool joins the `call` capability bucket
+  (`tool_names::CAPABILITIES`) automatically for every declared endpoint —
+  every endpoint tool is unconditionally a network call, so a bare `call:
+  allow` grades all of them, mirroring how an MCP server's config-side
+  `capabilities:` annotation extends the same table (#426). A
+  skill-declared endpoint tool (`skill__<skill>__<name>`) is deliberately
+  **not** in that index — it shares the `skill__` namespace with
+  alias/rhai-backed skill tools that grade under a different name entirely,
+  so a profile wanting to grade it under `call` names it explicitly (#713
+  tracks whether that should change).
+- Both sources surface in `explore`/`describe` with their own source labels,
+  and follow the same non-kernel `defer_loading` rule as everything else
+  outside the lean kernel on the `anthropic_native`/`responses_native`
+  encodings.
 
 ## 9. Lifecycle hooks — [ADR-0066](../adr/0066-lifecycle-hooks-as-runtime-interceptors.md) (#199)
 

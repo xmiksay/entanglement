@@ -165,6 +165,23 @@ below realize one model:
   tool the server never registers is simply inert. `skutter inspect agents`/
   `prompt_report`/`built_in_registry` deliberately keep an empty index (a debug
   view that already doesn't reflect the ceiling clamp either).
+  **Config-declared endpoint tools join the same `call` index, data-driven and
+  unconditional** (#560 P8): every `config.yml` `endpoints:` entry
+  (`endpoint__<name>`) is added to the `call` capability's fan-out for every
+  declared endpoint, with no per-tool config hint needed — unlike an MCP
+  tool, an endpoint tool has no ambiguity to annotate away, it's always a
+  network call. A **skill-declared** endpoint tool (`skill__<skill>__<name>`)
+  is deliberately excluded from this index — it shares the `skill__`
+  namespace with alias/rhai-backed skill tools that grade under a wholly
+  different name, so a profile grading it under `call` must name it
+  explicitly (tracked in #713). **Alias rewrite happens before grading, not
+  after**: `Tool::alias_rewrite` (a skill's `Alias`/`Rhai`-kind tool,
+  `skills::alias_tool::AliasTool`) is consulted by `tool_runner::dispatch`
+  ahead of permission resolution and rewrites the in-flight call to the
+  wrapped tool's real name — so masking, capability fan-out, grants, and the
+  escape-root gate all see the underlying tool, never the alias. This is the
+  load-bearing invariant: **an alias cannot launder a denied tool** by
+  presenting it under a differently-permissioned name.
 - **Lag-proof decision delivery (✅ #156, [ADR-0070](../adr/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md)):**
   the `Ask` park (and `ask_user`/`propose_plan`/each `rhai` binding) no longer holds
   its own `broadcast` subscription of the inbound fan-out — that per-task subscriber

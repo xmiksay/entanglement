@@ -79,6 +79,13 @@ leaves (re-engaging one with `agent_send` rather than respawning it), so its
 delegation subtree can never widen into a write-capable profile. Permission
 resolution and approval live entirely in the runtime (#59).
 
+A session advertises its tool surface in one of two modes (`ToolAdvertising`,
+default `ToolSearch`, ADR-0196): `full` sends every registered spec up
+front; `tool_search` sends a lean kernel plus an always-on `explore`/
+`describe` discovery pair, with the rest of the registry (MCP tools,
+endpoints, skill tools, …) reachable by real name once discovered — no
+router/envelope tool, every call by its native name either way.
+
 A plan is a **file** (`.entanglement/plans/<id>.md`), not an in-memory
 snapshot: the plan agent's one tool, `propose_plan(content | path)`,
 materializes or binds one, force-parks on approval every phase, and — on
