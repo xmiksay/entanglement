@@ -2088,16 +2088,17 @@ pub enum OutEvent {
         path: String,
         hash: String,
     },
-    /// The session's active-skill tool mask changed (#400, ADR-0106). Emitted by
+    /// The session's active-skill posture changed (#400, ADR-0106). Emitted by
     /// the runtime's tool executor: `Some(skill_id)` when a `load_skill` call
-    /// activates a skill (`allowed_tools` is that skill's mask, `None` meaning it
-    /// imposes none), `None` when the skill's scope ends — the current turn's
-    /// `Done`, or the session ending. Wire-facing posture only: core neither
-    /// interprets nor enforces this (skills are runtime-only, ADR-0037); a head
-    /// combines it with `ProfileDetail`'s #116 agent mask to render the session's
-    /// full effective tool set. Mirrors `FileChange`: a fresh per-session seq
-    /// (#157), no core replay-fold semantics (a head just tracks the latest
-    /// value).
+    /// activates a skill, `None` when the skill's scope ends — the current turn's
+    /// `Done`, or the session ending. `allowed_tools` is **vestigial** since
+    /// ADR-0194 (skills are additive-only, never a tool-set restriction): still
+    /// populated from the skill's frontmatter and serialized when present, for
+    /// wire/log-replay compatibility, but never interpreted as an enforced mask —
+    /// by core (which never did, ADR-0037) or the runtime. Wire-facing posture
+    /// only; a head renders it as a notice. Mirrors `FileChange`: a fresh
+    /// per-session seq (#157), no core replay-fold semantics (a head just tracks
+    /// the latest value).
     SkillActive {
         session: SessionId,
         seq: u64,

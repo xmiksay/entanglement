@@ -54,8 +54,7 @@ use crate::mcp::{ActiveServers, AvailableMcp};
 #[cfg(feature = "rhai")]
 use crate::permission::effective_permission;
 use crate::permission::{
-    ancestor_chain, clamp_to_base, min_permission, skill_masked, spawn_refusal, tool_mask_source,
-    ActiveSkill,
+    ancestor_chain, clamp_to_base, min_permission, spawn_refusal, tool_mask_source,
 };
 use crate::permission_path::grading_arg;
 use crate::plan_files::PlanFileRegistry;
@@ -335,9 +334,9 @@ pub fn spawn_tool_executor_with_hooks(
 ///
 /// `skills` (#400, ADR-0106) is the same live-reloadable handle
 /// `LoadSkillTool` resolves against: after a `load_skill` call succeeds, this
-/// executor parses the `skill_id` its result carries, looks up that skill's
-/// `allowed_tools` here, and activates the session's skill mask —
-/// [`skill_masked`], layered after the #116 agent mask.
+/// executor parses the `skill_id` its result carries and emits
+/// `OutEvent::SkillActive` (posture-only since ADR-0194 — skills no longer
+/// narrow the session's tool set, so there is no mask to activate here).
 ///
 /// `jobs` (#605) is the same [`crate::host::jobs::JobRegistry`] the caller
 /// wires into its `BashTool` — shared so `poll`'s job-handle path reaches the
@@ -503,15 +502,16 @@ pub fn spawn_tool_executor_with_policy(
         // `SessionEnded`/`SessionHibernated`.
         let mut overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>> =
             HashMap::new();
-        // The session's active-skill tool mask (#400, ADR-0106): set when a
-        // `load_skill` call resolves with an `allowed_tools` list, layered after
-        // the #116 agent mask below (`skill_masked`). Cleared on the turn's
-        // `Done` — a skill's scope is one conversational turn — or when the
-        // session ends. Shared with `dispatch`/`await_decision`/`run_and_reply`
-        // (the detached per-call tasks), which set it after a successful
-        // `load_skill`; this loop is the sole writer of the clear path.
-        let active_skill: Arc<Mutex<HashMap<SessionId, ActiveSkill>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        // Which sessions currently have a loaded skill "active" (#400,
+        // ADR-0106; posture-only since ADR-0194 — skills no longer mask
+        // tools, this purely tracks whether to emit `OutEvent::SkillActive`'s
+        // clearing notice). Set when a `load_skill` call resolves, cleared on
+        // the turn's `Done` — a skill's scope is one conversational turn —
+        // or when the session ends. Shared with
+        // `dispatch`/`await_decision`/`run_and_reply` (the detached per-call
+        // tasks), which set it after a successful `load_skill`; this loop is
+        // the sole writer of the clear path.
+        let active_skill: Arc<Mutex<HashSet<SessionId>>> = Arc::new(Mutex::new(HashSet::new()));
         // The project root `propose_plan` materializes/resolves plan files
         // against (#513): the same canonical root `escape_root` carries when
         // wired (every full head). A wrapper with no escape-root policy (test
@@ -838,8 +838,9 @@ pub fn spawn_tool_executor_with_policy(
                     // Drop the re-offer dedupe set (#274): its request ids can
                     // never recur once the session is gone.
                     in_flight.remove(&session);
-                    // The active-skill mask is moot once the session is gone too
-                    // (#400) — no `Done` will follow to clear it otherwise.
+                    // The active-skill posture tracking is moot once the
+                    // session is gone too (#400) — no `Done` will follow to
+                    // clear it otherwise.
                     active_skill
                         .lock()
                         .expect("active-skill mutex poisoned")
@@ -876,10 +877,11 @@ pub fn spawn_tool_executor_with_policy(
                     // loop against once the session is gone.
                     validation.forget(&session);
                 }
-                // A skill's tool mask scopes one model turn (#400, ADR-0106):
-                // clear it here so a later turn can `load_skill` a different one
-                // (or none) unmasked, and tell any listening head the combined
-                // posture reverted to just the #116 agent mask.
+                // A skill's "active" posture scopes one model turn (#400,
+                // ADR-0106; posture-only since ADR-0194): clear it here so a
+                // later turn can `load_skill` a different one (or none)
+                // cleanly, and tell any listening head via
+                // `OutEvent::SkillActive { skill_id: None, .. }`.
                 Ok(OutEvent::Done { session, .. }) => {
                     clear_active_skill(&holly, &active_skill, &session);
                 }
@@ -1021,23 +1023,6 @@ pub fn spawn_tool_executor_with_policy(
                                 agent_name.as_deref(),
                                 &tool,
                             );
-                            seam::reply(&holly, session, request_id, output, true).await;
-                        });
-                        continue;
-                    }
-                    // Skill-scoped tool restriction (#400, ADR-0106), layered
-                    // *after* the #116 agent mask above — a tool must survive
-                    // both. A loaded skill's `allowed_tools` narrows the session's
-                    // already-unmasked set for the rest of this turn.
-                    let skill_masked_by = {
-                        let active_skill =
-                            active_skill.lock().expect("active-skill mutex poisoned");
-                        skill_masked(&active_skill, &session, &tool)
-                    };
-                    if let Some(skill_id) = skill_masked_by {
-                        let holly = holly.clone();
-                        tokio::spawn(async move {
-                            let output = crate::decline::skill_decline(&skill_id, &tool);
                             seam::reply(&holly, session, request_id, output, true).await;
                         });
                         continue;
@@ -1340,13 +1325,6 @@ pub fn spawn_tool_executor_with_policy(
                                     arg.as_deref(),
                                     workdir.as_deref(),
                                 );
-                                // The session's active-skill mask (#400, #477): a
-                                // snapshot alongside the agent mask above, not a
-                                // live read — sound because `load_skill` is not
-                                // itself a binding, so nothing inside a running
-                                // script can change it mid-run.
-                                let active_skill =
-                                    active_skill.lock().expect("active-skill mutex poisoned");
                                 let policy = crate::script::BindingPolicy::capture(
                                     &active,
                                     &spawn_guard,
@@ -1354,7 +1332,6 @@ pub fn spawn_tool_executor_with_policy(
                                     &session,
                                     &base,
                                     escape_root.as_ref().map(|er| er.root.as_path()),
-                                    &active_skill,
                                 );
                                 (base_self, policy)
                             };
@@ -1532,7 +1509,7 @@ async fn dispatch(
     holly: &Holly,
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     resolver: &dyn PermissionResolver,
     chain: &[SessionId],
     grants: &dyn GrantStore,
@@ -1694,7 +1671,7 @@ async fn await_decision(
     holly: &Holly,
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     grants: &dyn GrantStore,
     hooks: &Hooks,
     advertising: &tool_advertising::AdvertisingState,
@@ -1764,7 +1741,7 @@ async fn run_and_reply(
     holly: &Holly,
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     hooks: &Hooks,
     advertising: &tool_advertising::AdvertisingState,
     validation: &arg_validate::LoopBreaker,
@@ -1876,10 +1853,12 @@ async fn run_and_reply(
             arg_validate::LOOP_BREAKER_NOTE
         )));
     }
-    // #400, ADR-0106: a successful `load_skill` activates the session's
-    // skill-scoped tool mask for the rest of this turn — parsed from the
-    // result's `skill_id:` header (absent on a failed load: unknown/`user_only`
-    // skill, which leaves any prior active skill untouched).
+    // #400, ADR-0106 (posture-only since ADR-0194): a successful `load_skill`
+    // records the session's skill-active posture and tells any listening head
+    // via `OutEvent::SkillActive` — parsed from the result's `skill_id:`
+    // header (absent on a failed load: unknown/`user_only` skill, which
+    // leaves any prior posture untouched). It no longer narrows the
+    // session's tool set.
     if tool == LOAD_SKILL_TOOL {
         activate_skill(holly, skills, active_skill, &session, &output_text);
     }
@@ -1902,15 +1881,17 @@ async fn run_and_reply(
     .await;
 }
 
-/// Activate `session`'s skill mask (#400, ADR-0106) from a `load_skill` result:
-/// parse its `skill_id:` header, look the skill up in the live registry for its
-/// `allowed_tools`, record it, and tell any listening head via
-/// [`OutEvent::SkillActive`]. A `result` with no `skill_id:` header (a failed
-/// load) is a no-op — the session keeps whatever skill was active before.
+/// Record `session`'s skill-active posture (#400, ADR-0106; posture-only
+/// since ADR-0194 — skills no longer mask tools) from a `load_skill` result:
+/// parse its `skill_id:` header, look the skill up in the live registry for
+/// its (now-vestigial, wire-compat-only) `allowed_tools`, and tell any
+/// listening head via [`OutEvent::SkillActive`]. A `result` with no
+/// `skill_id:` header (a failed load) is a no-op — the session keeps
+/// whatever posture was active before.
 fn activate_skill(
     holly: &Holly,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     session: &SessionId,
     result: &str,
 ) {
@@ -1925,13 +1906,7 @@ fn activate_skill(
     active_skill
         .lock()
         .expect("active-skill mutex poisoned")
-        .insert(
-            session.clone(),
-            ActiveSkill {
-                skill_id: skill_id.to_string(),
-                allowed_tools: allowed_tools.clone(),
-            },
-        );
+        .insert(session.clone());
     holly.emit_for_session(session, |seq| OutEvent::SkillActive {
         session: session.clone(),
         seq,
@@ -1940,20 +1915,19 @@ fn activate_skill(
     });
 }
 
-/// Clear `session`'s active skill mask (#400, ADR-0106) — the turn's `Done`, the
-/// natural end of a skill's scope. A no-op (no wire event) when no skill was
-/// active, matching [`activate_skill`]'s "only tell a head about a real change"
-/// shape.
+/// Clear `session`'s skill-active posture (#400, ADR-0106) — the turn's
+/// `Done`, the natural end of a skill's scope. A no-op (no wire event) when
+/// no skill was active, matching [`activate_skill`]'s "only tell a head about
+/// a real change" shape.
 fn clear_active_skill(
     holly: &Holly,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     session: &SessionId,
 ) {
     if active_skill
         .lock()
         .expect("active-skill mutex poisoned")
         .remove(session)
-        .is_some()
     {
         holly.emit_for_session(session, |seq| OutEvent::SkillActive {
             session: session.clone(),

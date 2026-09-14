@@ -51,7 +51,7 @@ mod replay_from;
 mod serve;
 #[cfg(feature = "provider")]
 mod session_title;
-mod skill_mask;
+mod skill_posture;
 mod spawn_prompt_persistence;
 mod stop_abort;
 mod stop_abort_inflight_cleanup;

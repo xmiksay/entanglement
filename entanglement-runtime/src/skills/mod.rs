@@ -59,9 +59,15 @@ pub struct SkillMeta {
     /// `true` ⇒ only explicit user invocation can trigger it (destructive/deploy
     /// skills). Withheld from the model's disclosure list.
     pub user_only: bool,
-    /// Tool mask active while the skill is loaded, enforced by
-    /// `permission::skill_masked` (ADR-0106). `None` ⇒ inherit the session's
-    /// tools.
+    /// Parsed but **ignored** (ADR-0194 retired the ADR-0106 enforcement
+    /// this once drove): skills are additive-only, never a tool-set
+    /// restriction. Kept in the struct only because `SkillFrontmatter` is
+    /// `deny_unknown_fields` — dropping the key would break every existing
+    /// skill file that still carries it. A skill parsed with a non-`None`
+    /// value gets a one-time load warning (see [`parse_skill`]) pointing the
+    /// author at deleting it. Still populated onto the vestigial
+    /// `OutEvent::SkillActive.allowed_tools` wire field for log-replay
+    /// compatibility.
     pub allowed_tools: Option<Vec<String>>,
     /// The skill directory (holds `SKILL.md` + payload). `None` for embedded
     /// built-ins, which have no on-disk home.
@@ -88,8 +94,9 @@ struct SkillFrontmatter {
 /// `argument-hint`, …) is ignored. Claude's `disable-model-invocation` maps to
 /// [`SkillMeta::user_only`] — same semantics, the model must not self-trigger.
 /// Claude's `allowed-tools` is deliberately dropped: its tool names don't map
-/// onto entanglement's, and `allowed_tools` enforcement (ADR-0106) keys off
-/// `SkillMeta::allowed_tools`, which a foreign skill never populates.
+/// onto entanglement's, and `SkillMeta::allowed_tools` is parsed-but-ignored
+/// even on a native skill (ADR-0194), so there is nothing for a foreign skill
+/// to populate it for.
 #[derive(Debug, Deserialize)]
 struct ForeignSkillFrontmatter {
     name: String,
@@ -272,13 +279,23 @@ pub fn resolve_registry(root: &Path) -> Result<Vec<SkillResolution>> {
 }
 
 /// Parse a `SKILL.md`: split frontmatter from body, deserialize the frontmatter,
-/// and build a [`SkillMeta`] carrying the pre-resolved `root_dir`.
+/// and build a [`SkillMeta`] carrying the pre-resolved `root_dir`. A frontmatter
+/// carrying `allowed_tools` gets a one-time (per load) warning — ADR-0194
+/// retired its enforcement, so the field is parsed-but-ignored; permission
+/// profiles are the control now.
 fn parse_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
     let (frontmatter, body) = crate::frontmatter::split(content)?;
     let fm: SkillFrontmatter =
         serde_yaml::from_str(&frontmatter).context("invalid skill frontmatter")?;
     if fm.name.trim().is_empty() {
         bail!("skill frontmatter `name` must not be empty");
+    }
+    if fm.allowed_tools.is_some() {
+        tracing::warn!(
+            skill = %fm.name,
+            "skill's `allowed_tools` is no longer enforced (ADR-0194: skills are \
+             additive-only) — permission profiles are the control now; remove the field",
+        );
     }
     Ok(SkillMeta {
         name: fm.name,
@@ -347,6 +364,55 @@ mod tests {
         assert!(!rhai.user_only);
         assert_eq!(rhai.root_dir, None);
         assert!(rhai.body.contains("Rhai"));
+    }
+
+    /// A minimal [`tracing::Subscriber`] that counts WARN-level events —
+    /// enough to assert the ADR-0194 one-time `allowed_tools` warning fires
+    /// exactly once per parse, without pulling in a test-only tracing crate.
+    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tracing::Subscriber for WarnCounter {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// ADR-0194: `allowed_tools` still parses (wire/log-replay compat), but a
+    /// skill carrying it gets exactly one load warning naming the field as
+    /// no-longer-enforced; a skill without it never warns.
+    #[test]
+    fn allowed_tools_frontmatter_is_parsed_but_ignored_with_one_time_warning() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let _guard = tracing::subscriber::set_default(WarnCounter(count.clone()));
+
+        let s =
+            parse("---\nname: x\ndescription: d\nallowed_tools: [bash, read]\n---\nbody").unwrap();
+        assert_eq!(s.allowed_tools, Some(vec!["bash".into(), "read".into()]));
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "exactly one warning for a skill carrying allowed_tools"
+        );
+
+        let s2 = parse("---\nname: y\ndescription: d\n---\nbody").unwrap();
+        assert_eq!(s2.allowed_tools, None);
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no additional warning for a skill without allowed_tools"
+        );
     }
 
     #[test]

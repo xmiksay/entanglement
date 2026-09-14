@@ -2,11 +2,12 @@
 //! refuses.
 //!
 //! Advertisement is decoupled from enforcement: core advertises every spec the
-//! config provides, so the model can (and will) call a tool its profile mask,
-//! the session tool overlay, or an active skill's `allowed_tools` withholds.
-//! Each such call is answered with a terse, **attributed** refusal — the model
-//! must learn *who* declined it, or it retries the same call forever — carried
-//! on the ADR-0176 structured side channel with `is_error: true`.
+//! config provides, so the model can (and will) call a tool its profile mask
+//! or the session tool overlay withholds (skills no longer mask tools,
+//! ADR-0194). Each such call is answered with a terse, **attributed**
+//! refusal — the model must learn *who* declined it, or it retries the same
+//! call forever — carried on the ADR-0176 structured side channel with
+//! `is_error: true`.
 //!
 //! The wording family is one table, here, so the executor's dispatch ladder and
 //! the mask walk in [`crate::permission`] can never drift apart:
@@ -14,7 +15,6 @@
 //! - `Declined by agent profile ...`
 //! - `Declined by ancestor agent ...`
 //! - `Declined by session tool overlay ...`
-//! - `Declined by skill ...`
 
 use entanglement_core::SessionId;
 
@@ -100,13 +100,6 @@ pub fn mask_decline(
     }
 }
 
-/// The refusal for a call an active skill's `allowed_tools` withholds (#400,
-/// ADR-0106) — layered after the agent mask, so this only fires for a tool the
-/// profile itself admits.
-pub fn skill_decline(skill_id: &str, tool: &str) -> String {
-    format!("Declined by skill `{skill_id}`'s allowed_tools — tool `{tool}` is not listed")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,13 +165,5 @@ mod tests {
         let msg = mask_decline(&MaskSource::unseen(s("s1")), &s("s1"), None, "edit");
         assert!(msg.contains("not yet known"), "{msg}");
         assert!(!msg.contains("unknown`"), "no fake agent name: {msg}");
-    }
-
-    #[test]
-    fn skill_wording() {
-        assert_eq!(
-            skill_decline("restricted", "edit"),
-            "Declined by skill `restricted`'s allowed_tools — tool `edit` is not listed"
-        );
     }
 }

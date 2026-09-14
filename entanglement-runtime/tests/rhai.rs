@@ -1037,12 +1037,12 @@ async fn approving_a_call_command_covers_a_repeat_of_the_same_command() {
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ┃ #477: the active skill's `allowed_tools` mask reaches rhai bindings
+// ┃ ADR-0194: a loaded skill's `allowed_tools` no longer reaches rhai bindings
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Collect events for `sid` up to and including the *n*th `Done`, then linger
 /// briefly to also catch anything the tool executor emits asynchronously right
-/// after `Done` — mirrors `skill_mask.rs`'s helper of the same shape.
+/// after `Done` — mirrors `skill_posture.rs`'s helper of the same shape.
 async fn collect_through_dones(
     sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
     sid: &SessionId,
@@ -1070,13 +1070,15 @@ async fn collect_through_dones(
     out
 }
 
-/// #477: a skill loaded via `load_skill` scopes `rhai` bindings exactly like it
-/// scopes generic tool dispatch (#400/ADR-0106) — a script running while a
-/// restrictive skill is active cannot use its `edit` binding to reach a tool
-/// the skill's `allowed_tools` excludes, and the same script succeeds once the
-/// skill's scope clears at the turn's `Done`.
+/// #477, retired by ADR-0194: a skill loaded via `load_skill` used to scope
+/// `rhai` bindings exactly like it scoped generic tool dispatch (#400/
+/// ADR-0106) — a script's `edit` binding was refused while a restrictive
+/// skill was active. Skills are additive-only now: the same binding, under
+/// the identical loaded skill, must succeed — the skill's `allowed_tools`
+/// (still parsed, still populates the vestigial `SkillActive` wire field) no
+/// longer restrains it.
 #[tokio::test]
-async fn skill_mask_refuses_a_binding_then_clears_after_done() {
+async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-rhai-skillmask-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -1118,7 +1120,7 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
     };
 
     let scripted = Arc::new(vec![
-        // Turn 1, round 1: activate the skill.
+        // Round 1: activate the skill.
         LlmResponse {
             text: "".into(),
             tool_calls: vec![ToolCall {
@@ -1128,24 +1130,15 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
                 provider_meta: None,
             }],
         },
-        // Turn 1, round 2: the script's `edit` binding must be refused — the
-        // skill's `allowed_tools` excludes it.
+        // Round 2: the script's `edit` binding — outside the loaded skill's
+        // `allowed_tools` — must now succeed (ADR-0194).
         LlmResponse {
             text: "".into(),
             tool_calls: vec![rhai_call("r1")],
         },
-        // Turn 1, round 3: finish — triggers `Done`, clearing the skill mask.
+        // Round 3: finish — triggers `Done`, clearing the skill-active posture.
         LlmResponse {
             text: "turn1 done".into(),
-            tool_calls: vec![],
-        },
-        // Turn 2, round 1: the identical script, unmasked — must succeed.
-        LlmResponse {
-            text: "".into(),
-            tool_calls: vec![rhai_call("r2")],
-        },
-        LlmResponse {
-            text: "turn2 done".into(),
             tool_calls: vec![],
         },
     ]);
@@ -1199,33 +1192,32 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         .unwrap();
     let turn1 = collect_through_dones(&mut sub, &sid, 1).await;
 
-    let out1 = rhai_output(&turn1).expect("expected turn 1 rhai output");
+    let out1 = rhai_output(&turn1).expect("expected rhai output");
     assert!(
-        out1.contains("caught")
-            && out1.contains("not available while skill `restricted` is active"),
-        "the edit binding must be refused by the active skill's allowed_tools; got {out1}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(root.join("f.txt")).unwrap(),
-        "before",
-        "the masked edit binding must not touch the filesystem"
-    );
-
-    holly
-        .send(InMsg::prompt(sid.clone(), "run it again"))
-        .await
-        .unwrap();
-    let turn2 = collect_through_dones(&mut sub, &sid, 1).await;
-
-    let out2 = rhai_output(&turn2).expect("expected turn 2 rhai output");
-    assert!(
-        out2.contains("ran") && !out2.contains("not available while skill"),
-        "the binding must be unmasked once the skill's scope clears at Done; got {out2}"
+        out1.contains("ran") && !out1.contains("not available while skill"),
+        "the edit binding must run — a skill's allowed_tools no longer restricts it \
+         (ADR-0194); got {out1}"
     );
     assert_eq!(
         std::fs::read_to_string(root.join("f.txt")).unwrap(),
         "after",
-        "the unmasked edit binding must run in turn 2"
+        "the edit binding must have actually run"
+    );
+    // The wire posture event is unchanged: still activates with the
+    // frontmatter's (now-vestigial) allowed_tools, still clears at Done.
+    assert!(
+        turn1.iter().any(|e| matches!(
+            e,
+            OutEvent::SkillActive { skill_id: Some(id), allowed_tools: Some(tools), .. }
+                if id == "restricted" && tools == &vec!["read".to_string(), "rhai".to_string()]
+        )),
+        "expected a SkillActive activation event; got {turn1:?}"
+    );
+    assert!(
+        turn1
+            .iter()
+            .any(|e| matches!(e, OutEvent::SkillActive { skill_id: None, .. })),
+        "expected a SkillActive clear event at Done; got {turn1:?}"
     );
 }
 

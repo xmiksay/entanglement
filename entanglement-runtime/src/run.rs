@@ -293,8 +293,9 @@ fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // "Consequences"): a non-TUI head sees this live too, not only as a
         // refusal at the next `propose_plan(path=...)` call.
         OutEvent::PlanChanged { path, .. } => writeln!(out, "◆ plan file changed on disk: {path}")?,
-        // Skill-scoped tool mask posture (#400, ADR-0106): a wire-facing audit
-        // event for a head to render, not required for the one-shot text render.
+        // Skill-active posture (#400, ADR-0106; posture-only since ADR-0194): a
+        // wire-facing audit event for a head to render, not required for the
+        // one-shot text render.
         OutEvent::SkillActive { skill_id, .. } => match skill_id {
             Some(id) => writeln!(out, "◆ skill active: {id}")?,
             None => writeln!(out, "◆ skill cleared")?,
