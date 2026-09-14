@@ -397,6 +397,13 @@ pub struct DiscoverySurface {
     /// since it's session-keyed state alongside `advertising`, read/written
     /// by the same `dispatch`/`run_and_reply` call sites.
     pub validation: Arc<arg_validate::LoopBreaker>,
+    /// The shared endpoint-pool `HttpClient` a dispatch-time lazy MCP
+    /// re-enable rides (ADR-0201, `mcp::available::try_lazy_reenable`) —
+    /// `None` (the convenience wrappers, every test-only caller) degrades a
+    /// would-be re-enable to a clean tool error rather than a panic; those
+    /// callers' `mcp_avail` is also the empty default, so the path is never
+    /// actually exercised.
+    pub http: Option<entanglement_core::HttpClient>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -455,6 +462,7 @@ pub fn spawn_tool_executor_with_policy(
         mcp_avail,
         mcp_active,
         validation,
+        http: mcp_http,
     } = discovery.unwrap_or_default();
     let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
@@ -1067,12 +1075,42 @@ pub fn spawn_tool_executor_with_policy(
                         if !tools_snapshot.contains(&tool)
                             && !crate::plan_tasks::is_state_tool(&tool)
                         {
-                            let holly = holly.clone();
-                            tokio::spawn(async move {
-                                let output = tools_snapshot.unknown_tool_message(&tool);
-                                seam::reply(&holly, session, request_id, output, true).await;
-                            });
-                            continue;
+                            // ADR-0201: a tier-eligible `mcp__<server>__*`
+                            // name isn't "unknown" merely because this
+                            // session's registry snapshot has never seen it
+                            // registered — it's tier-known, and the real
+                            // lazy connect (plus a registry re-check) happens
+                            // once (if) this out-of-mask call is approved,
+                            // inside `dispatch` itself below. Only a
+                            // `disabled` tier or a truly unknown name
+                            // hard-refuses here, before any approval offer.
+                            let tier = crate::mcp::available::server_name_of(&tool)
+                                .map(|server| (server.to_string(), mcp_avail.tier_of(server)));
+                            match tier {
+                                Some((_, crate::mcp::available::McpTier::Eligible)) => {
+                                    // Falls through: "exists", mask-park
+                                    // proceeds below.
+                                }
+                                Some((server, crate::mcp::available::McpTier::Disabled)) => {
+                                    let holly = holly.clone();
+                                    tokio::spawn(async move {
+                                        let output =
+                                            crate::mcp::available::disabled_decline(&server);
+                                        seam::reply(&holly, session, request_id, output, true)
+                                            .await;
+                                    });
+                                    continue;
+                                }
+                                _ => {
+                                    let holly = holly.clone();
+                                    tokio::spawn(async move {
+                                        let output = tools_snapshot.unknown_tool_message(&tool);
+                                        seam::reply(&holly, session, request_id, output, true)
+                                            .await;
+                                    });
+                                    continue;
+                                }
+                            }
                         }
                         let mask_chain = ancestor_chain(&spawn_guard, &session);
                         let deny_floor = {
@@ -1107,6 +1145,14 @@ pub fn spawn_tool_executor_with_policy(
                         let active_skill = active_skill.clone();
                         let advertising = advertising.clone();
                         let validation = validation.clone();
+                        // ADR-0201: forwarded through to `mask_request::handle`'s
+                        // own `dispatch` call, so an approved out-of-mask
+                        // `mcp__<server>__*` call self-heals exactly like the
+                        // ordinary in-mask route does.
+                        let registry = tools.clone();
+                        let mcp_avail = mcp_avail.clone();
+                        let mcp_active = mcp_active.clone();
+                        let mcp_http = mcp_http.clone();
                         let holly = holly.clone();
                         let reg_session = session.clone();
                         let handle = tokio::spawn(async move {
@@ -1126,6 +1172,10 @@ pub fn spawn_tool_executor_with_policy(
                                 &ceiling,
                                 &advertising,
                                 &validation,
+                                &registry,
+                                &mcp_avail,
+                                &mcp_active,
+                                mcp_http.as_ref(),
                                 source,
                                 agent_name,
                                 session,
@@ -1543,6 +1593,15 @@ pub fn spawn_tool_executor_with_policy(
                             let overlay_entry =
                                 crate::permission::overlay_grade_entry(&overlays, &chain, &tool);
                             let ceiling = base.clone();
+                            // The live registry, cloned (cheap `Arc`) *before*
+                            // the snapshot shadow below — ADR-0201's dispatch-
+                            // time lazy MCP re-enable needs the live handle to
+                            // register into and re-snapshot from, not the
+                            // pre-spawn owned clone `tools` becomes next.
+                            let registry = tools.clone();
+                            let mcp_avail = mcp_avail.clone();
+                            let mcp_active = mcp_active.clone();
+                            let mcp_http = mcp_http.clone();
                             // Snapshot before spawning (#372) — see the Rhai arm above.
                             let tools = tools.read().expect("tool registry lock poisoned").clone();
                             let holly = holly.clone();
@@ -1597,6 +1656,10 @@ pub fn spawn_tool_executor_with_policy(
                                     &ceiling,
                                     &advertising,
                                     &validation,
+                                    &registry,
+                                    &mcp_avail,
+                                    &mcp_active,
+                                    mcp_http.as_ref(),
                                     session,
                                     request_id,
                                     tool,
@@ -1661,6 +1724,15 @@ pub(crate) async fn dispatch(
     // ADR-0196 §4) and the loop-breaker's per-session last-call tracker.
     advertising: &tool_advertising::AdvertisingState,
     validation: &arg_validate::LoopBreaker,
+    // ADR-0201's dispatch-time lazy MCP re-enable: the live registry (to
+    // register into, and to re-snapshot from on success — `tools` above is
+    // an already-cloned snapshot that a fresh registration is invisible to),
+    // the availability roster + connected-server map `enable_for_session`
+    // needs, and the endpoint-pool client its connect rides.
+    registry: &SharedRegistry,
+    mcp_avail: &AvailableMcp,
+    mcp_active: &ActiveServers,
+    http: Option<&entanglement_core::HttpClient>,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -1676,11 +1748,69 @@ pub(crate) async fn dispatch(
     // runtime state tool with no registry entry (#231, ADR-0049) —
     // `run_and_reply` handles it separately — so it's exempt from this
     // registry check.
+    //
+    // ADR-0201: an unregistered `mcp__<server>__*` name is not necessarily a
+    // hallucination — a resumed session's replay restores its tool-overlay/
+    // permission state (so the call reaches here, never masked) but MCP
+    // registration is process-lifetime, never persisted, so nothing
+    // re-registers on resume. Self-heal by consulting the same three-state
+    // tier `mcp_enable`/`/enable mcp` do before ever reporting "unknown":
+    // reserve that message strictly for a name matching no registered tool
+    // AND no configured/bundled server in any tier.
+    let mut refreshed_tools: Option<ToolRegistry> = None;
     if !tools.contains(&tool) && !crate::plan_tasks::is_state_tool(&tool) {
-        let output = tools.unknown_tool_message(&tool);
-        seam::reply(holly, session, request_id, output, true).await;
-        return;
+        match crate::mcp::available::server_name_of(&tool) {
+            Some(server) => {
+                match crate::mcp::available::try_lazy_reenable(
+                    mcp_avail, server, &session, registry, mcp_active, http,
+                )
+                .await
+                {
+                    crate::mcp::available::LazyReenableOutcome::Enabled => {
+                        // The enable registered into the *live* `registry`,
+                        // invisible to the already-cloned `tools` snapshot —
+                        // re-fetch it and let the rest of this function run
+                        // against the fresh view (alias rewrite, grading,
+                        // escape-root, hooks, the approval round-trip all
+                        // still apply below, exactly as if the tool had
+                        // been registered all along).
+                        let snap = registry
+                            .read()
+                            .expect("tool registry lock poisoned")
+                            .clone();
+                        if !snap.contains(&tool) {
+                            // Shouldn't happen (enable_for_session just
+                            // registered it) — fail safe, not panic.
+                            let output = snap.unknown_tool_message(&tool);
+                            seam::reply(holly, session, request_id, output, true).await;
+                            return;
+                        }
+                        refreshed_tools = Some(snap);
+                    }
+                    crate::mcp::available::LazyReenableOutcome::Disabled => {
+                        let output = crate::mcp::available::disabled_decline(server);
+                        seam::reply(holly, session, request_id, output, true).await;
+                        return;
+                    }
+                    crate::mcp::available::LazyReenableOutcome::Failed(msg) => {
+                        seam::reply(holly, session, request_id, msg, true).await;
+                        return;
+                    }
+                    crate::mcp::available::LazyReenableOutcome::Unknown => {
+                        let output = tools.unknown_tool_message(&tool);
+                        seam::reply(holly, session, request_id, output, true).await;
+                        return;
+                    }
+                }
+            }
+            None => {
+                let output = tools.unknown_tool_message(&tool);
+                seam::reply(holly, session, request_id, output, true).await;
+                return;
+            }
+        }
     }
+    let tools = refreshed_tools.as_ref().unwrap_or(tools);
     // Alias rewrite (#560 P8): a skill-declared alias — a renamed/preset-args
     // wrapper over another tool, or the rewrite-to-`rhai` a rhai-backed skill
     // tool is sugar for — must not launder permission through its own

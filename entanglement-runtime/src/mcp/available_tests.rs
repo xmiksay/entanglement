@@ -278,6 +278,8 @@ async fn enable_already_connected_marks_only() {
         secret_env: vec![],
         connecting: Mutex::new(HashMap::new()),
         parents: Mutex::new(HashMap::new()),
+        disabled_names: HashSet::new(),
+        recent_enable_failures: Mutex::new(HashMap::new()),
     };
     let registry: SharedRegistry =
         std::sync::Arc::new(std::sync::RwLock::new(crate::tools::ToolRegistry::new()));
@@ -335,6 +337,8 @@ async fn concurrent_enable_of_the_same_server_does_not_panic_or_corrupt_state() 
         secret_env: vec![],
         connecting: Mutex::new(HashMap::new()),
         parents: Mutex::new(HashMap::new()),
+        disabled_names: HashSet::new(),
+        recent_enable_failures: Mutex::new(HashMap::new()),
     };
     let registry: SharedRegistry =
         std::sync::Arc::new(std::sync::RwLock::new(crate::tools::ToolRegistry::new()));

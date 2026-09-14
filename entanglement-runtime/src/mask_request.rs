@@ -34,6 +34,7 @@ use entanglement_core::{
 use crate::arg_validate::LoopBreaker;
 use crate::decline::{mask_request_attribution, MaskSource};
 use crate::hooks::Hooks;
+use crate::mcp::{ActiveServers, AvailableMcp};
 use crate::pending::PendingDecisions;
 use crate::policy::{GrantStore, PermissionResolver};
 use crate::seam;
@@ -41,7 +42,7 @@ use crate::skills::SkillRegistry;
 use crate::tool_advertising::AdvertisingState;
 use crate::tool_names::{AGENT_SEND_TOOL, AGENT_TOOL};
 use crate::tool_runner::{dispatch, set_thinking, EscapeRoot};
-use crate::tools::ToolRegistry;
+use crate::tools::{SharedRegistry, ToolRegistry};
 
 /// Hard limit (b), ADR-0198 §2: `agent`/`agent_send` are profile-defining
 /// (the ADR-0192 spawn-enum carve-out — sponsorship, ADR-0138, depends on
@@ -116,6 +117,13 @@ pub(crate) async fn handle(
     ceiling: &PermissionProfile,
     advertising: &AdvertisingState,
     validation: &LoopBreaker,
+    // ADR-0201's dispatch-time lazy MCP re-enable — forwarded verbatim into
+    // the `dispatch` call below so an approved out-of-mask `mcp__<server>__*`
+    // call self-heals exactly like the ordinary in-mask route.
+    registry: &SharedRegistry,
+    mcp_avail: &AvailableMcp,
+    mcp_active: &ActiveServers,
+    http: Option<&entanglement_core::HttpClient>,
     source: MaskSource,
     agent_name: Option<String>,
     session: SessionId,
@@ -178,6 +186,10 @@ pub(crate) async fn handle(
                 ceiling,
                 advertising,
                 validation,
+                registry,
+                mcp_avail,
+                mcp_active,
+                http,
                 session,
                 request_id,
                 tool,

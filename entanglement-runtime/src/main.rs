@@ -1727,6 +1727,9 @@ async fn main() -> Result<()> {
             mcp_avail: mcp_available.clone(),
             mcp_active: mcp_active.clone(),
             validation: std::sync::Arc::new(entanglement_runtime::arg_validate::LoopBreaker::new()),
+            // ADR-0201: the same shared endpoint-pool client a dispatch-time
+            // lazy MCP re-enable rides.
+            http: Some(http_client.clone()),
         }),
     );
 

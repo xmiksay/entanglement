@@ -541,7 +541,12 @@ assistant/tool messages and the model appears to forget the conversation.
   stays dropped. This event-log + `Holly::resume` path is also the persistence
   seam for embedders of `entanglement-core`: records are serde values storable
   anywhere (a DB, a queue); the JSONL store here is the reference
-  implementation.
+  implementation. Resume restores every *replayable* piece of runtime-side
+  state (tool overlay, permission grants) but **not** MCP tool registration —
+  `ToolRegistry` is process-lifetime, never logged; a re-offered
+  `mcp__<server>__*` call self-heals at dispatch time instead
+  ([ADR-0201](../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md),
+  §"MCP client" in [gates & host tools](gates-and-host-tools.md)).
 - **Compaction is copy-on-write — it forks, never mutates** (#324,
   [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md) →
   [ADR-0101](../adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)).

@@ -1124,6 +1124,12 @@ Every MCP server now has a **three-state activation**
   **not** on `SessionHibernated`, since a lazy enable is never logged for
   replay the way the #539 tool overlay is, so clearing it there would strand
   a resumed session with no way to get its tools back short of re-enabling.
+  That covers an in-process hibernate/resume, where `AvailableMcp`/
+  `ToolRegistry` themselves never lost anything; a **process restart** is a
+  different gap — nothing re-registers a bundled/lazily-connected server's
+  tools on replay at all (`ToolRegistry` is process-lifetime, never
+  persisted) — closed instead at dispatch time, below
+  ([ADR-0201](../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md)).
 - **`disabled`** — invisible; only a config edit lifts it.
 
 `McpServerStatus` gains an optional `state` (`"enabled"`/`"allowed"`) and the
@@ -1137,6 +1143,51 @@ transport as `api_key` (✅ #559,
 [ADR-0157](../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)), so
 its traffic shares the shared endpoint pool's rate-limit budget with the
 provider's LLM endpoint using the same key — see §"MCP client" above.
+
+### Dispatch-time lazy re-enable — [ADR-0201](../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md) (#560)
+
+An unknown-tool dispatch for an `mcp__<server>__*` name is no longer a flat
+registry-membership test. `AvailableMcp::tier_of` (`mcp/available_tier.rs`)
+classifies `server` against the three-state roster above with **no connect
+attempt**: `Eligible` (`allowed`, or already lazily-connected) is
+tier-eligible for the same zero-approval connect `mcp_enable`/`/enable mcp`
+already perform; `Disabled` is a **known** name with consent withheld by
+configuration (`AvailableMcp::disabled_names`, populated by `partition` —
+previously a `disabled` entry was simply discarded, indistinguishable from
+"never configured"); `Unknown` is genuinely nothing. `server_name_of` parses
+the namespaced form (shared with `spec_visible`); `disabled_decline` renders
+the one truthful-decline string both call sites below use.
+
+- **`tool_runner::dispatch`'s** own unknown-tool check calls
+  `mcp::available::try_lazy_reenable`: `Eligible` attempts the real connect
+  (`enable_for_session`, same `CONNECT_TIMEOUT`/`connect_guard`), and on
+  success re-snapshots the live registry and **continues the same function**
+  — alias rewrite, grading, escape-root, hooks, approval all still run
+  unchanged, since a lazy re-enable restores registration only, never
+  permission. `Disabled` → `disabled_decline`. `Unknown` → the unchanged
+  Levenshtein-hinted unknown-tool message. A connect failure is a
+  distinguishable error (`"...could not be re-enabled: <cause>"`), never
+  confused with "unknown."
+- **The out-of-mask hard-limit check** (ADR-0198, before `mask_request::handle`
+  ever parks an approval) uses the pure `tier_of` read only — no connect
+  before permission is even asked. `Eligible` is treated as "exists" and
+  falls through to the ordinary mask-miss approval flow; the real connect
+  happens later, inside `dispatch`'s post-approval replay (`mask_request::handle`
+  forwards the same registry/`AvailableMcp`/`ActiveServers`/`HttpClient`
+  handles through unchanged).
+- A per-server **failure cooldown** (`AvailableMcp::recent_enable_failures`,
+  30s) guards a broken/unreachable server's `CONNECT_TIMEOUT` against a batch
+  of several calls each serially retrying it — complementary to the
+  pre-existing per-server `connect_guard` (#556), which serializes
+  *concurrent* attempts; this guards *sequential* repeats after one has
+  already failed.
+
+This closes the resume-coherence gap noted above: replay restores a
+session's tool-overlay/permission state, never MCP registration itself, so a
+resumed session's next call to a previously-enabled server self-heals here
+instead of misreporting the tool unknown. The self-heal is general, not
+resume-specific — any other registry/`AvailableMcp` desync heals the same
+way.
 
 ### TUI `/mcp` command — [ADR-0100](../adr/0100-tui-mcp-command.md) (#373)
 
