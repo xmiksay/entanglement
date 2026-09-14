@@ -72,6 +72,8 @@ pub(crate) fn build_index(
 ) -> Vec<Value> {
     let mut rows = builtin_rows(registry);
     rows.extend(mcp_rows(registry, avail, active, session));
+    rows.extend(endpoint_rows(registry));
+    rows.extend(skill_tool_rows(registry, skills));
     rows.extend(skill_rows(skills));
 
     if let Some(f) = filter {
@@ -117,7 +119,15 @@ fn builtin_rows(registry: &ToolRegistry) -> Vec<Row> {
     let mut rows: Vec<Row> = registry
         .specs()
         .into_iter()
-        .filter(|s| s.name != "read_raw" && !s.name.starts_with("mcp__"))
+        .filter(|s| {
+            s.name != "read_raw"
+                && !s.name.starts_with("mcp__")
+                // Definition-driven sources (#560 P8) get their own rows
+                // below, with a distinct `source` label — an endpoint tool
+                // isn't a "built-in" any more than an MCP tool is.
+                && !s.name.starts_with("endpoint__")
+                && !s.name.starts_with("skill__")
+        })
         .map(|s| Row {
             name: s.name,
             description: one_line(&s.description),
@@ -129,6 +139,45 @@ fn builtin_rows(registry: &ToolRegistry) -> Vec<Row> {
         description: one_line(&s.description),
         source: "built-in".to_string(),
     }));
+    rows
+}
+
+/// `config.yml`-declared endpoint tools (#560 P8) — every registered
+/// `endpoint__<name>` tool, one row each.
+fn endpoint_rows(registry: &ToolRegistry) -> Vec<Row> {
+    registry
+        .specs()
+        .into_iter()
+        .filter(|s| s.name.starts_with("endpoint__"))
+        .map(|s| Row {
+            name: s.name,
+            description: one_line(&s.description),
+            source: "endpoint".to_string(),
+        })
+        .collect()
+}
+
+/// Skill-declared tools (#560 P8) — every registered `skill__<skill>__<name>`
+/// tool, sourced `skill:<skill>` so the index shows which skill it came from
+/// (distinct from [`skill_rows`]'s own skill-index entries, which point at
+/// `load_skill`, not `describe`).
+fn skill_tool_rows(registry: &ToolRegistry, skills: &SkillRegistry) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for skill in skills.iter() {
+        let prefix = format!("skill__{}__", skill.name);
+        for def in &skill.tools {
+            let name = format!("{prefix}{}", def.name());
+            let description = registry
+                .spec_for(&name)
+                .map(|s| one_line(&s.description))
+                .unwrap_or_default();
+            rows.push(Row {
+                name,
+                description,
+                source: format!("skill:{}", skill.name),
+            });
+        }
+    }
     rows
 }
 
@@ -250,6 +299,7 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: String::new(),
+            tools: Vec::new(),
         });
         skills
     }
@@ -320,6 +370,59 @@ mod tests {
         assert!(rows.iter().any(|r| r["name"] == "git"
             && r["source"] == "skill"
             && r["description"].as_str().unwrap().contains("load_skill")));
+    }
+
+    #[test]
+    fn index_labels_endpoint_and_skill_tool_sources_distinctly() {
+        // #560 P8: an `endpoint__*`/`skill__*__*` registered tool must not
+        // fall into the generic "built-in" bucket — it gets its own source
+        // label, distinguishable from a plain host tool.
+        let mut registry = ToolRegistry::new();
+        registry.register(Fake {
+            name: "endpoint__weather",
+            desc: "current weather",
+        });
+        registry.register(Fake {
+            name: "skill__research__gh_search",
+            desc: "search github",
+        });
+        let mut skills = skill_registry();
+        skills.insert(crate::skills::SkillMeta {
+            name: "research".to_string(),
+            description: "d".to_string(),
+            user_only: false,
+            allowed_tools: None,
+            root_dir: None,
+            body: String::new(),
+            tools: vec![crate::skills::SkillToolDef::Alias {
+                name: "gh_search".to_string(),
+                target: "read".to_string(),
+                args: serde_json::Map::new(),
+                description: String::new(),
+            }],
+        });
+        let avail = allowed_avail("docs");
+        let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
+        let session = SessionId::new("s");
+
+        let rows = build_index(&registry, &avail, &active, &skills, &session, None);
+
+        let endpoint_row = rows
+            .iter()
+            .find(|r| r["name"] == "endpoint__weather")
+            .expect("endpoint row present");
+        assert_eq!(endpoint_row["source"], "endpoint");
+        // Never lumped into the generic built-in bucket.
+        assert!(!rows
+            .iter()
+            .any(|r| r["name"] == "endpoint__weather" && r["source"] == "built-in"));
+
+        let skill_tool_row = rows
+            .iter()
+            .find(|r| r["name"] == "skill__research__gh_search")
+            .expect("skill tool row present");
+        assert_eq!(skill_tool_row["source"], "skill:research");
+        assert_eq!(skill_tool_row["description"], "search github");
     }
 
     #[test]

@@ -43,9 +43,13 @@ use serde::Deserialize;
 use crate::layers::Strictness;
 use crate::system_prompt::SkillDisclosure;
 
+mod alias_tool;
 mod discovery;
 pub mod load_skill;
+pub mod tools;
+
 pub use load_skill::LoadSkillTool;
+pub use tools::SkillToolDef;
 
 /// One discovered skill: the tier-1 metadata plus the loaded body. `root_dir` is
 /// resolved **once** here at discovery (the directory holding `SKILL.md` and its
@@ -74,6 +78,12 @@ pub struct SkillMeta {
     pub root_dir: Option<PathBuf>,
     /// The markdown body below the frontmatter (tier-2 content).
     pub body: String,
+    /// Skill-declared tools (#560 P8, strict/native layers only — a foreign
+    /// `SKILL.md`'s `tools:` key is silently dropped, [`parse_foreign_skill`]).
+    /// Registered once at discovery time into `skill__<skill>__<tool>`
+    /// entries — see [`tools::register_skill_tools`] for why discovery-time,
+    /// not `load_skill`-time.
+    pub tools: Vec<SkillToolDef>,
 }
 
 /// Skill frontmatter: `name` + `description` required, the rest optional.
@@ -87,6 +97,12 @@ struct SkillFrontmatter {
     user_only: bool,
     #[serde(default)]
     allowed_tools: Option<Vec<String>>,
+    /// Skill-declared tools (#560 P8) — endpoint refs, rhai-backed tools,
+    /// aliases. Strict layers only: [`ForeignSkillFrontmatter`] below has no
+    /// such field, so a lenient (cross-vendor) parse drops a stray `tools:`
+    /// key the same way it already drops Claude-style `allowed-tools`.
+    #[serde(default)]
+    tools: Vec<crate::skills::tools::SkillToolDef>,
 }
 
 /// Lenient frontmatter for cross-vendor skills (ADR-0074): only the tier-1
@@ -304,11 +320,15 @@ fn parse_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
         allowed_tools: fm.allowed_tools,
         root_dir,
         body,
+        tools: fm.tools,
     })
 }
 
 /// Parse a cross-vendor `SKILL.md` via the lenient [`ForeignSkillFrontmatter`]
-/// (unknown keys ignored, ADR-0074).
+/// (unknown keys ignored, ADR-0074). `tools:` — like Claude's `allowed-tools`
+/// — is one such dropped key: [`ForeignSkillFrontmatter`] has no field for
+/// it, so [`SkillMeta::tools`] is always empty for a foreign-layer skill
+/// (#560 P8 is strict-layers-only).
 fn parse_foreign_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
     let (frontmatter, body) = crate::frontmatter::split(content)?;
     let fm: ForeignSkillFrontmatter =
@@ -323,6 +343,7 @@ fn parse_foreign_skill(content: &str, root_dir: Option<PathBuf>) -> Result<Skill
         allowed_tools: None,
         root_dir,
         body,
+        tools: Vec::new(),
     })
 }
 
@@ -617,6 +638,50 @@ mod tests {
     }
 
     #[test]
+    fn foreign_layer_tools_key_is_dropped_like_claude_allowed_tools() {
+        // #560 P8: a `tools:` key in a foreign (cross-vendor) SKILL.md must be
+        // silently dropped, exactly like Claude's `allowed-tools` above — the
+        // lenient parse has no field for it at all.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_skill(
+            &root.join(".claude").join("skills"),
+            "with-tools",
+            "---\nname: with-tools\ndescription: d\ntools:\n  - kind: alias\n    name: x\n    target: read\n---\nbody",
+        );
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
+        let reg = load_registry(root).unwrap();
+        std::env::remove_var(SKILLS_DIR_ENV);
+
+        let s = reg.get("with-tools").expect("foreign skill still loads");
+        assert!(
+            s.tools.is_empty(),
+            "foreign tools: must be dropped: {:?}",
+            s.tools
+        );
+    }
+
+    #[test]
+    fn native_layer_tools_key_is_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_skill(
+            &root.join(".entanglement").join("skills"),
+            "with-tools",
+            "---\nname: with-tools\ndescription: d\ntools:\n  - kind: alias\n    name: x\n    target: read\n---\nbody",
+        );
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
+        let reg = load_registry(root).unwrap();
+        std::env::remove_var(SKILLS_DIR_ENV);
+
+        let s = reg.get("with-tools").expect("native skill loads");
+        assert_eq!(s.tools.len(), 1);
+        assert_eq!(s.tools[0].name(), "x");
+    }
+
+    #[test]
     fn foreign_disable_model_invocation_maps_to_user_only() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -707,6 +772,7 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: String::new(),
+            tools: Vec::new(),
         });
         reg.insert(SkillMeta {
             name: "deploy".into(),
@@ -715,6 +781,7 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: String::new(),
+            tools: Vec::new(),
         });
         reg.insert(SkillMeta {
             name: "alpha".into(),
@@ -723,6 +790,7 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: String::new(),
+            tools: Vec::new(),
         });
         let d = reg.disclosures();
         assert_eq!(d.len(), 2, "user_only skill must be withheld: {d:?}");

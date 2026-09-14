@@ -902,6 +902,7 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: body.into(),
+            tools: Vec::new(),
         });
         reg
     }
@@ -927,6 +928,36 @@ mod tests {
         assert_eq!(p.for_tool("glob"), Permission::Allow);
         // Not a member of `read` — untouched.
         assert_eq!(p.for_tool("edit"), Permission::Deny);
+    }
+
+    #[test]
+    fn bare_call_capability_also_covers_every_endpoint_tool() {
+        // #560 P8: unlike an MCP tool (needs a config-side capability hint
+        // to join a bare capability's fan-out, #426), a config-declared
+        // endpoint tool is *always* a network call — `endpoint::
+        // call_capability_names` unconditionally feeds every declared
+        // endpoint into the same data-driven `call` index MCP capabilities
+        // use, so a bare `call: allow` covers it with no per-tool
+        // annotation.
+        let mut mcp = McpCapabilityIndex::new();
+        mcp.insert(
+            "call".to_string(),
+            vec![
+                "endpoint__weather".to_string(),
+                "endpoint__other".to_string(),
+            ],
+        );
+        let p = perm_with_mcp("default: deny\ncall: allow", &mcp);
+        assert_eq!(p.for_tool("bash"), Permission::Allow);
+        assert_eq!(p.for_tool("endpoint__weather"), Permission::Allow);
+        assert_eq!(p.for_tool("endpoint__other"), Permission::Allow);
+        // An undeclared endpoint tool (absent from the index) is untouched —
+        // this is a concrete per-name list, not a glob.
+        assert_eq!(p.for_tool("endpoint__not_declared"), Permission::Deny);
+        // A skill-declared endpoint tool is namespaced `skill__…`, sharing
+        // that prefix with alias/rhai-backed skill tools that grade under a
+        // different name entirely — deliberately not in this index either.
+        assert_eq!(p.for_tool("skill__research__gh_search"), Permission::Deny);
     }
 
     #[test]

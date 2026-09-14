@@ -58,6 +58,7 @@ use serde::Deserialize;
 use serde_yaml::Value;
 
 use crate::agents::permission_from_value;
+use crate::endpoint::EndpointConfig;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
 
@@ -170,6 +171,11 @@ struct RawConfig {
     /// registry. Absent ⇒ no servers.
     #[serde(default)]
     mcp: HashMap<String, McpServerConfig>,
+    /// Definition-driven HTTP endpoint tools (#560 P8): a map of name →
+    /// endpoint definition, each registered as `endpoint__<name>`. Absent ⇒
+    /// no endpoint tools. See [`crate::endpoint`].
+    #[serde(default)]
+    endpoints: HashMap<String, EndpointConfig>,
     /// Provider-side web search (#305, ADR-0075): opt-in, bound onto the LLM
     /// client at build time — never seen by core. Absent ⇒ disabled. Enabling
     /// it is consent (the server tool runs provider-side, *outside* the runtime
@@ -232,6 +238,9 @@ pub struct Config {
     pub hooks: Hooks,
     /// External MCP tool servers (#198). Empty by default (a no-op).
     pub mcp: HashMap<String, McpServerConfig>,
+    /// Definition-driven HTTP endpoint tools (#560 P8). Empty by default (a
+    /// no-op). See [`crate::endpoint`].
+    pub endpoints: HashMap<String, EndpointConfig>,
     /// Provider-side web search (#305). Disabled by default (a no-op).
     pub web_search: WebSearchConfig,
     /// Cap on the inner LLM→tool loop within a single turn (#177). `None` ⇒
@@ -391,8 +400,14 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
     // index (#426) `agents::load_registry` uses, built from this same `mcp:`
     // section — `read: allow` in the ceiling should cover an annotated MCP
     // tool exactly like it does in agent frontmatter.
-    let mcp_capabilities =
+    let mut mcp_capabilities =
         crate::mcp::capability_index(&raw.mcp).context("in user config `mcp` capabilities")?;
+    // Every declared endpoint tool joins the same data-driven `call` index
+    // (#560 P8), unconditionally — see `endpoint::call_capability_names`.
+    mcp_capabilities
+        .entry("call".to_string())
+        .or_default()
+        .extend(crate::endpoint::call_capability_names(&raw.endpoints));
     let permissions = match &raw.permissions {
         Some(v) => {
             permission_from_value(v, &mcp_capabilities).context("in user config `permissions`")?
@@ -407,6 +422,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         permissions,
         hooks: raw.hooks,
         mcp: raw.mcp,
+        endpoints: raw.endpoints,
         web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
@@ -438,6 +454,7 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "permissions",
         "hooks",
         "mcp",
+        "endpoints",
         "web_search",
         "max_turns",
         "idle_ttl_secs",

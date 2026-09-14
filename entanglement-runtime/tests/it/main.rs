@@ -19,11 +19,14 @@ mod agent_definitions;
 mod agent_generation;
 mod agent_models;
 mod agent_send;
+mod alias_grading;
 mod apply_patch;
 mod arg_validate;
 mod ask_user;
 mod aux_models;
 mod compact_fork;
+#[cfg(feature = "serve")]
+mod endpoint;
 mod hooks;
 mod host_tools;
 mod list_operations;

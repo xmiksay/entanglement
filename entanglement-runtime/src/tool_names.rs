@@ -128,7 +128,21 @@ pub const TOOL_SEARCH_KERNEL: &[&str] = &[
 /// MCP server's config-side `capabilities:` annotation maps to it (#426,
 /// `entanglement_runtime::mcp::capability_index`), a *data-driven* extension
 /// of this same table applied alongside it in
-/// `agents::expand_capabilities`.
+/// `agents::expand_capabilities`. A config-declared endpoint tool
+/// (`endpoint__<name>`, #560 P8) joins the *same* data-driven `call` index —
+/// unlike an MCP tool, with no per-tool config hint needed: every endpoint
+/// tool is unconditionally a network call, so `config::parse`/`main.rs`
+/// simply add `endpoint__<name>` to the index's `call` bucket for every
+/// declared endpoint alongside whatever the `mcp:` section contributed
+/// (`entanglement_core::PermissionProfile::resolve` matches a rule key
+/// against a tool name literally or via the single `*` wildcard — not an
+/// arbitrary glob — so this can't be a static `endpoint__*` table entry the
+/// way an agent tool *mask* pattern could be, ADR-0148; it has to be a
+/// concrete per-name index like MCP's). A skill-declared endpoint tool
+/// (`skill__<skill>__<name>`) is deliberately **not** in that index — it
+/// shares the `skill__` namespace with alias/rhai-backed skill tools that
+/// grade under a different name entirely (see `skills::alias_tool`), so a
+/// profile wanting to grade it under `call` names it explicitly.
 pub const CAPABILITIES: &[(&str, &[&str])] = &[
     ("read", &["read", "grep", "glob"]),
     ("write", &["edit", "write", "apply_patch"]),
@@ -224,6 +238,12 @@ pub fn is_recognized_mask_entry(entry: &str) -> bool {
     entry.contains('*')
         || entry.contains('?')
         || entry.starts_with("mcp__")
+        // Definition-driven sources (#560 P8): a config-declared endpoint
+        // (`endpoint__<name>`) or a skill-declared tool (`skill__<skill>__
+        // <name>` — endpoint ref, rhai-backed, or alias) isn't knowable from
+        // a fixed compile-time list either, exactly like an MCP tool above.
+        || entry.starts_with("endpoint__")
+        || entry.starts_with("skill__")
         || is_capability_name(entry)
         || KNOWN_TOOL_NAMES.contains(&entry)
 }

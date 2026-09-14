@@ -29,6 +29,7 @@ impl ModelInfo {
 pub mod anthropic;
 pub mod catalog;
 pub mod client;
+pub mod endpoint;
 pub mod gemini;
 pub mod llm;
 pub mod mcp;
@@ -50,6 +51,9 @@ pub use catalog::{
     ThinkingFormat, ThinkingSpec, ThinkingStyle, ToolAdvertising, Wire,
 };
 pub use client::{prune_stale, HttpClient, RetryConfig, StreamGuard, ThrottleStatus, UserBudget};
+pub use endpoint::{
+    call as call_endpoint, EndpointMethod, EndpointResponse, ENDPOINT_RESPONSE_CAP,
+};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
     fixed_model_concurrency, fixed_thinking_spec, stream_from_response, AuxLlmResolver, DummyLlm,

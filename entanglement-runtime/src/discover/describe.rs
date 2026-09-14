@@ -284,6 +284,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_endpoint_tool_describes_byte_identical_to_its_registry_spec() {
+        // #560 P8: `describe` needs zero endpoint-specific code — a
+        // registered `endpoint__*`/`skill__*__*` tool resolves through the
+        // exact same `registry.spec_for` path as any other tool.
+        let mut reg = registry();
+        let cfg: crate::endpoint::EndpointConfig =
+            serde_yaml::from_str("url: https://example.com/x\ndescription: weather lookup")
+                .unwrap();
+        reg.register(crate::endpoint::EndpointTool::new(
+            "endpoint__weather".to_string(),
+            &cfg,
+            entanglement_core::HttpClient::new().unwrap(),
+        ));
+        let advertising = AdvertisingState::new();
+        let session = SessionId::new("s");
+        let (entries, resolved) = build_entries(
+            &reg,
+            &SkillRegistry::default(),
+            None,
+            &advertising,
+            &session,
+            ToolAdvertising::ToolSearch,
+            &["endpoint__weather".to_string()],
+        )
+        .await;
+        let expected = spec_to_json(&reg.spec_for("endpoint__weather").unwrap());
+        assert_eq!(entries[0], expected);
+        assert_eq!(resolved, vec!["endpoint__weather".to_string()]);
+    }
+
+    #[tokio::test]
     async fn resolved_names_list_matches_only_successful_lookups() {
         // ADR-0196 §3: `run_describe` needs exactly this list to know which
         // names are safe to reference on the `anthropic_native` encoding —
@@ -381,6 +412,7 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: String::new(),
+            tools: Vec::new(),
         });
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");

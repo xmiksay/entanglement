@@ -28,11 +28,12 @@ pub use id_gen::{DefaultIdGen, IdGen, IdKind};
 // lean build too, so core re-exports it beside `Catalog` rather than the
 // runtime naming a provider path of its own.
 pub use entanglement_provider::{
-    content_text, stream_from_response, AuxLlmResolver, Catalog, ContentPart, DummyLlm, EchoLlm,
-    GenerationParams, GenerationResolver, HttpClient, ImageSource, Llm, LlmEvent, LlmFactory,
-    LlmRequest, LlmResponse, LlmStream, McpServerState, Message, MessageRole, ModelEntry,
-    ModelPricing, ModelResolver, ProviderMcpServer, ReasoningEffort, ResolvedModel, RetryConfig,
-    StopReason, ToolAdvertising, ToolCall, ToolSpec, Usage, UserId, WebSearchConfig, Wire,
+    call_endpoint, content_text, stream_from_response, AuxLlmResolver, Catalog, ContentPart,
+    DummyLlm, EchoLlm, EndpointMethod, EndpointResponse, GenerationParams, GenerationResolver,
+    HttpClient, ImageSource, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream,
+    McpServerState, Message, MessageRole, ModelEntry, ModelPricing, ModelResolver,
+    ProviderMcpServer, ReasoningEffort, ResolvedModel, RetryConfig, StopReason, ToolAdvertising,
+    ToolCall, ToolSpec, Usage, UserId, WebSearchConfig, Wire, ENDPOINT_RESPONSE_CAP,
     TOOL_SEARCH_CALL_TOOL,
 };
 // The MCP client mechanism — transport + OAuth (ADR-0153) — also lives in the

@@ -22,9 +22,9 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, config, discover, extra_roots, history, host, inspect, logging, mcp,
-    permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll, propose_plan,
-    retained_output, script_ops, session_store, skills, subagent, system_prompt,
+    agents, ask_user, config, discover, endpoint, extra_roots, history, host, inspect, logging,
+    mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
+    propose_plan, retained_output, script_ops, session_store, skills, subagent, system_prompt,
     system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, tool_state, watch,
     SharedRegistry, ToolRegistry,
 };
@@ -206,10 +206,24 @@ async fn build_config(
             }
         );
     }
+    // Skill-declared tools (#560 P8): a native/strict-layer `SKILL.md`'s
+    // `tools:` frontmatter — endpoint refs, rhai-backed tools, and aliases —
+    // registered once at skill-discovery time (this same startup pass, not
+    // gated behind `load_skill`), namespaced `skill__<skill>__<name>`. See
+    // `skills::tools`'s module doc for why discovery-time beats load-time.
+    // Snapshotted from the live wrapper *before* it's moved into
+    // `LoadSkillTool::new` below (cheap — an `Arc` clone under a brief read
+    // lock).
+    let skill_registry_snapshot = skills.read().unwrap().clone();
+    skills::tools::register_skill_tools(&mut tools, &skill_registry_snapshot, http_client);
     // `load_skill` is tier-2 progressive disclosure (#115): a real host tool (it
     // reads the filesystem), so it is registered here and goes through the *same*
     // per-call permission gate as `read` — no runtime-executor interception.
     tools.register(LoadSkillTool::new(skills));
+    // Definition-driven HTTP endpoint tools (#560 P8): `config.yml`'s
+    // `endpoints:` map, each registered as `endpoint__<name>` — startup-only,
+    // see `endpoint`'s module doc for why live-reload isn't wired.
+    endpoint::register_endpoints(&mut tools, &user_config.endpoints, http_client);
     // External MCP tool servers (#198): spawn each configured server, discover its
     // `tools/list`, and register every tool into the same registry as a
     // runtime-side provider. They then ride `tool_specs` (schemas) and the
@@ -1371,8 +1385,14 @@ async fn main() -> Result<()> {
     // `user_config.mcp`, folded into any bare `read`/`write`/`call` permission
     // key alongside the fixed built-in set — computed once here (like the
     // ceiling permission below) rather than re-derived on every reload.
-    let mcp_capabilities =
+    let mut mcp_capabilities =
         mcp::capability_index(&user_config.mcp).context("resolving MCP capability hints")?;
+    // Every declared endpoint tool joins the same data-driven `call` index
+    // (#560 P8), unconditionally — see `endpoint::call_capability_names`.
+    mcp_capabilities
+        .entry("call".to_string())
+        .or_default()
+        .extend(endpoint::call_capability_names(&user_config.endpoints));
     // The skill registry also resolves per-agent `skills:` preload bodies (#117),
     // orthogonal to the tier-1 disclosures above and to the `load_skill` mask.
     let mut profiles = agents::load_registry(&cwd, &prompt_ctx, &skill_registry, &mcp_capabilities)

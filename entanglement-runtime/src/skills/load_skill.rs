@@ -249,6 +249,7 @@ mod tests {
             allowed_tools: None,
             root_dir,
             body: body.into(),
+            tools: Vec::new(),
         }
     }
 

@@ -48,6 +48,7 @@ pub mod decline;
 // rest of the registry. Ungated — pure state/logic over core + the lean
 // `mcp` module, needed by the lean build's executor too.
 pub mod discover;
+pub mod endpoint;
 pub mod env_date;
 pub mod extra_roots;
 pub mod file_change;

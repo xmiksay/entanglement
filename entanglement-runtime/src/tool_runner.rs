@@ -1571,6 +1571,20 @@ async fn dispatch(
         seam::reply(holly, session, request_id, output, true).await;
         return;
     }
+    // Alias rewrite (#560 P8): a skill-declared alias — a renamed/preset-args
+    // wrapper over another tool, or the rewrite-to-`rhai` a rhai-backed skill
+    // tool is sugar for — must not launder permission through its own
+    // namespaced name (`Tool::alias_rewrite`'s doc). Rewriting *here*, before
+    // grading/escape-root/hooks/the approval round-trip all run, means every
+    // one of them operates on the wrapped tool's real name and merged input —
+    // exactly as if the model had called it directly — with zero special-
+    // casing anywhere else in this pipeline. A tool that never aliases
+    // (everything but `skills::alias_tool::AliasTool`) leaves `(tool, input)`
+    // untouched.
+    let (tool, input) = match tools.get(&tool).and_then(|t| t.alias_rewrite(&input)) {
+        Some(rewritten) => rewritten,
+        None => (tool, input),
+    };
     // Resolve + apply grants first (matching the pre-seam order where `perm` was
     // computed before the hook ran), so a grant upgrade and the veto compose the
     // same way. The tool-specific argument (command/path, #173) lets an

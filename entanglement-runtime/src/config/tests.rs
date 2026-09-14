@@ -51,6 +51,7 @@ pub(super) fn merge_user(user: &str) -> Config {
         permissions,
         hooks: raw.hooks,
         mcp: raw.mcp,
+        endpoints: raw.endpoints,
         web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(std::time::Duration::from_secs),

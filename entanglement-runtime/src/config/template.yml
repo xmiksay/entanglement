@@ -104,6 +104,37 @@
 #    url: https://example.com/mcp
 #    oauth: {}
 
+# Definition-driven HTTP endpoint tools (#560): a map of name → endpoint
+# definition, each registered as `endpoint__<name>` — an HTTP call tool whose
+# schema is derived from `params` (so argument validation and `describe()`
+# work the same as any native tool). Fields:
+#   method      — GET/POST/PUT/PATCH/DELETE/HEAD, case-insensitive (default GET)
+#   url         — a template; `{{param}}` tokens are substituted (percent-encoded)
+#                 from the tool call's arguments at call time
+#   description — surfaced as the tool's advertised description
+#   params      — name -> { type, description, required } (all optional;
+#                 type defaults to "string", required defaults to true) — also
+#                 which `{{param}}` tokens the url/body templates may reference
+#   headers     — static request headers; values may reference `${VAR}` from
+#                 the environment, exactly like an MCP server's headers above
+#   body        — an optional static body template (`{{param}}` substituted,
+#                 unencoded — shape it yourself, e.g. a JSON template)
+# The response body is capped at 32 KiB (truncated with a marker, never an
+# error) and rides the same per-endpoint connection/retry/rate-limit pool as
+# LLM/MCP traffic. Registration is startup-only — editing this section needs a
+# restart, unlike `mcp:`/skills/agents, which live-reload.
+# By default every endpoint tool also grades under a bare `call: allow/ask/deny`
+# permission (it makes a network call, like `bash`) — see `permissions` above.
+#endpoints:
+#  weather:
+#    method: GET
+#    url: "https://api.example.com/weather/{{city}}"
+#    description: "Current weather for a city"
+#    params:
+#      city: { type: string, description: "City name" }
+#    headers:
+#      Authorization: "Bearer ${WEATHER_API_KEY}"
+
 # Web search — opt-in, provider-side (#305). When enabled, the provider runs a
 # web search MID-TURN, server-side (z.ai and Anthropic only), and cites the
 # results; there is no client tool round-trip. ENABLING THIS IS YOUR CONSENT: the
