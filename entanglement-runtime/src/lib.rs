@@ -59,6 +59,10 @@ pub mod hooks;
 pub mod host;
 pub mod inspect;
 pub mod layers;
+// Out-of-mask tool calls as an approval round-trip (ADR-0198): the dispatch
+// loop's replacement for an unconditional mask decline, sharing `decline`'s
+// wording table and `tool_runner`'s own `dispatch` ladder.
+pub mod mask_request;
 // MCP client — attach external tool servers as a runtime-side tool provider
 // (#198, #312). The stdio transport lives in the lean library (tokio process +
 // serde_json only), so an embedder gets external tools without any

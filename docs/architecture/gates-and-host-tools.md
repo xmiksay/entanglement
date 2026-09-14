@@ -377,8 +377,12 @@ profiles differ in is what a call *does*. The inherit-all profiles (`build`,
 `plan`'s allowlist carries `write`/`edit` (graded `deny` outside the
 plans-folder carve-out, ADR-0142) and `call`/`bash` (for the ADR-0159
 ancestor-clamp reason, graded `ask` per dispatch); `explore` and `research`
-mask the write tools out entirely — so a write call from them is *declined*
-before any `Allow`/`Ask`/`Deny` default is reached — while grading
+mask the write tools out entirely — so a write call from them now *parks a
+mask-attributed approval* rather than declining outright
+([ADR-0198](../adr/0198-out-of-mask-tool-calls-are-approvable.md) — neither
+profile writes an explicit `write: deny`/`edit: deny` rule, only the ambient
+`default: deny` reaches them, which is not ADR-0198's hard-limit floor) —
+while grading
 `call`/`bash`/`rhai` at `Ask` (ADR-0137/ADR-0167). Registration, mask and
 permission are three orthogonal axes: registration decides whether the tool
 can *execute* at all (unconditional for both `call` and `bash`, ADR-0195), the

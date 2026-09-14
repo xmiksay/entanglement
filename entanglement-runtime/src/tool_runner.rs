@@ -50,6 +50,7 @@ use crate::arg_validate;
 use crate::cancel::{CancelAllOnDrop, CancelRegistry, TaskCanceller};
 use crate::discover;
 use crate::hooks::Hooks;
+use crate::mask_request;
 use crate::mcp::{ActiveServers, AvailableMcp};
 #[cfg(feature = "rhai")]
 use crate::permission::effective_permission;
@@ -1017,18 +1018,105 @@ pub fn spawn_tool_executor_with_policy(
                             },
                         )
                     };
+                    // ADR-0198: a mask miss is no longer a flat decline in
+                    // general — it now parks an approval, unless it hits one
+                    // of three hard limits that still refuse outright with
+                    // no prompt (`crate::mask_request`): a spawn tool
+                    // (profile-defining, ADR-0192's carve-out — unaffected
+                    // here), a name absent from the registry (its own
+                    // unknown-tool hint), or an explicit bare-name `Deny`
+                    // rule in the profile chain or the config ceiling (the
+                    // author's deliberate floor, distinct from the ambient
+                    // default every unlisted tool falls through to).
                     if let Some((source, agent_name)) = masked_by {
+                        if mask_request::is_spawn_tool(&tool) {
+                            let holly = holly.clone();
+                            let own_session = session.clone();
+                            tokio::spawn(async move {
+                                let output = crate::decline::mask_decline(
+                                    &source,
+                                    &own_session,
+                                    agent_name.as_deref(),
+                                    &tool,
+                                );
+                                seam::reply(&holly, session, request_id, output, true).await;
+                            });
+                            continue;
+                        }
+                        let tools_snapshot =
+                            tools.read().expect("tool registry lock poisoned").clone();
+                        if !tools_snapshot.contains(&tool)
+                            && !crate::plan_tasks::is_state_tool(&tool)
+                        {
+                            let holly = holly.clone();
+                            tokio::spawn(async move {
+                                let output = tools_snapshot.unknown_tool_message(&tool);
+                                seam::reply(&holly, session, request_id, output, true).await;
+                            });
+                            continue;
+                        }
+                        let mask_chain = ancestor_chain(&spawn_guard, &session);
+                        let deny_floor = {
+                            let active = active.lock().expect("active-profile mutex poisoned");
+                            mask_request::explicit_deny_floor(&active, &mask_chain, &base, &tool)
+                        };
+                        if deny_floor {
+                            let holly = holly.clone();
+                            tokio::spawn(async move {
+                                let output = format!("tool `{tool}` denied by permission profile");
+                                seam::reply(&holly, session, request_id, output, true).await;
+                            });
+                            continue;
+                        }
+                        // Not a hard limit: park a single mask-attributed
+                        // approval. `overlay_entry` is resolved now (exactly
+                        // as the ordinary `Intercept::Permission` route
+                        // resolves it below) so a `Once` approval replays
+                        // `dispatch` with the identical grade-override input
+                        // it would have had if the tool were in-mask all
+                        // along.
+                        let overlay_entry =
+                            crate::permission::overlay_grade_entry(&overlays, &mask_chain, &tool);
+                        let own_overlay = overlays.get(&session).cloned().unwrap_or_default();
+                        let resolver = resolver.clone();
+                        let grants = grants.clone();
+                        let hooks = hooks.clone();
+                        let pending = pending.clone();
+                        let escape_root = escape_root.clone();
+                        let ceiling = base.clone();
+                        let skills = skills.clone();
+                        let active_skill = active_skill.clone();
+                        let advertising = advertising.clone();
+                        let validation = validation.clone();
                         let holly = holly.clone();
-                        let own_session = session.clone();
-                        tokio::spawn(async move {
-                            let output = crate::decline::mask_decline(
-                                &source,
-                                &own_session,
-                                agent_name.as_deref(),
-                                &tool,
-                            );
-                            seam::reply(&holly, session, request_id, output, true).await;
+                        let reg_session = session.clone();
+                        let handle = tokio::spawn(async move {
+                            mask_request::handle(
+                                &holly,
+                                &tools_snapshot,
+                                &skills,
+                                &active_skill,
+                                &*resolver,
+                                &mask_chain,
+                                &*grants,
+                                &hooks,
+                                &pending,
+                                escape_root.as_ref(),
+                                overlay_entry,
+                                own_overlay,
+                                &ceiling,
+                                &advertising,
+                                &validation,
+                                source,
+                                agent_name,
+                                session,
+                                request_id,
+                                tool,
+                                input,
+                            )
+                            .await;
                         });
+                        cancels.register(&reg_session, TaskCanceller::task(handle.abort_handle()));
                         continue;
                     }
                     // Route the unmasked tool through its interception. The mask
@@ -1524,8 +1612,11 @@ pub fn spawn_tool_executor_with_policy(
 /// A `pre_tool_use` hook (#199) can **veto** the call: a non-zero-exit hook
 /// short-circuits with a denial `ToolResult`, so the tool neither prompts nor
 /// runs. Cleared hooks fall through to the normal `Allow | Ask | Deny` dispatch.
+// `pub(crate)`: also called from `crate::mask_request` (ADR-0198) — an
+// approved out-of-mask call proceeds through this exact ladder unchanged,
+// the "rest of the ladder" the ADR's single-prompt design relies on.
 #[allow(clippy::too_many_arguments)]
-async fn dispatch(
+pub(crate) async fn dispatch(
     holly: &Holly,
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
@@ -1974,7 +2065,10 @@ fn clear_active_skill(
     }
 }
 
-fn set_thinking(holly: &Holly, session: &SessionId) {
+// `pub(crate)`: also called from `crate::mask_request` (ADR-0198) on an
+// out-of-mask approval, mirroring the same status blip `await_decision`
+// emits for an ordinary in-mask `Ask`.
+pub(crate) fn set_thinking(holly: &Holly, session: &SessionId) {
     holly.emit_status(session, AgentState::Thinking);
 }
 

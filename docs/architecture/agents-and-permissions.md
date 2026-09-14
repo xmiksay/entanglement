@@ -693,28 +693,51 @@ below realize one model:
   mask exemption in `run_round` — is **subsumed and removed**: with no
   advertisement filter left there is nothing to exempt `poll` from. Sync `Fn` by design (turn hot path); the documented pattern is an
   embedder-owned `Arc<RwLock<..>>` snapshot cache. `None` (the default) keeps the
-  engine-global specs — a no-op for single-user heads. **(b) Enforcement — the
-  whole of it:** `runtime::permission::tool_masked` refuses a masked `ToolExec`
+  engine-global specs — a no-op for single-user heads. **(b) Enforcement — now
+  a soft boundary with approval, not always a hard one** ([ADR-0198](../adr/0198-out-of-mask-tool-calls-are-approvable.md)):
+  `runtime::permission::tool_masked` still checks a masked `ToolExec`
   **first** — before
   the `agent`/`agent_send`/`poll`/`ask_user` interceptions and permission —
-  so a masked call is a hard boundary, and the mask **intersects down
+  so mask *existence* is still resolved ahead of everything else, and the
+  mask still **intersects down
   the ancestor chain** (a child never gains a tool an ancestor lacked, mirroring
   ADR-0024's privilege ceiling; a read-only parent's sub-tree can never reach
-  write capability). A sibling `tool_mask_source`
+  write capability unasked). A sibling `tool_mask_source`
   ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597)
   runs the identical walk but returns *which* link **and on whose authority**
   (`Option<MaskSource>`: the session itself or a clamping ancestor ×
   profile / session-overlay deny / unseen-fail-closed) — `tool_masked` is
-  a thin `.is_some()` wrapper over it. `runtime::decline` renders that into the
-  one **autodecline** wording family, always with the ADR-0176 `is_error: true`
-  side channel set:
+  a thin `.is_some()` wrapper over it.
 
-  | Authority | Message |
-  | --- | --- |
-  | own profile mask | `` Declined by agent profile `X` — tool `T` is not in its tool mask `` |
-  | ancestor's mask | `` Declined by ancestor agent `X`'s profile — tool `T` is not in its tool mask `` |
-  | session overlay deny | `` Declined by session tool overlay — tool `T` is withdrawn for this session `` |
-  | ancestor's overlay | `` Declined by ancestor agent `X`'s session tool overlay — … `` |
+  What changed under ADR-0198 is what happens *once existence is refused*:
+  a mask miss now parks an ordinary `ToolRequest` approval (attributed to the
+  withholding authority) instead of an unconditional decline, **except three
+  hard limits that still flat-decline with no prompt**: an explicit
+  bare-name `Deny` permission rule for that exact tool (not the ambient
+  `default` every unmentioned tool falls through to — `explore`'s
+  `default: deny` does *not* float `edit`/`write` here, only a rule that
+  literally names them would), the `agent`/`agent_send` spawn family
+  (profile-defining, ADR-0192's carve-out), and an unknown tool name (its
+  existing fuzzy-match hint). `runtime::decline` still renders the flat-decline
+  wording family for those three, always with the ADR-0176 `is_error: true`
+  side channel set, and `runtime::mask_request` renders the *offer* wording
+  (`mask_request_attribution`) for everything else, appended to the parked
+  `ToolRequest`'s `input` text:
+
+  | Authority | Flat-decline wording (hard limits only) | Approval-offer wording (everything else) |
+  | --- | --- | --- |
+  | own profile mask | `` Declined by agent profile `X` — tool `T` is not in its tool mask `` | `` tool `T` is outside agent profile `X`'s tool mask `` |
+  | ancestor's mask | `` Declined by ancestor agent `X`'s profile — tool `T` is not in its tool mask `` | `` tool `T` is outside ancestor agent `X`'s profile tool mask `` |
+  | session overlay deny | `` Declined by session tool overlay — tool `T` is withdrawn for this session `` | `` tool `T` is withdrawn by this session's tool overlay `` |
+  | ancestor's overlay | `` Declined by ancestor agent `X`'s session tool overlay — … `` | `` tool `T` is withdrawn by ancestor agent `X`'s session tool overlay `` |
+
+  Approving with `Once` proceeds for just that call; approving with
+  `Session`/`SessionDir` materializes a session tool-overlay **enable** entry
+  (`ToolOverlayEntry::allow`, ADR-0149) so later calls skip the prompt
+  entirely — `Always` is not offered as a durable scope and degrades to
+  `Session`. See ADR-0198 for the full single-prompt ladder shape (the
+  approved call replays `tool_runner::dispatch` unchanged) and the hard-limit
+  rationale.
 
   (The skill `allowed_tools` row is gone — [ADR-0194](../adr/0194-skills-are-additive-only.md)
   removed the skill mask wholesale; skills never restrict. The

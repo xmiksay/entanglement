@@ -430,24 +430,55 @@ async fn write_tool_denied_under_explore_profile() {
         .await
         .unwrap();
     let sub = holly.subscribe();
+    let mut watch = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "try to write"))
         .await
         .unwrap();
 
+    // `write` is *masked* out of `explore`'s tool set (#116, ADR-0038). Since
+    // ADR-0198 that mask miss parks an approval instead of an outright
+    // decline — `explore`'s permission rules never explicitly name `write`,
+    // only the ambient `default: deny` reaches it, which is not the ADR's
+    // hard-limit floor. Advertisement is decoupled, so the model does see
+    // the schema and the offer's attribution names the declining profile.
+    let mut input = None;
+    while let Ok(Ok(ev)) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), watch.recv()).await
+    {
+        if let OutEvent::ToolRequest { tool, input: i, .. } = &ev {
+            if tool == "write" {
+                input = Some(i.clone());
+                break;
+            }
+        }
+    }
+    let input = input.expect("write must park a mask-attributed approval, not decline outright");
+    assert!(
+        input.contains("outside agent profile `explore`'s tool mask"),
+        "got {input:?}"
+    );
+
+    // Approving the mask offer still runs the *rest* of the ladder unchanged
+    // (ADR-0198 §4): `explore`'s ambient `default: deny` denies `write` on
+    // the merits, so the file still never lands even past the approval.
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "w1".into(),
+            scope: entanglement_core::ApprovalScope::Once,
+        })
+        .await
+        .unwrap();
     let events = collect(sub, &sid).await;
-    // `write` is *masked* out of `explore`'s tool set (#116, ADR-0038): the
-    // executor declines it before permission even resolves — a strictly
-    // stronger block than the earlier permission `Deny`. Advertisement is
-    // decoupled now, so the model does see the schema and the attributed
-    // decline is what stops it.
     assert!(
         events.iter().any(|e| matches!(
             e,
             OutEvent::ToolOutput { output, .. }
-                if output.contains("Declined by agent profile `explore`")
+                if output == "tool `write` denied by permission profile"
         )),
-        "explore should decline write with an attributed refusal; got {events:?}"
+        "the underlying permission grade must still refuse write past the mask approval; got \
+         {events:?}"
     );
     assert!(!root.join("blocked.txt").exists(), "write must not land");
 }

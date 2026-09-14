@@ -15,6 +15,13 @@
 //! - `Declined by agent profile ...`
 //! - `Declined by ancestor agent ...`
 //! - `Declined by session tool overlay ...`
+//!
+//! Since ADR-0198, a mask miss is a **flat decline only for three hard
+//! limits** (a spawn tool, an unknown name, or an explicit bare-name `Deny`
+//! rule — see `crate::mask_request`); every other mask miss instead parks an
+//! approval, whose attribution wording ([`mask_request_attribution`]) reuses
+//! this same [`MaskSource`]/[`MaskAuthority`] pair, phrased as an offer
+//! rather than a refusal.
 
 use entanglement_core::SessionId;
 
@@ -100,6 +107,39 @@ pub fn mask_decline(
     }
 }
 
+/// The mask-attributed **approval offer** for a mask-miss call that is not
+/// one of ADR-0198's hard limits — the affirmative counterpart to
+/// [`mask_decline`], appended to the parked `ToolRequest`'s `input` (no
+/// protocol change: there is no separate reason field, so the attribution
+/// rides the same text an escape-root-forced approval already appends a
+/// warning to).
+pub fn mask_request_attribution(
+    source: &MaskSource,
+    own_session: &SessionId,
+    agent_name: Option<&str>,
+    tool: &str,
+) -> String {
+    let own = source.session == *own_session;
+    let agent = agent_name.unwrap_or("unknown");
+    match (source.authority, own) {
+        (MaskAuthority::Profile, true) => {
+            format!("tool `{tool}` is outside agent profile `{agent}`'s tool mask")
+        }
+        (MaskAuthority::Profile, false) => {
+            format!("tool `{tool}` is outside ancestor agent `{agent}`'s profile tool mask")
+        }
+        (MaskAuthority::Overlay, true) => {
+            format!("tool `{tool}` is withdrawn by this session's tool overlay")
+        }
+        (MaskAuthority::Overlay, false) => {
+            format!("tool `{tool}` is withdrawn by ancestor agent `{agent}`'s session tool overlay")
+        }
+        (MaskAuthority::Unseen, _) => {
+            format!("tool `{tool}`'s agent profile is not yet known to the executor (fail-closed)")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +205,39 @@ mod tests {
         let msg = mask_decline(&MaskSource::unseen(s("s1")), &s("s1"), None, "edit");
         assert!(msg.contains("not yet known"), "{msg}");
         assert!(!msg.contains("unknown`"), "no fake agent name: {msg}");
+    }
+
+    #[test]
+    fn mask_request_attribution_names_the_same_authorities_as_an_offer() {
+        let own = mask_request_attribution(
+            &MaskSource::profile(s("s1")),
+            &s("s1"),
+            Some("explore"),
+            "edit",
+        );
+        assert_eq!(
+            own,
+            "tool `edit` is outside agent profile `explore`'s tool mask"
+        );
+        let ancestor = mask_request_attribution(
+            &MaskSource::profile(s("parent")),
+            &s("child"),
+            Some("plan"),
+            "write",
+        );
+        assert!(
+            ancestor.contains("ancestor agent `plan`'s profile"),
+            "{ancestor}"
+        );
+        let overlay = mask_request_attribution(
+            &MaskSource::overlay(s("s1")),
+            &s("s1"),
+            Some("build"),
+            "bash",
+        );
+        assert_eq!(
+            overlay,
+            "tool `bash` is withdrawn by this session's tool overlay"
+        );
     }
 }

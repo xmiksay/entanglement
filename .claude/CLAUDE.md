@@ -181,8 +181,14 @@ never here**; each bullet is the claim + where to read it:
   (`anthropic_native`/`responses_native`) — never removed, never reordered.
   Either way the profile mask, session tool overlay and skill `allowed_tools`
   no longer filter advertisement, they are enforced *only* at the runtime's
-  dispatch gate, which declines with an attributed `Declined by …` message on
-  the ADR-0176 `is_error` channel. WHY: any mid-session change to the tools
+  dispatch gate — a mask miss now **parks an approval** (attributed to the
+  withholding authority) rather than an unconditional decline, except three
+  hard limits that still flat-decline with an attributed `Declined by …`
+  message on the ADR-0176 `is_error` channel: an explicit bare-name `Deny`
+  permission rule for that tool (not the ambient `default` every unmentioned
+  tool falls through to), the `agent`/`agent_send` spawn family, and an
+  unknown tool name ([ADR-0198](../docs/adr/0198-out-of-mask-tool-calls-are-approvable.md)).
+  WHY: any mid-session change to the tools
   array busts the provider prompt cache from the tools block onward. Only the
   profile-defining specs (`propose_plan`, the `agent`/`agent_send` spawn
   enum) and `mcp__*` legitimately vary. Subsumes ADR-0190's `poll`

@@ -465,6 +465,22 @@ impl ToolOverlayEntry {
         }
     }
 
+    /// A flat **enable** entry that also grants outright (`allow: true`, no
+    /// `arg_pattern`) — the shape the runtime's Session-scope out-of-mask
+    /// approval materializes (`entanglement-runtime::mask_request`,
+    /// ADR-0198): the tool both exists for the session *and* skips the
+    /// permission prompt on every later call, matching the "stop asking me"
+    /// semantics an ordinary Session grant (#174) already gives an in-mask
+    /// `Ask` tool.
+    pub fn allow(pattern: impl Into<String>) -> Self {
+        Self {
+            pattern: pattern.into(),
+            allow: true,
+            deny: false,
+            arg_pattern: None,
+        }
+    }
+
     /// Whether this entry's pattern matches `tool` (same matcher as the
     /// ADR-0148 agent mask).
     pub fn matches(&self, tool: &str) -> bool {
@@ -597,6 +613,23 @@ impl PermissionProfile {
     /// concrete call in hand (inspect views, the TUI panel).
     pub fn for_tool(&self, name: &str) -> Permission {
         self.resolve(name, None)
+    }
+
+    /// Whether `name` carries an **explicit, unscoped** `Deny` rule keyed to
+    /// its own bare name — the profile author's deliberate "never" for this
+    /// specific tool, as opposed to falling through to the ambient
+    /// [`default`][Self::default] every tool the profile never mentions
+    /// resolves to, or to a blanket `*` catch-all. Neither the default nor a
+    /// `*`/`tool(pattern)`/`tool{pattern}` rule counts — only a literal
+    /// `name` key. This is ADR-0198's hard floor for an out-of-mask call: a
+    /// tool the profile never mentions still gets the mask-miss approval
+    /// offer even when its ambient default is `deny` (every unlisted tool
+    /// would otherwise silently lose the offer); a tool the author
+    /// specifically wrote `deny` for does not.
+    pub fn explicit_bare_deny(&self, name: &str) -> bool {
+        self.rules
+            .iter()
+            .any(|(pattern, perm)| pattern == name && *perm == Permission::Deny)
     }
 
     /// The grades a *concrete* call to `name` can reach that its bare grade
@@ -3376,6 +3409,39 @@ mod tests {
             .with("edit(src/*)", Permission::Allow)
             .with("edit(docs/*)", Permission::Allow);
         assert_eq!(dup.scoped_grades("edit"), vec![Permission::Allow]);
+    }
+
+    #[test]
+    fn explicit_bare_deny_ignores_the_ambient_default_and_the_wildcard() {
+        // The ambient default alone (`explore`'s shape: `default: deny`, no
+        // rule ever mentions `edit`) is not an explicit floor.
+        let ambient = PermissionProfile::new(Permission::Deny).with("read", Permission::Allow);
+        assert!(!ambient.explicit_bare_deny("edit"));
+        // Neither is a `*` catch-all.
+        let wildcard = PermissionProfile::new(Permission::Allow).with("*", Permission::Deny);
+        assert!(!wildcard.explicit_bare_deny("edit"));
+        // Nor an argument-/workdir-scoped rule — it narrows, it doesn't deny
+        // the bare tool.
+        let scoped = PermissionProfile::new(Permission::Allow).with("bash(rm *)", Permission::Deny);
+        assert!(!scoped.explicit_bare_deny("bash"));
+        // Only a literal bare-name `deny` rule counts.
+        let explicit = PermissionProfile::new(Permission::Allow).with("edit", Permission::Deny);
+        assert!(explicit.explicit_bare_deny("edit"));
+        assert!(!explicit.explicit_bare_deny("write"));
+    }
+
+    #[test]
+    fn tool_overlay_entry_allow_grants_outright_with_no_arg_pattern() {
+        let entry = ToolOverlayEntry::allow("edit");
+        assert_eq!(entry.pattern, "edit");
+        assert!(entry.allow);
+        assert!(!entry.deny);
+        assert!(entry.arg_pattern.is_none());
+        assert_eq!(
+            ToolOverlayEntry::disposition(std::slice::from_ref(&entry), "edit"),
+            Some(true)
+        );
+        assert!(ToolOverlayEntry::find(&[entry], "edit").is_some());
     }
 
     fn masked_profile(tools: Option<Vec<&str>>, disallowed: Vec<&str>) -> AgentProfile {

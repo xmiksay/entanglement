@@ -32,6 +32,7 @@ mod host_tools;
 mod list_operations;
 mod load_skill;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
+mod mask_request;
 mod mcp_http;
 #[cfg(feature = "mcp-http")]
 mod mcp_oauth_device;
