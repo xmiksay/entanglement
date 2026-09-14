@@ -197,7 +197,12 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `request_id`, so batch results still pair correctly), both expanded on click
   (or via the leader `t` key, which toggles the most recent block of either kind).
   The bottom **info line** (`draw_input_info`) shows `provider · model | tokens`
-  plus one transient status slot — a pending two-stage quit hint, else the
+  — the cumulative token/cost figure carries a session cache-hit rate
+  (`cached/total input`, #560) and is followed by the most recent round's
+  `in X (cached Y) · out Z` line, rendered in the throttle indicator's red/bold
+  style when that round is a full cache miss right after one that hit
+  (`tui/format.rs`, `SessionView::record_usage`) — plus one transient status
+  slot — a pending two-stage quit hint, else the
   **toast** (`tui/app/toast.rs`, ~3s TTL, expired eagerly by the render loop
   like `quit_pending`): the copy notice and app/config state-change
   confirmations (definitions reload #329, `/key` save, `/model`/generation
@@ -251,7 +256,13 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   insertion-ordered set depth-first (roots in insertion order, children
   indented under their parent; a corrupt parent cycle appends rather than
   drops), the modal's selection index follows the same ordering, and an ended
-  child session renders dim with a `✓`. **Two-stage Ctrl+C** ([ADR-0087](../adr/0087-two-stage-ctrl-c.md)):
+  child session renders dim with a `✓`. A session with spawned descendants
+  also shows a `Σ` fan-out rollup on its row — own + every descendant's
+  token/cost total, recursed over the same parent links
+  (`SessionRegistry::usage_rollup`, #560); it's a dollar figure only when
+  every contributing session carried catalog pricing, else token counts, and
+  it's head-side aggregation of already-broadcast `OutEvent::Usage` totals,
+  no protocol change. **Two-stage Ctrl+C** ([ADR-0087](../adr/0087-two-stage-ctrl-c.md)):
   a first Ctrl+C clears the transient input (text buffer, `@file` popup,
   multiline mode) and arms a pending quit; a second within 3s quits. It is
   intercepted **once** at the top of `handle_event`'s key-press block (before

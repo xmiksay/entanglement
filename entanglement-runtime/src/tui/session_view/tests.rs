@@ -786,3 +786,57 @@ fn session_meta_changed_folds_name_and_action() {
     }));
     assert_eq!(v.action(), None);
 }
+
+fn usage_event(seq: u64, input: u64, output: u64, cached: u64, cost_usd: Option<f64>) -> OutEvent {
+    OutEvent::Usage {
+        session: sid(),
+        seq,
+        input_tokens: input,
+        output_tokens: output,
+        cached_input_tokens: cached,
+        cache_write_tokens: 0,
+        cost_usd,
+    }
+}
+
+#[test]
+fn usage_accumulates_cumulative_totals_and_tracks_the_pricing_flag() {
+    let mut v = SessionView::new();
+    assert!(!v.cost_known());
+
+    v.apply_event(usage_event(1, 50_000, 1_000, 48_000, None));
+    assert_eq!(v.input_tokens(), 50_000);
+    assert_eq!(v.output_tokens(), 1_000);
+    assert_eq!(v.cached_input_tokens(), 48_000);
+    assert_eq!(v.cost_usd(), 0.0);
+    // No pricing on this round — the zero above must not read as "known free".
+    assert!(!v.cost_known());
+
+    v.apply_event(usage_event(2, 10_000, 500, 0, Some(0.02)));
+    assert_eq!(v.input_tokens(), 60_000);
+    assert_eq!(v.cached_input_tokens(), 48_000);
+    assert!((v.cost_usd() - 0.02).abs() < 1e-9);
+    assert!(v.cost_known());
+}
+
+#[test]
+fn usage_full_miss_after_a_hit_is_flagged_on_the_latest_round_only() {
+    let mut v = SessionView::new();
+    v.apply_event(usage_event(1, 50_000, 1_000, 48_000, None));
+    assert!(!v.last_round_full_miss());
+
+    // A large-input round right after a cache hit, now caching nothing.
+    v.apply_event(usage_event(2, 51_200, 1_100, 0, None));
+    assert!(v.last_round_full_miss());
+    let round = v.last_round_usage().expect("round recorded");
+    assert_eq!(
+        (round.input, round.output, round.cached),
+        (51_200, 1_100, 0)
+    );
+
+    // A further round after the miss doesn't re-trigger: the previous round
+    // (round 2) also cached nothing, so there's no hit-to-miss transition —
+    // the flag reflects the transition, not a standing "cache is cold" state.
+    v.apply_event(usage_event(3, 500, 100, 0, None));
+    assert!(!v.last_round_full_miss());
+}

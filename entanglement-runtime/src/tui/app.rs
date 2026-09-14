@@ -278,6 +278,12 @@ impl App {
         self.sessions.all_with_depth()
     }
 
+    /// Own + all-descendant usage for `id` (#560) — see
+    /// [`crate::tui::sessions::SessionRegistry::usage_rollup`].
+    pub fn usage_rollup(&self, id: &SessionId) -> crate::tui::sessions::UsageRollup {
+        self.sessions.usage_rollup(id)
+    }
+
     pub fn clear_dirty(&mut self) {
         self.dirty = false;
     }

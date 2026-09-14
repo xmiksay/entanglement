@@ -8,6 +8,7 @@ use ratatui::{
 
 use super::centered_rect;
 use crate::tui::app::App;
+use crate::tui::format::format_rollup;
 
 pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
     let profiles = app.available_profiles().to_vec();
@@ -88,6 +89,22 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
             // action when set, else the first-prompt snippet.
             if let Some(desc) = view.action().or_else(|| view.first_prompt()) {
                 spans.push(Span::styled(format!("  {desc}"), Style::default().dim()));
+            }
+            // Fan-out cost rollup (#560): shown only when this session has
+            // spawned descendants with their own usage, since otherwise the
+            // rollup is identical to the row's own totals and would just be
+            // noise on every leaf session.
+            let rollup = app.usage_rollup(id);
+            if rollup.input_tokens > view.input_tokens()
+                || rollup.output_tokens > view.output_tokens()
+            {
+                spans.push(Span::styled(
+                    format!(
+                        "  Σ {}",
+                        format_rollup(rollup.input_tokens, rollup.output_tokens, rollup.cost_usd)
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ));
             }
             // Sub-agents (depth > 0) show their spawn duration: live while
             // running, fixed once ended (#89, ADR-0026).

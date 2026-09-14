@@ -8,23 +8,10 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
+use crate::tui::format::{format_cache_hit_rate, format_round_usage, format_tokens};
 use crate::tui::modals;
 use crate::tui::progress;
 use crate::tui::session_view::ApprovalMode;
-
-/// Compact token-count display with SI-style multipliers (k/M/G) so large
-/// per-session totals stay readable in the bottom bar.
-fn format_tokens(n: u64) -> String {
-    if n < 1_000 {
-        n.to_string()
-    } else if n < 1_000_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else if n < 1_000_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else {
-        format!("{:.1}G", n as f64 / 1_000_000_000.0)
-    }
-}
 
 pub fn draw_top_padding(f: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme();
@@ -227,19 +214,21 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     // Provider name comes from the resolved catalog entry / `ModelChanged`;
     // show it beside the model when known.
     let provider_display = app.active_provider().to_string();
+    // Session-cumulative cache-hit rate rides alongside the totals (#560) —
+    // this is the "wherever session totals already display" surface.
+    let cache_rate = format_cache_hit_rate(app.cached_input_tokens(), app.input_tokens());
+    let in_label = match &cache_rate {
+        Some(rate) => format!("{} in ({rate})", format_tokens(app.input_tokens())),
+        None => format!("{} in", format_tokens(app.input_tokens())),
+    };
     let tokens_display = if app.cost_usd() > 0.0 {
         format!(
-            "{} in / {} out (${:.4})",
-            format_tokens(app.input_tokens()),
+            "{in_label} / {} out (${:.4})",
             format_tokens(app.output_tokens()),
             app.cost_usd()
         )
     } else {
-        format!(
-            "{} in / {} out",
-            format_tokens(app.input_tokens()),
-            format_tokens(app.output_tokens())
-        )
+        format!("{in_label} / {} out", format_tokens(app.output_tokens()))
     };
 
     // `provider · model` pair, skipping the provider segment + separator when
@@ -268,6 +257,18 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
         tokens_display,
         Style::default().fg(Color::Yellow),
     ));
+    // Last round's cache share (#560): a full miss right after a hit renders
+    // in the same red/bold style the throttle indicator below uses, so a
+    // cache regression is as loud as a rate-limit one.
+    if let Some(round) = app.last_round_usage() {
+        spans.push(Span::raw(" | "));
+        let style = if app.last_round_full_miss() {
+            Style::default().fg(Color::Red).bold()
+        } else {
+            Style::default().fg(Color::Yellow).dim()
+        };
+        spans.push(Span::styled(format_round_usage(round), style));
+    }
     if app.quit_pending() {
         spans.push(Span::raw(" | "));
         spans.push(Span::styled(
@@ -467,17 +468,6 @@ mod tests {
         // a `· Nq` suffix.
         let queued = ThrottleStatus { waiters: 2, ..base };
         assert_eq!(throttle_label(&queued), "⚠ api.z.ai busy · 1/3 · 2q");
-    }
-
-    #[test]
-    fn format_tokens_uses_si_multipliers() {
-        assert_eq!(format_tokens(0), "0");
-        assert_eq!(format_tokens(999), "999");
-        assert_eq!(format_tokens(1_000), "1.0k");
-        assert_eq!(format_tokens(2_500), "2.5k");
-        assert_eq!(format_tokens(1_000_000), "1.0M");
-        assert_eq!(format_tokens(1_500_000), "1.5M");
-        assert_eq!(format_tokens(1_000_000_000), "1.0G");
     }
 
     /// D2 + cursor-Y fix: with a 3-line input the terminal cursor must land on

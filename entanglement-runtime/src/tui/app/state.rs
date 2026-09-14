@@ -287,6 +287,22 @@ impl App {
         self.sessions.active_view().cost_usd()
     }
 
+    /// Cumulative cached-prefix input tokens for the active session (#560).
+    pub fn cached_input_tokens(&self) -> u64 {
+        self.sessions.active_view().cached_input_tokens()
+    }
+
+    /// Most recent round's token counts for the active session (#560).
+    pub fn last_round_usage(&self) -> Option<&crate::tui::session_view::RoundUsage> {
+        self.sessions.active_view().last_round_usage()
+    }
+
+    /// Whether the active session's most recent round is a full cache miss
+    /// right after a round that had cache hits (#560).
+    pub fn last_round_full_miss(&self) -> bool {
+        self.sessions.active_view().last_round_full_miss()
+    }
+
     #[allow(dead_code)]
     pub fn is_input_multiline(&self) -> bool {
         self.input_multiline

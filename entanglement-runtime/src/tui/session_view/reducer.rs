@@ -351,14 +351,11 @@ impl SessionView {
             OutEvent::Usage {
                 input_tokens,
                 output_tokens,
+                cached_input_tokens,
                 cost_usd,
                 ..
             } => {
-                self.input_tokens += input_tokens;
-                self.output_tokens += output_tokens;
-                if let Some(cost) = cost_usd {
-                    self.cost_usd += cost;
-                }
+                self.record_usage(input_tokens, output_tokens, cached_input_tokens, cost_usd);
                 true
             }
             OutEvent::Error { seq, message, .. } => {
