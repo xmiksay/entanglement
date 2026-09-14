@@ -313,6 +313,40 @@ pub(super) async fn handle_event(
                                 request_id: request_id.clone(),
                             });
                         }
+                        // Full-body pager (#B2): a long diff/plan body can
+                        // scroll off the transcript viewport, so `v` opens a
+                        // scrollable modal over the same rendering
+                        // (`transcript::render_approval_tool_body`). The
+                        // decision keys above are unchanged and still resolve
+                        // the approval while the pager is open — only
+                        // navigation below is pager-aware.
+                        KeyCode::Char('v') if !app.showing_approval_pager() => {
+                            app.open_approval_pager();
+                        }
+                        KeyCode::Char('j') | KeyCode::Down if app.showing_approval_pager() => {
+                            app.approval_pager_scroll_down(1);
+                        }
+                        KeyCode::Char('k') | KeyCode::Up if app.showing_approval_pager() => {
+                            app.approval_pager_scroll_up(1);
+                        }
+                        // PageUp/PageDown scroll the pager while it's open, or
+                        // the transcript (same ±5 as the Normal arm) otherwise
+                        // — both were previously unbound in this arm.
+                        KeyCode::PageUp if app.showing_approval_pager() => {
+                            app.approval_pager_scroll_up(10);
+                        }
+                        KeyCode::PageDown if app.showing_approval_pager() => {
+                            app.approval_pager_scroll_down(10);
+                        }
+                        KeyCode::PageUp => {
+                            app.scroll_up(5);
+                        }
+                        KeyCode::PageDown => {
+                            app.scroll_down(5);
+                        }
+                        KeyCode::Esc if app.showing_approval_pager() => {
+                            app.close_approval_pager();
+                        }
                         KeyCode::Esc => {
                             let _ = holly
                                 .send(InMsg::Stop {
@@ -369,6 +403,15 @@ pub(super) async fn handle_event(
                             }
                             KeyCode::Right => {
                                 app.input().move_cursor_right();
+                            }
+                            // Same ±5 as the Normal arm — free while typing a
+                            // reason since Up/Down/PageUp/PageDown aren't
+                            // otherwise bound in this single-line field (#B1).
+                            KeyCode::PageUp => {
+                                app.scroll_up(5);
+                            }
+                            KeyCode::PageDown => {
+                                app.scroll_down(5);
                             }
                             _ => {}
                         }
@@ -668,12 +711,21 @@ pub(super) async fn handle_event(
         Event::Resize => {}
         Event::FocusGained => attention.set_focused(true),
         Event::FocusLost => attention.set_focused(false),
-        Event::Paste(s) => {
-            if matches!(app.approval_mode(), ApprovalMode::Normal) {
+        Event::Paste(s) => match app.approval_mode() {
+            ApprovalMode::Normal => {
                 app.input().insert_str(&s);
                 app.update_popups();
             }
-        }
+            // The reject reason surfaces as a single status line
+            // (`record_rejected`'s `✗ rejected {tool} — {reason}`), so a
+            // paste's newlines collapse to spaces instead of splitting into
+            // buffer rows (unlike the Normal-mode multi-row paste above).
+            ApprovalMode::EnteringRejectReason { .. } => {
+                let collapsed = s.replace("\r\n", " ").replace(['\n', '\r'], " ");
+                app.input().insert_str(&collapsed);
+            }
+            ApprovalMode::WaitingForApproval { .. } => {}
+        },
         // External SIGINT (ADR-0087): route through the same two-stage path as
         // an in-app Ctrl+C so an out-of-band signal never leaves the terminal
         // in raw mode (the "half killed" state).
@@ -1054,6 +1106,272 @@ mod tests {
             recorded,
             "expected a rejection decision line with its reason: {:?}",
             app.transcript()
+        );
+    }
+
+    // --- A2: bracketed paste (Event::Paste) mode-gating -----------------
+
+    #[tokio::test]
+    async fn paste_with_embedded_newlines_creates_multiple_rows_and_sends_nothing() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::from_env();
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Paste("foo\nbar\nbaz".to_string()),
+        )
+        .await
+        .unwrap();
+
+        // One buffer, three rows — not a single row holding a literal `\n`
+        // (the `SimpleInput::insert_str` half of the A2 fix).
+        assert_eq!(
+            app.input().lines(),
+            &["foo".to_string(), "bar".to_string(), "baz".to_string()]
+        );
+        // A paste never synthesizes an Enter, so it must never submit — the
+        // actual A2 bug (N submits from N embedded newlines) came from a
+        // paste arriving as a flood of *key* events without bracketed paste
+        // enabled, not from anything the `Event::Paste` handler itself does.
+        let sent = drain_inbound(&mut rx).await;
+        assert!(
+            sent.is_empty(),
+            "pasting must not submit anything: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paste_in_reject_reason_collapses_newlines_to_spaces() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
+        app.set_approval_mode(ApprovalMode::EnteringRejectReason {
+            request_id: "t1".to_string(),
+        });
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Paste("looks\r\nrisky\rto me".to_string()),
+        )
+        .await
+        .unwrap();
+
+        // The reject reason renders as one status line (`record_rejected`'s
+        // `✗ rejected {tool} — {reason}`), so newlines collapse to spaces
+        // here instead of splitting into buffer rows like the Normal-mode
+        // paste above.
+        assert_eq!(app.input().lines(), &["looks risky to me".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn paste_while_waiting_for_approval_is_a_noop() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Paste("ignored".to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(app.input_text(), "", "no input box is active while parked");
+    }
+
+    // --- B2: full-body approval pager ------------------------------------
+
+    #[tokio::test]
+    async fn v_opens_the_pager_and_esc_closes_it_without_interrupting() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::from_env();
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Char('v'))),
+        )
+        .await
+        .unwrap();
+        assert!(app.showing_approval_pager(), "v should open the pager");
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Esc)),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !app.showing_approval_pager(),
+            "Esc should close the pager, not the approval"
+        );
+        assert!(
+            matches!(app.approval_mode(), ApprovalMode::WaitingForApproval { .. }),
+            "closing the pager must leave the approval parked, not send Stop"
+        );
+        assert!(
+            drain_inbound(&mut rx).await.is_empty(),
+            "no Stop should have been sent for the pager's own Esc"
+        );
+    }
+
+    #[tokio::test]
+    async fn pager_scroll_keys_move_the_scroll_offset() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
+        app.open_approval_pager();
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::PageDown)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.approval_pager_scroll(), 10, "PageDown pages by 10");
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Char('j'))),
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.approval_pager_scroll(), 11, "j steps by 1");
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Char('k'))),
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.approval_pager_scroll(), 10, "k steps back by 1");
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::PageUp)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.approval_pager_scroll(), 0, "PageUp pages back by 10");
+    }
+
+    #[tokio::test]
+    async fn y_resolves_the_approval_and_closes_the_pager_without_reopening_it() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::from_env();
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
+        app.open_approval_pager();
+
+        // The decision keys must not require closing the pager first (#B2).
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Char('y'))),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(app.approval_mode(), ApprovalMode::Normal),
+            "y must resolve the approval even while the pager is open"
+        );
+        assert!(
+            !app.showing_approval_pager(),
+            "resolving the approval must close the now-stale pager"
+        );
+        let sent = drain_inbound(&mut rx).await;
+        assert!(
+            sent.iter()
+                .any(|m| matches!(m, InMsg::Approve { request_id, .. } if request_id == "t1")),
+            "expected an Approve for t1: {sent:?}"
+        );
+    }
+
+    // --- B1: PageUp/PageDown scroll the transcript while parked ----------
+
+    #[tokio::test]
+    async fn pageup_scrolls_the_transcript_while_waiting_for_approval() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        app.set_viewport_metrics(20, 5);
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
+        assert!(app.auto_follow());
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::PageUp)),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !app.auto_follow(),
+            "PageUp should freeze/scroll the transcript like the Normal arm"
+        );
+    }
+
+    #[tokio::test]
+    async fn pageup_scrolls_the_transcript_while_entering_reject_reason() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let holly = engine();
+        let mut attention = Attention::from_env();
+        app.set_viewport_metrics(20, 5);
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
+        app.set_approval_mode(ApprovalMode::EnteringRejectReason {
+            request_id: "t1".to_string(),
+        });
+        assert!(app.auto_follow());
+
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::PageUp)),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !app.auto_follow(),
+            "PageUp should freeze/scroll the transcript while typing a reason too"
         );
     }
 

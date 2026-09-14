@@ -47,8 +47,9 @@ use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
         event::{
-            DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
-            KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+            DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+            EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
+            PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
         },
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -115,6 +116,11 @@ pub async fn tui(
     // (issue #14). Best-effort: many terminals never report it, and we default to
     // signalling in that case.
     let _ = execute!(stdout, EnableFocusChange);
+    // Bracketed paste (#A2): without it, a terminal paste is indistinguishable
+    // from very fast typing, so each embedded newline fires the Enter-to-send
+    // binding — one paste submits N times. With it, crossterm delivers the
+    // whole paste as one `Event::Paste` instead of a flood of key events.
+    let _ = execute!(stdout, EnableBracketedPaste);
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -303,11 +309,13 @@ fn reset_sigint_to_default() {
 fn setup_panic_handler() {
     std::panic::set_hook(Box::new(|_| {
         let _ = disable_raw_mode();
-        // Disable mouse capture unconditionally — harmless if it was never
-        // enabled — so a crash never leaves the terminal eating mouse input.
+        // Disable mouse capture / bracketed paste unconditionally — harmless
+        // if never enabled — so a crash never leaves the terminal eating
+        // mouse input or wrapping every paste in the bracket markers.
         let _ = execute!(
             std::io::stdout(),
             DisableMouseCapture,
+            DisableBracketedPaste,
             DisableFocusChange,
             LeaveAlternateScreen,
             PopKeyboardEnhancementFlags
@@ -320,6 +328,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) 
     let _ = execute!(
         terminal.backend_mut(),
         DisableMouseCapture,
+        DisableBracketedPaste,
         DisableFocusChange,
         LeaveAlternateScreen,
         PopKeyboardEnhancementFlags

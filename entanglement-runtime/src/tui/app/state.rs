@@ -27,13 +27,18 @@ impl App {
     }
 
     /// Resolve the prompted approval and surface the next queued one (#273).
+    /// Also closes the full-body pager (#B2): it renders the *front* request
+    /// only, and would otherwise show stale content once that request is
+    /// resolved and a different one (or none) takes its place.
     pub fn advance_approval(&mut self) {
         self.sessions.active_view_mut().advance_approval();
+        self.close_approval_pager();
         self.mark_dirty();
     }
 
     pub fn clear_approval(&mut self) {
         self.sessions.active_view_mut().clear_approval();
+        self.close_approval_pager();
         self.mark_dirty();
     }
 

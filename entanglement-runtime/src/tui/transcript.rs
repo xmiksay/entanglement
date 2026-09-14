@@ -52,64 +52,15 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
         if let Some((_, tool, input)) = app.pending_tool_request() {
             let (tool, input) = (tool.clone(), input.clone());
             let rule = "─".repeat(available_width.max(1) as usize);
-            // Yellow accent ties this tail to the surrounding rules; the tail
-            // now goes through `Theme::decorate` like any other block so it
-            // reads as part of the transcript, not a bolted-on overlay (#487).
-            let approval_colors = RoleColors {
-                fg: Color::Yellow,
-                bg: theme.message_bg,
-            };
             lines.push(Line::from(""));
             lines.push(Line::from(rule.clone()).fg(Color::Yellow));
 
-            // Same `▸/▾ tool  primary_arg` idiom the collapsed/expanded block
-            // header uses (`flush_tool_call`) — the tail is always fully shown,
-            // so the arrow is `▾`.
-            let mut header = render_run::tool_header_spans(
+            lines.extend(render_approval_tool_body(
+                app,
                 &tool,
                 &input,
-                '▾',
-                Color::Yellow,
                 available_width,
-                None,
-            );
-            // Core batch-emits tool calls (#270), so more approvals may be
-            // parked behind this one (#273) — show how many are waiting.
-            let queued = app.queued_approvals();
-            if queued > 0 {
-                header.push(Span::styled(
-                    format!("  (+{queued} more queued)"),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-            lines.push(theme.decorate(Line::from(header), approval_colors, available_width));
-
-            // The body: the same per-tool renderer the expanded block uses (a
-            // real diff for `edit`, the new content for `write`, plan markdown
-            // for `propose_plan`, …) instead of raw JSON — the primary arg
-            // already lives in the header above, so it's never re-dumped
-            // (mirrors `flush_tool_call`'s expanded branch, #487). No output
-            // yet — the call hasn't run.
-            //
-            // `write` is the one tool whose approval body diverges from its
-            // post-execution expansion: only *before* the call runs does the
-            // on-disk file still hold the pre-image, so only here can it be
-            // diffed against the proposed content (#519).
-            let rendered = if tool == "write" {
-                tool_render::render_write_approval_body(&input, app.root())
-            } else {
-                tool_render::render_expansion(
-                    Some(&tool),
-                    &input,
-                    "",
-                    theme,
-                    available_width,
-                    app.markdown_renderer(),
-                )
-            };
-            for line in rendered.lines {
-                lines.push(theme.decorate(line, approval_colors, available_width));
-            }
+            ));
 
             lines.push(Line::from(""));
             // The three approval scopes (#174): `y` once, `s` for the rest of
@@ -140,6 +91,10 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
                 Span::raw(" reject  "),
                 Span::styled("[e]", Style::default().fg(Color::Yellow).bold()),
                 Span::raw(" edit reason  "),
+                // Full-body pager (#B2): a long diff/plan body can scroll off
+                // this viewport before the footer even comes into view.
+                Span::styled("[v]", Style::default().fg(Color::Cyan).bold()),
+                Span::raw(" view · PgUp/PgDn scroll  "),
                 Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
                 Span::raw(" interrupt"),
             ]);
@@ -168,4 +123,64 @@ fn push_wrapped_spans<'a>(lines: &mut Vec<Line<'a>>, spans: Vec<Span<'a>>, avail
     for wline in wrap::wrap_line(Line::from(spans), available_width) {
         lines.push(wline);
     }
+}
+
+/// One pending approval's full rendered body: the `▸/▾ tool  primary_arg`
+/// header (same idiom the collapsed/expanded transcript block uses) plus the
+/// per-tool renderer the expanded block uses (a real diff for `edit`, the new
+/// content for `write`, plan markdown for `propose_plan`, …) instead of raw
+/// JSON — no output yet, the call hasn't run. `write` is the one tool whose
+/// approval body diverges from its post-execution expansion: only *before*
+/// the call runs does the on-disk file still hold the pre-image, so only here
+/// can it be diffed against the proposed content (#519).
+///
+/// Shared by the transcript's parked tail (`render_body_lines`, always
+/// visible while `WaitingForApproval`) and the full-body pager modal (`v`,
+/// #B2) so the two renderings can never drift apart. Takes `&App` (every call
+/// it makes is `&self`) so the pager — which only has an immutable borrow at
+/// draw time — can call it directly.
+pub(crate) fn render_approval_tool_body(
+    app: &App,
+    tool: &str,
+    input: &str,
+    available_width: u16,
+) -> Vec<Line<'static>> {
+    let theme = app.theme();
+    // Yellow accent ties this body to the surrounding rules; it goes through
+    // `Theme::decorate` like any other block so it reads as part of the
+    // transcript, not a bolted-on overlay (#487).
+    let approval_colors = RoleColors {
+        fg: Color::Yellow,
+        bg: theme.message_bg,
+    };
+
+    let mut header =
+        render_run::tool_header_spans(tool, input, '▾', Color::Yellow, available_width, None);
+    // Core batch-emits tool calls (#270), so more approvals may be parked
+    // behind this one (#273) — show how many are waiting.
+    let queued = app.queued_approvals();
+    if queued > 0 {
+        header.push(Span::styled(
+            format!("  (+{queued} more queued)"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let mut lines = vec![theme.decorate(Line::from(header), approval_colors, available_width)];
+
+    let rendered = if tool == "write" {
+        tool_render::render_write_approval_body(input, app.root())
+    } else {
+        tool_render::render_expansion(
+            Some(tool),
+            input,
+            "",
+            theme,
+            available_width,
+            app.markdown_renderer(),
+        )
+    };
+    for line in rendered.lines {
+        lines.push(theme.decorate(line, approval_colors, available_width));
+    }
+    lines
 }

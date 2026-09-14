@@ -20,6 +20,7 @@ use crate::tui::theme::Theme;
 // cohesive slice of the `impl App` surface. Fields stay private here — child
 // modules reach them through their descendant visibility.
 mod allow;
+mod approval_pager;
 mod aux;
 mod compact;
 mod construct;
@@ -230,6 +231,10 @@ pub struct App {
 
     // In-session inspection overlay (#214): resolved prompt / agents / skills.
     inspect: inspect::InspectState,
+
+    // Full-body pager over a parked approval's rendered body (#B2), opened
+    // with `v` in `ApprovalMode::WaitingForApproval`.
+    approval_pager: approval_pager::ApprovalPagerState,
 
     // `@file` mention completion + `!bash` passthrough (ADR-0030). `root` is the
     // working directory both the file index and `!bash` execution are rooted at.

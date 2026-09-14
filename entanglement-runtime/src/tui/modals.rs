@@ -1,11 +1,13 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+mod approval_pager;
 mod inspect;
 mod popups;
 mod sessions;
 mod stop_confirm;
 mod tool_popups;
 
+pub use approval_pager::draw_approval_pager;
 pub use inspect::draw_inspect_overlay;
 pub use popups::{
     draw_command_palette, draw_help_dialog, draw_key_dialog, draw_mention_popup,

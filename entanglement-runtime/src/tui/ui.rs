@@ -156,6 +156,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         modals::draw_inspect_overlay(f, app);
     }
 
+    if app.showing_approval_pager() {
+        modals::draw_approval_pager(f, app);
+    }
+
     if app.showing_mcp_panel() {
         modals::draw_mcp_panel(f, app);
     }

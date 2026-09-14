@@ -159,8 +159,16 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   single-user head uses.
 - **TUI** (`skutter tui`): opencode-style terminal UI over `subscribe()`. Uses
   ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
-  (ADR-0013), inline tool approval cards (ADR-0014), and rich markdown
-  rendering with pulldown-cmark + syntect (ADR-0015). Event buffering and
+  (ADR-0013), inline tool approval cards (ADR-0014) — with a full-body pager
+  (`v` while parked on one, `j`/`k`/`PgUp`/`PgDn` scroll, `Esc` closes back to
+  the prompt; the decision keys `y`/`s`/`a`/`d`/`n`/`e` still resolve the
+  approval while it's open) reusing the tail's own rendering for a diff/plan
+  body too long for the parked tail — and rich markdown rendering with
+  pulldown-cmark + syntect (ADR-0015). The input box enables crossterm's
+  bracketed paste so a multi-line paste lands as one buffer edit (each
+  embedded newline starts a new `SimpleInput` row) instead of a flood of key
+  events whose embedded newlines each fire the Enter-to-send binding. Event
+  buffering and
   multiplexed-session rendering follow ADR-0012. The transcript body is rendered
   through a **per-block render cache** (#342, `tui::transcript::cache`): a redraw
   fires on every keystroke, scroll, mouse move, and streaming delta, but the

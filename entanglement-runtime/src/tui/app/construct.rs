@@ -193,6 +193,7 @@ impl App {
             pending_effect: None,
             pending_compact_fork: None,
             inspect: Default::default(),
+            approval_pager: Default::default(),
             root: PathBuf::from("."),
             mention: MentionPopup::new(FileIndex::default()),
             slash: crate::tui::slash_popup::SlashPopup::new(),
