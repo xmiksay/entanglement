@@ -19,10 +19,12 @@
 
 mod describe;
 mod explore;
+mod tool_search;
 
 pub use describe::run_describe;
 pub(crate) use describe::spec_to_json;
 pub use explore::run_explore;
+pub use tool_search::run_tool_search;
 
 use entanglement_core::ToolSpec;
 

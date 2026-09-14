@@ -124,6 +124,14 @@ pub enum Wire {
     /// OpenAI-compat surface — it round-trips `thoughtSignature` the compat
     /// endpoint drops.
     Gemini,
+    /// OpenAI's native Responses API `/responses` wire (ADR-0196 §3, P7):
+    /// flat typed input/output items instead of Chat Completions'
+    /// role+content messages, and the one wire with a native client-executed
+    /// `tool_search` primitive. Opt-in per catalog entry — `openai` stays on
+    /// Chat Completions; a user (or a future embedded default) picks this
+    /// wire explicitly for a model that supports it (`gpt-5.4`+).
+    #[serde(rename = "openai_responses")]
+    OpenaiResponses,
 }
 
 /// One model plus its capability + pricing metadata.
@@ -472,6 +480,32 @@ mod tests {
         let mut deduped = keys.clone();
         deduped.dedup();
         assert_eq!(deduped.len(), keys.len(), "no duplicate key_env: {keys:?}");
+    }
+
+    #[test]
+    fn openai_responses_wire_parses_and_is_opt_in_not_a_default_flip() {
+        // ADR-0196 §3, P7: a distinct catalog entry on the new wire — `openai`
+        // itself stays on Chat Completions, and (since auto-detect walks
+        // `providers` in order) sits *before* `openai_responses` in the list,
+        // so an OPENAI_API_KEY-only environment still auto-detects to plain
+        // `openai`, never the Responses surface.
+        let c = Catalog::builtin();
+        let openai_idx = c.providers.iter().position(|p| p.name == "openai").unwrap();
+        let responses_idx = c
+            .providers
+            .iter()
+            .position(|p| p.name == "openai_responses")
+            .unwrap();
+        assert!(openai_idx < responses_idx);
+        let entry = c.provider("openai_responses").unwrap();
+        assert_eq!(entry.wire, Wire::OpenaiResponses);
+        assert_eq!(entry.key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(entry.default_model, "gpt-5.4");
+        assert!(c.model("openai_responses", "gpt-5.4").is_some());
+        // The wire's YAML/serde spelling is the underscore form, not
+        // `#[serde(rename_all = "lowercase")]`'s default `openairesponses`.
+        let parsed: Wire = serde_yaml::from_str("openai_responses").unwrap();
+        assert_eq!(parsed, Wire::OpenaiResponses);
     }
 
     #[test]

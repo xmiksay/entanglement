@@ -163,7 +163,9 @@ fn wired_catalog() -> Catalog {
     serde_yaml::from_str(
         "providers:\n  - name: p\n    default_model: plain\n    models:\n      - id: plain\n  \
          - name: anthro\n    wire: anthropic\n    default_model: claude_model\n    models:\n      \
-         - id: claude_model\n",
+         - id: claude_model\n  \
+         - name: resp\n    wire: openai_responses\n    default_model: resp_model\n    models:\n      \
+         - id: resp_model\n",
     )
     .expect("test catalog parses")
 }
@@ -183,6 +185,12 @@ fn encoding_resolves_from_the_provider_wire() {
         Encoding::ClientSide
     );
     assert_eq!(resolve_encoding(None, "anthro"), Encoding::ClientSide);
+    // P7: the Responses wire resolves to its own encoding, distinct from
+    // both `client_side` and `anthropic_native`.
+    assert_eq!(
+        resolve_encoding(Some(&catalog), "resp"),
+        Encoding::ResponsesNative
+    );
 }
 
 #[test]
@@ -199,5 +207,9 @@ fn encoding_by_id_finds_the_owning_providers_wire() {
     assert_eq!(
         resolve_encoding_by_id(Some(&catalog), "unknown_id"),
         Encoding::ClientSide
+    );
+    assert_eq!(
+        resolve_encoding_by_id(Some(&catalog), "resp_model"),
+        Encoding::ResponsesNative
     );
 }

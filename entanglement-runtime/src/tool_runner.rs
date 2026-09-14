@@ -67,7 +67,7 @@ use crate::tool_advertising::{self, SharedAdvertisingState};
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
     is_non_maskable, AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DESCRIBE_TOOL, EXPLORE_TOOL,
-    LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL,
+    LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
 };
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
@@ -149,12 +149,16 @@ enum Intercept {
     /// `propose_plan`: the plan agent's finalize step (#141, ADR-0042),
     /// force-parked on the `Ask` path since user approval *is* its semantics.
     ProposePlan,
-    /// `explore`/`describe` (#560, ADR-0196 §4): the always-on, non-maskable
-    /// discovery pair — read-only catalog introspection, starting nothing and
-    /// touching no host resource. Exempt from the #116 mask entirely (see the
-    /// `is_non_maskable` short-circuit ahead of classification, not this
-    /// route), and from the `Allow`/`Ask`/`Deny` ladder like every other
-    /// runtime-owned orchestration tool.
+    /// `explore`/`describe` (#560, ADR-0196 §4) plus the reserved
+    /// `responses_tool_search` call name (P7, ADR-0196 §3 — a streamed
+    /// client-executed `tool_search_call` from the OpenAI Responses wire,
+    /// never a name the model chose from an advertised schema): the
+    /// always-on, non-maskable discovery trio — read-only catalog
+    /// introspection, starting nothing and touching no host resource. Exempt
+    /// from the #116 mask entirely (see the `is_non_maskable` short-circuit
+    /// ahead of classification, not this route), and from the
+    /// `Allow`/`Ask`/`Deny` ladder like every other runtime-owned
+    /// orchestration tool.
     Discover,
     /// `rhai`: a sandboxed script tool (#122, ADR-0046) that resolves its own
     /// permission live against the loop's profile snapshot inside the script task.
@@ -176,7 +180,7 @@ impl Intercept {
             POLL_TOOL => Self::Poll,
             ASK_USER_TOOL => Self::AskUser,
             PROPOSE_PLAN_TOOL => Self::ProposePlan,
-            EXPLORE_TOOL | DESCRIBE_TOOL => Self::Discover,
+            EXPLORE_TOOL | DESCRIBE_TOOL | RESPONSES_TOOL_SEARCH_TOOL => Self::Discover,
             #[cfg(feature = "rhai")]
             RHAI_TOOL => Self::Rhai,
             _ => Self::Permission,
@@ -1267,12 +1271,28 @@ pub fn spawn_tool_executor_with_policy(
                                     )
                                     .await;
                                 });
-                            } else {
-                                debug_assert_eq!(tool, DESCRIBE_TOOL);
+                            } else if tool == DESCRIBE_TOOL {
                                 tokio::spawn(async move {
                                     discover::run_describe(
                                         &holly,
                                         registry_snapshot,
+                                        skills_snapshot.as_ref(),
+                                        mcp_scopes.as_deref(),
+                                        &advertising,
+                                        session,
+                                        request_id,
+                                        input,
+                                    )
+                                    .await;
+                                });
+                            } else {
+                                debug_assert_eq!(tool, RESPONSES_TOOL_SEARCH_TOOL);
+                                tokio::spawn(async move {
+                                    discover::run_tool_search(
+                                        &holly,
+                                        registry_snapshot,
+                                        &mcp_avail,
+                                        &mcp_active,
                                         skills_snapshot.as_ref(),
                                         mcp_scopes.as_deref(),
                                         &advertising,
@@ -1958,6 +1978,10 @@ mod tests {
         );
         assert_eq!(Intercept::classify(EXPLORE_TOOL), Intercept::Discover);
         assert_eq!(Intercept::classify(DESCRIBE_TOOL), Intercept::Discover);
+        assert_eq!(
+            Intercept::classify(RESPONSES_TOOL_SEARCH_TOOL),
+            Intercept::Discover
+        );
         #[cfg(feature = "rhai")]
         assert_eq!(Intercept::classify(RHAI_TOOL), Intercept::Rhai);
     }
@@ -2001,6 +2025,10 @@ mod tests {
     fn explore_and_describe_are_non_maskable() {
         assert!(is_non_maskable(EXPLORE_TOOL));
         assert!(is_non_maskable(DESCRIBE_TOOL));
+        // P7: the wire declares `tool_search` itself whenever a tool is
+        // deferred — the model never chose it from an advertised name — so
+        // masking it out would strand the round-trip with no way to answer.
+        assert!(is_non_maskable(RESPONSES_TOOL_SEARCH_TOOL));
         assert!(
             !is_non_maskable(POLL_TOOL),
             "poll's mask exemption was retired by ADR-0192"

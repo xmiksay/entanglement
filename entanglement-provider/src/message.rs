@@ -91,6 +91,30 @@ pub enum ContentPart {
     /// synthesized here since there's no separate human-readable field to
     /// fall back to.
     ToolReference { tool_name: String },
+    /// A `tool_search_output` input item (ADR-0196 §3, the OpenAI Responses
+    /// `responses_native` `ToolSearch` encoding): the runtime's reply to a
+    /// client-executed `tool_search_call`, persisted so the next request can
+    /// replay the same input item verbatim (`call_id` correlation rides the
+    /// enclosing tool-result message's own `tool_call_id`, exactly like
+    /// [`ToolReference`][ContentPart::ToolReference] needs none of its own).
+    ///
+    /// `data` is opaque JSON — the `tools` array (full tool definitions, one
+    /// per discovered name) the Responses client echoes back verbatim inside
+    /// the `tool_search_output` item — and round-trips only to the
+    /// `provider` that minted it, the same opaque-payload contract as
+    /// [`ProviderSearch`][ContentPart::ProviderSearch] /
+    /// [`Reasoning`][ContentPart::Reasoning]. `summary` is the portable,
+    /// human-readable degrade-to-text rendering every foreign converter falls
+    /// back to (mirrors `ProviderSearch::summary`) — unlike `ToolReference`,
+    /// which has no separate human field and synthesizes its fallback from
+    /// `tool_name` alone, this variant already carries one because the
+    /// underlying wire event has no single name to fall back to (a search can
+    /// discover zero, one, or many tools at once).
+    ToolSearchOutput {
+        provider: String,
+        summary: String,
+        data: serde_json::Value,
+    },
 }
 
 impl ContentPart {
@@ -144,6 +168,20 @@ impl ContentPart {
         }
     }
 
+    /// A `tool_search_output` block. See
+    /// [`ToolSearchOutput`][ContentPart::ToolSearchOutput].
+    pub fn tool_search_output(
+        provider: impl Into<String>,
+        summary: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        ContentPart::ToolSearchOutput {
+            provider: provider.into(),
+            summary: summary.into(),
+            data,
+        }
+    }
+
     /// The text of a [`Text`][ContentPart::Text] part, else `None`.
     ///
     /// A [`Reasoning`][ContentPart::Reasoning] part is deliberately **not**
@@ -156,7 +194,8 @@ impl ContentPart {
             ContentPart::Image { .. }
             | ContentPart::ProviderSearch { .. }
             | ContentPart::Reasoning { .. }
-            | ContentPart::ToolReference { .. } => None,
+            | ContentPart::ToolReference { .. }
+            | ContentPart::ToolSearchOutput { .. } => None,
         }
     }
 }
@@ -381,6 +420,21 @@ mod tests {
         );
         let back: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(back.content, msg.content);
+    }
+
+    #[test]
+    fn tool_search_output_block_serializes_and_roundtrips() {
+        let part = ContentPart::tool_search_output(
+            "openai_responses",
+            "discovered: get_weather",
+            serde_json::json!([{ "type": "function", "name": "get_weather" }]),
+        );
+        let msg = Message::tool_content("call_1", vec![part.clone()]);
+        assert_eq!(msg.text(), "", "as_text skips the tool_search_output block");
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content, msg.content);
+        assert_eq!(back.content[0], part);
     }
 
     #[test]

@@ -31,6 +31,7 @@ use crate::client::{HttpClient, UserBudget};
 use crate::gemini::{gemini_factory, GEMINI_BASE};
 use crate::llm::{ModelResolver, ResolvedModel, UserId};
 use crate::openai::{openai_factory, OPENAI_BASE};
+use crate::openai_responses::{openai_responses_factory, OPENAI_RESPONSES_BASE};
 use crate::web_search::WebSearchConfig;
 use crate::{anthropic_factory, ANTHROPIC_BASE};
 
@@ -294,6 +295,22 @@ fn resolve_for_user(
             gemini_factory(
                 base,
                 key,
+                auth,
+                model.to_string(),
+                rpm,
+                concurrency,
+                model_concurrency,
+                http_client.clone(),
+            )
+        }
+        Wire::OpenaiResponses => {
+            let base = entry
+                .base_url
+                .clone()
+                .unwrap_or_else(|| OPENAI_RESPONSES_BASE.to_string());
+            openai_responses_factory(
+                base,
+                key.map(str::to_string),
                 auth,
                 model.to_string(),
                 rpm,

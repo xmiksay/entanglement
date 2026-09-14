@@ -67,12 +67,28 @@ pub const EXPLORE_TOOL: &str = "explore";
 /// advertised array. Always-on and non-maskable, like [`EXPLORE_TOOL`].
 pub const DESCRIBE_TOOL: &str = "describe";
 
+/// Reserved [`entanglement_core::ToolCall::name`] the OpenAI Responses client
+/// emits for a streamed, client-executed `tool_search_call` output item (P7,
+/// ADR-0196 §3) — re-exported here (via `entanglement_core`, itself
+/// re-exporting `entanglement-provider`) so this file stays the executor's
+/// one interception-name vocabulary. Never a real registered tool, and not
+/// advertised as a [`entanglement_core::ToolSpec`] at all — the model calls
+/// it because the wire itself declares a `tool_search` primitive whenever a
+/// deferred tool exists, not because it saw a schema in the tools array.
+/// `discover::run_tool_search` answers it by running the same explore+
+/// describe lookup [`EXPLORE_TOOL`]/[`DESCRIBE_TOOL`] do, replying with a
+/// `ContentPart::ToolSearchOutput` block instead of `describe`'s plain text.
+/// Always-on and non-maskable, like [`EXPLORE_TOOL`]/[`DESCRIBE_TOOL`] — the
+/// model didn't choose it from an advertised name, so masking it out would
+/// strand the wire's own round-trip with no way to answer it.
+pub use entanglement_core::TOOL_SEARCH_CALL_TOOL as RESPONSES_TOOL_SEARCH_TOOL;
+
 /// Tools exempt from the #116 agent-mask / session-overlay / deny-entry check
 /// entirely (ADR-0196 §4): read-only catalog introspection, never a
 /// capability decision. Narrow and deliberate, like ADR-0190's original
 /// (now-retired, subsumed by ADR-0192's universal dispatch mask) `poll`
 /// exemption — adding an entry removes a profile-author control.
-pub const NON_MASKABLE_TOOLS: &[&str] = &[EXPLORE_TOOL, DESCRIBE_TOOL];
+pub const NON_MASKABLE_TOOLS: &[&str] = &[EXPLORE_TOOL, DESCRIBE_TOOL, RESPONSES_TOOL_SEARCH_TOOL];
 
 /// Whether `tool` is exempt from the dispatch-side mask entirely
 /// ([`NON_MASKABLE_TOOLS`]).
@@ -181,6 +197,7 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     "mcp_enable",
     EXPLORE_TOOL,
     DESCRIBE_TOOL,
+    RESPONSES_TOOL_SEARCH_TOOL,
 ];
 
 /// The compile-time literal tool vocabulary ([`KNOWN_TOOL_NAMES`]), for a

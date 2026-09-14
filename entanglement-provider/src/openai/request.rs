@@ -173,11 +173,22 @@ pub(super) fn convert_messages(messages: &[Message], thinking: crate::ThinkingSp
                 // silently dropping the "discovered X" outcome.
                 let mut text = m.text();
                 for p in &m.content {
-                    if let ContentPart::ToolReference { tool_name } = p {
-                        if !text.is_empty() {
-                            text.push('\n');
+                    match p {
+                        ContentPart::ToolReference { tool_name } => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(&crate::tool_reference_fallback_text(tool_name));
                         }
-                        text.push_str(&crate::tool_reference_fallback_text(tool_name));
+                        // Same fold-into-text fallback for a `responses_native`
+                        // `tool_search_output` block (ADR-0196 §3).
+                        ContentPart::ToolSearchOutput { summary, .. } => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(summary);
+                        }
+                        _ => {}
                     }
                 }
                 let content = if text.is_empty() && !images.is_empty() {
@@ -239,6 +250,14 @@ fn openai_content(content: &[ContentPart]) -> Value {
             // silently drop it if one ever did reach this path.
             ContentPart::ToolReference { tool_name } => {
                 json!({ "type": "text", "text": crate::tool_reference_fallback_text(tool_name) })
+            }
+            // Not expected here in practice either (rides tool-result content
+            // from a `responses_native` session, handled separately in
+            // `convert_messages`'s `MessageRole::Tool` arm above) — degrades
+            // to `summary` text, same portable-fallback contract as
+            // `ProviderSearch`.
+            ContentPart::ToolSearchOutput { summary, .. } => {
+                json!({ "type": "text", "text": summary })
             }
         })
         .filter(|b| !b.is_null())

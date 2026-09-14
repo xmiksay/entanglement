@@ -20,6 +20,15 @@ pub enum Encoding {
     /// `defer_loading: true`; `describe()`'s reply carries `tool_reference`
     /// content blocks the API auto-expands.
     AnthropicNative,
+    /// OpenAI Responses API (P7): non-kernel, non-discovered tools carry
+    /// `defer_loading: true` exactly like `AnthropicNative` — same
+    /// `mark_defer_loading` flagging, shared rather than duplicated (ADR-0196
+    /// §3) — but discovery itself rides the wire's native client-executed
+    /// `tool_search` primitive instead of a describe-carried content block:
+    /// a streamed `tool_search_call` is answered by the runtime's
+    /// `discover::tool_search` dispatch (reusing the same explore/describe
+    /// lookup), never `describe` directly.
+    ResponsesNative,
 }
 
 impl Default for Encoding {
@@ -36,12 +45,14 @@ impl Encoding {
         match self {
             Encoding::ClientSide => "client_side",
             Encoding::AnthropicNative => "anthropic_native",
+            Encoding::ResponsesNative => "responses_native",
         }
     }
 
     fn from_wire(wire: Wire) -> Self {
         match wire {
             Wire::Anthropic => Encoding::AnthropicNative,
+            Wire::OpenaiResponses => Encoding::ResponsesNative,
             Wire::Openai | Wire::Gemini => Encoding::ClientSide,
         }
     }

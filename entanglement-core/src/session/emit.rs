@@ -189,6 +189,11 @@ fn tool_output_display(content: &[ContentPart]) -> String {
             // wire's request converter falls back to, so a head shows the same
             // "discovered X" line regardless of which wire is live.
             ContentPart::ToolReference { tool_name } => tool_reference_fallback_text(tool_name),
+            // `tool_search` (P7)'s reply on a `responses_native` ToolSearch
+            // session carries one of these instead — same "show it as text
+            // regardless of wire" rendering, using its own human-readable
+            // `summary` rather than synthesizing one from a bare name.
+            ContentPart::ToolSearchOutput { summary, .. } => summary.clone(),
         })
         .collect()
 }

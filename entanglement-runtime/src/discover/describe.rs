@@ -41,14 +41,19 @@ struct Input {
 
 /// One `resolve_spec` outcome that isn't a spec: `Some(msg)` is an MCP
 /// connect/auth failure with an already-good user-facing message (ADR-0188's
-/// `overlay_registry_for_call`); `None` is a plain "no such name".
-type ResolveErr = Option<String>;
+/// `overlay_registry_for_call`); `None` is a plain "no such name". `pub(crate)`:
+/// also the return-error shape [`super::tool_search`] (P7) discards through
+/// (a search candidate that fails to resolve is simply skipped, never
+/// surfaced as a schema-shaped error entry the way `describe` does).
+pub(crate) type ResolveErr = Option<String>;
 
 /// Look up one name's spec: first the runtime-owned pseudo-tools that
 /// dispatch by name rather than living in the registry, then — for an
 /// `mcp__*` name under a scoped session — the session-scoped registry view
-/// (ADR-0188), else the plain registry snapshot.
-async fn resolve_spec(
+/// (ADR-0188), else the plain registry snapshot. `pub(crate)`: also reused by
+/// [`super::tool_search`] (P7, ADR-0196 §3) to resolve each of its own
+/// search-index candidates to a full spec.
+pub(crate) async fn resolve_spec(
     registry: &ToolRegistry,
     mcp_scopes: Option<&McpScopes>,
     session: &SessionId,

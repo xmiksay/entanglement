@@ -341,6 +341,16 @@ fn anthropic_blocks(content: &[ContentPart], replay_reasoning: bool) -> Vec<Valu
                 "type": "tool_reference",
                 "tool_name": tool_name,
             })),
+            // ADR-0196 §3: a `tool_search_output` block persisted from a
+            // `responses_native` session (e.g. history replaying after a
+            // live `/model` switch to this wire) has no native mechanism
+            // here — the Anthropic wire has its own `tool_reference`
+            // primitive instead — so degrade to `summary` text rather than
+            // silently dropping the "discovered X" outcome, mirroring
+            // `ProviderSearch`'s foreign-provider fallback.
+            ContentPart::ToolSearchOutput { summary, .. } => {
+                rest.push(json!({ "type": "text", "text": summary }))
+            }
         }
     }
     reasoning.extend(rest);

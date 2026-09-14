@@ -58,8 +58,11 @@ fn parse_filter(input: &str) -> Option<String> {
 
 /// Build every row, apply the filter, sort by name — the pure core of
 /// `explore`, independent of the tool round-trip so it's unit-testable with
-/// no engine in the loop.
-fn build_index(
+/// no engine in the loop. `pub(crate)`: also reused by
+/// [`super::tool_search`] (P7, ADR-0196 §3) to answer a `responses_native`
+/// wire's native `tool_search_call` with the same live index `explore`
+/// itself serves.
+pub(crate) fn build_index(
     registry: &ToolRegistry,
     avail: &AvailableMcp,
     active: &ActiveServers,

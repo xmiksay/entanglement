@@ -39,6 +39,7 @@ pub mod message;
 pub mod multi_user;
 pub mod oauth;
 pub mod openai;
+pub mod openai_responses;
 pub mod provider_mcp;
 mod sse_frame;
 pub mod web_search;
@@ -74,5 +75,8 @@ pub use oauth::{
 };
 pub use openai::{
     openai_factory, OpenAiLlm, OLLAMA_BASE, OPENAI_BASE, ZAI_CODING_PLAN_BASE, ZAI_GENERAL_BASE,
+};
+pub use openai_responses::{
+    openai_responses_factory, OpenAiResponsesLlm, OPENAI_RESPONSES_BASE, TOOL_SEARCH_CALL_TOOL,
 };
 pub use web_search::WebSearchConfig;

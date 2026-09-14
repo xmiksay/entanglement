@@ -265,6 +265,20 @@ providers:
           input: 0.5
           output: 1.5
 
+  - name: openai_responses
+    # Opt-in (ADR-0196 §3, P7): the native Responses API surface, distinct
+    # from `openai` above (Chat Completions). Selecting `openai` never picks
+    # this up automatically — set ENTANGLEMENT_PROVIDER=openai_responses (or
+    # a `providers.yml`/`config.yml` pin) to use it. `tool_search` (this
+    # wire's client-executed discovery primitive) needs gpt-5.4 or later.
+    wire: openai_responses
+    base_url: https://api.openai.com/v1
+    key_env: OPENAI_API_KEY
+    default_model: gpt-5.4
+    models:
+      - id: gpt-5.4
+        display_name: GPT-5.4 (Responses)
+
   - name: ollama
     base_url: http://localhost:11434/v1
     default_model: llama3.1

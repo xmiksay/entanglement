@@ -457,6 +457,9 @@ fn wire_config(
         Wire::Openai => openai_wire_config(entry, http_client, catalog, user_config),
         Wire::Anthropic => anthropic_wire_config(entry, http_client, catalog, user_config),
         Wire::Gemini => gemini_wire_config(entry, http_client, catalog, user_config),
+        Wire::OpenaiResponses => {
+            openai_responses_wire_config(entry, http_client, catalog, user_config)
+        }
     }
 }
 
@@ -666,6 +669,33 @@ fn gemini_wire_config(
     ))
 }
 
+/// OpenAI Responses API wire (P7, ADR-0196 §3). Key/base resolution mirrors
+/// [`openai_wire_config`] (same `key_env`/`{NAME}_API_BASE` precedence); no
+/// provider-side web search or `prompt_cache_key` hint — see
+/// `entanglement_provider::openai_responses`'s module doc for why this
+/// client doesn't (yet) carry those OpenAI-compat-only knobs.
+fn openai_responses_wire_config(
+    entry: &ProviderEntry,
+    http_client: &HttpClient,
+    catalog: &Catalog,
+    user_config: &config::Config,
+) -> Option<(EngineConfig, ModelInfo)> {
+    let model = resolve_model(entry, user_config);
+    let llm_factory =
+        openai_responses_factory_for(entry, &model, http_client, catalog, None).ok()?;
+    eprintln!("skutter: provider={} model={model}", entry.name);
+    Some((
+        EngineConfig {
+            llm_factory,
+            default_model: Some(model.clone()),
+            generation: generation_for(entry, &model, catalog),
+            pricing: pricing_map(catalog),
+            ..EngineConfig::default()
+        },
+        model_info_for(entry, &model, catalog),
+    ))
+}
+
 /// The OAuth bearer source for a catalog entry declaring `oauth:` (#684 edge
 /// d): tokens come from the managed LLM token file
 /// (`llm-tokens.yml` / `ENTANGLEMENT_LLM_TOKENS_FILE`), keyed by the provider
@@ -788,6 +818,47 @@ fn openai_factory_for(
     ))
 }
 
+/// Build an OpenAI Responses-wire [`LlmFactory`] for an explicit `(entry,
+/// model)` (P7). Shared by startup ([`openai_responses_wire_config`]) and
+/// the live-switch resolver ([`build_model_resolver`]). Key/base resolution
+/// mirrors [`openai_factory_for`] exactly; `explicit_key` mirrors its
+/// multi-user seam too.
+fn openai_responses_factory_for(
+    entry: &ProviderEntry,
+    model: &str,
+    http_client: &HttpClient,
+    catalog: &Catalog,
+    explicit_key: Option<&str>,
+) -> Result<LlmFactory, String> {
+    let auth = llm_oauth_source(entry)?;
+    let key = match (&auth, explicit_key) {
+        (Some(_), _) => None,
+        (None, Some(k)) => Some(k.to_string()),
+        (None, None) => match &entry.key_env {
+            Some(k) => Some(
+                env_nonempty(k)
+                    .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
+            ),
+            None => None,
+        },
+    };
+    let name = entry.name.to_uppercase();
+    let base = env_nonempty(&format!("{name}_API_BASE"))
+        .or_else(|| env_nonempty(&format!("{name}_BASE")))
+        .or_else(|| entry.base_url.clone())
+        .unwrap_or_else(|| entanglement_provider::OPENAI_RESPONSES_BASE.to_string());
+    Ok(entanglement_provider::openai_responses_factory(
+        base,
+        key,
+        auth,
+        model.to_string(),
+        resolve_rpm(entry),
+        resolve_concurrency(entry),
+        catalog.model_concurrency_resolver(&entry.name),
+        http_client.clone(),
+    ))
+}
+
 /// Build an Anthropic-wire [`LlmFactory`] for an explicit `(entry, model)`.
 /// Shared by startup and the live-switch resolver (#218). Always keyed;
 /// `Err(message)` when the key env is absent/unset. `web_search_tool_version`
@@ -903,6 +974,9 @@ fn resolve_catalog_entry(
             explicit_key,
         )?,
         Wire::Gemini => gemini_factory_for(entry, model, http_client, catalog, explicit_key)?,
+        Wire::OpenaiResponses => {
+            openai_responses_factory_for(entry, model, http_client, catalog, explicit_key)?
+        }
     };
     Ok(ResolvedModel {
         provider: entry.name.clone(),
@@ -1124,13 +1198,15 @@ fn full_surface(visible_specs: Vec<ToolSpec>, runtime_specs: Vec<ToolSpec>) -> V
     specs
 }
 
-/// ADR-0196 §3, `anthropic_native` encoding: flag every spec `defer_loading`
-/// except the lean kernel (`tool_names::TOOL_SEARCH_KERNEL`) and anything
-/// already in `discovered` — split out of the resolver closure so this pure
-/// flagging logic is unit-testable on its own. The kernel is always present
-/// in `specs` (`full_surface`'s input always includes it), so at least one
-/// entry always comes out non-deferred — Anthropic's hard requirement.
-fn mark_anthropic_native_defer(specs: &mut [ToolSpec], discovered: &[String]) {
+/// ADR-0196 §3, shared by the `anthropic_native` and `responses_native`
+/// encodings: flag every spec `defer_loading` except the lean kernel
+/// (`tool_names::TOOL_SEARCH_KERNEL`) and anything already in `discovered` —
+/// split out of the resolver closure so this pure flagging logic is
+/// unit-testable on its own. The kernel is always present in `specs`
+/// (`full_surface`'s input always includes it), so at least one entry always
+/// comes out non-deferred — Anthropic's hard requirement, harmless overhead
+/// on the Responses wire (which has no such requirement of its own).
+fn mark_defer_loading(specs: &mut [ToolSpec], discovered: &[String]) {
     for spec in specs.iter_mut() {
         let kernel = tool_names::TOOL_SEARCH_KERNEL.contains(&spec.name.as_str());
         let already_discovered = discovered.iter().any(|n| n == &spec.name);
@@ -1497,23 +1573,28 @@ async fn main() -> Result<()> {
                             }
                             specs
                         }
-                        tool_advertising::Encoding::AnthropicNative => {
-                            // ADR-0196 §3: the full surface (same shape
-                            // `Full` mode advertises), but every non-kernel,
-                            // non-discovered tool is marked `defer_loading`
-                            // so the Anthropic client omits it from the
-                            // rendered/cached prompt until `describe()`
-                            // discovers it. The profile-defining specs
-                            // (`propose_plan`, `agent`/`agent_send`) aren't
-                            // in this resolver's output at all — core
-                            // appends them afterward (`cfg.profile_tool_specs`)
-                            // with `defer_loading` at its constructor
-                            // default (`false`), so they stay non-deferred
-                            // for free. The kernel alone guarantees at least
-                            // one non-deferred entry either way — Anthropic's
-                            // hard requirement.
+                        // ADR-0196 §3: the full surface (same shape `Full`
+                        // mode advertises), but every non-kernel,
+                        // non-discovered tool is marked `defer_loading` so
+                        // the client omits it from the rendered/cached
+                        // prompt until discovered — `describe()` on the
+                        // Anthropic wire, the native `tool_search` primitive
+                        // (P7's `discover::run_tool_search`) on the
+                        // Responses wire. Both wires share the identical
+                        // flagging logic (`mark_defer_loading`) — only the
+                        // discovery mechanism differs. The profile-defining
+                        // specs (`propose_plan`, `agent`/`agent_send`)
+                        // aren't in this resolver's output at all — core
+                        // appends them afterward (`cfg.profile_tool_specs`)
+                        // with `defer_loading` at its constructor default
+                        // (`false`), so they stay non-deferred for free. The
+                        // kernel alone guarantees at least one non-deferred
+                        // entry either way — Anthropic's hard requirement,
+                        // harmless overhead on the Responses wire.
+                        tool_advertising::Encoding::AnthropicNative
+                        | tool_advertising::Encoding::ResponsesNative => {
                             let mut specs = full_surface(visible_specs, runtime_specs);
-                            mark_anthropic_native_defer(&mut specs, &discovered);
+                            mark_defer_loading(&mut specs, &discovered);
                             specs
                         }
                     }
@@ -2056,7 +2137,8 @@ mod tests {
         }
     }
 
-    // ── ADR-0196 §3, `anthropic_native` ToolSearch encoding ─────────────
+    // ── ADR-0196 §3, `anthropic_native`/`responses_native` ToolSearch
+    // encodings — both share the identical `mark_defer_loading` flagging. ──
 
     fn tool_spec(name: &str) -> entanglement_provider::ToolSpec {
         entanglement_provider::ToolSpec::new(name, "d")
@@ -2072,7 +2154,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_native_defers_everything_outside_kernel_and_discovered() {
+    fn mark_defer_loading_defers_everything_outside_kernel_and_discovered() {
         let mut specs = vec![
             tool_spec("read"),         // kernel
             tool_spec("bash"),         // kernel
@@ -2080,7 +2162,7 @@ mod tests {
             tool_spec("mcp__x__tool"), // not kernel, discovered
         ];
         let discovered = vec!["mcp__x__tool".to_string()];
-        super::mark_anthropic_native_defer(&mut specs, &discovered);
+        super::mark_defer_loading(&mut specs, &discovered);
         let deferred: Vec<(&str, bool)> = specs
             .iter()
             .map(|s| (s.name.as_str(), s.defer_loading))
@@ -2097,11 +2179,13 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_native_keeps_at_least_the_kernel_non_deferred() {
+    fn mark_defer_loading_keeps_at_least_the_kernel_non_deferred() {
         // Even with nothing discovered yet, the kernel alone satisfies
-        // Anthropic's "at least one non-deferred tool" requirement.
+        // Anthropic's "at least one non-deferred tool" requirement (and is
+        // harmless-but-unneeded overhead on the Responses wire, which has no
+        // such requirement).
         let mut specs = vec![tool_spec("read"), tool_spec("glob"), tool_spec("grep")];
-        super::mark_anthropic_native_defer(&mut specs, &[]);
+        super::mark_defer_loading(&mut specs, &[]);
         assert!(specs.iter().any(|s| !s.defer_loading));
     }
 }
