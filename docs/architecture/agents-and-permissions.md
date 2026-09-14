@@ -428,9 +428,9 @@ below realize one model:
   | --- | --- | --- | --- | --- |
   | `build` (default) | primary | none — every registered tool exists | `default: allow` — everything Allow | may spawn `explore`/`debug` |
   | `plan` | primary | `read, glob, grep, agent, agent_send, poll, ask_user, load_skill, propose_plan, write, edit, call, bash` — `call`/`bash` are on the mask only so a spawned `explore` child keeps its own access ([ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md), #597); `agent_send` (#609, [ADR-0162](../adr/0162-agent-send-supervising-a-sub-agent.md)) is what lets the plan agent re-engage the same sponsored `build` child for another review round instead of spawning a fresh one each phase | `default: ask`; `read: allow` (capability fan-out covers `grep`/`glob`); `write: deny` with `write(.entanglement/plans/*.md): allow` — the plans-folder carve-out (#524, [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)), fanning out to `edit`/`apply_patch` too | may spawn |
-  | `explore` | subagent | `read, glob, grep, call, bash, poll, rhai` | `default: deny`; read triad Allow, exec set at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — `poll` rides along with `bash` so a background job it starts is actually readable (#615/#605); `poll` is intercepted before permission resolution, so it carries no grade of its own | cannot spawn |
+  | `explore` | subagent | `read, glob, grep, call, bash, poll, rhai, mcp_enable, "mcp__*"` | `default: deny`; read triad Allow, exec set at `Ask` (escalates to user, never runs silently; [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — `poll` rides along with `bash` so a background job it starts is actually readable (#615/#605); `poll` is intercepted before permission resolution, so it carries no grade of its own; `mcp_enable: allow` (ADR-0152's `allowed` tier is the consent boundary, not this grade) plus the ordinary `read: allow` capability fan-out (#426) covers a bundled server's read-hinted tools, e.g. z.ai's `web_search_prime` | cannot spawn |
   | `debug` | subagent | none — every registered tool exists | `default: allow` | cannot spawn |
-  | `research` | primary | `read, glob, grep, agent, agent_send, poll, ask_user, load_skill, call, bash, rhai` — no write tools, no `propose_plan`; `agent_send` (#609, [ADR-0162](../adr/0162-agent-send-supervising-a-sub-agent.md)) rides next to `agent` as on `plan`, so a follow-up round goes to the `explore` child already holding the context instead of a fresh respawn | `default: ask`; `read: allow`; `write: deny` with **no** carve-out; exec at `Ask` via `call(*): ask` + a literal `rhai: ask` (the [ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md) grading pattern; posture per [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)) — the global read-only Q&A entry agent ([ADR-0167](../adr/0167-embedded-research-agent-profile.md); shipped `mode: all`, since flipped to `primary` so the Tab cycle reaches it) | may spawn **only** `explore` — a read-only leaf that cannot spawn, so the subtree stays closed |
+  | `research` | primary | `read, glob, grep, agent, agent_send, poll, ask_user, load_skill, call, bash, rhai, mcp_enable, "mcp__*"` — no write tools, no `propose_plan`; `agent_send` (#609, [ADR-0162](../adr/0162-agent-send-supervising-a-sub-agent.md)) rides next to `agent` as on `plan`, so a follow-up round goes to the `explore` child already holding the context instead of a fresh respawn | `default: ask`; `read: allow`; `write: deny` with **no** carve-out; exec at `Ask` via `call(*): ask` + a literal `rhai: ask` (the [ADR-0159](../adr/0159-plan-mask-widened-for-explore-delegation.md) grading pattern; posture per [ADR-0137](../adr/0137-explore-ask-grade-shell-access.md)); `mcp_enable: allow` same as `explore`, MCP tools riding the same `read` capability fan-out — the global read-only Q&A entry agent ([ADR-0167](../adr/0167-embedded-research-agent-profile.md); shipped `mode: all`, since flipped to `primary` so the Tab cycle reaches it) | may spawn **only** `explore` — a read-only leaf that cannot spawn, so the subtree stays closed |
 
   Three cross-cutting facts complete the picture: **(1)** both exec tools
   are registered at startup — `bash` no longer sits behind an opt-in
@@ -609,10 +609,17 @@ below realize one model:
   (`plan_tasks::explicitly_allowlists`) stays literal-exact, so a wildcard
   widens the mask without granting `propose_plan`, mirroring `tools: None`.
   Skill `allowed_tools` (#400), permission tool-name keys, and
-  `spawnable_agents` deliberately stay exact; built-in `plan`/`explore`/
-  `research` masks are unchanged (an MCP tool can be arbitrarily
-  write-capable) — enabling MCP
-  for them is a user/project-layer override adding a pattern to `tools:`.
+  `spawnable_agents` deliberately stay exact; built-in `plan` masks are
+  unchanged (an MCP tool can be arbitrarily write-capable) — enabling MCP
+  for it is a user/project-layer override adding a pattern to `tools:`.
+  `explore`/`research` are the exception: both mask in `mcp_enable` and
+  `"mcp__*"` grading `mcp_enable: allow` (ADR-0152's three-state tier —
+  `allowed`/`enabled`/`disabled` — is the actual consent boundary a bundled
+  server like z.ai's `web_search_prime` sits behind, not this profile grade)
+  while every namespaced MCP tool still resolves through the ordinary
+  `read: allow` capability fan-out below, so a server without a `read` hint
+  on a given tool falls through to the profile's own default (`deny` for
+  `explore`, `ask` for `research`) exactly like any other unclassified tool.
   **A session-scoped escape hatch layers on top** (✅ #539,
   [ADR-0149](../adr/0149-per-session-tool-overlay.md); live bash enablement
   folded in, #611,
@@ -719,13 +726,19 @@ below realize one model:
   model *will* call these, and a blanket "restricted by profile" teaches it
   nothing about whether to stop, ask, or ask the user to change something.
   `explore` is the reference read-only agent: `tools: [read, glob,
-  grep, call, bash, poll, rhai]` — no `edit`/`write`/`agent`, but
+  grep, call, bash, poll, rhai, mcp_enable, "mcp__*"]` — no `edit`/`write`/`agent`, but
   `call`/`bash`/`rhai` are graded `Ask` (ADR-0137) rather than
   masked out, so a research child isn't hard-blocked from shell access, only
   approval-gated on it. `poll` rides along with `bash`/`call` (#615/#605/#606) so a
   background job started via `bash{background: true}` (or `call{background: true}`) is actually
   readable, not a write-only dead end — `poll` itself is intercepted before
-  permission resolution, so it carries no grade of its own.
+  permission resolution, so it carries no grade of its own. `mcp_enable`
+  and the `"mcp__*"` mask entry exist so a read-only agent can still reach a
+  provider-bundled search server: `mcp_enable: allow` graded regardless
+  (ADR-0152's `allowed`/`enabled`/`disabled` tier is the real consent
+  boundary, not the profile), while the server's own tools ride the
+  ordinary `read: allow` MCP capability fan-out (#426) once connected — a
+  tool without a `read` hint still falls through to `default: deny`.
   It is also the **default** `agent` target (`DEFAULT_SUBAGENT` in
   `entanglement_runtime::subagent`) when the caller omits `agent` — the safe
   choice for an unscoped delegation. But it is also, by design, the *only*

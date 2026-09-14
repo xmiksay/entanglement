@@ -38,6 +38,10 @@ pub use enable::{disconnect, enable_for_session};
 mod lifecycle;
 pub use lifecycle::{forget_session, record_parent};
 
+#[path = "available_catalog.rs"]
+mod catalog;
+pub use catalog::bundled_capability_configs;
+
 /// One available-but-not-startup-connected server: its resolved config (bundled
 /// definition field-merged with any same-name user `mcp:` override), the env
 /// var gating its availability (`None` ⇒ ungated, e.g. a user-declared

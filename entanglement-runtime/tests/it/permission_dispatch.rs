@@ -1744,3 +1744,138 @@ async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segme
         "a compound merely containing a granted segment must still ask"
     );
 }
+
+/// A trivial host tool named `mcp_enable`, echoing its input — stands in for
+/// the real `McpEnableTool` (`entanglement_runtime::mcp::McpEnableTool`,
+/// covered end-to-end by `mcp::available_tests`) so this test exercises only
+/// the mask/permission ladder, not a real server connection.
+struct EchoMcpEnable;
+#[async_trait]
+impl Tool for EchoMcpEnable {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("mcp_enable")
+    }
+    async fn run(&self, input: &str) -> anyhow::Result<String> {
+        Ok(format!("enabled: {input}"))
+    }
+}
+
+/// A trivial host tool named like a namespaced MCP tool, standing in for a
+/// server's real tool once connected — this test's `McpCapabilityIndex`
+/// hints it `read` exactly as a bundled server's config-side `capabilities:`
+/// would (#426).
+struct EchoMcpSearch;
+#[async_trait]
+impl Tool for EchoMcpSearch {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("mcp__testserver__search")
+    }
+    async fn run(&self, input: &str) -> anyhow::Result<String> {
+        Ok(format!("searched: {input}"))
+    }
+}
+
+/// The explore/research provider-bundled-MCP fix, exercised through the real
+/// permission ladder (unit coverage for the mask/capability-index plumbing
+/// itself lives in `entanglement_runtime::agents::mod::tests` and
+/// `entanglement_runtime::mcp::mod::tests`): under `explore`, `mcp_enable`
+/// runs with no approval prompt — ADR-0152's `allowed`/`enabled`/`disabled`
+/// tier is the real consent boundary, not this profile's grade — and a
+/// namespaced MCP tool the capability index hints `read` also runs with no
+/// approval, riding the same `read: allow` fan-out that already covers
+/// `read`/`glob`/`grep`.
+#[tokio::test]
+async fn explore_calls_mcp_enable_and_a_read_hinted_mcp_tool_without_approval() {
+    let empty_dir = tempfile::tempdir().unwrap();
+    let mut mcp = entanglement_runtime::mcp::McpCapabilityIndex::new();
+    mcp.insert(
+        "read".to_string(),
+        vec!["mcp__testserver__search".to_string()],
+    );
+    let profiles = entanglement_runtime::agents::load_registry(
+        empty_dir.path(),
+        &entanglement_runtime::system_prompt::PromptContext::default(),
+        &SkillRegistry::default(),
+        &mcp,
+    )
+    .expect("load_registry");
+
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: "mcp_enable".into(),
+                input: r#"{"server":"testserver"}"#.into(),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t2".into(),
+                name: "mcp__testserver__search".into(),
+                input: "{}".into(),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoMcpEnable);
+    reg.register(EchoMcpSearch);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "search the web"))
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "neither call should need approval under explore; got {events:?}"
+    );
+    let outs: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        outs.iter().any(|o| o.starts_with("enabled:")),
+        "mcp_enable must run, not be mask-declined; got {outs:?}"
+    );
+    assert!(
+        outs.iter().any(|o| o.starts_with("searched:")),
+        "the read-hinted MCP tool must run under `read: allow`; got {outs:?}"
+    );
+}

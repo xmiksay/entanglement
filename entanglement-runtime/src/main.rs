@@ -1382,11 +1382,13 @@ async fn main() -> Result<()> {
     let mut prompt_ctx = system_prompt::PromptContext::load(&cwd);
     prompt_ctx.skills = skill_registry.disclosures();
     // The MCP capability index (#426): config-side `capabilities:` hints on
-    // `user_config.mcp`, folded into any bare `read`/`write`/`call` permission
-    // key alongside the fixed built-in set — computed once here (like the
-    // ceiling permission below) rather than re-derived on every reload.
-    let mut mcp_capabilities =
-        mcp::capability_index(&user_config.mcp).context("resolving MCP capability hints")?;
+    // `user_config.mcp` *and* every catalog-bundled server (e.g. z.ai's
+    // `web_search_prime`, which never joins `user_config.mcp` — #542),
+    // folded into any bare `read`/`write`/`call` permission key alongside the
+    // fixed built-in set — computed once here (like the ceiling permission
+    // below) rather than re-derived on every reload.
+    let mut mcp_capabilities = mcp::capability_index_with_catalog(&catalog, &user_config.mcp)
+        .context("resolving MCP capability hints")?;
     // Every declared endpoint tool joins the same data-driven `call` index
     // (#560 P8), unconditionally — see `endpoint::call_capability_names`.
     mcp_capabilities

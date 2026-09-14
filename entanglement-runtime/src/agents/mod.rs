@@ -1526,6 +1526,67 @@ mod tests {
         );
     }
 
+    /// The explore/research provider-bundled-MCP gap: both profiles mask in
+    /// `mcp_enable` + `"mcp__*"` and grade `mcp_enable: allow` outright
+    /// (ADR-0152's tier is the consent boundary, not the profile), while a
+    /// bundled server's own tools ride the ordinary `read` capability
+    /// fan-out — so a read-hinted tool (e.g. z.ai's `web_search_prime`)
+    /// grades Allow but an unhinted one still falls through to each
+    /// profile's own default.
+    #[test]
+    fn explore_and_research_can_enable_and_use_a_read_hinted_bundled_mcp_tool() {
+        let mut mcp = McpCapabilityIndex::new();
+        mcp.insert(
+            "read".to_string(),
+            vec!["mcp__web_search_prime__webSearchPrime".to_string()],
+        );
+        for (file, contents) in BUILT_INS {
+            if *file != "explore.md" && *file != "research.md" {
+                continue;
+            }
+            let p = parse_definition(
+                contents,
+                &PromptContext::default(),
+                &SkillRegistry::default(),
+                &mcp,
+            )
+            .unwrap_or_else(|e| panic!("{file}: {e}"));
+            assert!(
+                p.advertises_tool("mcp_enable"),
+                "{file}: must mask in mcp_enable"
+            );
+            assert!(
+                p.advertises_tool("mcp__web_search_prime__webSearchPrime"),
+                "{file}: \"mcp__*\" mask entry must admit a namespaced MCP tool"
+            );
+            assert_eq!(
+                p.permission.for_tool("mcp_enable"),
+                Permission::Allow,
+                "{file}: mcp_enable is graded outright — the tier gates consent, not this profile"
+            );
+            assert_eq!(
+                p.permission
+                    .for_tool("mcp__web_search_prime__webSearchPrime"),
+                Permission::Allow,
+                "{file}: a read-hinted bundled MCP tool must ride the `read: allow` fan-out"
+            );
+            // An MCP tool the catalog never hinted `read` is not admitted by
+            // the fan-out and falls through to the profile's own default
+            // (posture pinned: explore denies, research asks) — the same
+            // capability index, a second tool absent from it.
+            let expected_default = if *file == "explore.md" {
+                Permission::Deny
+            } else {
+                Permission::Ask
+            };
+            assert_eq!(
+                p.permission.for_tool("mcp__some_write_server__delete"),
+                expected_default,
+                "{file}: an unhinted MCP tool must not silently grade Allow"
+            );
+        }
+    }
+
     #[test]
     fn missing_frontmatter_is_an_error() {
         let err = parse("no frontmatter here").unwrap_err();

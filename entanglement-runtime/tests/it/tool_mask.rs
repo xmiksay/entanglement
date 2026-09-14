@@ -346,6 +346,45 @@ async fn an_ancestors_mask_declines_a_child_and_names_the_ancestor() {
     );
 }
 
+/// The explore/research provider-bundled-MCP fix: `mcp_enable` must clear
+/// the tool mask under both least-privileged profiles — pinned the same way
+/// `unregistered_bash_falls_through_to_the_generic_unknown_tool_message`
+/// below pins an admitted-but-unregistered name: if the mask still declined
+/// it, dispatch would never even reach the registry lookup, so the specific
+/// wording here (an ordinary "unknown tool", not "Declined by agent
+/// profile") is itself the assertion that the mask let the call through.
+#[tokio::test]
+async fn mcp_enable_clears_the_mask_under_explore_and_research() {
+    for agent in ["explore", "research"] {
+        let holly = spawn_calling(
+            "mcp_enable",
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        );
+        let sid = SessionId::new("s1");
+        holly
+            .send(InMsg::SetAgent {
+                session: sid.clone(),
+                agent: agent.into(),
+            })
+            .await
+            .unwrap();
+        let sub = holly.subscribe();
+        holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+        let events = collect(sub, &sid).await;
+        let outs = outputs(&events);
+        assert!(
+            outs.iter()
+                .any(|o| o.starts_with("unknown tool: `mcp_enable`")),
+            "{agent}: mcp_enable must clear the mask (unregistered in this test registry, \
+             so it falls through to the ordinary unknown-tool message); got {outs:?}"
+        );
+        assert!(
+            !outs.iter().any(|o| o.contains("is not in its tool mask")),
+            "{agent}: mcp_enable must not be mask-declined; got {outs:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn unregistered_bash_falls_through_to_the_generic_unknown_tool_message() {
     // ADR-0195 retired the lazily-registrable built-in machinery: `bash` is

@@ -985,7 +985,13 @@ the same permission profiles as `read`/`bash`.
   — an MCP tool carries no such hint of its own, so without this a bare
   `read: allow` would never reach it; `mcp::capability_index` folds it into an
   `McpCapabilityIndex` keyed by capability name, resolved from config alone
-  (no live connection needed) and consumed by `agents::expand_capabilities`.
+  (no live connection needed) and consumed by `agents::expand_capabilities`. A
+  catalog-bundled server (below) never joins `user_config.mcp`, so its own
+  `capabilities:` block (e.g. z.ai's `web_search_prime` →
+  `{webSearchPrime: read}`) is invisible to `capability_index` alone;
+  `mcp::capability_index_with_catalog` is what `main.rs` actually calls —
+  `capability_index` plus every bundled server's hint, merged with any
+  same-name user override the same way `AvailableMcp::partition` merges one.
 - **Wiring:** `build_config` is `async` and calls `mcp::connect(&config.mcp, &mut
   tools)` after the host tools are registered but before `tool_specs` is derived, so
   MCP tools flow into both the advertised schemas and the executor's registry with
