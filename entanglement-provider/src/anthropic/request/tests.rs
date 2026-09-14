@@ -823,3 +823,101 @@ fn provider_search_block_from_another_provider_is_dropped() {
         &vec![json!({ "type": "text", "text": "searching" })]
     );
 }
+
+// ── tool search / deferred loading (ADR-0196 §3) ───────────────────────
+
+#[test]
+fn defer_loading_is_omitted_when_false_and_present_when_true() {
+    // Back-compat: a non-deferred tool's wire entry is byte-identical to
+    // every pre-#560 golden (no `defer_loading` key at all), not merely
+    // `"defer_loading": false`.
+    let plain = ToolSpec::new("greet", "say hi");
+    let mut deferred = ToolSpec::new("search_files", "search the workspace");
+    deferred.defer_loading = true;
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &[msg(MessageRole::User, "hi")],
+        &[plain, deferred],
+        1024,
+        None,
+        None,
+        None,
+        ThinkingStyle::Budget,
+        false,
+    );
+    let tools = body["tools"].as_array().unwrap();
+    assert!(tools[0].get("defer_loading").is_none());
+    assert_eq!(tools[1]["defer_loading"], true);
+}
+
+#[test]
+fn cache_breakpoint_skips_a_deferred_last_tool() {
+    // Anthropic 400s a `defer_loading: true` tool carrying `cache_control`
+    // (wire reference §1.4) — the alphabetically/positionally last tool can
+    // easily be a deferred one under `anthropic_native`, so the breakpoint
+    // must land on the last *non*-deferred entry instead.
+    let kernel = ToolSpec::new("read", "kernel tool");
+    let mut deferred = ToolSpec::new("zzz_deferred", "not yet discovered");
+    deferred.defer_loading = true;
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &[msg(MessageRole::User, "hi")],
+        &[kernel, deferred],
+        1024,
+        None,
+        None,
+        None,
+        ThinkingStyle::Budget,
+        false,
+    );
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(tools[0]["name"], "read");
+    assert_eq!(tools[0]["cache_control"]["type"], "ephemeral");
+    assert!(
+        tools[1].get("cache_control").is_none(),
+        "a deferred entry must never carry cache_control"
+    );
+}
+
+#[test]
+fn tool_result_with_tool_reference_renders_native_blocks_alongside_text() {
+    // `describe()`'s reply on an `anthropic_native` session (ADR-0196 §3):
+    // schema text plus one `tool_reference` per discovered name, in the
+    // exact wire shape the client-executed custom-search flow documents.
+    let tool_result = Message::tool_content(
+        "call_1",
+        vec![
+            ContentPart::text("[{\"name\":\"search_files\", ...}]"),
+            ContentPart::tool_reference("search_files"),
+        ],
+    );
+    let out = convert_messages(&[tool_result], false);
+    let result = &out[0]["content"][0];
+    assert_eq!(result["type"], "tool_result");
+    assert_eq!(result["tool_use_id"], "call_1");
+    let blocks = result["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(
+        blocks[1],
+        json!({ "type": "tool_reference", "tool_name": "search_files" })
+    );
+}
+
+#[test]
+fn multiple_tool_references_each_render_their_own_block() {
+    let tool_result = Message::tool_content("call_1", vec![ContentPart::text("[{}, {}]")]);
+    let mut tool_result = tool_result;
+    tool_result
+        .content
+        .push(ContentPart::tool_reference("search_files"));
+    tool_result
+        .content
+        .push(ContentPart::tool_reference("get_weather"));
+    let out = convert_messages(&[tool_result], false);
+    let blocks = out[0]["content"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks[1]["tool_name"], "search_files");
+    assert_eq!(blocks[2]["tool_name"], "get_weather");
+}

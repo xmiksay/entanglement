@@ -166,7 +166,20 @@ pub(super) fn convert_messages(messages: &[Message], thinking: crate::ThinkingSp
                     .filter(|p| matches!(p, ContentPart::Image { .. }))
                     .cloned()
                     .collect();
-                let text = m.text();
+                // ADR-0196 §3: a `ToolReference` block persisted from an
+                // `anthropic_native` session (e.g. history replaying after a
+                // live `/model` switch to this wire) has no native mechanism
+                // here — degrade to its portable text line rather than
+                // silently dropping the "discovered X" outcome.
+                let mut text = m.text();
+                for p in &m.content {
+                    if let ContentPart::ToolReference { tool_name } = p {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(&crate::tool_reference_fallback_text(tool_name));
+                    }
+                }
                 let content = if text.is_empty() && !images.is_empty() {
                     "[image returned; see the following message]".to_string()
                 } else {
@@ -219,6 +232,14 @@ fn openai_content(content: &[ContentPart]) -> Value {
             // rendering it as text would put the model's thinking into
             // history as if it had been said aloud.
             ContentPart::Reasoning { .. } => json!(null),
+            // Not expected here in practice — a `ToolReference` only ever
+            // rides tool-result content, handled separately in
+            // `convert_messages`' `MessageRole::Tool` arm — but the match is
+            // exhaustive, so degrade the same way that arm does rather than
+            // silently drop it if one ever did reach this path.
+            ContentPart::ToolReference { tool_name } => {
+                json!({ "type": "text", "text": crate::tool_reference_fallback_text(tool_name) })
+            }
         })
         .filter(|b| !b.is_null())
         .collect();

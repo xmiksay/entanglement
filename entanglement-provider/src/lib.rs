@@ -61,7 +61,8 @@ pub use llm::{
 // than colliding with it at the crate root.
 pub use mcp::{jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef};
 pub use message::{
-    content_has_image, content_text, ContentPart, ImageSource, Message, MessageRole,
+    content_has_image, content_text, tool_reference_fallback_text, ContentPart, ImageSource,
+    Message, MessageRole,
 };
 pub use multi_user::{
     build_user_model_resolver, InMemoryUserProviderStore, UserProviderContext, UserProviderStore,

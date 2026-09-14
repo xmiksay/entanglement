@@ -42,6 +42,10 @@ use crate::config::{Config, TOOL_ADVERTISING_ENV};
 mod discovered;
 pub use discovered::DiscoveredSet;
 
+mod encoding;
+pub use encoding::Encoding;
+use encoding::{resolve_encoding, resolve_encoding_by_id};
+
 /// Which precedence tier won an advertising resolution — reported by
 /// `skutter inspect config` so "why is this session tool_search?" has an
 /// answer.
@@ -168,7 +172,16 @@ pub fn resolve_advertising_by_id(
 /// *overriding* record, never a hole.
 #[derive(Debug, Default)]
 pub struct SessionToolAdvertising {
-    modes: HashMap<SessionId, ToolAdvertising>,
+    modes: HashMap<SessionId, Pinned>,
+}
+
+/// One session's pinned facts: the advertising mode plus the encoding its
+/// wire resolved to — both fixed together at session start, both untouched by
+/// a later `SetModel` (§2/§3), so there's exactly one pin call per session.
+#[derive(Debug, Clone, Copy)]
+struct Pinned {
+    mode: ToolAdvertising,
+    encoding: Encoding,
 }
 
 impl SessionToolAdvertising {
@@ -176,19 +189,27 @@ impl SessionToolAdvertising {
         Self::default()
     }
 
-    /// Pin a session's mode. Called exactly once per session, at start.
-    pub fn pin(&mut self, session: SessionId, mode: ToolAdvertising) {
+    /// Pin a session's mode + encoding. Called exactly once per session, at
+    /// start.
+    pub fn pin(&mut self, session: SessionId, mode: ToolAdvertising, encoding: Encoding) {
         tracing::debug!(
             session = %session.0,
             mode = mode.label(),
+            encoding = encoding.label(),
             "tool advertising resolved for session (fixed for its lifetime)"
         );
-        self.modes.insert(session, mode);
+        self.modes.insert(session, Pinned { mode, encoding });
     }
 
     /// The session's pinned mode, or `None` when start hasn't been observed.
     pub fn get(&self, session: &SessionId) -> Option<ToolAdvertising> {
-        self.modes.get(session).copied()
+        self.modes.get(session).map(|p| p.mode)
+    }
+
+    /// The session's pinned encoding, or `None` when start hasn't been
+    /// observed — same "not a hole" contract as [`get`][Self::get].
+    pub fn get_encoding(&self, session: &SessionId) -> Option<Encoding> {
+        self.modes.get(session).map(|p| p.encoding)
     }
 
     /// Release a ended/hibernated session's entry. Derived state only — a
@@ -216,11 +237,11 @@ impl AdvertisingInputs {
         Self { config, catalog }
     }
 
-    /// Fold a session start into `modes`: pin the session's mode, resolved
-    /// from the pairing of its initial `SessionStarted.model` (a profile's
-    /// model field — a bare model id) with the `ModelChanged` a pin-driven
-    /// rebind emits right after, whichever carries a `(provider, model)`.
-    /// Called from the executor loop only, so `&mut` needs no lock.
+    /// Fold a session start into `modes`: pin the session's mode + encoding,
+    /// resolved from the pairing of its initial `SessionStarted.model` (a
+    /// profile's model field — a bare model id) with the `ModelChanged` a
+    /// pin-driven rebind emits right after, whichever carries a `(provider,
+    /// model)`. Called from the executor loop only, so `&mut` needs no lock.
     pub fn pin_session_start(
         &self,
         modes: &mut SessionToolAdvertising,
@@ -238,7 +259,16 @@ impl AdvertisingInputs {
             // is `tool_search` when unset — the new default).
             _ => configured_advertising(&self.config).unwrap_or_default(),
         };
-        modes.pin(session.clone(), mode);
+        // The encoding is wire-derived only (ADR-0196 §3) — no config/env
+        // override, unlike the mode — so it needs just the provider half
+        // when one is known; a bare model id still resolves it by finding
+        // which provider lists that id (mirrors `resolve_advertising_by_id`).
+        let encoding = match (provider, model) {
+            (Some(p), Some(_)) => resolve_encoding(self.catalog.as_deref(), p),
+            (None, Some(m)) => resolve_encoding_by_id(self.catalog.as_deref(), m),
+            _ => Encoding::default(),
+        };
+        modes.pin(session.clone(), mode, encoding);
     }
 
     /// Fold a `ModelChanged` into `modes`: **keep** the pinned mode, but log
@@ -333,6 +363,18 @@ impl AdvertisingState {
             .lock()
             .expect("tool-advertising mode mutex poisoned")
             .get(session)
+            .unwrap_or_default()
+    }
+
+    /// This session's pinned `ToolSearch`-mode encoding (ADR-0196 §3),
+    /// defaulting to [`Encoding::default`] (`client_side`) under the same
+    /// "not a hole in practice" contract as [`mode`][Self::mode]. Meaningless
+    /// under `Full` mode — nothing reads it there.
+    pub fn encoding(&self, session: &SessionId) -> Encoding {
+        self.modes
+            .lock()
+            .expect("tool-advertising mode mutex poisoned")
+            .get_encoding(session)
             .unwrap_or_default()
     }
 }

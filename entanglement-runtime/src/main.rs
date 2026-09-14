@@ -37,7 +37,7 @@ use entanglement_core::{
 };
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
-    ProviderEntry, ResolvedModel, ThinkingStyle, WebSearchConfig, Wire,
+    ProviderEntry, ResolvedModel, ThinkingStyle, ToolSpec, WebSearchConfig, Wire,
 };
 use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
@@ -1109,6 +1109,35 @@ fn launches_tui_head(cmd: &Option<Cmd>, prompt: &[String]) -> bool {
     }
 }
 
+/// The full deduped, name-sorted tool surface (#566): every visible registry
+/// spec plus the runtime-owned pseudo-tools, in one stable order independent
+/// of registration order. Shared by `Full` mode and the `anthropic_native`
+/// `ToolSearch` encoding (ADR-0196 §3) — the latter advertises this same
+/// surface, then additionally flags its non-kernel entries `defer_loading`.
+fn full_surface(visible_specs: Vec<ToolSpec>, runtime_specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
+    let mut specs = visible_specs;
+    specs.extend(runtime_specs);
+    // A runtime-owned pseudo-tool also present in the registry would appear
+    // twice; keep one. Sorting first makes duplicates adjacent.
+    specs.sort_by(|a, b| a.name.cmp(&b.name));
+    specs.dedup_by(|a, b| a.name == b.name);
+    specs
+}
+
+/// ADR-0196 §3, `anthropic_native` encoding: flag every spec `defer_loading`
+/// except the lean kernel (`tool_names::TOOL_SEARCH_KERNEL`) and anything
+/// already in `discovered` — split out of the resolver closure so this pure
+/// flagging logic is unit-testable on its own. The kernel is always present
+/// in `specs` (`full_surface`'s input always includes it), so at least one
+/// entry always comes out non-deferred — Anthropic's hard requirement.
+fn mark_anthropic_native_defer(specs: &mut [ToolSpec], discovered: &[String]) {
+    for spec in specs.iter_mut() {
+        let kernel = tool_names::TOOL_SEARCH_KERNEL.contains(&spec.name.as_str());
+        let already_discovered = discovered.iter().any(|n| n == &spec.name);
+        spec.defer_loading = !(kernel || already_discovered);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -1435,50 +1464,59 @@ async fn main() -> Result<()> {
             runtime_specs.push(discover::describe_spec());
 
             match advertising.mode(session) {
-                ToolAdvertising::Full => {
-                    let mut specs = visible_specs;
-                    specs.extend(runtime_specs);
-                    // Sorted by name (#566): `specs()` is already sorted, but
-                    // appending the runtime-owned pseudo-tools after it
-                    // reintroduces an unsorted tail — re-sort so the whole
-                    // array handed to the model (and thus the provider's
-                    // cached `tools` prefix) has one stable order,
-                    // independent of registration order and stable across
-                    // restarts.
-                    specs.sort_by(|a, b| a.name.cmp(&b.name));
-                    // A runtime-owned pseudo-tool also present in the
-                    // registry would appear twice; keep one. Sorting first
-                    // makes duplicates adjacent.
-                    specs.dedup_by(|a, b| a.name == b.name);
-                    specs
-                }
+                ToolAdvertising::Full => full_surface(visible_specs, runtime_specs),
                 ToolAdvertising::ToolSearch => {
-                    let mut kernel_pool = visible_specs;
-                    kernel_pool.extend(runtime_specs.iter().cloned());
-                    let mut specs: Vec<_> = kernel_pool
-                        .into_iter()
-                        .filter(|s| tool_names::TOOL_SEARCH_KERNEL.contains(&s.name.as_str()))
-                        .collect();
-                    specs.sort_by(|a, b| a.name.cmp(&b.name));
-                    specs.dedup_by(|a, b| a.name == b.name);
-
                     let discovered = advertising
                         .discovered
                         .lock()
                         .expect("discovered-tool mutex poisoned")
                         .names(session);
-                    for name in discovered {
-                        if specs.iter().any(|s| s.name == name) {
-                            continue; // already in the kernel prefix
+                    match advertising.encoding(session) {
+                        tool_advertising::Encoding::ClientSide => {
+                            let mut kernel_pool = visible_specs;
+                            kernel_pool.extend(runtime_specs.iter().cloned());
+                            let mut specs: Vec<_> = kernel_pool
+                                .into_iter()
+                                .filter(|s| {
+                                    tool_names::TOOL_SEARCH_KERNEL.contains(&s.name.as_str())
+                                })
+                                .collect();
+                            specs.sort_by(|a, b| a.name.cmp(&b.name));
+                            specs.dedup_by(|a, b| a.name == b.name);
+
+                            for name in discovered {
+                                if specs.iter().any(|s| s.name == name) {
+                                    continue; // already in the kernel prefix
+                                }
+                                let spec = registry.spec_for(&name).or_else(|| {
+                                    runtime_specs.iter().find(|s| s.name == name).cloned()
+                                });
+                                if let Some(spec) = spec {
+                                    specs.push(spec);
+                                }
+                            }
+                            specs
                         }
-                        let spec = registry
-                            .spec_for(&name)
-                            .or_else(|| runtime_specs.iter().find(|s| s.name == name).cloned());
-                        if let Some(spec) = spec {
-                            specs.push(spec);
+                        tool_advertising::Encoding::AnthropicNative => {
+                            // ADR-0196 §3: the full surface (same shape
+                            // `Full` mode advertises), but every non-kernel,
+                            // non-discovered tool is marked `defer_loading`
+                            // so the Anthropic client omits it from the
+                            // rendered/cached prompt until `describe()`
+                            // discovers it. The profile-defining specs
+                            // (`propose_plan`, `agent`/`agent_send`) aren't
+                            // in this resolver's output at all — core
+                            // appends them afterward (`cfg.profile_tool_specs`)
+                            // with `defer_loading` at its constructor
+                            // default (`false`), so they stay non-deferred
+                            // for free. The kernel alone guarantees at least
+                            // one non-deferred entry either way — Anthropic's
+                            // hard requirement.
+                            let mut specs = full_surface(visible_specs, runtime_specs);
+                            mark_anthropic_native_defer(&mut specs, &discovered);
+                            specs
                         }
                     }
-                    specs
                 }
             }
         }));
@@ -2016,5 +2054,54 @@ mod tests {
         for expected in ["read", "glob", "grep", "edit", "write", "apply_patch"] {
             assert!(names.contains(&expected.to_string()), "{names:?}");
         }
+    }
+
+    // ── ADR-0196 §3, `anthropic_native` ToolSearch encoding ─────────────
+
+    fn tool_spec(name: &str) -> entanglement_provider::ToolSpec {
+        entanglement_provider::ToolSpec::new(name, "d")
+    }
+
+    #[test]
+    fn full_surface_sorts_and_dedups_by_name() {
+        let visible = vec![tool_spec("write"), tool_spec("read")];
+        let runtime = vec![tool_spec("poll"), tool_spec("read")]; // duplicated
+        let specs = super::full_surface(visible, runtime);
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["poll", "read", "write"]);
+    }
+
+    #[test]
+    fn anthropic_native_defers_everything_outside_kernel_and_discovered() {
+        let mut specs = vec![
+            tool_spec("read"),         // kernel
+            tool_spec("bash"),         // kernel
+            tool_spec("glob"),         // not kernel, not discovered
+            tool_spec("mcp__x__tool"), // not kernel, discovered
+        ];
+        let discovered = vec!["mcp__x__tool".to_string()];
+        super::mark_anthropic_native_defer(&mut specs, &discovered);
+        let deferred: Vec<(&str, bool)> = specs
+            .iter()
+            .map(|s| (s.name.as_str(), s.defer_loading))
+            .collect();
+        assert_eq!(
+            deferred,
+            vec![
+                ("read", false),
+                ("bash", false),
+                ("glob", true),
+                ("mcp__x__tool", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn anthropic_native_keeps_at_least_the_kernel_non_deferred() {
+        // Even with nothing discovered yet, the kernel alone satisfies
+        // Anthropic's "at least one non-deferred tool" requirement.
+        let mut specs = vec![tool_spec("read"), tool_spec("glob"), tool_spec("grep")];
+        super::mark_anthropic_native_defer(&mut specs, &[]);
+        assert!(specs.iter().any(|s| !s.defer_loading));
     }
 }

@@ -112,11 +112,11 @@ mod tests {
 
         let advertising = Arc::new(AdvertisingState::new());
         let session = SessionId::new("s");
-        advertising
-            .modes
-            .lock()
-            .unwrap()
-            .pin(session.clone(), ToolAdvertising::Full);
+        advertising.modes.lock().unwrap().pin(
+            session.clone(),
+            ToolAdvertising::Full,
+            crate::tool_advertising::Encoding::ClientSide,
+        );
         let today = crate::date::today_utc();
         let profile = AgentProfile {
             name: "build".into(),
@@ -145,11 +145,11 @@ mod tests {
 
         let advertising = Arc::new(AdvertisingState::new());
         let session = SessionId::new("s");
-        advertising
-            .modes
-            .lock()
-            .unwrap()
-            .pin(session.clone(), ToolAdvertising::ToolSearch);
+        advertising.modes.lock().unwrap().pin(
+            session.clone(),
+            ToolAdvertising::ToolSearch,
+            crate::tool_advertising::Encoding::ClientSide,
+        );
         let today = crate::date::today_utc();
         let profile = AgentProfile {
             name: "build".into(),

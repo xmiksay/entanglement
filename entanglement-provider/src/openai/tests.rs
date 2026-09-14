@@ -599,6 +599,53 @@ fn assistant_provider_search_block_renders_as_appended_text() {
     assert_eq!(out[0]["content"], "found it\n\n[web_search] rust");
 }
 
+// ── tool search / deferred loading foreign-wire fallback (ADR-0196 §3) ──
+
+#[test]
+fn tool_result_tool_reference_degrades_to_portable_text() {
+    // A `ToolReference` block persisted from an `anthropic_native` session
+    // (e.g. history replaying after a live `/model` switch to this wire) has
+    // no native mechanism here — it degrades to a plain text line rather
+    // than silently vanishing from the request.
+    let tool_result = Message::tool_content(
+        "call_1",
+        vec![
+            ContentPart::text("[{\"name\":\"search_files\"}]"),
+            ContentPart::tool_reference("search_files"),
+        ],
+    );
+    let out = convert_messages(&[tool_result], ThinkingSpec::default());
+    assert_eq!(
+        out[0]["content"],
+        "[{\"name\":\"search_files\"}]\n[discovered tool: search_files]"
+    );
+}
+
+#[test]
+fn request_body_with_a_tool_reference_never_emits_the_native_key() {
+    // Regression guard for the whole request, not just the one message:
+    // `defer_loading` and `tool_reference` are Anthropic-only wire concepts
+    // that must never appear on this wire's JSON, whatever the tool's flag
+    // or the message content carries.
+    let mut deferred = ToolSpec::new("search_files", "search the workspace");
+    deferred.defer_loading = true;
+    let tool_result =
+        Message::tool_content("call_1", vec![ContentPart::tool_reference("search_files")]);
+    let body = build_body(
+        "glm-5.2",
+        "sys",
+        &[msg(MessageRole::User, "hi"), tool_result],
+        &[deferred],
+        None,
+        None,
+        None,
+        ThinkingSpec::default(),
+    );
+    let dumped = serde_json::to_string(&body).unwrap();
+    assert!(!dumped.contains("tool_reference"), "{dumped}");
+    assert!(!dumped.contains("defer_loading"), "{dumped}");
+}
+
 // ── stream robustness: [DONE] terminator + trailing-frame flush (#483) ────
 
 #[test]

@@ -7,7 +7,9 @@ use tokio::sync::broadcast;
 
 use super::Session;
 use crate::protocol::{AgentState, OutEvent, SessionId};
-use entanglement_provider::{content_has_image, ContentPart, ImageSource, Usage};
+use entanglement_provider::{
+    content_has_image, tool_reference_fallback_text, ContentPart, ImageSource, Usage,
+};
 
 /// Atomically bump the session's monotonic `seq` and return the new value. The
 /// counter is shared (`Arc<AtomicU64>`, #157) so a runtime-authored event minted
@@ -181,6 +183,12 @@ fn tool_output_display(content: &[ContentPart]) -> String {
             // tool executor does not — but the match is exhaustive, and showing
             // nothing is the right answer if one ever appeared.
             ContentPart::Reasoning { .. } => String::new(),
+            // `describe()`'s reply on an `anthropic_native` ToolSearch session
+            // (ADR-0196 §3) carries one of these per discovered tool, alongside
+            // its schema text — reuse the same portable rendering a foreign
+            // wire's request converter falls back to, so a head shows the same
+            // "discovered X" line regardless of which wire is live.
+            ContentPart::ToolReference { tool_name } => tool_reference_fallback_text(tool_name),
         })
         .collect()
 }

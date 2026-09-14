@@ -5,14 +5,14 @@
 //! successfully resolved name also joins the session's discovered set, so
 //! the next round's `tool_spec_resolver` advertises it directly.
 
-use entanglement_core::{Holly, SessionId, ToolAdvertising, ToolSpec};
+use entanglement_core::{ContentPart, Holly, SessionId, ToolAdvertising, ToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::mcp::McpScopes;
 use crate::seam;
 use crate::skills::SkillRegistry;
-use crate::tool_advertising::AdvertisingState;
+use crate::tool_advertising::{AdvertisingState, Encoding};
 use crate::tools::{closest_name, ToolRegistry};
 
 use super::runtime_owned_specs;
@@ -107,7 +107,13 @@ fn unknown_entry(
 
 /// Resolve every requested name against the given inputs, marking each
 /// success into `discovered` when `mode` is `ToolSearch` — the pure core of
-/// `describe`, independent of the tool round-trip.
+/// `describe`, independent of the tool round-trip. Returns the schema
+/// entries alongside the names that actually resolved (in call order) — the
+/// `anthropic_native` encoding (ADR-0196 §3) needs that second list to build
+/// `tool_reference` parts for exactly the tools now safely referenceable
+/// (each one's full definition is present, `defer_loading: true`, in the
+/// same request's `tools` array); referencing a name that failed to resolve
+/// isn't a tool in that array at all and would 400.
 async fn build_entries(
     registry: &ToolRegistry,
     skills: &SkillRegistry,
@@ -116,8 +122,9 @@ async fn build_entries(
     session: &SessionId,
     mode: ToolAdvertising,
     names: &[String],
-) -> Vec<Value> {
+) -> (Vec<Value>, Vec<String>) {
     let mut entries = Vec::with_capacity(names.len());
+    let mut resolved = Vec::new();
     for name in names {
         match resolve_spec(registry, mcp_scopes, session, name).await {
             Ok(spec) => {
@@ -128,12 +135,13 @@ async fn build_entries(
                         .expect("discovered-tool mutex poisoned")
                         .mark(session, name);
                 }
+                resolved.push(name.clone());
                 entries.push(spec_to_json(&spec));
             }
             Err(mcp_error) => entries.push(unknown_entry(registry, skills, name, mcp_error)),
         }
     }
-    entries
+    (entries, resolved)
 }
 
 /// Dispatch `describe`: parse, resolve every name, reply. Always-`Allow`/
@@ -179,7 +187,7 @@ pub async fn run_describe(
     };
 
     let mode = advertising.mode(&session);
-    let entries = build_entries(
+    let (entries, resolved) = build_entries(
         &registry,
         skills,
         mcp_scopes,
@@ -190,7 +198,23 @@ pub async fn run_describe(
     )
     .await;
     let output = serde_json::to_string_pretty(&entries).unwrap_or_default();
-    seam::reply(holly, session, request_id, output, false).await;
+
+    // ADR-0196 §3, `anthropic_native` encoding: append a `tool_reference`
+    // part per newly-resolved name alongside the schema text this reply
+    // already carries — the API auto-expands each reference into the
+    // matching (already-sent, `defer_loading: true`) tool definition. Every
+    // other encoding, and a `Full`-mode session (where nothing is deferred
+    // to begin with), keeps the plain text reply unchanged.
+    if mode == ToolAdvertising::ToolSearch
+        && advertising.encoding(&session) == Encoding::AnthropicNative
+        && !resolved.is_empty()
+    {
+        let mut content = vec![ContentPart::text(output)];
+        content.extend(resolved.into_iter().map(ContentPart::tool_reference));
+        seam::reply_content(holly, session, request_id, content, false, None, None).await;
+    } else {
+        seam::reply(holly, session, request_id, output, false).await;
+    }
 }
 
 #[cfg(test)]
@@ -235,7 +259,7 @@ mod tests {
         let reg = registry();
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");
-        let entries = build_entries(
+        let (entries, _resolved) = build_entries(
             &reg,
             &SkillRegistry::default(),
             None,
@@ -255,11 +279,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolved_names_list_matches_only_successful_lookups() {
+        // ADR-0196 §3: `run_describe` needs exactly this list to know which
+        // names are safe to reference on the `anthropic_native` encoding —
+        // an unresolved name must never appear in it.
+        let reg = registry();
+        let advertising = AdvertisingState::new();
+        let session = SessionId::new("s");
+        let (entries, resolved) = build_entries(
+            &reg,
+            &SkillRegistry::default(),
+            None,
+            &advertising,
+            &session,
+            ToolAdvertising::ToolSearch,
+            &["glob".to_string(), "nope".to_string()],
+        )
+        .await;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(resolved, vec!["glob".to_string()]);
+    }
+
+    #[tokio::test]
     async fn full_mode_resolves_but_does_not_mark_discovered() {
         let reg = registry();
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");
-        let entries = build_entries(
+        let (entries, _resolved) = build_entries(
             &reg,
             &SkillRegistry::default(),
             None,
@@ -287,7 +333,7 @@ mod tests {
         let reg = ToolRegistry::new();
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");
-        let entries = build_entries(
+        let (entries, _resolved) = build_entries(
             &reg,
             &SkillRegistry::default(),
             None,
@@ -305,7 +351,7 @@ mod tests {
         let reg = registry();
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");
-        let entries = build_entries(
+        let (entries, _resolved) = build_entries(
             &reg,
             &SkillRegistry::default(),
             None,
@@ -333,7 +379,7 @@ mod tests {
         });
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");
-        let entries = build_entries(
+        let (entries, _resolved) = build_entries(
             &reg,
             &skills,
             None,
@@ -380,7 +426,7 @@ mod tests {
         );
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");
-        let entries = build_entries(
+        let (entries, _resolved) = build_entries(
             &reg,
             &SkillRegistry::default(),
             Some(scopes.as_ref()),

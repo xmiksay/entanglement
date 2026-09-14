@@ -143,10 +143,24 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
             MessageRole::Tool => {
                 let id = m.tool_call_id.clone().unwrap_or_default();
                 let name = tool_name_from_id(&id).to_string();
+                // ADR-0196 §3: a `ToolReference` block persisted from an
+                // `anthropic_native` session (e.g. history replaying after a
+                // live `/model` switch to this wire) has no native mechanism
+                // here — fold its portable text line into the function
+                // response result rather than silently dropping it.
+                let mut result_text = m.text();
+                for p in &m.content {
+                    if let ContentPart::ToolReference { tool_name } = p {
+                        if !result_text.is_empty() {
+                            result_text.push('\n');
+                        }
+                        result_text.push_str(&crate::tool_reference_fallback_text(tool_name));
+                    }
+                }
                 let mut parts = vec![json!({
                     "functionResponse": {
                         "name": name,
-                        "response": { "result": m.text() },
+                        "response": { "result": result_text },
                     }
                 })];
                 for p in &m.content {
@@ -205,6 +219,14 @@ fn content_parts(content: &[ContentPart]) -> Vec<Value> {
             // part is not answer content — rendering it as `text` would inject
             // the model's reasoning into history as if it had said it.
             ContentPart::Reasoning { .. } => None,
+            // Not expected here in practice — a `ToolReference` only ever
+            // rides tool-result content, handled separately in
+            // `convert_messages`' `MessageRole::Tool` arm — but the match is
+            // exhaustive, so degrade the same way that arm does rather than
+            // silently drop it if one ever did reach this path.
+            ContentPart::ToolReference { tool_name } => {
+                Some(json!({ "text": crate::tool_reference_fallback_text(tool_name) }))
+            }
         })
         .collect()
 }
@@ -509,6 +531,30 @@ mod request_tests {
         );
         assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
         assert_eq!(parts[1]["inlineData"]["data"], "AAAA");
+    }
+
+    #[test]
+    fn tool_result_tool_reference_degrades_to_portable_text() {
+        // ADR-0196 §3: a `ToolReference` block persisted from an
+        // `anthropic_native` session (e.g. history replaying after a live
+        // `/model` switch to this wire) has no native mechanism here —
+        // folds into the function response's `result` text instead of
+        // silently vanishing.
+        let msg = Message::tool_content(
+            "search#1",
+            vec![
+                ContentPart::text("schema text"),
+                ContentPart::tool_reference("search_files"),
+            ],
+        );
+        let contents = convert_messages(&[msg]);
+        let fr = &contents[0]["parts"][0]["functionResponse"];
+        assert_eq!(
+            fr["response"]["result"],
+            "schema text\n[discovered tool: search_files]"
+        );
+        let dumped = serde_json::to_string(&contents).unwrap();
+        assert!(!dumped.contains("tool_reference"), "{dumped}");
     }
 
     #[test]

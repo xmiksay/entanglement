@@ -146,8 +146,58 @@ fn map_pins_reads_and_forgets() {
         None,
         "unpinned reads as absent, not a resolved default"
     );
-    modes.pin(s.clone(), ToolAdvertising::Full);
+    assert_eq!(modes.get_encoding(&s), None);
+    modes.pin(s.clone(), ToolAdvertising::Full, Encoding::AnthropicNative);
     assert_eq!(modes.get(&s), Some(ToolAdvertising::Full));
+    assert_eq!(modes.get_encoding(&s), Some(Encoding::AnthropicNative));
     modes.forget(&s);
     assert_eq!(modes.get(&s), None);
+    assert_eq!(modes.get_encoding(&s), None);
+}
+
+/// A provider on each wire this crate cares about (ADR-0196 §3): `anthro`
+/// speaks the Anthropic wire, `p` falls to `Wire`'s default (`openai`) by
+/// omitting the field entirely — exercising the same "unset means openai"
+/// path every z.ai/OpenAI/Ollama catalog entry takes.
+fn wired_catalog() -> Catalog {
+    serde_yaml::from_str(
+        "providers:\n  - name: p\n    default_model: plain\n    models:\n      - id: plain\n  \
+         - name: anthro\n    wire: anthropic\n    default_model: claude_model\n    models:\n      \
+         - id: claude_model\n",
+    )
+    .expect("test catalog parses")
+}
+
+#[test]
+fn encoding_resolves_from_the_provider_wire() {
+    let catalog = wired_catalog();
+    assert_eq!(
+        resolve_encoding(Some(&catalog), "anthro"),
+        Encoding::AnthropicNative
+    );
+    assert_eq!(resolve_encoding(Some(&catalog), "p"), Encoding::ClientSide);
+    // An unknown provider, or no catalog at all, is not an error — it just
+    // contributes no preference, falling to the safe default.
+    assert_eq!(
+        resolve_encoding(Some(&catalog), "nope"),
+        Encoding::ClientSide
+    );
+    assert_eq!(resolve_encoding(None, "anthro"), Encoding::ClientSide);
+}
+
+#[test]
+fn encoding_by_id_finds_the_owning_providers_wire() {
+    let catalog = wired_catalog();
+    assert_eq!(
+        resolve_encoding_by_id(Some(&catalog), "claude_model"),
+        Encoding::AnthropicNative
+    );
+    assert_eq!(
+        resolve_encoding_by_id(Some(&catalog), "plain"),
+        Encoding::ClientSide
+    );
+    assert_eq!(
+        resolve_encoding_by_id(Some(&catalog), "unknown_id"),
+        Encoding::ClientSide
+    );
 }

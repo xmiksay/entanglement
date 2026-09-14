@@ -57,6 +57,17 @@ pub struct ToolSpec {
     /// JSON Schema for the tool's input object (surfaces as Anthropic's
     /// `input_schema`). Defaults to a permissive empty-object schema.
     pub schema: serde_json::Value,
+    /// Anthropic-wire-only (ADR-0196 §3, the `anthropic_native` `ToolSearch`
+    /// encoding): when true, the Anthropic client marks this tool's request
+    /// entry `"defer_loading": true` — the full definition is still sent on
+    /// every request (the API needs it server-side to run search and expand
+    /// `tool_reference` blocks), but it is stripped from the rendered/cached
+    /// prompt until a `describe()` call discovers it. Every other wire
+    /// (OpenAI-compat, Gemini) ignores this field entirely — their `ToolSpec`
+    /// → wire-JSON converters never read it. Defaults `false` so every
+    /// existing [`new`][Self::new]/[`with_schema`][Self::with_schema] call
+    /// site, and thus every existing wire serialization, is unaffected.
+    pub defer_loading: bool,
 }
 
 impl ToolSpec {
@@ -65,6 +76,7 @@ impl ToolSpec {
             name: name.into(),
             description: description.into(),
             schema: serde_json::json!({ "type": "object", "properties": {} }),
+            defer_loading: false,
         }
     }
 
@@ -77,6 +89,7 @@ impl ToolSpec {
             name: name.into(),
             description: description.into(),
             schema,
+            defer_loading: false,
         }
     }
 }
@@ -663,6 +676,16 @@ mod tests {
             generation: None,
             cache_key: None,
         }
+    }
+
+    #[test]
+    fn tool_spec_constructors_default_defer_loading_to_false() {
+        // ADR-0196 §3: every existing call site (`new`/`with_schema`) must
+        // keep producing a non-deferred spec with no code change — the wire
+        // converters then omit `defer_loading` entirely for these, exactly
+        // matching every pre-#560 golden.
+        assert!(!ToolSpec::new("greet", "say hi").defer_loading);
+        assert!(!ToolSpec::with_schema("greet", "say hi", serde_json::json!({})).defer_loading);
     }
 
     #[test]
