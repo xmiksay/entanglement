@@ -43,36 +43,46 @@ toggle, a `SetAgent`, or a skill load (see [agents &
 permissions](agents-and-permissions.md) §physical tool restriction for the
 attributed decline a masked call gets instead).
 
-**Two tool-call modes** (ADR-0193): the surface above is what **native mode**
-(the default) advertises — the full registered surface with dynamic MCP specs
-inline, mutating on add/remove (an accepted cache cost). **Invoke mode**
-(per-model opt-in) advertises instead an **immutable lean kernel**: the
+**Two advertising modes** (`ToolAdvertising`,
+[ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md),
+superseding ADR-0193's `native`/`invoke` split): the surface above is what
+**`Full`** mode advertises — the full registered surface with dynamic MCP
+specs inline, mutating on add/remove (an accepted cache cost). **`ToolSearch`**
+mode (**the default**) advertises instead an **immutable lean kernel**: the
 high-frequency tools (`read`/`edit`/`apply_patch`/`write`/`bash`/`poll`/
-`ask_user`/`update_tasks`/`load_skill`) plus `invoke` and the discovery trio
-(`tools`/`skills`/`describe`) plus the profile-defining specs (the
-ADR-0192 carve-out — they vary across profiles, never within a session).
-Everything else (`call`/`glob`/`grep`/`rhai`, MCP management, all `mcp__*`,
-endpoints, skill tools) stays **registered but unadvertised** — invoke-reachable
-and discoverable only, so the advertised array and the system prompt are
-**byte-stable for the session's lifetime**, including across `mcp_enable` and
-`McpAdd` (the dynamic seams native mode still carries). The mode is
-**per-session, resolved at session start** from the session's initial model
-(`ModelEntry.tool_call`, precedence env `ENTANGLEMENT_TOOL_CALL_MODE` >
-`config.yml` `tool_call_mode` > catalog > default `native`) and held in a
-runtime-side session→mode map — the resolver and executor are engine-global and
-session-multiplexed, and per-profile model pins mean concurrent sessions can
-run different modes. A live `SetModel` **keeps** the session's mode (logged
-when the new model's catalog preference differs — switching mid-session would
-bust the cache the mode exists to protect); subagents resolve their own mode
-at spawn. Mechanically the mode is the resolver's input shape, not a core
-concept: core still advertises whatever the `tool_spec_resolver` yields, and
-`invoke`'s envelope is unwrapped runtime-side at the top of the dispatch
-ladder ([gates & host tools](gates-and-host-tools.md) §invoke router) — so
-from core's perspective a `invoke(read)` round-trip is an ordinary
-`ToolCall`/`ToolResult` pair, and the emitted `invoke(...)` call is kept in
-history under the same call id. In invoke mode the system prompt drops the
-skills/dynamic-tool rosters for a one-line pointer at
-`tools`/`skills`/`describe` (native mode keeps today's sections).
+`ask_user`/`update_tasks`/`load_skill`) plus the discovery pair
+(`explore`/`describe`) plus the profile-defining specs (the ADR-0192
+carve-out — they vary across profiles, never within a session). Everything
+else (`call`/`glob`/`grep`/`rhai`, MCP management, all `mcp__*`, endpoints,
+skill tools) stays **registered but unadvertised** — dispatchable by name the
+moment the model calls it, discoverable via `explore`, schema-delivered via
+`describe`. There is no router tool: a discovered tool is called exactly like
+a kernel one, by its real name.
+
+The mode is **per-session, resolved at session start** from the session's
+initial model (`ModelEntry.tool_advertising`, precedence env
+`ENTANGLEMENT_TOOL_ADVERTISING` > `config.yml` `tool_advertising` > catalog >
+default `ToolSearch`) and held in a runtime-side session→mode map — the
+resolver and executor are engine-global and session-multiplexed, and
+per-profile model pins mean concurrent sessions can run different modes. A
+live `SetModel` **keeps** the session's mode (logged when the new model's
+catalog preference differs — switching mid-session would bust the cache the
+mode exists to protect); subagents resolve their own mode at spawn.
+
+Mechanically the mode is the resolver's input shape, not a core concept: core
+still advertises whatever the `tool_spec_resolver` yields, re-consulted fresh
+every round. Under `ToolSearch` mode's `client_side` wire encoding (OpenAI-
+compat Chat Completions incl. z.ai, Ollama, Gemini), each `describe()` call
+grows that resolver's output by appending the described tool's spec to a
+session-keyed discovered set — **append-only, never removed**, so the
+advertised array only ever grows and each discovery costs one cache
+invalidation, not a continuous one. The `anthropic_native` and
+`responses_native` encodings instead lean on each wire's own
+`defer_loading`/`tool_search` primitive (see
+[provider](provider.md) and [gates & host tools](gates-and-host-tools.md)
+§Discovery and lazy tool search for the wire-level detail). In `ToolSearch`
+mode the system prompt drops the skills/dynamic-tool rosters for a one-line
+pointer at `explore`/`describe` (`Full` mode keeps today's sections).
 
 The assembled tools go into `LlmRequest { system,
 model, messages, tools }` → consume the streamed `LlmEvent`s (emit `TextDelta`

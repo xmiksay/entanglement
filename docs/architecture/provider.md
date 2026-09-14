@@ -170,6 +170,27 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   image blocks ride as trailing `inlineData` parts alongside the
   `functionResponse` part in the same turn (#447).
 
+**Tool search / deferred loading (planned,
+[ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md))**
+— a `ToolSearch`-mode session reaches most of its registry through discovery
+rather than up-front advertisement, and two of the three per-wire encodings
+that carry a discovered schema to the model are provider-crate seams, not
+runtime-side workarounds: `ToolSpec.defer_loading: bool` (planned addition,
+serde-default `false`) marks a non-kernel tool so the Anthropic client omits
+it from the rendered/cached prompt until discovered, per Anthropic's own
+`defer_loading` contract; a new `ContentPart::ToolReference` (planned)
+carries the `tool_reference` blocks a `describe()` tool result returns on
+that wire, which the API auto-expands into the full definition. A new
+Responses-API client (planned, `openai/responses`) speaks OpenAI's distinct
+flat `input`/`output` item shape (not `/chat/completions`' `messages` array)
+for the `responses_native` encoding, answering a model's `tool_search_call`
+with a `tool_search_output` item. The third encoding, `client_side` (the
+z.ai-priority path, plus Ollama/Gemini), needs no provider-crate change at
+all — it rides the existing `tool_spec_resolver` seam entirely runtime-side.
+This section stays brief by design: the seam is what belongs here, the full
+wire contracts (request/response JSON, streaming event shapes, per-provider
+quirks) live in `scratch/tool-search-wire-reference.md`.
+
 **Provider-side web search** (#305,
 [ADR-0075](../adr/0075-provider-side-web-search-mvp.md); post-MVP follow-ups
 #481, [ADR-0131](../adr/0131-web-search-post-mvp-follow-ups.md)) — opt-in,

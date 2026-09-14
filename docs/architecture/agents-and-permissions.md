@@ -473,19 +473,19 @@ below realize one model:
   typing `/set …`/`/show` directly, or from the `Ctrl+P` palette (a palette
   pick of `/set` prefills the input with `/set ` since the palette carries no
   trailing args, while `/show` runs immediately).
-- **Tool-call mode knob (ADR-0193,
-  [0193](../adr/0193-two-tool-call-modes-and-lazy-tool-discovery.md)):** the
-  per-session `native | invoke` mode (see [engine](engine.md) §turn loop)
-  resolves from the session's initial model via `ModelEntry.tool_call` —
-  the same `Option<Enum>` catalog pattern as `thinking_style` — with
-  precedence **env (`ENTANGLEMENT_TOOL_CALL_MODE`) > `config.yml`
-  `tool_call_mode` > catalog > default `native`**. The mode is held in a
-  runtime-side session→mode map (the resolver and executor are
-  engine-global and session-multiplexed; per-profile model pins mean
-  concurrent sessions can differ), is **fixed at session start** — a live
-  `SetModel` keeps it, logged when the new model's catalog preference
-  differs — and a subagent resolves its own at spawn. `skutter inspect
-  config` prints the resolved mode.
+- **Tool-advertising mode knob**
+  ([ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md),
+  superseding ADR-0193's `native`/`invoke` split): the per-session
+  `Full | ToolSearch` mode (see [engine](engine.md) §turn loop) resolves from
+  the session's initial model via `ModelEntry.tool_advertising` — the same
+  `Option<Enum>` catalog pattern as `thinking_style` — with precedence **env
+  (`ENTANGLEMENT_TOOL_ADVERTISING`) > `config.yml` `tool_advertising` >
+  catalog > default `ToolSearch`**. The mode is held in a runtime-side
+  session→mode map (the resolver and executor are engine-global and
+  session-multiplexed; per-profile model pins mean concurrent sessions can
+  differ), is **fixed at session start** — a live `SetModel` keeps it, logged
+  when the new model's catalog preference differs — and a subagent resolves
+  its own at spawn. `skutter inspect config` prints the resolved mode.
 - **Live reload + managed-file locking (✅ #329, [ADR-0084](../adr/0084-runtime-live-reload-and-managed-file-locking.md)):**
   a runtime-side `watch.rs` watches every resolvable agent/skill dir plus
   `${config_dir}/entanglement/` and `<root>/.entanglement/` (`notify`, debounced
@@ -610,8 +610,15 @@ below realize one model:
   overlay, no skill filter. The universal, session-stable surface is the
   registry tools (`read`/`write`/`edit`/`glob`/`grep`/`call`, `rhai` when the
   feature is on), `bash` (registered at startup, ADR-0195), `update_tasks`,
-  `ask_user`, `load_skill` and `poll` — the **lean kernel** invoke mode
-  narrows this to (ADR-0193; see [engine](engine.md) §turn loop). Two categories legitimately vary and
+  `ask_user`, `load_skill` and `poll` — the **lean kernel** `ToolSearch` mode
+  narrows this to
+  ([ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md);
+  see [engine](engine.md) §turn loop), plus the discovery pair `explore`/
+  `describe` — advertised in **both** modes and, unlike every other tool in
+  this list, **fully non-maskable**: no profile mask, session overlay, or
+  deny entry can withdraw them even at dispatch (the ADR-0190 `poll` pattern,
+  extended to two more tools — contrast `poll` itself, which a mask can still
+  decline at dispatch per the note below, just not un-advertise). Two categories legitimately vary and
   stay outside it: **profile-defining specs** — `propose_plan` (advertised
   only to a profile explicitly allowlisting it) and the `agent`/`agent_send`
   spawn family (gated to `may_spawn()` profiles, with a per-profile
