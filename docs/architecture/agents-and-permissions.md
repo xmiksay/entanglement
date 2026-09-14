@@ -118,6 +118,27 @@ below realize one model:
     on approve, run the tool and reply `ToolResult`; on reject, reply
     `ToolResult("…rejected…")`.
   - `Deny` → reply `ToolResult("…denied…")` without running the tool.
+- **Compound `bash` commands grade per segment (✅ #560 follow-up,
+  [ADR-0197](../adr/0197-compound-bash-commands-grade-per-segment.md)):** an
+  argument-scoped `bash(pattern)` rule no longer glob-matches the whole raw
+  `command` string as one blob — that let a trailing `*` swallow a shell
+  operator (`bash(find *): allow` covering `find . && rm -rf /`) and, in the
+  other direction, left a compound that doesn't start with an allowed verb
+  stuck on `Ask` forever. `runtime::shell_split` conservatively splits on
+  top-level `&&`/`\|\|`/`;`/`\|`/`&`/newline (quote- and escape-aware),
+  returning `Opaque` — never a guess — for redirection, command/process
+  substitution, a heredoc, or subshell grouping. `runtime::permission_bash::
+  resolve_scoped_bash_aware` is the drop-in `resolve_scoped` replacement
+  every `bash`-arg call site now routes through (the ancestor-chain fold,
+  the config ceiling clamp, the tool-overlay grade, `rhai`'s bindings via
+  `script::BindingPolicy`): the whole string grades first (a `Deny` there
+  wins outright — deny is never weakened by splitting), `Opaque` re-resolves
+  with no argument (an arg-scoped **Allow** can't fire against a construct
+  the splitter didn't parse), and `Segments` folds each one independently
+  with `min_permission` — a simple command is one segment, byte-identical to
+  today. `call` (argv-exec, no shell, ADR-0093) and the exact-match grant
+  store (`runtime::grants`) are untouched — core's `resolve_scoped`/
+  `glob_match` stay unaware this exists.
 - **Capability-level permission keys (✅ #418, [ADR-0114](../adr/0114-capability-level-permission-keys.md),
   part of the #416 epic):** a rule key may also be a **capability** —
   `read`/`write`/`call` — instead of a literal tool name. Expanded at **parse
@@ -332,7 +353,11 @@ below realize one model:
   (a user `bash: ask` ceiling forces the prompt back over a curated Allow).
   The list is deliberately short and exact-prefix — no `git *` (it writes),
   no `echo *` (redirection writes), no class patterns — and grows only by a
-  reviewed embedded-defaults change.
+  reviewed embedded-defaults change. Since [ADR-0197](../adr/0197-compound-bash-commands-grade-per-segment.md)
+  these Allow rules grade each top-level segment of a compound command
+  independently (`find . | grep x | wc -l` allows with no prompt) instead of
+  the whole raw string, closing the over-match a trailing `*` used to open
+  (`find . && rm -rf /` no longer rides `bash(find *)`).
 - **Live tool-overlay grades compose with the ceiling too (✅ #498/#539,
   originally [ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md),
   generalized by

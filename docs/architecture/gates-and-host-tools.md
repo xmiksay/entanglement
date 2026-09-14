@@ -351,7 +351,9 @@ guessing again:
   no `echo *` — redirection writes; no class patterns), and the config
   ceiling still clamps least-privilege over every grade: a user ceiling of
   `bash: ask` (or `bash(find *): ask`) forces the prompt back over any
-  curated Allow, exactly as it clamps a profile's own `Allow`. See
+  curated Allow, exactly as it clamps a profile's own `Allow`. Graded per
+  top-level segment of a compound command, not the whole raw string, since
+  [ADR-0197](../adr/0197-compound-bash-commands-grade-per-segment.md). See
   [agents & permissions](agents-and-permissions.md) §permission ceiling.
   **Advertisement (ADR-0196):** `call` is registered but **unadvertised
   under `ToolSearch` mode** — it sits outside the lean kernel, reachable via

@@ -353,7 +353,10 @@ pub fn clamp_to_base(
     arg: Option<&str>,
     workdir: Option<&str>,
 ) -> Permission {
-    min_permission(perm, base.resolve_scoped(tool, arg, workdir))
+    min_permission(
+        perm,
+        crate::permission_bash::resolve_scoped_bash_aware(base, tool, arg, workdir),
+    )
 }
 
 /// The [`PermissionProfile`] an **enable** [`ToolOverlayEntry`] materializes
@@ -422,7 +425,9 @@ pub(crate) fn permission_for(
 ) -> Permission {
     active
         .get(session)
-        .map(|p| p.permission.resolve_scoped(tool, arg, workdir))
+        .map(|p| {
+            crate::permission_bash::resolve_scoped_bash_aware(&p.permission, tool, arg, workdir)
+        })
         .unwrap_or(Permission::Deny)
 }
 
@@ -1471,6 +1476,137 @@ mod tests {
         );
     }
 
+    /// ADR-0197: a compound command built entirely of allowed verbs grades
+    /// `Allow` through the ancestor-chain fold, without needing the whole raw
+    /// string to match a single rule.
+    #[test]
+    fn compound_command_allowed_when_every_segment_matches() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask)
+                .with("bash(find *)", Permission::Allow)
+                .with("bash(grep *)", Permission::Allow)
+                .with("bash(wc *)", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "bash",
+                Some("find . | grep x | wc -l"),
+                None
+            ),
+            Permission::Allow
+        );
+    }
+
+    /// ADR-0197 regression: the over-match hole a trailing `*` used to open —
+    /// `bash(find *): allow` must never authorize an appended `rm -rf /` via
+    /// `&&`.
+    #[test]
+    fn compound_command_over_match_regression_asks() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "bash",
+                Some("find . && rm -rf /tmp/x"),
+                None
+            ),
+            Permission::Ask
+        );
+    }
+
+    /// ADR-0197: a compound whose leading verb has no rule at all (not just an
+    /// unmatched allow) still resolves through the segment fold to `Ask`.
+    #[test]
+    fn compound_command_with_unmatched_leading_verb_asks() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "bash",
+                Some("git status && find ."),
+                None
+            ),
+            Permission::Ask
+        );
+    }
+
+    /// ADR-0197: a deny rule matching only a *later* segment still denies the
+    /// whole compound — the deny doesn't need to be the leading verb.
+    #[test]
+    fn compound_command_deny_on_trailing_segment_denies_the_whole_command() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask)
+                .with("bash(find *)", Permission::Allow)
+                .with("bash(rm *)", Permission::Deny),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(&active, &guard, &root, "bash", Some("find . && rm x"), None),
+            Permission::Deny
+        );
+    }
+
+    /// ADR-0197: output redirection is opaque to the splitter, so an
+    /// arg-scoped Allow must not fire — `find . > out.txt` still asks despite
+    /// `bash(find *): allow`.
+    #[test]
+    fn compound_command_redirect_still_asks_despite_curated_allow() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "bash",
+                Some("find . > out.txt"),
+                None
+            ),
+            Permission::Ask
+        );
+    }
+
     #[test]
     fn argument_scoped_rule_resolves_for_search_tools() {
         // #417: grep/glob now yield a path-shaped arg, so a `read`-style
@@ -1544,6 +1680,37 @@ mod tests {
         );
         assert_eq!(
             clamp_to_base(Permission::Allow, &base, "bash", Some("git status"), None),
+            Permission::Allow
+        );
+    }
+
+    /// ADR-0197: the ceiling's own per-segment fold still applies *after* the
+    /// already-folded ancestor grade — a `bash(rm *): deny` ceiling denies a
+    /// compound even when the incoming `perm` (from the agent chain) is
+    /// `Allow`.
+    #[test]
+    fn clamp_to_base_folds_compound_command_per_segment() {
+        let base = PermissionProfile::new(Permission::Allow).with("bash(rm *)", Permission::Deny);
+        assert_eq!(
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "bash",
+                Some("find . && rm x"),
+                None
+            ),
+            Permission::Deny
+        );
+        // All segments clear the ceiling — the incoming `Allow` stands.
+        let base = PermissionProfile::new(Permission::Allow).with("bash(rm *)", Permission::Deny);
+        assert_eq!(
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "bash",
+                Some("find . && git status"),
+                None
+            ),
             Permission::Allow
         );
     }

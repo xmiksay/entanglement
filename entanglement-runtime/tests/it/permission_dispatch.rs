@@ -1545,3 +1545,202 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
         "the clamped command must not run"
     );
 }
+
+// --- ADR-0197: compound bash commands grade per segment ---------------------
+
+/// A compound pipeline built entirely from curated read-only verbs runs with
+/// no approval round-trip — the curated Allow rules now grade each top-level
+/// segment instead of only the whole raw string.
+#[tokio::test]
+async fn compound_pipeline_of_curated_verbs_runs_without_approval() {
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let holly = spawn_with_exec_tools_using(
+        &serde_json::json!({ "command": "find . | grep x | wc -l" }).to_string(),
+        profiles,
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "every segment of `find . | grep x | wc -l` is curated read-only — no approval expected; got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("find ."))),
+        "the pipeline should run; got {events:?}"
+    );
+}
+
+/// The over-match regression this ADR closes: a trailing `*` on
+/// `bash(find *)` must never authorize an `&&`-appended command it doesn't
+/// cover.
+#[tokio::test]
+async fn compound_over_match_regression_still_escalates() {
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let holly = spawn_with_exec_tools_using(
+        &serde_json::json!({ "command": "find . && rm -rf /tmp/x" }).to_string(),
+        profiles,
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let mut got_request = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            got_request = true;
+            break;
+        }
+    }
+    assert!(
+        got_request,
+        "`find . && rm -rf /tmp/x` must not ride `bash(find *): allow` past the `&&`"
+    );
+}
+
+/// A deny rule matching only the trailing segment of a compound still denies
+/// the whole command — deny is never weakened by splitting.
+#[tokio::test]
+async fn compound_command_deny_on_trailing_segment_denies_via_dispatch() {
+    let holly = spawn_with_bash_call_using(
+        &serde_json::json!({ "command": "git status && rm x" }).to_string(),
+        scoped_bash_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedbash".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("denied"))),
+        "the trailing `rm x` segment matches `bash(rm *): deny` — the whole \
+         command must be denied; got {events:?}"
+    );
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
+        ),
+        "a denied compound must not run"
+    );
+}
+
+/// Grants stay exact whole-string match (`GrantKey`, unchanged): approving
+/// `ls` as a standalone command does not widen to a compound that merely
+/// contains `ls` as one of its segments — that compound still asks (rule-
+/// based per-segment Allow, not grant widening, is ADR-0197's fix for the
+/// common case).
+#[tokio::test]
+async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segment() {
+    let call = |id: &str, command: &str| LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            input: serde_json::json!({ "command": command }).to_string(),
+            provider_meta: None,
+        }],
+    };
+    let ok = || LlmResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![call("t1", "ls"), ok(), call("t2", "ls && pwd"), ok()]);
+    let profiles = ask_bash_registry();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        PermissionProfile::new(Permission::Allow),
+    );
+
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "askbash".into(),
+        })
+        .await
+        .unwrap();
+
+    // Turn 1: approve the exact standalone command `ls` for the session.
+    let sub1 = holly.subscribe();
+    let mut watch1 = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
+    let mut asked = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch1.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            asked = true;
+            break;
+        }
+    }
+    assert!(asked, "turn 1 should prompt for approval");
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "t1".into(),
+            scope: entanglement_core::ApprovalScope::Session,
+        })
+        .await
+        .unwrap();
+    let _turn1 = collect(sub1, &sid).await;
+
+    // Turn 2: `ls && pwd` contains the granted segment but is a different
+    // whole string, and no rule covers either segment — must still ask.
+    let mut watch2 = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "run again"))
+        .await
+        .unwrap();
+    let mut asked_again = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch2.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            asked_again = true;
+            break;
+        }
+    }
+    assert!(
+        asked_again,
+        "a compound merely containing a granted segment must still ask"
+    );
+}

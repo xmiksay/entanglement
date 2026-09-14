@@ -81,6 +81,7 @@ use crate::permission::{
     ancestor_chain, min_permission, overlay_entry_grade, overlay_grade_entry, permission_chain,
     permission_workdir, tool_masked,
 };
+use crate::permission_bash::resolve_scoped_bash_aware;
 use crate::permission_path::grading_arg;
 use crate::seam;
 use crate::subagent::SpawnGuard;
@@ -232,21 +233,22 @@ impl BindingPolicy {
         let workdir = permission_workdir(tool, input);
         let perm = match self.overlay.get(tool) {
             Some(entry) => {
-                let grade = overlay_entry_grade(tool, entry).resolve_scoped(
+                let overlay_profile = overlay_entry_grade(tool, entry);
+                let grade = resolve_scoped_bash_aware(
+                    &overlay_profile,
                     tool,
                     arg.as_deref(),
                     workdir.as_deref(),
                 );
                 min_permission(
                     grade,
-                    self.base
-                        .resolve_scoped(tool, arg.as_deref(), workdir.as_deref()),
+                    resolve_scoped_bash_aware(&self.base, tool, arg.as_deref(), workdir.as_deref()),
                 )
             }
             None => self.chain.iter().fold(Permission::Allow, |acc, p| {
                 min_permission(
                     acc,
-                    p.resolve_scoped(tool, arg.as_deref(), workdir.as_deref()),
+                    resolve_scoped_bash_aware(p, tool, arg.as_deref(), workdir.as_deref()),
                 )
             }),
         };
@@ -1493,6 +1495,50 @@ mod tests {
         ));
         assert!(matches!(
             policy.decide("edit", r#"{"path":"Cargo.toml"}"#),
+            Decision::Perm(Permission::Ask)
+        ));
+    }
+
+    /// ADR-0197: a rhai `bash()` binding grades a compound pipeline
+    /// per-segment too, not as one full-string glob match — mirroring
+    /// `tool_runner::dispatch`'s direct-call behavior for the same command.
+    #[test]
+    fn binding_policy_grades_compound_bash_per_segment() {
+        use entanglement_core::{AgentMode, PermissionProfile};
+
+        let profile = AgentProfile {
+            name: "build".into(),
+            description: String::new(),
+            mode: AgentMode::Primary,
+            system_prompt: String::new(),
+            model: None,
+            provider: None,
+            permission: PermissionProfile::new(Permission::Ask)
+                .with("bash(find *)", Permission::Allow)
+                .with("bash(grep *)", Permission::Allow),
+            tools: None,
+            disallowed_tools: Vec::new(),
+            can_spawn: None,
+            spawnable_agents: None,
+            sandbox: None,
+        };
+        let session = SessionId::new("s");
+        let mut active = HashMap::new();
+        active.insert(session.clone(), profile);
+        let guard = SpawnGuard::new();
+        let base = PermissionProfile::new(Permission::Allow);
+        let policy =
+            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+
+        // Every segment matches an Allow rule — the whole pipeline is allowed.
+        assert!(matches!(
+            policy.decide("bash", r#"{"command":"find . | grep x"}"#),
+            Decision::Perm(Permission::Allow)
+        ));
+        // `rm` has no rule — the compound falls through to `Ask`, not the
+        // over-match a full-string `bash(find *)` glob would have produced.
+        assert!(matches!(
+            policy.decide("bash", r#"{"command":"find . && rm -rf /tmp/x"}"#),
             Decision::Perm(Permission::Ask)
         ));
     }

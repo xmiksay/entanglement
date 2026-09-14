@@ -1598,7 +1598,9 @@ async fn dispatch(
     let workdir = crate::permission::permission_workdir(&tool, &input);
     let base_perm = match overlay_entry {
         Some(entry) => {
-            let grade = crate::permission::overlay_entry_grade(&tool, &entry).resolve_scoped(
+            let overlay_profile = crate::permission::overlay_entry_grade(&tool, &entry);
+            let grade = crate::permission_bash::resolve_scoped_bash_aware(
+                &overlay_profile,
                 &tool,
                 arg.as_deref(),
                 workdir.as_deref(),
