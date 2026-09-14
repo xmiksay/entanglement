@@ -30,6 +30,11 @@
 pub mod agent_registry;
 pub mod agent_send;
 pub mod agents;
+// Pre-dispatch argument validation against a tool's advertised `ToolSpec`
+// schema (#560, ADR-0196 §6): the three-way error taxonomy (schema
+// violation / parameter error / command failure) plus the delivered-schema
+// and loop-breaker guards.
+pub mod arg_validate;
 pub mod ask_user;
 pub mod aux_llm;
 pub mod cancel;

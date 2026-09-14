@@ -21,8 +21,11 @@ use super::runtime_owned_specs;
 /// registered [`Tool`][crate::tools::Tool]'s name/description/schema, never
 /// round-tripped through JSON on the advertising path) — this is the
 /// byte-identical rendering `describe` promises: the same three fields, same
-/// names, no reformatting.
-fn spec_to_json(spec: &ToolSpec) -> Value {
+/// names, no reformatting. `pub(crate)`: also reused by
+/// [`crate::arg_validate`] (ADR-0196 §6) so a schema-violation decline's
+/// "correct usage" block is byte-identical to what `describe`/the native
+/// `<tools>` entry would show — never a second, drifting rendering.
+pub(crate) fn spec_to_json(spec: &ToolSpec) -> Value {
     json!({
         "name": spec.name,
         "description": spec.description,

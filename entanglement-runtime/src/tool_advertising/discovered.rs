@@ -1,6 +1,10 @@
 //! Session-keyed discovered-tool set (#560, ADR-0196 §3 — `client_side`
-//! encoding): grows only via a successful `describe()` call under a
-//! `ToolSearch`-mode session, **never shrinks mid-session** — the resolver
+//! encoding): grows via a successful `describe()` call under a
+//! `ToolSearch`-mode session, or (ADR-0196 §6) via
+//! [`crate::arg_validate`]'s schema-violation decline delivering a tool's
+//! full schema regardless of mode — both share this same tracking so the
+//! decline guard never re-sends a schema `describe()` (or a prior decline)
+//! already put in context. **Never shrinks mid-session** — the resolver
 //! appends these names' specs after the lean kernel, so the advertised
 //! array's prefix (kernel + profile-defining specs) never changes, only its
 //! tail grows. Discovery order is preserved, not re-sorted: sorting the whole
@@ -42,6 +46,17 @@ impl DiscoveredSet {
     /// extra tail yet".
     pub fn names(&self, session: &SessionId) -> Vec<String> {
         self.per_session.get(session).cloned().unwrap_or_default()
+    }
+
+    /// Whether `name`'s schema was already delivered to `session` this
+    /// session — via a `describe()` result or (ADR-0196 §6)
+    /// [`crate::arg_validate`]'s schema-violation decline, which also calls
+    /// [`mark`][Self::mark]. The delivered-schema dedup guard reads this
+    /// before re-sending a full schema on a repeat violation.
+    pub fn contains(&self, session: &SessionId, name: &str) -> bool {
+        self.per_session
+            .get(session)
+            .is_some_and(|names| names.iter().any(|n| n == name))
     }
 
     /// Release an ended/hibernated session's entry. A resume starts

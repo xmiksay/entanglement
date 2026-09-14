@@ -46,6 +46,7 @@ use entanglement_core::{
 use crate::tools::{SharedRegistry, ToolExecution, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::arg_validate;
 use crate::cancel::{CancelAllOnDrop, CancelRegistry, TaskCanceller};
 use crate::discover;
 use crate::hooks::Hooks;
@@ -380,12 +381,18 @@ impl EscapeRoot {
 /// `explore`/`describe`'s shared inputs (#560, ADR-0196 §4), bundled into one
 /// struct — see [`spawn_tool_executor_with_policy`]'s `discovery` param.
 /// `Default` gives every field's own empty/private state: an advertising
-/// state no external resolver shares, and an empty MCP roster.
+/// state no external resolver shares, an empty MCP roster, and a private
+/// loop-breaker tracker.
 #[derive(Default)]
 pub struct DiscoverySurface {
     pub advertising: SharedAdvertisingState,
     pub mcp_avail: Arc<AvailableMcp>,
     pub mcp_active: ActiveServers,
+    /// The pre-dispatch argument-validation loop-breaker guard (#560,
+    /// ADR-0196 §6) — bundled here rather than as a fourth top-level param
+    /// since it's session-keyed state alongside `advertising`, read/written
+    /// by the same `dispatch`/`run_and_reply` call sites.
+    pub validation: Arc<arg_validate::LoopBreaker>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -443,6 +450,7 @@ pub fn spawn_tool_executor_with_policy(
         advertising,
         mcp_avail,
         mcp_active,
+        validation,
     } = discovery.unwrap_or_default();
     let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
@@ -863,6 +871,10 @@ pub fn spawn_tool_executor_with_policy(
                         .lock()
                         .expect("discovered-tool mutex poisoned")
                         .forget(&session);
+                    // The loop-breaker's last-call tracker (#560, ADR-0196
+                    // §6) is equally session-scoped — nothing to break a
+                    // loop against once the session is gone.
+                    validation.forget(&session);
                 }
                 // A skill's tool mask scopes one model turn (#400, ADR-0106):
                 // clear it here so a later turn can `load_skill` a different one
@@ -1437,6 +1449,8 @@ pub fn spawn_tool_executor_with_policy(
                             let pending = pending.clone();
                             let escape_root = escape_root.clone();
                             let mcp_scopes = mcp_scopes.clone();
+                            let advertising = advertising.clone();
+                            let validation = validation.clone();
                             // Register so a `Stop` aborts this task mid-execution:
                             // aborting the future drops the exec tool's child,
                             // firing its process-group SIGKILL guard (#167/#168).
@@ -1477,6 +1491,8 @@ pub fn spawn_tool_executor_with_policy(
                                     escape_root.as_ref(),
                                     overlay_entry,
                                     &ceiling,
+                                    &advertising,
+                                    &validation,
                                     session,
                                     request_id,
                                     tool,
@@ -1533,6 +1549,11 @@ async fn dispatch(
     // still wins.
     overlay_entry: Option<entanglement_core::ToolOverlayEntry>,
     ceiling: &PermissionProfile,
+    // Pre-dispatch argument-validation state (#560, ADR-0196 §6): the
+    // delivered-schema dedup (shares `advertising.discovered` with `describe`,
+    // ADR-0196 §4) and the loop-breaker's per-session last-call tracker.
+    advertising: &tool_advertising::AdvertisingState,
+    validation: &arg_validate::LoopBreaker,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -1599,6 +1620,8 @@ async fn dispatch(
                 skills,
                 active_skill,
                 hooks,
+                advertising,
+                validation,
                 session,
                 request_id,
                 tool,
@@ -1643,6 +1666,8 @@ async fn dispatch(
                 active_skill,
                 grants,
                 hooks,
+                advertising,
+                validation,
                 rx,
                 escape_grant,
                 session,
@@ -1672,6 +1697,8 @@ async fn await_decision(
     active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
     grants: &dyn GrantStore,
     hooks: &Hooks,
+    advertising: &tool_advertising::AdvertisingState,
+    validation: &arg_validate::LoopBreaker,
     rx: tokio::sync::oneshot::Receiver<seam::Decision>,
     escape_grant: Option<(Arc<crate::extra_roots::ExtraRootStore>, std::path::PathBuf)>,
     session: SessionId,
@@ -1705,6 +1732,8 @@ async fn await_decision(
                 skills,
                 active_skill,
                 hooks,
+                advertising,
+                validation,
                 session,
                 request_id,
                 tool,
@@ -1737,6 +1766,8 @@ async fn run_and_reply(
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
     active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
     hooks: &Hooks,
+    advertising: &tool_advertising::AdvertisingState,
+    validation: &arg_validate::LoopBreaker,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -1758,6 +1789,45 @@ async fn run_and_reply(
             .await;
         seam::reply(holly, session, request_id, ack, false).await;
         return;
+    }
+    // Pre-dispatch argument validation (#560, ADR-0196 §6): a call whose
+    // input violates the tool's advertised schema (missing/unexpected
+    // properties, a type mismatch) never reaches `Tool::run` at all — it gets
+    // a specific complaint instead of `run()`'s opaque parse-failure text.
+    // A tool absent from the registry (a runtime-owned pseudo-tool like
+    // `update_tasks`/`ask_user`/`poll`, already handled above or dispatched
+    // elsewhere) has no advertised schema here, so it's exempt by
+    // construction — nothing to validate against.
+    if let Some(spec) = tools.spec_for(&tool) {
+        if let Some(violation) = arg_validate::validate(&spec.schema, &input) {
+            tracing::warn!(
+                tool = %tool,
+                violation = ?violation.lines(),
+                "tool call failed pre-dispatch schema validation"
+            );
+            let already_delivered = advertising
+                .discovered
+                .lock()
+                .expect("discovered-tool mutex poisoned")
+                .contains(&session, &tool);
+            if !already_delivered {
+                advertising
+                    .discovered
+                    .lock()
+                    .expect("discovered-tool mutex poisoned")
+                    .mark(&session, &tool);
+            }
+            let mut output = arg_validate::decline_text(&spec, &violation, already_delivered);
+            if validation.note(&session, &tool, &input, true) {
+                output.push_str("\n\n");
+                output.push_str(arg_validate::LOOP_BREAKER_NOTE);
+            }
+            hooks
+                .run_post_tool_use(&session, &tool, &input, &output, true, None)
+                .await;
+            seam::reply(holly, session, request_id, output, true).await;
+            return;
+        }
     }
     // Every other tool executes against the host registry, returning multimodal
     // content (a text result, or an image block for `read` on an image, #221)
@@ -1786,11 +1856,26 @@ async fn run_and_reply(
     .await;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let ToolExecution {
-        content,
+        mut content,
         is_error,
         exit_code,
     } = execution;
-    let output_text = entanglement_core::content_text(&content);
+    let mut output_text = entanglement_core::content_text(&content);
+    // Loop-breaker guard (#560, ADR-0196 §6): two identical failing calls in a
+    // row — same tool, same input, both `is_error` — mean the schema was
+    // never the problem. Deliberately generic across every failure kind
+    // (unknown-tool and schema-violation return earlier, above/in `dispatch`;
+    // this covers a runtime tool error and an MCP required-param rejection
+    // alike). A non-error result never triggers the note, matching decision
+    // 3: a command failure (non-zero exit) is untouched.
+    if validation.note(&session, &tool, &input, is_error) && is_error {
+        output_text.push_str("\n\n");
+        output_text.push_str(arg_validate::LOOP_BREAKER_NOTE);
+        content.push(entanglement_core::ContentPart::text(format!(
+            "\n\n{}",
+            arg_validate::LOOP_BREAKER_NOTE
+        )));
+    }
     // #400, ADR-0106: a successful `load_skill` activates the session's
     // skill-scoped tool mask for the rest of this turn — parsed from the
     // result's `skill_id:` header (absent on a failed load: unknown/`user_only`

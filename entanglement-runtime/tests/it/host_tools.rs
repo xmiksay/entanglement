@@ -683,6 +683,80 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     assert!(output.contains("shell-ok"), "got: {output}");
 }
 
+/// #560/ADR-0196 §6 audit: a `bash` foreground call that exits non-zero is a
+/// legitimate result, not a structural failure — the model must read it, not
+/// be steered to "fix the call". `exit_code` (ADR-0186) carries the fact on
+/// its own orthogonal channel; `is_error` must stay `false`.
+#[tokio::test]
+async fn bash_non_zero_exit_is_not_is_error_through_engine_under_build_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-bash-exit-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let bash_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "b1".into(),
+            name: "bash".into(),
+            input: r#"{"command":"exit 3"}"#.into(),
+            provider_meta: None,
+        }],
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![bash_call, finish]);
+    let mut tools = host_tools(root.clone());
+    tools.register(BashTool::new(root.clone()));
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "run it"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    let (output, is_error, exit_code) = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::ToolOutput {
+                output,
+                is_error,
+                exit_code,
+                ..
+            } => Some((output.clone(), *is_error, *exit_code)),
+            _ => None,
+        })
+        .expect("expected a ToolOutput");
+    assert!(output.contains("[exit 3]"), "got: {output}");
+    assert!(!is_error, "a non-zero exit must not set is_error; got true");
+    assert_eq!(exit_code, Some(3));
+}
+
 #[tokio::test]
 async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
     let id = std::process::id();

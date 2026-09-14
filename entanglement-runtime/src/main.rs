@@ -1573,6 +1573,7 @@ async fn main() -> Result<()> {
             advertising: advertising_state,
             mcp_avail: mcp_available.clone(),
             mcp_active: mcp_active.clone(),
+            validation: std::sync::Arc::new(entanglement_runtime::arg_validate::LoopBreaker::new()),
         }),
     );
 

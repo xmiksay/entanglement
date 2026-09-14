@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -68,10 +68,11 @@ impl Tool for McpTool {
         } else {
             serde_json::from_str(input).context("MCP tool arguments must be a JSON object")?
         };
-        // Reject a call missing a required parameter before it ever reaches the
-        // server (#594) — the server's own JSON-RPC validation error is far less
-        // legible to the model than naming the missing field ourselves.
-        check_required(&self.schema, &arguments, &self.name)?;
+        // #594's required-param pre-check used to live here; it's now
+        // subsumed by the uniform pre-dispatch validation in
+        // `crate::arg_validate` (ADR-0196 §6), which runs against this same
+        // `self.schema` (the server's `inputSchema`) before `run` is ever
+        // called — so a missing/malformed argument never reaches this point.
         let result = self.client.call_tool(&self.remote_name, arguments).await?;
         // MCP servers are the one tool source the runtime doesn't author — cap
         // their results with the same 32 KiB bound every host tool honors, so a
@@ -112,27 +113,6 @@ fn render_result(result: &Value) -> String {
     } else {
         body.to_string()
     }
-}
-
-/// Check `arguments` against `schema`'s top-level `required` array, bailing with
-/// a clear message naming the first missing field rather than letting the MCP
-/// server reject the call with a cryptic JSON-RPC error (#594).
-fn check_required(schema: &Value, arguments: &Value, name: &str) -> Result<()> {
-    let Some(required) = schema.get("required").and_then(Value::as_array) else {
-        return Ok(());
-    };
-    for field in required {
-        let Some(field) = field.as_str() else {
-            continue;
-        };
-        let present = arguments
-            .as_object()
-            .is_some_and(|obj| obj.contains_key(field));
-        if !present {
-            bail!("tool `{name}` requires parameter `{field}`");
-        }
-    }
-    Ok(())
 }
 
 /// The advertised, collision-free, sanitized name for `tool` on `server`
@@ -237,65 +217,36 @@ mod tests {
         assert_eq!(t.schema(), json!({ "type": "object", "properties": {} }));
     }
 
-    fn def_with_required(name: &str, required: &[&str]) -> McpToolDef {
-        McpToolDef {
-            name: name.to_string(),
-            description: "a tool".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": required,
-            }),
-        }
-    }
-
-    #[test]
-    fn check_required_passes_when_no_required_array() {
-        let schema = json!({ "type": "object", "properties": {} });
-        assert!(check_required(&schema, &json!({}), "t").is_ok());
-    }
-
-    #[test]
-    fn check_required_passes_when_all_fields_present() {
-        let schema = json!({ "required": ["id"] });
-        assert!(check_required(&schema, &json!({ "id": "abc" }), "t").is_ok());
-    }
-
-    #[test]
-    fn check_required_rejects_missing_field() {
-        let schema = json!({ "required": ["id"] });
-        let err = check_required(&schema, &json!({}), "mcp__chess__get_puzzle").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "tool `mcp__chess__get_puzzle` requires parameter `id`"
-        );
-    }
-
+    // The required-param pre-check that used to live in `run` (#594) moved to
+    // `crate::arg_validate`'s uniform pre-dispatch validation (ADR-0196 §6),
+    // which runs against `McpTool::schema()` (the server's own `inputSchema`,
+    // unmodified) before `run` is ever called — this is that same mechanism
+    // exercised registry-level, the way `tool_runner::run_and_reply` actually
+    // calls it (`tools.spec_for` → `arg_validate::validate`/`decline_text`).
     #[tokio::test]
-    async fn run_rejects_call_missing_a_required_parameter() {
+    async fn wrong_args_decline_carries_the_servers_input_schema_verbatim() {
         let t = McpTool::new(
             dead_client(),
             "chess",
-            def_with_required("get_puzzle", &["id"]),
+            McpToolDef {
+                name: "get_puzzle".to_string(),
+                description: "fetch a puzzle".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "id": { "type": "string" } },
+                    "required": ["id"],
+                }),
+            },
         );
-        let err = t.run("{}").await.unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "tool `mcp__chess__get_puzzle` requires parameter `id`"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_rejects_empty_input_when_a_parameter_is_required() {
-        let t = McpTool::new(
-            dead_client(),
-            "chess",
-            def_with_required("get_puzzle", &["id"]),
-        );
-        let err = t.run("").await.unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "tool `mcp__chess__get_puzzle` requires parameter `id`"
-        );
+        let mut reg = crate::tools::ToolRegistry::new();
+        reg.register_arc(std::sync::Arc::new(t));
+        let spec = reg.spec_for("mcp__chess__get_puzzle").unwrap();
+        let violation = crate::arg_validate::validate(&spec.schema, "{}").unwrap();
+        let decline = crate::arg_validate::decline_text(&spec, &violation, false);
+        assert!(decline.contains("missing required: id"), "{decline}");
+        // The server's own `inputSchema` surfaces verbatim in the decline, not
+        // a re-derived shape.
+        assert!(decline.contains("\"required\""), "{decline}");
+        assert!(decline.contains("\"id\""), "{decline}");
     }
 }
