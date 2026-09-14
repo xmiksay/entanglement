@@ -554,7 +554,19 @@ session-scoped view, `overlay_registry_for_call`,
 [ADR-0188](../adr/0188-session-keyed-per-user-mcp-scopes.md), so per-user MCP
 scopes resolve correctly for the asking session). Under `client_side`
 encoding (below), `describe` additionally appends the described tool's spec
-into the session's advertised array.
+into the session's advertised array. **Repeat-`describe` dedup** (#560
+follow-up: a looping model was observed calling `describe(["glob"])` up to
+131 times, each reply re-paying the full schema): a name already present in
+the session's `DiscoveredSet` — via an earlier `describe()` or an
+`arg_validate` schema-violation decline sharing the same set (§Error taxonomy
+below) — gets a short pointer line instead (`discover::describe::
+already_delivered_entry`), worded truthfully per
+[ADR-0200](../adr/0200-fields-reasoning-capture-and-advertise-discovered.md)'s
+`advertise_discovered`: an append-mode session is told the tool is now
+directly callable, a frozen-array session is told the schema still stands
+without the false claim that the array grew. A mixed request resolves each
+name independently, so new names in the same call still get their full
+schema.
 
 Both are internal tools in the
 [ADR-0190](../adr/0190-poll-is-always-on-non-maskable-internal-tool.md)

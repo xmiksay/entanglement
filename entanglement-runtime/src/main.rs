@@ -1507,6 +1507,7 @@ async fn main() -> Result<()> {
         engine_config.llm_factory.clone(),
         catalog.clone(),
         primary_concurrency,
+        (provider_name.clone(), model_info.id.clone()),
     );
     // Route session compaction (both `/compact` and the auto-summarize overflow
     // path) through the `summarize` pin when one is set — core calls this with

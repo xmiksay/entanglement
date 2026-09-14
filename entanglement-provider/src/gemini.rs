@@ -234,7 +234,7 @@ impl Llm for GeminiLlm {
                     self.concurrency,
                     &model,
                     model_concurrency,
-                    None,
+                    req.retry,
                     || {
                         self.http
                             .client()

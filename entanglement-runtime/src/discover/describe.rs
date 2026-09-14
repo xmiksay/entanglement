@@ -110,15 +110,48 @@ fn unknown_entry(
     json!({ "name": name, "error": msg })
 }
 
-/// Resolve every requested name against the given inputs, marking each
+/// The short-line reply for a name whose schema this session's
+/// [`DiscoveredSet`][crate::tool_advertising::DiscoveredSet] already shows as
+/// delivered (#560 describe-dedup follow-up: a model stuck re-`describe`-ing
+/// an unchanging tool — seen looping up to 131 times on one name — must not
+/// keep re-paying, and re-reading, the same schema JSON every round). Worded
+/// per whether the discovered tail is actually growing the advertised array
+/// (ADR-0200's `advertise_discovered`): an append-mode session can truthfully
+/// say the tool is now directly callable; a frozen-array session must not —
+/// the schema stands from where it was first shown, but the tool never
+/// joined the advertised list, so claiming otherwise would be false.
+fn already_delivered_entry(
+    advertising: &AdvertisingState,
+    session: &SessionId,
+    name: &str,
+) -> Value {
+    let note = if advertising.advertise_discovered(session) {
+        format!("{name}: schema already provided above — the tool is ready to call")
+    } else {
+        format!(
+            "{name}: schema already provided above — this session does not \
+             auto-advertise discovered tools (the tool list won't show it), \
+             but the schema already shown is still valid and the call will \
+             still dispatch"
+        )
+    };
+    json!({ "name": name, "note": note })
+}
+
+/// Resolve every requested name against the given inputs, marking each new
 /// success into `discovered` when `mode` is `ToolSearch` — the pure core of
-/// `describe`, independent of the tool round-trip. Returns the schema
-/// entries alongside the names that actually resolved (in call order) — the
-/// `anthropic_native` encoding (ADR-0196 §3) needs that second list to build
-/// `tool_reference` parts for exactly the tools now safely referenceable
-/// (each one's full definition is present, `defer_loading: true`, in the
-/// same request's `tools` array); referencing a name that failed to resolve
-/// isn't a tool in that array at all and would 400.
+/// `describe`, independent of the tool round-trip. A name already present in
+/// `discovered` (a prior `describe()` this session, or an `arg_validate`
+/// schema-violation decline, ADR-0196 §6 — same set) short-circuits to
+/// [`already_delivered_entry`] instead of re-resolving and re-emitting the
+/// full schema (#560 describe-dedup follow-up). Returns the schema entries
+/// alongside the names that were *newly* resolved this round (in call
+/// order) — the `anthropic_native` encoding (ADR-0196 §3) needs that second
+/// list to build `tool_reference` parts for exactly the tools now safely
+/// referenceable (each one's full definition is present, `defer_loading:
+/// true`, in the same request's `tools` array); a name that failed to
+/// resolve, or was already delivered in an earlier round, is deliberately
+/// excluded.
 async fn build_entries(
     registry: &ToolRegistry,
     skills: &SkillRegistry,
@@ -131,6 +164,15 @@ async fn build_entries(
     let mut entries = Vec::with_capacity(names.len());
     let mut resolved = Vec::new();
     for name in names {
+        let already_delivered = advertising
+            .discovered
+            .lock()
+            .expect("discovered-tool mutex poisoned")
+            .contains(session, name);
+        if already_delivered {
+            entries.push(already_delivered_entry(advertising, session, name));
+            continue;
+        }
         match resolve_spec(registry, mcp_scopes, session, name).await {
             Ok(spec) => {
                 if mode == ToolAdvertising::ToolSearch {
@@ -253,9 +295,32 @@ mod tests {
         }
     }
 
+    struct FakeGrep;
+    #[async_trait]
+    impl Tool for FakeGrep {
+        fn name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("grep")
+        }
+        fn description(&self) -> &str {
+            "search file contents"
+        }
+        fn schema(&self) -> Value {
+            json!({ "type": "object", "properties": { "pattern": { "type": "string" } } })
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
     fn registry() -> ToolRegistry {
         let mut r = ToolRegistry::new();
         r.register(Fake);
+        r
+    }
+
+    fn registry_with_grep() -> ToolRegistry {
+        let mut r = registry();
+        r.register(FakeGrep);
         r
     }
 
@@ -475,5 +540,156 @@ mod tests {
         .await;
         let err = entries[0]["error"].as_str().unwrap();
         assert!(err.contains("requires authorization"), "{err}");
+    }
+
+    /// Pin a session's mode/encoding directly through the public `modes`
+    /// field — mirrors `tool_advertising::overlay`'s own test helper; the
+    /// executor loop normally does this via `AdvertisingInputs` off a
+    /// `SessionStarted`, more machinery than these tests need.
+    fn pin(advertising: &AdvertisingState, session: &SessionId, encoding: Encoding) {
+        advertising.modes.lock().unwrap().pin(
+            session.clone(),
+            ToolAdvertising::ToolSearch,
+            encoding,
+        );
+    }
+
+    /// #560 describe-dedup follow-up: a second `describe()` of a name already
+    /// delivered this session gets a short pointer line, not the full schema
+    /// again — the fix for a model looping `describe(["glob"])` up to 131
+    /// times, each reply re-paying the full schema JSON.
+    #[tokio::test]
+    async fn second_describe_of_the_same_name_sends_a_short_line_not_the_full_schema() {
+        let reg = registry();
+        let advertising = AdvertisingState::new();
+        let session = SessionId::new("s");
+
+        let (first, _resolved) = build_entries(
+            &reg,
+            &SkillRegistry::default(),
+            None,
+            &advertising,
+            &session,
+            ToolAdvertising::ToolSearch,
+            &["glob".to_string()],
+        )
+        .await;
+        assert!(
+            first[0].get("schema").is_some(),
+            "first delivery is full: {first:?}"
+        );
+
+        let (second, resolved) = build_entries(
+            &reg,
+            &SkillRegistry::default(),
+            None,
+            &advertising,
+            &session,
+            ToolAdvertising::ToolSearch,
+            &["glob".to_string()],
+        )
+        .await;
+        assert!(
+            second[0].get("schema").is_none(),
+            "repeat delivery must not resend the schema: {second:?}"
+        );
+        let note = second[0]["note"].as_str().expect("a short note entry");
+        assert!(note.contains("glob"), "{note}");
+        assert!(note.contains("schema already provided above"), "{note}");
+        assert!(
+            note.contains("ready to call"),
+            "default (append) session must say the tool is callable: {note}"
+        );
+        assert!(
+            resolved.is_empty(),
+            "a repeat delivery is not newly resolved, so it must not appear in `resolved`: {resolved:?}"
+        );
+    }
+
+    /// #560 follow-up: a request mixing an already-delivered name with a new
+    /// one sends the full schema for the new tool and the short line for the
+    /// repeat, in the same reply.
+    #[tokio::test]
+    async fn mixed_request_sends_full_schema_for_new_and_a_short_line_for_repeats() {
+        let reg = registry_with_grep();
+        let advertising = AdvertisingState::new();
+        let session = SessionId::new("s");
+        advertising
+            .discovered
+            .lock()
+            .unwrap()
+            .mark(&session, "glob");
+
+        let (entries, resolved) = build_entries(
+            &reg,
+            &SkillRegistry::default(),
+            None,
+            &advertising,
+            &session,
+            ToolAdvertising::ToolSearch,
+            &["glob".to_string(), "grep".to_string()],
+        )
+        .await;
+
+        assert!(
+            entries[0].get("note").is_some() && entries[0].get("schema").is_none(),
+            "glob was already delivered: {:?}",
+            entries[0]
+        );
+        assert!(
+            entries[1].get("schema").is_some() && entries[1].get("note").is_none(),
+            "grep is new, so it gets the full schema: {:?}",
+            entries[1]
+        );
+        assert_eq!(
+            resolved,
+            vec!["grep".to_string()],
+            "only the newly-resolved name joins `resolved`"
+        );
+    }
+
+    /// #560 follow-up: under a `client_side` session that opted out of
+    /// growing its advertised array (ADR-0200's `advertise_discovered:
+    /// false`), the short-line wording must not claim the tool is now
+    /// "ready to call" — it never joined the advertised list, so that would
+    /// be false. It states the truth instead: the schema stands, the tool
+    /// list just won't show it.
+    #[tokio::test]
+    async fn already_delivered_wording_is_truthful_under_a_frozen_advertised_array() {
+        let reg = registry();
+        let advertising = AdvertisingState::new();
+        let session = SessionId::new("s");
+        pin(&advertising, &session, Encoding::ClientSide);
+        advertising
+            .modes
+            .lock()
+            .unwrap()
+            .set_advertise_discovered(&session, false);
+        advertising
+            .discovered
+            .lock()
+            .unwrap()
+            .mark(&session, "glob");
+
+        let (entries, _resolved) = build_entries(
+            &reg,
+            &SkillRegistry::default(),
+            None,
+            &advertising,
+            &session,
+            ToolAdvertising::ToolSearch,
+            &["glob".to_string()],
+        )
+        .await;
+        let note = entries[0]["note"].as_str().expect("a short note entry");
+        assert!(note.contains("schema already provided above"), "{note}");
+        assert!(
+            !note.contains("ready to call"),
+            "a frozen-array session must not falsely claim the tool is now callable: {note}"
+        );
+        assert!(
+            note.contains("does not auto-advertise"),
+            "the wording must truthfully explain why: {note}"
+        );
     }
 }

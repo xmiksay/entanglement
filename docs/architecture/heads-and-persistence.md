@@ -465,6 +465,28 @@ transformation). Three consumers reach it by deliberately different routes:
   that call's task finishes, so the next tool call after that gets a fresh
   narration.
 
+**Fail-fast aux traffic** (#560 follow-up, no ADR — robustness hardening
+within ADR-0154's existing decision): every aux request (`narrate`,
+`session_title`, and `summarize` when a pin actually resolved — not its
+session-fallback case, which keeps the ordinary ladder) rides
+`LlmRequest::retry = Some(RetryConfig::minimal())` — at most one retry, a
+short backoff/response-header wait, and a tightly bounded 429 park — instead
+of the endpoint's full 5-attempt LLM-tuned ladder, so a dead pinned endpoint
+(the triggering incident: `aux-models.yml` pinning `narrate`/`session_title`
+to an unreachable local Ollama) fails one probe fast rather than
+retry-storming on every tool call. `narrate`/`session_title` additionally
+gate through `AuxLlmRegistry::try_resolve`, a per-`(purpose, provider,
+model)` cooldown (`AuxCooldown`, 60s, mirroring ADR-0201's
+`recent_enable_failures` shape) that short-circuits a call entirely — no
+client built, no network touched — while a recent failure's window is still
+open; a `tracing::warn!` fires once per new window (`note_failure`'s return
+value gates it), not once per suppressed call. `summarize`'s pinned case
+relies on the retry override alone (no cooldown gate): compaction is rare
+enough, and infrequent enough per session, that the storm risk doesn't apply
+the way it does to `narrate` firing on every tool call — but the fail-fast
+`RetryConfig` still keeps a dead `summarize` pin from stalling a `/compact`
+or auto-compact for the ladder's worst case.
+
 The TUI surface is `/aux-model <purpose> <provider>/<model>`
 (`parse_aux_model_args` — the raw-text re-parse pattern; `title` is accepted
 as an alias for `session_title`; bare `/aux-model` or `/aux-model list`

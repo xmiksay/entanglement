@@ -258,9 +258,19 @@ async fn try_auto_compact(
     // an overflow recovery is a side transformation too, so it runs on the
     // pinned backend when one is set.
     let mut aux = super::summarize::AuxBackend::for_summarize(cfg);
-    let (llm, model, generation) = aux.resolve(&mut *s.llm, model, s.generation);
+    let (llm, model, generation, retry) = aux.resolve(&mut *s.llm, model, s.generation);
 
-    match summarize(&s.ctx, llm, model, generation, AUTO_COMPACT_KEEP_TAIL, None).await {
+    match summarize(
+        &s.ctx,
+        llm,
+        model,
+        generation,
+        retry,
+        AUTO_COMPACT_KEEP_TAIL,
+        None,
+    )
+    .await
+    {
         Ok(SummarizeOutcome {
             summary,
             kept,

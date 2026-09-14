@@ -9,7 +9,8 @@
 
 use crate::context::Context;
 use entanglement_provider::{
-    GenerationParams, Llm, LlmEvent, LlmRequest, Message, MessageRole, StopReason, Usage,
+    GenerationParams, Llm, LlmEvent, LlmRequest, Message, MessageRole, RetryConfig, StopReason,
+    Usage,
 };
 use futures::StreamExt;
 
@@ -34,6 +35,15 @@ pub(crate) struct AuxBackend {
     llm: Option<Box<dyn Llm>>,
     model: Option<String>,
     generation: Option<GenerationParams>,
+    /// `Some(RetryConfig::minimal())` when [`Self::llm`] is a genuinely
+    /// pinned aux backend, `None` on the session-fallback path (aux
+    /// fail-fast, #560 follow-up). A dead `summarize` pin must fail its probe
+    /// fast rather than retry-storm like `narrate`/`session_title` — but the
+    /// *fallback* case reuses the session's own primary `Llm`, the same
+    /// handle the main turn loop calls, so it must keep the ordinary
+    /// LLM-tuned retry ladder: weakening it here would regress a legitimate
+    /// transient-failure retry on every compaction, pinned or not.
+    retry: Option<RetryConfig>,
 }
 
 impl AuxBackend {
@@ -57,29 +67,41 @@ impl AuxBackend {
                     llm: Some((resolved.llm_factory)()),
                     model: Some(resolved.model),
                     generation: resolved.generation,
+                    retry: Some(RetryConfig::minimal()),
                 }
             }
             None => Self {
                 llm: None,
                 model: None,
                 generation: None,
+                retry: None,
             },
         }
     }
 
-    /// The `(llm, model, generation)` triple to summarize with, falling back to
-    /// `session_*` field-by-field. The session fallback deliberately reads the
-    /// *session's current* binding, so a live `/model` switch keeps applying to
-    /// compaction when no aux pin is set.
+    /// The `(llm, model, generation, retry)` quadruple to summarize with,
+    /// falling back to `session_*` field-by-field. The session fallback
+    /// deliberately reads the *session's current* binding, so a live
+    /// `/model` switch keeps applying to compaction when no aux pin is set.
     pub(crate) fn resolve<'a>(
         &'a mut self,
         session_llm: &'a mut dyn Llm,
         session_model: Option<&'a str>,
         session_generation: Option<GenerationParams>,
-    ) -> (&'a mut dyn Llm, Option<&'a str>, Option<GenerationParams>) {
+    ) -> (
+        &'a mut dyn Llm,
+        Option<&'a str>,
+        Option<GenerationParams>,
+        Option<RetryConfig>,
+    ) {
         match &mut self.llm {
-            Some(llm) => (&mut **llm, self.model.as_deref(), self.generation),
-            None => (session_llm, session_model, session_generation),
+            Some(llm) => (
+                &mut **llm,
+                self.model.as_deref(),
+                self.generation,
+                self.retry,
+            ),
+            None => (session_llm, session_model, session_generation, None),
         }
     }
 }
@@ -179,6 +201,7 @@ pub(crate) async fn summarize(
     llm: &mut dyn Llm,
     model: Option<&str>,
     generation: Option<GenerationParams>,
+    retry: Option<RetryConfig>,
     requested_kept: usize,
     instructions: Option<&str>,
 ) -> Result<SummarizeOutcome, SummarizeError> {
@@ -238,7 +261,7 @@ pub(crate) async fn summarize(
                           preserving summary.";
     let messages = [Message::user(prompt)];
 
-    let (summary, finish) = oneshot_text(llm, SYSTEM, &messages, model, generation)
+    let (summary, finish) = oneshot_text(llm, SYSTEM, &messages, model, generation, retry)
         .await
         .map_err(SummarizeError::Llm)?;
 
@@ -265,6 +288,7 @@ async fn oneshot_text(
     messages: &[Message],
     model: Option<&str>,
     generation: Option<GenerationParams>,
+    retry: Option<RetryConfig>,
 ) -> anyhow::Result<(String, Option<(Option<StopReason>, Usage)>)> {
     let req = LlmRequest {
         system,
@@ -274,6 +298,7 @@ async fn oneshot_text(
         generation,
         // One-shot aux request: a distinct prefix, so no session cache key.
         cache_key: None,
+        retry,
     };
     let mut stream = llm.stream(req).await?;
     let mut text = String::new();
@@ -348,6 +373,54 @@ mod tests {
         assert!(truncated.starts_with(&"a".repeat(20)));
         assert!(truncated.ends_with(&"b".repeat(20)));
         assert!(truncated.contains("truncated"));
+    }
+
+    /// #560 aux fail-fast follow-up: a resolved `summarize` pin must carry
+    /// `RetryConfig::minimal()` so a dead pinned endpoint fails its probe
+    /// fast rather than retry-storming — `max_attempts` is the cheapest
+    /// field to assert the right shape landed (`RetryConfig` has no
+    /// `PartialEq`).
+    #[test]
+    fn aux_backend_carries_minimal_retry_only_when_a_pin_resolves() {
+        let cfg = crate::EngineConfig {
+            aux_llm_resolver: Some(std::sync::Arc::new(|purpose: &str| {
+                assert_eq!(purpose, AUX_PURPOSE_SUMMARIZE);
+                Some(entanglement_provider::ResolvedModel {
+                    provider: "aux".to_string(),
+                    model: "aux-model".to_string(),
+                    llm_factory: std::sync::Arc::new(|| {
+                        Box::new(entanglement_provider::DummyLlm::default()) as Box<dyn Llm>
+                    }),
+                    generation: None,
+                    context_window: None,
+                })
+            })),
+            ..Default::default()
+        };
+        let mut aux = AuxBackend::for_summarize(&cfg);
+        let mut session_llm = entanglement_provider::DummyLlm::default();
+        let (_llm, _model, _generation, retry) = aux.resolve(&mut session_llm, None, None);
+        let retry = retry.expect("a resolved pin must carry the fail-fast retry override");
+        assert_eq!(retry.max_attempts, 2);
+    }
+
+    /// #560 follow-up: falling back to the session's own backend (no pin, or
+    /// an unresolvable one) must keep the ordinary LLM-tuned retry ladder —
+    /// weakening it here would regress every legitimate transient-failure
+    /// retry on a compaction that never touched a pin at all.
+    #[test]
+    fn aux_backend_carries_no_retry_override_on_session_fallback() {
+        let cfg = crate::EngineConfig {
+            aux_llm_resolver: Some(std::sync::Arc::new(|_purpose: &str| None)),
+            ..Default::default()
+        };
+        let mut aux = AuxBackend::for_summarize(&cfg);
+        let mut session_llm = entanglement_provider::DummyLlm::default();
+        let (_llm, _model, _generation, retry) = aux.resolve(&mut session_llm, None, None);
+        assert!(
+            retry.is_none(),
+            "the session-fallback path must not override the endpoint's own retry policy"
+        );
     }
 
     #[test]

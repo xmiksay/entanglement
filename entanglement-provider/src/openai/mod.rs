@@ -256,7 +256,7 @@ impl Llm for OpenAiLlm {
                     self.concurrency,
                     &model,
                     model_concurrency,
-                    None,
+                    req.retry,
                     || {
                         let mut request = self.http.client().post(&url);
                         if let Some(key) = &bearer {

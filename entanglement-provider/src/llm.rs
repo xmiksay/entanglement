@@ -365,6 +365,15 @@ pub struct LlmRequest<'a> {
     /// requests (summarize / session-title), whose prefix shares nothing with
     /// the session's own.
     pub cache_key: Option<&'a str>,
+    /// Per-request override of the endpoint's retry/backoff/timeout knobs
+    /// (aux fail-fast, #560 follow-up), forwarded verbatim to
+    /// [`crate::client::HttpClient::execute_with_retry`]'s own `retry`
+    /// parameter. `None` (every primary-turn request) leaves the endpoint's
+    /// pooled `RetryConfig` in force; the aux narrate/session-title/summarize
+    /// paths set `Some(RetryConfig::minimal())` when they resolved a purpose
+    /// pin, so a dead pinned endpoint fails one caller's probe fast instead of
+    /// retry-storming through the LLM-tuned ladder on every call.
+    pub retry: Option<crate::client::RetryConfig>,
 }
 
 /// A boxed, owned, sendable stream of model events. `'static` so the session
@@ -675,6 +684,7 @@ mod tests {
             tools,
             generation: None,
             cache_key: None,
+            retry: None,
         }
     }
 

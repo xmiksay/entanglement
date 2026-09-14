@@ -72,9 +72,19 @@ async fn compact_op(
     // A `summarize` aux-model pin (Issue 5) routes compaction to its own
     // backend; unset, this resolves straight back to the session's.
     let mut aux = super::summarize::AuxBackend::for_summarize(cfg);
-    let (llm, model, generation) = aux.resolve(&mut *s.llm, model, s.generation);
+    let (llm, model, generation, retry) = aux.resolve(&mut *s.llm, model, s.generation);
 
-    match summarize(&s.ctx, llm, model, generation, requested_kept, instructions).await {
+    match summarize(
+        &s.ctx,
+        llm,
+        model,
+        generation,
+        retry,
+        requested_kept,
+        instructions,
+    )
+    .await
+    {
         Ok(SummarizeOutcome {
             summary,
             kept,

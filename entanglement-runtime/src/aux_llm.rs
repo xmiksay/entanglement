@@ -25,11 +25,86 @@
 //!   switch keeps applying to compaction. Core knows only the purpose *string*
 //!   (`session::summarize::AUX_PURPOSE_SUMMARIZE`), never this registry.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use entanglement_core::{AuxLlmResolver, Catalog, Llm, LlmFactory, ModelResolver, ResolvedModel};
 
 use crate::config::aux_models::{AuxModelStore, Purpose};
+
+/// How long a `(purpose, provider, model)` combination stays cooled down
+/// after a failed [`try_resolve`](AuxLlmRegistry::try_resolve) probe (#560
+/// aux fail-fast follow-up) — mirrors ADR-0201's `FAILURE_COOLDOWN`
+/// (`mcp/available_enable.rs`). A dead endpoint then costs one probe per
+/// window, not a storm per tool call.
+const AUX_FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// Fail-fast cooldown state for [`try_resolve`](AuxLlmRegistry::try_resolve)
+/// (#560 follow-up), keyed by `(purpose, provider, model)` so a live
+/// `/aux-model` re-pin doesn't inherit a stale cooldown from the model it
+/// replaced. Mirrors [`crate::mcp::available_tier`]'s `recent_enable_failures`
+/// shape exactly — a `Mutex<HashMap<_, Instant>>`, checked/recorded/cleared
+/// by elapsed time rather than a background sweep.
+#[derive(Default)]
+struct AuxCooldown {
+    recent_failures: Mutex<HashMap<(String, String, String), Instant>>,
+}
+
+impl AuxCooldown {
+    fn key(purpose: Purpose, provider: &str, model: &str) -> (String, String, String) {
+        (
+            purpose.as_str().to_string(),
+            provider.to_string(),
+            model.to_string(),
+        )
+    }
+
+    /// `cooldown` is a parameter (not the [`AUX_FAILURE_COOLDOWN`] constant
+    /// read internally) so a test can shrink it to `Duration::ZERO` and
+    /// assert expiry without sleeping — mirrors
+    /// `mcp::available_tier::AvailableMcp::recently_failed_enable`.
+    fn in_cooldown(
+        &self,
+        purpose: Purpose,
+        provider: &str,
+        model: &str,
+        cooldown: Duration,
+    ) -> bool {
+        self.recent_failures
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&Self::key(purpose, provider, model))
+            .is_some_and(|at| at.elapsed() < cooldown)
+    }
+
+    /// Record a failure, returning `true` when this starts a *new* cooldown
+    /// window (the caller should warn) rather than refreshing one already in
+    /// force (silent — the warn already fired for this window).
+    fn record_failure(
+        &self,
+        purpose: Purpose,
+        provider: &str,
+        model: &str,
+        cooldown: Duration,
+    ) -> bool {
+        let key = Self::key(purpose, provider, model);
+        let mut guard = self
+            .recent_failures
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let is_new_window = guard.get(&key).is_none_or(|at| at.elapsed() >= cooldown);
+        guard.insert(key, Instant::now());
+        is_new_window
+    }
+
+    fn clear_failure(&self, purpose: Purpose, provider: &str, model: &str) {
+        self.recent_failures
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&Self::key(purpose, provider, model));
+    }
+}
 
 /// The runtime's per-purpose auxiliary LLM resolver (Issue 5). Wraps a shared
 /// handle to the [`AuxModelStore`] (so a live `/aux-model` write is visible
@@ -57,6 +132,15 @@ pub struct AuxLlmRegistry {
     /// reports when a purpose has no pin, mirroring [`resolve`](Self::resolve)'s
     /// own no-pin fallback to `primary`.
     primary_concurrency: Option<usize>,
+    /// `(provider, model)` identity of the primary-model fallback — the
+    /// cooldown key [`try_resolve`](Self::try_resolve) uses when a purpose
+    /// has no pin (#560 follow-up). Distinct from `primary` (the factory
+    /// itself): this is just the label a cooldown/warn needs.
+    primary_identity: (String, String),
+    /// Shared (across every `Clone` of this registry — narrate/session-title
+    /// each hand a clone to a detached per-call task) fail-fast cooldown
+    /// state (#560 follow-up).
+    cooldown: Arc<AuxCooldown>,
 }
 
 impl AuxLlmRegistry {
@@ -69,12 +153,14 @@ impl AuxLlmRegistry {
     /// fire an aux call *alongside* a live primary-model call (the session-title
     /// generator) can check whether it would contend for the same per-model
     /// permit before doing so.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Arc<Mutex<AuxModelStore>>,
         resolver: ModelResolver,
         primary: LlmFactory,
         catalog: Catalog,
         primary_concurrency: Option<usize>,
+        primary_identity: (String, String),
     ) -> Self {
         Self {
             store,
@@ -82,6 +168,8 @@ impl AuxLlmRegistry {
             primary,
             catalog,
             primary_concurrency,
+            primary_identity,
+            cooldown: Arc::new(AuxCooldown::default()),
         }
     }
 
@@ -153,6 +241,64 @@ impl AuxLlmRegistry {
                 );
                 None
             }
+        }
+    }
+
+    /// Resolve `purpose` for a **skippable, display-only** aux call
+    /// (narrate / session-title, #560 follow-up) — unlike
+    /// [`resolve`](Self::resolve), a `(purpose, provider, model)` combination
+    /// that recently failed short-circuits to `None` *before* building a
+    /// client, let alone calling it, so a dead endpoint (pinned or the
+    /// primary fallback) costs one probe per [`AUX_FAILURE_COOLDOWN`] window
+    /// rather than a storm per call. On `Some`, the caller must report the
+    /// outcome back through [`note_success`](Self::note_success) /
+    /// [`note_failure`](Self::note_failure) so the cooldown state stays
+    /// accurate.
+    pub fn try_resolve(&self, purpose: Purpose) -> Option<(Box<dyn Llm>, String, String)> {
+        let (factory, provider, model) = match self.resolve_pin(purpose) {
+            Some(resolved) => (resolved.llm_factory, resolved.provider, resolved.model),
+            None => (
+                self.primary.clone(),
+                self.primary_identity.0.clone(),
+                self.primary_identity.1.clone(),
+            ),
+        };
+        if self
+            .cooldown
+            .in_cooldown(purpose, &provider, &model, AUX_FAILURE_COOLDOWN)
+        {
+            return None;
+        }
+        Some((factory(), provider, model))
+    }
+
+    /// A [`try_resolve`](Self::try_resolve) call succeeded end-to-end (#560
+    /// follow-up): clear any cooldown recorded for this `(purpose, provider,
+    /// model)` so a transient earlier failure doesn't outlive its own window
+    /// after the endpoint has clearly recovered.
+    pub fn note_success(&self, purpose: Purpose, provider: &str, model: &str) {
+        self.cooldown.clear_failure(purpose, provider, model);
+    }
+
+    /// A [`try_resolve`](Self::try_resolve) call failed (connect/transport,
+    /// #560 follow-up): start/refresh the cooldown window, warning exactly
+    /// once per window so the user learns their pin (or primary endpoint) is
+    /// unreachable without a log line per call.
+    pub fn note_failure(&self, purpose: Purpose, provider: &str, model: &str) {
+        if self
+            .cooldown
+            .record_failure(purpose, provider, model, AUX_FAILURE_COOLDOWN)
+        {
+            tracing::warn!(
+                purpose = purpose.as_str(),
+                provider,
+                model,
+                cooldown_secs = AUX_FAILURE_COOLDOWN.as_secs(),
+                "aux: probe failed for this purpose/endpoint — cooling down; \
+                 further calls for this purpose short-circuit locally until \
+                 the window clears (check the pinned aux-model config if this \
+                 persists)"
+            );
         }
     }
 

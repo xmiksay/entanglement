@@ -104,6 +104,7 @@ fn registry_with_primary(
         factory,
         entanglement_provider::Catalog { providers: vec![] },
         primary_concurrency,
+        ("primary".to_string(), "primary-model".to_string()),
     )
 }
 

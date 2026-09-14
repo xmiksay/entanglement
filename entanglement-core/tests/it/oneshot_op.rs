@@ -96,6 +96,35 @@ fn truncating() -> (EngineConfig, Arc<Mutex<Vec<Vec<Message>>>>) {
     (cfg, seen)
 }
 
+/// A `Llm` whose ordinary turn call(s) succeed but whose *second-and-later*
+/// `stream()` call — the compaction summarize call — returns a transport
+/// `Err` (#560: aux fail-fast follow-up regression guard). Proves the
+/// existing `SummarizeError::Llm` → `OutEvent::Error` path is byte-identical
+/// after `retry`/cooldown were threaded through the summarize path — a
+/// failed summarize call must still surface the same way it always has.
+struct FailingSummaryLlm {
+    calls: Arc<Mutex<usize>>,
+}
+
+#[async_trait]
+impl Llm for FailingSummaryLlm {
+    async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        if *calls == 1 {
+            let events = vec![
+                Ok(LlmEvent::Text("hi there".to_string())),
+                Ok(LlmEvent::Finish {
+                    stop_reason: Some(StopReason::EndTurn),
+                    usage: Usage::default(),
+                }),
+            ];
+            return Ok(stream::iter(events).boxed());
+        }
+        anyhow::bail!("transport error: connection refused (dead endpoint)")
+    }
+}
+
 /// Collect events for `sid` through `Done` *and* the `Status` that trails it
 /// (`turn.rs`/`ops.rs` both emit `Done` then a lifecycle `Status` — waiting one
 /// extra beat after `Done` keeps that trailing `Status` from leaking into the
@@ -416,6 +445,55 @@ async fn compact_with_truncated_summary_is_rejected_and_source_is_unchanged() {
         .first()
         .expect("the original user message is still present");
     assert_eq!(first.text(), "hello");
+}
+
+/// #560 regression guard: a compact call that fails at the transport level
+/// (a dead pinned/session backend) must surface through the exact same
+/// `SummarizeError::Llm` → `OutEvent::Error` path as before the aux
+/// fail-fast retry override was threaded in — no new error variant, no
+/// wording change, and the source session stays untouched.
+#[tokio::test]
+async fn compact_with_a_failing_llm_surfaces_the_unchanged_error_path() {
+    let calls = Arc::new(Mutex::new(0usize));
+    let calls2 = calls.clone();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(FailingSummaryLlm {
+                calls: calls2.clone(),
+            }) as Box<dyn Llm>
+        }),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "hello"))
+        .await
+        .unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+
+    holly
+        .send(InMsg::Oneshot {
+            session: sid.clone(),
+            op: "compact".to_string(),
+            args: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+    let events = collect_until_done(&mut sub, &sid).await;
+
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OutEvent::Error { message, .. } if message.contains("connection refused"))
+        ),
+        "the transport error must surface verbatim via OutEvent::Error: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(e, OutEvent::Done { .. })));
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, OutEvent::Compacted { .. })));
 }
 
 #[tokio::test]

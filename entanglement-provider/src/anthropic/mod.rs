@@ -176,6 +176,10 @@ impl Llm for AnthropicLlm {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let rpm = self.rpm;
         let concurrency = self.concurrency;
+        // Aux fail-fast override (#560 follow-up): `Copy`, so extracted here
+        // like `rpm`/`concurrency` — `req`'s borrow can't cross into the
+        // `'static` `try_stream!` generator below.
+        let retry = req.retry;
         // Resolved against *this* request's model, not baked in at
         // construction (#550) — a profile's `model:`-only pin can send a
         // request under a different model than `default_model`. The
@@ -217,7 +221,7 @@ impl Llm for AnthropicLlm {
                             concurrency,
                             &request_model,
                             model_concurrency,
-                            None,
+                            retry,
                             || {
                                 let request = http
                                     .client()
