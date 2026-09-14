@@ -27,6 +27,7 @@ mod pause_semantics;
 mod reasoning_block_persistence;
 mod replay;
 mod resume_children;
+mod resume_model_announce;
 mod resume_predecessor;
 mod resume_reoffer;
 mod search_result_persistence;

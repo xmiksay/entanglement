@@ -218,13 +218,21 @@ pub(crate) async fn session_loop(
     // (`false`), so the param carries the real value there instead (#626).
     let effective_sponsored = s.sponsored || sponsored;
     s.sponsored = effective_sponsored;
+    // Same resumed-takes-precedence rule as `predecessor`/`user`/`sponsored`
+    // above: a resumed session's replay already rebound `s.model` from its
+    // `ModelChanged` log (ADR-0081 — session memory wins over the static
+    // profile pin `profile_model`), so the *announced* value must reflect
+    // that resolved binding, not the pin a fresh session still falls back to.
+    // A fresh session has `s.model == None` here (the pin re-bind below hasn't
+    // run yet), so this is unchanged there.
+    let effective_model = s.model.clone().or_else(|| profile_model.clone());
 
     let _ = events.send(OutEvent::SessionStarted {
         session: session.clone(),
         parent,
         predecessor: effective_predecessor,
         profile: profile_name,
-        model: profile_model,
+        model: effective_model,
         root,
         ts,
         user: effective_user,
@@ -270,6 +278,27 @@ pub(crate) async fn session_loop(
                         "session start: could not apply profile model pin; keeping default"
                     ),
                 }
+            }
+        }
+    } else if let (Some(provider), Some(model)) = (s.provider.clone(), s.model.clone()) {
+        // Resumed session, corrective announce: replay already rebound
+        // `s.provider`/`s.model` from the log's last `ModelChanged` (ADR-0081),
+        // but a freshly resumed process's heads have no prior state — they only
+        // see this session's re-emitted `SessionStarted` (now carrying the
+        // resolved model above) and, critically, the TUI status bar updates
+        // *only* on `ModelChanged`, never on `SessionStarted.model`. Re-resolve
+        // the already-bound pair once more solely to recover `context_window`
+        // (not carried on `Session` state between replay and here) and emit one
+        // corrective `ModelChanged` via the same `rebind` the live `SetModel`
+        // path uses — idempotent, it re-folds to the same binding replay
+        // already applied. Best-effort, matching the pin arm's stance.
+        if let Some(resolver) = cfg.model_resolver.as_ref() {
+            match resolver(s.user.as_ref(), &provider, &model) {
+                Ok(resolved) => s.rebind(&session, resolved, &events),
+                Err(e) => tracing::warn!(
+                    provider, model, error = %e,
+                    "session start: could not re-resolve resumed model for corrective announce"
+                ),
             }
         }
     }
