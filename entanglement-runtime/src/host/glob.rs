@@ -3,6 +3,7 @@
 //! recursively and a zero-result call always explains itself (ADR-0150).
 
 use super::{list_files_with_extra_roots, truncate_output};
+use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -50,6 +51,9 @@ struct GlobInput {
 impl Tool for GlobTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("glob")
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Read]
     }
     fn description(&self) -> &str {
         "List files matching a glob pattern (e.g. `**/*.rs`) relative to the \
@@ -179,7 +183,17 @@ pub(crate) fn suggest_files_pattern(pattern: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{joined_pattern, suggest_files_pattern};
+    use super::{joined_pattern, suggest_files_pattern, GlobTool};
+    use crate::capability::Capability;
+    use crate::tools::Tool;
+
+    #[test]
+    fn capability_is_read() {
+        assert_eq!(
+            GlobTool::new(std::env::temp_dir()).capabilities(),
+            &[Capability::Read]
+        );
+    }
 
     #[test]
     fn suggest_appends_slash_star_for_bare_doublestar() {

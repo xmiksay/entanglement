@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::client::{McpClient, McpToolDef};
+use crate::capability::Capability;
 use crate::host::truncate_output;
 use crate::tools::Tool;
 
@@ -50,6 +51,15 @@ impl McpTool {
 impl Tool for McpTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Owned(self.name.clone())
+    }
+
+    // Explicit, not just the trait default: an external server is opaque —
+    // it could do anything — so this pins the fail-safe `Write` answer
+    // deliberately rather than leaving it to fall through unannotated.
+    // Reading a server's own per-server `capabilities:` config annotation to
+    // narrow this is a later stage's job, not this one.
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Write]
     }
 
     fn description(&self) -> &str {
@@ -165,6 +175,12 @@ mod tests {
             description: "a tool".to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
+    }
+
+    #[tokio::test]
+    async fn capability_is_write_the_fail_safe_default() {
+        let t = McpTool::new(dead_client(), "my server", def("read.file"));
+        assert_eq!(t.capabilities(), &[Capability::Write]);
     }
 
     #[tokio::test]

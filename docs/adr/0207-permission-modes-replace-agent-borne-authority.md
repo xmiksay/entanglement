@@ -119,9 +119,9 @@ protocol into `entanglement-runtime`.
 
 ### 3. Tools declare their capability
 
-`Tool` gains `fn capability(&self) -> Capability`, with
-`Capability { Read, Write, Exec, Plan, Control }`. `call` and `rhai` are
-multi-capability. Config-declared `endpoint__*` tools are `Exec`;
+`Tool` gains `fn capabilities(&self) -> &'static [Capability]`, with
+`Capability { Read, Write, Exec, Plan, Control }`. A slice, not a single
+value, because `call` and `rhai` genuinely do all three. Config-declared `endpoint__*` tools are `Exec`;
 rhai-backed skill tools are multi; an alias inherits its target's capability,
 resolved before grading so it cannot launder. MCP tools are ordinary graded
 tools matched by name or pattern; their servers connect in the background at

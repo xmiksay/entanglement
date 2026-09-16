@@ -4,6 +4,7 @@
 //! provider renders to its native image format (#221).
 
 use super::{resolve_under_root, resolve_under_root_or_grant, truncate_output};
+use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -80,6 +81,9 @@ struct ReadInput {
 impl Tool for ReadTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("read")
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Read]
     }
     fn description(&self) -> &str {
         "Read a file under the working directory. A UTF-8 text file returns its \
@@ -222,6 +226,9 @@ impl Tool for ReadRawTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("read_raw")
     }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Read]
+    }
     fn description(&self) -> &str {
         "Read a file's raw UTF-8 content with no line-number prefix. Internal — \
          only reachable from a rhai script, never advertised as a standalone tool."
@@ -247,6 +254,18 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
+    }
+
+    #[test]
+    fn read_and_read_raw_are_read_capability() {
+        assert_eq!(
+            ReadTool::new(tmp().path().to_path_buf()).capabilities(),
+            &[Capability::Read]
+        );
+        assert_eq!(
+            ReadRawTool::new(tmp().path().to_path_buf()).capabilities(),
+            &[Capability::Read]
+        );
     }
 
     #[tokio::test]

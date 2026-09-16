@@ -10,6 +10,7 @@ use super::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOu
 use super::jobs::JobRegistry;
 use super::sandbox::{self, SandboxPolicy};
 use super::{bounded_result, tail_lines, DEFAULT_TAIL};
+use crate::capability::Capability;
 use crate::policy::SandboxResolver;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -146,6 +147,9 @@ fn default_tail() -> u32 {
 impl Tool for BashTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("bash")
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Exec]
     }
     fn description(&self) -> &str {
         "Run a shell command (`sh -c`) rooted at the working directory (or \
@@ -343,6 +347,14 @@ fn format_bash_streams(header: &str, stdout: &[u8], stderr: &[u8], tail: u32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_is_exec() {
+        assert_eq!(
+            BashTool::new(std::env::temp_dir()).capabilities(),
+            &[Capability::Exec]
+        );
+    }
 
     #[test]
     fn format_includes_exit_and_stdout() {

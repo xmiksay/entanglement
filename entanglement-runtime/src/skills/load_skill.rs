@@ -34,6 +34,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use crate::capability::Capability;
 use crate::tools::Tool;
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -66,6 +67,9 @@ struct LoadSkillInput {
 impl Tool for LoadSkillTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed(LOAD_SKILL_TOOL)
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Control]
     }
     fn description(&self) -> &str {
         "Load a skill's full instructions by name (pick one from the skill index \
@@ -259,6 +263,15 @@ mod tests {
             reg.insert(s);
         }
         reg
+    }
+
+    #[test]
+    fn capability_is_control() {
+        let reg = Arc::new(RwLock::new(Arc::new(SkillRegistry::default())));
+        assert_eq!(
+            LoadSkillTool::new(reg).capabilities(),
+            &[Capability::Control]
+        );
     }
 
     #[test]

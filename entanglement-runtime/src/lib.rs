@@ -38,6 +38,9 @@ pub mod arg_validate;
 pub mod ask_user;
 pub mod aux_llm;
 pub mod cancel;
+// The capability vocabulary tools declare (#560, ADR-0207 §3) — stage 1,
+// vocabulary only; nothing consumes it yet.
+pub mod capability;
 pub mod config;
 mod date;
 // Attributed autodecline wording for a call the dispatch gate refuses — the

@@ -38,6 +38,7 @@ mod validate;
 
 use super::jobs::JobRegistry;
 use super::sandbox::SandboxPolicy;
+use crate::capability::Capability;
 use crate::policy::SandboxResolver;
 use crate::retained_output::RetainedOutputRegistry;
 use crate::tools::Tool;
@@ -165,6 +166,9 @@ fn default_tail() -> u32 {
 impl Tool for CallTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("call")
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Read, Capability::Write, Capability::Exec]
     }
     fn description(&self) -> &str {
         "Execute a binary directly (argv, NO shell) in the working directory \
@@ -378,6 +382,14 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn capability_is_read_write_exec() {
+        assert_eq!(
+            CallTool::new(std::env::temp_dir()).capabilities(),
+            &[Capability::Read, Capability::Write, Capability::Exec]
+        );
     }
 
     #[tokio::test]

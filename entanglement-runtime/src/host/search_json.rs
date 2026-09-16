@@ -19,6 +19,7 @@
 use super::grep::{compile_regex, scan_matches, SkipReason, MAX_SCAN_BYTES};
 use super::walk::MAX_RESULTS;
 use super::{glob, list_files_with_extra_roots, FileList};
+use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -179,6 +180,9 @@ impl Tool for GlobJsonTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("glob_json")
     }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Read]
+    }
     fn description(&self) -> &str {
         "Script-facing structured variant of `glob` (rhai binding layer only, \
          never model-advertised — ADR-0206): matching paths as a JSON document \
@@ -264,6 +268,9 @@ impl GrepJsonTool {
 impl Tool for GrepJsonTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("grep_json")
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Read]
     }
     fn description(&self) -> &str {
         "Script-facing structured variant of `grep` (rhai binding layer only, \
@@ -382,6 +389,18 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
+    }
+
+    #[test]
+    fn glob_json_and_grep_json_are_read_capability() {
+        assert_eq!(
+            GlobJsonTool::new(tmp().path().to_path_buf()).capabilities(),
+            &[Capability::Read]
+        );
+        assert_eq!(
+            GrepJsonTool::new(tmp().path().to_path_buf()).capabilities(),
+            &[Capability::Read]
+        );
     }
 
     #[tokio::test]

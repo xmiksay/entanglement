@@ -5,6 +5,7 @@
 //! See ADR-0031 (supersedes-by-addition of ADR-0008/0009).
 
 use super::resolve_under_root_or_grant;
+use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -66,6 +67,9 @@ fn count_lines(s: &str) -> usize {
 impl Tool for WriteTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("write")
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Write]
     }
     fn description(&self) -> &str {
         "Create or fully overwrite a file under the working directory with the \
@@ -169,6 +173,14 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn capability_is_write() {
+        assert_eq!(
+            WriteTool::new(std::env::temp_dir()).capabilities(),
+            &[Capability::Write]
+        );
+    }
 
     struct TempDir {
         path: PathBuf,
